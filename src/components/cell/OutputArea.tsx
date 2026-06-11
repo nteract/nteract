@@ -26,6 +26,7 @@ import {
   type RenderPayload,
   segmentedOutputLanes,
   useIsolatedRenderer,
+  useRegisterIsolatedOutput,
 } from "@/components/isolated";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
@@ -645,12 +646,19 @@ function OutputAreaSingle({
   const shouldIsolate =
     outputs.length > 0 &&
     (isolated === true || (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
-  // Terminal renderer-bundle failure (the provider's bounded retries are
-  // exhausted): the frame could only render a silent blank well, so show
-  // the same degraded fallback the in-DOM branch gets. retry() recovery is
-  // shared module-level state — one click un-blanks every output at once.
-  const rendererBundleError =
-    shouldIsolate && !rendererBundle.isLoading ? rendererBundle.error : null;
+  // Page-level surfaces (the cloud's aggregated asset notice) gate on
+  // whether anything on screen actually renders isolated outputs.
+  useRegisterIsolatedOutput(shouldIsolate);
+  // Renderer-bundle failure (the provider's bounded retries exhausted):
+  // the frame could only render a silent blank well, so show the same
+  // degraded fallback the in-DOM branch gets. `lastError` keeps the
+  // fallback mounted through an in-flight retry ladder — frames remount
+  // only once the bundle actually loads, so a hopeless Retry click never
+  // churns N blank iframes. retry() recovery is shared module-level
+  // state — one click un-blanks every output at once.
+  const rendererBundleError = shouldIsolate
+    ? (rendererBundle.error ?? rendererBundle.lastError)
+    : null;
   const shouldConstrainIsolatedOutput = shouldIsolate && (focused || maxHeight != null);
   const isolatedOutputWellMaxHeight = focused
     ? focusedOutputWellMaxHeight

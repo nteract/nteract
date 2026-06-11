@@ -3,16 +3,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   _resetBundleCache,
   IsolatedRendererProvider,
+  useHasIsolatedOutputs,
   useIsolatedRenderer,
+  useRegisterIsolatedOutput,
 } from "../isolated-renderer-context";
 
 function Probe({ id }: { id: string }) {
-  const { rendererCode, rendererCss, isLoading, error, retry } = useIsolatedRenderer();
+  const { rendererCode, rendererCss, isLoading, error, lastError, retry } = useIsolatedRenderer();
   return (
     <div
       data-testid={id}
       data-loading={isLoading ? "true" : "false"}
       data-error={error?.message ?? ""}
+      data-last-error={lastError?.message ?? ""}
       data-code={rendererCode ?? ""}
       data-css={rendererCss ?? ""}
     >
@@ -28,6 +31,7 @@ function probeState(id: string) {
   return {
     loading: node.getAttribute("data-loading"),
     error: node.getAttribute("data-error"),
+    lastError: node.getAttribute("data-last-error"),
     code: node.getAttribute("data-code"),
     css: node.getAttribute("data-css"),
   };
@@ -287,6 +291,154 @@ describe("IsolatedRendererProvider retry behavior", () => {
       "/renderer-assets/isolated-renderer.css",
     ]);
     vi.unstubAllGlobals();
+  });
+
+  it("keeps lastError sticky through an in-flight retry so degraded UI does not flap", async () => {
+    const loader = vi.fn(async () => {
+      throw new Error("Failed to fetch renderer JS: 503");
+    });
+
+    render(
+      <IsolatedRendererProvider loader={loader}>
+        <Probe id="a" />
+      </IsolatedRendererProvider>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150 + 500 + 1500);
+    });
+    expect(probeState("a")).toMatchObject({
+      loading: "false",
+      error: "Failed to fetch renderer JS: 503",
+      lastError: "Failed to fetch renderer JS: 503",
+    });
+
+    // Mid-retry: terminal `error` clears (the ladder is running) but
+    // `lastError` keeps the failure visible — consumers keep their
+    // fallback instead of remounting blank frames.
+    await act(async () => {
+      screen.getByTestId("a-retry").click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(probeState("a")).toMatchObject({
+      loading: "true",
+      error: "",
+      lastError: "Failed to fetch renderer JS: 503",
+    });
+
+    // Exhausting again restores the terminal error.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150 + 500 + 1500);
+    });
+    expect(probeState("a")).toMatchObject({
+      loading: "false",
+      error: "Failed to fetch renderer JS: 503",
+    });
+  });
+
+  it("falls back to the stable bundle names once after a hashed-name ladder exhausts", async () => {
+    const fetched: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      fetched.push(url);
+      if (/\.[a-f0-9]{12,64}\.(?:js|css)$/.test(url)) {
+        return new Response("gone", { status: 404 });
+      }
+      return new Response(url.endsWith(".css") ? "stable-css" : "stable-js");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    render(
+      <IsolatedRendererProvider
+        basePath="/renderer-assets"
+        assetNames={{
+          js: "isolated-renderer.0123456789abcdef.js",
+          css: "isolated-renderer.fedcba9876543210.css",
+        }}
+      >
+        <Probe id="a" />
+      </IsolatedRendererProvider>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150 + 500 + 1500);
+    });
+
+    // Four hashed-pair attempts, then ONE stable-pair attempt (js and css
+    // fall back together so the pair stays deploy-consistent).
+    expect(fetched.slice(-2)).toEqual([
+      "/renderer-assets/isolated-renderer.js",
+      "/renderer-assets/isolated-renderer.css",
+    ]);
+    expect(fetched.filter((url) => url.includes("0123456789abcdef"))).toHaveLength(4);
+    expect(probeState("a")).toMatchObject({
+      loading: "false",
+      error: "",
+      lastError: "",
+      code: "stable-js",
+      css: "stable-css",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("re-kicks a terminally failed load when the browser comes back online", async () => {
+    let healed = false;
+    const loader = vi.fn(async () => {
+      if (!healed) throw new Error("Failed to fetch renderer JS: 503");
+      return { rendererCode: "code-v4", rendererCss: "css-v4" };
+    });
+
+    render(
+      <IsolatedRendererProvider loader={loader}>
+        <Probe id="a" />
+      </IsolatedRendererProvider>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150 + 500 + 1500);
+    });
+    expect(probeState("a").error).toBe("Failed to fetch renderer JS: 503");
+
+    healed = true;
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(probeState("a")).toMatchObject({ loading: "false", error: "", code: "code-v4" });
+    expect(loader).toHaveBeenCalledTimes(5);
+  });
+
+  it("tracks isolated-output presence across mounts", async () => {
+    function Watcher() {
+      const present = useHasIsolatedOutputs();
+      return <div data-testid="watcher" data-present={present ? "true" : "false"} />;
+    }
+    function IsolatedWell() {
+      useRegisterIsolatedOutput(true);
+      return null;
+    }
+
+    const { rerender } = render(
+      <>
+        <Watcher />
+      </>,
+    );
+    expect(screen.getByTestId("watcher").getAttribute("data-present")).toBe("false");
+
+    rerender(
+      <>
+        <Watcher />
+        <IsolatedWell />
+      </>,
+    );
+    expect(screen.getByTestId("watcher").getAttribute("data-present")).toBe("true");
+
+    rerender(
+      <>
+        <Watcher />
+      </>,
+    );
+    expect(screen.getByTestId("watcher").getAttribute("data-present")).toBe("false");
   });
 
   it("reports a configuration error when neither basePath nor loader is provided", async () => {

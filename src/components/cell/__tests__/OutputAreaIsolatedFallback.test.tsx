@@ -21,6 +21,7 @@ interface MockRendererBundleState {
   rendererCss: string | undefined;
   isLoading: boolean;
   error: Error | null;
+  lastError: Error | null;
   retry: () => void;
 }
 
@@ -84,6 +85,7 @@ describe("OutputArea isolated degraded states", () => {
       rendererCss: undefined,
       isLoading: true,
       error: null,
+      lastError: null,
       retry: vi.fn(),
     };
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -103,6 +105,7 @@ describe("OutputArea isolated degraded states", () => {
   it("replaces the blank frame with a visible fallback on terminal bundle failure", () => {
     mockRendererBundle.isLoading = false;
     mockRendererBundle.error = new Error("Failed to fetch renderer JS: 404");
+    mockRendererBundle.lastError = mockRendererBundle.error;
 
     render(<OutputArea cellId="cell-1" outputs={[htmlOutput("o1")]} isolated />);
 
@@ -115,6 +118,7 @@ describe("OutputArea isolated degraded states", () => {
   it("wires the fallback Retry to the shared provider retry()", () => {
     mockRendererBundle.isLoading = false;
     mockRendererBundle.error = new Error("Failed to fetch renderer JS: 404");
+    mockRendererBundle.lastError = mockRendererBundle.error;
 
     render(<OutputArea cellId="cell-1" outputs={[htmlOutput("o1")]} isolated />);
 
@@ -125,6 +129,7 @@ describe("OutputArea isolated degraded states", () => {
   it("renders one quiet fallback per output well and emits no per-frame error cascade", () => {
     mockRendererBundle.isLoading = false;
     mockRendererBundle.error = new Error("Failed to fetch renderer JS: 404");
+    mockRendererBundle.lastError = mockRendererBundle.error;
 
     render(
       <>
@@ -141,11 +146,29 @@ describe("OutputArea isolated degraded states", () => {
     // CloudNotebookNotices, fed by the single shared provider state).
     expect(isolatedFrameMountCount).toBe(0);
     expect(console.error).not.toHaveBeenCalled();
+    // OutputArea must NEVER render the page-level notice itself — N
+    // failing wells aggregate into ONE notice in the cloud notices stack.
+    expect(screen.queryByText("Output renderer unavailable.")).toBeNull();
+  });
+
+  it("keeps the fallback mounted through an in-flight retry instead of churning blank frames", () => {
+    // The provider reports a retry kicked from a terminal error as
+    // isLoading with lastError sticky.
+    mockRendererBundle.isLoading = true;
+    mockRendererBundle.error = null;
+    mockRendererBundle.lastError = new Error("Failed to fetch renderer JS: 404");
+
+    render(<OutputArea cellId="cell-1" outputs={[htmlOutput("o1")]} isolated />);
+
+    expect(screen.queryByTestId("isolated-frame")).toBeNull();
+    expect(isolatedFrameMountCount).toBe(0);
+    expect(screen.getByText("Output rendering failed")).toBeTruthy();
   });
 
   it("recovers in place once the shared bundle state clears", () => {
     mockRendererBundle.isLoading = false;
     mockRendererBundle.error = new Error("Failed to fetch renderer JS: 404");
+    mockRendererBundle.lastError = mockRendererBundle.error;
 
     const outputs = [htmlOutput("o1")];
     const { rerender } = render(<OutputArea cellId="cell-1" outputs={outputs} isolated />);
@@ -156,6 +179,7 @@ describe("OutputArea isolated degraded states", () => {
       rendererCss: "css",
       isLoading: false,
       error: null,
+      lastError: null,
       retry: vi.fn(),
     };
     rerender(<OutputArea cellId="cell-1" outputs={outputs} isolated />);
@@ -167,6 +191,7 @@ describe("OutputArea isolated degraded states", () => {
   it("leaves in-DOM outputs untouched by a renderer bundle failure", () => {
     mockRendererBundle.isLoading = false;
     mockRendererBundle.error = new Error("Failed to fetch renderer JS: 404");
+    mockRendererBundle.lastError = mockRendererBundle.error;
 
     render(<OutputArea cellId="cell-1" outputs={[streamOutput("s1")]} isolated={false} />);
 
@@ -185,6 +210,23 @@ describe("OutputArea isolated degraded states", () => {
     // Boundary reset: healed frame re-renders cleanly after Retry.
     frameShouldThrow = false;
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(screen.getByTestId("isolated-frame")).toBeTruthy();
+  });
+
+  it("auto-resets the boundary when a NEW outputs array arrives (resetKeys), no Retry click", () => {
+    frameShouldThrow = true;
+
+    const { rerender } = render(
+      <OutputArea cellId="cell-1" outputs={[htmlOutput("o1")]} isolated />,
+    );
+    expect(screen.getByText("Output rendering failed")).toBeTruthy();
+
+    // Re-execution delivers a fresh outputs array: resetKeys=[outputs]
+    // must clear the boundary without any user interaction.
+    frameShouldThrow = false;
+    rerender(<OutputArea cellId="cell-1" outputs={[htmlOutput("o2")]} isolated />);
+
+    expect(screen.queryByText("Output rendering failed")).toBeNull();
     expect(screen.getByTestId("isolated-frame")).toBeTruthy();
   });
 });
