@@ -1557,6 +1557,23 @@ export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
             text_paths?: string[][];
           }
         | undefined,
+    // Cross-tab bridge surface. Deployed-handle tolerance (the
+    // cloudCommsDocSyncMethods pattern): an older WASM bundle without
+    // these exports leaves them undefined, and applyLocalPeerChanges
+    // degrades to dropping peer messages — single-tab behavior.
+    ...(typeof handle.apply_change_bytes === "function"
+      ? {
+          apply_change_bytes: (bytes: Uint8Array) =>
+            handle.apply_change_bytes(bytes) as ReturnType<
+              NonNullable<SyncableHandle["apply_change_bytes"]>
+            >,
+        }
+      : {}),
+    ...(typeof handle.save_since_heads === "function"
+      ? {
+          save_since_heads: (headsHex: string[]) => handle.save_since_heads(headsHex),
+        }
+      : {}),
   };
 }
 

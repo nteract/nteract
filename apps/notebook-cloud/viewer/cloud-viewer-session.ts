@@ -68,6 +68,7 @@ import {
   loadCloudPersistedNotebookSeed,
   type CloudNotebookPersistenceController,
 } from "./notebook-persistence";
+import { createCloudNotebookTabBridge } from "./tab-bridge";
 import {
   OFFLINE_MERGE_RESYNC_SETTLE_MS,
   OfflineMergeTracker,
@@ -536,6 +537,12 @@ export function useCloudViewerSession({
     // controller may have overwritten the seeded record, so only the very
     // first arm may trust the seed's heads to describe what is in storage.
     let notebookPersistenceEverArmed = false;
+    // Cross-tab bridge (slice 3): same-notebook, same-principal tabs
+    // converge over a BroadcastChannel. Gated on principal only — it
+    // needs no storage adapter and never writes storage, so read_failed
+    // does not disarm it.
+    let tabBridge: ReturnType<typeof createCloudNotebookTabBridge> = null;
+    let tabBridgePrincipal: string | null = null;
     const persistenceSeed = persistenceAdapter
       ? {
           // Chunk-preferred read with the chunk-level principal guard;
@@ -593,8 +600,31 @@ export function useCloudViewerSession({
       notebookPersistence?.dispose();
       notebookPersistence = null;
       notebookPersistencePrincipal = null;
+      // Close the tab channel BEFORE freeing the handle: a closed
+      // channel delivers nothing, so no late peer apply can touch a
+      // freed handle.
+      tabBridge?.dispose();
+      tabBridge = null;
+      tabBridgePrincipal = null;
       disposeCloudSyncRuntime(liveRuntime);
       return teardownFlush;
+    };
+    // Arm (or re-arm) the cross-tab bridge for the runtime's CURRENT
+    // principal — same-principal reconnects keep it; a principal change
+    // recreates it so messages are stamped and filtered correctly.
+    const armTabBridge = (liveRuntime: CloudSyncRuntime) => {
+      const principal = cloudPrincipalFromActorLabel(liveRuntime.actorLabel);
+      if (tabBridge && tabBridgePrincipal === principal) return;
+      tabBridge?.dispose();
+      tabBridge = null;
+      tabBridgePrincipal = null;
+      tabBridge = createCloudNotebookTabBridge({
+        notebookId: config.notebookId,
+        principal,
+        engine: liveRuntime.engine,
+        handle: liveRuntime.handle,
+      });
+      tabBridgePrincipal = tabBridge ? principal : null;
     };
     // Arm (or re-arm) the persistence save loop for the runtime's CURRENT
     // principal. Same-principal reconnects keep the controller; a principal
@@ -1071,6 +1101,7 @@ export function useCloudViewerSession({
         liveRuntimeRef.current = liveRuntime;
         installCloudWidgetCommWriter(liveRuntime);
         armPersistence(liveRuntime);
+        armTabBridge(liveRuntime);
         // Anonymous sessions are out of scope for offline-merge surfacing
         // (per-connection principals; persistence never arms for them).
         offlineMergeTracker.noteSessionEligibility(
@@ -1103,8 +1134,10 @@ export function useCloudViewerSession({
             stopCursorDispatch();
             stopCursorDispatch = startCursorDispatch(liveRuntime.peerId);
             // The persistence principal follows the latest identity;
-            // same-principal reconnects keep the controller.
+            // same-principal reconnects keep the controller. The tab
+            // bridge follows the same identity rule.
             armPersistence(liveRuntime);
+            armTabBridge(liveRuntime);
             // Re-resolution can change the principal mid-session; the
             // offline-merge eligibility follows the latest identity too.
             offlineMergeTracker.noteSessionEligibility(

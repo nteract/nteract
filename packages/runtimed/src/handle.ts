@@ -241,4 +241,21 @@ export interface SyncableHandle {
    * shared projection.
    */
   project_execution_view_changeset?(): ExecutionViewChangeset | undefined;
+
+  /**
+   * Serialize every NotebookDoc change that is not a transitive dependency
+   * of the given heads (empty heads = the full compressed save). Stateless;
+   * callers own the heads bookkeeping. Optional: older bundles and test
+   * mocks may omit it (chunked persistence and the tab bridge gate on it).
+   */
+  save_since_heads?(heads_hex: string[]): Uint8Array;
+
+  /**
+   * Apply serialized NotebookDoc changes (from `save_since_heads` or a full
+   * save) and return the same `sync_applied`-shaped event `receive_frame`
+   * produces — `changed` via heads compare, one diff_doc changeset,
+   * attributions, execution-view changeset, never a `reply`. Known changes
+   * dedupe to `changed: false`. Optional for the same reason as above.
+   */
+  apply_change_bytes?(bytes: Uint8Array): FrameEvent | undefined;
 }

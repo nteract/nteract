@@ -90,6 +90,19 @@ export {
   type StorageKey,
 } from "./persistence/storage-adapter";
 
+// Cross-tab convergence bridge (BroadcastChannel; same notebook, same
+// principal — see notebook-tab-bridge.ts)
+export {
+  NOTEBOOK_TAB_BRIDGE_CHANNEL_PREFIX,
+  NotebookTabBridge,
+  createNotebookTabBridge,
+  notebookTabBridgeChannelName,
+  type NotebookTabBridgeChangesMessage,
+  type NotebookTabBridgeChannel,
+  type NotebookTabBridgeLogger,
+  type NotebookTabBridgeOptions,
+} from "./notebook-tab-bridge";
+
 // Scope capabilities (generated from nteract_identity::ConnectionScope)
 export {
   CONNECTION_SCOPES,

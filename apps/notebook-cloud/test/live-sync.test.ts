@@ -248,6 +248,51 @@ describe("cloud live sync", () => {
     assert.equal(warnings.length, 1);
   });
 
+  it("forwards the cross-tab bridge exports, tolerating bundles without them", () => {
+    const base = {
+      receive_frame: () => [],
+      flush_local_changes: () => undefined,
+      cancel_last_flush: () => undefined,
+      flush_runtime_state_sync: () => undefined,
+      cancel_last_runtime_state_flush: () => undefined,
+      generate_runtime_state_sync_reply: () => undefined,
+      flush_comms_doc_sync: () => undefined,
+      cancel_last_comms_doc_flush: () => undefined,
+      generate_comms_doc_sync_reply: () => undefined,
+      reset_sync_state: () => undefined,
+      cell_count: () => 0,
+      get_heads_hex: () => [],
+      get_dependency_fingerprint: () => undefined,
+      resolve_comm_state: () => undefined,
+    };
+
+    // Current bundle: engine.applyLocalPeerChanges must reach the WASM
+    // apply through the wrapper (regression: an unforwarded export would
+    // silently drop every peer-tab message in production).
+    const applied: Uint8Array[] = [];
+    const withExports = syncableCloudHandle({
+      ...base,
+      apply_change_bytes: (bytes: Uint8Array) => {
+        applied.push(bytes);
+        return { type: "sync_applied", changed: true };
+      },
+      save_since_heads: (headsHex: string[]) => new Uint8Array([headsHex.length]),
+    } as unknown as Parameters<typeof syncableCloudHandle>[0]);
+    assert.deepEqual(withExports.apply_change_bytes?.(new Uint8Array([7])), {
+      type: "sync_applied",
+      changed: true,
+    });
+    assert.deepEqual(applied, [new Uint8Array([7])]);
+    assert.deepEqual(withExports.save_since_heads?.(["a", "b"]), new Uint8Array([2]));
+
+    // Older deployed bundle: the optional surface stays absent.
+    const withoutExports = syncableCloudHandle(
+      base as unknown as Parameters<typeof syncableCloudHandle>[0],
+    );
+    assert.equal(withoutExports.apply_change_bytes, undefined);
+    assert.equal(withoutExports.save_since_heads, undefined);
+  });
+
   it("derives the connection principal from the actor label", () => {
     assert.equal(
       cloudPrincipalFromActorLabel("user:dev:alice/browser:session-1"),

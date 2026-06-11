@@ -2695,6 +2695,114 @@ describe("SyncEngine", () => {
       }
     });
   });
+
+  // ── Cross-tab apply (applyLocalPeerChanges) ─────────────────────
+
+  describe("applyLocalPeerChanges", () => {
+    it("routes a changed apply through the sync_applied pipeline and schedules a flush", () => {
+      const changeset: CellChangeset = {
+        changed: [],
+        added: ["cell-1"],
+        removed: [],
+        order_changed: true,
+      };
+      const apply = vi.fn(() => syncAppliedEvent({ changed: true, changeset }));
+      handle = createMockHandle({
+        apply_change_bytes: apply,
+        flush_local_changes: vi.fn(() => new Uint8Array([1])),
+      });
+      const engine = createEngine();
+      engine.start();
+
+      const cellEmissions: Array<CellChangeset | null> = [];
+      engine.cellChanges$.subscribe((cs) => cellEmissions.push(cs));
+      let docChanged = 0;
+      engine.notebookDocChanged$.subscribe(() => docChanged++);
+      let syncApplied = 0;
+      engine.notebookSyncApplied$.subscribe(() => syncApplied++);
+
+      const bytes = new Uint8Array([9, 9]);
+      expect(engine.applyLocalPeerChanges(bytes)).toBe(true);
+      expect(apply).toHaveBeenCalledWith(bytes);
+
+      // Changeset rides the same coalescing buffer as inbound frames.
+      advanceBy(scheduler, 50);
+      expect(cellEmissions).toEqual([changeset]);
+      // Persistence save hint fired from the apply path (and possibly
+      // again from the scheduled flush attempt — both are by design;
+      // persistence dedupes on heads).
+      expect(docChanged).toBeGreaterThanOrEqual(1);
+      // notebookSyncApplied$ reports applied ROOM frames only.
+      expect(syncApplied).toBe(0);
+      // The room stays authoritative: a changed apply schedules the
+      // normal debounced outbound flush.
+      expect(handle.flush_local_changes).toHaveBeenCalled();
+
+      engine.stop();
+    });
+
+    it("emits nothing and schedules nothing for already-known changes (ping-pong terminator)", () => {
+      const apply = vi.fn(() => syncAppliedEvent({ changed: false }));
+      handle = createMockHandle({ apply_change_bytes: apply });
+      const engine = createEngine();
+      engine.start();
+
+      const cellEmissions: Array<CellChangeset | null> = [];
+      engine.cellChanges$.subscribe((cs) => cellEmissions.push(cs));
+      let docChanged = 0;
+      engine.notebookDocChanged$.subscribe(() => docChanged++);
+
+      expect(engine.applyLocalPeerChanges(new Uint8Array([9]))).toBe(false);
+      advanceBy(scheduler, 100);
+
+      expect(cellEmissions).toEqual([]);
+      expect(docChanged).toBe(0);
+      expect(handle.flush_local_changes).not.toHaveBeenCalled();
+      engine.stop();
+    });
+
+    it("returns false without throwing when the handle lacks the export or apply throws", () => {
+      const engine = createEngine();
+      engine.start();
+      // No apply_change_bytes on the default mock handle:
+      expect(engine.applyLocalPeerChanges(new Uint8Array([1]))).toBe(false);
+
+      handle = createMockHandle({
+        apply_change_bytes: vi.fn(() => {
+          throw new Error("bad bytes");
+        }),
+      });
+      expect(engine.applyLocalPeerChanges(new Uint8Array([1]))).toBe(false);
+      engine.stop();
+
+      // No handle at all:
+      const engineNoHandle = createEngine({ getHandle: () => null });
+      engineNoHandle.start();
+      expect(engineNoHandle.applyLocalPeerChanges(new Uint8Array([1]))).toBe(false);
+      engineNoHandle.stop();
+    });
+
+    it("broadcasts attributions from the apply, mirroring the inbound path", () => {
+      const apply = vi.fn(() =>
+        syncAppliedEvent({
+          changed: true,
+          attributions: [
+            { cell_id: "cell-1", index: 0, text: "hi", deleted: 0, actors: ["user:test:alice"] },
+          ],
+        }),
+      );
+      handle = createMockHandle({ apply_change_bytes: apply });
+      const engine = createEngine();
+      engine.start();
+
+      const broadcasts: unknown[] = [];
+      engine.broadcasts$.subscribe((b) => broadcasts.push(b));
+      engine.applyLocalPeerChanges(new Uint8Array([9]));
+
+      expect(broadcasts).toHaveLength(1);
+      engine.stop();
+    });
+  });
 });
 
 // ── DirectTransport tests ──────────────────────────────────────────
