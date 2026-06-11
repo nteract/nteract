@@ -14,6 +14,7 @@ import { setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import type { WidgetStore } from "@/components/widgets/widget-store";
 import {
   cloudConnectionErrorAcceptsAccessDiagnostic,
+  cloudConnectionErrorWithAccessDiagnostic,
   diagnoseCloudConnectionAccess,
 } from "./connection-diagnostics";
 import {
@@ -646,7 +647,12 @@ export function useCloudViewerSession({
         })
           .then((diagnostic) => {
             if (disposed || !diagnostic) return;
-            setConnectionError(diagnostic);
+            // Resolution-time guard: this fetch has no deadline, and a
+            // terminal WASM asset failure may own the notice by now — its
+            // Retry affordance must survive the late diagnostic.
+            setConnectionError((current) =>
+              cloudConnectionErrorWithAccessDiagnostic(current, diagnostic),
+            );
           })
           .catch(() => undefined);
       }
@@ -1184,7 +1190,11 @@ export function useCloudViewerSession({
                   message: `Unable to load live notebook room: ${diagnostic}`,
                 });
               }
-              setConnectionError(diagnostic);
+              // Resolution-time sibling of the kick-time guard above: a
+              // WASM failure surfaced meanwhile keeps the notice.
+              setConnectionError((current) =>
+                cloudConnectionErrorWithAccessDiagnostic(current, diagnostic),
+              );
             })
             .catch(() => undefined);
         }
