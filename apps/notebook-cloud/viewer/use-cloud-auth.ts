@@ -22,10 +22,42 @@ interface CloudPrototypeAuthOptions {
   appSession?: CloudAppSession | null;
 }
 
-interface CloudAppSessionViewState {
+export interface CloudAppSessionViewState {
   status: "loading" | "ready" | "error";
   session: CloudAppSession | null;
   error: string | null;
+}
+
+export function cloudAppSessionsEqual(
+  a: CloudAppSession | null,
+  b: CloudAppSession | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.provider === b.provider && a.expires_at === b.expires_at;
+}
+
+/**
+ * Ready-state reducer for a session-status fetch result that keeps OBJECT
+ * IDENTITIES stable when the fetch only confirms what we already have.
+ *
+ * The session object feeds effect dependency chains (resolveSyncAuth → the
+ * live-room effect), so installing a fresh-but-content-identical object on
+ * every mount fetch tears down and reconnects the live room gratuitously.
+ * Returning `current` unchanged lets React bail out of the re-render
+ * entirely.
+ */
+export function nextCloudAppSessionReadyState(
+  current: CloudAppSessionViewState,
+  fetchedSession: CloudAppSession | null,
+): CloudAppSessionViewState {
+  const session = cloudAppSessionsEqual(current.session, fetchedSession)
+    ? current.session
+    : fetchedSession;
+  if (current.status === "ready" && current.session === session && current.error === null) {
+    return current;
+  }
+  return { status: "ready", session, error: null };
 }
 
 export function useCloudPrototypeAuth(
@@ -173,7 +205,7 @@ export function useCloudAppSessionStatus(
     void readCloudAppSessionStatus({ signal: controller.signal })
       .then((status) => {
         if (controller.signal.aborted) return;
-        setState({ status: "ready", session: status.session, error: null });
+        setState((current) => nextCloudAppSessionReadyState(current, status.session));
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
