@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AlertCircle, CloudOff, Loader2, LogIn, RotateCcw } from "lucide-react";
+import { AlertCircle, CloudOff, ImageOff, Loader2, LogIn, RotateCcw } from "lucide-react";
 import {
   NotebookNotice,
   NotebookNoticeAction,
@@ -30,6 +30,17 @@ export interface CloudNotebookNoticesProps {
   sustainedReconnecting?: boolean;
   status: ViewerStatus;
   diagnostics?: ReactNode;
+  /**
+   * Terminal renderer-asset failure from the shared IsolatedRendererProvider
+   * (bounded retries already exhausted). The provider state is module-level,
+   * so N blank output wells collapse into this ONE quiet line — never
+   * per-output spam. Asset health is notices + output fallbacks only; it
+   * must never feed the connection dot or CloudConnectionStatusBridge
+   * (that bridge models room transport health exclusively).
+   */
+  rendererAssetError?: Error | null;
+  /** Restarts the renderer bundle load ladder; recovery un-blanks every output at once. */
+  onRetryRendererAssets?: () => void;
   onResetAuth: () => void;
   onSignInAgain?: () => void | Promise<void>;
 }
@@ -70,6 +81,7 @@ export function cloudNotebookHasNotices({
   connectionError,
   hasAppSession = false,
   hasReadableSnapshot = false,
+  rendererAssetError = null,
   sustainedReconnecting = false,
   status,
   diagnostics,
@@ -91,6 +103,7 @@ export function cloudNotebookHasNotices({
     shouldShowAuthRenewalNotice ||
     sustainedReconnecting ||
     Boolean(connectionNotice) ||
+    Boolean(rendererAssetError) ||
     Boolean(diagnostics) ||
     shouldShowStatusNotice
   );
@@ -102,10 +115,12 @@ export function CloudNotebookNotices({
   connectionError,
   hasAppSession = false,
   hasReadableSnapshot = false,
+  rendererAssetError = null,
   sustainedReconnecting = false,
   status,
   diagnostics,
   onResetAuth,
+  onRetryRendererAssets,
   onSignInAgain,
 }: CloudNotebookNoticesProps) {
   if (
@@ -115,6 +130,7 @@ export function CloudNotebookNotices({
       connectionError,
       hasAppSession,
       hasReadableSnapshot,
+      rendererAssetError,
       sustainedReconnecting,
       status,
       diagnostics,
@@ -188,6 +204,27 @@ export function CloudNotebookNotices({
           }
         >
           {connectionNotice.message}
+        </NotebookNotice>
+      ) : null}
+
+      {rendererAssetError ? (
+        <NotebookNotice
+          tone="warning"
+          icon={<ImageOff className="h-4 w-4" />}
+          title="Output renderer unavailable."
+          actions={
+            onRetryRendererAssets ? (
+              <NotebookNoticeAction
+                onClick={onRetryRendererAssets}
+                icon={<RotateCcw className="h-3 w-3" />}
+              >
+                Retry
+              </NotebookNoticeAction>
+            ) : null
+          }
+        >
+          Rich outputs are paused because their renderer assets failed to load. Code and text stay
+          readable; retry to restore outputs.
         </NotebookNotice>
       ) : null}
 

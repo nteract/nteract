@@ -25,6 +25,7 @@ import {
   outputUsesWheelOwningFrame,
   type RenderPayload,
   segmentedOutputLanes,
+  useIsolatedRenderer,
 } from "@/components/isolated";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
@@ -638,11 +639,18 @@ function OutputAreaSingle({
   // Get widget store context (may be null if not in provider)
   const widgetContext = useWidgetStore();
   const savedWidgetModels = useSavedWidgetModels();
+  const rendererBundle = useIsolatedRenderer();
 
   // Determine if we should use isolation (when we have outputs)
   const shouldIsolate =
     outputs.length > 0 &&
     (isolated === true || (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
+  // Terminal renderer-bundle failure (the provider's bounded retries are
+  // exhausted): the frame could only render a silent blank well, so show
+  // the same degraded fallback the in-DOM branch gets. retry() recovery is
+  // shared module-level state — one click un-blanks every output at once.
+  const rendererBundleError =
+    shouldIsolate && !rendererBundle.isLoading ? rendererBundle.error : null;
   const shouldConstrainIsolatedOutput = shouldIsolate && (focused || maxHeight != null);
   const isolatedOutputWellMaxHeight = focused
     ? focusedOutputWellMaxHeight
@@ -1083,28 +1091,44 @@ function OutputAreaSingle({
             onKeyDown={shouldUseScrollPassthroughFrame ? handleStaticFrameKeyDown : undefined}
           >
             {shouldMountIsolatedFrame ? (
-              <IsolatedFrame
-                ref={setIsolatedFrameHandle}
-                name={frameName}
-                darkMode={darkMode}
-                colorTheme={colorTheme}
-                minHeight={24}
-                maxHeight={isolatedOutputWellMaxHeight}
-                autoHeight={shouldIsolate && !focused}
-                allowWheelBoundaryScroll={allowWheelBoundaryScroll}
-                forwardWheelBoundaryScroll={shouldForwardWheelBoundaryScroll}
-                scrollPassthrough={shouldScrollPassthroughFrame}
-                onReady={handleIsolatedFrameReady}
-                onLinkClick={onLinkClick}
-                onMouseDown={activateStaticFrameInteraction}
-                onMouseUp={handleStaticFrameMouseUp}
-                onWidgetUpdate={onWidgetUpdate}
-                onMessage={handleIframeMessage}
-                onError={handleIframeError}
-                onDiagnostic={onDiagnostic}
-                hostContext={hostContext}
-                outputDocumentUrl={hostContext?.nteract?.outputDocumentUrl}
-              />
+              rendererBundleError ? (
+                <OutputErrorFallback error={rendererBundleError} onRetry={rendererBundle.retry} />
+              ) : (
+                <ErrorBoundary
+                  resetKeys={[outputs]}
+                  fallback={(error, reset) => <OutputErrorFallback error={error} onRetry={reset} />}
+                  onError={(error, errorInfo) => {
+                    console.error(
+                      "[OutputArea] Error rendering isolated output:",
+                      error,
+                      errorInfo.componentStack,
+                    );
+                  }}
+                >
+                  <IsolatedFrame
+                    ref={setIsolatedFrameHandle}
+                    name={frameName}
+                    darkMode={darkMode}
+                    colorTheme={colorTheme}
+                    minHeight={24}
+                    maxHeight={isolatedOutputWellMaxHeight}
+                    autoHeight={shouldIsolate && !focused}
+                    allowWheelBoundaryScroll={allowWheelBoundaryScroll}
+                    forwardWheelBoundaryScroll={shouldForwardWheelBoundaryScroll}
+                    scrollPassthrough={shouldScrollPassthroughFrame}
+                    onReady={handleIsolatedFrameReady}
+                    onLinkClick={onLinkClick}
+                    onMouseDown={activateStaticFrameInteraction}
+                    onMouseUp={handleStaticFrameMouseUp}
+                    onWidgetUpdate={onWidgetUpdate}
+                    onMessage={handleIframeMessage}
+                    onError={handleIframeError}
+                    onDiagnostic={onDiagnostic}
+                    hostContext={hostContext}
+                    outputDocumentUrl={hostContext?.nteract?.outputDocumentUrl}
+                  />
+                </ErrorBoundary>
+              )
             ) : (
               <div
                 aria-hidden="true"

@@ -153,6 +153,54 @@ test("cloud notebook notices distinguish sign-in and access diagnostics from soc
   assert.doesNotMatch(noAccessHtml, /Live room unavailable/);
 });
 
+test("cloud notebook notices aggregate renderer-asset failures into one quiet line with retry", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      rendererAssetError: new Error("Failed to fetch renderer JS: 404"),
+      status: { kind: "ready", message: "Ready" },
+    }),
+    true,
+  );
+
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      rendererAssetError: new Error("Failed to fetch renderer JS: 404"),
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+      onRetryRendererAssets: () => {},
+    }),
+  );
+
+  // Exactly ONE notice for the whole page — N failing output wells never
+  // produce per-output notice spam (the provider state is module-level).
+  assert.equal(html.match(/Output renderer unavailable/g)?.length, 1);
+  assert.match(html, /Rich outputs are paused/);
+  assert.match(html, /Retry/);
+  // Asset health stays out of connection vocabulary: no connection notice,
+  // no reconnecting line.
+  assert.doesNotMatch(html, /Live room/);
+  assert.doesNotMatch(html, /Reconnecting/);
+});
+
+test("cloud notebook notices render nothing extra when renderer assets are healthy", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      rendererAssetError: null,
+      status: { kind: "ready", message: "Ready" },
+    }),
+    false,
+  );
+});
+
 test("cloud notebook notices keep dev diagnostics inside the shared stack", () => {
   const html = renderToStaticMarkup(
     React.createElement(CloudNotebookNotices, {

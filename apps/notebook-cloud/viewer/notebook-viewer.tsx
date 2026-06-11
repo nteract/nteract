@@ -10,6 +10,7 @@ import {
 import { NotebookHostProvider } from "@nteract/notebook-host";
 import { AlertCircle, Check, Loader2, X } from "lucide-react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import { useIsolatedRenderer } from "@/components/isolated/isolated-renderer-context";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
@@ -230,6 +231,9 @@ export function NotebookViewer({
   // dot by design, so once "reconnecting" outlives the debounce the notices
   // stack carries the one calm line (and clears it when the room is back).
   const sustainedReconnecting = useSustainedReconnecting(connectionStatus$);
+  // Shared renderer-bundle state from the root IsolatedRendererProvider
+  // (CloudNotebookProviders): drives the single asset-health notice below.
+  const isolatedRenderer = useIsolatedRenderer();
   const presenceSnapshot = useSyncExternalStore(
     presenceStore.subscribe,
     presenceStore.getSnapshot,
@@ -907,6 +911,11 @@ export function NotebookViewer({
       ? { kind: "loading", message: "Preparing notebook view..." }
       : status;
   const accessRequestNotice = cloudAccessRequestNotice(latestAccessRequest, accessRequestError);
+  // Asset health is its own quiet surface: N identical renderer failures
+  // collapse into ONE notice (the provider state is module-level shared)
+  // plus per-output fallbacks. It never feeds the connection dot or
+  // CloudConnectionStatusBridge — that bridge models room transport health.
+  const rendererAssetError = isolatedRenderer.isLoading ? null : isolatedRenderer.error;
   const hasNotices = cloudNotebookHasNotices({
     authState,
     authRenewal,
@@ -914,6 +923,7 @@ export function NotebookViewer({
     diagnostics: accessRequestNotice,
     hasAppSession: Boolean(appSessionStatus.session),
     hasReadableSnapshot: notebookHasReadableSnapshot,
+    rendererAssetError,
     sustainedReconnecting,
     status: noticeStatus,
   });
@@ -925,9 +935,11 @@ export function NotebookViewer({
       diagnostics={accessRequestNotice}
       hasAppSession={Boolean(appSessionStatus.session)}
       hasReadableSnapshot={notebookHasReadableSnapshot}
+      rendererAssetError={rendererAssetError}
       sustainedReconnecting={sustainedReconnecting}
       status={noticeStatus}
       onResetAuth={resetPrototypeAuth}
+      onRetryRendererAssets={isolatedRenderer.retry}
       onSignInAgain={authConfig.oidc ? beginNotebookOidcAuth : undefined}
     />
   ) : null;
