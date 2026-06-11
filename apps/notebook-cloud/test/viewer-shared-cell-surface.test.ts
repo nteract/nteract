@@ -34,7 +34,13 @@ test("cloud viewer imports desktop notebook code only through public surfaces", 
 
     for (const match of imports) {
       const importPath = match[1] ?? "";
-      if (importPath.includes("/wasm/") || importPath.endsWith("/notebook-surface")) {
+      if (
+        importPath.includes("/wasm/") ||
+        importPath.endsWith("/notebook-surface") ||
+        // Headless store surface: same public symbols, no component/CSS
+        // imports, so node-run tests can exercise the bridge directly.
+        importPath.endsWith("/notebook-surface-stores")
+      ) {
         continue;
       }
       offenders.push(`${fileName}: ${importPath}`);
@@ -59,7 +65,7 @@ test("cloud projects live cells into the NotebookView stores", () => {
   );
   assert.match(
     sessionSourceText,
-    /const applyResolvedCells = useCallback\(\(resolvedCells: ResolvedCell\[\]\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(resolvedCells\);[\s\S]*setCells\(resolvedCells\);/,
+    /const applyResolvedCells = useCallback\(\s*\(resolvedCells: ResolvedCell\[\]\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(resolvedCells\);[\s\S]*setCells\(resolvedCells\);/,
   );
   assert.match(sessionSourceText, /applyResolvedCells\(syncCells\);/);
   assert.match(sessionSourceText, /applyResolvedCells\(progressiveCells\);/);

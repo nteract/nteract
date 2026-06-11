@@ -21,6 +21,8 @@ import {
 } from "../src/notebook-room.ts";
 import {
   FrameType,
+  LIVENESS_PING,
+  LIVENESS_PONG,
   decodeJsonPayload,
   encodeTypedFrame,
   splitTypedFrame,
@@ -314,6 +316,108 @@ describe("NotebookRoom peer lifecycle", () => {
       7,
       "the close-triggering rejection should not echo another control frame",
     );
+  });
+
+  it("arms the CF auto-response liveness pair when the runtime supports it", () => {
+    const pairs: Array<{ request: string; response: string }> = [];
+    class PairCtor {
+      constructor(
+        readonly request: string,
+        readonly response: string,
+      ) {}
+    }
+    const globals = globalThis as { WebSocketRequestResponsePair?: unknown };
+    const original = globals.WebSocketRequestResponsePair;
+    globals.WebSocketRequestResponsePair = PairCtor;
+    try {
+      const state = fakeState() as DurableObjectState & {
+        setWebSocketAutoResponse?: (pair: { request: string; response: string }) => void;
+      };
+      state.setWebSocketAutoResponse = (pair) => pairs.push(pair);
+      new NotebookRoom(state, {} as Env);
+      assert.equal(pairs.length, 1);
+      assert.equal(pairs[0].request, LIVENESS_PING);
+      assert.equal(pairs[0].response, LIVENESS_PONG);
+
+      // Hibernation wake = a fresh constructor run against the SAME durable
+      // state. Re-arming per wake must be an idempotent re-set of the same
+      // pair — the load-bearing claim behind arming in the constructor.
+      new NotebookRoom(state, {} as Env);
+      assert.equal(pairs.length, 2);
+      assert.equal(pairs[1].request, pairs[0].request);
+      assert.equal(pairs[1].response, pairs[0].response);
+
+      // Older runtime shape: the global constructor exists but the state
+      // lacks setWebSocketAutoResponse. The second conjunct of the feature
+      // detection must keep the constructor from throwing — a TypeError
+      // here is a total room outage, not a degraded probe.
+      assert.doesNotThrow(() => new NotebookRoom(fakeState(), {} as Env));
+    } finally {
+      globals.WebSocketRequestResponsePair = original;
+    }
+    // Feature detection: without the global constructor (every other test in
+    // this file), the constructor must not call setWebSocketAutoResponse.
+    const uncalled: unknown[] = [];
+    const bare = fakeState() as DurableObjectState & {
+      setWebSocketAutoResponse?: (pair: unknown) => void;
+    };
+    bare.setWebSocketAutoResponse = (pair) => uncalled.push(pair);
+    new NotebookRoom(bare, {} as Env);
+    assert.equal(uncalled.length, 0);
+  });
+
+  it("answers liveness pings without counting them toward rejected-frame close", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "peer-a",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(peer.id, peer);
+    harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+
+    // Fallback path for runtimes without setWebSocketAutoResponse: pings are
+    // text frames, but they must never ride the binary-only rejection.
+    for (let i = 0; i < 20; i += 1) {
+      await harness.handleMessage("demo", peer, LIVENESS_PING);
+    }
+
+    assert.equal(socket.closed, false);
+    assert.equal(peer.consecutiveRejectedFrames, 0);
+    assert.equal(socket.sent.length, 20);
+    assert(
+      socket.sent.every((frame) => new TextDecoder().decode(frame) === LIVENESS_PONG),
+      "every ping is answered with a pong, not a rejection control frame",
+    );
+  });
+
+  it("swallows pong send failures on a closing socket", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket({ throwOnSend: true });
+    const peer = {
+      id: "peer-a",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(peer.id, peer);
+
+    await harness.handleMessage("demo", peer, LIVENESS_PING);
+
+    assert.equal(peer.consecutiveRejectedFrames, 0);
+    assert.equal(harness.peers.has(peer.id), true);
   });
 
   it("does not count server-side room host failures toward peer close", async () => {

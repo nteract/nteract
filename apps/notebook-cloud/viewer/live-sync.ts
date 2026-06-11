@@ -14,7 +14,12 @@ import {
 } from "runtimed";
 import { isConnectionScope, type ConnectionScope } from "../src/auth-shared";
 import { identityDisplayLabel } from "../src/display-label";
-import { FrameType, type SessionControlMessage } from "../src/protocol";
+import {
+  FrameType,
+  LIVENESS_PING,
+  LIVENESS_PONG,
+  type SessionControlMessage,
+} from "../src/protocol";
 import {
   cloudPrototypeAuthFromWindow,
   cloudSyncAuthFromPrototypeAuthState,
@@ -131,6 +136,17 @@ const RECONNECT_MAX_DELAY_MS = 30_000;
 const RECONNECT_JITTER_RATIO = 0.5;
 
 /**
+ * App-level liveness probe cadence. A zombie socket (OS-level offline,
+ * upstream loss with the interface up) keeps `readyState === OPEN` and
+ * buffers sends silently — without traffic that DEMANDS a reply, the only
+ * loss signal is the OS TCP retransmit abort, minutes later. The room DO
+ * answers `LIVENESS_PING` via `setWebSocketAutoResponse` (no DO wake), so a
+ * missed pong within the deadline means the link is dead: recycle it.
+ */
+const LIVENESS_PING_INTERVAL_MS = 20_000;
+const LIVENESS_PONG_DEADLINE_MS = 10_000;
+
+/**
  * Bound on the persisted-seed IndexedDB read at connect time. A hung IDB
  * open (corrupt browser profile) must degrade to bootstrap, not stall the
  * live session after the room handshake succeeded.
@@ -141,6 +157,17 @@ interface PendingFrameAck {
   reject: (error: Error) => void;
   resolve: () => void;
   timeoutId: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * Browser timers are numbers; Node timers are objects whose `unref()`
+ * releases the event loop. The liveness probe's periodic timers must never
+ * keep a Node process (tests) alive on their own — a transport that is
+ * still connected when a test file finishes would otherwise wedge the
+ * runner forever. No-op in browsers.
+ */
+function unrefTimer(timer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>): void {
+  (timer as { unref?: () => void }).unref?.();
 }
 
 function requestTimeoutMs(request: NotebookRequest): number {
@@ -657,6 +684,15 @@ export interface CloudWebSocketTransportOptions {
   reconnectBaseDelayMs?: number;
   reconnectMaxDelayMs?: number;
   handshakeTimeoutMs?: number;
+  /**
+   * Liveness probe tuning for tests. After each cloud_room_ready the
+   * transport sends `LIVENESS_PING` every `livenessPingIntervalMs`; if no
+   * `LIVENESS_PONG` arrives within `livenessPongDeadlineMs` of a ping, the
+   * connection is treated as lost. `livenessPingIntervalMs: 0` disables
+   * the probe entirely.
+   */
+  livenessPingIntervalMs?: number;
+  livenessPongDeadlineMs?: number;
   /** Jitter source (default Math.random); injectable for deterministic tests. */
   random?: () => number;
 }
@@ -678,6 +714,8 @@ export class CloudWebSocketTransport implements NotebookTransport {
   private readonly reconnectBaseDelayMs: number;
   private readonly reconnectMaxDelayMs: number;
   private readonly handshakeTimeoutMs: number;
+  private readonly livenessPingIntervalMs: number;
+  private readonly livenessPongDeadlineMs: number;
   private readonly random: () => number;
 
   private socket: WebSocket | null = null;
@@ -690,6 +728,8 @@ export class CloudWebSocketTransport implements NotebookTransport {
   private failedAttempts = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
+  private livenessPingTimer: ReturnType<typeof setInterval> | null = null;
+  private livenessPongTimer: ReturnType<typeof setTimeout> | null = null;
   private manualDisconnect = false;
   private everReady = false;
   private readySettled = false;
@@ -738,11 +778,28 @@ export class CloudWebSocketTransport implements NotebookTransport {
     }
   };
 
+  /**
+   * navigator 'offline': proactively recycle the current socket. An
+   * OS-level offline window never fires WS `close`/`error` — the socket
+   * stays `OPEN` and buffers sends silently until the TCP retransmit abort
+   * minutes later. The browser telling us it is offline is trustworthy in
+   * the direction that matters; tear down now so status flips to
+   * reconnecting and the `online` handler can short-circuit recovery.
+   */
+  private readonly handleBrowserOffline = () => {
+    if (this.manualDisconnect) return;
+    const socket = this.socket;
+    if (socket === null) return;
+    this.connectionLost(new Error("browser reported offline"), socket);
+  };
+
   constructor(options: CloudWebSocketTransportOptions) {
     this.options = options;
     this.reconnectBaseDelayMs = options.reconnectBaseDelayMs ?? RECONNECT_BASE_DELAY_MS;
     this.reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? RECONNECT_MAX_DELAY_MS;
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
+    this.livenessPingIntervalMs = options.livenessPingIntervalMs ?? LIVENESS_PING_INTERVAL_MS;
+    this.livenessPongDeadlineMs = options.livenessPongDeadlineMs ?? LIVENESS_PONG_DEADLINE_MS;
     this.random = options.random ?? Math.random;
     this.ready = new Promise((resolve, reject) => {
       this.readyResolve = resolve;
@@ -753,6 +810,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.ready.catch(() => undefined);
     if (typeof window !== "undefined") {
       window.addEventListener("online", this.handleBrowserOnline);
+      window.addEventListener("offline", this.handleBrowserOffline);
     }
     void this.connect();
   }
@@ -841,6 +899,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.teardownSocket();
     this.connectionReady = false;
     this.clearHandshakeTimer();
+    this.stopLivenessProbe();
     // Pending FIFO frame ACKs cannot span sockets.
     this.rejectPendingFrameAcks(reason);
     // Frames queued from a dead connection are bound to that connection's
@@ -917,6 +976,85 @@ export class CloudWebSocketTransport implements NotebookTransport {
       clearTimeout(this.handshakeTimer);
       this.handshakeTimer = null;
     }
+  }
+
+  /**
+   * (Re)start the liveness probe for the connection that just completed
+   * its cloud_room_ready handshake. The captured socket pins the probe to
+   * that connection: a superseding connect tears the old probe down via
+   * `connectionLost` → `stopLivenessProbe`, and the captured-socket guard
+   * makes a straggling tick harmless besides.
+   */
+  private startLivenessProbe(socket: WebSocket): void {
+    this.stopLivenessProbe();
+    if (this.livenessPingIntervalMs <= 0) return;
+    this.livenessPingTimer = setInterval(() => {
+      if (socket !== this.socket) {
+        this.stopLivenessProbe();
+        return;
+      }
+      this.sendLivenessPing(socket);
+    }, this.livenessPingIntervalMs);
+    // Node-only (tests): a probe interval must never keep the process
+    // alive on its own. No-op in browsers, where timers are numbers.
+    unrefTimer(this.livenessPingTimer);
+  }
+
+  private sendLivenessPing(socket: WebSocket): void {
+    if (socket.readyState !== WebSocket.OPEN) return; // close handler will recycle
+    try {
+      // Raw text send on purpose: the room's WebSocketRequestResponsePair
+      // matches the exact string and replies without waking the DO. The
+      // typed-frame channel stays binary-only.
+      socket.send(LIVENESS_PING);
+    } catch (error) {
+      const reason =
+        error instanceof Error
+          ? new Error(`cloud sync liveness ping failed: ${error.message}`)
+          : new Error(`cloud sync liveness ping failed: ${String(error)}`);
+      this.connectionLost(reason, socket);
+      return;
+    }
+    // One deadline per OUTSTANDING ping: if a pong is already overdue,
+    // keep the original (earlier) deadline rather than extending it.
+    if (this.livenessPongTimer !== null) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      // Background tabs throttle and suspend timers: a frozen deadline can
+      // fire on resume BEFORE the queued pong MessageEvent dispatches,
+      // declaring a healthy connection dead on every tab foreground. Send
+      // the ping (it keeps intermediaries warm) but skip enforcement while
+      // hidden — the next visible-tab ping re-arms the deadline.
+      return;
+    }
+    this.livenessPongTimer = setTimeout(() => {
+      this.livenessPongTimer = null;
+      if (socket !== this.socket) return;
+      // The link is zombie: readyState stays OPEN and sends buffer
+      // silently, but the room's auto-response never made it back.
+      this.connectionLost(
+        new Error(
+          `cloud sync liveness pong missed (no reply within ${this.livenessPongDeadlineMs}ms)`,
+        ),
+        socket,
+      );
+      socket.close();
+    }, this.livenessPongDeadlineMs);
+    unrefTimer(this.livenessPongTimer);
+  }
+
+  private noteLivenessPong(): void {
+    if (this.livenessPongTimer !== null) {
+      clearTimeout(this.livenessPongTimer);
+      this.livenessPongTimer = null;
+    }
+  }
+
+  private stopLivenessProbe(): void {
+    if (this.livenessPingTimer !== null) {
+      clearInterval(this.livenessPingTimer);
+      this.livenessPingTimer = null;
+    }
+    this.noteLivenessPong();
   }
 
   async sendFrame(frameType: number, payload: Uint8Array): Promise<void> {
@@ -1004,8 +1142,10 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.connectEpoch += 1; // invalidate any in-flight connect attempt
     this.clearRetryTimer();
     this.clearHandshakeTimer();
+    this.stopLivenessProbe();
     if (typeof window !== "undefined") {
       window.removeEventListener("online", this.handleBrowserOnline);
+      window.removeEventListener("offline", this.handleBrowserOffline);
     }
     this.teardownSocket();
     this.rejectPendingFrameAcks(new Error("cloud sync socket disconnected"));
@@ -1020,6 +1160,21 @@ export class CloudWebSocketTransport implements NotebookTransport {
   }
 
   private async handleMessage(data: unknown, socket: WebSocket): Promise<void> {
+    if (socket !== this.socket) return; // superseded connection
+    // ANY inbound message is liveness evidence, not just the strict pong:
+    // the pong is an ordinary frame serialized into the same in-order WS
+    // stream as sync frames, so during a large post-reconnect sync over a
+    // slow link it queues behind the backlog. A connection actively
+    // delivering frames is demonstrably alive — killing it on a fixed pong
+    // deadline would recycle exactly the connections least able to afford
+    // the resync churn. The probe's job is the silent zombie socket, and a
+    // zombie delivers nothing.
+    this.noteLivenessPong();
+    // Liveness pongs are the only text frames the room ever sends; consume
+    // them before binary decoding (which rejects strings).
+    if (data === LIVENESS_PONG) {
+      return;
+    }
     const bytes = await bytesFromWebSocketMessage(data);
     if (socket !== this.socket) return; // superseded while decoding
     if (bytes.byteLength === 0) return;
@@ -1028,7 +1183,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
       const control = JSON.parse(new TextDecoder().decode(bytes.slice(1))) as SessionControlMessage;
       this.options.onControl?.(control);
       if (control.type === "cloud_room_ready") {
-        this.handleRoomReady(control);
+        this.handleRoomReady(control, socket);
       } else if (control.type === "cloud_frame_accepted") {
         this.resolveFrameAck(control.frame_type);
       } else if (control.type === "cloud_frame_rejected") {
@@ -1044,13 +1199,14 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.emitFrame(frame);
   }
 
-  private handleRoomReady(control: CloudRoomReady): void {
+  private handleRoomReady(control: CloudRoomReady, socket: WebSocket): void {
     this.failedAttempts = 0; // backoff resets on the app-level ack
     this.everReady = true;
     // Before the roomReady$ emission: subscribers' resync flush sends on
     // this connection within the same tick.
     this.connectionReady = true;
     this.clearHandshakeTimer();
+    this.startLivenessProbe(socket);
     this.setStatus("online");
     if (!this.readySettled) {
       this.readySettled = true;

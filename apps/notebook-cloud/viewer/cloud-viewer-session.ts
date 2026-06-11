@@ -54,6 +54,7 @@ import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import {
   projectCloudCellsIntoNotebookViewStores,
+  resetCloudProjectionUnlessPreserved,
   resetCloudViewStoreProjection,
 } from "./notebook-view-store-bridge";
 import { CloudViewerPresenceStore } from "./presence";
@@ -173,12 +174,31 @@ export function useCloudViewerSession({
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
 
-  const applyResolvedCells = useCallback((resolvedCells: ResolvedCell[]) => {
-    projectCloudCellsIntoNotebookViewStores(resolvedCells);
-    setCells(resolvedCells);
-  }, []);
+  // Identity of the notebook whose cells are currently painted into the
+  // view stores — the flicker gate's "previous" side (see effect cleanup).
+  const paintedNotebookIdentityRef = useRef<string | null>(null);
+  const applyResolvedCells = useCallback(
+    (resolvedCells: ResolvedCell[]) => {
+      projectCloudCellsIntoNotebookViewStores(resolvedCells);
+      if (resolvedCells.length > 0) {
+        paintedNotebookIdentityRef.current = `id:${config.notebookId}`;
+      }
+      setCells(resolvedCells);
+    },
+    [config.notebookId],
+  );
 
-  useEffect(() => resetCloudViewStoreProjection, []);
+  // True unmount: nothing is preserved across a session teardown — clear
+  // every store the projection paints (the live effect's cleanup preserves
+  // them for same-notebook re-runs, so it cannot be the unmount janitor).
+  useEffect(
+    () => () => {
+      resetCloudViewStoreProjection();
+      resetRuntimeState();
+      resetRuntimeStoresProjection();
+    },
+    [],
+  );
 
   useEffect(() => {
     if (authRenewalKind === "refreshing") {
@@ -657,6 +677,21 @@ export function useCloudViewerSession({
     };
     materializeLiveRuntimeRef.current = materializeLiveCellsSafely;
 
+    // Notebook-switch gate (desktop beforeBootstrap placement): the effect
+    // CLEANUP closes over its own run's config, so it can only ever compare
+    // the painted identity against itself — a real switch is visible only
+    // here, to the NEXT run. Before connecting, clear every projected store
+    // when the painted cells belong to a different notebook (or nothing
+    // usable is painted); a same-notebook re-run's paint survives untouched
+    // and is replaced wholesale by this run's materialization.
+    const preservedAcrossRuns = resetCloudProjectionUnlessPreserved({
+      paintedNotebookIdentity: paintedNotebookIdentityRef.current,
+      nextNotebookIdentity: `id:${config.notebookId}`,
+    });
+    if (!preservedAcrossRuns) {
+      paintedNotebookIdentityRef.current = null;
+    }
+
     presenceStore.reset();
     resetRuntimeState();
     setConnectionError(null);
@@ -897,9 +932,23 @@ export function useCloudViewerSession({
         void teardownFlush.catch(() => undefined).then(() => persistenceAdapter.close());
       }
       setCrdtCommWriter(null);
-      resetCloudViewStoreProjection();
-      resetRuntimeState();
-      resetRuntimeStoresProjection();
+      // Flicker gate (desktop bootstrap-preservation pattern): the live
+      // effect re-runs for reasons that are NOT a notebook switch — OIDC
+      // refreshes, manual retries. With IDB seeding, paint #1 lands before
+      // those re-runs, and an unconditional clear here blanked a painted
+      // notebook into a full→empty→full flicker. The gate covers EVERY
+      // projected store together: CodeCell reads outputs and execution
+      // counts from the execution/output stores, so preserving cells while
+      // wiping those still flickered the dominant visual mass. Within this
+      // closure nextNotebookIdentity always equals the painted identity
+      // whenever cells are painted, so this honestly reduces to "painted
+      // with visible cells ⇒ preserve"; REAL notebook switches are cleared
+      // by the next run's body gate, and true unmount clears via the
+      // mount-scoped effect above.
+      resetCloudProjectionUnlessPreserved({
+        paintedNotebookIdentity: paintedNotebookIdentityRef.current,
+        nextNotebookIdentity: `id:${config.notebookId}`,
+      });
       resetPoolState();
       livePresenceStore = null;
       presenceStore.reduceConnection("disconnected");
