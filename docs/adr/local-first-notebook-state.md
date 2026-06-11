@@ -254,8 +254,13 @@ automerge-repo websocket adapter's good parts and fixing its known flaws:
   the handle XOR reuse the actor label" — a preserved handle with a new
   label is safe (`set_actor` starts a fresh seq chain), a fresh handle with
   a reused label collides (DuplicateSeqNumber); fresh-per-attempt is the
-  universally safe choice. Each attempt is also bounded by a 30 s handshake
-  timer (open ≠ ready) that recycles the attempt instead of dead-ending.
+  universally safe choice. Each attempt is bounded end to end by a 30 s
+  per-attempt budget: the `connectTarget()` resolution itself is timed out
+  (a hung auth fetch becomes a normal failed attempt, never a wedge with no
+  socket and no timers) and the same budget arms a handshake timer (open ≠
+  ready) that recycles the attempt instead of dead-ending. The `online`
+  event also supersedes an attempt parked in `connectTarget()` — the epoch
+  guard discards the late-settling target.
 - **Exponential backoff with jitter** (automerge-repo uses a fixed 5 s
   interval — explicitly noted as a flaw): base 1 s, ×2, cap 30 s, ±50 %
   full jitter. Reset on `cloud_room_ready` (the application-level ack),
@@ -266,10 +271,13 @@ automerge-repo websocket adapter's good parts and fixing its known flaws:
   retries) → `online` (each ready) → `reconnecting` (a previously-online
   connection lost, loop active) → `offline` (manual disconnect only). This
   is the first user of the reserved `"reconnecting"` status.
-- **Drop, don't buffer.** Sends while not-OPEN reject; pending FIFO frame
-  ACKs are rejected per connection loss (they cannot span sockets). Frames
-  queued from a dead connection are likewise discarded — they are bound to
-  that connection's sync state. The sync layer already rolls back via
+- **Drop, don't buffer.** Sends while not-OPEN reject, and so do sends in
+  the open→ready handshake window — frames sent there would go out under
+  the PREVIOUS connection's sync state and actor (the outbound mirror of
+  the inbound roomReady$ ordering guarantee). Pending FIFO frame ACKs are
+  rejected per connection loss (they cannot span sockets). Frames queued
+  from a dead connection are likewise discarded — they are bound to that
+  connection's sync state. The sync layer already rolls back via
   `cancel_last_flush` and regenerates from sync state after the handshake —
   correctness lives in the protocol, not in an outbound queue.
 - **`roomReady$: Observable<CloudRoomReady>`** emits per successful handshake
@@ -312,39 +320,67 @@ change recreates it, and a `read_failed` seed outcome keeps saves disarmed
 for the runtime's whole life).
 
 RuntimeStateDoc/CommsDoc re-sync from the room (authoritative) into the
-preserved stores; `resetForBootstrap`'s pending `SessionStatus` keeps the
-fail-open window closed. The initial-connect failure path (previously a
-terminal error after a 30 s ready timeout) now rides the same loop — the
-transport keeps trying, the session stays in `connecting`/`reconnecting`
-(`onConnectionLost` is informational: presence marked disconnected,
-`connectionError` surfaced, access diagnostics run once), and the existing
-notices surface a quiet reconnecting state instead of the dead-end "Live
-room needs attention."
+preserved stores. The offline fail-open window on cloud is closed by
+`connectionError` → shell-capability / `sessionRuntimeState` gating
+(`canAcceptCellMutations` requires no connection error; cleared on the
+next `cloud_room_ready`) — NOT by `resetForBootstrap`'s pending
+`SessionStatus`, which is inert on this surface: the cloud transport
+consumes every SESSION_CONTROL frame itself, so `sessionStatus$` never
+fires on cloud (it is the engine-level guard for sessionStatus$-consuming
+surfaces, i.e. desktop). `resetForBootstrap` remains load-bearing on cloud
+for its diff-cache clearing. Known limitation until PR 3 surfaces
+connection state: the runtime-state store is deliberately not blanked on
+transport-level reconnects, so stale kernel/execution chrome can stay
+visible during the offline window. The initial-connect failure path
+(previously a terminal error after a 30 s ready timeout) now rides the
+same loop — the transport keeps trying, the session stays in
+`connecting`/`reconnecting` (`onConnectionLost` is informational: presence
+marked disconnected, `connectionError` surfaced, access diagnostics run
+once), and the existing notices surface a quiet reconnecting state instead
+of the dead-end "Live room needs attention."
 
-Escalation (`classifyRecoverableRejection`): the first recoverable
+Escalation (`CloudRecoverableRejectionTracker`): the first recoverable
 `cloud_frame_rejected(AUTOMERGE_SYNC)` on a connection is handled in place —
-`resetAndResync()` on the live connection, no teardown. A repeat within the
-same connection (the strike count resets per `cloud_room_ready`) escalates
-to the full teardown path, as does a rejection that arrives before the
-runtime exists (which also marks the next attempt bootstrap-only — closing
-the former poison-pill blind spot). For transport-level divergence the
-persisted snapshot reseeds the fresh handle loss-lessly; for content-caused
-rejections on a seeded session the reseed would be the poison, so PR 1's
-escalation (clear the record after the teardown flush settles, bootstrap the
-next attempt) takes over and the retry converges from a fresh bootstrap.
+`resetAndResync()` on the live connection, no teardown. The strike only
+clears once the resync's outbound flush has actually been delivered
+(`engine.flushAndWait()`): the ack protocol carries no frame id and several
+AUTOMERGE_SYNC frames are routinely in flight, so rejections that arrive
+before delivery cannot have observed the resync — they **absorb** into
+strike 1 (the same divergence event) instead of escalating. Only a
+post-delivery repeat within the same connection (the tracker resets per
+`cloud_room_ready`) escalates to the full teardown path, as does a
+rejection that arrives before the runtime exists (which also marks the
+next attempt bootstrap-only — closing the former poison-pill blind spot).
+For transport-level divergence the persisted snapshot reseeds the fresh
+handle loss-lessly; for content-caused rejections on a seeded session the
+reseed would be the poison, so PR 1's escalation takes over: dispose, clear
+the record after the teardown flush settles
+(`discardPersistedSeedAfterTeardown`), and bootstrap the next attempt. The
+discard chain is stashed in a ref the next attempt's persistence arming
+awaits (strict clear-then-arm), so a straggling clear can never delete the
+fresh attempt's first record. Escalation teardowns also bump the
+materialization generation before freeing the handle, so in-flight
+materializations bail instead of touching a freed handle.
 
 ### Tests
 
 Mock WS server harness (extended `live-sync.test.ts`): backoff schedule
-under mock timers (growth, cap, jitter bounds, reset-on-ready, online-event
-short-circuit); status transitions incl. `reconnecting`; handshake replay
-emitting `roomReady$` with fresh identity (plus late-subscriber replay);
-pending-ACK rejection and queued-frame discard at socket loss; the
-ready→immediate-sync-frame ordering regression; an engine-level continuity
-test proving an edit made while disconnected is rolled back, preserved, and
-delivered by the reconnect resync while the original `cellChanges$`
-subscription keeps receiving (no engine restart, no projection blanking);
-rejection-escalation classification; fresh-operator-nonce-per-attempt.
+under mock timers (growth, cap, jitter bounds, reset-on-ready, NO reset on
+WS open without ready, online-event short-circuit and supersession of a
+parked `connectTarget()` await); per-attempt budget recycling for both a
+handshake that never completes and a hung or rejecting `connectTarget()`;
+status transitions incl. `reconnecting`; handshake replay emitting
+`roomReady$` with fresh identity (plus late-subscriber replay) and the
+adoption seam (`applyCloudRoomReady` dedup/identity ordering); pending-ACK
+rejection and queued-frame discard at socket loss; pre-ready send
+rejection; the ready→immediate-sync-frame ordering regression; an
+engine-level continuity test proving an edit made while disconnected is
+rolled back, preserved, and delivered by the reconnect resync while the
+original `cellChanges$` subscription keeps receiving (no engine restart,
+no projection blanking); rejection-tracker lifecycle (strike, absorb,
+post-delivery escalation, per-connection reset); the dispose-flush→clear
+ordering of the seed discard; fresh-operator-nonce-per-attempt through the
+real `createCloudConnectTarget`.
 
 ---
 
