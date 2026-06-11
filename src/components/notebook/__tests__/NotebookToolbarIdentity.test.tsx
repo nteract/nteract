@@ -142,7 +142,7 @@ describe("NotebookToolbarIdentity", () => {
     );
   });
 
-  it("uses a compact label for inline email identities", () => {
+  it("uses a generic visible label for inline email identities", () => {
     render(
       <NotebookToolbarIdentity
         variant="inline"
@@ -158,7 +158,8 @@ describe("NotebookToolbarIdentity", () => {
       />,
     );
 
-    expect(screen.getByText("alice")).toBeVisible();
+    expect(screen.getByText("User")).toBeVisible();
+    expect(screen.queryByText("alice")).not.toBeInTheDocument();
     expect(screen.queryByText("alice@example.com")).not.toBeInTheDocument();
     expect(document.querySelector("[data-slot='notebook-identity-badge']")).toHaveAttribute(
       "title",

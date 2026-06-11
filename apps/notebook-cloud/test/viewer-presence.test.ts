@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   cloudFriendlyPeerLabel,
   cloudPresenceHasRuntimePeer,
+  cloudPresenceInitials,
   cloudPresenceRuntimePeerCount,
   cloudVisiblePeerLabel,
   cloudViewerPresenceDisplay,
@@ -155,6 +156,8 @@ describe("cloud viewer presence", () => {
       peer_id: "peer-b",
       actor_label: "user:anaconda:bob/browser:tab",
       connection_scope: "editor",
+      display_name: "Bob Demo",
+      email: "bob@example.com",
       room_peer_count: 2,
       timestamp: "2026-05-23T00:00:01.000Z",
     });
@@ -178,11 +181,16 @@ describe("cloud viewer presence", () => {
       })),
       [
         { kind: "self", label: "Alice Demo", count: undefined },
-        { kind: "peer", label: "Bob", count: undefined },
+        { kind: "peer", label: "Bob Demo", count: undefined },
         { kind: "anonymous", label: "Anonymous viewer", count: 1 },
       ],
     );
     assert.equal(display.hiddenCount, 0);
+  });
+
+  it("keeps email-only presence avatars generic until hover", () => {
+    assert.equal(cloudPresenceInitials("Kyle Kelley"), "KK");
+    assert.equal(cloudPresenceInitials("rgbkrk@gmail.com"), "U");
   });
 
   it("detects attached runtime peers from session-control scope", () => {

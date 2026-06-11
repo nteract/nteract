@@ -137,6 +137,8 @@ export function reduceCloudViewerPresenceMessage(
             state.peers,
             cloudPresencePeerFromMessage({
               peerId: message.peer_id,
+              displayName: message.display_name,
+              email: message.email,
               actorLabel: message.actor_label,
               connectionScope: message.connection_scope ?? null,
               kind: "peer",
@@ -307,6 +309,22 @@ export function cloudPresenceRuntimePeerCount(state: CloudViewerPresenceState): 
   return Math.max(state.runtimePeerCount, visibleRuntimePeers);
 }
 
+export function cloudPresenceInitials(label: string): string {
+  const trimmed = label.trim();
+  if (looksLikeEmailAddress(trimmed)) {
+    return "U";
+  }
+  const words = trimmed
+    .split(/[\s@._-]+/g)
+    .map((word) => word.trim())
+    .filter(Boolean);
+  const initials = words
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("");
+  return initials || "?";
+}
+
 export interface CloudFriendlyPeerLabelInput {
   displayName?: string | null;
   email?: string | null;
@@ -359,6 +377,10 @@ function safeRuntimePeerCount(value: number | undefined, fallback: number): numb
 
 function looksLikeRawIdentityLabel(value: string): boolean {
   return /^(anonymous|user):/.test(value);
+}
+
+function looksLikeEmailAddress(label: string): boolean {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(label);
 }
 
 function normalizePresenceConnectionScope(
