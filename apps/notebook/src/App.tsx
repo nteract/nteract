@@ -2,8 +2,6 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   deriveEnvManager,
   deriveRuntimeKind,
-  notebookCellAnchorId,
-  resolveNotebookOutlineSelection,
   NotebookClient,
   type ExecuteCellOptions,
   type NotebookResponse,
@@ -37,6 +35,9 @@ import {
 } from "@/components/notebook-rail";
 import {
   navigateNotebookOutlineItem,
+  useActiveOutlineItemId,
+  useOutlineSelection,
+  useOutlineStatusLabel,
   type DaemonStatus,
   DaemonStatusBanner,
   DebugBanner,
@@ -90,7 +91,6 @@ import {
   startExecutionPerformanceTrace,
 } from "./lib/execution-performance";
 import { getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
-import { useNotebookQueueProjection } from "@/components/notebook/state/execution-store";
 import { useNotebookViewModel } from "@/components/notebook/state/view-model-store";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
@@ -223,122 +223,6 @@ function resolveCommOutputs(
   })();
 }
 
-function useActiveOutlineItemId(
-  items: readonly NotebookOutlineItem[],
-  cellIds: readonly string[],
-  enabled: boolean,
-): string | null {
-  const [activeItemId, setActiveItemId] = useState<string | null>(null);
-  const itemsRef = useRef(items);
-  const cellIdsRef = useRef(cellIds);
-  const itemIdsKey = useMemo(() => items.map((item) => item.id).join("\n"), [items]);
-  const cellIdsKey = useMemo(() => cellIds.join("\n"), [cellIds]);
-
-  useEffect(() => {
-    itemsRef.current = items;
-  }, [items]);
-
-  useEffect(() => {
-    cellIdsRef.current = cellIds;
-  }, [cellIds]);
-
-  useEffect(() => {
-    if (!enabled || itemIdsKey.length === 0 || cellIdsKey.length === 0) {
-      setActiveItemId(null);
-      return;
-    }
-
-    let frame: number | null = null;
-    const visibleCellIds = new Set<string>();
-    const observedCellIds = new Map<Element, string>();
-    const anchorTop = 96;
-
-    const measure = () => {
-      frame = null;
-      let currentCellId: string | null = null;
-      let firstUpcomingCellId: string | null = null;
-      let firstUpcomingTop = Number.POSITIVE_INFINITY;
-      const currentCellIds = cellIdsRef.current;
-      const candidateCellIds =
-        visibleCellIds.size > 0
-          ? currentCellIds.filter((cellId) => visibleCellIds.has(cellId))
-          : currentCellIds;
-
-      for (const cellId of candidateCellIds) {
-        const target = document.getElementById(notebookCellAnchorId(cellId));
-        if (!target) continue;
-
-        const rect = target.getBoundingClientRect();
-        if (rect.bottom < anchorTop) continue;
-
-        if (rect.top <= anchorTop) {
-          currentCellId = cellId;
-        } else if (rect.top < firstUpcomingTop) {
-          firstUpcomingTop = rect.top;
-          firstUpcomingCellId = cellId;
-        }
-      }
-
-      const nextCellId = currentCellId ?? firstUpcomingCellId;
-      const nextItemId = nextCellId
-        ? resolveNotebookOutlineSelection(itemsRef.current, {
-            selectedCellId: nextCellId,
-            cellIds: currentCellIds,
-          })
-        : null;
-      setActiveItemId((current) => (current === nextItemId ? current : nextItemId));
-    };
-
-    const scheduleMeasure = () => {
-      if (frame !== null) return;
-      frame = window.requestAnimationFrame(measure);
-    };
-
-    scheduleMeasure();
-    const observer =
-      "IntersectionObserver" in window
-        ? new IntersectionObserver(
-            (entries) => {
-              for (const entry of entries) {
-                const cellId = observedCellIds.get(entry.target);
-                if (!cellId) continue;
-                if (entry.isIntersecting) {
-                  visibleCellIds.add(cellId);
-                } else {
-                  visibleCellIds.delete(cellId);
-                }
-              }
-              scheduleMeasure();
-            },
-            { rootMargin: `-${anchorTop}px 0px 0px 0px`, threshold: [0, 0.01] },
-          )
-        : null;
-
-    if (observer) {
-      for (const cellId of cellIdsRef.current) {
-        const target = document.getElementById(notebookCellAnchorId(cellId));
-        if (!target) continue;
-        observedCellIds.set(target, cellId);
-        observer.observe(target);
-      }
-    }
-
-    document.addEventListener("scroll", scheduleMeasure, true);
-    window.addEventListener("resize", scheduleMeasure);
-
-    return () => {
-      observer?.disconnect();
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
-      document.removeEventListener("scroll", scheduleMeasure, true);
-      window.removeEventListener("resize", scheduleMeasure);
-    };
-  }, [cellIdsKey, enabled, itemIdsKey]);
-
-  return activeItemId;
-}
-
 function AppContent() {
   const host = useNotebookHost();
   const blobUploader = useMemo<BlobUploader>(
@@ -423,7 +307,6 @@ function AppContent() {
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(true);
   const stageHadFocusBeforeRailTakeoverRef = useRef(false);
-  const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
   const [dismissedEnvBuildDetails, setDismissedEnvBuildDetails] = useState<string | null>(null);
@@ -781,18 +664,7 @@ function AppContent() {
     }
   }, [blobPort, getEngine]);
 
-  const notebookQueueProjection = useNotebookQueueProjection();
-  const getOutlineStatusLabel = useCallback(
-    (cell: { id: string; cellType: string; executionCount: number | null }) => {
-      if (cell.id === notebookQueueProjection.executing_cell_id) return "running";
-      if (notebookQueueProjection.queued_cell_ids.includes(cell.id)) return "queued";
-      if (cell.cellType === "code" && cell.executionCount !== null) {
-        return `run ${cell.executionCount}`;
-      }
-      return null;
-    },
-    [notebookQueueProjection.executing_cell_id, notebookQueueProjection.queued_cell_ids],
-  );
+  const getOutlineStatusLabel = useOutlineStatusLabel();
   const notebookViewModel = useNotebookViewModel({ getOutlineStatusLabel });
   const outlineItems = notebookViewModel.outlineItems;
   const markdownHeadingAnchorsByCellId = notebookViewModel.markdownHeadingAnchorsByCellId;
@@ -801,6 +673,11 @@ function AppContent() {
     cellIds,
     !railCollapsed && activeRailPanel === "outline",
   );
+  const { selectedOutlineItemId, handleSelectOutlineItem } = useOutlineSelection({
+    outlineItems,
+    focusedCellId,
+    setFocusedCellId,
+  });
 
   // ── Sync host-owned transient UI state into shared cell UI store ─────
   useNotebookCellUIStateBridge({
@@ -917,17 +794,6 @@ function AppContent() {
 
   const packagesRailOpen = !railCollapsed && activeRailPanel === "packages";
 
-  useEffect(() => {
-    if (!selectedOutlineItemId) return;
-    const selectedOutlineItem = outlineItems.find((item) => item.id === selectedOutlineItemId);
-    if (
-      !selectedOutlineItem ||
-      (focusedCellId !== null && focusedCellId !== selectedOutlineItem.cellId)
-    ) {
-      setSelectedOutlineItemId(null);
-    }
-  }, [focusedCellId, outlineItems, selectedOutlineItemId]);
-
   const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
     setActiveRailPanel(panelId);
     setRailCollapsed(false);
@@ -945,14 +811,6 @@ function AppContent() {
     setActiveRailPanel("packages");
     setRailCollapsed(false);
   }, [activeRailPanel, railCollapsed, shellCapabilities.canViewPackages]);
-
-  const handleSelectOutlineItem = useCallback(
-    (item: NotebookOutlineItem) => {
-      setSelectedOutlineItemId(item.id);
-      setFocusedCellId(item.cellId);
-    },
-    [setFocusedCellId],
-  );
 
   const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
     return navigateNotebookOutlineItem(item, href, { headingHashTarget: "cell" });
