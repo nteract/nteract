@@ -409,18 +409,23 @@ export class SyncEngine {
   readonly initialSyncComplete$: Observable<void>;
 
   /**
-   * Fires whenever the notebook CRDT document has changed.
+   * Save hint: the notebook CRDT document may have changed.
    *
    * Emitted from two sources:
    * - the `sync_applied` pipeline when `changed=true` (remote changes), and
-   * - the outbound flush path whenever `flush_local_changes()` yields bytes
-   *   (local changes). Emission happens on the flush *attempt*, regardless
-   *   of delivery success — `cancel_last_flush()` rolls back sync-state
-   *   bookkeeping, not the document, and offline flush attempts are exactly
-   *   the ones persistence must capture.
+   * - the outbound flush path whenever `flush_local_changes()` yields bytes.
+   *   Emission happens on the flush *attempt*, regardless of delivery
+   *   success — `cancel_last_flush()` rolls back sync-state bookkeeping,
+   *   not the document, and offline flush attempts are exactly the ones
+   *   persistence must capture.
    *
-   * Persistence consumers should throttle this and call `handle.save()` to
-   * snapshot the `NotebookDoc` bytes for local storage.
+   * The flush source can over-fire: `flush_local_changes()` also yields
+   * bytes for protocol-only messages (the initial handshake on a fresh
+   * sync state, resync negotiation), so an emission means "a sync message
+   * was generated; the doc may have changed". It never under-fires for
+   * committed local changes. Consumers must treat saves as idempotent —
+   * throttle this signal and call `handle.save()` to snapshot the
+   * `NotebookDoc` bytes for local storage.
    *
    * Note: only `NotebookDoc` bytes should be persisted — `RuntimeStateDoc` is
    * daemon-authoritative and must not be stored locally.
@@ -1143,9 +1148,11 @@ export class SyncEngine {
 
     const msg = handle.flush_local_changes();
     if (msg) {
-      // Local changes exist — notify persistence on the flush attempt
-      // regardless of delivery outcome (cancel_last_flush rolls back sync
-      // bookkeeping, not the doc).
+      // A sync message was generated — the doc may have changed (protocol-
+      // only handshakes also yield bytes, so this can over-fire; saves are
+      // idempotent). Notify persistence on the attempt regardless of
+      // delivery outcome: cancel_last_flush rolls back sync bookkeeping,
+      // not the doc.
       this._notebookDocChanged$.next();
       this.opts.logger.debug(`[sync-engine] flushing sync message (${msg.byteLength}B)`);
       const done = this.awaitFrameDelivery(
@@ -1225,8 +1232,8 @@ export class SyncEngine {
     // Flush any remaining notebook doc changes (may be none if debounce got them).
     const msg = handle.flush_local_changes();
     if (msg) {
-      // Same persistence notification contract as flush(): emit on the
-      // attempt, before delivery resolves.
+      // Same save-hint contract as flush(): emit on the attempt, before
+      // delivery resolves; may over-fire for protocol-only messages.
       this._notebookDocChanged$.next();
       this.opts.logger.debug(`[sync-engine] flushAndWait: sending ${msg.byteLength}B sync message`);
       const delivered = await this.awaitFrameDelivery(

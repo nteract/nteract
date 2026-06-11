@@ -56,6 +56,8 @@ export {
 export {
   NotebookDocPersistence,
   clearPersistedNotebookDoc,
+  decodePersistedNotebookDoc,
+  encodePersistedNotebookDoc,
   loadPersistedNotebookDoc,
   type NotebookDocPersistenceLogger,
   type NotebookDocPersistenceMeta,

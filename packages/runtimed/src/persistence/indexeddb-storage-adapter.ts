@@ -25,7 +25,7 @@ const DEFAULT_STORE_NAME = "notebook-docs";
  * Sentinel for prefix range upper bounds: any longer key
  * `[...prefix, segment]` sorts between `prefix` and `[...prefix, "￿"]`
  * under IDB array-key ordering, as long as key segments stay below U+FFFF
- * (true for notebook ids and the snapshot/meta key words).
+ * (true for notebook ids and the record-type key words).
  */
 const PREFIX_UPPER_BOUND = "￿";
 
@@ -54,6 +54,8 @@ export class IndexedDbStorageAdapter implements StorageAdapter {
   private readonly onError?: (error: unknown) => void;
   private dbPromise: Promise<IDBDatabase> | null = null;
   private currentDb: IDBDatabase | null = null;
+  /** Bumped by close() so an in-flight open never resurrects a closed cache. */
+  private connectionGeneration = 0;
 
   /**
    * Returns null when IndexedDB is unavailable (private browsing modes,
@@ -70,6 +72,20 @@ export class IndexedDbStorageAdapter implements StorageAdapter {
     this.databaseName = options.databaseName ?? DEFAULT_DATABASE_NAME;
     this.storeName = options.storeName ?? DEFAULT_STORE_NAME;
     this.onError = options.onError;
+  }
+
+  /**
+   * Close the cached connection (connection hygiene for effect teardown).
+   *
+   * Not a terminal state: a later operation reopens on demand. Safe to
+   * call repeatedly or while an open is in flight.
+   */
+  close(): void {
+    this.connectionGeneration += 1;
+    const db = this.currentDb;
+    this.currentDb = null;
+    this.dbPromise = null;
+    db?.close();
   }
 
   load(key: StorageKey): Promise<Uint8Array | undefined> {
@@ -188,17 +204,28 @@ export class IndexedDbStorageAdapter implements StorageAdapter {
   }
 
   private getDb(): Promise<IDBDatabase> {
-    this.dbPromise ??= this.openDb();
-    return this.dbPromise;
+    if (this.dbPromise) return this.dbPromise;
+    const opened = this.openDb();
+    this.dbPromise = opened;
+    // Clear the cache through the promise itself, not inside the executor:
+    // a synchronous factory.open() throw rejects during openDb()'s own
+    // evaluation, before the assignment above — an executor-side reset
+    // would be overwritten and the rejection cached forever.
+    opened.catch(() => {
+      if (this.dbPromise === opened) {
+        this.dbPromise = null;
+      }
+    });
+    return opened;
   }
 
   private openDb(): Promise<IDBDatabase> {
+    const generation = this.connectionGeneration;
     return new Promise<IDBDatabase>((resolve, reject) => {
       let request: IDBOpenDBRequest;
       try {
         request = this.factory.open(this.databaseName, 1);
       } catch (error) {
-        this.dbPromise = null;
         reject(error);
         return;
       }
@@ -206,11 +233,16 @@ export class IndexedDbStorageAdapter implements StorageAdapter {
         request.result.createObjectStore(this.storeName);
       };
       request.onerror = () => {
-        this.dbPromise = null;
         reject(request.error ?? new Error("indexedDB open failed"));
       };
       request.onsuccess = () => {
         const db = request.result;
+        if (generation !== this.connectionGeneration) {
+          // close() raced the open; don't leak the fresh connection.
+          db.close();
+          reject(new Error("indexedDB connection closed during open"));
+          return;
+        }
         // Another tab upgrading the schema, or the browser closing an
         // idle connection: drop the cached connection so the next
         // operation reopens instead of failing forever.
