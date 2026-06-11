@@ -1,7 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { BehaviorSubject } from "rxjs";
 import { SyncEngine, type PersistedNotebookDoc, type SyncableHandle } from "runtimed";
 import {
+  CloudConnectionStatusBridge,
   CloudRecoverableRejectionTracker,
   CloudWebSocketTransport,
   applyCloudRoomReady,
@@ -1821,6 +1823,123 @@ describe("cloud transport reconnect loop", () => {
       await drainMicrotasks();
       await transport.sendFrame(FrameType.PRESENCE, new Uint8Array([4]));
       assert.equal(second.sent.length, 1);
+      transport.disconnect();
+    } finally {
+      fake.restore();
+    }
+  });
+});
+
+describe("cloud connection status bridge", () => {
+  it("switches to the replacement transport and dedups across the switch", () => {
+    const bridge = new CloudConnectionStatusBridge();
+    const statuses: string[] = [];
+    bridge.status$.subscribe((status) => statuses.push(status));
+
+    // Initial-connect attempt: transport A.
+    const a = new BehaviorSubject<"connecting" | "online" | "offline" | "reconnecting">(
+      "connecting",
+    );
+    bridge.attach({ connectionStatus$: a.asObservable() });
+    a.next("online");
+
+    // The effect re-runs (manual retry / escalation): transport B replaces
+    // A. The single stable subscription must follow B and ignore A.
+    const b = new BehaviorSubject<"connecting" | "online" | "offline" | "reconnecting">("online");
+    bridge.attach({ connectionStatus$: b.asObservable() });
+    a.next("offline"); // dead transport — must not surface
+    b.next("reconnecting");
+    b.next("online");
+
+    assert.deepEqual(statuses, ["connecting", "online", "reconnecting", "online"]);
+    assert.equal(bridge.current, "online");
+  });
+
+  it("reports the retry loop on teardown instead of the disposed transport's offline", () => {
+    const bridge = new CloudConnectionStatusBridge();
+    const statuses: string[] = [];
+    bridge.status$.subscribe((status) => statuses.push(status));
+
+    const transport = new BehaviorSubject<"connecting" | "online" | "offline" | "reconnecting">(
+      "online",
+    );
+    bridge.attach({ connectionStatus$: transport.asObservable() });
+
+    // Escalation teardown: detach first, then the manual disconnect emits
+    // a terminal "offline" that must never surface — the session is
+    // retrying, not going offline.
+    bridge.noteTeardownRetry();
+    transport.next("offline");
+
+    assert.deepEqual(statuses, ["connecting", "online", "reconnecting"]);
+  });
+
+  it("detach severs silently: no late emissions, no spurious status", () => {
+    const bridge = new CloudConnectionStatusBridge();
+    const statuses: string[] = [];
+    bridge.status$.subscribe((status) => statuses.push(status));
+
+    const transport = new BehaviorSubject<"connecting" | "online" | "offline" | "reconnecting">(
+      "online",
+    );
+    bridge.attach({ connectionStatus$: transport.asObservable() });
+
+    // Plain detach (effect cleanup without a retry in flight): the dead
+    // transport's later emissions must not surface, and detach itself must
+    // not emit anything.
+    bridge.detach();
+    transport.next("offline");
+
+    assert.deepEqual(statuses, ["connecting", "online"]);
+    assert.equal(bridge.current, "online");
+  });
+
+  it("implements the slot source contract: subscribe replay + getCurrent snapshot", () => {
+    const bridge = new CloudConnectionStatusBridge();
+    const transport = new BehaviorSubject<"connecting" | "online" | "offline" | "reconnecting">(
+      "online",
+    );
+    bridge.attach({ connectionStatus$: transport.asObservable() });
+
+    assert.equal(bridge.getCurrent(), "online");
+    const statuses: string[] = [];
+    const subscription = bridge.subscribe((status) => statuses.push(status));
+    assert.deepEqual(statuses, ["online"]); // replayed for late subscribers
+
+    transport.next("reconnecting");
+    assert.deepEqual(statuses, ["online", "reconnecting"]);
+
+    subscription.unsubscribe();
+    transport.next("online");
+    assert.deepEqual(statuses, ["online", "reconnecting"]); // severed
+  });
+
+  it("reflects the transport's own reconnect loop without a switch", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const bridge = new CloudConnectionStatusBridge();
+      const statuses: string[] = [];
+      bridge.status$.subscribe((status) => statuses.push(status));
+
+      const transport = createTransport({ reconnectBaseDelayMs: 1, random: () => 0.5 });
+      bridge.attach(transport);
+
+      const first = await waitForSocket(0);
+      first.open();
+      first.ready("peer-1");
+      await transport.ready;
+
+      // PR-2's transport-level loop: same transport object, status walks
+      // online -> reconnecting -> online through the stable bridge.
+      first.close({ code: 1006 });
+      await delayMs(10);
+      const second = await waitForSocket(1);
+      second.open();
+      second.ready("peer-2");
+      await drainMicrotasks();
+
+      assert.deepEqual(statuses, ["connecting", "online", "reconnecting", "online"]);
+      bridge.detach();
       transport.disconnect();
     } finally {
       fake.restore();

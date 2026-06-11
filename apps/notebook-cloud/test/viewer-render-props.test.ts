@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as ts from "typescript";
-import { viewerCorpus, viewerFunctionSource, viewerModuleTexts } from "./viewer-source-corpus";
+import {
+  viewerCorpus,
+  viewerFileContaining,
+  viewerFunctionSource,
+  viewerModuleTexts,
+} from "./viewer-source-corpus";
 
 test("cloud notebook rendering uses shared cell chrome instead of report-mode cells", () => {
   const offenders: string[] = [];
@@ -152,7 +157,39 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState, \{[\s\S]*hasAppSession: Boolean\(appSessionStatus\.session\),[\s\S]*\}\) \? \(/,
   );
   assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
-  assert.match(sourceText, /identityControls=\{null\}/);
+  // The connection/identity slot is filled by the shared quiet component:
+  // avatar + connectivity dot, driven by the stable status bridge. It must
+  // never regress into a text pill or a second status label surface. The
+  // match is scoped to the module that owns the slot (not the whole
+  // corpus) so an identityControls regression cannot false-pass against a
+  // mount elsewhere.
+  const slotOwnerSource = viewerFileContaining("identityControls=");
+  assert.match(
+    slotOwnerSource,
+    /identityControls=\{[\s\S]{0,400}?<NotebookConnectionIdentity[\s\S]{0,200}?capabilities=\{shellCapabilities\}[\s\S]{0,200}?connectionStatus\$=\{connectionStatus\$\}/,
+  );
+  assert.doesNotMatch(sourceText, /identityControls=\{null\}/);
+  // Session-side bridge wiring order (comment-enforced invariants, pinned):
+  // attach follows each replacement transport; teardown paths report the
+  // retry BEFORE the dispose emits its terminal "offline"; the effect
+  // cleanup does the same so the auth-refresh re-run gap reads as a
+  // transition, not stale "online".
+  assert.match(
+    sessionSourceText,
+    /onTransportCreated: \(transport\) => \{[\s\S]{0,400}?connectionStatusBridge\.attach\(transport\);/,
+  );
+  assert.match(
+    sessionSourceText,
+    /const scheduleReconnect = \(reason: Error\) => \{[\s\S]{0,600}?connectionStatusBridge\.noteTeardownRetry\(\);[\s\S]{0,800}?disposeCurrentRuntime\(\);/,
+  );
+  assert.match(
+    sessionSourceText,
+    /connectionStatusBridge\.noteTeardownRetry\(\);[\s\S]{0,400}?pendingSeedDiscardRef\.current = discardPersistedSeedAfterTeardown\(/,
+  );
+  assert.match(
+    sessionSourceText,
+    /connectionStatusBridge\.noteTeardownRetry\(\);[\s\S]{0,600}?const teardownFlush = disposeCurrentRuntime\(\);/,
+  );
   assert.match(sourceText, /useState\(initialCloudRailCollapsed\)/);
   assert.match(sourceText, /function initialCloudRailCollapsed/);
   assert.match(sourceText, /function initialCloudRailCollapsed\(\): boolean \{[\s\S]*return true;/);

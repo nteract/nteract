@@ -43,6 +43,7 @@ import {
   DebugBanner,
   EnvBuildDecisionDialog,
   KernelLaunchErrorBanner,
+  NotebookConnectionIdentity,
   NotebookDocumentRail,
   NotebookDocumentShell,
   PoolErrorBanner,
@@ -51,6 +52,7 @@ import {
   UntrustedBanner,
 } from "@/components/notebook";
 import { GlobalFindBar } from "@/components/search";
+import { createDesktopConnectionStatusSource } from "./lib/desktop-connection-status";
 import {
   CondaDependencyPanel as CondaDependencyHeader,
   DenoDependencyPanel as DenoDependencyHeader,
@@ -521,6 +523,14 @@ function AppContent() {
       statusKey,
     ],
   );
+
+  // Connection/identity slot source: daemon lifecycle, stable for the
+  // app's lifetime (the dot must transition on daemon restarts).
+  const desktopConnectionStatus = useMemo(
+    () => createDesktopConnectionStatusSource(host.daemonEvents),
+    [host],
+  );
+  useEffect(() => () => desktopConnectionStatus.dispose(), [desktopConnectionStatus]);
 
   useEffect(() => {
     installExecutionPerformanceApi();
@@ -1372,6 +1382,18 @@ function AppContent() {
           updateStatus={updateStatus}
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}
+          trailingControls={
+            // Connection/identity slot: renders nothing for a purely local
+            // session (isRemoteNotebookContext) — conditionality is the
+            // point. The source derives from daemon lifecycle events (the
+            // IPC transport's status is constant in practice), and the
+            // copy is scoped to the link it measures.
+            <NotebookConnectionIdentity
+              capabilities={shellCapabilities}
+              connectionStatus$={desktopConnectionStatus}
+              connectionLabel="Daemon connection"
+            />
+          }
         />
         {globalFind.isOpen && (
           <GlobalFindBar

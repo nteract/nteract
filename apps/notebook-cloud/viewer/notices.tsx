@@ -20,10 +20,48 @@ export interface CloudNotebookNoticesProps {
   connectionError: string | null;
   hasAppSession?: boolean;
   hasReadableSnapshot?: boolean;
+  /**
+   * The live-room status has been "reconnecting" past the debounce window
+   * (`useSustainedReconnecting`). Renders the single quiet reconnect line;
+   * transport-loss `connectionError` strings are routed here instead of
+   * the per-drop connection notice, so brief blips surface nothing and a
+   * real outage surfaces one calm sentence.
+   */
+  sustainedReconnecting?: boolean;
   status: ViewerStatus;
   diagnostics?: ReactNode;
   onResetAuth: () => void;
   onSignInAgain?: () => void | Promise<void>;
+}
+
+/**
+ * EXACT connection-loss shapes minted by CloudWebSocketTransport when the
+ * LINK itself drops (socket close/failure, browser offline, liveness
+ * probe misses, handshake that never completed). The retry loop owns
+ * recovery for these, so they surface through the debounced sustained-
+ * reconnecting line rather than an immediate per-drop warning.
+ *
+ * Anchored shape-by-shape on purpose: the transport wraps OTHER failures
+ * in similar prefixes — connect-target resolution ("cloud sync connect
+ * target failed: ..."), socket creation, protocol decode, and the session
+ * escalation's "cloud room rejected frame: ..." — and those carry
+ * actionable detail that must keep the warning notice and its action.
+ * A terminal auth/access failure routed into the perpetual calm
+ * "Reconnecting." line would loop forever with no CTA. Keep this list in
+ * lockstep with the connectionLost reasons in live-sync.ts.
+ */
+const TRANSPORT_RECONNECT_ERROR_SHAPES: readonly RegExp[] = [
+  /^browser reported offline$/,
+  /^cloud sync socket failed$/,
+  /^cloud sync socket closed \(\d+\)/,
+  /^cloud sync socket send failed: /,
+  /^cloud room handshake did not complete within \d+ms$/,
+  /^cloud sync liveness ping failed: /,
+  /^cloud sync liveness pong missed \(no reply within \d+ms\)$/,
+];
+
+export function isTransportReconnectError(error: string): boolean {
+  return TRANSPORT_RECONNECT_ERROR_SHAPES.some((shape) => shape.test(error));
 }
 
 export function cloudNotebookHasNotices({
@@ -32,6 +70,7 @@ export function cloudNotebookHasNotices({
   connectionError,
   hasAppSession = false,
   hasReadableSnapshot = false,
+  sustainedReconnecting = false,
   status,
   diagnostics,
 }: Omit<CloudNotebookNoticesProps, "onResetAuth">): boolean {
@@ -50,6 +89,7 @@ export function cloudNotebookHasNotices({
   return (
     shouldShowAuthNotice ||
     shouldShowAuthRenewalNotice ||
+    sustainedReconnecting ||
     Boolean(connectionNotice) ||
     Boolean(diagnostics) ||
     shouldShowStatusNotice
@@ -62,6 +102,7 @@ export function CloudNotebookNotices({
   connectionError,
   hasAppSession = false,
   hasReadableSnapshot = false,
+  sustainedReconnecting = false,
   status,
   diagnostics,
   onResetAuth,
@@ -74,6 +115,7 @@ export function CloudNotebookNotices({
       connectionError,
       hasAppSession,
       hasReadableSnapshot,
+      sustainedReconnecting,
       status,
       diagnostics,
     })
@@ -123,6 +165,12 @@ export function CloudNotebookNotices({
           }
         >
           {authRenewal.message}
+        </NotebookNotice>
+      ) : null}
+
+      {sustainedReconnecting ? (
+        <NotebookNotice tone="info" icon={<CloudOff className="h-4 w-4" />} title="Reconnecting.">
+          Your edits are kept locally and will sync when the connection returns.
         </NotebookNotice>
       ) : null}
 
@@ -238,7 +286,14 @@ function cloudConnectionNoticeDisplay(
   title: string;
   message: string;
   tone: "warning";
-} {
+} | null {
+  if (isTransportReconnectError(error)) {
+    // The transport retries forever on its own; the debounced sustained-
+    // reconnecting line is the user-facing surface for these. Rendering a
+    // warning per drop turned every sub-second blip into notice flap.
+    return null;
+  }
+
   if (error === CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC) {
     return {
       title: "Sign in required.",

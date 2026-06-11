@@ -573,6 +573,70 @@ export function shouldDiscardPersistedSeedOnRejection(
   return seededFromPersistence && isRecoverableCloudFrameRejection(message);
 }
 
+/**
+ * Stable, switching connection-status source for UI consumers.
+ *
+ * The transport object survives transport-level reconnects, but
+ * initial-connect attempts and escalation teardowns still REPLACE it — a
+ * subscriber holding one transport's `connectionStatus$` would watch a
+ * dead object forever (the host facade has exactly that flaw). The bridge
+ * follows whichever transport is current and exposes one
+ * BehaviorSubject-backed observable that stays stable for the session's
+ * lifetime, deduplicating repeated values across switches.
+ */
+export class CloudConnectionStatusBridge {
+  private readonly _status$ = new BehaviorSubject<ConnectionStatus>("connecting");
+  private subscription: { unsubscribe(): void } | null = null;
+  readonly status$: Observable<ConnectionStatus> = this._status$.asObservable();
+
+  get current(): ConnectionStatus {
+    return this._status$.getValue();
+  }
+
+  /** Synchronous snapshot (NotebookConnectionStatusSource contract). */
+  getCurrent(): ConnectionStatus {
+    return this._status$.getValue();
+  }
+
+  /**
+   * Subscribe with a plain callback (NotebookConnectionStatusSource
+   * contract) — the bridge is handed to the connection/identity slot
+   * directly, so first paint can read getCurrent() instead of flashing
+   * "connecting".
+   */
+  subscribe(next: (status: ConnectionStatus) => void): { unsubscribe(): void } {
+    const subscription = this._status$.subscribe(next);
+    return { unsubscribe: () => subscription.unsubscribe() };
+  }
+
+  /** Follow a (replacement) transport's connection status. */
+  attach(transport: Pick<CloudWebSocketTransport, "connectionStatus$">): void {
+    this.subscription?.unsubscribe();
+    this.subscription = transport.connectionStatus$.subscribe((status) => this.next(status));
+  }
+
+  /**
+   * A session-level teardown is about to dispose the current transport and
+   * retry: stop following it (so the manual disconnect's terminal
+   * "offline" never surfaces) and report the retry loop instead.
+   */
+  noteTeardownRetry(): void {
+    this.detach();
+    this.next("reconnecting");
+  }
+
+  /** Stop following the current transport (effect cleanup). */
+  detach(): void {
+    this.subscription?.unsubscribe();
+    this.subscription = null;
+  }
+
+  private next(status: ConnectionStatus): void {
+    if (status === this._status$.getValue()) return;
+    this._status$.next(status);
+  }
+}
+
 export type CloudRejectionDisposition = "absorb" | "resync_in_place" | "escalate";
 
 /**

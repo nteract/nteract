@@ -142,6 +142,12 @@ export {
 } from "./NotebookIdentity";
 export { NotebookPresenceStatus, type NotebookPresenceStatusProps } from "./NotebookPresenceStatus";
 export {
+  NotebookConnectionIdentity,
+  isRemoteNotebookContext,
+  type NotebookConnectionIdentityProps,
+  type NotebookConnectionStatusSource,
+} from "./NotebookConnectionIdentity";
+export {
   NotebookToolbarIdentity,
   notebookToolbarActors,
   type NotebookToolbarIdentityProps,

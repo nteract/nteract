@@ -141,17 +141,21 @@ export function NotebookIdentityGroup({
   );
 }
 
-function NotebookActorAvatar({
+export function NotebookActorAvatar({
   actor,
-  icon: Icon,
+  icon,
   size = "default",
   showStatus = true,
+  statusClassName,
 }: {
   actor: NotebookActorIdentity;
-  icon: LucideIcon;
+  icon?: LucideIcon;
   size?: "sm" | "default";
   showStatus?: boolean;
+  /** Override the status dot tone (e.g. connection state instead of actor status). */
+  statusClassName?: string;
 }) {
+  const Icon = icon ?? actorIcon(actor.kind);
   return (
     <Avatar
       size={size}
@@ -167,7 +171,9 @@ function NotebookActorAvatar({
           <Icon className="size-3.5" aria-hidden="true" />
         )}
       </AvatarFallback>
-      {showStatus ? <AvatarBadge className={statusTone(actor.status ?? "active")} /> : null}
+      {showStatus ? (
+        <AvatarBadge className={statusClassName ?? statusTone(actor.status ?? "active")} />
+      ) : null}
     </Avatar>
   );
 }

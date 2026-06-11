@@ -386,23 +386,48 @@ real `createCloudConnectTarget`.
 
 ## PR 3 — Connection/identity slot
 
-One shared component, mounted in slots that already exist and are empty:
+One shared component — `NotebookConnectionIdentity`
+(`src/components/notebook/`) — mounted in slots that already existed and
+were empty:
 
-- **Cloud:** `identityControls={null}` in `notebook-viewer.tsx` (right-most
-  header slot).
-- **Desktop:** `trailingControls` → `identityControls` at the right end of the
-  command toolbar.
+- **Cloud:** the `identityControls={null}` slot in `notebook-viewer.tsx`
+  (right-most header slot), now filled.
+- **Desktop:** `trailingControls` on `<NotebookToolbar>` in `App.tsx` →
+  `identityControls` at the right end of the command toolbar, fed by a
+  daemon-lifecycle source (`createDesktopConnectionStatusSource`:
+  `daemon:ready` → online, `daemon:disconnected` → reconnecting — the host
+  auto-reconnects — `daemon:unavailable` → offline; the host facade's
+  ready-cache backfill covers late mounts). The Tauri IPC transport's own
+  `connectionStatus$` is deliberately NOT used: it is honest about IPC but
+  constant in practice (the app never disconnects it), so a dot fed from
+  it could never transition through a daemon restart. The desktop copy is
+  scoped to the measured link via `connectionLabel="Daemon connection"` —
+  daemon↔room link health for runtime-peer contexts is **future work**;
+  until it exists the dot must say which hop it reports.
 
 **Conditionality** (the reason #3290 pulled the previous attempt): the slot
-renders **nothing** for a purely local desktop session. The predicate already
-exists in `NotebookShellCapabilities`: `access.source !== "local"` or
-`runtime.target.kind === "runtime_peer"`. Cloud is always remote.
+renders **nothing** for a purely local desktop session. The predicate is
+centralized in the component (`isRemoteNotebookContext`):
+`access.source !== "local"` or `runtime.target.kind === "runtime_peer"`.
+Cloud is always remote, so hosts mount unconditionally.
 
-**Content:** self-identity (the flattened `NotebookIdentityBadge` treatment —
-actor initials/avatar) paired with a connectivity dot driven by
-`connectionStatus$` — its first UI consumer. Status vocabulary follows the
+**Content:** self-identity (the flattened avatar treatment via the shared
+actor projection — initials/avatar only, no visible label, hidden from the
+a11y tree so the sr-only copy is the single accessible text) paired with a
+connectivity dot driven by `connectionStatus$` — its first UI consumer. The
+component accepts a structural `NotebookConnectionStatusSource` (an
+rxjs-free `Observable` subset with an optional `getCurrent()` snapshot so
+first paint shows the real status, no one-frame "connecting" flash) so
+shared `src/` takes no new dependency. Status vocabulary follows the
 existing tones: emerald `online`, amber pulse `reconnecting`/`connecting`,
-muted `offline`.
+muted `offline`; non-online states also dim the wrapper (opacity, not
+copy). Status CHANGES (never the initial value) are announced through a
+polite sr-only live region using the scoped link copy — quiet for the eyes
+is not silence for screen readers. This is the surface that makes the PR-2
+limitation interpretable: runtime-state stores are not blanked during the
+offline window, and the pulsing dot stays live through `reconnecting` so
+frozen kernel/execution chrome reads as "reconnecting", not as truth — for
+the link each host actually measures.
 
 **Aesthetic rules distilled from the three pulled designs** (#3273, #3290,
 #3337, #3349 — recorded so we do not relitigate them):
@@ -421,13 +446,37 @@ muted `offline`.
 Plumbing fix included: the host facade's `connectionStatus$` delegation
 captures whichever transport exists at subscribe time and never switches — a
 subscriber can watch a dead transport forever. With PR 2 the transport object
-survives reconnects, but initial-connect attempts may still replace it; the
-session exposes a stable, switching connection-status source (small
-BehaviorSubject bridge fed by the current transport) for the UI.
+survives reconnects, but initial-connect attempts and escalation teardowns
+still replace it; the session exposes `CloudConnectionStatusBridge`
+(`live-sync.ts`) — a stable BehaviorSubject-backed source attached to each
+replacement transport via `onTransportCreated`, deduplicating across
+switches. On escalation teardown — and in the effect cleanup, where the
+auth-refresh re-run early-returns without attaching a replacement — the
+bridge detaches BEFORE the dispose and reports `"reconnecting"`, so the
+disposed transport's terminal `"offline"` (manual-disconnect vocabulary)
+never surfaces and the gap reads as a transition, never as stale
+`"online"`. The bridge implements the slot's source contract directly
+(`subscribe` + `getCurrent`).
 
-Tests: component tests for each status × identity combination and the
-local-session-renders-nothing gate; keep #3337's quiet-chrome regressions
-green.
+Tests: component tests for every status × identity combination
+(data-state + dot tone + opacity), the local-session-renders-nothing gate,
+the runtime-peer remote case, the live-dot-through-reconnecting regression,
+scoped-link copy, `getCurrent` first paint, live-region announcements
+(changes only, never the mount), aria-hidden avatar, unmount-unsubscribe,
+the flat-never-raised treatment across the whole subtree, and
+icon-only-at-every-width via clone-and-strip (wrapper text nodes included);
+desktop tests for the daemon-lifecycle source (lifecycle walk, dedup,
+replay/getCurrent, dispose), the real-projection composition with
+`isRemoteNotebookContext`, the toolbar trailingControls flow with real
+`desktopNotebookShellCapabilities` output, and a source-text pin on the
+App.tsx mount (daemon source + scoped label, not the IPC transport); bridge
+tests for transport replacement, plain-detach silence, the slot source
+contract, teardown-retry masking of the disposed transport's offline, and
+the PR-2 loop reflected without a switch; session wiring order
+(attach-on-transport-created, retry-before-dispose in all three teardown
+paths) pinned by source guardrails; #3337's quiet-chrome regressions stay
+green (the `identityControls={null}` pin became a module-scoped pin on the
+new mount).
 
 ---
 

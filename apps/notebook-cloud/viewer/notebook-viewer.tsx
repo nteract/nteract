@@ -13,6 +13,7 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
+  NotebookConnectionIdentity,
   NotebookDocumentToolbar,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
@@ -67,6 +68,7 @@ import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { cloudPresenceHasRuntimePeer, cloudPresenceRuntimePeerCount } from "./presence";
 import type { ResolvedCell } from "./render-resolution";
 import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
+import { useSustainedReconnecting } from "./use-sustained-reconnecting";
 import type { ViewerStatus } from "./notice-types";
 import type { CloudNotebookAccessRequest } from "./sharing-client";
 import { CloudSharingControls } from "./sharing-controls";
@@ -195,6 +197,7 @@ export function NotebookViewer({
     connectionError,
     connectionPeerId,
     connectionScope,
+    connectionStatus$,
     liveMaterializedRef,
     liveRuntimeRef,
     notebookLanguageRef,
@@ -223,6 +226,10 @@ export function NotebookViewer({
       }),
     [blobResolver, liveRuntimeRef],
   );
+  // Sustained-outage legibility: the connection/identity slot stays an 8px
+  // dot by design, so once "reconnecting" outlives the debounce the notices
+  // stack carries the one calm line (and clears it when the room is back).
+  const sustainedReconnecting = useSustainedReconnecting(connectionStatus$);
   const presenceSnapshot = useSyncExternalStore(
     presenceStore.subscribe,
     presenceStore.getSnapshot,
@@ -856,7 +863,15 @@ export function NotebookViewer({
           onRequestEditAccess={requestCloudEditAccess}
         />
       }
-      identityControls={null}
+      identityControls={
+        // Connection/identity slot: self-identity avatar + connectivity dot
+        // (the stable bridge survives transport replacement; the dot keeps
+        // frozen runtime chrome interpretable while reconnecting).
+        <NotebookConnectionIdentity
+          capabilities={shellCapabilities}
+          connectionStatus$={connectionStatus$}
+        />
+      }
       reserveCommandToolbar={editAccessPending}
       commandToolbar={{
         runtime: toolbarRuntime,
@@ -899,6 +914,7 @@ export function NotebookViewer({
     diagnostics: accessRequestNotice,
     hasAppSession: Boolean(appSessionStatus.session),
     hasReadableSnapshot: notebookHasReadableSnapshot,
+    sustainedReconnecting,
     status: noticeStatus,
   });
   const notices = hasNotices ? (
@@ -909,6 +925,7 @@ export function NotebookViewer({
       diagnostics={accessRequestNotice}
       hasAppSession={Boolean(appSessionStatus.session)}
       hasReadableSnapshot={notebookHasReadableSnapshot}
+      sustainedReconnecting={sustainedReconnecting}
       status={noticeStatus}
       onResetAuth={resetPrototypeAuth}
       onSignInAgain={authConfig.oidc ? beginNotebookOidcAuth : undefined}
