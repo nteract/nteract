@@ -1018,6 +1018,14 @@ export class CloudWebSocketTransport implements NotebookTransport {
     // One deadline per OUTSTANDING ping: if a pong is already overdue,
     // keep the original (earlier) deadline rather than extending it.
     if (this.livenessPongTimer !== null) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      // Background tabs throttle and suspend timers: a frozen deadline can
+      // fire on resume BEFORE the queued pong MessageEvent dispatches,
+      // declaring a healthy connection dead on every tab foreground. Send
+      // the ping (it keeps intermediaries warm) but skip enforcement while
+      // hidden — the next visible-tab ping re-arms the deadline.
+      return;
+    }
     this.livenessPongTimer = setTimeout(() => {
       this.livenessPongTimer = null;
       if (socket !== this.socket) return;
@@ -1152,11 +1160,19 @@ export class CloudWebSocketTransport implements NotebookTransport {
   }
 
   private async handleMessage(data: unknown, socket: WebSocket): Promise<void> {
-    // Liveness pongs are the only text frames the room ever sends; handle
+    if (socket !== this.socket) return; // superseded connection
+    // ANY inbound message is liveness evidence, not just the strict pong:
+    // the pong is an ordinary frame serialized into the same in-order WS
+    // stream as sync frames, so during a large post-reconnect sync over a
+    // slow link it queues behind the backlog. A connection actively
+    // delivering frames is demonstrably alive — killing it on a fixed pong
+    // deadline would recycle exactly the connections least able to afford
+    // the resync churn. The probe's job is the silent zombie socket, and a
+    // zombie delivers nothing.
+    this.noteLivenessPong();
+    // Liveness pongs are the only text frames the room ever sends; consume
     // them before binary decoding (which rejects strings).
     if (data === LIVENESS_PONG) {
-      if (socket !== this.socket) return; // superseded connection
-      this.noteLivenessPong();
       return;
     }
     const bytes = await bytesFromWebSocketMessage(data);
