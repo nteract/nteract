@@ -14,6 +14,13 @@ let initialized: Promise<RuntimedWasmModule> | undefined;
 let initializedSource: string | undefined;
 let resolvedModule: RuntimedWasmModule | undefined;
 
+type RuntimedWasmModuleImporter = (href: string) => Promise<RuntimedWasmModule>;
+
+const defaultModuleImporter: RuntimedWasmModuleImporter = (href) =>
+  import(/* @vite-ignore */ href) as Promise<RuntimedWasmModule>;
+
+let importModule: RuntimedWasmModuleImporter = defaultModuleImporter;
+
 export async function initializeRuntimedWasmClient(
   modulePath: string | URL,
   moduleOrPath: WasmModuleOrPath,
@@ -163,8 +170,45 @@ function loadRuntimedWasmModule(modulePath: string | URL): Promise<RuntimedWasmM
   }
 
   loadedModuleSource = href;
-  loadedModule ??= import(/* @vite-ignore */ href) as Promise<RuntimedWasmModule>;
+  if (!loadedModule) {
+    // Cache by REQUESTED href, and clear the cache when the import rejects:
+    // a pinned rejected promise would turn one transient failure into a
+    // permanent one — every later attempt (manual retry, reconnect) would
+    // re-await the same rejection for the life of the page.
+    const pending = importModule(href).catch((error: unknown) => {
+      if (loadedModule === pending) {
+        loadedModule = undefined;
+        loadedModuleSource = undefined;
+      }
+      throw error;
+    });
+    loadedModule = pending;
+  }
   return loadedModule;
+}
+
+/**
+ * Swap the dynamic `import()` used for the runtimed WASM module. Node test
+ * runners cannot intercept real dynamic imports, so retry/caching tests
+ * inject failures here. Pass `null` to restore the real importer.
+ * @internal
+ */
+export function _setRuntimedWasmModuleImporterForTests(
+  importer: ((href: string) => Promise<unknown>) | null,
+): void {
+  importModule = (importer as RuntimedWasmModuleImporter | null) ?? defaultModuleImporter;
+}
+
+/**
+ * Reset the module-level load/init caches between tests.
+ * @internal
+ */
+export function _resetRuntimedWasmClientForTests(): void {
+  loadedModule = undefined;
+  loadedModuleSource = undefined;
+  initialized = undefined;
+  initializedSource = undefined;
+  resolvedModule = undefined;
 }
 
 function runtimedWasmModuleAfterInit(): RuntimedWasmModule {
