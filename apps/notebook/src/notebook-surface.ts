@@ -25,6 +25,7 @@ export {
   getNotebookCellsSnapshot,
   type NotebookCell,
 } from "./lib/notebook-cells";
+export { shouldPreserveBootstrapProjection } from "./lib/bootstrap-preservation";
 export type { JupyterOutput } from "./types";
 export { resetPoolState, setPoolState } from "./lib/pool-state";
 export {

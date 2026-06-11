@@ -59,7 +59,7 @@ test("cloud projects live cells into the NotebookView stores", () => {
   );
   assert.match(
     sessionSourceText,
-    /const applyResolvedCells = useCallback\(\(resolvedCells: ResolvedCell\[\]\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(resolvedCells\);[\s\S]*setCells\(resolvedCells\);/,
+    /const applyResolvedCells = useCallback\(\s*\(resolvedCells: ResolvedCell\[\]\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(resolvedCells\);[\s\S]*setCells\(resolvedCells\);/,
   );
   assert.match(sessionSourceText, /applyResolvedCells\(syncCells\);/);
   assert.match(sessionSourceText, /applyResolvedCells\(progressiveCells\);/);
