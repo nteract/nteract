@@ -2205,9 +2205,15 @@ impl NotebookHandle {
     /// (outputs, executions) alongside the notebook doc. Replacing the state
     /// doc also resets RuntimeStateDoc sync state so later room-host sync starts
     /// from the loaded snapshot, not the previous empty/bootstrap doc.
+    ///
+    /// Preserves the current actor so a load never silently discards an
+    /// authenticated actor set via `set_actor` (room hosts reject
+    /// non-`<principal>/<operator>` actors).
     pub fn load_state_doc(&mut self, bytes: &[u8]) -> Result<(), JsError> {
-        let doc = automerge::AutoCommit::load(bytes)
+        let actor = self.state_doc.doc().get_actor().clone();
+        let mut doc = automerge::AutoCommit::load(bytes)
             .map_err(|e| JsError::new(&format!("load_state_doc failed: {}", e)))?;
+        doc.set_actor(actor);
         self.state_doc = RuntimeStateDoc::from_doc(doc);
         self.state_sync_state = sync::State::new();
         self.prev_output_by_id.clear();
@@ -2216,9 +2222,15 @@ impl NotebookHandle {
     }
 
     /// Load a CommsDoc from saved bytes.
+    ///
+    /// Preserves the current actor so a load never silently discards an
+    /// authenticated actor set via `set_actor` (room hosts reject
+    /// non-`<principal>/<operator>` actors).
     pub fn load_comms_doc(&mut self, bytes: &[u8]) -> Result<(), JsError> {
-        let doc = automerge::AutoCommit::load(bytes)
+        let actor = self.comms_doc.doc().get_actor().clone();
+        let mut doc = automerge::AutoCommit::load(bytes)
             .map_err(|e| JsError::new(&format!("load_comms_doc failed: {}", e)))?;
+        doc.set_actor(actor);
         self.comms_doc = CommsDoc::from_doc(doc);
         self.comms_sync_state = sync::State::new();
         Ok(())
@@ -3414,32 +3426,29 @@ impl NotebookHandle {
 
     /// Rebuild the notebook doc via save→load to clear corrupted internal indices.
     ///
-    /// Mirrors `NotebookDoc::rebuild_from_save()` on the daemon side. The
-    /// `save()` path uses `op_set.export()` (safe even with corrupted indices),
-    /// and `load()` reconstructs all internal data structures from scratch.
+    /// Delegates to `NotebookDoc::rebuild_from_save`, which preserves the actor
+    /// and refuses cell-losing rebuilds.
     fn rebuild_doc(&mut self) {
-        let bytes = self.doc.save();
-        if let Ok(doc) =
-            NotebookDoc::load_with_encoding(&bytes, notebook_doc::TextEncoding::Utf16CodeUnit)
-        {
-            self.doc = doc;
-        }
+        let _ = self.doc.rebuild_from_save();
     }
 
     /// Rebuild the PoolDoc via save→load.
+    ///
+    /// PoolDoc has no crate-level `rebuild_from_save`, so preserves the actor manually.
     fn rebuild_pool_doc(&mut self) {
+        let actor = self.pool_doc.doc_mut().get_actor().clone();
         let bytes = self.pool_doc.doc_mut().save();
-        if let Ok(doc) = automerge::AutoCommit::load(&bytes) {
+        if let Ok(mut doc) = automerge::AutoCommit::load(&bytes) {
+            doc.set_actor(actor);
             *self.pool_doc.doc_mut() = doc;
         }
     }
 
     /// Rebuild the CommsDoc via save→load.
+    ///
+    /// Delegates to `CommsDoc::rebuild_from_save`, which preserves the actor.
     fn rebuild_comms_doc(&mut self) {
-        let bytes = self.comms_doc.doc_mut().save();
-        if let Ok(doc) = automerge::AutoCommit::load(&bytes) {
-            *self.comms_doc.doc_mut() = doc;
-        }
+        let _ = self.comms_doc.rebuild_from_save();
     }
 
     /// Normalize pool sync state via encode→decode round-trip.
@@ -3449,11 +3458,10 @@ impl NotebookHandle {
     }
 
     /// Rebuild the RuntimeStateDoc via save→load.
+    ///
+    /// Delegates to `RuntimeStateDoc::rebuild_from_save`, which preserves the actor.
     fn rebuild_state_doc(&mut self) {
-        let bytes = self.state_doc.doc_mut().save();
-        if let Ok(doc) = automerge::AutoCommit::load(&bytes) {
-            *self.state_doc.doc_mut() = doc;
-        }
+        let _ = self.state_doc.rebuild_from_save();
     }
 
     /// Receive a typed frame from the daemon, demux by type byte, return events for the frontend.
@@ -5051,5 +5059,136 @@ mod tests {
         );
         assert!(buffer_paths.is_empty());
         assert!(text_paths.is_empty());
+    }
+
+    // -- Actor preservation tests (hotfix #3579 follow-up) -----------------
+
+    #[test]
+    fn set_actor_covers_all_docs_on_notebook_handle() {
+        let mut handle = NotebookHandle::create_bootstrap("user:dev:a/browser:x")
+            .expect("create bootstrap handle");
+
+        // Set a new actor
+        handle.set_actor("user:dev:b/browser:y");
+
+        // Verify all three docs have the new actor
+        let expected_actor = automerge::ActorId::from("user:dev:b/browser:y".as_bytes());
+
+        assert_eq!(
+            handle.doc.get_actor_id(),
+            "user:dev:b/browser:y",
+            "NotebookDoc actor mismatch"
+        );
+        assert_eq!(
+            handle.state_doc.doc().get_actor(),
+            &expected_actor,
+            "RuntimeStateDoc actor mismatch"
+        );
+        assert_eq!(
+            handle.comms_doc.doc().get_actor(),
+            &expected_actor,
+            "CommsDoc actor mismatch"
+        );
+    }
+
+    #[test]
+    fn set_actor_covers_both_docs_on_runtime_peer_handle() {
+        let mut handle =
+            RuntimeStatePeerHandle::new("user:dev:a/browser:x").expect("create handle");
+
+        // Set a new actor
+        handle.set_actor("user:dev:b/browser:y");
+
+        // Verify both docs have the new actor
+        let expected_actor = automerge::ActorId::from("user:dev:b/browser:y".as_bytes());
+
+        assert_eq!(
+            handle.state_doc.doc().get_actor(),
+            &expected_actor,
+            "RuntimeStateDoc actor mismatch"
+        );
+        assert_eq!(
+            handle.comms_doc.doc().get_actor(),
+            &expected_actor,
+            "CommsDoc actor mismatch"
+        );
+    }
+
+    #[test]
+    fn load_comms_doc_preserves_actor() {
+        // Create handle A with actor X and write a comm
+        let mut handle_a =
+            NotebookHandle::create_bootstrap("user:dev:a/browser:x").expect("create handle A");
+        let success = handle_a.set_comm_state_property("test-comm", "key", r#""value""#);
+        assert!(success, "write comm property");
+        let bytes = handle_a.save_comms_doc();
+
+        // Create handle B, set actor Y, then load A's comms doc
+        let mut handle_b =
+            NotebookHandle::create_bootstrap("user:dev:tmp/browser:tmp").expect("create handle B");
+        handle_b.set_actor("user:dev:b/browser:y");
+
+        handle_b
+            .load_comms_doc(&bytes)
+            .expect("load comms doc should succeed");
+
+        // Verify handle B's comms doc still has actor Y, not a random actor
+        let expected_actor = automerge::ActorId::from("user:dev:b/browser:y".as_bytes());
+        assert_eq!(
+            handle_b.comms_doc.doc().get_actor(),
+            &expected_actor,
+            "load_comms_doc should preserve the handle's actor"
+        );
+
+        // Verify handle B can still write to the comms doc
+        let success = handle_b.set_comm_state_property("test-comm", "key2", r#""value2""#);
+        assert!(success, "should be able to write after load");
+    }
+
+    #[test]
+    fn load_state_doc_preserves_actor() {
+        // Create handle A with actor X
+        let mut handle_a =
+            NotebookHandle::create_bootstrap("user:dev:a/browser:x").expect("create handle A");
+        let bytes = handle_a.state_doc.doc_mut().save();
+
+        // Create handle B, set actor Y, then load A's state doc
+        let mut handle_b =
+            NotebookHandle::create_bootstrap("user:dev:tmp/browser:tmp").expect("create handle B");
+        handle_b.set_actor("user:dev:b/browser:y");
+
+        handle_b
+            .load_state_doc(&bytes)
+            .expect("load state doc should succeed");
+
+        // Verify handle B's state doc still has actor Y, not a random actor
+        let expected_actor = automerge::ActorId::from("user:dev:b/browser:y".as_bytes());
+        assert_eq!(
+            handle_b.state_doc.doc().get_actor(),
+            &expected_actor,
+            "load_state_doc should preserve the handle's actor"
+        );
+    }
+
+    #[test]
+    fn rebuild_comms_doc_preserves_actor() {
+        let mut handle =
+            NotebookHandle::create_bootstrap("user:dev:test/browser:x").expect("create handle");
+
+        // Write a comm property so the doc is non-empty
+        let success = handle.set_comm_state_property("test-comm", "key", r#""value""#);
+        assert!(success, "write comm property");
+
+        let expected_actor = automerge::ActorId::from("user:dev:test/browser:x".as_bytes());
+
+        // Call rebuild directly (test has private field access)
+        handle.rebuild_comms_doc();
+
+        // Verify the actor is still the same
+        assert_eq!(
+            handle.comms_doc.doc().get_actor(),
+            &expected_actor,
+            "rebuild_comms_doc should preserve the actor"
+        );
     }
 }
