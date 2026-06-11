@@ -450,7 +450,12 @@ describe("cloudInstantPaintStorageOptions (session storage boundary)", () => {
       remove: async (key) => {
         records.delete(keyOf(key));
       },
-      loadRange: async () => [],
+      loadRange: async (prefix) => {
+        const rangePrefix = `${keyOf(prefix)}/`;
+        return Array.from(records.entries())
+          .filter(([key]) => key.startsWith(rangePrefix))
+          .map(([key, data]) => ({ key: key.split("/"), data }));
+      },
       removeRange: async (prefix) => {
         const rangePrefix = `${keyOf(prefix)}/`;
         const doomed = Array.from(records.keys()).filter(
@@ -482,10 +487,11 @@ describe("cloudInstantPaintStorageOptions (session storage boundary)", () => {
       encodePersistedNotebookDoc(meta, new Uint8Array([2])),
     );
 
+    const matcher = (principal: string) => principal === "user:dev:alice";
     const resolved = await withSilencedWarnings(() =>
       resolveCloudInstantPaintHandle<string>({
-        matchesPrincipal: (principal) => principal === "user:dev:alice",
-        ...cloudInstantPaintStorageOptions(adapter, "nb-1"),
+        matchesPrincipal: matcher,
+        ...cloudInstantPaintStorageOptions(adapter, "nb-1", matcher),
         loadRenderHandle: async (_notebookBytes, runtimeStateBytes) => {
           if (runtimeStateBytes) {
             throw new Error("corrupt runtime-state bytes");
@@ -497,6 +503,128 @@ describe("cloudInstantPaintStorageOptions (session storage boundary)", () => {
 
     assert.deepEqual(resolved, { handle: "cells-only-handle", outcome: "painted_cells_only" });
     assert.deepEqual([...adapter.records.keys()], ["nb-1/snapshot"]);
+  });
+
+  it("paints from the matching principal's chunk store when present", async () => {
+    const adapter = createRecordingAdapter();
+    const meta = {
+      headsHex: ["aa"],
+      savedAt: 10,
+      principal: "user:dev:alice",
+      schemaVersion: 1 as const,
+    };
+    // Stale envelope + live chunk store + a foreign principal's store:
+    // the MATCHING chunks must win.
+    await adapter.save(
+      ["nb-1", "snapshot"],
+      encodePersistedNotebookDoc({ ...meta, savedAt: 1 }, new Uint8Array([1])),
+    );
+    await adapter.save(
+      ["nb-1", "chunks", "user:dev:alice", "snapshot", "aa"],
+      new Uint8Array([7, 8]),
+    );
+    await adapter.save(
+      ["nb-1", "chunks", "user:dev:alice", "meta"],
+      new TextEncoder().encode(JSON.stringify(meta)),
+    );
+    await adapter.save(
+      ["nb-1", "chunks", "user:dev:mallory", "snapshot", "zz"],
+      new Uint8Array([6]),
+    );
+    await adapter.save(
+      ["nb-1", "chunks", "user:dev:mallory", "meta"],
+      new TextEncoder().encode(JSON.stringify({ ...meta, principal: "user:dev:mallory" })),
+    );
+
+    const matcher = (principal: string) => principal === "user:dev:alice";
+    let paintedBytes: Uint8Array | undefined;
+    const resolved = await resolveCloudInstantPaintHandle<string>({
+      matchesPrincipal: matcher,
+      ...cloudInstantPaintStorageOptions(adapter, "nb-1", matcher),
+      loadRenderHandle: async (notebookBytes) => {
+        paintedBytes = notebookBytes;
+        return "painted-handle";
+      },
+    });
+
+    assert.equal(resolved.outcome, "painted_cells_only");
+    assert.deepEqual(paintedBytes, new Uint8Array([7, 8]));
+  });
+
+  it("prefers a strictly NEWER matching envelope over the chunk store (rollback rule)", async () => {
+    const adapter = createRecordingAdapter();
+    const meta = {
+      headsHex: ["aa"],
+      savedAt: 10,
+      principal: "user:dev:alice",
+      schemaVersion: 1 as const,
+    };
+    await adapter.save(
+      ["nb-1", "snapshot"],
+      encodePersistedNotebookDoc({ ...meta, savedAt: 20 }, new Uint8Array([1])),
+    );
+    await adapter.save(
+      ["nb-1", "chunks", "user:dev:alice", "snapshot", "aa"],
+      new Uint8Array([7, 8]),
+    );
+    await adapter.save(
+      ["nb-1", "chunks", "user:dev:alice", "meta"],
+      new TextEncoder().encode(JSON.stringify(meta)),
+    );
+
+    const matcher = (principal: string) => principal === "user:dev:alice";
+    let paintedBytes: Uint8Array | undefined;
+    const resolved = await resolveCloudInstantPaintHandle<string>({
+      matchesPrincipal: matcher,
+      ...cloudInstantPaintStorageOptions(adapter, "nb-1", matcher),
+      loadRenderHandle: async (notebookBytes) => {
+        paintedBytes = notebookBytes;
+        return "painted-handle";
+      },
+    });
+
+    assert.equal(resolved.outcome, "painted_cells_only");
+    assert.deepEqual(
+      paintedBytes,
+      new Uint8Array([1]),
+      "the rolled-back version's newer envelope paints",
+    );
+  });
+
+  it("an unverifiable chunk store degrades to the envelope WITHOUT clearing anything", async () => {
+    const adapter = createRecordingAdapter();
+    const meta = {
+      headsHex: ["aa"],
+      savedAt: 1,
+      principal: "user:dev:alice",
+      schemaVersion: 1 as const,
+    };
+    await adapter.save(["nb-1", "snapshot"], encodePersistedNotebookDoc(meta, new Uint8Array([1])));
+    await adapter.save(
+      ["nb-1", "chunks", "user:dev:alice", "snapshot", "aa"],
+      new Uint8Array([7, 8]),
+    );
+    // No chunk meta: unverifiable. The paint is read-only — seeding owns
+    // every discard decision, so both stores must survive untouched.
+
+    const matcher = (principal: string) => principal === "user:dev:alice";
+    let paintedBytes: Uint8Array | undefined;
+    const resolved = await resolveCloudInstantPaintHandle<string>({
+      matchesPrincipal: matcher,
+      ...cloudInstantPaintStorageOptions(adapter, "nb-1", matcher),
+      loadRenderHandle: async (notebookBytes) => {
+        paintedBytes = notebookBytes;
+        return "painted-handle";
+      },
+    });
+
+    assert.equal(resolved.outcome, "painted_cells_only");
+    assert.deepEqual(paintedBytes, new Uint8Array([1]), "envelope bytes painted");
+    assert.deepEqual(
+      [...adapter.records.keys()].sort(),
+      ["nb-1/chunks/user:dev:alice/snapshot/aa", "nb-1/snapshot"],
+      "read path cleared nothing",
+    );
   });
 });
 
@@ -614,7 +742,7 @@ describe("instant paint mutual exclusion and session wiring", () => {
     assert.match(sessionSource, /shouldContinue: instantPaintFresh,/);
     assert.match(
       sessionSource,
-      /\.\.\.cloudInstantPaintStorageOptions\(persistenceAdapter, config\.notebookId\),/,
+      /\.\.\.cloudInstantPaintStorageOptions\(\s*persistenceAdapter,\s*config\.notebookId,\s*instantPaintMatcher,\s*\)/,
     );
     assert.match(sessionSource, /freeHandle: \(renderHandle\) => renderHandle\.free\(\),/);
   });

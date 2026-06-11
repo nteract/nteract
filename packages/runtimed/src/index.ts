@@ -56,19 +56,34 @@ export {
   type IndexedDbStorageAdapterOptions,
 } from "./persistence/indexeddb-storage-adapter";
 export {
+  NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT,
   NOTEBOOK_DOC_SNAPSHOT_KEY_SEGMENT,
   NotebookDocPersistence,
   RUNTIME_STATE_CACHE_KEY_SEGMENT,
   clearPersistedNotebookDoc,
+  clearPersistedNotebookDocChunks,
   clearPersistedNotebookRecord,
+  decodeNotebookDocChunkMeta,
   decodePersistedNotebookDoc,
+  encodeNotebookDocChunkMeta,
   encodePersistedNotebookDoc,
+  loadAllPersistedNotebookDocChunkStores,
   loadPersistedNotebookDoc,
+  loadPersistedNotebookDocChunks,
   loadPersistedNotebookRecord,
+  notebookDocChunkMetaKey,
+  notebookDocChunksPrefix,
+  notebookDocIncrementalChunkKey,
+  notebookDocPrincipalChunksPrefix,
+  notebookDocSnapshotChunkKey,
+  type NotebookDocChunkInfo,
+  type NotebookDocChunkedOptions,
   type NotebookDocPersistenceLogger,
   type NotebookDocPersistenceMeta,
   type NotebookDocPersistenceOptions,
   type PersistedNotebookDoc,
+  type PersistedNotebookDocChunkStore,
+  type PersistedNotebookDocChunks,
 } from "./persistence/notebook-doc-persistence";
 export {
   SaveBatchEntryError,
@@ -77,6 +92,20 @@ export {
   type StorageChunk,
   type StorageKey,
 } from "./persistence/storage-adapter";
+
+// Cross-tab convergence bridge (BroadcastChannel; same notebook, same
+// principal — see notebook-tab-bridge.ts)
+export {
+  NOTEBOOK_TAB_BRIDGE_CHANNEL_PREFIX,
+  NOTEBOOK_TAB_BRIDGE_MESSAGE_VERSION,
+  NotebookTabBridge,
+  createNotebookTabBridge,
+  notebookTabBridgeChannelName,
+  type NotebookTabBridgeChangesMessage,
+  type NotebookTabBridgeChannel,
+  type NotebookTabBridgeLogger,
+  type NotebookTabBridgeOptions,
+} from "./notebook-tab-bridge";
 
 // Scope capabilities (generated from nteract_identity::ConnectionScope)
 export {

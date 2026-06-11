@@ -138,12 +138,16 @@ reopened on `onversionchange`/close (including a rejected `open()` — the
 cache is cleared through the promise, not the executor), and `close()`
 exists for effect-teardown connection hygiene.
 
-Key layout (room for incremental chunks later, without migration):
+Key layout (the chunked rows landed with PR 7; the envelope row remains
+the migration/rollback fallback):
 
 | Key | Value |
 |---|---|
-| `[notebookId, "snapshot"]` | one **envelope record**: 4-byte little-endian meta-JSON length, meta JSON utf8 (`{ headsHex, savedAt, principal, schemaVersion: 1 }`), then full `handle.save()` NotebookDoc bytes |
-| `[notebookId, "runtime-state-cache"]` | same envelope shape over `save_state_doc()` RuntimeStateDoc bytes (meta heads = runtime heads) — PR 6's render-only paint cache, never a sync seed |
+| `[notebookId, "snapshot"]` | one **envelope record**: 4-byte little-endian meta-JSON length, meta JSON utf8 (`{ headsHex, savedAt, principal, schemaVersion: 1 }`), then full `handle.save()` NotebookDoc bytes — PR 1's seed record, now the chunk-less load fallback (no longer written for the NotebookDoc); when both stores verify for the principal, the newer `savedAt` wins (the rollback rule) |
+| `[notebookId, "chunks", <principal>, "snapshot", <headsKey>]` | full `handle.save()` at those heads; `<headsKey>` is the canonically-sorted heads joined with `-`, so identical heads collide on the identical key in every tab (PR 7) |
+| `[notebookId, "chunks", <principal>, "incremental", <sha256hex(bytes)>]` | `save_since_heads(lastCommittedHeads)` output, content-addressed by its own bytes — concurrent tabs writing identical deltas are a no-op collision (PR 7) |
+| `[notebookId, "chunks", <principal>, "meta"]` | plain meta JSON (envelope meta shape plus the store `generation` epoch) — its `headsHex` is the newest writer's heads, an informational dedupe hint (the chunk union is the truth and may be ahead of it). The principal KEY SEGMENT is the real guard: one last-writer-wins meta record can never vouch for another principal's bytes, because those live under a different prefix |
+| `[notebookId, "runtime-state-cache"]` | same envelope shape over `save_state_doc()` RuntimeStateDoc bytes (meta heads = runtime heads) — PR 6's render-only paint cache, never a sync seed; deliberately NOT chunked (rewrite-whole paint source, not a history store) |
 
 The envelope is deliberate: a single record means a single IDB transaction,
 so the meta (which carries the principal guard) can never tear apart from
@@ -153,10 +157,10 @@ truncation degrade to `meta: null`, which seeding treats as unverifiable
 (clear + bootstrap); a tear inside the doc bytes is caught by
 `NotebookHandle.load()` throwing at seed time.
 
-PR 1 saves full snapshots (the only surface `NotebookHandle` exposes is
-`save()`); the adapter interface and key scheme already accommodate
-automerge-repo-style content-addressed incremental chunks + compaction if doc
-sizes ever demand it.
+PR 1 saved full snapshots (the only surface `NotebookHandle` exposed was
+`save()`); PR 7 filled the reserved chunk slot with automerge-repo-style
+content-addressed incrementals + compaction on the same adapter interface
+and key scheme, with zero migration.
 
 `NotebookDocPersistence` controller: subscribes `notebookDocChanged$` through
 a trailing-edge async throttle (serialize saves; latest call wins —
@@ -659,9 +663,16 @@ is exactly when the merge notice can first appear.
   label** before any authoring (operator nonce client-minted per connect
   attempt; principal rewritten by the worker). Never reuse an actor label
   across doc instances.
-- Persisted bytes and their authoring principal live in **one atomic
-  envelope record**; principal mismatch or an unverifiable envelope ⇒
-  discard. Anonymous principals never seed, save, or clear.
+- Persisted bytes and their authoring principal commit **atomically**:
+  the envelope is one record; the chunk store writes each chunk with its
+  meta in one `saveBatch`, inside a principal-namespaced sub-range that
+  makes cross-principal unions impossible by construction. An
+  unverifiable chunk meta ⇒ discard only that sub-range and fall back to
+  the envelope. Anonymous principals never seed, save, clear, or bridge.
+- A chunk incremental's basis is covered by the chunk store itself
+  (never by the envelope alone), and incrementals are dropped — never
+  written — when the store's generation epoch shows another session
+  cleared it.
 - Preserve the handle **xor** mint a new actor — never re-bootstrap a
   preserved handle.
 - Storage failures degrade to no-persistence; they never break the live
@@ -778,6 +789,129 @@ live connection. As landed:
 - Offline *editing* before the first-ever handshake stays out of scope
   (below) — this PR is about read latency, not offline authoring.
 
+### PR 7 — Chunked persistence + multi-tab bridge (landed)
+
+Slices 3 and 4 of #3585, shipped together because they share the WASM
+surface. Two stateless `NotebookHandle` exports (on automerge's
+long-stable `save_after(heads)` — see the fragments note below for the
+planned successor):
+
+- `save_since_heads(heads_hex)` — every change that is not a transitive
+  dependency of the given heads. Empty heads returns the full compressed
+  `save()` (never an incremental dump of the whole history —
+  automerge-repo's documented `saveSince(empty)` pitfall); unknown heads
+  are filtered by the dependency walk, so a stale basis degrades to
+  overlap, never a gap. TS owns all heads bookkeeping; automerge's
+  internal `save_incremental` cursor is never used (other code calls
+  `save()`).
+- `apply_change_bytes(bytes)` — applies serialized changes and returns
+  the same `sync_applied` event shape as `receive_frame`'s
+  AUTOMERGE_SYNC arm (heads-compare `changed`, one `diff_doc` changeset,
+  attributions, execution-view projection; never a `reply`). Known
+  changes dedupe to `changed: false`; garbage degrades to a no-op
+  partial load. Sync state is untouched.
+
+**Chunked NotebookDoc store (slice 4).** `NotebookDocPersistence` grows
+a chunked mode (the runtime-state paint cache stays an envelope) that
+keeps the heads-dedupe / committed-key semantics intact per strategy:
+
+- The store is **principal-namespaced** (`[notebookId, "chunks",
+  <principal>, ...]`): unions are single-principal by construction, so
+  cross-principal chunk mixing under a last-writer-wins meta record is
+  structurally impossible. Foreign principals' sub-ranges are never
+  loaded and never deleted by compaction; the whole-notebook record
+  discard (sign-in change, poison pill) removes them via the
+  `[notebookId]` prefix as before.
+- Every save is ONE `saveBatch` — atomic on IndexedDB, chunk-then-meta
+  crash-ordered under the sequential fallback (an orphaned chunk is
+  invisible; a meta record never describes bytes that are not there).
+- Incrementals cut from the last **committed** heads, so a failed write
+  yields overlapping chunks (deduplicated on load), never a dependency
+  gap. **Basis-coverage invariant:** the basis must be durable in the
+  CHUNK STORE itself — a seed's heads become the basis only when the
+  chunk inventory is non-empty, and the incremental arm stays closed
+  until a snapshot chunk is committed/inventoried (so a capture racing a
+  held-then-failing FIRST snapshot also snapshots, and an
+  envelope-migrated session can never strand an incremental whose
+  dependencies live only in the envelope). No committed basis ⇒ full
+  snapshot.
+- The meta record carries a **store `generation` epoch**. Commits
+  re-read the live meta: an incremental whose controller's generation no
+  longer matches (the store was cleared by another session's discard and
+  possibly re-established) is dropped, the controller resets, and the
+  re-triggered capture snapshots — bounding the cleared-store orphan
+  window to the read-then-write TOCTOU of a single commit. Snapshots are
+  self-contained: on a detected reset they commit anyway, adopt the live
+  generation (or mint one), and abandon the stale inventory rather than
+  deleting blind.
+- Compaction is automerge-repo's rule (`snapshotSize < 1024 ||
+  incrementalSize >= snapshotSize`, ~2× doc-size bound), single-flight,
+  write-before-delete, and deletes only chunks this controller
+  inventoried (its seed load + its own writes) — a chunk another tab
+  wrote concurrently is unknown here and survives. Multi-tab safety is
+  content addressing plus that delete discipline plus the generation
+  epoch, not coordination.
+- Load concatenates snapshots-then-incrementals into one
+  `NotebookHandle.load()` (verified against the pinned automerge rev by
+  Rust + WASM tests, including the two missing-dependency contracts the
+  recovery story leans on: incrementals-only unions hard-error;
+  snapshot-first unions tolerate a dep-orphaned incremental without
+  materializing it). The seeding seam (`resolveCloudNotebookHandle` →
+  `loadPersisted(principal)`) reads the principal's sub-range; an
+  unverifiable meta inside it clears ONLY that sub-range and falls back
+  to the PR-1 envelope record, preserving the
+  seeded/bootstrap/cleared/read_failed taxonomy. Instant paint scans the
+  sub-ranges with its pre-handshake principal matcher, strictly
+  read-only.
+- **Rollback rule:** when both the chunk store and the envelope verify
+  for the principal, the newer `meta.savedAt` wins (ties prefer the
+  chunk store). A rolled-back app version writes only the envelope, so
+  its offline edits seed on roll-forward instead of being shadowed by
+  stale chunks; the stale chunks stay put — the session's first save
+  snapshots fresh and later loads union both lines through the CRDT
+  merge. Wall-clock comparison is the accepted trade-off here; both
+  metas carry `savedAt`.
+- Migration: an envelope-seeded session's first chunked save writes a
+  fresh snapshot chunk (the snapshot arm is forced while the inventory
+  is empty); the envelope record is left in place so an older version
+  rolling back still finds a usable — if stale — seed.
+
+**BroadcastChannel tab bridge (slice 3).** One channel per notebook
+(`nteract-notebook-<notebookId>`), one message kind
+(`{ kind: "changes", v: 1, principal, bytes }` — the `v` field is the
+negotiation hook for any future payload change; mismatched versions
+drop), `bytes = save_since_heads(lastBroadcastHeads)` on the persistence
+cadence (empty deltas skipped). Receive requires an exact principal
+match — anonymous sessions are disabled in both directions, since a
+cross-principal apply would feed the room sync changes its
+actor-principal authorization never approved. Applies route through
+`SyncEngine.applyLocalPeerChanges`, which reuses the `sync_applied`
+pipeline section (no second diff), refuses to run on a stopped engine
+(never mutate-and-silently-drop), and schedules the normal debounced
+flush so the room stays authoritative; `notebookSyncApplied$`
+deliberately does not fire (it reports applied ROOM frames). Ping-pong
+terminates structurally: re-broadcast known changes apply as
+`changed: false` and emit nothing, bounding a T-tab channel at ~one
+broadcast per tab per edit (pinned for three tabs). Offline behavior
+falls out free — two offline tabs converge over the channel and
+whichever reconnects first pushes the union; persistence collisions from
+both tabs are idempotent through the chunk store's content addressing.
+
+Bridge trust model, recorded: the message principal is SENDER-ASSERTED.
+A compromised same-origin script can stamp the victim's principal on
+foreign-actor changes; the room's actor-principal validation rejects the
+flush, and the escalation path would otherwise loop (teardown → seed
+discard → bootstrap → re-arm against the still-open hostile tab). The
+session therefore QUARANTINES the bridge for the remainder of the
+session when an AUTOMERGE_SYNC rejection escalates. Receive-side actor
+validation is deliberately not used: a legitimate tab relays
+room-authorized collaborator changes (other principals' actors) to an
+offline sibling, and those must apply. The bridge arms on principal only
+(works without IndexedDB; `read_failed` does not disarm it, since it
+never writes storage), arms only when the deployed WASM bundle ships
+`save_since_heads` (older bundles degrade to single-tab), and its
+channel closes before the WASM handle frees.
+
 ## Prior-art trajectory: subduction / sedimentree
 
 The automerge ecosystem's successor sync line (Ink & Switch
@@ -801,10 +935,13 @@ moves when the time comes:
    (blobs → metadata → id-marker: a crash leaves invisible orphans, never a
    visible-but-incomplete record).~~ **Adopted** (#3585 slice 1) — see the
    storage-layer section above.
-2. Fill the reserved "incremental chunks later" slot against the automerge
-   3.3 fragments API (`getFragmentMetadata`/`bundleFragmentMetadata` via new
-   `NotebookHandle` WASM exports) instead of inventing a chunk format —
-   core-driven, deterministic compaction for free.
+2. Replace PR 7's incremental chunks with the automerge 3.3 fragments API
+   (`getFragmentMetadata`/`bundleFragmentMetadata` via new `NotebookHandle`
+   WASM exports) once it reaches a stable tag — core-driven, deterministic
+   compaction. The chunk key scheme was designed for this: fragment bundles
+   slot in as new records under the same `[notebookId, "chunks", ...]`
+   prefix (unknown sub-keys are already ignored, never deleted, by every
+   read path), so the swap needs no migration.
 3. Operational patterns worth stealing regardless: per-doc heal-retry with
    an exhaustion signal, and "confirmation is just another sync"
    idempotence.
@@ -814,12 +951,16 @@ moves when the time comes:
 - Offline *authoring* before the first `cloud_room_ready` of a session
   (needs an actor-label strategy that does not depend on the server
   handshake, e.g. locally-minted operator nonces).
-- Incremental chunk persistence + compaction (key scheme reserves room; add
-  `save_incremental`-style WASM exports when doc sizes justify it).
+- ~~Incremental chunk persistence + compaction~~ — landed as PR 7's
+  chunked store (`save_since_heads` WASM export over automerge's stable
+  `save_after(heads)`).
 - Desktop adoption of the persistence module for remote-attached notebooks.
-- Multi-tab write coordination. The envelope is last-write-wins per
-  notebook: a second tab's save (or pagehide flush) can regress the stored
-  heads and destroy the only copy of another tab's flushed-but-undelivered
-  edits — the room only heals divergence it has seen. Accepted limitation
-  until content-addressed incremental chunks (which the key scheme reserves
-  room for) make concurrent writers structurally safe.
+- ~~Multi-tab write coordination~~ — closed by PR 7: content-addressed
+  chunks make concurrent writers structurally safe, and the
+  BroadcastChannel bridge converges live tabs through sync rather than
+  write ordering. The legacy envelope record is no longer written for the
+  NotebookDoc, so its last-write-wins hazard window is gone with it.
+- Cross-tab catch-up replay. The bridge carries deltas forward from arm
+  time only (no replay protocol on the channel); divergence that predates
+  both tabs heals through the room or through the shared chunk store on
+  the next load.

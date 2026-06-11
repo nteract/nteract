@@ -312,6 +312,8 @@ export class SyncEngine {
   // Internal subjects
   private readonly frameIn$ = new Subject<number[]>();
   private readonly flushRequest$ = new Subject<void>();
+  /** The running pipeline's materialize subject (null while stopped). */
+  private materializeIn: Subject<CellChangeset | null> | null = null;
 
   /** Promise for the most recent fire-and-forget flush (debounced path). */
   private inflightFlush: Promise<boolean> | null = null;
@@ -542,9 +544,16 @@ export class SyncEngine {
       ),
     );
 
-    // Subject bridging sync_applied events into the coalescing buffer
+    // Subject bridging sync_applied events into the coalescing buffer.
+    // Held on the instance while running so applyLocalPeerChanges (the
+    // cross-tab bridge apply) can route through the same coalesce →
+    // cellChanges$ pipeline as inbound sync frames.
     const materialize$ = new Subject<CellChangeset | null>();
-    sub.add(() => materialize$.complete());
+    this.materializeIn = materialize$;
+    sub.add(() => {
+      this.materializeIn = null;
+      materialize$.complete();
+    });
 
     // ── Source: frames → WASM demux → individual FrameEvents ──────
 
@@ -1151,6 +1160,73 @@ export class SyncEngine {
     const removed_ids = changeset?.removed ?? [];
     if (changed.length === 0 && removed_ids.length === 0) return;
     this._outputIdChanges$.next({ changed, removed_ids });
+  }
+
+  // ── Cross-tab apply ──────────────────────────────────────────────
+
+  /**
+   * Apply serialized NotebookDoc changes from a same-principal peer tab
+   * (the BroadcastChannel bridge) and route the result through the SAME
+   * pipeline section as an inbound `sync_applied` frame: attributions →
+   * broadcast, changeset → the coalescing buffer (→ `cellChanges$`),
+   * `notebookDocChanged$` for persistence, execution-view changes — one
+   * WASM-computed diff, no second diff path (projection-convergence ADR).
+   *
+   * Returns true when the document changed. Known changes dedupe inside
+   * `apply_change_bytes` to `changed: false` and emit NOTHING — the
+   * property that terminates two-tab ping-pong: a peer re-broadcasting
+   * our own changes back at us cannot re-trigger persistence or another
+   * broadcast.
+   *
+   * Deliberate differences from the inbound-frame path:
+   * - No sync reply (the apply never touches sync state) — instead a
+   *   changed apply schedules the normal debounced flush, so the room
+   *   stays authoritative and receives the changes through ordinary
+   *   sync. Offline, that flush attempt fails and rolls back exactly
+   *   like any local edit's.
+   * - `notebookSyncApplied$` does not fire: it reports applied ROOM
+   *   frames (consumers poll room catch-up facts on it), and a tab
+   *   apply changes nothing about room catch-up.
+   */
+  applyLocalPeerChanges(bytes: Uint8Array): boolean {
+    if (this.materializeIn === null) {
+      // Stopped engine: drop BEFORE touching the doc. Applying here
+      // would mutate the handle while the projection pipelines are gone
+      // — the changeset and flush would vanish silently, and per-frame
+      // diffs after the next start() could never backfill the gap
+      // (permanent UI divergence). Dropping is safe: the peer tab's
+      // changes reach this doc through the room sync or the next
+      // session's seed instead.
+      this.opts.logger.warn("[sync-engine] peer changes dropped: engine not running");
+      return false;
+    }
+    const handle = this.opts.getHandle();
+    if (!handle?.apply_change_bytes) {
+      this.opts.logger.debug("[sync-engine] peer changes dropped: no handle/apply export");
+      return false;
+    }
+    let event: FrameEvent | undefined;
+    try {
+      event = handle.apply_change_bytes(bytes);
+    } catch (e) {
+      this.opts.logger.warn("[sync-engine] apply_change_bytes failed:", e);
+      return false;
+    }
+    if (!event || event.type !== "sync_applied") {
+      return false;
+    }
+
+    if (event.attributions && event.attributions.length > 0) {
+      this._broadcasts$.next(createTextAttributionEvent(event.attributions));
+    }
+    if (event.changed) {
+      this.materializeIn?.next(event.changeset ?? null);
+      this._notebookDocChanged$.next();
+      // Propagate to the room through the normal outbound path.
+      this.scheduleFlush();
+    }
+    this.emitExecutionViewChanges(event.execution_view_changeset);
+    return event.changed === true;
   }
 
   // ── Outbound sync ────────────────────────────────────────────────

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import {
   IndexedDbStorageAdapter,
   clearPersistedNotebookDoc,
-  loadPersistedNotebookDoc,
   type BlobResolver,
   type CommChanges,
 } from "runtimed";
@@ -66,8 +65,10 @@ import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import {
   createCloudNotebookPersistence,
+  loadCloudPersistedNotebookSeed,
   type CloudNotebookPersistenceController,
 } from "./notebook-persistence";
+import { createCloudNotebookTabBridge } from "./tab-bridge";
 import {
   OFFLINE_MERGE_RESYNC_SETTLE_MS,
   OfflineMergeTracker,
@@ -214,6 +215,13 @@ export function useCloudViewerSession({
   // Set when a seeded session's replayed changes were rejected by the room:
   // the next connect attempt must bootstrap (survives the effect re-run).
   const skipSeedOnceRef = useRef(false);
+  // Escalated AUTOMERGE_SYNC rejections quarantine the cross-tab bridge
+  // for the remainder of the session (page lifetime): the bridge's
+  // principal is sender-asserted, so a hostile/buggy same-origin tab can
+  // feed changes the room will keep rejecting — without this flag the
+  // post-escalation bootstrap would re-arm against the still-open tab
+  // and loop teardown → discard → re-poison forever.
+  const tabBridgeQuarantinedRef = useRef(false);
   // The escalation's dispose-flush → clear chain (never rejects). The next
   // attempt's persistence arming awaits it (clear-then-arm), so a
   // straggling clear can never delete a fresh attempt's first record.
@@ -536,9 +544,20 @@ export function useCloudViewerSession({
     // controller may have overwritten the seeded record, so only the very
     // first arm may trust the seed's heads to describe what is in storage.
     let notebookPersistenceEverArmed = false;
+    // Cross-tab bridge (slice 3): same-notebook, same-principal tabs
+    // converge over a BroadcastChannel. Gated on principal only — it
+    // needs no storage adapter and never writes storage, so read_failed
+    // does not disarm it.
+    let tabBridge: ReturnType<typeof createCloudNotebookTabBridge> = null;
+    let tabBridgePrincipal: string | null = null;
     const persistenceSeed = persistenceAdapter
       ? {
-          loadPersisted: () => loadPersistedNotebookDoc(persistenceAdapter, config.notebookId),
+          // Chunk-preferred read with the chunk-level principal guard;
+          // falls back to the PR-1 envelope record when no chunks exist.
+          loadPersisted: (principal: string) =>
+            loadCloudPersistedNotebookSeed(persistenceAdapter, config.notebookId, principal),
+          // The record-level discard stays whole-notebook: envelope,
+          // chunks, and the runtime-state paint cache all go together.
           clear: () => clearPersistedNotebookDoc(persistenceAdapter, config.notebookId),
         }
       : undefined;
@@ -588,8 +607,35 @@ export function useCloudViewerSession({
       notebookPersistence?.dispose();
       notebookPersistence = null;
       notebookPersistencePrincipal = null;
+      // Close the tab channel BEFORE freeing the handle: a closed
+      // channel delivers nothing, so no late peer apply can touch a
+      // freed handle.
+      tabBridge?.dispose();
+      tabBridge = null;
+      tabBridgePrincipal = null;
       disposeCloudSyncRuntime(liveRuntime);
       return teardownFlush;
+    };
+    // Arm (or re-arm) the cross-tab bridge for the runtime's CURRENT
+    // principal — same-principal reconnects keep it; a principal change
+    // recreates it so messages are stamped and filtered correctly.
+    const armTabBridge = (liveRuntime: CloudSyncRuntime) => {
+      // Quarantined for the session after an escalated sync rejection —
+      // the rejected changes may have arrived over the bridge, and
+      // re-arming would let the same peer re-poison the fresh bootstrap.
+      if (tabBridgeQuarantinedRef.current) return;
+      const principal = cloudPrincipalFromActorLabel(liveRuntime.actorLabel);
+      if (tabBridge && tabBridgePrincipal === principal) return;
+      tabBridge?.dispose();
+      tabBridge = null;
+      tabBridgePrincipal = null;
+      tabBridge = createCloudNotebookTabBridge({
+        notebookId: config.notebookId,
+        principal,
+        engine: liveRuntime.engine,
+        handle: liveRuntime.handle,
+      });
+      tabBridgePrincipal = tabBridge ? principal : null;
     };
     // Arm (or re-arm) the persistence save loop for the runtime's CURRENT
     // principal. Same-principal reconnects keep the controller; a principal
@@ -627,10 +673,14 @@ export function useCloudViewerSession({
         // matching the armed one — a mismatched record would be re-stamped,
         // which dedupe must not suppress.
         const seedMeta = liveRuntime.persistenceSeedMeta;
-        const seedSavedHeadsHex =
-          !notebookPersistenceEverArmed && seedMeta?.principal === principal
-            ? seedMeta.headsHex
-            : undefined;
+        const seedTrusted = !notebookPersistenceEverArmed && seedMeta?.principal === principal;
+        const seedSavedHeadsHex = seedTrusted ? seedMeta?.headsHex : undefined;
+        // The chunk inventory rides the same gate: it is only
+        // compaction-deletable while the seeded bytes are the ones in
+        // storage and stamped with the armed principal. The store epoch
+        // travels with it (chunk-seeded sessions only).
+        const seedChunks = seedTrusted ? liveRuntime.persistenceSeedChunks : undefined;
+        const seedGeneration = seedChunks ? seedMeta?.generation : undefined;
         notebookPersistence = createCloudNotebookPersistence({
           adapter: persistenceAdapter,
           notebookId: config.notebookId,
@@ -638,6 +688,8 @@ export function useCloudViewerSession({
           engine: liveRuntime.engine,
           handle: liveRuntime.handle,
           seedSavedHeadsHex,
+          seedChunks,
+          seedGeneration,
           onError: (error) => console.warn("[notebook-cloud] notebook persistence error", error),
         });
         if (notebookPersistence !== null) {
@@ -858,15 +910,22 @@ export function useCloudViewerSession({
     const instantPaintFresh = () => !disposed && !liveMaterializedRef.current;
     const paintFromPersistedSnapshot = async () => {
       if (!persistenceAdapter) return;
+      // Pre-handshake principal gate from locally stored auth material;
+      // null (no derivable principal) skips the paint. Shared with the
+      // storage bindings, which use it to pick the matching principal's
+      // chunk sub-range.
+      const instantPaintMatcher = cloudInstantPaintPrincipalMatcher(authState, { hasAppSession });
       await runCloudInstantPaint({
         resolveHandle: () =>
           resolveCloudInstantPaintHandle({
-            // Pre-handshake principal gate from locally stored auth
-            // material; null (no derivable principal) skips the paint.
-            matchesPrincipal: cloudInstantPaintPrincipalMatcher(authState, { hasAppSession }),
+            matchesPrincipal: instantPaintMatcher,
             // Record bindings — including that the corrupt-cache clear
             // targets ONLY the runtime-state-cache record, never the seed.
-            ...cloudInstantPaintStorageOptions(persistenceAdapter, config.notebookId),
+            ...cloudInstantPaintStorageOptions(
+              persistenceAdapter,
+              config.notebookId,
+              instantPaintMatcher,
+            ),
             loadRenderHandle: (notebookBytes, runtimeStateBytes) =>
               loadRenderSnapshotHandle(
                 notebookBytes,
@@ -1025,6 +1084,12 @@ export function useCloudViewerSession({
               return;
             }
             const reason = new Error(`Room rejected sync frame: ${message.reason}`);
+            // Escalation means in-place resync could not converge — the
+            // refused changes are IN the doc. One plausible arrival path
+            // is the cross-tab bridge (sender-asserted principal), so
+            // disable it for the rest of the session; legitimate tabs
+            // converge through the room instead.
+            tabBridgeQuarantinedRef.current = true;
             const seededRuntime = liveRuntime?.seededFromPersistence === true;
             if (persistenceSeed && shouldDiscardPersistedSeedOnRejection(message, seededRuntime)) {
               // Poison pill: the record replays changes the room will not
@@ -1063,6 +1128,7 @@ export function useCloudViewerSession({
         liveRuntimeRef.current = liveRuntime;
         installCloudWidgetCommWriter(liveRuntime);
         armPersistence(liveRuntime);
+        armTabBridge(liveRuntime);
         // Anonymous sessions are out of scope for offline-merge surfacing
         // (per-connection principals; persistence never arms for them).
         offlineMergeTracker.noteSessionEligibility(
@@ -1095,8 +1161,10 @@ export function useCloudViewerSession({
             stopCursorDispatch();
             stopCursorDispatch = startCursorDispatch(liveRuntime.peerId);
             // The persistence principal follows the latest identity;
-            // same-principal reconnects keep the controller.
+            // same-principal reconnects keep the controller. The tab
+            // bridge follows the same identity rule.
             armPersistence(liveRuntime);
+            armTabBridge(liveRuntime);
             // Re-resolution can change the principal mid-session; the
             // offline-merge eligibility follows the latest identity too.
             offlineMergeTracker.noteSessionEligibility(

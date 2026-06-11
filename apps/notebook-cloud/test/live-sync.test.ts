@@ -25,6 +25,7 @@ import {
   withReadyTimeout,
   type CloudConnectTarget,
   type CloudWebSocketTransportOptions,
+  type PersistedCloudNotebookSeed,
 } from "../viewer/live-sync.ts";
 import { FrameType, LIVENESS_PING, LIVENESS_PONG } from "../src/protocol.ts";
 
@@ -245,6 +246,51 @@ describe("cloud live sync", () => {
     }
 
     assert.equal(warnings.length, 1);
+  });
+
+  it("forwards the cross-tab bridge exports, tolerating bundles without them", () => {
+    const base = {
+      receive_frame: () => [],
+      flush_local_changes: () => undefined,
+      cancel_last_flush: () => undefined,
+      flush_runtime_state_sync: () => undefined,
+      cancel_last_runtime_state_flush: () => undefined,
+      generate_runtime_state_sync_reply: () => undefined,
+      flush_comms_doc_sync: () => undefined,
+      cancel_last_comms_doc_flush: () => undefined,
+      generate_comms_doc_sync_reply: () => undefined,
+      reset_sync_state: () => undefined,
+      cell_count: () => 0,
+      get_heads_hex: () => [],
+      get_dependency_fingerprint: () => undefined,
+      resolve_comm_state: () => undefined,
+    };
+
+    // Current bundle: engine.applyLocalPeerChanges must reach the WASM
+    // apply through the wrapper (regression: an unforwarded export would
+    // silently drop every peer-tab message in production).
+    const applied: Uint8Array[] = [];
+    const withExports = syncableCloudHandle({
+      ...base,
+      apply_change_bytes: (bytes: Uint8Array) => {
+        applied.push(bytes);
+        return { type: "sync_applied", changed: true };
+      },
+      save_since_heads: (headsHex: string[]) => new Uint8Array([headsHex.length]),
+    } as unknown as Parameters<typeof syncableCloudHandle>[0]);
+    assert.deepEqual(withExports.apply_change_bytes?.(new Uint8Array([7])), {
+      type: "sync_applied",
+      changed: true,
+    });
+    assert.deepEqual(applied, [new Uint8Array([7])]);
+    assert.deepEqual(withExports.save_since_heads?.(["a", "b"]), new Uint8Array([2]));
+
+    // Older deployed bundle: the optional surface stays absent.
+    const withoutExports = syncableCloudHandle(
+      base as unknown as Parameters<typeof syncableCloudHandle>[0],
+    );
+    assert.equal(withoutExports.apply_change_bytes, undefined);
+    assert.equal(withoutExports.save_since_heads, undefined);
   });
 
   it("derives the connection principal from the actor label", () => {
@@ -550,7 +596,7 @@ describe("cloud persisted-seed handle resolution", () => {
     };
   }
 
-  function createHarness(record: PersistedNotebookDoc | undefined) {
+  function createHarness(record: PersistedCloudNotebookSeed | undefined) {
     const calls: string[] = [];
     const loadedBytes: Uint8Array[] = [];
     return {
@@ -559,8 +605,8 @@ describe("cloud persisted-seed handle resolution", () => {
       options: {
         actorLabel: ACTOR_LABEL,
         persistence: {
-          loadPersisted: async () => {
-            calls.push("loadPersisted");
+          loadPersisted: async (principal: string) => {
+            calls.push(`loadPersisted:${principal}`);
             return record;
           },
           clear: async () => {
@@ -620,7 +666,7 @@ describe("cloud persisted-seed handle resolution", () => {
     const resolved = await resolveCloudNotebookHandle(harness.options);
 
     assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "bootstrap" });
-    assert.deepEqual(harness.calls, ["loadPersisted", "createBootstrap"]);
+    assert.deepEqual(harness.calls, ["loadPersisted:user:dev:alice", "createBootstrap"]);
   });
 
   it("seeds from persisted bytes when the principal matches", async () => {
@@ -639,8 +685,20 @@ describe("cloud persisted-seed handle resolution", () => {
         schemaVersion: 1,
       },
     });
-    assert.deepEqual(harness.calls, ["loadPersisted", "loadFromBytes"]);
+    assert.deepEqual(harness.calls, ["loadPersisted:user:dev:alice", "loadFromBytes"]);
     assert.deepEqual(harness.loadedBytes, [new Uint8Array([7, 8, 9])]);
+  });
+
+  it("threads the chunk inventory through to the seeded result", async () => {
+    const record = persistedRecord("user:dev:alice");
+    const chunks = [
+      { key: ["nb-1", "chunks", "snapshot", "aa"], size: 3, kind: "snapshot" as const },
+    ];
+    const harness = createHarness({ ...record, chunks });
+    const resolved = await resolveCloudNotebookHandle(harness.options);
+
+    assert.equal(resolved.outcome, "seeded");
+    assert.deepEqual(resolved.seedChunks, chunks);
   });
 
   it("clears the record and bootstraps on principal mismatch", async () => {
@@ -648,7 +706,7 @@ describe("cloud persisted-seed handle resolution", () => {
     const resolved = await resolveCloudNotebookHandle(harness.options);
 
     assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "cleared" });
-    assert.deepEqual(harness.calls, ["loadPersisted", "clear", "createBootstrap"]);
+    assert.deepEqual(harness.calls, ["loadPersisted:user:dev:alice", "clear", "createBootstrap"]);
   });
 
   it("clears the record and bootstraps when meta is missing or corrupt", async () => {
@@ -656,7 +714,7 @@ describe("cloud persisted-seed handle resolution", () => {
     const resolved = await resolveCloudNotebookHandle(harness.options);
 
     assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "cleared" });
-    assert.deepEqual(harness.calls, ["loadPersisted", "clear", "createBootstrap"]);
+    assert.deepEqual(harness.calls, ["loadPersisted:user:dev:alice", "clear", "createBootstrap"]);
   });
 
   it("clears the record and bootstraps when a torn envelope has no bytes", async () => {
@@ -665,7 +723,7 @@ describe("cloud persisted-seed handle resolution", () => {
     const resolved = await resolveCloudNotebookHandle(harness.options);
 
     assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "cleared" });
-    assert.deepEqual(harness.calls, ["loadPersisted", "clear", "createBootstrap"]);
+    assert.deepEqual(harness.calls, ["loadPersisted:user:dev:alice", "clear", "createBootstrap"]);
   });
 
   it("clears the record and bootstraps when the persisted bytes fail to load", async () => {
@@ -678,14 +736,19 @@ describe("cloud persisted-seed handle resolution", () => {
     const resolved = await withSilencedWarnings(() => resolveCloudNotebookHandle(harness.options));
 
     assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "cleared" });
-    assert.deepEqual(harness.calls, ["loadPersisted", "loadFromBytes", "clear", "createBootstrap"]);
+    assert.deepEqual(harness.calls, [
+      "loadPersisted:user:dev:alice",
+      "loadFromBytes",
+      "clear",
+      "createBootstrap",
+    ]);
   });
 
   it("fails open as read_failed without clearing when the storage read fails", async () => {
     const harness = createHarness(undefined);
     harness.options.persistence = {
-      loadPersisted: async () => {
-        harness.calls.push("loadPersisted");
+      loadPersisted: async (principal: string) => {
+        harness.calls.push(`loadPersisted:${principal}`);
         throw new Error("indexedDB unavailable mid-session");
       },
       clear: async () => {
@@ -696,14 +759,14 @@ describe("cloud persisted-seed handle resolution", () => {
     const resolved = await withSilencedWarnings(() => resolveCloudNotebookHandle(harness.options));
 
     assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "read_failed" });
-    assert.deepEqual(harness.calls, ["loadPersisted", "createBootstrap"]);
+    assert.deepEqual(harness.calls, ["loadPersisted:user:dev:alice", "createBootstrap"]);
   });
 
   it("fails open as read_failed when the storage read never settles", async () => {
     const harness = createHarness(undefined);
     harness.options.persistence = {
-      loadPersisted: () => {
-        harness.calls.push("loadPersisted");
+      loadPersisted: (principal: string) => {
+        harness.calls.push(`loadPersisted:${principal}`);
         return new Promise(() => undefined); // hung IDB open
       },
       clear: async () => {
@@ -716,7 +779,7 @@ describe("cloud persisted-seed handle resolution", () => {
     );
 
     assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "read_failed" });
-    assert.deepEqual(harness.calls, ["loadPersisted", "createBootstrap"]);
+    assert.deepEqual(harness.calls, ["loadPersisted:user:dev:alice", "createBootstrap"]);
   });
 
   it("still bootstraps when clearing a rejected record fails", async () => {
@@ -729,7 +792,7 @@ describe("cloud persisted-seed handle resolution", () => {
     const resolved = await withSilencedWarnings(() => resolveCloudNotebookHandle(harness.options));
 
     assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "cleared" });
-    assert.deepEqual(harness.calls, ["loadPersisted", "clear", "createBootstrap"]);
+    assert.deepEqual(harness.calls, ["loadPersisted:user:dev:alice", "clear", "createBootstrap"]);
   });
 
   it("discards the persisted seed only for seeded sessions hitting sync rejections", () => {
