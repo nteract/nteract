@@ -39,12 +39,16 @@ import {
 import { materializeCloudNotebookView } from "./cloud-view-model";
 import { CloudLivePresenceStore } from "./live-presence";
 import {
+  CloudRecoverableRejectionTracker,
   cloudPrincipalFromActorLabel,
   connectCloudSyncRuntime,
+  createCloudConnectTarget,
+  discardPersistedSeedAfterTeardown,
   isAnonymousCloudPrincipal,
   isRecoverableCloudFrameRejection,
   shouldDiscardPersistedSeedOnRejection,
   type CloudSyncRuntime,
+  type CloudWebSocketTransport,
 } from "./live-sync";
 import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
@@ -151,6 +155,10 @@ export function useCloudViewerSession({
   // Set when a seeded session's replayed changes were rejected by the room:
   // the next connect attempt must bootstrap (survives the effect re-run).
   const skipSeedOnceRef = useRef(false);
+  // The escalation's dispose-flush → clear chain (never rejects). The next
+  // attempt's persistence arming awaits it (clear-then-arm), so a
+  // straggling clear can never delete a fresh attempt's first record.
+  const pendingSeedDiscardRef = useRef<Promise<void>>(Promise.resolve());
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
   const outputResolutionCacheRef = useRef(createOutputResolutionCache());
   const incrementalOutputCacheRef = useRef(new Map<string, NotebookStoreJupyterOutput>());
@@ -381,11 +389,18 @@ export function useCloudViewerSession({
     let materializeSequence = 0;
     let livePresenceStore: CloudLivePresenceStore | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    const sessionId = mintSessionId();
+    let pendingTransport: CloudWebSocketTransport | null = null;
+    // Recoverable sync rejections on the CURRENT connection (reset on each
+    // cloud_room_ready): the first recovers in place, pipelined rejections
+    // that cannot have observed the resync absorb, a post-resync repeat
+    // escalates.
+    const rejectionTracker = new CloudRecoverableRejectionTracker();
+    let ranConnectionDiagnostics = false;
     // Local-first persistence is fail-open: no IndexedDB (private mode,
     // SSR) means no adapter and the session runs exactly as before.
     const persistenceAdapter = IndexedDbStorageAdapter.create();
     let notebookPersistence: NotebookDocPersistence | null = null;
+    let notebookPersistencePrincipal: string | null = null;
     const persistenceSeed = persistenceAdapter
       ? {
           loadPersisted: () => loadPersistedNotebookDoc(persistenceAdapter, config.notebookId),
@@ -425,6 +440,11 @@ export function useCloudViewerSession({
       if (!liveRuntime) return Promise.resolve();
       liveRuntimeRef.current = null;
       setCrdtCommWriter(null);
+      // Invalidate in-flight materializations before the handle is freed —
+      // their shouldContinue/sequence guards trip instead of touching a
+      // freed handle (the unmount path gets this from the disposed flag;
+      // mid-effect escalation teardowns need it here).
+      materializeSequence += 1;
       // Capture unsaved persistence state before the handle is freed —
       // flushNow reads the snapshot bytes synchronously, and dispose()
       // guarantees no later capture touches the freed handle. The returned
@@ -432,12 +452,80 @@ export function useCloudViewerSession({
       const teardownFlush = notebookPersistence?.flushNow() ?? Promise.resolve();
       notebookPersistence?.dispose();
       notebookPersistence = null;
+      notebookPersistencePrincipal = null;
       disposeCloudSyncRuntime(liveRuntime);
       return teardownFlush;
     };
+    // Arm (or re-arm) the persistence save loop for the runtime's CURRENT
+    // principal. Same-principal reconnects keep the controller; a principal
+    // change (auth re-resolution yielded a different account) recreates it
+    // so the envelope is never stamped with the wrong principal.
+    const armPersistence = (liveRuntime: CloudSyncRuntime) => {
+      if (!persistenceAdapter) return;
+      // A failed seed read leaves an unread record (possibly the only copy
+      // of offline edits) in place — never arm the save loop that would
+      // overwrite it, for the whole life of this runtime.
+      if (liveRuntime.persistenceSeedOutcome === "read_failed") return;
+      const principal = cloudPrincipalFromActorLabel(liveRuntime.actorLabel);
+      if (notebookPersistence && notebookPersistencePrincipal === principal) return;
+      notebookPersistence?.dispose();
+      notebookPersistence = null;
+      notebookPersistencePrincipal = null;
+      // Anonymous principals are per-connection: their records can never
+      // seed and would only churn storage.
+      if (isAnonymousCloudPrincipal(principal)) return;
+      // Strict clear-then-arm: a previous escalation's dispose-flush → clear
+      // chain (never rejects) must settle before this attempt writes its
+      // first record, or the straggling clear could delete it.
+      void pendingSeedDiscardRef.current.then(() => {
+        if (disposed || liveRuntimeRef.current !== liveRuntime) return;
+        if (notebookPersistence && notebookPersistencePrincipal === principal) return;
+        // Snapshot the raw NotebookHandle (full NotebookDoc bytes) on every
+        // doc change; the controller throttles, self-disables after repeated
+        // failures, and never throws into the session.
+        notebookPersistence = new NotebookDocPersistence({
+          adapter: persistenceAdapter,
+          notebookId: config.notebookId,
+          principal,
+          changes$: liveRuntime.engine.notebookDocChanged$,
+          getSaveBytes: () => liveRuntime.handle.save(),
+          getHeadsHex: () => liveRuntime.handle.get_heads_hex(),
+          onError: (error) => console.warn("[notebook-cloud] notebook persistence error", error),
+        });
+        notebookPersistencePrincipal = principal;
+      });
+    };
+    // Transport-level connection losses are informational: the transport
+    // owns the retry loop, the preserved handle keeps unflushed local
+    // edits, and the rendered projections stay in place until the room
+    // re-syncs. No teardown here.
+    const handleConnectionLost = (reason: Error) => {
+      if (disposed) return;
+      console.warn("[notebook-cloud] live room connection lost; transport is reconnecting", reason);
+      presenceStore.reduceConnection("disconnected");
+      setConnectionError(reason.message);
+      if (!liveRuntimeRef.current && !ranConnectionDiagnostics) {
+        // First pre-ready failure: surface an actionable access diagnosis
+        // while the retry loop keeps running in the background.
+        ranConnectionDiagnostics = true;
+        void diagnoseCloudConnectionAccess({
+          accessRequestsEndpoint: config.accessRequestsEndpoint,
+          authState,
+          hasAppSession,
+        })
+          .then((diagnostic) => {
+            if (disposed || !diagnostic) return;
+            setConnectionError(diagnostic);
+          })
+          .catch(() => undefined);
+      }
+    };
+    // Escalation-only teardown (repeated sync rejections): dispose the
+    // runtime and re-run the effect with a fresh handle. Transport-level
+    // drops never come through here anymore.
     const scheduleReconnect = (reason: Error) => {
       if (disposed) return;
-      console.warn("[notebook-cloud] live room connection closed", reason);
+      console.warn("[notebook-cloud] live room session teardown; reconnecting", reason);
       presenceStore.reduceConnection("disconnected");
       setConnectionScope(null);
       setConnectionActorLabel(null);
@@ -447,6 +535,9 @@ export function useCloudViewerSession({
       // clears it through the workstation$ projection.
       resetRuntimeState();
       disposeCurrentRuntime();
+      // An in-flight connect (no runtime yet) owns a live transport too.
+      pendingTransport?.disconnect();
+      pendingTransport = null;
       if (reconnectTimer) return;
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
@@ -571,68 +662,96 @@ export function useCloudViewerSession({
     setConnectionError(null);
     setConnectionActorLabel(null);
     setConnectionPeerId(null);
-    void (async () =>
-      connectCloudSyncRuntime({
+    connectCloudSyncRuntime({
+      // Per-attempt target: re-resolves auth and mints a fresh operator
+      // nonce on every retry (see createCloudConnectTarget).
+      connectTarget: createCloudConnectTarget({
         syncEndpoint: config.syncEndpoint,
-        runtimedWasmModulePath: config.runtimedWasmModulePath,
-        runtimedWasmPath: config.runtimedWasmPath,
-        sessionId,
-        auth: resolveSyncAuth
-          ? await resolveSyncAuth(sessionId)
-          : cloudSyncAuthFromPrototypeAuthState(authState),
-        persistence: skipSeedOnThisAttempt ? undefined : persistenceSeed,
-        onDisconnect: scheduleReconnect,
-        onControl: (message) => {
-          if (disposed) return;
-          if (
-            message.type === "cloud_room_ready" ||
-            message.type === "cloud_peer_joined" ||
-            message.type === "cloud_peer_left"
-          ) {
-            presenceStore.reduceMessage(message);
-          }
-          if (message.type === "cloud_room_ready") {
-            markCloudViewerLoadMilestone("live-room-ready");
-            setConnectionError(null);
-            setConnectionScope(message.connection_scope);
-            setConnectionActorLabel(message.actor_label);
-          }
-          if (message.type === "cloud_frame_rejected") {
-            if (isRecoverableCloudFrameRejection(message)) {
-              const reason = new Error(`Room rejected sync frame: ${message.reason}`);
-              setStatus({
-                kind: "loading",
-                message: "Resynchronizing live notebook room after a rejected sync frame...",
-              });
-              const seededRuntime = liveRuntimeRef.current?.seededFromPersistence === true;
-              if (
-                persistenceSeed &&
-                shouldDiscardPersistedSeedOnRejection(message, seededRuntime)
-              ) {
-                // Poison pill: the record replays changes the room will not
-                // accept; reseeding it would loop forever. Dispose FIRST —
-                // teardown's flushNow re-writes the record with the rejected
-                // changes — then clear once that write has settled, and
-                // bootstrap the next attempt. The rejected changes are
-                // unauthorized; losing them is the intended outcome.
-                skipSeedOnceRef.current = true;
-                disposeCurrentRuntime()
-                  .catch(() => undefined)
-                  .then(() => persistenceSeed.clear())
-                  .catch((error: unknown) =>
-                    console.warn(
-                      "[notebook-cloud] failed to clear rejected persisted NotebookDoc record",
-                      error,
-                    ),
-                  );
-              }
-              scheduleReconnect(reason);
+        resolveAuth: (attemptSessionId) =>
+          resolveSyncAuth
+            ? resolveSyncAuth(attemptSessionId)
+            : cloudSyncAuthFromPrototypeAuthState(authState),
+      }),
+      runtimedWasmModulePath: config.runtimedWasmModulePath,
+      runtimedWasmPath: config.runtimedWasmPath,
+      persistence: skipSeedOnThisAttempt ? undefined : persistenceSeed,
+      onConnectionLost: handleConnectionLost,
+      onTransportCreated: (transport) => {
+        pendingTransport = transport;
+      },
+      onControl: (message) => {
+        if (disposed) return;
+        if (
+          message.type === "cloud_room_ready" ||
+          message.type === "cloud_peer_joined" ||
+          message.type === "cloud_peer_left"
+        ) {
+          presenceStore.reduceMessage(message);
+        }
+        if (message.type === "cloud_room_ready") {
+          markCloudViewerLoadMilestone("live-room-ready");
+          rejectionTracker.reset(); // fresh connection, fresh strike count
+          setConnectionError(null);
+          setConnectionScope(message.connection_scope);
+          setConnectionActorLabel(message.actor_label);
+        }
+        if (message.type === "cloud_frame_rejected") {
+          if (isRecoverableCloudFrameRejection(message)) {
+            const liveRuntime = liveRuntimeRef.current;
+            const disposition = rejectionTracker.record(liveRuntime !== null);
+            if (disposition === "absorb") {
+              // Pipelined rejection: it cannot have observed the in-flight
+              // strike-1 resync (several AUTOMERGE_SYNC frames are routinely
+              // outstanding and acks carry no id) — same divergence event.
               return;
             }
-            setStatus({ kind: "error", message: `Room rejected a frame: ${message.reason}` });
+            setStatus({
+              kind: "loading",
+              message: "Resynchronizing live notebook room after a rejected sync frame...",
+            });
+            if (disposition === "resync_in_place" && liveRuntime) {
+              // First strike: sync state diverged from the room — reset and
+              // resync on the live connection, no teardown. The strike only
+              // clears once the resync's outbound flush has actually been
+              // delivered, so only rejections that could have observed it
+              // count toward escalation.
+              liveRuntime.engine.resetAndResync();
+              void liveRuntime.engine
+                .flushAndWait()
+                .catch(() => undefined)
+                .then(() => rejectionTracker.resyncSettled());
+              return;
+            }
+            const reason = new Error(`Room rejected sync frame: ${message.reason}`);
+            const seededRuntime = liveRuntime?.seededFromPersistence === true;
+            if (persistenceSeed && shouldDiscardPersistedSeedOnRejection(message, seededRuntime)) {
+              // Poison pill: the record replays changes the room will not
+              // accept; reseeding it would loop forever. Dispose FIRST —
+              // teardown's flushNow re-writes the record with the rejected
+              // changes — then clear once that write has settled, and
+              // bootstrap the next attempt. The rejected changes are
+              // unauthorized; losing them is the intended outcome. The chain
+              // is stashed so the next attempt arms strictly clear-then-arm.
+              skipSeedOnceRef.current = true;
+              pendingSeedDiscardRef.current = discardPersistedSeedAfterTeardown(
+                disposeCurrentRuntime,
+                persistenceSeed.clear,
+              );
+            } else if (!liveRuntime) {
+              // A rejection before the runtime resolved means the in-flight
+              // bootstrap flush was refused. We cannot tell from here
+              // whether that attempt was seeded, so bootstrap the next one
+              // either way — a non-seeded attempt bootstraps identically,
+              // and a healthy record is re-persisted after convergence.
+              skipSeedOnceRef.current = true;
+            }
+            scheduleReconnect(reason);
+            return;
           }
-        },
-      }))()
+          setStatus({ kind: "error", message: `Room rejected a frame: ${message.reason}` });
+        }
+      },
+    })
       .then((liveRuntime) => {
         if (disposed) {
           disposeCloudSyncRuntime(liveRuntime);
@@ -640,38 +759,37 @@ export function useCloudViewerSession({
         }
         liveRuntimeRef.current = liveRuntime;
         installCloudWidgetCommWriter(liveRuntime);
-        const persistencePrincipal = cloudPrincipalFromActorLabel(liveRuntime.actorLabel);
-        if (
-          persistenceAdapter &&
-          // A failed seed read leaves an unread record (possibly the only
-          // copy of offline edits) in place — never arm the save loop that
-          // would overwrite it.
-          liveRuntime.persistenceSeedOutcome !== "read_failed" &&
-          // Anonymous principals are per-connection: their records can
-          // never seed and would only churn storage.
-          !isAnonymousCloudPrincipal(persistencePrincipal)
-        ) {
-          // Snapshot the raw NotebookHandle (full NotebookDoc bytes) on
-          // every doc change; the controller throttles, self-disables after
-          // repeated failures, and never throws into the session.
-          notebookPersistence = new NotebookDocPersistence({
-            adapter: persistenceAdapter,
-            notebookId: config.notebookId,
-            principal: persistencePrincipal,
-            changes$: liveRuntime.engine.notebookDocChanged$,
-            getSaveBytes: () => liveRuntime.handle.save(),
-            getHeadsHex: () => liveRuntime.handle.get_heads_hex(),
-            onError: (error) => console.warn("[notebook-cloud] notebook persistence error", error),
-          });
-        }
+        armPersistence(liveRuntime);
         const stopWidgetLiveRuntimeDiagnostics =
           installCloudWidgetLiveRuntimeDiagnostics(liveRuntime);
         setConnectionScope(liveRuntime.connectionScope);
         setConnectionActorLabel(liveRuntime.actorLabel);
         setConnectionPeerId(liveRuntime.peerId);
         livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
-        const stopCursorDispatch = startCursorDispatch(liveRuntime.peerId);
+        let stopCursorDispatch = startCursorDispatch(liveRuntime.peerId);
         subscriptions = [
+          // Transport-level reconnects preserve the handle, engine,
+          // subscriptions, and store projections; only per-connection state
+          // is re-established here.
+          liveRuntime.transport.roomReady$.subscribe((ready) => {
+            if (disposed || liveRuntimeRef.current !== liveRuntime) return;
+            // applyRoomReady runs the synchronous re-establish (set_actor +
+            // resetForBootstrap + resetAndResync) — it must complete before
+            // this tick yields, ahead of the new connection's first sync
+            // frame. Everything after it is async-safe.
+            if (!liveRuntime.applyRoomReady(ready)) return;
+            setConnectionError(null);
+            setConnectionScope(liveRuntime.connectionScope);
+            setConnectionActorLabel(liveRuntime.actorLabel);
+            setConnectionPeerId(liveRuntime.peerId);
+            // Presence identity is per-connection (server-assigned peer id).
+            livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
+            stopCursorDispatch();
+            stopCursorDispatch = startCursorDispatch(liveRuntime.peerId);
+            // The persistence principal follows the latest identity;
+            // same-principal reconnects keep the controller.
+            armPersistence(liveRuntime);
+          }),
           liveRuntime.engine.broadcasts$.subscribe((payload) => {
             emitBroadcast(payload);
           }),
@@ -716,7 +834,7 @@ export function useCloudViewerSession({
           liveRuntime.engine.poolState$.subscribe((state) => {
             setPoolState(state);
           }),
-          { unsubscribe: stopCursorDispatch },
+          { unsubscribe: () => stopCursorDispatch() },
           { unsubscribe: stopWidgetLiveRuntimeDiagnostics },
         ];
         liveRuntime.engine.reProjectComms();
@@ -768,6 +886,10 @@ export function useCloudViewerSession({
       document.removeEventListener("visibilitychange", flushPersistenceWhenHidden);
       materializeLiveRuntimeRef.current = null;
       const teardownFlush = disposeCurrentRuntime();
+      // An in-flight connect (runtime not yet resolved) owns a transport
+      // whose retry loop would otherwise run forever after unmount.
+      pendingTransport?.disconnect();
+      pendingTransport = null;
       if (persistenceAdapter) {
         // Connection hygiene across reconnect cycles: close the cached IDB
         // connection once the teardown write has committed. Adapter ops
@@ -831,27 +953,6 @@ function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
   liveRuntime.engine.stop();
   liveRuntime.transport.disconnect();
   liveRuntime.handle.free();
-}
-
-/**
- * Mint the per-connect-attempt session id.
- *
- * Load-bearing for actor uniqueness: the worker derives the anonymous
- * principal and the `browser:<sessionId>` operator nonce from this value
- * and only rewrites the principal segment, so a collision would reuse an
- * actor label across doc instances (DuplicateSeqNumber). The fallbacks
- * for environments without crypto.randomUUID must stay collision-resistant
- * — never a bare timestamp.
- */
-function mintSessionId(): string {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-    const bytes = crypto.getRandomValues(new Uint8Array(16));
-    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function recordCloudWidgetCommChangesDiagnostic(
