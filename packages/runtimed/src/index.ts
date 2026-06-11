@@ -48,17 +48,23 @@ export {
 // Reactive runtime-state store (framework-agnostic RxJS projections)
 export { BUSY_THROTTLE_MS, RuntimeStateStore, throttleBusyStatus } from "./runtime-state-store";
 
-// Local-first persistence (NotebookDoc bytes only; see notebookDocChanged$)
+// Local-first persistence: the NotebookDoc seed record plus the render-only
+// RuntimeStateDoc paint cache (see notebookDocChanged$ and the key-segment
+// docs in notebook-doc-persistence.ts)
 export {
   IndexedDbStorageAdapter,
   type IndexedDbStorageAdapterOptions,
 } from "./persistence/indexeddb-storage-adapter";
 export {
+  NOTEBOOK_DOC_SNAPSHOT_KEY_SEGMENT,
   NotebookDocPersistence,
+  RUNTIME_STATE_CACHE_KEY_SEGMENT,
   clearPersistedNotebookDoc,
+  clearPersistedNotebookRecord,
   decodePersistedNotebookDoc,
   encodePersistedNotebookDoc,
   loadPersistedNotebookDoc,
+  loadPersistedNotebookRecord,
   type NotebookDocPersistenceLogger,
   type NotebookDocPersistenceMeta,
   type NotebookDocPersistenceOptions,

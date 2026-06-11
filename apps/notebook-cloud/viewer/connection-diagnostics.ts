@@ -1,4 +1,5 @@
 import { withCloudPrototypeAuthHeaders, type CloudPrototypeAuthState } from "./collaborator-auth";
+import { isRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
 import type { CloudNotebookAccessRequest } from "./sharing-client";
 
 export const CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC = "Sign in again to open this notebook.";
@@ -8,6 +9,20 @@ export const CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC =
   "Edit access is waiting for owner approval.";
 export const CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC =
   "Edit access was approved. Reconnect to open the live notebook room with editor access.";
+
+/**
+ * Whether an access diagnostic may replace the current connection error.
+ *
+ * Terminal runtimed-WASM asset failures own the connection notice: their
+ * Retry affordance is the documented re-entry (the wasm client clears its
+ * caches on rejection, so the retry genuinely re-imports), and an access
+ * diagnostic resolving around the same time (sign-in, pending edit access)
+ * must not overwrite it — auth-flavored copy and actions cannot fix a
+ * failed WASM load.
+ */
+export function cloudConnectionErrorAcceptsAccessDiagnostic(message: string): boolean {
+  return !isRuntimedWasmAssetFailure(message);
+}
 
 export interface DiagnoseCloudConnectionAccessOptions {
   accessRequestsEndpoint: string;
