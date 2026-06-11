@@ -25,7 +25,7 @@ export function autoWidth(name: string, colType: ColumnType): number {
     case "boolean":
       return Math.max(90, Math.ceil(labelW));
     case "timestamp":
-      return Math.max(130, Math.ceil(labelW));
+      return Math.max(170, Math.ceil(labelW));
     case "numeric":
       return Math.max(100, Math.ceil(labelW));
     case "categorical":

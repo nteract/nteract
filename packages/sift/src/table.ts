@@ -1262,6 +1262,7 @@ export function createTable(
       }
 
       const label = document.createElement("span");
+      label.className = "sift-filter-pill-label";
       label.textContent = text;
 
       const closeBtn = document.createElement("button");

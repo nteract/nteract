@@ -5,7 +5,7 @@ describe("autoWidth", () => {
   it("returns minimum width for short column names", () => {
     expect(autoWidth("x", "numeric")).toBeGreaterThanOrEqual(100);
     expect(autoWidth("y", "boolean")).toBeGreaterThanOrEqual(90);
-    expect(autoWidth("z", "timestamp")).toBeGreaterThanOrEqual(130);
+    expect(autoWidth("z", "timestamp")).toBeGreaterThanOrEqual(170);
     expect(autoWidth("a", "categorical")).toBeGreaterThanOrEqual(120);
   });
 
@@ -35,7 +35,7 @@ describe("autoWidth", () => {
 
   it("timestamp columns have highest minimum", () => {
     const tsW = autoWidth("x", "timestamp");
-    expect(tsW).toBeGreaterThanOrEqual(130);
+    expect(tsW).toBeGreaterThanOrEqual(170);
   });
 
   it("handles empty string column name", () => {
@@ -45,6 +45,6 @@ describe("autoWidth", () => {
 
   it("handles unicode column names", () => {
     const width = autoWidth("日付", "timestamp");
-    expect(width).toBeGreaterThanOrEqual(130);
+    expect(width).toBeGreaterThanOrEqual(170);
   });
 });
