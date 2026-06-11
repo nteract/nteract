@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { createCrdtBridge, remoteChangesFromTextAttributions } from "../crdt-editor-bridge";
@@ -122,6 +122,46 @@ describe("createCrdtBridge capability gating", () => {
     await Promise.resolve();
 
     expect(calls).toEqual(["sync", "sync", "store:hello!?"]);
+  });
+
+  it("keeps notifying source changes after the bridge plugin is recreated", async () => {
+    let source = "hello";
+    const calls: string[] = [];
+    const bridge = createCrdtBridge({
+      getHandle: () =>
+        ({
+          splice_source: (
+            _cellId: string,
+            index: number,
+            deleteCount: number,
+            text: string,
+          ) => {
+            source = `${source.slice(0, index)}${text}${source.slice(index + deleteCount)}`;
+            return true;
+          },
+          get_cell_source: () => source,
+        }) as never,
+      cellId: "cell-a",
+      onSourceChanged: (nextSource) => calls.push(`store:${nextSource}`),
+      onSyncNeeded: () => calls.push("sync"),
+    });
+    const bridgeCompartment = new Compartment();
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "hello",
+        extensions: [bridgeCompartment.of(bridge.extension)],
+      }),
+    });
+    views.push(view);
+
+    view.dispatch({ effects: bridgeCompartment.reconfigure([]) });
+    view.dispatch({ effects: bridgeCompartment.reconfigure(bridge.extension) });
+    view.dispatch({ changes: { from: 5, insert: "!" } });
+
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toBe("hello!");
+    expect(calls).toEqual(["sync", "store:hello!"]);
   });
 
   it("drops pending coalesced store updates after imperative source replacement", async () => {

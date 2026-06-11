@@ -241,6 +241,7 @@ function cellsEqual(a: NotebookStoreCell, b: NotebookStoreCell): boolean {
     }
   } else if (a.cell_type === "markdown") {
     const bm = b as typeof a;
+    if (a.markdownProjection !== bm.markdownProjection) return false;
     if (
       !shallowRecordEqual(
         a.resolvedAssets as Record<string, unknown> | undefined,
@@ -266,6 +267,7 @@ function cellChromeEqual(a: NotebookStoreCell, b: NotebookStoreCell): boolean {
 
   if (a.cell_type === "markdown") {
     const bm = b as typeof a;
+    if (a.markdownProjection !== bm.markdownProjection) return false;
     return shallowRecordEqual(
       a.resolvedAssets as Record<string, unknown> | undefined,
       bm.resolvedAssets as Record<string, unknown> | undefined,
