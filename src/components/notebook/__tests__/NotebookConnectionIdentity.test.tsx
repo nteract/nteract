@@ -27,6 +27,23 @@ class FakeStatusSource implements NotebookConnectionStatusSource {
       listener(status);
     }
   }
+
+  get listenerCount(): number {
+    return this.listeners.size;
+  }
+}
+
+/** Source with a snapshot but NO replay on subscribe — isolates getCurrent. */
+class SnapshotOnlyStatusSource implements NotebookConnectionStatusSource {
+  constructor(private readonly value: ConnectionStatus) {}
+
+  getCurrent(): ConnectionStatus {
+    return this.value;
+  }
+
+  subscribe(): { unsubscribe(): void } {
+    return { unsubscribe: () => {} };
+  }
 }
 
 function capabilities(
@@ -77,7 +94,20 @@ function localCapabilities(): NotebookShellCapabilities {
       source: "local",
       actorLabel: "local:kyle/desktop:abc",
       identityLabel: "Kyle",
-      target: { kind: "local_daemon", status: "connected" },
+      target: { kind: "local_daemon", status: "ready", label: "Local daemon" },
+    },
+  });
+}
+
+function runtimePeerCapabilities(): NotebookShellCapabilities {
+  const caps = localCapabilities();
+  return capabilities({
+    ...caps,
+    access: caps.access,
+    runtime: {
+      ...caps.runtime,
+      source: "cloud",
+      target: { kind: "runtime_peer", status: "attached", label: "Cloud room" },
     },
   });
 }
@@ -85,12 +115,13 @@ function localCapabilities(): NotebookShellCapabilities {
 function renderSlot(
   caps: NotebookShellCapabilities,
   status: ConnectionStatus = "online",
-): { container: HTMLElement; source: FakeStatusSource } {
+  props: { connectionLabel?: string } = {},
+): { container: HTMLElement; source: FakeStatusSource; unmount: () => void } {
   const source = new FakeStatusSource(status);
-  const { container } = render(
-    <NotebookConnectionIdentity capabilities={caps} connectionStatus$={source} />,
+  const { container, unmount } = render(
+    <NotebookConnectionIdentity capabilities={caps} connectionStatus$={source} {...props} />,
   );
-  return { container, source };
+  return { container, source, unmount };
 }
 
 function slotElement(container: HTMLElement): HTMLElement {
@@ -105,6 +136,12 @@ function dotElement(container: HTMLElement): HTMLElement {
   return dot!;
 }
 
+function liveRegion(container: HTMLElement): HTMLElement {
+  const region = container.querySelector<HTMLElement>('[aria-live="polite"]');
+  expect(region).not.toBeNull();
+  return region!;
+}
+
 describe("NotebookConnectionIdentity", () => {
   it("renders nothing for a purely local desktop session", () => {
     // Conditionality is the point (#3290): local identity is noise, not chrome.
@@ -113,18 +150,7 @@ describe("NotebookConnectionIdentity", () => {
   });
 
   it("renders for a local session attached to a runtime peer", () => {
-    const caps = localCapabilities();
-    const { container } = renderSlot(
-      capabilities({
-        ...caps,
-        access: caps.access,
-        runtime: {
-          ...caps.runtime,
-          source: "cloud",
-          target: { kind: "runtime_peer", status: "connected" },
-        },
-      }),
-    );
+    const { container } = renderSlot(runtimePeerCapabilities());
     expect(slotElement(container)).toBeTruthy();
   });
 
@@ -141,10 +167,10 @@ describe("NotebookConnectionIdentity", () => {
       const dot = dotElement(container);
 
       expect(slot.dataset.state).toBe(status);
-      expect(dot.className).toContain(tone);
-      expect(dot.className.includes("animate-pulse")).toBe(pulses);
+      expect(dot.classList.contains(tone)).toBe(true);
+      expect(dot.classList.contains("animate-pulse")).toBe(pulses);
       // State expresses as opacity/dot color, never copy: non-online dims.
-      expect(slot.className.includes("opacity-60")).toBe(status !== "online");
+      expect(slot.classList.contains("opacity-60")).toBe(status !== "online");
       // Detail lives in sr-only copy and the title tooltip only.
       expect(slot.title).toContain(label);
       const srOnly = slot.querySelector(".sr-only");
@@ -152,6 +178,18 @@ describe("NotebookConnectionIdentity", () => {
       expect(srOnly?.textContent).toContain("Alice");
     },
   );
+
+  it("scopes the copy to the measured link via connectionLabel", () => {
+    // Desktop measures the daemon link, not daemon<->room health — the
+    // copy must say which link it reports so the dot never overclaims.
+    const { container } = renderSlot(runtimePeerCapabilities(), "online", {
+      connectionLabel: "Daemon connection",
+    });
+    const slot = slotElement(container);
+
+    expect(slot.title).toContain("Daemon connection: Connected");
+    expect(slot.querySelector(".sr-only")?.textContent).toContain("Daemon connection: Connected");
+  });
 
   it("keeps the dot live through a reconnect loop (stale-chrome motivation)", () => {
     // Runtime-state stores are not blanked while the transport reconnects;
@@ -162,43 +200,91 @@ describe("NotebookConnectionIdentity", () => {
 
     act(() => source.next("reconnecting"));
     expect(slotElement(container).dataset.state).toBe("reconnecting");
-    expect(dotElement(container).className).toContain("animate-pulse");
+    expect(dotElement(container).classList.contains("animate-pulse")).toBe(true);
 
     act(() => source.next("online"));
     expect(slotElement(container).dataset.state).toBe("online");
-    expect(dotElement(container).className).toContain("bg-emerald-500");
+    expect(dotElement(container).classList.contains("bg-emerald-500")).toBe(true);
   });
 
-  it("uses the flat quiet treatment, never a raised bubble", () => {
+  it("seeds first paint from getCurrent without waiting for a subscription replay", () => {
+    // SnapshotOnlyStatusSource never replays on subscribe — the rendered
+    // state can only come from the synchronous getCurrent snapshot.
+    const source = new SnapshotOnlyStatusSource("online");
+    const { container } = render(
+      <NotebookConnectionIdentity capabilities={cloudCapabilities()} connectionStatus$={source} />,
+    );
+    expect(slotElement(container).dataset.state).toBe("online");
+  });
+
+  it("announces status CHANGES politely, never the initial state", () => {
+    const { container, source } = renderSlot(cloudCapabilities(), "online", {
+      connectionLabel: "Live room",
+    });
+    // Mounting must not speak.
+    expect(liveRegion(container).textContent).toBe("");
+
+    act(() => source.next("reconnecting"));
+    expect(liveRegion(container).textContent).toBe("Live room: Reconnecting");
+
+    act(() => source.next("online"));
+    expect(liveRegion(container).textContent).toBe("Live room: Connected");
+  });
+
+  it("hides the avatar from the a11y tree so sr-only copy is the accessible text", () => {
+    // Without aria-hidden, SR users would hear "AL Alice — Connected".
+    const { container } = renderSlot(cloudCapabilities());
+    const avatar = container.querySelector('[data-slot="notebook-actor-avatar"]');
+    expect(avatar).not.toBeNull();
+    expect(avatar?.closest('[aria-hidden="true"]')).not.toBeNull();
+
+    const srOnly = slotElement(container).querySelector(".sr-only");
+    expect(srOnly?.closest('[aria-hidden="true"]')).toBeNull();
+  });
+
+  it("unsubscribes from the source on unmount", () => {
+    const { source, unmount } = renderSlot(cloudCapabilities(), "online");
+    expect(source.listenerCount).toBe(1);
+
+    unmount();
+    expect(source.listenerCount).toBe(0);
+    // Late emissions are inert (no listener left to call).
+    source.next("offline");
+  });
+
+  it("uses the flat quiet treatment, never a raised bubble — across the whole subtree", () => {
     const { container } = renderSlot(cloudCapabilities());
     const slot = slotElement(container);
 
-    expect(slot.className).toContain("rounded-md");
-    expect(slot.className).toContain("border-border/70");
-    expect(slot.className).toContain("bg-muted/35");
-    // The pulled designs' raised-bubble look must never come back.
-    expect(slot.className).not.toContain("rounded-full");
-    expect(slot.className).not.toContain("shadow");
+    expect(slot.classList.contains("rounded-md")).toBe(true);
+    expect(slot.classList.contains("border-border/70")).toBe(true);
+    expect(slot.classList.contains("bg-muted/35")).toBe(true);
+    // The pulled designs' raised-bubble look must never come back. The
+    // wrapper must not be a pill (Avatar internals are legitimately
+    // rounded-full), and NOTHING in the subtree may carry a shadow.
+    expect(slot.classList.contains("rounded-full")).toBe(false);
+    for (const element of [slot, ...Array.from(slot.querySelectorAll("*"))]) {
+      for (const token of Array.from(element.classList)) {
+        expect(token.startsWith("shadow")).toBe(false);
+      }
+    }
   });
 
   it("is icon-only at every width: no visible text pill", () => {
     // Collapse-proof by construction — there is no label to truncate.
+    // Clone-and-strip covers the wrapper's own text nodes and every
+    // nesting depth: remove sr-only copy and the avatar initials, then
+    // nothing visible may remain.
     const { container } = renderSlot(cloudCapabilities());
     const slot = slotElement(container);
 
-    const visibleText = Array.from(slot.querySelectorAll("*"))
-      .filter(
-        (element) =>
-          !element.classList.contains("sr-only") &&
-          !element.closest('[data-slot="avatar-fallback"]'),
-      )
-      .flatMap((element) =>
-        Array.from(element.childNodes)
-          .filter((node) => node.nodeType === Node.TEXT_NODE)
-          .map((node) => node.textContent?.trim() ?? ""),
-      )
-      .filter((text) => text.length > 0);
-    expect(visibleText).toEqual([]);
+    const clone = slot.cloneNode(true) as HTMLElement;
+    for (const hidden of Array.from(
+      clone.querySelectorAll('.sr-only, [data-slot="avatar-fallback"]'),
+    )) {
+      hidden.remove();
+    }
+    expect(clone.textContent?.trim()).toBe("");
 
     // The avatar fallback (initials) is the only visible glyph.
     const fallback = slot.querySelector('[data-slot="avatar-fallback"]');
@@ -220,15 +306,6 @@ describe("isRemoteNotebookContext", () => {
   });
 
   it("treats a runtime-peer compute target as remote even with local access", () => {
-    const caps = localCapabilities();
-    expect(
-      isRemoteNotebookContext(
-        capabilities({
-          ...caps,
-          access: caps.access,
-          runtime: { ...caps.runtime, target: { kind: "runtime_peer", status: "connected" } },
-        }),
-      ),
-    ).toBe(true);
+    expect(isRemoteNotebookContext(runtimePeerCapabilities())).toBe(true);
   });
 });

@@ -19,6 +19,10 @@ import {
   type RuntimeLifecycle,
   type RuntimeStatusKey,
 } from "../../lib/kernel-status";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { NotebookConnectionIdentity } from "@/components/notebook";
+import { desktopNotebookShellCapabilities } from "../../lib/desktop-shell-capabilities";
 import { NotebookToolbar } from "../NotebookToolbar";
 
 function makeEnvProgress(overrides: Partial<EnvProgressState>): EnvProgressState {
@@ -622,5 +626,77 @@ describe("NotebookToolbar", () => {
       );
       expect(screen.queryByTestId("conda-env-yml-missing-banner")).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("connection/identity slot wiring", () => {
+  const statusSource = {
+    getCurrent: () => "online" as const,
+    subscribe: () => ({ unsubscribe: () => {} }),
+  };
+
+  it("flows trailingControls into the toolbar identity slot for remote sessions", () => {
+    // Real projection output, not hand-rolled capability literals: the
+    // runtime_peer scope is what makes the slot render on desktop.
+    const capabilities = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:kyle/desktop:window",
+      connectionScope: "runtime_peer",
+    });
+    const { container } = render(
+      <NotebookToolbar
+        {...baseProps}
+        capabilities={capabilities}
+        trailingControls={
+          <NotebookConnectionIdentity
+            capabilities={capabilities}
+            connectionStatus$={statusSource}
+            connectionLabel="Daemon connection"
+          />
+        }
+      />,
+    );
+
+    const slot = container.querySelector('[data-slot="notebook-connection-identity"]');
+    expect(slot).not.toBeNull();
+    expect(slot?.getAttribute("title")).toContain("Daemon connection: Connected");
+  });
+
+  it("renders no identity chrome for a purely local session", () => {
+    const capabilities = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "local:kyle/desktop:window",
+      connectionScope: null,
+    });
+    const { container } = render(
+      <NotebookToolbar
+        {...baseProps}
+        capabilities={capabilities}
+        trailingControls={
+          <NotebookConnectionIdentity
+            capabilities={capabilities}
+            connectionStatus$={statusSource}
+            connectionLabel="Daemon connection"
+          />
+        }
+      />,
+    );
+
+    expect(container.querySelector('[data-slot="notebook-connection-identity"]')).toBeNull();
+  });
+
+  it("App.tsx mounts the slot on the daemon-lifecycle source with scoped copy", () => {
+    // Source-text pin mirroring the cloud guardrail: deleting the desktop
+    // mount, feeding it the IPC transport again, or dropping the scoped
+    // connection label must fail here.
+    // vp test runs from the repo root.
+    const appSource = readFileSync(resolve(process.cwd(), "apps/notebook/src/App.tsx"), "utf8");
+    expect(appSource).toMatch(
+      /trailingControls=\{[\s\S]{0,600}?<NotebookConnectionIdentity[\s\S]{0,200}?capabilities=\{shellCapabilities\}[\s\S]{0,200}?connectionStatus\$=\{desktopConnectionStatus\}[\s\S]{0,200}?connectionLabel="Daemon connection"/,
+    );
+    expect(appSource).toMatch(/createDesktopConnectionStatusSource\(host\.daemonEvents\)/);
+    expect(appSource).not.toMatch(/connectionStatus\$=\{host\.transport\.connectionStatus\$\}/);
   });
 });

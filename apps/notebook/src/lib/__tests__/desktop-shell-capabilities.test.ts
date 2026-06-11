@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { isRemoteNotebookContext } from "@/components/notebook";
 import { desktopNotebookShellCapabilities } from "../desktop-shell-capabilities";
 import { RUNTIME_STATUS } from "../kernel-status";
 
@@ -374,5 +375,35 @@ describe("desktopNotebookShellCapabilities", () => {
       operator: { kind: "agent", label: "Codex" },
       scope: "editor",
     });
+  });
+
+  it("composes with the connection/identity slot gate on REAL projection output", () => {
+    // Drift guard: the slot's isRemoteNotebookContext must keep agreeing
+    // with what desktopNotebookShellCapabilities actually emits — a purely
+    // local session renders no identity chrome (#3290), a server-assigned
+    // scope does.
+    const local = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "local:kyle/desktop:window",
+      connectionScope: null,
+    });
+    expect(isRemoteNotebookContext(local)).toBe(false);
+
+    const runtimePeer = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:kyle/desktop:window",
+      connectionScope: "runtime_peer",
+    });
+    expect(isRemoteNotebookContext(runtimePeer)).toBe(true);
+
+    const cloudScoped = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:kyle/desktop:window",
+      connectionScope: "editor",
+    });
+    expect(isRemoteNotebookContext(cloudScoped)).toBe(true);
   });
 });
