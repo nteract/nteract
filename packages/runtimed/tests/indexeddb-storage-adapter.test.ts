@@ -132,6 +132,55 @@ describe("IndexedDbStorageAdapter", () => {
     expect(opens).not.toHaveBeenCalled();
   });
 
+  it("saveBatch surfaces the failing request's error when the transaction aborts with error: null", async () => {
+    // Async per-request failures (quota aborts) can leave transaction.error
+    // null; the rejection must still name the real cause from the request.
+    const adapter = createAdapter();
+    const quotaError = new DOMException("quota exceeded", "QuotaExceededError");
+    type PutRequest = { error: DOMException | null; onerror: (() => void) | null };
+    type FakeTransaction = {
+      error: DOMException | null;
+      oncomplete: (() => void) | null;
+      onabort: (() => void) | null;
+      onerror: (() => void) | null;
+      objectStore: () => { put: () => PutRequest };
+    };
+    // Warm the connection first: a prototype-level transaction mock would
+    // otherwise break fake-indexeddb's internal versionchange transaction
+    // during open.
+    await adapter.save(["warm"], new Uint8Array([0]));
+
+    let fake: FakeTransaction | null = null;
+    const requests: PutRequest[] = [];
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementationOnce(function () {
+      fake = {
+        error: null,
+        oncomplete: null,
+        onabort: null,
+        onerror: null,
+        objectStore: () => ({
+          put: () => {
+            const request: PutRequest = { error: null, onerror: null };
+            requests.push(request);
+            return request;
+          },
+        }),
+      };
+      return fake as unknown as IDBTransaction;
+    });
+
+    const attempt = adapter.saveBatch([
+      [["nb-1", "a"], new Uint8Array([1])],
+      [["nb-1", "b"], new Uint8Array([2])],
+    ]);
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    requests[1]!.error = quotaError;
+    requests[1]!.onerror?.();
+    fake!.onabort?.(); // transaction.error stays null
+
+    await expect(attempt).rejects.toBe(quotaError);
+  });
+
   it("saveBatch is all-or-nothing when a put fails mid-batch", async () => {
     const onError = vi.fn();
     const adapter = createAdapter({ onError });

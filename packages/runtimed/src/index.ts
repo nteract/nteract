@@ -71,6 +71,7 @@ export {
   type PersistedNotebookDoc,
 } from "./persistence/notebook-doc-persistence";
 export {
+  SaveBatchEntryError,
   saveBatch,
   type StorageAdapter,
   type StorageChunk,

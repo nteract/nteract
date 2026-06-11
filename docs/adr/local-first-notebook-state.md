@@ -74,14 +74,22 @@ protocol-only messages (the initial handshake on a fresh `sync::State`,
 resync negotiation). It never under-fires for committed local changes.
 Consumers must treat saves as idempotent; the persistence throttle makes the
 occasional no-op snapshot cheap, and the controller's heads-dedupe
-(automerge-repo's `#shouldSave` shape, #3585 slice 2) removes it entirely:
-each capture compares `get_heads_hex()` against the heads of the newest
-capture handed to the write chain and skips both the full-doc serialization
-and the write when they match. A failed write forgets its recorded heads
-(unless a newer capture superseded them) so the next signal retries; a
-seeded session initializes the dedupe from the loaded record's
-`meta.headsHex` (first arm only, principal-gated) so the handshake's
-protocol-only signal does not re-write the envelope it just loaded.
+(automerge-repo's `#shouldSave` shape, #3585 slice 2) removes it entirely.
+Two keys with different trust levels: change-signal captures dedupe against
+the heads of the newest capture handed to the write chain (optimistic —
+prevents queueing duplicates behind an identical in-flight write; a late
+failure self-heals through the next signal), while `flushNow` dedupes only
+against the newest **committed** write — an in-flight write is not proof of
+durability, and a teardown flush gets no next signal, so skipping on its
+behalf could lose the only copy of offline edits if it then failed. A
+failed write forgets its recorded heads (unless a newer capture superseded
+them) so the next signal retries. A seeded session initializes both keys
+from the loaded record's `meta.headsHex` (first arm only, principal-gated,
+and only when the heads are non-empty — an empty heads array also describes
+a freshly-bootstrapped doc and must read as unknown, not as a match) so the
+handshake's protocol-only signal does not re-write the envelope it just
+loaded; the runtime-state cache controller never inherits these heads (its
+heads space is the RuntimeStateDoc's).
 
 This stays consistent with the projection-convergence ADR: a narrow,
 cross-host observable derived from already-computed WASM facts (the heads

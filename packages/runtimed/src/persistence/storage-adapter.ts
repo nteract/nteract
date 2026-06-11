@@ -43,9 +43,12 @@ export interface StorageAdapter {
 /**
  * Save a batch through the adapter's `saveBatch` when it has one,
  * falling back to sequential `save` calls (upstream's default-impl
- * shape). The fallback is per-entry-atomic only — callers that need the
- * stronger staged semantics get them exactly when the adapter provides
- * them.
+ * shape). The fallback is per-entry-atomic only: when entry N fails,
+ * entries 0..N-1 are already durable and N.. were never attempted — the
+ * thrown `SaveBatchEntryError` carries the failed key and index so
+ * callers can tell a clean prefix from an unknown state. Callers that
+ * need the stronger staged semantics get them exactly when the adapter
+ * provides them.
  */
 export async function saveBatch(
   adapter: StorageAdapter,
@@ -56,7 +59,27 @@ export async function saveBatch(
     await adapter.saveBatch(entries);
     return;
   }
-  for (const [key, data] of entries) {
-    await adapter.save(key, data);
+  for (const [index, [key, data]] of entries.entries()) {
+    try {
+      await adapter.save(key, data);
+    } catch (cause) {
+      throw new SaveBatchEntryError(key, index, cause);
+    }
+  }
+}
+
+/**
+ * Sequential-fallback failure: entries before `index` are durable,
+ * `index` and after are not written.
+ */
+export class SaveBatchEntryError extends Error {
+  readonly key: StorageKey;
+  readonly index: number;
+
+  constructor(key: StorageKey, index: number, cause: unknown) {
+    super(`saveBatch fallback failed at entry ${index} (${key.join("/")})`, { cause });
+    this.name = "SaveBatchEntryError";
+    this.key = key;
+    this.index = index;
   }
 }

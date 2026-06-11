@@ -143,15 +143,30 @@ export class NotebookDocPersistence {
    * signal retries.
    */
   private lastSavedHeadsKey: string | null = null;
+  /**
+   * Heads of the newest write that COMMITTED (or of the seeded record, which
+   * is committed by definition). `flushNow` dedupes against this key, never
+   * the optimistic one: a teardown flush that skipped because an in-flight
+   * write "covered" its state would lose that state forever if the write
+   * then failed — errors are swallowed and the handle is freed right after.
+   */
+  private lastCommittedHeadsKey: string | null = null;
 
   constructor(opts: NotebookDocPersistenceOptions) {
     this.opts = opts;
     this.keySegment = opts.keySegment ?? NOTEBOOK_DOC_SNAPSHOT_KEY_SEGMENT;
     this.throttleMs = opts.throttleMs ?? DEFAULT_SAVE_THROTTLE_MS;
     this.logger = opts.logger ?? console;
-    this.lastSavedHeadsKey = opts.initialSavedHeadsHex
-      ? headsCacheKey(opts.initialSavedHeadsHex)
-      : null;
+    // An empty heads array is treated as unknown, not as an identity: a
+    // freshly-bootstrapped doc (RuntimeStateDoc starts empty by design)
+    // would otherwise match a stale prior-session record's empty heads and
+    // skip its first save.
+    const initialHeads = opts.initialSavedHeadsHex;
+    if (initialHeads && initialHeads.length > 0) {
+      const initialKey = headsCacheKey(initialHeads);
+      this.lastSavedHeadsKey = initialKey;
+      this.lastCommittedHeadsKey = initialKey;
+    }
     this.subscription = opts.changes$.subscribe(() => this.onChanged());
   }
 
@@ -177,12 +192,14 @@ export class NotebookDocPersistence {
    *
    * Captures ignoring the change-signal dirty flag: local edits inside
    * the engine's flush debounce have not emitted yet, but `getSaveBytes()`
-   * already sees them. The heads-dedupe still applies — committed edits
-   * always move the heads, so the only skipped flushes are ones whose
-   * exact state the write chain has already accepted. Bytes are captured
-   * synchronously, so a handle freed right after this call returns is
-   * never touched by the queued write; the returned promise resolves once
-   * the write chain has committed.
+   * already sees them. The heads-dedupe applies only against COMMITTED
+   * writes — an in-flight write may still fail after this call returns
+   * (errors are swallowed, the handle freed), so "covered by a pending
+   * write" must not skip the teardown's last chance to persist. A flush
+   * racing an identical in-flight write costs one redundant idempotent
+   * write. Bytes are captured synchronously, so a handle freed right after
+   * this call returns is never touched by the queued write; the returned
+   * promise resolves once the write chain has committed.
    */
   async flushNow(): Promise<void> {
     if (this.disposed) return;
@@ -190,7 +207,7 @@ export class NotebookDocPersistence {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
-    await this.captureAndEnqueue();
+    await this.captureAndEnqueue("committed");
   }
 
   private onChanged(): void {
@@ -208,7 +225,15 @@ export class NotebookDocPersistence {
     return this.captureAndEnqueue();
   }
 
-  private captureAndEnqueue(): Promise<void> {
+  /**
+   * `dedupeAgainst` selects which heads key may skip the capture:
+   * change-signal saves use `"newest"` (the optimistic key — prevents
+   * queueing duplicates behind an identical in-flight write, and a late
+   * failure self-heals through the next signal), while `flushNow` uses
+   * `"committed"` (an in-flight write is not proof of durability, and a
+   * teardown flush gets no next signal).
+   */
+  private captureAndEnqueue(dedupeAgainst: "newest" | "committed" = "newest"): Promise<void> {
     this.dirty = false;
 
     // Capture synchronously: getSaveBytes touches the WASM handle, which a
@@ -218,11 +243,14 @@ export class NotebookDocPersistence {
     try {
       const headsHex = this.opts.getHeadsHex();
       headsKey = headsCacheKey(headsHex);
-      if (headsKey === this.lastSavedHeadsKey) {
-        // Heads unchanged since the newest capture: the change signal
-        // over-fired (protocol-only flush) — skip the no-op snapshot.
-        // Edits inside the engine's flush debounce are already committed
-        // to the doc, so they move the heads and never land here.
+      const skipKey =
+        dedupeAgainst === "newest" ? this.lastSavedHeadsKey : this.lastCommittedHeadsKey;
+      if (headsKey === skipKey) {
+        // Heads unchanged since the newest capture (or, for flushes, the
+        // newest COMMITTED write): the signal over-fired (protocol-only
+        // flush) — skip the no-op snapshot. Edits inside the engine's
+        // flush debounce are already committed to the doc, so they move
+        // the heads and never land here.
         return this.writeChain;
       }
       const meta: NotebookDocPersistenceMeta = {
@@ -247,6 +275,7 @@ export class NotebookDocPersistence {
       try {
         await saveBatch(adapter, [[key, envelope]]);
         this.consecutiveSaveFailures = 0;
+        this.lastCommittedHeadsKey = headsKey;
       } catch (error) {
         // Forget this capture's heads so the next signal retries — unless
         // a newer capture already superseded them.

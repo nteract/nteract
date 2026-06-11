@@ -126,14 +126,21 @@ export class IndexedDbStorageAdapter implements StorageAdapter {
       "readwrite",
       (store, transaction) =>
         new Promise<void>((resolve, reject) => {
+          // `transaction.error` can be null when an async put fails (seen
+          // with quota aborts); remember the failing request's error so the
+          // rejection names the real cause.
+          let requestError: unknown = null;
           transaction.oncomplete = () => resolve();
           transaction.onabort = () =>
-            reject(transaction.error ?? new Error("indexedDB saveBatch aborted"));
+            reject(transaction.error ?? requestError ?? new Error("indexedDB saveBatch aborted"));
           transaction.onerror = () =>
-            reject(transaction.error ?? new Error("indexedDB saveBatch failed"));
+            reject(transaction.error ?? requestError ?? new Error("indexedDB saveBatch failed"));
           try {
             for (const [key, data] of entries) {
-              store.put(data, key);
+              const request = store.put(data, key);
+              request.onerror = () => {
+                requestError ??= request.error;
+              };
             }
           } catch (error) {
             // A synchronous put failure (DataError, quota in some engines)
