@@ -1,4 +1,4 @@
-import { BehaviorSubject, type Observable } from "rxjs";
+import { BehaviorSubject, ReplaySubject, type Observable } from "rxjs";
 import {
   SyncEngine,
   splitNotebookActorPrincipalOperator,
@@ -30,11 +30,19 @@ import {
   type NotebookHandle,
 } from "./runtimed-wasm-client";
 
+export type CloudRoomReady = Extract<SessionControlMessage, { type: "cloud_room_ready" }>;
+
+export interface CloudConnectTarget {
+  url: URL;
+  protocols: string[];
+}
+
 export interface CloudSyncRuntime {
-  actorLabel: string;
-  connectionScope: ConnectionScope;
-  peerId: string;
-  peerLabel: string;
+  /** Latest connection identity — updated on every cloud_room_ready. */
+  readonly actorLabel: string;
+  readonly connectionScope: ConnectionScope;
+  readonly peerId: string;
+  readonly peerLabel: string;
   handle: NotebookHandle;
   engine: SyncEngine;
   transport: CloudWebSocketTransport;
@@ -42,6 +50,16 @@ export interface CloudSyncRuntime {
   seededFromPersistence: boolean;
   /** How the persisted-seed attempt resolved; "read_failed" must not arm saves. */
   persistenceSeedOutcome: CloudPersistenceSeedOutcome;
+  /**
+   * Adopt a reconnect handshake on the PRESERVED runtime: update identity,
+   * `set_actor` with the fresh label, reset engine caches and sync state.
+   * Returns false when the ready belongs to the connection already adopted
+   * (`roomReady$` replays the latest handshake to new subscribers).
+   *
+   * Must be invoked synchronously from the `roomReady$` subscription — see
+   * `reestablishCloudConnection` for the ordering constraint.
+   */
+  applyRoomReady: (ready: CloudRoomReady) => boolean;
   sendCursorPresence: (cellId: string, line: number, column: number) => void;
   sendSelectionPresence: (
     cellId: string,
@@ -54,15 +72,28 @@ export interface CloudSyncRuntime {
 }
 
 export interface CloudSyncConnectOptions {
-  syncEndpoint: string;
+  /**
+   * Per-attempt connection target (see `createCloudConnectTarget`). The
+   * transport re-invokes it on every retry so auth material is re-resolved
+   * and the operator nonce is re-minted.
+   */
+  connectTarget: () => Promise<CloudConnectTarget>;
   runtimedWasmModulePath: string;
   runtimedWasmPath: string;
-  sessionId: string;
-  auth: CloudSyncAuth;
   /** Locally persisted NotebookDoc seed; omitted when storage is unavailable. */
   persistence?: CloudSyncPersistenceSeed;
   onControl?: (message: SessionControlMessage) => void;
-  onDisconnect?: (reason: Error) => void;
+  /**
+   * Informational: a connection dropped or an attempt failed. The transport
+   * keeps retrying — this is a notice surface, not a teardown signal.
+   */
+  onConnectionLost?: (reason: Error) => void;
+  /**
+   * Receives the transport as soon as it exists, so callers can disconnect
+   * an in-flight connect on unmount — `ready` may stay pending for as long
+   * as the retry loop runs.
+   */
+  onTransportCreated?: (transport: CloudWebSocketTransport) => void;
 }
 
 export interface CloudSyncPersistenceSeed {
@@ -90,8 +121,14 @@ export interface ResolvedCloudNotebookHandle<Handle> {
 
 type FrameListener = Parameters<NotebookTransport["onFrame"]>[0];
 
-const LIVE_SYNC_READY_TIMEOUT_MS = 30_000;
+/** Per-attempt bound on cloud_room_ready after the socket is created. */
+const HANDSHAKE_TIMEOUT_MS = 30_000;
 const CLOUD_REQUEST_TIMEOUT_MS = 30_000;
+
+const RECONNECT_BASE_DELAY_MS = 1_000;
+const RECONNECT_MAX_DELAY_MS = 30_000;
+/** ±50% full jitter on every retry delay. */
+const RECONNECT_JITTER_RATIO = 0.5;
 
 /**
  * Bound on the persisted-seed IndexedDB read at connect time. A hung IDB
@@ -123,23 +160,22 @@ export function cloudSyncAuthFromLocalStorage(): CloudSyncAuth {
 }
 
 export async function connectCloudSyncRuntime({
-  syncEndpoint,
+  connectTarget,
   runtimedWasmModulePath,
   runtimedWasmPath,
-  sessionId,
-  auth,
   persistence,
   onControl,
-  onDisconnect,
+  onConnectionLost,
+  onTransportCreated,
 }: CloudSyncConnectOptions): Promise<CloudSyncRuntime> {
-  const url = syncUrl(syncEndpoint, sessionId, auth);
-  const transport = new CloudWebSocketTransport(url, auth.protocols, onControl, onDisconnect);
+  const transport = new CloudWebSocketTransport({ connectTarget, onControl, onConnectionLost });
+  onTransportCreated?.(transport);
   try {
-    const ready = await withReadyTimeout(
-      transport.ready,
-      LIVE_SYNC_READY_TIMEOUT_MS,
-      `notebook cloud WebSocket did not become ready within ${LIVE_SYNC_READY_TIMEOUT_MS}ms`,
-    );
+    // No timeout: the transport retries with backoff until manual
+    // disconnect, so initial-connect failures ride the same loop instead
+    // of dead-ending the session. `ready` resolves on the first successful
+    // handshake, whenever that happens.
+    const ready = await transport.ready;
     const wasmModuleUrl = new URL(runtimedWasmModulePath, location.href);
     const wasmUrl = new URL(runtimedWasmPath, location.href);
     const { handle, outcome: persistenceSeedOutcome } = await resolveCloudNotebookHandle({
@@ -151,81 +187,187 @@ export async function connectCloudSyncRuntime({
         loadNotebookHandleFromBytes(bytes, ready.actor_label, wasmModuleUrl, wasmUrl),
     });
     const syncHandle = syncableCloudHandle(handle);
-    const peerLabel = cloudRoomReadyPeerLabel(ready);
-    const heartbeatPeerId = ready.peer_id;
-    const connectionScope = normalizeConnectionScope(ready.connection_scope);
+    // Mutable connection identity: presence encoders and the runtime's
+    // identity getters always read the LATEST handshake's values, so a
+    // reconnect never sends presence under a dead peer id.
+    const identity = {
+      actorLabel: ready.actor_label,
+      peerId: ready.peer_id,
+      peerLabel: cloudRoomReadyPeerLabel(ready),
+      connectionScope: normalizeConnectionScope(ready.connection_scope),
+    };
     const engine = new SyncEngine({
       getHandle: () => syncHandle,
       transport,
       presenceHeartbeat: {
         intervalMs: 15_000,
-        encode: () => encodeHeartbeatPresenceAfterInit(heartbeatPeerId),
+        encode: () => encodeHeartbeatPresenceAfterInit(identity.peerId),
       },
       logger: consoleSyncLogger,
     });
 
     startCloudBootstrapSync(engine);
 
+    const sendPresence = (payload: Uint8Array, label: string) => {
+      void transport
+        .sendFrame(FrameType.PRESENCE, payload)
+        .catch((error: unknown) =>
+          console.warn(`[notebook-cloud] ${label} presence failed`, error),
+        );
+    };
+
     return {
-      actorLabel: ready.actor_label,
-      connectionScope,
-      peerId: ready.peer_id,
-      peerLabel,
+      get actorLabel() {
+        return identity.actorLabel;
+      },
+      get connectionScope() {
+        return identity.connectionScope;
+      },
+      get peerId() {
+        return identity.peerId;
+      },
+      get peerLabel() {
+        return identity.peerLabel;
+      },
       handle,
       engine,
       transport,
       seededFromPersistence: persistenceSeedOutcome === "seeded",
       persistenceSeedOutcome,
+      applyRoomReady: (nextReady) => {
+        if (nextReady.peer_id === identity.peerId) {
+          // The connection already adopted (roomReady$ replays the latest
+          // handshake to new subscribers).
+          return false;
+        }
+        identity.actorLabel = nextReady.actor_label;
+        identity.peerId = nextReady.peer_id;
+        identity.peerLabel = cloudRoomReadyPeerLabel(nextReady);
+        identity.connectionScope = normalizeConnectionScope(nextReady.connection_scope);
+        reestablishCloudConnection(handle, engine, nextReady.actor_label);
+        return true;
+      },
       sendCursorPresence: (cellId, line, column) => {
-        const payload = encodeCursorPresenceAfterInit(
-          heartbeatPeerId,
-          peerLabel,
-          ready.actor_label,
-          cellId,
-          line,
-          column,
+        sendPresence(
+          encodeCursorPresenceAfterInit(
+            identity.peerId,
+            identity.peerLabel,
+            identity.actorLabel,
+            cellId,
+            line,
+            column,
+          ),
+          "cursor",
         );
-        void transport
-          .sendFrame(FrameType.PRESENCE, payload)
-          .catch((error: unknown) =>
-            console.warn("[notebook-cloud] cursor presence failed", error),
-          );
       },
       sendSelectionPresence: (cellId, anchorLine, anchorCol, headLine, headCol) => {
-        const payload = encodeSelectionPresenceAfterInit(
-          heartbeatPeerId,
-          peerLabel,
-          ready.actor_label,
-          cellId,
-          anchorLine,
-          anchorCol,
-          headLine,
-          headCol,
+        sendPresence(
+          encodeSelectionPresenceAfterInit(
+            identity.peerId,
+            identity.peerLabel,
+            identity.actorLabel,
+            cellId,
+            anchorLine,
+            anchorCol,
+            headLine,
+            headCol,
+          ),
+          "selection",
         );
-        void transport
-          .sendFrame(FrameType.PRESENCE, payload)
-          .catch((error: unknown) =>
-            console.warn("[notebook-cloud] selection presence failed", error),
-          );
       },
       sendInteractionPresence: (target) => {
-        const payload = encodeInteractionPresenceAfterInit(
-          heartbeatPeerId,
-          peerLabel,
-          ready.actor_label,
-          target,
+        sendPresence(
+          encodeInteractionPresenceAfterInit(
+            identity.peerId,
+            identity.peerLabel,
+            identity.actorLabel,
+            target,
+          ),
+          "interaction",
         );
-        void transport
-          .sendFrame(FrameType.PRESENCE, payload)
-          .catch((error: unknown) =>
-            console.warn("[notebook-cloud] interaction presence failed", error),
-          );
       },
     };
   } catch (error) {
     transport.disconnect();
     throw error;
   }
+}
+
+/**
+ * Re-establish per-connection sync state on a PRESERVED runtime after a
+ * reconnect handshake — mirrors the daemon cloud agent's reconnect
+ * (runtime_agent.rs keeps the kernel, queue, and docs; only sync states
+ * are recreated).
+ *
+ * Ordering constraint: this must run synchronously inside the roomReady$
+ * emission. The room host kicks host-initiated sync immediately after
+ * cloud_room_ready, and an inbound sync frame applied against the previous
+ * connection's sync state is garbage. The transport emits roomReady$
+ * before dispatching any frame from the new connection, and every call in
+ * here is synchronous WASM — no awaits allowed before these calls.
+ *
+ * Actor safety: preserve the handle XOR reuse the actor label. The handle
+ * is preserved (unflushed local edits live in it), so it MUST adopt the
+ * new connection's fresh label — set_actor starts a fresh (actor, seq)
+ * chain, avoiding DuplicateSeqNumber.
+ */
+export function reestablishCloudConnection(
+  handle: Pick<NotebookHandle, "set_actor">,
+  engine: Pick<SyncEngine, "resetForBootstrap" | "resetAndResync">,
+  actorLabel: string,
+): void {
+  handle.set_actor(actorLabel);
+  engine.resetForBootstrap();
+  engine.resetAndResync();
+}
+
+/**
+ * Mint the per-connection-attempt session id.
+ *
+ * Load-bearing for actor uniqueness: the worker derives the anonymous
+ * principal and the `browser:<sessionId>` operator nonce from this value
+ * and only rewrites the principal segment, so a collision would reuse an
+ * actor label across doc instances (DuplicateSeqNumber). The fallbacks for
+ * environments without crypto.randomUUID must stay collision-resistant —
+ * never a bare timestamp.
+ */
+export function mintCloudSessionId(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * Build the per-attempt connect target factory for the transport's retry
+ * loop. Each invocation re-resolves auth (tokens expire mid-session) and
+ * mints a FRESH operator nonce.
+ *
+ * Fresh-per-attempt nonce rationale: the actor-safety rule is "preserve
+ * the handle XOR reuse the actor label". A preserved handle with a NEW
+ * label is safe (set_actor starts a fresh seq chain); a fresh handle with
+ * a REUSED label collides (DuplicateSeqNumber). Fresh-per-attempt is the
+ * universally safe choice for both shapes and matches the previous
+ * per-effect-run behavior.
+ */
+export function createCloudConnectTarget({
+  syncEndpoint,
+  resolveAuth,
+  mintSessionId = mintCloudSessionId,
+}: {
+  syncEndpoint: string;
+  resolveAuth: (sessionId: string) => Promise<CloudSyncAuth> | CloudSyncAuth;
+  mintSessionId?: () => string;
+}): () => Promise<CloudConnectTarget> {
+  return async () => {
+    const sessionId = mintSessionId();
+    const auth = await resolveAuth(sessionId);
+    return { url: syncUrl(syncEndpoint, sessionId, auth), protocols: auth.protocols };
+  };
 }
 
 export function normalizeConnectionScope(value: string): ConnectionScope {
@@ -379,6 +521,23 @@ export function shouldDiscardPersistedSeedOnRejection(
   return seededFromPersistence && isRecoverableCloudFrameRejection(message);
 }
 
+export type CloudRejectionDisposition = "resync_in_place" | "escalate";
+
+/**
+ * First recoverable sync rejection on a connection: recover in place —
+ * `resetAndResync()` on the live connection, no teardown. A repeat within
+ * the same connection means in-place recovery cannot converge (the resync
+ * regenerated the same refused content), so escalate to the full teardown
+ * path, where the poison-pill seed discard applies. A rejection before the
+ * runtime exists escalates directly — there is nothing to resync in place.
+ */
+export function classifyRecoverableRejection(
+  rejectionsThisConnection: number,
+  hasLiveRuntime: boolean,
+): CloudRejectionDisposition {
+  return rejectionsThisConnection <= 1 && hasLiveRuntime ? "resync_in_place" : "escalate";
+}
+
 export async function withReadyTimeout<T>(
   ready: Promise<T>,
   timeoutMs: number,
@@ -397,96 +556,286 @@ export async function withReadyTimeout<T>(
   }
 }
 
+export interface CloudWebSocketTransportOptions {
+  /**
+   * Resolve the connection target for one attempt. Re-invoked on every
+   * retry so auth material is re-resolved (tokens expire mid-session) and
+   * the operator nonce is re-minted (`createCloudConnectTarget`).
+   */
+  connectTarget: () => Promise<CloudConnectTarget>;
+  onControl?: (message: SessionControlMessage) => void;
+  /**
+   * Informational: an established or in-progress connection was lost. The
+   * retry loop keeps running — this is a notice surface, not a teardown
+   * signal. Never fires for manual `disconnect()`.
+   */
+  onConnectionLost?: (reason: Error) => void;
+  /** Backoff/handshake tuning for tests. */
+  reconnectBaseDelayMs?: number;
+  reconnectMaxDelayMs?: number;
+  handshakeTimeoutMs?: number;
+  /** Jitter source (default Math.random); injectable for deterministic tests. */
+  random?: () => number;
+}
+
+/**
+ * Multi-connection cloud transport: one re-entrant connect loop serves the
+ * initial connect and every retry (exponential backoff + full jitter,
+ * reset on the cloud_room_ready app-level ack, short-circuit on the
+ * browser `online` event, retry forever until manual `disconnect()`).
+ *
+ * Drop, don't buffer: sends while the current socket is not OPEN reject,
+ * and pending FIFO frame ACKs are rejected per connection loss — they
+ * cannot span sockets. Sync correctness lives in the protocol: the engine
+ * rolls back via `cancel_last_flush` and regenerates from sync state after
+ * the next handshake.
+ */
 export class CloudWebSocketTransport implements NotebookTransport {
-  private socket: WebSocket;
+  private readonly options: CloudWebSocketTransportOptions;
+  private readonly reconnectBaseDelayMs: number;
+  private readonly reconnectMaxDelayMs: number;
+  private readonly handshakeTimeoutMs: number;
+  private readonly random: () => number;
+
+  private socket: WebSocket | null = null;
+  private detachSocket: (() => void) | null = null;
+  /** Bumped per connect attempt and on disconnect to invalidate stale async work. */
+  private connectEpoch = 0;
+  /** Consecutive attempts without a cloud_room_ready ack (backoff input). */
+  private failedAttempts = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
+  private manualDisconnect = false;
+  private everReady = false;
+  private readySettled = false;
   private listeners = new Set<FrameListener>();
   private queuedFrames: number[][] = [];
   // Hosted room accept/reject controls currently carry only the frame type, not
   // a request id, so pending acknowledgements are matched FIFO per frame type.
   private pendingFrameAcks = new Map<number, PendingFrameAck[]>();
-  private readySettled = false;
-  private readyResolved = false;
-  private closed = false;
-  private manualDisconnect = false;
-  private readyResolve!: (
-    message: Extract<SessionControlMessage, { type: "cloud_room_ready" }>,
-  ) => void;
+  private readyResolve!: (message: CloudRoomReady) => void;
   private readyReject!: (error: Error) => void;
-  readonly ready: Promise<Extract<SessionControlMessage, { type: "cloud_room_ready" }>>;
+  /**
+   * Resolves on the FIRST successful handshake; rejects only on manual
+   * disconnect. Later handshakes emit on `roomReady$`.
+   */
+  readonly ready: Promise<CloudRoomReady>;
+  private readonly _roomReady$ = new ReplaySubject<CloudRoomReady>(1);
+  /**
+   * Emits per successful cloud_room_ready handshake (initial and every
+   * reconnect) with the new peer_id / actor_label / connection_scope.
+   *
+   * Emission is synchronous within the ready message's handling, BEFORE
+   * any subsequent frame from that connection is dispatched — subscribers
+   * reset per-connection sync state in the same tick so host-initiated
+   * sync never lands on stale state. Replays the latest handshake to new
+   * subscribers (a reconnect during session setup is adopted on
+   * subscribe).
+   */
+  readonly roomReady$: Observable<CloudRoomReady> = this._roomReady$.asObservable();
   private status: ConnectionStatus = "connecting";
   private readonly _status$ = new BehaviorSubject<ConnectionStatus>("connecting");
   readonly connectionStatus$: Observable<ConnectionStatus> = this._status$.asObservable();
+  /** navigator 'online': skip the rest of the current backoff wait. */
+  private readonly handleBrowserOnline = () => {
+    if (this.manualDisconnect || this.retryTimer === null) return;
+    this.clearRetryTimer();
+    void this.connect();
+  };
 
-  constructor(
-    url: URL,
-    protocols: string[],
-    private readonly onControl?: (message: SessionControlMessage) => void,
-    private readonly onDisconnect?: (reason: Error) => void,
-  ) {
+  constructor(options: CloudWebSocketTransportOptions) {
+    this.options = options;
+    this.reconnectBaseDelayMs = options.reconnectBaseDelayMs ?? RECONNECT_BASE_DELAY_MS;
+    this.reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? RECONNECT_MAX_DELAY_MS;
+    this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
+    this.random = options.random ?? Math.random;
     this.ready = new Promise((resolve, reject) => {
-      this.readyResolve = (message) => {
-        this.readySettled = true;
-        this.readyResolved = true;
-        this.setStatus("online");
-        resolve(message);
-      };
-      this.readyReject = (error) => {
-        this.readySettled = true;
-        reject(error);
-      };
+      this.readyResolve = resolve;
+      this.readyReject = reject;
     });
-    this.socket = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
-    this.socket.binaryType = "arraybuffer";
-    this.socket.addEventListener("message", (event) => {
-      void this.handleMessage(event.data).catch((error: unknown) => {
+    // Callers that never await `ready` (tests, fire-and-forget teardown)
+    // must not produce an unhandled rejection on manual disconnect.
+    this.ready.catch(() => undefined);
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", this.handleBrowserOnline);
+    }
+    void this.connect();
+  }
+
+  get connected(): boolean {
+    return !this.manualDisconnect && this.socket?.readyState === WebSocket.OPEN;
+  }
+
+  private async connect(): Promise<void> {
+    if (this.manualDisconnect) return;
+    const epoch = ++this.connectEpoch;
+    this.clearRetryTimer();
+
+    let target: CloudConnectTarget;
+    try {
+      target = await this.options.connectTarget();
+    } catch (error) {
+      if (epoch !== this.connectEpoch || this.manualDisconnect) return;
+      this.connectionLost(
+        error instanceof Error
+          ? new Error(`cloud sync connect target failed: ${error.message}`)
+          : new Error(`cloud sync connect target failed: ${String(error)}`),
+        null,
+      );
+      return;
+    }
+    if (epoch !== this.connectEpoch || this.manualDisconnect) return;
+
+    this.teardownSocket();
+    let socket: WebSocket;
+    try {
+      socket =
+        target.protocols.length > 0
+          ? new WebSocket(target.url, target.protocols)
+          : new WebSocket(target.url);
+    } catch (error) {
+      this.connectionLost(
+        error instanceof Error
+          ? new Error(`cloud sync socket creation failed: ${error.message}`)
+          : new Error(`cloud sync socket creation failed: ${String(error)}`),
+        null,
+      );
+      return;
+    }
+    socket.binaryType = "arraybuffer";
+    this.socket = socket;
+    const onMessage = (event: MessageEvent) => {
+      if (socket !== this.socket) return; // superseded connection
+      void this.handleMessage(event.data, socket).catch((error: unknown) => {
         const reason =
           error instanceof Error
             ? new Error(`cloud sync socket message failed: ${error.message}`)
             : new Error(`cloud sync socket message failed: ${String(error)}`);
-        if (!this.readySettled) {
-          this.readyReject(reason);
-        }
-        this.markClosed(reason);
-        this.socket.close();
+        this.connectionLost(reason, socket);
+        socket.close();
       });
-    });
-    this.socket.addEventListener("error", () => {
-      const reason = new Error(`cloud sync socket failed`);
-      if (!this.readySettled) {
-        this.readyReject(new Error(`failed to connect ${url.href}`));
-      }
-      this.markClosed(reason);
-    });
-    this.socket.addEventListener("close", (event) => {
+    };
+    const onError = () => {
+      this.connectionLost(new Error("cloud sync socket failed"), socket);
+    };
+    const onClose = (event: CloseEvent) => {
       const detail = event.reason ? `: ${event.reason}` : "";
-      const reason = new Error(`cloud sync socket closed (${event.code})${detail}`);
-      if (!this.readySettled) {
-        this.readyReject(new Error(`cloud sync socket closed before ready`));
-      }
-      this.markClosed(reason);
-    });
+      this.connectionLost(new Error(`cloud sync socket closed (${event.code})${detail}`), socket);
+    };
+    socket.addEventListener("message", onMessage as EventListener);
+    socket.addEventListener("error", onError);
+    socket.addEventListener("close", onClose as EventListener);
+    this.detachSocket = () => {
+      socket.removeEventListener("message", onMessage as EventListener);
+      socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose as EventListener);
+    };
+    this.armHandshakeTimer(socket);
   }
 
-  get connected(): boolean {
-    return !this.closed && this.socket.readyState === WebSocket.OPEN;
+  private connectionLost(reason: Error, socket: WebSocket | null): void {
+    if (socket !== null && socket !== this.socket) return; // superseded connection
+    this.teardownSocket();
+    this.clearHandshakeTimer();
+    // Pending FIFO frame ACKs cannot span sockets.
+    this.rejectPendingFrameAcks(reason);
+    // Frames queued from a dead connection are bound to that connection's
+    // sync state; never replay them into the next one.
+    this.queuedFrames = [];
+    if (this.manualDisconnect) return;
+    this.setStatus(this.everReady ? "reconnecting" : "connecting");
+    this.options.onConnectionLost?.(reason);
+    this.scheduleRetry();
+  }
+
+  private scheduleRetry(): void {
+    if (this.manualDisconnect || this.retryTimer !== null) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.connect();
+    }, this.nextRetryDelay());
+  }
+
+  private nextRetryDelay(): number {
+    // Exponential backoff with full ±50% jitter so a fleet of dropped
+    // clients does not reconnect in lockstep. The attempt counter resets on
+    // cloud_room_ready (the app-level ack), NOT on WS open — a load
+    // balancer can accept sockets while the room is unreachable.
+    const exponent = Math.min(this.failedAttempts, 16);
+    this.failedAttempts += 1;
+    const base = Math.min(this.reconnectBaseDelayMs * 2 ** exponent, this.reconnectMaxDelayMs);
+    const jitter = 1 + RECONNECT_JITTER_RATIO * (2 * this.random() - 1);
+    return Math.round(base * jitter);
+  }
+
+  private armHandshakeTimer(socket: WebSocket): void {
+    this.clearHandshakeTimer();
+    this.handshakeTimer = setTimeout(() => {
+      this.handshakeTimer = null;
+      if (socket !== this.socket) return;
+      // The socket opened (or is still connecting) but the room never sent
+      // cloud_room_ready — recycle the attempt.
+      this.connectionLost(
+        new Error(`cloud room handshake did not complete within ${this.handshakeTimeoutMs}ms`),
+        socket,
+      );
+      socket.close();
+    }, this.handshakeTimeoutMs);
+  }
+
+  private teardownSocket(): void {
+    this.detachSocket?.();
+    this.detachSocket = null;
+    const socket = this.socket;
+    this.socket = null;
+    if (
+      socket &&
+      socket.readyState !== WebSocket.CLOSED &&
+      socket.readyState !== WebSocket.CLOSING
+    ) {
+      try {
+        socket.close();
+      } catch {
+        // already closing
+      }
+    }
+  }
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  private clearHandshakeTimer(): void {
+    if (this.handshakeTimer !== null) {
+      clearTimeout(this.handshakeTimer);
+      this.handshakeTimer = null;
+    }
   }
 
   async sendFrame(frameType: number, payload: Uint8Array): Promise<void> {
-    if (this.closed) {
-      return Promise.reject(new Error("cloud sync socket is closed"));
+    if (this.manualDisconnect) {
+      throw new Error("cloud sync socket is closed");
     }
-    await this.waitUntilOpen();
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      // Drop, don't buffer: the engine rolls back via cancel_last_flush and
+      // regenerates from sync state after the next handshake.
+      throw new Error("cloud sync socket is not open");
+    }
     const frame = new Uint8Array(payload.byteLength + 1);
     frame[0] = frameType;
     frame.set(payload, 1);
     try {
-      this.socket.send(frame);
+      socket.send(frame);
     } catch (error) {
       const reason =
         error instanceof Error
           ? new Error(`cloud sync socket send failed: ${error.message}`)
           : new Error(`cloud sync socket send failed: ${String(error)}`);
-      this.markClosed(reason);
+      this.connectionLost(reason, socket);
       throw reason;
     }
   }
@@ -539,20 +888,36 @@ export class CloudWebSocketTransport implements NotebookTransport {
   }
 
   disconnect(): void {
+    if (this.manualDisconnect) return;
     this.manualDisconnect = true;
-    this.markClosed(new Error("cloud sync socket disconnected"));
-    this.socket.close();
+    this.connectEpoch += 1; // invalidate any in-flight connect attempt
+    this.clearRetryTimer();
+    this.clearHandshakeTimer();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("online", this.handleBrowserOnline);
+    }
+    this.teardownSocket();
+    this.rejectPendingFrameAcks(new Error("cloud sync socket disconnected"));
+    this.listeners.clear();
+    this.queuedFrames = [];
+    if (!this.readySettled) {
+      this.readySettled = true;
+      this.readyReject(new Error("cloud sync transport disconnected before ready"));
+    }
+    this.setStatus("offline");
+    this._roomReady$.complete();
   }
 
-  private async handleMessage(data: unknown): Promise<void> {
+  private async handleMessage(data: unknown, socket: WebSocket): Promise<void> {
     const bytes = await bytesFromWebSocketMessage(data);
+    if (socket !== this.socket) return; // superseded while decoding
     if (bytes.byteLength === 0) return;
 
     if (bytes[0] === FrameType.SESSION_CONTROL) {
       const control = JSON.parse(new TextDecoder().decode(bytes.slice(1))) as SessionControlMessage;
-      this.onControl?.(control);
+      this.options.onControl?.(control);
       if (control.type === "cloud_room_ready") {
-        this.readyResolve(control);
+        this.handleRoomReady(control);
       } else if (control.type === "cloud_frame_accepted") {
         this.resolveFrameAck(control.frame_type);
       } else if (control.type === "cloud_frame_rejected") {
@@ -568,6 +933,23 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.emitFrame(frame);
   }
 
+  private handleRoomReady(control: CloudRoomReady): void {
+    this.failedAttempts = 0; // backoff resets on the app-level ack
+    this.everReady = true;
+    this.clearHandshakeTimer();
+    this.setStatus("online");
+    if (!this.readySettled) {
+      this.readySettled = true;
+      this.readyResolve(control);
+    }
+    // Synchronous emission BEFORE any subsequent frame is dispatched: the
+    // room host kicks host-initiated sync immediately after ready, and
+    // subscribers must reset per-connection sync state before the first
+    // frame of the new connection is applied. WS messages are delivered in
+    // order, so emitting inside the ready message's handling precedes them.
+    this._roomReady$.next(control);
+  }
+
   private emitFrame(frame: number[]): void {
     if (this.listeners.size === 0) {
       this.queuedFrames.push(frame);
@@ -576,42 +958,6 @@ export class CloudWebSocketTransport implements NotebookTransport {
 
     for (const listener of this.listeners) {
       listener(frame);
-    }
-  }
-
-  private waitUntilOpen(): Promise<void> {
-    if (this.socket.readyState === WebSocket.OPEN) {
-      return Promise.resolve();
-    }
-    if (
-      this.socket.readyState === WebSocket.CLOSED ||
-      this.socket.readyState === WebSocket.CLOSING
-    ) {
-      const reason = new Error("cloud sync socket is closed");
-      this.markClosed(reason);
-      return Promise.reject(reason);
-    }
-
-    return new Promise((resolve, reject) => {
-      this.socket.addEventListener("open", () => resolve(), { once: true });
-      this.socket.addEventListener("error", () => reject(new Error("cloud sync socket failed")), {
-        once: true,
-      });
-      this.socket.addEventListener("close", () => reject(new Error("cloud sync socket closed")), {
-        once: true,
-      });
-    });
-  }
-
-  private markClosed(reason: Error): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.setStatus("offline");
-    this.listeners.clear();
-    this.queuedFrames = [];
-    this.rejectPendingFrameAcks(reason);
-    if (this.readyResolved && !this.manualDisconnect) {
-      this.onDisconnect?.(reason);
     }
   }
 

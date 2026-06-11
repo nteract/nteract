@@ -1,19 +1,24 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { PersistedNotebookDoc } from "runtimed";
+import { SyncEngine, type PersistedNotebookDoc, type SyncableHandle } from "runtimed";
 import {
   CloudWebSocketTransport,
+  classifyRecoverableRejection,
   cloudPrincipalFromActorLabel,
   cloudRoomReadyPeerLabel,
+  createCloudConnectTarget,
   isAnonymousCloudPrincipal,
   isRecoverableCloudFrameRejection,
+  mintCloudSessionId,
   normalizeConnectionScope,
+  reestablishCloudConnection,
   resolveCloudNotebookHandle,
   shouldDiscardPersistedSeedOnRejection,
   startCloudBootstrapSync,
   syncUrl,
   syncableCloudHandle,
   withReadyTimeout,
+  type CloudWebSocketTransportOptions,
 } from "../viewer/live-sync.ts";
 import { FrameType } from "../src/protocol.ts";
 
@@ -252,54 +257,61 @@ describe("cloud live sync", () => {
     assert.equal(isAnonymousCloudPrincipal("user:anaconda:uuid-123"), false);
   });
 
-  it("notifies disconnect when a send sees a closing socket before the close event", async () => {
+  it("rejects sends while the socket is not open without tearing the connection down", async () => {
     const fake = installFakeWebSocket();
-    const disconnects: string[] = [];
+    const lost: string[] = [];
     try {
-      const transport = new CloudWebSocketTransport(
-        new URL("wss://example.test/n/room/sync"),
-        [],
-        undefined,
-        (reason) => disconnects.push(reason.message),
-      );
-      const socket = fake.socket;
+      const transport = createTransport({
+        onConnectionLost: (reason) => lost.push(reason.message),
+      });
+      const socket = await waitForSocket(0);
       socket.open();
       socket.ready("peer-1");
       await transport.ready;
 
       socket.readyState = FakeWebSocket.CLOSING;
+      // Drop, don't buffer: the sync layer rolls back and regenerates after
+      // the next handshake.
       await assert.rejects(
         transport.sendFrame(FrameType.PRESENCE, new Uint8Array([1, 2, 3])),
-        /cloud sync socket is closed/,
+        /cloud sync socket is not open/,
       );
-      socket.close({ code: 1006 });
+      assert.deepEqual(lost, []);
 
-      assert.deepEqual(disconnects, ["cloud sync socket is closed"]);
+      socket.close({ code: 1006 });
+      assert.equal(lost.length, 1);
+      assert.match(lost[0], /cloud sync socket closed \(1006\)/);
+      transport.disconnect();
     } finally {
       fake.restore();
     }
   });
 
-  it("emits offline when the socket closes before room readiness", async () => {
+  it("keeps connecting and retries when the socket closes before room readiness", async () => {
     const fake = installFakeWebSocket();
     const statuses: string[] = [];
-    const disconnects: string[] = [];
+    const lost: string[] = [];
     try {
-      const transport = new CloudWebSocketTransport(
-        new URL("wss://example.test/n/room/sync"),
-        [],
-        undefined,
-        (reason) => disconnects.push(reason.message),
-      );
+      const transport = createTransport({
+        onConnectionLost: (reason) => lost.push(reason.message),
+        reconnectBaseDelayMs: 1,
+        random: () => 0.5,
+      });
       const subscription = transport.connectionStatus$.subscribe((status) => statuses.push(status));
-      const ready = assert.rejects(transport.ready, /cloud sync socket closed before ready/);
 
-      fake.socket.close({ code: 1006 });
-      await ready;
+      const first = await waitForSocket(0);
+      first.close({ code: 1006 });
+      await delayMs(10); // let the (tiny) retry delay elapse
+
+      // Initial-connect failure rides the retry loop: status stays
+      // "connecting" (never been online) and a fresh socket appears.
+      const second = await waitForSocket(1);
+      assert.notEqual(second, first);
+      assert.equal(lost.length, 1);
+      assert.deepEqual(statuses, ["connecting"]);
+
       subscription.unsubscribe();
-
-      assert.deepEqual(statuses, ["connecting", "offline"]);
-      assert.deepEqual(disconnects, []);
+      transport.disconnect();
     } finally {
       fake.restore();
     }
@@ -309,9 +321,9 @@ describe("cloud live sync", () => {
     const fake = installFakeWebSocket();
     const statuses: string[] = [];
     try {
-      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
+      const transport = createTransport();
       const subscription = transport.connectionStatus$.subscribe((status) => statuses.push(status));
-      const socket = fake.socket;
+      const socket = await waitForSocket(0);
       socket.open();
       socket.ready("peer-1");
       await transport.ready;
@@ -329,8 +341,8 @@ describe("cloud live sync", () => {
   it("sends notebook requests as cloud request frames and resolves on room-host ack", async () => {
     const fake = installFakeWebSocket();
     try {
-      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
-      const socket = fake.socket;
+      const transport = createTransport();
+      const socket = await waitForSocket(0);
       socket.open();
       socket.ready("peer-1");
       await transport.ready;
@@ -374,8 +386,8 @@ describe("cloud live sync", () => {
   it("rejects notebook requests when the cloud room rejects the request frame", async () => {
     const fake = installFakeWebSocket();
     try {
-      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
-      const socket = fake.socket;
+      const transport = createTransport();
+      const socket = await waitForSocket(0);
       socket.open();
       socket.ready("peer-1");
       await transport.ready;
@@ -400,8 +412,8 @@ describe("cloud live sync", () => {
   it("resolves accepted notebook requests without waiting for a response frame", async () => {
     const fake = installFakeWebSocket();
     try {
-      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
-      const socket = fake.socket;
+      const transport = createTransport();
+      const socket = await waitForSocket(0);
       socket.open();
       socket.ready("peer-1");
       await transport.ready;
@@ -429,17 +441,16 @@ describe("cloud live sync", () => {
     }
   });
 
-  it("notifies disconnect when WebSocket.send throws", async () => {
+  it("recycles the connection when WebSocket.send throws", async () => {
     const fake = installFakeWebSocket();
-    const disconnects: string[] = [];
+    const lost: string[] = [];
     try {
-      const transport = new CloudWebSocketTransport(
-        new URL("wss://example.test/n/room/sync"),
-        [],
-        undefined,
-        (reason) => disconnects.push(reason.message),
-      );
-      const socket = fake.socket;
+      const transport = createTransport({
+        onConnectionLost: (reason) => lost.push(reason.message),
+        reconnectBaseDelayMs: 1,
+        random: () => 0.5,
+      });
+      const socket = await waitForSocket(0);
       socket.open();
       socket.ready("peer-1");
       await transport.ready;
@@ -449,41 +460,58 @@ describe("cloud live sync", () => {
         transport.sendFrame(FrameType.PRESENCE, new Uint8Array([1, 2, 3])),
         /cloud sync socket send failed: synthetic send failure/,
       );
-      assert.deepEqual(disconnects, ["cloud sync socket send failed: synthetic send failure"]);
+      assert.deepEqual(lost, ["cloud sync socket send failed: synthetic send failure"]);
+
+      // The retry loop replaces the broken socket.
+      await delayMs(10);
+      await waitForSocket(1);
+      transport.disconnect();
     } finally {
       fake.restore();
     }
   });
 
-  it("rejects ready when the bootstrap message cannot be decoded", async () => {
+  it("recycles the connection when the bootstrap message cannot be decoded", async () => {
     const fake = installFakeWebSocket();
+    const lost: string[] = [];
     try {
-      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
-      const socket = fake.socket;
+      const transport = createTransport({
+        onConnectionLost: (reason) => lost.push(reason.message),
+        reconnectBaseDelayMs: 1,
+        random: () => 0.5,
+      });
+      const socket = await waitForSocket(0);
       socket.open();
       socket.message("not binary");
+      await nextMicrotask();
 
-      await assert.rejects(
-        transport.ready,
-        /cloud sync socket message failed: unsupported WebSocket message/,
-      );
+      assert.equal(lost.length, 1);
+      assert.match(lost[0], /cloud sync socket message failed: unsupported WebSocket message/);
       assert.equal(socket.readyState, FakeWebSocket.CLOSED);
+
+      // ready is not rejected — the loop keeps trying until disconnect().
+      await delayMs(10);
+      const second = await waitForSocket(1);
+      second.open();
+      second.ready("peer-1");
+      const ready = await transport.ready;
+      assert.equal(ready.peer_id, "peer-1");
+      transport.disconnect();
     } finally {
       fake.restore();
     }
   });
 
-  it("notifies disconnect when a post-ready message cannot be decoded", async () => {
+  it("recycles the connection when a post-ready message cannot be decoded", async () => {
     const fake = installFakeWebSocket();
-    const disconnects: string[] = [];
+    const lost: string[] = [];
     try {
-      const transport = new CloudWebSocketTransport(
-        new URL("wss://example.test/n/room/sync"),
-        [],
-        undefined,
-        (reason) => disconnects.push(reason.message),
-      );
-      const socket = fake.socket;
+      const transport = createTransport({
+        onConnectionLost: (reason) => lost.push(reason.message),
+        reconnectBaseDelayMs: 1,
+        random: () => 0.5,
+      });
+      const socket = await waitForSocket(0);
       socket.open();
       socket.ready("peer-1");
       await transport.ready;
@@ -491,14 +519,15 @@ describe("cloud live sync", () => {
       socket.message("not binary");
       await nextMicrotask();
 
-      assert.deepEqual(disconnects, [
+      assert.deepEqual(lost, [
         "cloud sync socket message failed: unsupported WebSocket message [object String]",
       ]);
       assert.equal(socket.readyState, FakeWebSocket.CLOSED);
       await assert.rejects(
         transport.sendFrame(FrameType.PRESENCE, new Uint8Array([1, 2, 3])),
-        /cloud sync socket is closed/,
+        /cloud sync socket is not open/,
       );
+      transport.disconnect();
     } finally {
       fake.restore();
     }
@@ -704,6 +733,485 @@ describe("cloud persisted-seed handle resolution", () => {
     );
   });
 });
+
+describe("cloud transport reconnect loop", () => {
+  it("resolves the connect target per attempt (fresh auth + operator nonce)", async () => {
+    const fake = installFakeWebSocket();
+    const targets: string[] = [];
+    try {
+      const transport = createTransport({
+        connectTarget: async () => {
+          const nonce = mintCloudSessionId();
+          targets.push(nonce);
+          return {
+            url: new URL(`wss://example.test/n/room/sync?operator=browser%3A${nonce}`),
+            protocols: [],
+          };
+        },
+        reconnectBaseDelayMs: 1,
+        random: () => 0.5,
+      });
+
+      const first = await waitForSocket(0);
+      first.close({ code: 1006 });
+      await delayMs(10);
+      await waitForSocket(1);
+
+      assert.equal(targets.length, 2);
+      assert.notEqual(targets[0], targets[1]);
+      transport.disconnect();
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("emits roomReady$ per handshake with the fresh connection identity", async () => {
+    const fake = installFakeWebSocket();
+    const readyPeers: string[] = [];
+    try {
+      const transport = createTransport({ reconnectBaseDelayMs: 1, random: () => 0.5 });
+      transport.roomReady$.subscribe((ready) => readyPeers.push(ready.peer_id));
+
+      const first = await waitForSocket(0);
+      first.open();
+      first.ready("peer-1");
+      const ready = await transport.ready;
+      assert.equal(ready.peer_id, "peer-1");
+
+      first.close({ code: 1006 });
+      await delayMs(10);
+      const second = await waitForSocket(1);
+      second.open();
+      second.ready("peer-2");
+      await drainMicrotasks();
+
+      assert.deepEqual(readyPeers, ["peer-1", "peer-2"]);
+      transport.disconnect();
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("replays the latest handshake to late roomReady$ subscribers", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const transport = createTransport();
+      const socket = await waitForSocket(0);
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      // A subscriber attaching after the handshake (the session wires up
+      // once the runtime resolves) still observes the connection it must
+      // adopt — closes the missed-reconnect-during-setup gap.
+      const replayed: string[] = [];
+      transport.roomReady$.subscribe((ready) => replayed.push(ready.peer_id));
+      assert.deepEqual(replayed, ["peer-1"]);
+      transport.disconnect();
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("walks the status machine: connecting, online, reconnecting, online, offline", async () => {
+    const fake = installFakeWebSocket();
+    const statuses: string[] = [];
+    try {
+      const transport = createTransport({ reconnectBaseDelayMs: 1, random: () => 0.5 });
+      const subscription = transport.connectionStatus$.subscribe((status) => statuses.push(status));
+
+      const first = await waitForSocket(0);
+      first.open();
+      first.ready("peer-1");
+      await transport.ready;
+
+      first.close({ code: 1006 });
+      await delayMs(10);
+      const second = await waitForSocket(1);
+      second.open();
+      second.ready("peer-2");
+      await drainMicrotasks();
+
+      transport.disconnect();
+      subscription.unsubscribe();
+
+      assert.deepEqual(statuses, ["connecting", "online", "reconnecting", "online", "offline"]);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("rejects pending frame ACKs when the connection is lost", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const transport = createTransport({ reconnectBaseDelayMs: 1, random: () => 0.5 });
+      const socket = await waitForSocket(0);
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      const response = transport.sendRequest({ type: "execute_cell", cell_id: "cell-1" });
+      await nextMicrotask();
+      assert.equal(socket.sent.length, 1);
+
+      // FIFO frame-type ACK matching cannot span sockets.
+      socket.close({ code: 1006 });
+      await assert.rejects(response, /cloud sync socket closed \(1006\)/);
+      transport.disconnect();
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("backs off exponentially, caps the delay, and resets on cloud_room_ready", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const fake = installFakeWebSocket();
+    try {
+      // random() = 0.5 makes the jitter factor exactly 1.0.
+      const transport = createTransport({ random: () => 0.5 });
+
+      // Attempt 0 connects immediately.
+      const failAttempt = async (index: number) => {
+        const socket = await waitForSocket(index);
+        socket.close({ code: 1006 });
+      };
+
+      // Failed attempts schedule retries at 1s, 2s, 4s ... capped at 30s.
+      const expectedDelays = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000];
+      await failAttempt(0);
+      for (const [index, delay] of expectedDelays.entries()) {
+        t.mock.timers.tick(delay - 1);
+        await drainMicrotasks();
+        assert.equal(
+          FakeWebSocket.instances.length,
+          index + 1,
+          `no early retry before ${delay}ms (attempt ${index + 1})`,
+        );
+        t.mock.timers.tick(1);
+        await failAttempt(index + 1);
+      }
+
+      // A successful handshake resets the backoff to the base delay.
+      t.mock.timers.tick(30_000);
+      const recovered = await waitForSocket(expectedDelays.length + 1);
+      recovered.open();
+      recovered.ready("peer-1");
+      await transport.ready;
+      recovered.close({ code: 1006 });
+
+      t.mock.timers.tick(999);
+      await drainMicrotasks();
+      assert.equal(FakeWebSocket.instances.length, expectedDelays.length + 2);
+      t.mock.timers.tick(1);
+      await waitForSocket(expectedDelays.length + 2);
+
+      transport.disconnect();
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("keeps retry delays within the ±50% jitter bounds", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const fake = installFakeWebSocket();
+    try {
+      // random() = 0 → 0.5× base; random() = 1 → 1.5× base.
+      const low = createTransport({ random: () => 0 });
+      (await waitForSocket(0)).close({ code: 1006 });
+      t.mock.timers.tick(499);
+      await drainMicrotasks();
+      assert.equal(FakeWebSocket.instances.length, 1, "0.5×base lower bound holds");
+      t.mock.timers.tick(1);
+      await waitForSocket(1);
+      low.disconnect();
+
+      const high = createTransport({ random: () => 1 });
+      (await waitForSocket(2)).close({ code: 1006 });
+      t.mock.timers.tick(1_499);
+      await drainMicrotasks();
+      assert.equal(FakeWebSocket.instances.length, 3, "1.5×base upper bound holds");
+      t.mock.timers.tick(1);
+      await waitForSocket(3);
+      high.disconnect();
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("short-circuits the backoff wait on the browser online event", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const fake = installFakeWebSocket();
+    const fakeWindow = installFakeWindow();
+    try {
+      const transport = createTransport({ random: () => 0.5 });
+      (await waitForSocket(0)).close({ code: 1006 });
+      // Burn a couple of attempts so the pending delay is long.
+      t.mock.timers.tick(1_000);
+      (await waitForSocket(1)).close({ code: 1006 });
+      t.mock.timers.tick(2_000);
+      (await waitForSocket(2)).close({ code: 1006 });
+
+      // 4s wait pending; connectivity returns — reconnect immediately.
+      fakeWindow.dispatchEvent(new Event("online"));
+      await waitForSocket(3);
+
+      transport.disconnect();
+    } finally {
+      fakeWindow.restore();
+      fake.restore();
+    }
+  });
+
+  it("processes a sync frame arriving immediately after a reconnect ready AFTER the re-establish", async () => {
+    const fake = installFakeWebSocket();
+    const order: string[] = [];
+    try {
+      const transport = createTransport({ reconnectBaseDelayMs: 1, random: () => 0.5 });
+      const first = await waitForSocket(0);
+      first.open();
+      first.ready("peer-1");
+      await transport.ready;
+
+      transport.onFrame((frame) => order.push(`frame:${frame[0]}`));
+      transport.roomReady$.subscribe((ready) => order.push(`ready:${ready.peer_id}`));
+      assert.deepEqual(order, ["ready:peer-1"]); // replayed handshake
+
+      first.close({ code: 1006 });
+      await delayMs(10);
+      const second = await waitForSocket(1);
+      second.open();
+      // The room host kicks sync immediately after ready: the sync frame
+      // lands right behind the handshake. Subscribers (the session's
+      // synchronous re-establish) must run before the frame is dispatched.
+      second.ready("peer-2");
+      second.message(new Uint8Array([FrameType.AUTOMERGE_SYNC, 9]).buffer);
+      await drainMicrotasks();
+
+      assert.deepEqual(order, ["ready:peer-1", "ready:peer-2", "frame:0"]);
+      transport.disconnect();
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("delivers an edit made while disconnected after the reconnect resync, with continuity", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const transport = createTransport({ reconnectBaseDelayMs: 1, random: () => 0.5 });
+      const first = await waitForSocket(0);
+      first.open();
+      first.ready("peer-1");
+      const ready = await transport.ready;
+
+      // Mock SyncableHandle with claim/rollback semantics for local edits.
+      const handleCalls: string[] = [];
+      let pendingEdit: Uint8Array | null = null;
+      let claimedEdit: Uint8Array | null = null;
+      const handle: SyncableHandle = {
+        receive_frame: (bytes) =>
+          bytes[0] === FrameType.AUTOMERGE_SYNC
+            ? [
+                {
+                  type: "sync_applied",
+                  changed: true,
+                  changeset: {
+                    changed: [{ cell_id: "c1", fields: { source: true } }],
+                    added: [],
+                    removed: [],
+                    order_changed: false,
+                  },
+                },
+              ]
+            : [],
+        flush_local_changes: () => {
+          const edit = pendingEdit;
+          if (edit) {
+            claimedEdit = edit;
+            pendingEdit = null;
+          }
+          return edit;
+        },
+        cancel_last_flush: () => {
+          handleCalls.push("cancel_last_flush");
+          pendingEdit = claimedEdit;
+          claimedEdit = null;
+        },
+        flush_runtime_state_sync: () => null,
+        cancel_last_runtime_state_flush: () => undefined,
+        generate_runtime_state_sync_reply: () => null,
+        flush_comms_doc_sync: () => null,
+        cancel_last_comms_doc_flush: () => undefined,
+        generate_comms_doc_sync_reply: () => null,
+        flush_pool_state_sync: () => null,
+        cancel_last_pool_state_flush: () => undefined,
+        generate_pool_state_sync_reply: () => null,
+        reset_sync_state: () => {
+          handleCalls.push("reset_sync_state");
+        },
+        cell_count: () => 1,
+        get_heads_hex: () => ["aa"],
+        get_dependency_fingerprint: () => undefined,
+      };
+      const setActorCalls: string[] = [];
+      const engine = new SyncEngine({
+        getHandle: () => handle,
+        transport,
+        presenceHeartbeat: { intervalMs: 60_000, encode: () => new Uint8Array([0]) },
+        flushDeliveryTimeoutMs: 50,
+      });
+      startCloudBootstrapSync(engine);
+
+      // The session-shaped roomReady$ wiring: synchronous re-establish on
+      // every handshake after the one already adopted.
+      let adoptedPeer = ready.peer_id;
+      transport.roomReady$.subscribe((next) => {
+        if (next.peer_id === adoptedPeer) return;
+        adoptedPeer = next.peer_id;
+        reestablishCloudConnection(
+          { set_actor: (label: string) => setActorCalls.push(label) },
+          engine,
+          next.actor_label,
+        );
+      });
+
+      // Continuity seam: the cellChanges$ subscription must survive the
+      // reconnect (no engine restart, no projection blanking).
+      const changesets: unknown[] = [];
+      engine.cellChanges$.subscribe((changeset) => changesets.push(changeset));
+
+      // Connection drops; an edit lands while offline.
+      first.close({ code: 1006 });
+      pendingEdit = new Uint8Array([42]);
+      engine.flush();
+      await delayMs(10);
+      // The send was dropped (not buffered) and rolled back into the handle.
+      assert.deepEqual(handleCalls, ["cancel_last_flush"]);
+      assert.deepEqual(pendingEdit, new Uint8Array([42]));
+
+      // Reconnect: handshake replay triggers the synchronous re-establish,
+      // and the resync flush delivers the preserved edit.
+      const second = await waitForSocket(1);
+      second.open();
+      second.ready("peer-2");
+      await delayMs(10);
+      assert.deepEqual(setActorCalls, ["user:dev:alice/desktop:peer-2"]);
+      assert.ok(handleCalls.includes("reset_sync_state"));
+      const syncFrames = second.sent.filter((frame) => frame[0] === FrameType.AUTOMERGE_SYNC);
+      assert.equal(syncFrames.length, 1);
+      assert.deepEqual(Array.from(syncFrames[0].slice(1)), [42]);
+
+      // Inbound sync after the reconnect still reaches the ORIGINAL
+      // subscription — engine and consumers were preserved throughout.
+      second.message(new Uint8Array([FrameType.AUTOMERGE_SYNC, 7]).buffer);
+      await delayMs(60); // cellChanges$ coalesces on a 32ms buffer
+      assert.equal(changesets.length, 1);
+
+      engine.stop();
+      transport.disconnect();
+    } finally {
+      fake.restore();
+    }
+  });
+});
+
+describe("cloud reconnect session policies", () => {
+  it("re-establishes in the safe order: set_actor, resetForBootstrap, resetAndResync", () => {
+    const calls: string[] = [];
+    reestablishCloudConnection(
+      { set_actor: () => calls.push("set_actor") },
+      {
+        resetForBootstrap: () => calls.push("resetForBootstrap"),
+        resetAndResync: () => calls.push("resetAndResync"),
+      },
+      "user:dev:alice/browser:fresh",
+    );
+    assert.deepEqual(calls, ["set_actor", "resetForBootstrap", "resetAndResync"]);
+  });
+
+  it("classifies the first recoverable rejection as in-place resync, repeats escalate", () => {
+    assert.equal(classifyRecoverableRejection(1, true), "resync_in_place");
+    assert.equal(classifyRecoverableRejection(2, true), "escalate");
+    assert.equal(classifyRecoverableRejection(3, true), "escalate");
+    // No runtime yet (rejection during connect): nothing to resync in place.
+    assert.equal(classifyRecoverableRejection(1, false), "escalate");
+  });
+
+  it("mints a fresh operator nonce and re-resolves auth per connect target call", async () => {
+    const resolvedFor: string[] = [];
+    const connectTarget = createCloudConnectTarget({
+      syncEndpoint: "https://cloud.test/n/demo/sync",
+      resolveAuth: (sessionId) => {
+        resolvedFor.push(sessionId);
+        return {
+          headers: { Authorization: "Bearer token" },
+          protocols: ["nteract-bearer.dG9rZW4", "nteract.v4"],
+          user: null,
+          operator: null,
+          requestedScope: null,
+        };
+      },
+    });
+
+    const first = await connectTarget();
+    const second = await connectTarget();
+
+    assert.equal(resolvedFor.length, 2);
+    assert.notEqual(resolvedFor[0], resolvedFor[1]);
+    assert.equal(
+      first.url.searchParams.get("operator"),
+      `browser:${encodeURIComponent(resolvedFor[0])}`,
+    );
+    assert.equal(
+      second.url.searchParams.get("operator"),
+      `browser:${encodeURIComponent(resolvedFor[1])}`,
+    );
+    assert.deepEqual(first.protocols, ["nteract-bearer.dG9rZW4", "nteract.v4"]);
+  });
+});
+
+function createTransport(
+  overrides: Partial<CloudWebSocketTransportOptions> = {},
+): CloudWebSocketTransport {
+  return new CloudWebSocketTransport({
+    connectTarget: async () => ({
+      url: new URL("wss://example.test/n/room/sync"),
+      protocols: [],
+    }),
+    ...overrides,
+  });
+}
+
+/** Connect attempts resolve their target asynchronously; wait for socket N. */
+async function waitForSocket(index: number): Promise<FakeWebSocket> {
+  for (let i = 0; i < 50 && FakeWebSocket.instances.length <= index; i++) {
+    await nextMicrotask();
+  }
+  const socket = FakeWebSocket.instances[index];
+  assert.ok(socket, `expected WebSocket instance ${index}`);
+  return socket;
+}
+
+async function drainMicrotasks(): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    await nextMicrotask();
+  }
+}
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function installFakeWindow(): { dispatchEvent: (event: Event) => void; restore: () => void } {
+  const target = new EventTarget();
+  const original = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = target;
+  return {
+    dispatchEvent: (event) => target.dispatchEvent(event),
+    restore: () => {
+      (globalThis as { window?: unknown }).window = original;
+    },
+  };
+}
 
 function installFakeWebSocket(): {
   restore: () => void;
