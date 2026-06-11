@@ -178,6 +178,7 @@ function useDeferredIsolatedFrame({
 }
 
 import type { JupyterOutput } from "./jupyter-output";
+import { notebookOutputAnchorId } from "runtimed";
 // Re-export so existing imports continue to work.
 export type { JupyterOutput } from "./jupyter-output";
 
@@ -1131,8 +1132,11 @@ function OutputAreaSingle({
               // stream append doesn't re-mount sibling outputs. Fall back
               // to positional when a render path skipped the id.
               const key = output.output_id ?? `output-${index}`;
+              const outputAnchor = cellId
+                ? notebookOutputAnchorId(cellId, output.output_id ?? String(index))
+                : undefined;
               return (
-                <div key={key} data-slot="output-item" data-output-index={index}>
+                <div key={key} id={outputAnchor} data-slot="output-item" data-output-index={index}>
                   <ErrorBoundary
                     resetKeys={[output]}
                     fallback={(error, reset) => (
