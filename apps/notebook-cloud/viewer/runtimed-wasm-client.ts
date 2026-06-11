@@ -63,9 +63,12 @@ export async function loadNotebookHandleFromBytes(
   const handle = module.NotebookHandle.load(notebookBytes);
   try {
     // load() restores NotebookDoc bytes only (state/comms docs start empty)
-    // and leaves a random actor — the server-assigned label must be set
-    // before any authoring (actor labels are never reused across doc
-    // instances; the room mints a fresh one per connection).
+    // and leaves a random actor — the connection's label must be set before
+    // any authoring. Actor labels must never be reused across doc instances
+    // (DuplicateSeqNumber); freshness comes from the CLIENT-minted operator
+    // nonce (`browser:<sessionId>`, re-minted per connect effect run) — the
+    // worker only rewrites the principal segment, it does not mint the
+    // operator. Keep sessionId per-run or this invariant silently breaks.
     handle.set_actor(actorLabel);
   } catch (error) {
     handle.free();

@@ -41,7 +41,9 @@ import { CloudLivePresenceStore } from "./live-presence";
 import {
   cloudPrincipalFromActorLabel,
   connectCloudSyncRuntime,
+  isAnonymousCloudPrincipal,
   isRecoverableCloudFrameRejection,
+  shouldDiscardPersistedSeedOnRejection,
   type CloudSyncRuntime,
 } from "./live-sync";
 import type { CloudViewerLoadingPolicy } from "./loading-policy";
@@ -146,6 +148,9 @@ export function useCloudViewerSession({
   const materializeLiveRuntimeRef = useRef<((runtime: CloudSyncRuntime) => void) | null>(null);
   const liveMaterializedRef = useRef(false);
   const snapshotResolvedRef = useRef(false);
+  // Set when a seeded session's replayed changes were rejected by the room:
+  // the next connect attempt must bootstrap (survives the effect re-run).
+  const skipSeedOnceRef = useRef(false);
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
   const outputResolutionCacheRef = useRef(createOutputResolutionCache());
   const incrementalOutputCacheRef = useRef(new Map<string, NotebookStoreJupyterOutput>());
@@ -376,7 +381,7 @@ export function useCloudViewerSession({
     let materializeSequence = 0;
     let livePresenceStore: CloudLivePresenceStore | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    const sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+    const sessionId = mintSessionId();
     // Local-first persistence is fail-open: no IndexedDB (private mode,
     // SSR) means no adapter and the session runs exactly as before.
     const persistenceAdapter = IndexedDbStorageAdapter.create();
@@ -387,6 +392,11 @@ export function useCloudViewerSession({
           clear: () => clearPersistedNotebookDoc(persistenceAdapter, config.notebookId),
         }
       : undefined;
+    // Consume the poison-pill marker: after a seeded session's changes were
+    // rejected by the room, the next attempt bootstraps even though the
+    // adapter is healthy (the record was cleared, but don't race the clear).
+    const skipSeedOnThisAttempt = skipSeedOnceRef.current;
+    skipSeedOnceRef.current = false;
     // Shrink the tab-kill loss window: commit pending persistence state
     // when the page hides or unloads.
     const flushPersistence = () => {
@@ -410,18 +420,20 @@ export function useCloudViewerSession({
         }
       });
     };
-    const disposeCurrentRuntime = () => {
+    const disposeCurrentRuntime = (): Promise<void> => {
       const liveRuntime = liveRuntimeRef.current;
-      if (!liveRuntime) return;
+      if (!liveRuntime) return Promise.resolve();
       liveRuntimeRef.current = null;
       setCrdtCommWriter(null);
       // Capture unsaved persistence state before the handle is freed —
       // flushNow reads the snapshot bytes synchronously, and dispose()
-      // guarantees no later capture touches the freed handle.
-      flushPersistence();
+      // guarantees no later capture touches the freed handle. The returned
+      // promise settles once the teardown write has committed.
+      const teardownFlush = notebookPersistence?.flushNow() ?? Promise.resolve();
       notebookPersistence?.dispose();
       notebookPersistence = null;
       disposeCloudSyncRuntime(liveRuntime);
+      return teardownFlush;
     };
     const scheduleReconnect = (reason: Error) => {
       if (disposed) return;
@@ -568,7 +580,7 @@ export function useCloudViewerSession({
         auth: resolveSyncAuth
           ? await resolveSyncAuth(sessionId)
           : cloudSyncAuthFromPrototypeAuthState(authState),
-        persistence: persistenceSeed,
+        persistence: skipSeedOnThisAttempt ? undefined : persistenceSeed,
         onDisconnect: scheduleReconnect,
         onControl: (message) => {
           if (disposed) return;
@@ -592,6 +604,28 @@ export function useCloudViewerSession({
                 kind: "loading",
                 message: "Resynchronizing live notebook room after a rejected sync frame...",
               });
+              const seededRuntime = liveRuntimeRef.current?.seededFromPersistence === true;
+              if (
+                persistenceSeed &&
+                shouldDiscardPersistedSeedOnRejection(message, seededRuntime)
+              ) {
+                // Poison pill: the record replays changes the room will not
+                // accept; reseeding it would loop forever. Dispose FIRST —
+                // teardown's flushNow re-writes the record with the rejected
+                // changes — then clear once that write has settled, and
+                // bootstrap the next attempt. The rejected changes are
+                // unauthorized; losing them is the intended outcome.
+                skipSeedOnceRef.current = true;
+                disposeCurrentRuntime()
+                  .catch(() => undefined)
+                  .then(() => persistenceSeed.clear())
+                  .catch((error: unknown) =>
+                    console.warn(
+                      "[notebook-cloud] failed to clear rejected persisted NotebookDoc record",
+                      error,
+                    ),
+                  );
+              }
               scheduleReconnect(reason);
               return;
             }
@@ -606,17 +640,28 @@ export function useCloudViewerSession({
         }
         liveRuntimeRef.current = liveRuntime;
         installCloudWidgetCommWriter(liveRuntime);
-        if (persistenceAdapter) {
+        const persistencePrincipal = cloudPrincipalFromActorLabel(liveRuntime.actorLabel);
+        if (
+          persistenceAdapter &&
+          // A failed seed read leaves an unread record (possibly the only
+          // copy of offline edits) in place — never arm the save loop that
+          // would overwrite it.
+          liveRuntime.persistenceSeedOutcome !== "read_failed" &&
+          // Anonymous principals are per-connection: their records can
+          // never seed and would only churn storage.
+          !isAnonymousCloudPrincipal(persistencePrincipal)
+        ) {
           // Snapshot the raw NotebookHandle (full NotebookDoc bytes) on
-          // every doc change; the controller throttles and never throws
-          // into the session.
+          // every doc change; the controller throttles, self-disables after
+          // repeated failures, and never throws into the session.
           notebookPersistence = new NotebookDocPersistence({
             adapter: persistenceAdapter,
             notebookId: config.notebookId,
-            principal: cloudPrincipalFromActorLabel(liveRuntime.actorLabel),
+            principal: persistencePrincipal,
             changes$: liveRuntime.engine.notebookDocChanged$,
             getSaveBytes: () => liveRuntime.handle.save(),
             getHeadsHex: () => liveRuntime.handle.get_heads_hex(),
+            onError: (error) => console.warn("[notebook-cloud] notebook persistence error", error),
           });
         }
         const stopWidgetLiveRuntimeDiagnostics =
@@ -722,7 +767,13 @@ export function useCloudViewerSession({
       window.removeEventListener("pagehide", flushPersistence);
       document.removeEventListener("visibilitychange", flushPersistenceWhenHidden);
       materializeLiveRuntimeRef.current = null;
-      disposeCurrentRuntime();
+      const teardownFlush = disposeCurrentRuntime();
+      if (persistenceAdapter) {
+        // Connection hygiene across reconnect cycles: close the cached IDB
+        // connection once the teardown write has committed. Adapter ops
+        // reopen on demand, so a straggling clear still succeeds.
+        void teardownFlush.catch(() => undefined).then(() => persistenceAdapter.close());
+      }
       setCrdtCommWriter(null);
       resetCloudViewStoreProjection();
       resetRuntimeState();
@@ -780,6 +831,27 @@ function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
   liveRuntime.engine.stop();
   liveRuntime.transport.disconnect();
   liveRuntime.handle.free();
+}
+
+/**
+ * Mint the per-connect-attempt session id.
+ *
+ * Load-bearing for actor uniqueness: the worker derives the anonymous
+ * principal and the `browser:<sessionId>` operator nonce from this value
+ * and only rewrites the principal segment, so a collision would reuse an
+ * actor label across doc instances (DuplicateSeqNumber). The fallbacks
+ * for environments without crypto.randomUUID must stay collision-resistant
+ * — never a bare timestamp.
+ */
+function mintSessionId(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function recordCloudWidgetCommChangesDiagnostic(

@@ -38,6 +38,10 @@ export interface CloudSyncRuntime {
   handle: NotebookHandle;
   engine: SyncEngine;
   transport: CloudWebSocketTransport;
+  /** True when the handle was seeded from locally persisted NotebookDoc bytes. */
+  seededFromPersistence: boolean;
+  /** How the persisted-seed attempt resolved; "read_failed" must not arm saves. */
+  persistenceSeedOutcome: CloudPersistenceSeedOutcome;
   sendCursorPresence: (cellId: string, line: number, column: number) => void;
   sendSelectionPresence: (
     cellId: string,
@@ -68,10 +72,33 @@ export interface CloudSyncPersistenceSeed {
   clear: () => Promise<void>;
 }
 
+/**
+ * How the persisted-seed attempt resolved:
+ * - `"seeded"` — handle loaded from persisted bytes (principal matched).
+ * - `"bootstrap"` — no persistence wired, anonymous principal, or no record.
+ * - `"cleared"` — record was unverifiable or unloadable and was discarded.
+ * - `"read_failed"` — storage read rejected or timed out; the record (which
+ *   may hold offline-only edits) was left in place, so the session must NOT
+ *   arm the save loop — the next throttled save would overwrite it.
+ */
+export type CloudPersistenceSeedOutcome = "seeded" | "bootstrap" | "cleared" | "read_failed";
+
+export interface ResolvedCloudNotebookHandle<Handle> {
+  handle: Handle;
+  outcome: CloudPersistenceSeedOutcome;
+}
+
 type FrameListener = Parameters<NotebookTransport["onFrame"]>[0];
 
 const LIVE_SYNC_READY_TIMEOUT_MS = 30_000;
 const CLOUD_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Bound on the persisted-seed IndexedDB read at connect time. A hung IDB
+ * open (corrupt browser profile) must degrade to bootstrap, not stall the
+ * live session after the room handshake succeeded.
+ */
+const PERSISTED_SEED_READ_TIMEOUT_MS = 2_000;
 
 interface PendingFrameAck {
   reject: (error: Error) => void;
@@ -115,7 +142,7 @@ export async function connectCloudSyncRuntime({
     );
     const wasmModuleUrl = new URL(runtimedWasmModulePath, location.href);
     const wasmUrl = new URL(runtimedWasmPath, location.href);
-    const handle = await resolveCloudNotebookHandle({
+    const { handle, outcome: persistenceSeedOutcome } = await resolveCloudNotebookHandle({
       actorLabel: ready.actor_label,
       persistence,
       createBootstrap: () =>
@@ -147,6 +174,8 @@ export async function connectCloudSyncRuntime({
       handle,
       engine,
       transport,
+      seededFromPersistence: persistenceSeedOutcome === "seeded",
+      persistenceSeedOutcome,
       sendCursorPresence: (cellId, line, column) => {
         const payload = encodeCursorPresenceAfterInit(
           heartbeatPeerId,
@@ -239,6 +268,18 @@ export function cloudPrincipalFromActorLabel(actorLabel: string): string {
 }
 
 /**
+ * Anonymous principals (`anonymous:<encodedSession>`, minted by the worker
+ * from the per-connection viewer_session nonce) change on every connect,
+ * so a persisted record can never match the next session — and an
+ * anonymous session must never clear a signed-in user's record on
+ * principal mismatch. Persistence is skipped entirely for them: no seed,
+ * no save, no clear.
+ */
+export function isAnonymousCloudPrincipal(principal: string): boolean {
+  return principal.startsWith("anonymous:");
+}
+
+/**
  * Choose the initial NotebookHandle for a live cloud session: seed from
  * locally persisted NotebookDoc bytes when their authoring principal
  * matches the connection's, else create a bootstrap skeleton.
@@ -248,53 +289,66 @@ export function cloudPrincipalFromActorLabel(actorLabel: string): string {
  * offline edits captured in the persisted bytes flow to the room as
  * ordinary sync.
  *
- * Records that cannot be verified (missing/corrupt meta) or whose
- * principal mismatches are cleared — the room's actor-principal
+ * Records that cannot be verified (missing/corrupt meta, torn envelope)
+ * or whose principal mismatches are cleared — the room's actor-principal
  * authorization would reject their replayed changes on every reconnect,
  * looping forever. Corrupt bytes (`load()` throwing) likewise clear and
- * fall back to bootstrap. Storage read failures fail open to bootstrap
- * without clearing.
+ * fall back to bootstrap. Storage reads are bounded by a short timeout
+ * and fail open to bootstrap WITHOUT clearing (`"read_failed"`); callers
+ * must not arm the save loop in that case. Rejection of seeded changes by
+ * the room is escalated by the session (clear + bootstrap-only retry),
+ * not here.
  */
 export async function resolveCloudNotebookHandle<Handle>({
   actorLabel,
   persistence,
   createBootstrap,
   loadFromBytes,
+  readTimeoutMs = PERSISTED_SEED_READ_TIMEOUT_MS,
 }: {
   actorLabel: string;
   persistence?: CloudSyncPersistenceSeed;
   createBootstrap: () => Promise<Handle>;
   loadFromBytes: (bytes: Uint8Array) => Promise<Handle>;
-}): Promise<Handle> {
-  if (!persistence) {
-    return createBootstrap();
+  readTimeoutMs?: number;
+}): Promise<ResolvedCloudNotebookHandle<Handle>> {
+  if (!persistence || isAnonymousCloudPrincipal(cloudPrincipalFromActorLabel(actorLabel))) {
+    return { handle: await createBootstrap(), outcome: "bootstrap" };
   }
 
   let persisted: PersistedNotebookDoc | undefined;
   try {
-    persisted = await persistence.loadPersisted();
+    persisted = await withReadyTimeout(
+      persistence.loadPersisted(),
+      readTimeoutMs,
+      `persisted NotebookDoc read did not settle within ${readTimeoutMs}ms`,
+    );
   } catch (error) {
     console.warn("[notebook-cloud] persisted NotebookDoc read failed; bootstrapping", error);
-    return createBootstrap();
+    return { handle: await createBootstrap(), outcome: "read_failed" };
   }
   if (!persisted) {
-    return createBootstrap();
+    return { handle: await createBootstrap(), outcome: "bootstrap" };
   }
 
-  if (!persisted.meta || persisted.meta.principal !== cloudPrincipalFromActorLabel(actorLabel)) {
+  if (
+    !persisted.meta ||
+    !persisted.bytes ||
+    persisted.meta.principal !== cloudPrincipalFromActorLabel(actorLabel)
+  ) {
     await clearPersistedSeed(persistence);
-    return createBootstrap();
+    return { handle: await createBootstrap(), outcome: "cleared" };
   }
 
   try {
-    return await loadFromBytes(persisted.bytes);
+    return { handle: await loadFromBytes(persisted.bytes), outcome: "seeded" };
   } catch (error) {
     console.warn(
       "[notebook-cloud] persisted NotebookDoc bytes failed to load; clearing and bootstrapping",
       error,
     );
     await clearPersistedSeed(persistence);
-    return createBootstrap();
+    return { handle: await createBootstrap(), outcome: "cleared" };
   }
 }
 
@@ -308,6 +362,21 @@ async function clearPersistedSeed(persistence: CloudSyncPersistenceSeed): Promis
 
 export function isRecoverableCloudFrameRejection(message: SessionControlMessage): boolean {
   return message.type === "cloud_frame_rejected" && message.frame_type === FrameType.AUTOMERGE_SYNC;
+}
+
+/**
+ * Poison-pill guard: a room-rejected NotebookDoc sync frame on a session
+ * seeded from persisted bytes means the record replays changes the room
+ * will never accept (scope downgrade, room history regression). Without
+ * discarding it, every reconnect reseeds the same record and hits the
+ * identical rejection — a permanent loop. The rejected changes are
+ * unauthorized; losing them is the intended outcome.
+ */
+export function shouldDiscardPersistedSeedOnRejection(
+  message: SessionControlMessage,
+  seededFromPersistence: boolean,
+): boolean {
+  return seededFromPersistence && isRecoverableCloudFrameRejection(message);
 }
 
 export async function withReadyTimeout<T>(
