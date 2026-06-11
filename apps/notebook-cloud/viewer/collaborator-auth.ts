@@ -579,6 +579,13 @@ function base64UrlEncode(value: string): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
-function devPrincipalLabel(user: string): string {
+/**
+ * Client-side mirror of the worker's `principalForDevUser`
+ * (src/identity.ts): `user:dev:<encodePrincipalComponent(user)>` where the
+ * encoder is `encodeURIComponent`. The single client-side definition —
+ * auth diagnostics and the instant-paint principal matcher both derive
+ * the dev principal from here so the two cannot drift apart.
+ */
+export function devPrincipalLabel(user: string): string {
   return `user:dev:${encodeURIComponent(user.trim() || "browser-editor")}`;
 }

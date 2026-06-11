@@ -1,16 +1,37 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import type { PersistedNotebookDoc } from "runtimed";
+import {
+  RUNTIME_STATE_CACHE_KEY_SEGMENT,
+  encodePersistedNotebookDoc,
+  type PersistedNotebookDoc,
+  type StorageAdapter,
+  type StorageKey,
+} from "runtimed";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth.ts";
 import {
   cloudInstantPaintPrincipalMatcher,
+  cloudInstantPaintStorageOptions,
   cloudNotebookHandleCaughtUp,
   resolveCloudInstantPaintHandle,
+  runCloudInstantPaint,
   shouldDisplayEmptyLiveNotebook,
   type CloudInstantPaintOptions,
+  type CloudInstantPaintRunOptions,
 } from "../viewer/instant-paint.ts";
 import { cloudViewerLoadingPolicy } from "../viewer/loading-policy.ts";
+import {
+  asRuntimedWasmAssetFailure,
+  isRuntimedWasmAssetFailure,
+} from "../viewer/runtimed-wasm-failure.ts";
+
+/**
+ * The session's exact transient-failure classifier (cloud-viewer-session
+ * wires this expression verbatim) — drift between the test's predicate and
+ * the shipped one must show up here.
+ */
+const sessionIsTransientLoadFailure = (error: unknown) =>
+  isRuntimedWasmAssetFailure(error instanceof Error ? error.message : String(error));
 
 function authState(overrides: Partial<CloudPrototypeAuthState>): CloudPrototypeAuthState {
   return {
@@ -188,10 +209,13 @@ describe("resolveCloudInstantPaintHandle", () => {
     harness.options.loadRenderHandle = async (notebookBytes, runtimeStateBytes) => {
       if (runtimeStateBytes) {
         harness.calls.push("load(pair)");
+        // A bare load_snapshot rejection carries no asset-failure prefix:
+        // through the REAL classifier it must read as corrupt cache.
         throw new Error("corrupt runtime-state bytes");
       }
       return loadRenderHandle(notebookBytes, runtimeStateBytes);
     };
+    harness.options.isTransientLoadFailure = sessionIsTransientLoadFailure;
 
     const resolved = await withSilencedWarnings(() =>
       resolveCloudInstantPaintHandle(harness.options),
@@ -211,16 +235,47 @@ describe("resolveCloudInstantPaintHandle", () => {
     const harness = createHarness({ notebook: record(PRINCIPAL), cache: record(PRINCIPAL) });
     harness.options.loadRenderHandle = async () => {
       harness.calls.push("load(pair)");
-      throw new Error("runtimed WASM asset failed: import timed out");
+      // The terminal init-failure shape the wasm client actually throws.
+      throw asRuntimedWasmAssetFailure(new Error("import timed out"));
     };
-    harness.options.isTransientLoadFailure = (error) =>
-      error instanceof Error && error.message.startsWith("runtimed WASM asset failed");
+    harness.options.isTransientLoadFailure = sessionIsTransientLoadFailure;
 
     const resolved = await withSilencedWarnings(() =>
       resolveCloudInstantPaintHandle(harness.options),
     );
 
     assert.deepEqual(resolved, { handle: null, outcome: "skipped_unloadable" });
+    assert.equal(harness.calls.includes("clearCache"), false);
+  });
+
+  it("treats an absent or torn seed record as nothing to paint, clearing nothing", async () => {
+    for (const notebook of [undefined, { meta: null } as PersistedNotebookDoc]) {
+      const harness = createHarness({ notebook, cache: record(PRINCIPAL) });
+      const resolved = await resolveCloudInstantPaintHandle(harness.options);
+
+      assert.deepEqual(resolved, { handle: null, outcome: "skipped_no_record" });
+      // Seeding's post-handshake logic owns whether an unverifiable seed
+      // record clears — the paint path must touch neither record.
+      assert.equal(harness.calls.includes("clearCache"), false);
+    }
+  });
+
+  it("a stale attempt never clears the cache after losing the race inside the load", async () => {
+    // Seconds can pass inside loadRenderHandle (WASM init ladder); a live
+    // session arming persistence meanwhile may have REWRITTEN the cache
+    // record. The corrupt-cache clear decision was made against the OLD
+    // bytes, so a superseded attempt must skip the delete.
+    let liveMaterialized = false;
+    const harness = createHarness({ notebook: record(PRINCIPAL), cache: record(PRINCIPAL) });
+    harness.options.shouldContinue = () => !liveMaterialized;
+    harness.options.loadRenderHandle = async () => {
+      liveMaterialized = true; // live connect wins during the WASM load
+      throw new Error("corrupt runtime-state bytes");
+    };
+
+    const resolved = await resolveCloudInstantPaintHandle(harness.options);
+
+    assert.deepEqual(resolved, { handle: null, outcome: "skipped_superseded" });
     assert.equal(harness.calls.includes("clearCache"), false);
   });
 
@@ -270,6 +325,177 @@ describe("resolveCloudInstantPaintHandle", () => {
       harness.calls.some((call) => call.startsWith("load(")),
       false,
     );
+  });
+});
+
+describe("runCloudInstantPaint", () => {
+  interface RunHarness {
+    calls: string[];
+    liveMaterialized: { current: boolean };
+    options: CloudInstantPaintRunOptions<string, { cells: string[] }>;
+  }
+
+  function createRunHarness(cells: string[] = ["cell-1"]): RunHarness {
+    const calls: string[] = [];
+    const liveMaterialized = { current: false };
+    return {
+      calls,
+      liveMaterialized,
+      options: {
+        resolveHandle: async () => {
+          calls.push("resolve");
+          return { handle: "render-handle", outcome: "painted" as const };
+        },
+        // The session's freshness flag shape: live materialization flips it.
+        isFresh: () => !liveMaterialized.current,
+        materialize: async (handle, _shouldContinue) => {
+          calls.push(`materialize(${handle})`);
+          return { cells };
+        },
+        acceptMetadata: () => {
+          calls.push("acceptMetadata");
+        },
+        projectWidgets: async () => {
+          calls.push("projectWidgets");
+        },
+        applyPaint: () => {
+          calls.push("applyPaint");
+        },
+        freeHandle: (handle) => {
+          calls.push(`free(${handle})`);
+        },
+      },
+    };
+  }
+
+  it("runs resolve, materialize, metadata, widgets, apply in order and frees the handle", async () => {
+    const harness = createRunHarness();
+    const outcome = await runCloudInstantPaint(harness.options);
+
+    assert.equal(outcome, "painted");
+    assert.deepEqual(harness.calls, [
+      "resolve",
+      "materialize(render-handle)",
+      "acceptMetadata",
+      "projectWidgets",
+      "applyPaint",
+      "free(render-handle)",
+    ]);
+  });
+
+  it("a live materialization landing while the handle resolves skips every later step", async () => {
+    const harness = createRunHarness();
+    harness.options.resolveHandle = async () => {
+      harness.calls.push("resolve");
+      harness.liveMaterialized.current = true; // live wins during IDB/WASM work
+      return { handle: "render-handle", outcome: "painted" as const };
+    };
+
+    const outcome = await runCloudInstantPaint(harness.options);
+
+    assert.equal(outcome, "skipped_superseded");
+    assert.deepEqual(harness.calls, ["resolve", "free(render-handle)"]);
+  });
+
+  it("a live materialization landing mid-materialize means no apply lands", async () => {
+    const harness = createRunHarness();
+    harness.options.materialize = async () => {
+      harness.calls.push("materialize");
+      harness.liveMaterialized.current = true; // live wins mid-flight
+      return { cells: ["stale-cell"] };
+    };
+
+    const outcome = await runCloudInstantPaint(harness.options);
+
+    assert.equal(outcome, "skipped_superseded");
+    assert.equal(harness.calls.includes("applyPaint"), false);
+    assert.equal(harness.calls.includes("acceptMetadata"), false);
+    assert.equal(harness.calls.at(-1), "free(render-handle)");
+  });
+
+  it("a live materialization landing during widget projection means no final apply", async () => {
+    const harness = createRunHarness();
+    harness.options.projectWidgets = async () => {
+      harness.calls.push("projectWidgets");
+      harness.liveMaterialized.current = true;
+    };
+
+    const outcome = await runCloudInstantPaint(harness.options);
+
+    assert.equal(outcome, "skipped_superseded");
+    assert.equal(harness.calls.includes("applyPaint"), false);
+    assert.equal(harness.calls.at(-1), "free(render-handle)");
+  });
+
+  it("an empty persisted snapshot paints nothing and still frees the handle", async () => {
+    const harness = createRunHarness([]);
+    const outcome = await runCloudInstantPaint(harness.options);
+
+    assert.equal(outcome, "skipped_empty_snapshot");
+    assert.equal(harness.calls.includes("applyPaint"), false);
+    assert.equal(harness.calls.at(-1), "free(render-handle)");
+  });
+});
+
+describe("cloudInstantPaintStorageOptions (session storage boundary)", () => {
+  function createRecordingAdapter(): StorageAdapter & { records: Map<string, Uint8Array> } {
+    const records = new Map<string, Uint8Array>();
+    const keyOf = (key: StorageKey) => key.join("/");
+    return {
+      records,
+      load: async (key) => records.get(keyOf(key)),
+      save: async (key, data) => {
+        records.set(keyOf(key), data);
+      },
+      remove: async (key) => {
+        records.delete(keyOf(key));
+      },
+      loadRange: async () => [],
+      removeRange: async (prefix) => {
+        const rangePrefix = `${keyOf(prefix)}/`;
+        for (const key of [...records.keys()]) {
+          if (key === keyOf(prefix) || key.startsWith(rangePrefix)) {
+            records.delete(key);
+          }
+        }
+      },
+    };
+  }
+
+  it("a corrupt runtime cache clears ONLY the cache record — the seed record survives", async () => {
+    // Review C[2]: the unit harness cannot observe a seed clear by
+    // construction, so this drives the REAL storage bindings the session
+    // spreads (load + clear against real envelope records) and asserts the
+    // boundary: load_snapshot rejecting the cache bytes deletes
+    // [id, "runtime-state-cache"] and nothing else.
+    const adapter = createRecordingAdapter();
+    const meta = {
+      headsHex: ["aa"],
+      savedAt: 1,
+      principal: "user:dev:alice",
+      schemaVersion: 1 as const,
+    };
+    await adapter.save(["nb-1", "snapshot"], encodePersistedNotebookDoc(meta, new Uint8Array([1])));
+    await adapter.save(
+      ["nb-1", RUNTIME_STATE_CACHE_KEY_SEGMENT],
+      encodePersistedNotebookDoc(meta, new Uint8Array([2])),
+    );
+
+    const resolved = await withSilencedWarnings(() =>
+      resolveCloudInstantPaintHandle<string>({
+        matchesPrincipal: (principal) => principal === "user:dev:alice",
+        ...cloudInstantPaintStorageOptions(adapter, "nb-1"),
+        loadRenderHandle: async (_notebookBytes, runtimeStateBytes) => {
+          if (runtimeStateBytes) {
+            throw new Error("corrupt runtime-state bytes");
+          }
+          return "cells-only-handle";
+        },
+      }),
+    );
+
+    assert.deepEqual(resolved, { handle: "cells-only-handle", outcome: "painted_cells_only" });
+    assert.deepEqual([...adapter.records.keys()], ["nb-1/snapshot"]);
   });
 });
 
@@ -374,14 +600,21 @@ describe("instant paint mutual exclusion and session wiring", () => {
     );
   });
 
-  it("guards every instant-paint apply on the live-materialization race flag", () => {
+  it("drives the paint through the tested runner with the real freshness flag", () => {
+    // The race-guard SEQUENCING is tested for real in the runCloudInstantPaint
+    // suite above; these pin the session's thin wiring into it — the flag
+    // definition, both injection points, and the storage-option factory
+    // whose clear targets only the cache record.
     assert.match(
       sessionSource,
       /const instantPaintFresh = \(\) => !disposed && !liveMaterializedRef\.current;/,
     );
-  });
-
-  it("frees the throwaway render handle after materialization", () => {
-    assert.match(sessionSource, /\} finally \{\s*renderHandle\.free\(\);\s*\}/);
+    assert.match(sessionSource, /isFresh: instantPaintFresh,/);
+    assert.match(sessionSource, /shouldContinue: instantPaintFresh,/);
+    assert.match(
+      sessionSource,
+      /\.\.\.cloudInstantPaintStorageOptions\(persistenceAdapter, config\.notebookId\),/,
+    );
+    assert.match(sessionSource, /freeHandle: \(renderHandle\) => renderHandle\.free\(\),/);
   });
 });
