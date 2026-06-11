@@ -456,13 +456,17 @@ actor**. The pinned-snapshot path already proves bytes → throwaway handle →
   shared machine. Gate the paint on the principal derivable from the locally
   stored auth material (collaborator-auth token) matching the envelope meta;
   no match → skip paint, wait for the room.
-- **Outputs:** the envelope holds NotebookDoc only, so first paint shows
-  cells/sources/metadata without outputs (RuntimeStateDoc is authority-owned
-  and unpersisted); outputs fill in when room sync lands. If outputs-less
-  paint proves too bare, a strictly render-only RuntimeStateDoc *cache*
-  (never loaded into the syncing handle, never flushed) is the compatible
-  extension — the authority invariant forbids restoring runtime state into
-  the sync path, not caching pixels.
+- **Outputs paint too — via a render-only RuntimeStateDoc cache (base
+  case).** Outputs are most of what a notebook visually *is*, so first paint
+  must include them: alongside the NotebookDoc envelope, cache the last
+  received RuntimeStateDoc bytes (`save_state_doc()`) under a sibling key,
+  strictly as a paint source — decoded into a throwaway render handle (the
+  pinned-snapshot path's exact shape), **never** loaded into the syncing
+  handle and never flushed. The authority invariant forbids restoring
+  runtime state into the sync path, not caching pixels; the syncing handle
+  still bootstraps RuntimeStateDoc empty and the room remains the only
+  writer. Blob-backed outputs still need their blob fetches; everything
+  inline paints instantly.
 - Offline *editing* before the first-ever handshake stays out of scope
   (below) — this PR is about read latency, not offline authoring.
 
