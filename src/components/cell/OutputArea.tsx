@@ -762,23 +762,30 @@ function OutputAreaSingle({
     return () => document.removeEventListener("pointerdown", handlePointerDown, true);
   }, [releaseStaticFrameInteraction, staticFrameInteractionActive]);
 
-  const activateStaticFrameInteraction = useCallback(() => {
-    if (shouldUseScrollPassthroughFrame) {
-      if (!staticFrameInteractionActive && hasSiftOutputs) {
-        scrollElementIntoComfortableView(staticFrameInteractionRef.current);
+  const activateStaticFrameInteraction = useCallback(
+    ({ alignIntoView = false }: { alignIntoView?: boolean } = {}) => {
+      if (shouldUseScrollPassthroughFrame) {
+        if (alignIntoView && !staticFrameInteractionActive && hasSiftOutputs) {
+          scrollElementIntoComfortableView(staticFrameInteractionRef.current);
+        }
+        setStaticFrameInteractionActive(true);
+        // Move DOM focus off CodeMirror without scrolling; this wrapper owns
+        // focus until iframe pointer interaction is active.
+        staticFrameInteractionRef.current?.focus({ preventScroll: true });
       }
-      setStaticFrameInteractionActive(true);
-      // Move DOM focus off CodeMirror without scrolling; this wrapper owns
-      // focus until iframe pointer interaction is active.
-      staticFrameInteractionRef.current?.focus({ preventScroll: true });
-    }
-    onIframeMouseDown?.();
-  }, [
-    hasSiftOutputs,
-    shouldUseScrollPassthroughFrame,
-    staticFrameInteractionActive,
-    onIframeMouseDown,
-  ]);
+      onIframeMouseDown?.();
+    },
+    [
+      hasSiftOutputs,
+      shouldUseScrollPassthroughFrame,
+      staticFrameInteractionActive,
+      onIframeMouseDown,
+    ],
+  );
+
+  const activateStaticFrameInteractionWithAlignment = useCallback(() => {
+    activateStaticFrameInteraction({ alignIntoView: true });
+  }, [activateStaticFrameInteraction]);
 
   const activateStaticFrameInteractionTemporarily = useCallback(() => {
     activateStaticFrameInteraction();
@@ -1112,11 +1119,11 @@ function OutputAreaSingle({
                   className="pointer-events-auto"
                   onPointerDown={(event) => {
                     event.stopPropagation();
-                    activateStaticFrameInteraction();
+                    activateStaticFrameInteractionWithAlignment();
                   }}
                   onClick={(event) => {
                     event.stopPropagation();
-                    activateStaticFrameInteraction();
+                    activateStaticFrameInteractionWithAlignment();
                   }}
                 />
               </div>
