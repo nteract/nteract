@@ -12,7 +12,7 @@ import {
   setExecution,
   setNotebookQueueProjection,
 } from "@/components/notebook/state/execution-store";
-import { deleteOutputs, setOutput } from "@/components/notebook/state/output-store";
+import { deleteOutputs, getOutputById, setOutput } from "@/components/notebook/state/output-store";
 import {
   getCellIdsSnapshot,
   resetRuntimeState,
@@ -167,17 +167,49 @@ function normalizeOutputForNotebookView(
   index: number,
 ): NotebookStoreOutput {
   const output_id = output.output_id ?? `cloud-output:${cellId}:${index}`;
+  const previous = getOutputById(output_id);
+  let normalized: NotebookStoreOutput;
+
   if (output.output_type === "stream") {
-    return {
-      ...output,
-      output_id,
-      text: Array.isArray(output.text) ? output.text.join("") : output.text,
-    };
+    const text = Array.isArray(output.text) ? output.text.join("") : output.text;
+    normalized =
+      output.output_id === output_id && output.text === text
+        ? (output as NotebookStoreOutput)
+        : {
+            ...output,
+            output_id,
+            text,
+          };
+    return reusePreviousOutputIfEqual(previous, normalized);
   }
-  return {
-    ...output,
-    output_id,
-  } as NotebookStoreOutput;
+
+  normalized =
+    output.output_id === output_id
+      ? (output as NotebookStoreOutput)
+      : ({
+          ...output,
+          output_id,
+        } as NotebookStoreOutput);
+  return reusePreviousOutputIfEqual(previous, normalized);
+}
+
+function reusePreviousOutputIfEqual(
+  previous: NotebookStoreOutput | undefined,
+  next: NotebookStoreOutput,
+): NotebookStoreOutput {
+  if (!previous || previous === next) return next;
+  const previousSerialized = serializedOutput(previous);
+  return previousSerialized !== null && previousSerialized === serializedOutput(next)
+    ? previous
+    : next;
+}
+
+function serializedOutput(output: NotebookStoreOutput): string | null {
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return null;
+  }
 }
 
 function difference(previous: ReadonlySet<string>, next: ReadonlySet<string>): string[] {

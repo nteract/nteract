@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { updateCellSourceById } from "@/components/notebook/state/cell-store";
+import { getCellById, updateCellSourceById } from "@/components/notebook/state/cell-store";
 import {
   getExecutionById,
   getNotebookQueueProjection,
   setExecution,
   setNotebookQueueProjection,
 } from "@/components/notebook/state/execution-store";
+import { getOutputById } from "@/components/notebook/state/output-store";
 import { createNotebookViewModelFromNotebookCells } from "@/components/notebook/state/view-model-store";
 import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 import {
@@ -134,7 +135,72 @@ describe("cloud NotebookView store bridge", () => {
       output_ids: ["out-runtime"],
     });
   });
+
+  it("keeps existing output references stable when structural cloud projection adds a cell", () => {
+    projectCloudCellsIntoNotebookViewStores([
+      codeCellWithWidgetOutput("widget-cell", "slider-model", 7),
+    ]);
+
+    const firstCell = getCellById("widget-cell");
+    const firstOutput = getOutputById("widget-output");
+
+    projectCloudCellsIntoNotebookViewStores([
+      codeCellWithWidgetOutput("widget-cell", "slider-model", 7),
+      {
+        id: "new-cell",
+        cellType: "code",
+        source: "",
+        language: "python",
+        executionId: null,
+        executionCount: null,
+        outputs: [],
+        metadata: {},
+      },
+    ]);
+
+    assert.equal(getCellById("widget-cell"), firstCell);
+    assert.equal(getOutputById("widget-output"), firstOutput);
+  });
+
+  it("updates an existing output reference when the cloud output payload changes", () => {
+    projectCloudCellsIntoNotebookViewStores([
+      codeCellWithWidgetOutput("widget-cell", "slider-model", 7),
+    ]);
+
+    const firstOutput = getOutputById("widget-output");
+
+    projectCloudCellsIntoNotebookViewStores([
+      codeCellWithWidgetOutput("widget-cell", "slider-model", 8),
+    ]);
+
+    assert.notEqual(getOutputById("widget-output"), firstOutput);
+  });
 });
+
+function codeCellWithWidgetOutput(cellId: string, modelId: string, value: number) {
+  return {
+    id: cellId,
+    cellType: "code" as const,
+    source: "display(slider)",
+    language: "python",
+    executionId: "exec-widget",
+    executionCount: 1,
+    outputs: [
+      {
+        output_id: "widget-output",
+        output_type: "display_data" as const,
+        data: {
+          "application/vnd.jupyter.widget-view+json": {
+            model_id: modelId,
+          },
+          "text/plain": `IntSlider(value=${value})`,
+        },
+        metadata: {},
+      },
+    ],
+    metadata: {},
+  };
+}
 
 function outlineTitlesFromStore(): string[] {
   return createNotebookViewModelFromNotebookCells().outlineItems.map((item) => item.title);
