@@ -12,6 +12,7 @@ import {
   CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
 } from "./connection-diagnostics";
+import { isRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 
 export interface CloudNotebookNoticesProps {
@@ -41,6 +42,13 @@ export interface CloudNotebookNoticesProps {
   rendererAssetError?: Error | null;
   /** Restarts the renderer bundle load ladder; recovery un-blanks every output at once. */
   onRetryRendererAssets?: () => void;
+  /**
+   * Re-enters the live connection (retryLiveConnection — a connectAttempt
+   * bump; the wasm client's caches clear on rejection so the retry
+   * genuinely re-imports). Rendered as the action for terminal notebook-
+   * engine asset failures, which auth actions cannot remedy.
+   */
+  onRetryConnection?: () => void;
   onResetAuth: () => void;
   onSignInAgain?: () => void | Promise<void>;
 }
@@ -120,6 +128,7 @@ export function CloudNotebookNotices({
   status,
   diagnostics,
   onResetAuth,
+  onRetryConnection,
   onRetryRendererAssets,
   onSignInAgain,
 }: CloudNotebookNoticesProps) {
@@ -199,6 +208,7 @@ export function CloudNotebookNotices({
             <ConnectionNoticeAction
               connectionError={connectionError ?? ""}
               onResetAuth={onResetAuth}
+              onRetryConnection={onRetryConnection}
               onSignInAgain={onSignInAgain}
             />
           }
@@ -279,12 +289,25 @@ function AuthNoticeAction({
 function ConnectionNoticeAction({
   connectionError,
   onResetAuth,
+  onRetryConnection,
   onSignInAgain,
 }: {
   connectionError: string;
   onResetAuth: () => void;
+  onRetryConnection?: () => void;
   onSignInAgain?: () => void | Promise<void>;
 }) {
+  if (isRuntimedWasmAssetFailure(connectionError) && onRetryConnection) {
+    // Asset failures are not auth problems: "Use anonymous" would destroy
+    // a signed-in session without fixing anything. retryLiveConnection is
+    // the documented re-entry and genuinely re-imports.
+    return (
+      <NotebookNoticeAction onClick={onRetryConnection} icon={<RotateCcw className="h-3 w-3" />}>
+        Retry
+      </NotebookNoticeAction>
+    );
+  }
+
   if (connectionError === CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC && onSignInAgain) {
     return (
       <NotebookNoticeAction
@@ -364,6 +387,14 @@ function cloudConnectionNoticeDisplay(
     };
   }
 
+  if (isRuntimedWasmAssetFailure(error)) {
+    return {
+      title: "Notebook engine failed to load.",
+      message: sanitizeCloudConnectionError(error),
+      tone: "warning",
+    };
+  }
+
   if (/\bfailed to connect\s+wss?:\/\//i.test(error)) {
     if (!hasReadableSnapshot) {
       return {
@@ -387,7 +418,10 @@ function cloudConnectionNoticeDisplay(
 }
 
 function sanitizeCloudConnectionError(error: string): string {
-  return error.replace(/\bwss?:\/\/[^\s]+/gi, (rawUrl) => {
+  // http(s) joined the redaction set when runtimed WASM asset hrefs began
+  // flowing into this surface; query/fragment (where signed-CDN tokens
+  // would live) are stripped, protocol//host/pathname stay legible.
+  return error.replace(/\b(?:wss?|https?):\/\/[^\s]+/gi, (rawUrl) => {
     try {
       const url = new URL(rawUrl);
       return `${url.protocol}//${url.host}${url.pathname}`;

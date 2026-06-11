@@ -185,12 +185,43 @@ describe("HTML script serialization", () => {
       new Request("https://cloud.test/n/demo/r/heads-123"),
       fakeEnv({
         ASSETS: fakeViewerAssetManifests({
+          // js is invalid while css is a VALID hashed name: the whole
+          // manifest must be rejected (never a per-field mix of a stable
+          // js with a hashed css from another deploy).
           rendererSidecar: {
             js: "../assets/notebook-cloud-viewer.js",
-            css: "isolated-renderer.css",
+            css: "isolated-renderer.fedcba9876543210.css",
             siftWasm: "sift_wasm.wasm",
           },
         }),
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(
+      html,
+      /"rendererAssets":\{"js":"isolated-renderer\.js","css":"isolated-renderer\.css","siftWasm":"sift_wasm\.wasm"\}/,
+    );
+    assert.doesNotMatch(html, /fedcba9876543210/);
+  });
+
+  it("falls back to stable renderer sidecar names when the manifest body is not JSON", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo/r/heads-123"),
+      fakeEnv({
+        ASSETS: {
+          fetch: async (request: Request) => {
+            const pathname = new URL(request.url).pathname;
+            if (pathname === "/assets/renderer-sidecar-assets.json") {
+              return new Response("not json", {
+                headers: { "Content-Type": "application/json" },
+              });
+            }
+            return new Response("not found", { status: 404 });
+          },
+        },
       }),
       fakeContext(),
     );

@@ -75,9 +75,12 @@ const STABLE_RENDERER_ASSET_NAMES: CloudRendererAssetNames = {
 
 /**
  * Shells without manifest names (older workers, missing manifest) keep
- * loading the stable-name copies — the documented fallback.
+ * loading the stable-name copies — the documented fallback. The viewer
+ * bundle ships under a stable name, so NEW viewer JS routinely executes
+ * against OLD shell config during gradual worker deploys; this guard is
+ * that skew's client half and must stay tolerant of an absent key.
  */
-function normalizeRendererAssetNames(
+export function normalizeRendererAssetNames(
   value: Partial<CloudRendererAssetNames> | undefined,
 ): CloudRendererAssetNames {
   return {

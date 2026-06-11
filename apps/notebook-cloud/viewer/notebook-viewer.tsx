@@ -10,7 +10,10 @@ import {
 import { NotebookHostProvider } from "@nteract/notebook-host";
 import { AlertCircle, Check, Loader2, X } from "lucide-react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
-import { useIsolatedRenderer } from "@/components/isolated/isolated-renderer-context";
+import {
+  useHasIsolatedOutputs,
+  useIsolatedRenderer,
+} from "@/components/isolated/isolated-renderer-context";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
@@ -235,6 +238,9 @@ export function NotebookViewer({
   // Shared renderer-bundle state from the root IsolatedRendererProvider
   // (CloudNotebookProviders): drives the single asset-health notice below.
   const isolatedRenderer = useIsolatedRenderer();
+  // The provider preloads the bundle for every notebook; only surface its
+  // failure when something on screen actually renders isolated outputs.
+  const hasIsolatedOutputs = useHasIsolatedOutputs();
   const presenceSnapshot = useSyncExternalStore(
     presenceStore.subscribe,
     presenceStore.getSnapshot,
@@ -917,7 +923,12 @@ export function NotebookViewer({
   // collapse into ONE notice (the provider state is module-level shared)
   // plus per-output fallbacks. It never feeds the connection dot or
   // CloudConnectionStatusBridge — that bridge models room transport health.
-  const rendererAssetError = isolatedRenderer.isLoading ? null : isolatedRenderer.error;
+  // `lastError` keeps the notice steady through an in-flight retry (no
+  // per-click flap); the presence gate keeps pure-markdown/text notebooks
+  // free of a warning about outputs they do not have.
+  const rendererAssetError = hasIsolatedOutputs
+    ? (isolatedRenderer.error ?? isolatedRenderer.lastError)
+    : null;
   const hasNotices = cloudNotebookHasNotices({
     authState,
     authRenewal,
@@ -941,6 +952,7 @@ export function NotebookViewer({
       sustainedReconnecting={sustainedReconnecting}
       status={noticeStatus}
       onResetAuth={resetPrototypeAuth}
+      onRetryConnection={retryLiveConnection}
       onRetryRendererAssets={isolatedRenderer.retry}
       onSignInAgain={authConfig.oidc ? beginNotebookOidcAuth : undefined}
     />

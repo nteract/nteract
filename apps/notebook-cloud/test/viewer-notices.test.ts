@@ -201,6 +201,62 @@ test("cloud notebook notices render nothing extra when renderer assets are healt
   );
 });
 
+test("terminal wasm-asset failures get a dedicated notice with a non-destructive Retry", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError:
+        "runtimed WASM asset failed: Failed to fetch runtimed WASM (404): https://wasm.example/assets/runtimed_wasm_bg.0123456789abcdef.wasm",
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+      onRetryConnection: () => {},
+      onSignInAgain: () => {},
+    }),
+  );
+
+  assert.match(html, /Notebook engine failed to load/);
+  assert.match(html, /Retry/);
+  // Auth actions cannot remedy an asset 404 — and "Use anonymous" would
+  // destroy a signed-in session.
+  assert.doesNotMatch(html, /Use anonymous/);
+  assert.doesNotMatch(html, /Sign in again/);
+  assert.doesNotMatch(html, /Live room needs attention/);
+});
+
+test("wasm-asset failures keep the legacy action when no retry callback is wired", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: "runtimed WASM asset failed: Failed to fetch dynamically imported module",
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /Notebook engine failed to load/);
+  assert.match(html, /Use anonymous/);
+});
+
+test("connection notice sanitizer redacts http(s) URLs down to host and path", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError:
+        "runtimed WASM asset failed: Failed to fetch runtimed WASM (403): https://cdn.example/assets/runtimed_wasm_bg.wasm?token=SECRET#frag",
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+      onRetryConnection: () => {},
+    }),
+  );
+
+  assert.match(html, /https:\/\/cdn\.example\/assets\/runtimed_wasm_bg\.wasm/);
+  assert.doesNotMatch(html, /SECRET/);
+  assert.doesNotMatch(html, /token=/);
+});
+
 test("cloud notebook notices keep dev diagnostics inside the shared stack", () => {
   const html = renderToStaticMarkup(
     React.createElement(CloudNotebookNotices, {
