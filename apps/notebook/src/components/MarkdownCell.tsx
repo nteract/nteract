@@ -681,6 +681,10 @@ export const MarkdownCell = memo(function MarkdownCell({
     ],
     [searchQuery, remoteCursorsExt, textAttributionExt, presenceSenderExt],
   );
+  const editorExtensions = useMemo(
+    () => [crdtBridgeExt, ...searchExtensions],
+    [crdtBridgeExt, searchExtensions],
+  );
 
   // Get keyboard navigation bindings
   const navigationKeyMap = useCellKeyboardNavigation({
@@ -830,7 +834,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 onBlur={handleBlur}
                 onSelectionChange={noteEditorSourcePosition}
                 keyMap={keyMap}
-                extensions={[crdtBridgeExt, ...searchExtensions]}
+                extensions={editorExtensions}
                 placeholder="Enter markdown..."
                 className="min-h-[2rem]"
                 autoFocus={editing}

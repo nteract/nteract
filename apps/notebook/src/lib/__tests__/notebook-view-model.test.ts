@@ -46,6 +46,32 @@ describe("createNotebookViewModelFromNotebookCells", () => {
     expect(outlineTitles()).toEqual(["Updated title"]);
   });
 
+  it("updates outline headings after direct markdown source edits", () => {
+    restoreMarkdownProjectionProjector = setMarkdownProjectionProjector(testMarkdownProjector);
+    replaceNotebookCells([
+      {
+        ...markdownCell("later", "## Later section\n\n# LMAO\n\n### Deeper note"),
+        markdownProjection: testMarkdownProjection(
+          "## Later section\n\n# LMAO\n\n### Deeper note",
+        ),
+      },
+    ]);
+
+    expect(outlineTitles()).toEqual(["Later section", "LMAO", "Deeper note"]);
+
+    updateCellSourceById(
+      "later",
+      "## Later section\n\n# ANother one\n\n# LMAO this is fine\n\n### Deeper note",
+    );
+
+    expect(outlineTitles()).toEqual([
+      "Later section",
+      "ANother one",
+      "LMAO this is fine",
+      "Deeper note",
+    ]);
+  });
+
   it("projects outline status labels from shared cell chrome", () => {
     replaceNotebookCells([codeCell("code-1", "print('hi')")]);
 
@@ -68,8 +94,28 @@ function testMarkdownProjection(source: string): NonNullable<Extract<NotebookCel
 }
 
 function testMarkdownProjector(source: string): string {
-  const title = source.replace(/^#+\s*/, "").split(/\r?\n/, 1)[0]?.trim() || "Untitled";
-  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const anchors = source
+    .split(/\r?\n/)
+    .flatMap((line, index) => {
+      const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+      if (!match) return [];
+      const title = match[2].trim();
+      const slug = title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      return [
+        {
+          anchorId: `anchor:${slug}`,
+          blockId: `block:${index}`,
+          level: match[1].length,
+          slug,
+          sourceSpanByte: [0, source.length],
+          sourceSpanUtf16: [0, source.length],
+          title,
+        },
+      ];
+    });
   return JSON.stringify({
     version: 1,
     engine: "test",
@@ -80,17 +126,7 @@ function testMarkdownProjector(source: string): string {
       confidence: "high",
       width: 720,
     },
-    anchors: [
-      {
-        anchorId: `anchor:${slug}`,
-        blockId: "block:0",
-        level: 1,
-        slug,
-        sourceSpanByte: [0, source.length],
-        sourceSpanUtf16: [0, source.length],
-        title,
-      },
-    ],
+    anchors,
     blocks: [],
     runs: [],
   });

@@ -29,6 +29,31 @@ const markdownCell = (id: string, source = ""): NotebookCell => ({
   metadata: {},
 });
 
+function markdownProjection(
+  source: string,
+  anchors: readonly { title: string; level: number; slug: string }[],
+): NonNullable<Extract<NotebookCell, { cell_type: "markdown" }>["markdownProjection"]> {
+  return {
+    version: 1,
+    engine: "test",
+    source,
+    byteLength: source.length,
+    utf16Length: source.length,
+    measurement: { estimatedHeight: 24, confidence: "high", width: 720 },
+    anchors: anchors.map((anchor, index) => ({
+      anchorId: `anchor:${anchor.slug}`,
+      blockId: `block:${index}`,
+      level: anchor.level,
+      slug: anchor.slug,
+      sourceSpanByte: [0, source.length],
+      sourceSpanUtf16: [0, source.length],
+      title: anchor.title,
+    })),
+    blocks: [],
+    runs: [],
+  };
+}
+
 let restoreMarkdownProjectionProjector: (() => void) | undefined;
 
 afterEach(() => {
@@ -461,6 +486,43 @@ describe("cell diffing in replaceNotebookCells", () => {
     const ref2 = getCellById("m1");
 
     expect(ref2).toBe(ref1);
+  });
+
+  it("replaces same-source markdown cells when the projection refreshes", () => {
+    const source = "# ANother one\n\n# LMAO this is fine";
+    const staleCell: NotebookCell = {
+      ...markdownCell("m1", source),
+      markdownProjection: markdownProjection(source, [
+        { title: "LMAO", level: 1, slug: "lmao" },
+        { title: "Deeper note", level: 3, slug: "deeper-note" },
+      ]),
+    };
+    const refreshedCell: NotebookCell = {
+      ...markdownCell("m1", source),
+      markdownProjection: markdownProjection(source, [
+        { title: "ANother one", level: 1, slug: "another-one" },
+        { title: "LMAO this is fine", level: 1, slug: "lmao-this-is-fine" },
+        { title: "Deeper note", level: 3, slug: "deeper-note" },
+      ]),
+    };
+
+    replaceNotebookCells([staleCell]);
+    const ref1 = getCellById("m1");
+    const { result } = renderHook(() => useMaterializeVersion());
+    const initialVersion = result.current;
+
+    act(() => {
+      replaceNotebookCells([refreshedCell]);
+    });
+
+    const ref2 = getCellById("m1");
+    expect(ref2).not.toBe(ref1);
+    expect(result.current).toBe(initialVersion + 1);
+    expect(
+      ref2?.cell_type === "markdown"
+        ? ref2.markdownProjection?.anchors.map((anchor) => anchor.title)
+        : [],
+    ).toEqual(["ANother one", "LMAO this is fine", "Deeper note"]);
   });
 
   it("only changes reference for the cell that changed", () => {

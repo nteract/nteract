@@ -174,6 +174,7 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
 
   class CrdtBridgePlugin implements PluginValue {
     constructor(view: EditorView) {
+      destroyed = false;
       currentView = view;
     }
 
