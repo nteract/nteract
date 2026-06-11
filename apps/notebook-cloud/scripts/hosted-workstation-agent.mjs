@@ -98,6 +98,7 @@ async function main() {
       continue;
     }
     await runAgentStep("poll_attach_jobs", () => pollAttachJobs(pythonPath));
+    await runAgentStep("heartbeat_active_jobs", () => heartbeatActiveJobs());
     await sleep(pollIntervalMs);
   }
 }
@@ -208,7 +209,7 @@ async function startAttachJob(job, pythonPath) {
   });
   closeSync(logFd);
 
-  const active = { child, logPath: plan.logPath, ready: false };
+  const active = { child, logPath: plan.logPath, lastRunningPatchAt: 0, ready: false };
   activeJobs.set(job.job_id, active);
   console.log(
     JSON.stringify({
@@ -238,6 +239,7 @@ async function watchRuntimePeer(jobId, active) {
       const output = await readFile(active.logPath, "utf8").catch(() => "");
       if (!output.includes("Infrastructure ready, entering main loop")) return;
       active.ready = true;
+      active.lastRunningPatchAt = Date.now();
       await patchAttachJob(jobId, {
         status: "running",
       });
@@ -286,6 +288,20 @@ async function watchRuntimePeer(jobId, active) {
       );
     });
   });
+}
+
+async function heartbeatActiveJobs() {
+  const now = Date.now();
+  const runningJobs = [...activeJobs.entries()].filter(
+    ([, active]) => active.ready && now - active.lastRunningPatchAt >= heartbeatIntervalMs,
+  );
+  for (const [jobId, active] of runningJobs) {
+    await patchAttachJob(jobId, {
+      status: "running",
+    });
+    active.lastRunningPatchAt = now;
+  }
+  return runningJobs.length > 0;
 }
 
 async function patchAttachJob(jobId, patch) {

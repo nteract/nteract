@@ -95,6 +95,8 @@ export type WorkstationAttachJobStatus =
   | "completed"
   | "cancelled";
 
+export const WORKSTATION_ATTACH_JOB_STALE_MS = 2 * 60_000;
+
 export interface WorkstationRow {
   owner_principal: string;
   workstation_id: string;
@@ -897,12 +899,15 @@ export async function createWorkstationAttachJob(
   }
 
   await ensureCatalogSchema(env);
-  const existing = await getActiveWorkstationAttachJob(env, input);
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const staleBefore = new Date(now.getTime() - WORKSTATION_ATTACH_JOB_STALE_MS).toISOString();
+  await expireStaleWorkstationAttachJobs(env, input, { now: nowIso, staleBefore });
+  const existing = await getActiveWorkstationAttachJob(env, input, staleBefore);
   if (existing) {
     return existing;
   }
 
-  const now = new Date().toISOString();
   const jobId = crypto.randomUUID();
   const insert = env.DB.prepare(
     `INSERT INTO workstation_attach_jobs (
@@ -921,13 +926,13 @@ export async function createWorkstationAttachJob(
     input.ownerPrincipal,
     input.workstationId,
     input.actorLabel,
-    now,
-    now,
+    nowIso,
+    nowIso,
   );
   try {
     await insert.run();
   } catch (error) {
-    const racedExisting = await getActiveWorkstationAttachJob(env, input);
+    const racedExisting = await getActiveWorkstationAttachJob(env, input, staleBefore);
     if (racedExisting) {
       return racedExisting;
     }
@@ -936,7 +941,7 @@ export async function createWorkstationAttachJob(
   return getWorkstationAttachJob(env, input.ownerPrincipal, input.workstationId, jobId);
 }
 
-export async function listPendingWorkstationAttachJobs(
+export async function listActiveWorkstationAttachJobs(
   env: Env,
   ownerPrincipal: string,
   workstationId: string,
@@ -947,6 +952,7 @@ export async function listPendingWorkstationAttachJobs(
   }
 
   await ensureCatalogSchema(env);
+  const staleBefore = new Date(Date.now() - WORKSTATION_ATTACH_JOB_STALE_MS).toISOString();
   const rows = await env.DB.prepare(
     `SELECT id,
             notebook_id,
@@ -962,11 +968,14 @@ export async function listPendingWorkstationAttachJobs(
        FROM workstation_attach_jobs
       WHERE owner_principal = ?
         AND workstation_id = ?
-        AND status = 'pending'
+        AND (
+          status = 'pending'
+          OR (status IN ('accepted', 'running') AND updated_at >= ?)
+        )
       ORDER BY requested_at ASC
       LIMIT ?`,
   )
-    .bind(ownerPrincipal, workstationId, limit)
+    .bind(ownerPrincipal, workstationId, staleBefore, limit)
     .all<WorkstationAttachJobRow>();
   return rows.results ?? [];
 }
@@ -1027,6 +1036,7 @@ async function getActiveWorkstationAttachJob(
     ownerPrincipal: string;
     workstationId: string;
   },
+  staleBefore: string,
 ): Promise<WorkstationAttachJobRow | null> {
   const row = await env
     .DB!.prepare(
@@ -1045,13 +1055,48 @@ async function getActiveWorkstationAttachJob(
       WHERE notebook_id = ?
         AND owner_principal = ?
         AND workstation_id = ?
-        AND status IN ('pending', 'accepted', 'running')
+        AND (
+          status = 'pending'
+          OR (status IN ('accepted', 'running') AND updated_at >= ?)
+        )
       ORDER BY requested_at DESC
       LIMIT 1`,
     )
-    .bind(input.notebookId, input.ownerPrincipal, input.workstationId)
+    .bind(input.notebookId, input.ownerPrincipal, input.workstationId, staleBefore)
     .first<WorkstationAttachJobRow>();
   return row;
+}
+
+async function expireStaleWorkstationAttachJobs(
+  env: Env,
+  input: {
+    notebookId: string;
+    ownerPrincipal: string;
+    workstationId: string;
+  },
+  {
+    now,
+    staleBefore,
+  }: {
+    now: string;
+    staleBefore: string;
+  },
+): Promise<void> {
+  await env
+    .DB!.prepare(
+      `UPDATE workstation_attach_jobs
+          SET status = 'failed',
+              updated_at = ?,
+              finished_at = ?,
+              error_message = 'stale workstation attach job expired after heartbeat timeout'
+        WHERE notebook_id = ?
+          AND owner_principal = ?
+          AND workstation_id = ?
+          AND status IN ('accepted', 'running')
+          AND updated_at < ?`,
+    )
+    .bind(now, now, input.notebookId, input.ownerPrincipal, input.workstationId, staleBefore)
+    .run();
 }
 
 async function getWorkstationAttachJob(

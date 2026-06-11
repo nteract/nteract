@@ -26,6 +26,7 @@ import type {
 } from "../src/cloudflare-types.ts";
 import { initializeRuntimedWasm, RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import {
+  WORKSTATION_ATTACH_JOB_STALE_MS,
   blobKey,
   commsDocSnapshotKey,
   createNotebookWithOwnerAcl,
@@ -1800,6 +1801,86 @@ describe("Worker artifact routes", () => {
     const secondBody = (await second.json()) as { job: { job_id: string } };
     assert.equal(secondBody.job.job_id, firstBody.job.job_id);
     assert.equal(env.DB.workstationAttachJobs.size, 1);
+  });
+
+  it("expires stale running attach jobs before creating a replacement", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "stale-running",
+      notebookId: "attach-demo",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      status: "running",
+      updatedAt: new Date(Date.now() - WORKSTATION_ATTACH_JOB_STALE_MS - 5_000).toISOString(),
+    });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 202);
+    const body = (await attach.json()) as { job: { job_id: string; status: string } };
+    assert.notEqual(body.job.job_id, "stale-running");
+    assert.equal(body.job.status, "pending");
+    assert.equal(env.DB.workstationAttachJobs.get("stale-running")?.status, "failed");
+    assert.match(
+      env.DB.workstationAttachJobs.get("stale-running")?.error_message ?? "",
+      /stale workstation attach job expired/,
+    );
+  });
+
+  it("lists fresh running attach jobs so workstation agents can recover after restart", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "running-job",
+      notebookId: "nb-running",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      status: "running",
+      updatedAt: new Date().toISOString(),
+    });
+    seedWorkstationAttachJob(env, {
+      id: "stale-running-job",
+      notebookId: "nb-stale",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      status: "running",
+      updatedAt: new Date(Date.now() - WORKSTATION_ATTACH_JOB_STALE_MS - 5_000).toISOString(),
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { jobs: Array<{ job_id: string; status: string }> };
+    assert.deepEqual(
+      body.jobs.map((job) => [job.job_id, job.status]),
+      [["running-job", "running"]],
+    );
   });
 
   it("only lists attach jobs for the authenticated workstation owner", async () => {
@@ -4448,6 +4529,7 @@ function seedWorkstationAttachJob(
     ownerPrincipal: string;
     workstationId: string;
     status?: WorkstationAttachJobRow["status"];
+    updatedAt?: string;
   },
 ): void {
   env.DB.workstationAttachJobs.set(input.id, {
@@ -4458,11 +4540,18 @@ function seedWorkstationAttachJob(
     status: input.status ?? "pending",
     requested_by_actor_label: "user:dev:alice/browser:tab",
     requested_at: "2026-05-22T00:00:00.000Z",
-    updated_at: "2026-05-22T00:00:00.000Z",
+    updated_at: input.updatedAt ?? "2026-05-22T00:00:00.000Z",
     accepted_at: null,
     finished_at: null,
     error_message: null,
   });
+}
+
+function isActiveWorkstationAttachJob(job: WorkstationAttachJobRow, staleBefore: string): boolean {
+  return (
+    job.status === "pending" ||
+    ((job.status === "accepted" || job.status === "running") && job.updated_at >= staleBefore)
+  );
 }
 
 function seedPendingInvite(
@@ -5226,6 +5315,29 @@ class FakeD1Statement implements D1PreparedStatement {
         error_message: null,
       });
       return okResult(undefined, { changes: 1 });
+    } else if (
+      this.query.includes("UPDATE workstation_attach_jobs") &&
+      this.query.includes("stale workstation attach job expired")
+    ) {
+      const [updatedAt, finishedAt, notebookId, ownerPrincipal, workstationId, staleBefore] = this
+        .values as [string, string, string, string, string, string];
+      let changes = 0;
+      for (const job of this.db.workstationAttachJobs.values()) {
+        if (
+          job.notebook_id === notebookId &&
+          job.owner_principal === ownerPrincipal &&
+          job.workstation_id === workstationId &&
+          (job.status === "accepted" || job.status === "running") &&
+          job.updated_at < staleBefore
+        ) {
+          job.status = "failed";
+          job.updated_at = updatedAt;
+          job.finished_at = finishedAt;
+          job.error_message = "stale workstation attach job expired after heartbeat timeout";
+          changes += 1;
+        }
+      }
+      return okResult(undefined, { changes });
     } else if (this.query.includes("UPDATE workstation_attach_jobs")) {
       const [
         status,
@@ -5540,7 +5652,12 @@ class FakeD1Statement implements D1PreparedStatement {
     }
     if (this.query.includes("FROM workstation_attach_jobs")) {
       if (this.query.includes("notebook_id = ?")) {
-        const [notebookId, ownerPrincipal, workstationId] = this.values as [string, string, string];
+        const [notebookId, ownerPrincipal, workstationId, staleBefore] = this.values as [
+          string,
+          string,
+          string,
+          string,
+        ];
         return (
           ([...this.db.workstationAttachJobs.values()]
             .filter(
@@ -5548,7 +5665,7 @@ class FakeD1Statement implements D1PreparedStatement {
                 job.notebook_id === notebookId &&
                 job.owner_principal === ownerPrincipal &&
                 job.workstation_id === workstationId &&
-                (job.status === "pending" || job.status === "accepted" || job.status === "running"),
+                isActiveWorkstationAttachJob(job, staleBefore),
             )
             .sort((left, right) => right.requested_at.localeCompare(left.requested_at))[0] as
             | T
@@ -5671,7 +5788,12 @@ class FakeD1Statement implements D1PreparedStatement {
       );
     }
     if (this.query.includes("FROM workstation_attach_jobs")) {
-      const [ownerPrincipal, workstationId, limitValue] = this.values as [string, string, number];
+      const [ownerPrincipal, workstationId, staleBefore, limitValue] = this.values as [
+        string,
+        string,
+        string,
+        number,
+      ];
       const limit = Number.isFinite(limitValue) ? limitValue : Number.POSITIVE_INFINITY;
       return okResult(
         [...this.db.workstationAttachJobs.values()]
@@ -5679,7 +5801,7 @@ class FakeD1Statement implements D1PreparedStatement {
             (job) =>
               job.owner_principal === ownerPrincipal &&
               job.workstation_id === workstationId &&
-              job.status === "pending",
+              isActiveWorkstationAttachJob(job, staleBefore),
           )
           .sort((left, right) => left.requested_at.localeCompare(right.requested_at))
           .slice(0, limit) as T[],
