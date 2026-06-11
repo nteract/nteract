@@ -277,9 +277,8 @@ async function openNotebookShell(page, href, timeout) {
 }
 
 async function waitForWidgetSlider(page, timeout) {
-  const cell = page.locator('[data-cell-type="code"]').first();
-  await cell.waitFor({ state: "visible", timeout });
-  const slider = cell
+  await page.locator('[data-cell-type="code"]').first().waitFor({ state: "visible", timeout });
+  const slider = page
     .frameLocator('[data-slot="isolated-frame"]')
     .locator('[data-widget-type="IntSlider"]')
     .getByRole("slider")
