@@ -91,6 +91,10 @@ export class NotebookRoom {
   private broadcastDepth = 0;
   private readonly materializers = new Map<string, RoomMaterializer>();
   private readonly restoredPeersReady: Promise<void>;
+  // In-memory only by design: persisting on the frame hot path would cost more
+  // than the data is worth. Hibernation resets it, so peer_closed summaries
+  // under-count peers whose connection outlives the DO instance — treat the
+  // numbers as trend data, not billing-exact totals.
   private readonly frameBudget = new SyncFrameBudgetTracker();
 
   constructor(
@@ -1167,7 +1171,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function webSocketMessageByteLength(message: string | ArrayBuffer | ArrayBufferView): number {
   if (typeof message === "string") {
-    return new TextEncoder().encode(message).byteLength;
+    // Text frames are rejected unconditionally, so an exact UTF-8 byte count
+    // is not worth an encoder allocation + full copy on a path a misbehaving
+    // client can hammer. UTF-16 code-unit length is close enough for budgets.
+    return message.length;
   }
   if (message instanceof ArrayBuffer) {
     return message.byteLength;
