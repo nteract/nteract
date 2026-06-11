@@ -458,9 +458,12 @@ test("cloud live materialization skips empty room handles before resolving outpu
     /status\.kind === "empty" && notebookCellIds\.length === 0 && !emptyRoomGraceElapsed/,
   );
   assert.match(sessionSourceText, /const rawCellCount = liveRuntime\.handle\.cell_count\(\);/);
+  // The zero-cell guard routes through the displacement policy: a painted
+  // notebook blocks the empty apply only until the handle has caught up to
+  // the room (see instant-paint.test.ts for the policy matrix).
   assert.match(
     sessionSourceText,
-    /if \(rawCellCount === 0 && \(!snapshotResolvedRef\.current \|\| materializedCellCount\(\) > 0\)\) \{\s+return;\s+\}\s+const materialized = await materializeCloudNotebookView/,
+    /if \(rawCellCount === 0 && !mayShowEmptyLiveNotebook\(liveRuntime\)\) \{\s+return;\s+\}/,
   );
 });
 
