@@ -67,12 +67,14 @@ export {
   decodePersistedNotebookDoc,
   encodeNotebookDocChunkMeta,
   encodePersistedNotebookDoc,
+  loadAllPersistedNotebookDocChunkStores,
   loadPersistedNotebookDoc,
   loadPersistedNotebookDocChunks,
   loadPersistedNotebookRecord,
   notebookDocChunkMetaKey,
   notebookDocChunksPrefix,
   notebookDocIncrementalChunkKey,
+  notebookDocPrincipalChunksPrefix,
   notebookDocSnapshotChunkKey,
   type NotebookDocChunkInfo,
   type NotebookDocChunkedOptions,
@@ -80,6 +82,7 @@ export {
   type NotebookDocPersistenceMeta,
   type NotebookDocPersistenceOptions,
   type PersistedNotebookDoc,
+  type PersistedNotebookDocChunkStore,
   type PersistedNotebookDocChunks,
 } from "./persistence/notebook-doc-persistence";
 export {
@@ -94,6 +97,7 @@ export {
 // principal — see notebook-tab-bridge.ts)
 export {
   NOTEBOOK_TAB_BRIDGE_CHANNEL_PREFIX,
+  NOTEBOOK_TAB_BRIDGE_MESSAGE_VERSION,
   NotebookTabBridge,
   createNotebookTabBridge,
   notebookTabBridgeChannelName,

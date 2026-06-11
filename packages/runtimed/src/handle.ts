@@ -245,8 +245,11 @@ export interface SyncableHandle {
   /**
    * Serialize every NotebookDoc change that is not a transitive dependency
    * of the given heads (empty heads = the full compressed save). Stateless;
-   * callers own the heads bookkeeping. Optional: older bundles and test
-   * mocks may omit it (chunked persistence and the tab bridge gate on it).
+   * callers own the heads bookkeeping. Optional: older deployed bundles
+   * and test mocks may omit it — the cloud tab bridge checks for it at
+   * arm time (`createCloudNotebookTabBridge` returns null without it)
+   * and the chunked persistence controller only arms alongside the same
+   * bundle that ships the export.
    */
   save_since_heads?(heads_hex: string[]): Uint8Array;
 

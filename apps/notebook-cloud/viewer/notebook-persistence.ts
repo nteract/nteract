@@ -36,6 +36,7 @@ import {
   loadPersistedNotebookDoc,
   loadPersistedNotebookDocChunks,
   type NotebookDocChunkInfo,
+  type PersistedNotebookDocChunks,
   type StorageAdapter,
 } from "runtimed";
 import { isAnonymousCloudPrincipal, type PersistedCloudNotebookSeed } from "./live-sync";
@@ -83,6 +84,12 @@ export interface CreateCloudNotebookPersistenceOptions {
    * deletable; chunks the doc was not seeded from must never be passed.
    */
   seedChunks?: NotebookDocChunkInfo[];
+  /**
+   * `generation` of the seed store's meta record (chunk-seeded sessions
+   * only) — joins the controller to the store epoch so commit-time reset
+   * detection works from the first incremental.
+   */
+  seedGeneration?: number;
   onError?: (error: unknown) => void;
   /** Test hook: trailing-edge throttle for both controllers. */
   throttleMs?: number;
@@ -98,6 +105,7 @@ export function createCloudNotebookPersistence({
   handle,
   seedSavedHeadsHex,
   seedChunks,
+  seedGeneration,
   onError,
   throttleMs,
   chunkDigest,
@@ -117,6 +125,7 @@ export function createCloudNotebookPersistence({
     chunked: {
       getSaveBytesSince: (headsHex) => handle.save_since_heads(headsHex),
       initialChunks: seedChunks,
+      initialGeneration: seedGeneration,
       ...(chunkDigest ? { digest: chunkDigest } : {}),
     },
     onError,
@@ -150,38 +159,61 @@ export function createCloudNotebookPersistence({
 }
 
 /**
- * Read the persisted NotebookDoc seed for a notebook, preferring the
- * chunked store and falling back to the PR-1 envelope record.
+ * Read the persisted NotebookDoc seed for a notebook: this principal's
+ * chunk sub-range, the PR-1 envelope record as the fallback, and a
+ * recency rule between them.
  *
- * Chunk-level principal guard (the envelope's rules, applied per store):
- * a chunk store whose meta is unverifiable (missing/corrupt) or stamped
- * with another principal is discarded — but ONLY the `[notebookId,
- * "chunks"]` range — and the load falls back to the envelope record,
+ * Chunk-level guard: the sub-range is single-principal by construction
+ * (the principal is a key segment), so a meta record inside it that is
+ * missing, corrupt, or — defensively — stamped otherwise is plain
+ * damage: discard ONLY this sub-range and fall back to the envelope,
  * which the resolver then verifies with the record-level guard as
  * before. Never called for anonymous principals (the resolver gates
  * first), so the chunk clear can never discard a signed-in user's store
  * from an anonymous session.
  *
+ * Rollback rule: when BOTH stores verify for this principal, the newer
+ * `meta.savedAt` wins. A rolled-back app version writes only the
+ * envelope, so after a rollback-with-edits the envelope is strictly
+ * newer and must seed; the stale chunks stay in place — the session's
+ * first save snapshots fresh into the same sub-range, and later loads
+ * union old chunks + new snapshot, recovering any chunk-only changes
+ * through the CRDT merge. Ties prefer the chunk store (the live format).
+ *
  * Migration note: an envelope-seeded session's first chunked save writes
- * a fresh snapshot chunk (the compaction floor fires on an empty chunk
- * inventory); the envelope record is left in place for older-version
- * rollback and simply goes stale.
+ * a fresh snapshot chunk (the snapshot arm is forced while the chunk
+ * inventory is empty); the envelope record is left in place for
+ * older-version rollback.
  */
 export async function loadCloudPersistedNotebookSeed(
   adapter: StorageAdapter,
   notebookId: string,
   principal: string,
 ): Promise<PersistedCloudNotebookSeed | undefined> {
-  const chunked = await loadPersistedNotebookDocChunks(adapter, notebookId);
+  let chunkSeed: PersistedNotebookDocChunks | undefined;
+  const chunked = await loadPersistedNotebookDocChunks(adapter, notebookId, principal);
   if (chunked) {
     if (chunked.meta && chunked.meta.principal === principal) {
-      return { bytes: chunked.bytes, meta: chunked.meta, chunks: chunked.chunks };
-    }
-    try {
-      await clearPersistedNotebookDocChunks(adapter, notebookId);
-    } catch (error) {
-      console.warn("[notebook-cloud] failed to clear mismatched chunk store", error);
+      chunkSeed = chunked;
+    } else {
+      try {
+        await clearPersistedNotebookDocChunks(adapter, notebookId, principal);
+      } catch (error) {
+        console.warn("[notebook-cloud] failed to clear unverifiable chunk store", error);
+      }
     }
   }
-  return loadPersistedNotebookDoc(adapter, notebookId);
+  const envelope = await loadPersistedNotebookDoc(adapter, notebookId);
+  if (chunkSeed?.meta) {
+    if (
+      envelope?.meta &&
+      envelope.bytes &&
+      envelope.meta.principal === principal &&
+      envelope.meta.savedAt > chunkSeed.meta.savedAt
+    ) {
+      return envelope;
+    }
+    return { bytes: chunkSeed.bytes, meta: chunkSeed.meta, chunks: chunkSeed.chunks };
+  }
+  return envelope;
 }

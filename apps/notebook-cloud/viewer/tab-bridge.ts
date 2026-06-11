@@ -24,7 +24,12 @@ export interface CloudTabBridgeEngineSurface {
 
 export interface CloudTabBridgeHandleSurface {
   get_heads_hex(): string[];
-  save_since_heads(headsHex: string[]): Uint8Array;
+  /**
+   * Optional to match deployed reality: an older cached WASM bundle may
+   * lack the export, and the factory below degrades to single-tab
+   * instead of arming a bridge whose every broadcast would throw.
+   */
+  save_since_heads?(headsHex: string[]): Uint8Array;
 }
 
 export interface CreateCloudNotebookTabBridgeOptions {
@@ -39,8 +44,11 @@ export interface CreateCloudNotebookTabBridgeOptions {
 }
 
 /**
- * Returns null for anonymous principals and for environments without
- * BroadcastChannel — both degrade to the previous single-tab behavior.
+ * Returns null for anonymous principals, for environments without
+ * BroadcastChannel, and for deployed WASM bundles that predate the
+ * `save_since_heads` export (the cloudCommsDocSyncMethods deployed-
+ * bundle-tolerance pattern) — all degrade to the previous single-tab
+ * behavior instead of arming a send path that throws every window.
  */
 export function createCloudNotebookTabBridge({
   notebookId,
@@ -53,12 +61,19 @@ export function createCloudNotebookTabBridge({
   if (isAnonymousCloudPrincipal(principal)) {
     return null;
   }
+  const saveSinceHeads = handle.save_since_heads;
+  if (typeof saveSinceHeads !== "function") {
+    console.warn(
+      "[notebook-cloud] tab bridge disabled: deployed WASM bundle lacks save_since_heads",
+    );
+    return null;
+  }
   return createNotebookTabBridge({
     notebookId,
     principal,
     changes$: engine.notebookDocChanged$,
     getHeadsHex: () => handle.get_heads_hex(),
-    getChangesSince: (headsHex) => handle.save_since_heads(headsHex),
+    getChangesSince: (headsHex) => saveSinceHeads.call(handle, headsHex),
     applyChanges: (bytes) => engine.applyLocalPeerChanges(bytes),
     ...(throttleMs !== undefined ? { throttleMs } : {}),
     ...(createChannel ? { createChannel } : {}),

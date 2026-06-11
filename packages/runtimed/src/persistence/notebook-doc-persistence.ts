@@ -45,17 +45,25 @@
  * automerge-repo's proven chunk/compaction model, multi-tab safe by
  * construction rather than by coordination:
  *
- * - `[notebookId, "chunks", "snapshot", <headsKey>]` — a full
- *   `handle.save()` at those heads. Same heads ⇒ same key in every tab,
- *   so concurrent compactions collide idempotently.
- * - `[notebookId, "chunks", "incremental", <sha256hex(bytes)>]` —
- *   `save_since_heads(lastCommittedHeads)` output, content-addressed:
- *   two tabs writing identical bytes write the same record (a no-op
- *   collision, never a clobber).
- * - `[notebookId, "chunks", "meta"]` — plain meta JSON (the principal
- *   guard). `headsHex` here is the newest WRITER's heads, an
- *   informational dedupe hint — the chunk union is the truth and may be
- *   ahead of it when several tabs write.
+ * The store is namespaced by principal — `[notebookId, "chunks",
+ * <principal>, ...]` — so a chunk union is single-principal by
+ * construction: one last-writer-wins meta record can never vouch for
+ * another principal's bytes, and a foreign principal's records are
+ * simply a different sub-range (never loaded, never deleted by
+ * compaction; the whole-notebook record discard still removes them).
+ *
+ * - `[notebookId, "chunks", <principal>, "snapshot", <headsKey>]` — a
+ *   full `handle.save()` at those heads. Same heads ⇒ same key in every
+ *   tab, so concurrent compactions collide idempotently.
+ * - `[notebookId, "chunks", <principal>, "incremental",
+ *   <sha256hex(bytes)>]` — `save_since_heads(lastCommittedHeads)`
+ *   output, content-addressed: two tabs writing identical bytes write
+ *   the same record (a no-op collision, never a clobber).
+ * - `[notebookId, "chunks", <principal>, "meta"]` — plain meta JSON (the
+ *   principal guard, plus the store `generation` epoch). `headsHex` here
+ *   is the newest WRITER's heads, an informational dedupe hint — the
+ *   chunk union is the truth and may be ahead of it when several tabs
+ *   write.
  *
  * Every save is ONE `saveBatch` (atomic on IndexedDB; chunk-then-meta
  * crash-ordering under the sequential fallback). Compaction follows
@@ -67,10 +75,30 @@
  * unknown here and therefore survives until a controller that has loaded
  * it compacts. Incremental saves always cut from the last COMMITTED
  * heads, so a failed write can produce overlapping chunks (deduplicated
- * on load) but never a dependency gap. With no committed basis the save
- * falls back to a full snapshot — `save_since_heads([])` would serialize
- * the entire history as an incremental (automerge-repo's documented
- * pitfall).
+ * on load) but never a dependency gap. Two guards keep that invariant
+ * honest:
+ *
+ * - **Basis coverage.** The incremental basis must be durable IN THE
+ *   CHUNK STORE, not merely durable somewhere: a seed's heads only
+ *   become the basis when the chunk inventory is non-empty (an
+ *   envelope-migrated seed keeps the heads for dedupe but starts with no
+ *   basis), and the incremental arm stays closed until a snapshot chunk
+ *   is actually committed/inventoried. Until then every capture takes
+ *   the self-contained snapshot arm — even ones racing an in-flight
+ *   first snapshot whose write may still fail.
+ * - **Generation epoch.** The meta record carries a store `generation`.
+ *   Every commit re-reads the live meta: an incremental whose
+ *   controller's generation no longer matches (the store was cleared —
+ *   poison-pill discard, principal-guard clear — and possibly
+ *   re-established by another session) is DROPPED, the controller
+ *   resets to a fresh-store posture, and the re-triggered capture takes
+ *   the snapshot arm. Snapshots are self-contained, so they commit
+ *   regardless, adopting the live generation (or minting one) and
+ *   abandoning a stale inventory rather than deleting blind.
+ *
+ * With no committed basis the save falls back to a full snapshot —
+ * `save_since_heads([])` would serialize the entire history as an
+ * incremental (automerge-repo's documented pitfall).
  *
  * Failures never propagate into the live session: every error routes to
  * the `onError` callback and the logger, and after
@@ -80,7 +108,12 @@
 
 import type { Observable, Subscription } from "rxjs";
 
-import { saveBatch, type StorageAdapter, type StorageKey } from "./storage-adapter";
+import {
+  saveBatch,
+  type StorageAdapter,
+  type StorageChunk,
+  type StorageKey,
+} from "./storage-adapter";
 
 const DEFAULT_SAVE_THROTTLE_MS = 1_000;
 
@@ -121,6 +154,14 @@ export interface NotebookDocPersistenceMeta {
   /** Authoring principal; checked against the session principal before seeding. */
   principal: string;
   schemaVersion: 1;
+  /**
+   * Chunk-store epoch (chunk meta only; absent on envelope records).
+   * Every writer sharing a store carries the same generation; clearing
+   * and re-establishing the store mints a new one, so a stale writer
+   * detects the reset at commit time instead of orphaning incrementals
+   * against deleted chunks.
+   */
+  generation?: number;
 }
 
 export interface PersistedNotebookDoc {
@@ -145,8 +186,9 @@ export interface PersistedNotebookDocChunks {
    */
   bytes: Uint8Array;
   /**
-   * Decoded `[notebookId, "chunks", "meta"]` record; null when missing or
-   * unparseable — callers must treat that as unverifiable provenance.
+   * Decoded `[notebookId, "chunks", <principal>, "meta"]` record; null
+   * when missing or unparseable — callers must treat that as
+   * unverifiable provenance.
    */
   meta: NotebookDocPersistenceMeta | null;
   /**
@@ -170,9 +212,18 @@ export interface NotebookDocChunkedOptions {
    * Chunks already in storage that the seeded doc PROVABLY contains (the
    * `chunks` inventory returned by `loadPersistedNotebookDocChunks` when
    * the session seeded from it). These become compaction-deletable; chunks
-   * discovered any other way must not be passed here.
+   * discovered any other way must not be passed here. Also the gate that
+   * lets `initialSavedHeadsHex` become the incremental basis — only a
+   * chunk-seeded session may cut incrementals from its seed heads.
    */
   initialChunks?: NotebookDocChunkInfo[];
+
+  /**
+   * `generation` of the seed store's meta record, when seeded from the
+   * chunk store. Without it (or after any detected store reset) the
+   * controller's first commit re-establishes via the snapshot arm.
+   */
+  initialGeneration?: number;
 
   /**
    * Content-hash override for tests; defaults to WebCrypto SHA-256.
@@ -281,9 +332,17 @@ export class NotebookDocPersistence {
   /**
    * Single-flight compaction guard (automerge-repo's `#compacting`): while
    * a snapshot write is captured-but-unsettled, further captures take the
-   * incremental path instead of queueing redundant full saves.
+   * incremental path instead of queueing redundant full saves. Never
+   * consulted while the incremental arm is closed — correctness (a
+   * self-contained snapshot) outranks redundancy avoidance there.
    */
   private compactionInFlight = false;
+  /**
+   * Chunked mode: the store epoch this controller joined (seed meta) or
+   * established (its own snapshot commit). Compared against the LIVE
+   * meta record on every commit to detect external store resets.
+   */
+  private storeGeneration: number | null = null;
 
   constructor(opts: NotebookDocPersistenceOptions) {
     this.opts = opts;
@@ -291,6 +350,7 @@ export class NotebookDocPersistence {
     this.throttleMs = opts.throttleMs ?? DEFAULT_SAVE_THROTTLE_MS;
     this.logger = opts.logger ?? console;
     this.chunkInfos = [...(opts.chunked?.initialChunks ?? [])];
+    this.storeGeneration = opts.chunked?.initialGeneration ?? null;
     // An empty heads array is treated as unknown, not as an identity: a
     // freshly-bootstrapped doc (RuntimeStateDoc starts empty by design)
     // would otherwise match a stale prior-session record's empty heads and
@@ -300,7 +360,16 @@ export class NotebookDocPersistence {
       const initialKey = headsCacheKey(initialHeads);
       this.lastSavedHeadsKey = initialKey;
       this.lastCommittedHeadsKey = initialKey;
-      this.lastCommittedHeadsHex = [...initialHeads];
+      // The incremental basis demands more than dedupe does: these heads
+      // must be durable IN THE CHUNK STORE, or an incremental cut from
+      // them orphans (its dependencies live only in the envelope
+      // record). Only a chunk-seeded session — non-empty inventory —
+      // qualifies; an envelope-migrated seed keeps the dedupe keys but
+      // starts with no basis, so its first save takes the self-contained
+      // snapshot arm.
+      if (this.chunkInfos.length > 0) {
+        this.lastCommittedHeadsHex = [...initialHeads];
+      }
     }
     this.subscription = opts.changes$.subscribe(() => this.onChanged());
   }
@@ -447,10 +516,18 @@ export class NotebookDocPersistence {
     let capture: { kind: "snapshot" | "incremental"; bytes: Uint8Array };
     try {
       const basis = this.lastCommittedHeadsHex;
-      if (!basis || this.shouldCompactChunks()) {
-        // Full snapshot: the compaction rule fired, or there is no
-        // committed basis to cut from — `save_since_heads([])` would
-        // serialize the entire history as an incremental.
+      // The incremental arm opens only once BOTH hold: a committed basis
+      // exists AND a snapshot chunk is inventoried. Until the first
+      // snapshot commit, every capture — including one racing the
+      // in-flight first snapshot whose write may yet fail — must be
+      // self-contained, or a surviving incremental could be the store's
+      // only record, with its dependencies nowhere in it.
+      const snapshotInventoried = this.chunkInfos.some((chunk) => chunk.kind === "snapshot");
+      if (!basis || !snapshotInventoried || this.shouldCompactChunks()) {
+        // Full snapshot: the compaction rule fired, the incremental arm
+        // is closed, or there is no committed basis to cut from —
+        // `save_since_heads([])` would serialize the entire history as
+        // an incremental.
         capture = { kind: "snapshot", bytes: this.opts.getSaveBytes() };
       } else {
         const bytes = chunked.getSaveBytesSince(basis);
@@ -474,14 +551,28 @@ export class NotebookDocPersistence {
 
     const write = this.writeChain.then(async () => {
       try {
+        let committed = true;
         if (capture.kind === "snapshot") {
           await this.commitSnapshotChunk(capture.bytes, meta);
         } else {
-          await this.commitIncrementalChunk(chunked, capture.bytes, meta);
+          committed = await this.commitIncrementalChunk(chunked, capture.bytes, meta);
         }
-        this.consecutiveSaveFailures = 0;
-        this.lastCommittedHeadsKey = headsKey;
-        this.lastCommittedHeadsHex = meta.headsHex;
+        if (committed) {
+          this.consecutiveSaveFailures = 0;
+          this.lastCommittedHeadsKey = headsKey;
+          this.lastCommittedHeadsHex = meta.headsHex;
+        } else {
+          // Dropped on an external store reset — not a backend failure.
+          // Forget the optimistic key and reopen a capture window so the
+          // snapshot re-establish runs without waiting for an external
+          // signal. (A teardown flush whose tail lands here is the
+          // cleared store's intended semantics: the discard already
+          // decided those bytes' fate; the room is the backstop.)
+          if (this.lastSavedHeadsKey === headsKey) {
+            this.lastSavedHeadsKey = null;
+          }
+          this.onChanged();
+        }
       } catch (error) {
         if (this.lastSavedHeadsKey === headsKey) {
           this.lastSavedHeadsKey = null;
@@ -495,6 +586,21 @@ export class NotebookDocPersistence {
     });
     this.writeChain = write;
     return write;
+  }
+
+  /** Read the LIVE meta record for this principal's store sub-range. */
+  private async readStoredChunkMeta(): Promise<NotebookDocPersistenceMeta | null> {
+    const bytes = await this.opts.adapter.load(
+      notebookDocChunkMetaKey(this.opts.notebookId, this.opts.principal),
+    );
+    return bytes ? decodeMeta(bytes) : null;
+  }
+
+  /** Forget everything tied to the previous store epoch. */
+  private resetChunkStoreState(): void {
+    this.chunkInfos = [];
+    this.lastCommittedHeadsHex = null;
+    this.storeGeneration = null;
   }
 
   /**
@@ -529,11 +635,33 @@ export class NotebookDocPersistence {
     bytes: Uint8Array,
     meta: NotebookDocPersistenceMeta,
   ): Promise<void> {
-    const { adapter, notebookId } = this.opts;
-    const key = notebookDocSnapshotChunkKey(notebookId, meta.headsHex);
+    const { adapter, notebookId, principal } = this.opts;
+    // Establish or verify the store generation against the LIVE meta
+    // record. A missing or foreign-generation meta means another session
+    // cleared (and possibly re-established) the store since this
+    // controller last looked: its inventory names records that no longer
+    // exist, so deleting by it would be deleting blind — abandon it. The
+    // snapshot itself is self-contained and commits either way, joining
+    // the live epoch (or minting one for an empty store).
+    const stored = await this.readStoredChunkMeta();
+    const storedGeneration = stored?.generation ?? null;
+    if (this.storeGeneration === null || storedGeneration !== this.storeGeneration) {
+      if (this.storeGeneration !== null) {
+        this.logger.warn(
+          "[notebook-persistence] chunk store was reset externally; rejoining with a fresh snapshot",
+        );
+        this.chunkInfos = [];
+      }
+      this.storeGeneration = storedGeneration ?? mintChunkStoreGeneration();
+    }
+
+    const key = notebookDocSnapshotChunkKey(notebookId, principal, meta.headsHex);
     await saveBatch(adapter, [
       [key, bytes],
-      [notebookDocChunkMetaKey(notebookId), encodeNotebookDocChunkMeta(meta)],
+      [
+        notebookDocChunkMetaKey(notebookId, principal),
+        encodeNotebookDocChunkMeta({ ...meta, generation: this.storeGeneration }),
+      ],
     ]);
 
     const keyId = chunkKeyId(key);
@@ -556,22 +684,46 @@ export class NotebookDocPersistence {
     this.chunkInfos = [...retained, { key, size: bytes.byteLength, kind: "snapshot" }];
   }
 
+  /**
+   * Returns false (nothing written) when the live meta record shows the
+   * store was reset since this controller's epoch: the basis chunks this
+   * incremental was cut above are gone, and writing it would create a
+   * dependency-orphaned record (a one-write TOCTOU window remains
+   * between the meta read and the batch — the bound the design accepts).
+   */
   private async commitIncrementalChunk(
     chunked: NotebookDocChunkedOptions,
     bytes: Uint8Array,
     meta: NotebookDocPersistenceMeta,
-  ): Promise<void> {
-    const { adapter, notebookId } = this.opts;
+  ): Promise<boolean> {
+    const { adapter, notebookId, principal } = this.opts;
+    const stored = await this.readStoredChunkMeta();
+    if (
+      this.storeGeneration === null ||
+      stored === null ||
+      (stored.generation ?? null) !== this.storeGeneration
+    ) {
+      this.logger.warn(
+        "[notebook-persistence] chunk store was reset externally; dropping the incremental and re-snapshotting",
+      );
+      this.resetChunkStoreState();
+      return false;
+    }
+
     const digest = await (chunked.digest ?? sha256)(bytes);
-    const key = notebookDocIncrementalChunkKey(notebookId, bytesToHex(digest));
+    const key = notebookDocIncrementalChunkKey(notebookId, principal, bytesToHex(digest));
     await saveBatch(adapter, [
       [key, bytes],
-      [notebookDocChunkMetaKey(notebookId), encodeNotebookDocChunkMeta(meta)],
+      [
+        notebookDocChunkMetaKey(notebookId, principal),
+        encodeNotebookDocChunkMeta({ ...meta, generation: this.storeGeneration }),
+      ],
     ]);
     const keyId = chunkKeyId(key);
     if (!this.chunkInfos.some((chunk) => chunkKeyId(chunk.key) === keyId)) {
       this.chunkInfos.push({ key, size: bytes.byteLength, kind: "incremental" });
     }
+    return true;
   }
 
   private reportSaveFailure(label: string, error: unknown): void {
@@ -603,12 +755,26 @@ function headsCacheKey(headsHex: string[]): string {
 
 // ── Chunked NotebookDoc store keys + codec ───────────────────────────
 
+/** The whole chunked store across every principal (read/scan paths). */
 export function notebookDocChunksPrefix(notebookId: string): StorageKey {
   return [notebookId, NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT];
 }
 
-export function notebookDocChunkMetaKey(notebookId: string): StorageKey {
-  return [notebookId, NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT, CHUNK_META_KEY_SEGMENT];
+/**
+ * One principal's chunk sub-range. The principal segment makes the
+ * union single-principal by construction: another principal's chunks
+ * live under a different prefix and can never be vouched for by this
+ * sub-range's meta record.
+ */
+export function notebookDocPrincipalChunksPrefix(
+  notebookId: string,
+  principal: string,
+): StorageKey {
+  return [notebookId, NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT, principal];
+}
+
+export function notebookDocChunkMetaKey(notebookId: string, principal: string): StorageKey {
+  return [...notebookDocPrincipalChunksPrefix(notebookId, principal), CHUNK_META_KEY_SEGMENT];
 }
 
 /**
@@ -617,16 +783,29 @@ export function notebookDocChunkMetaKey(notebookId: string): StorageKey {
  * same property — every tab derives the identical key for identical
  * heads — without an async hash on the capture path).
  */
-export function notebookDocSnapshotChunkKey(notebookId: string, headsHex: string[]): StorageKey {
-  return [notebookId, NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT, CHUNK_KIND_SNAPSHOT, headsHex.join("-")];
+export function notebookDocSnapshotChunkKey(
+  notebookId: string,
+  principal: string,
+  headsHex: string[],
+): StorageKey {
+  return [
+    ...notebookDocPrincipalChunksPrefix(notebookId, principal),
+    CHUNK_KIND_SNAPSHOT,
+    headsHex.join("-"),
+  ];
 }
 
 /** Incremental chunk key, content-addressed by the chunk bytes' SHA-256. */
 export function notebookDocIncrementalChunkKey(
   notebookId: string,
+  principal: string,
   contentHashHex: string,
 ): StorageKey {
-  return [notebookId, NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT, CHUNK_KIND_INCREMENTAL, contentHashHex];
+  return [
+    ...notebookDocPrincipalChunksPrefix(notebookId, principal),
+    CHUNK_KIND_INCREMENTAL,
+    contentHashHex,
+  ];
 }
 
 /** Identity string for chunk-key comparison (unambiguous across segments). */
@@ -645,33 +824,75 @@ export function decodeNotebookDocChunkMeta(bytes: Uint8Array): NotebookDocPersis
 }
 
 /**
- * Load the chunked NotebookDoc store for a notebook.
+ * Load one principal's chunked NotebookDoc store.
  *
- * Returns undefined when no data chunks exist (callers fall back to the
- * PR-1 envelope record). Snapshots are concatenated before incrementals;
- * `NotebookHandle.load()` accepts the combined buffer and deduplicates
- * overlap. Records under unknown sub-keys are ignored — and, like every
- * read path here, never deleted: another writer (a newer version, a
- * concurrent tab) may own them.
+ * Returns undefined when no data chunks exist in that sub-range (callers
+ * fall back to the PR-1 envelope record). Snapshots are concatenated
+ * before incrementals; `NotebookHandle.load()` accepts the combined
+ * buffer and deduplicates overlap. Records under unknown sub-keys are
+ * ignored — and, like every read path here, never deleted: another
+ * writer (a newer version, a concurrent tab) may own them.
  */
 export async function loadPersistedNotebookDocChunks(
   adapter: StorageAdapter,
   notebookId: string,
+  principal: string,
 ): Promise<PersistedNotebookDocChunks | undefined> {
+  const range = await adapter.loadRange(notebookDocPrincipalChunksPrefix(notebookId, principal));
+  return chunkStoreFromRange(range);
+}
+
+export interface PersistedNotebookDocChunkStore extends PersistedNotebookDocChunks {
+  /** The sub-range's principal key segment. */
+  principal: string;
+}
+
+/**
+ * Scan every principal sub-range of a notebook's chunked store (the
+ * instant-paint path, which holds a principal MATCHER rather than an
+ * exact principal before the handshake). Strictly read-only.
+ */
+export async function loadAllPersistedNotebookDocChunkStores(
+  adapter: StorageAdapter,
+  notebookId: string,
+): Promise<PersistedNotebookDocChunkStore[]> {
   const range = await adapter.loadRange(notebookDocChunksPrefix(notebookId));
+  const byPrincipal = new Map<string, StorageChunk[]>();
+  for (const chunk of range) {
+    const principal = chunk.key[2];
+    if (typeof principal !== "string" || chunk.key.length < 4) continue;
+    const group = byPrincipal.get(principal);
+    if (group) {
+      group.push(chunk);
+    } else {
+      byPrincipal.set(principal, [chunk]);
+    }
+  }
+  const stores: PersistedNotebookDocChunkStore[] = [];
+  for (const [principal, group] of byPrincipal) {
+    const store = chunkStoreFromRange(group);
+    if (store) {
+      stores.push({ ...store, principal });
+    }
+  }
+  return stores;
+}
+
+/** Key shape: `[notebookId, "chunks", <principal>, <kind>, <address>?]`. */
+function chunkStoreFromRange(range: StorageChunk[]): PersistedNotebookDocChunks | undefined {
   const snapshots: Array<{ key: StorageKey; data: Uint8Array }> = [];
   const incrementals: Array<{ key: StorageKey; data: Uint8Array }> = [];
   let metaBytes: Uint8Array | undefined;
   for (const { key, data } of range) {
     if (!data) continue;
-    if (key.length === 3 && key[2] === CHUNK_META_KEY_SEGMENT) {
+    if (key.length === 4 && key[3] === CHUNK_META_KEY_SEGMENT) {
       metaBytes = data;
       continue;
     }
-    if (key.length !== 4) continue;
-    if (key[2] === CHUNK_KIND_SNAPSHOT) {
+    if (key.length !== 5) continue;
+    if (key[3] === CHUNK_KIND_SNAPSHOT) {
       snapshots.push({ key, data });
-    } else if (key[2] === CHUNK_KIND_INCREMENTAL) {
+    } else if (key[3] === CHUNK_KIND_INCREMENTAL) {
       incrementals.push({ key, data });
     }
   }
@@ -690,22 +911,35 @@ export async function loadPersistedNotebookDocChunks(
     chunks.push({
       key,
       size: data.byteLength,
-      kind: key[2] === CHUNK_KIND_SNAPSHOT ? "snapshot" : "incremental",
+      kind: key[3] === CHUNK_KIND_SNAPSHOT ? "snapshot" : "incremental",
     });
   }
   return { bytes, meta: metaBytes ? decodeMeta(metaBytes) : null, chunks };
 }
 
 /**
- * Remove ONLY the chunked store (`[notebookId, "chunks"]` range). Used by
- * the chunk-level principal guard, which falls back to the envelope
- * record rather than discarding the whole notebook's records.
+ * Remove ONLY one principal's chunk sub-range. Used by the chunk-level
+ * guard (unverifiable meta inside the caller's own sub-range), which
+ * falls back to the envelope record rather than discarding the whole
+ * notebook's records. The whole-notebook discard
+ * (`clearPersistedNotebookDoc`) removes every principal's chunks via the
+ * `[notebookId]` prefix.
  */
 export function clearPersistedNotebookDocChunks(
   adapter: StorageAdapter,
   notebookId: string,
+  principal: string,
 ): Promise<void> {
-  return adapter.removeRange(notebookDocChunksPrefix(notebookId));
+  return adapter.removeRange(notebookDocPrincipalChunksPrefix(notebookId, principal));
+}
+
+/**
+ * Store-epoch mint. Uniqueness across resets is what matters (writers
+ * compare for equality), not monotonicity; collisions across unrelated
+ * resets are 1-in-2^31 per pair.
+ */
+function mintChunkStoreGeneration(): number {
+  return Math.floor(Math.random() * 0x7fffffff) + 1;
 }
 
 /** WebCrypto SHA-256 (Node ≥ 20 and every secure browser context). */
@@ -831,7 +1065,8 @@ function decodeMeta(bytes: Uint8Array): NotebookDocPersistenceMeta | null {
     typeof parsed.principal !== "string" ||
     typeof parsed.savedAt !== "number" ||
     !Array.isArray(parsed.headsHex) ||
-    !parsed.headsHex.every((head) => typeof head === "string")
+    !parsed.headsHex.every((head) => typeof head === "string") ||
+    (parsed.generation !== undefined && typeof parsed.generation !== "number")
   ) {
     return null;
   }
@@ -840,5 +1075,6 @@ function decodeMeta(bytes: Uint8Array): NotebookDocPersistenceMeta | null {
     savedAt: parsed.savedAt,
     principal: parsed.principal,
     schemaVersion: 1,
+    ...(parsed.generation !== undefined ? { generation: parsed.generation } : {}),
   };
 }

@@ -29,8 +29,8 @@
 import {
   RUNTIME_STATE_CACHE_KEY_SEGMENT,
   clearPersistedNotebookRecord,
+  loadAllPersistedNotebookDocChunkStores,
   loadPersistedNotebookDoc,
-  loadPersistedNotebookDocChunks,
   loadPersistedNotebookRecord,
   type PersistedNotebookDoc,
   type StorageAdapter,
@@ -312,23 +312,41 @@ async function clearCacheRecord(clear: () => Promise<void>): Promise<void> {
 export function cloudInstantPaintStorageOptions(
   adapter: StorageAdapter,
   notebookId: string,
+  matchesPrincipal: ((principal: string) => boolean) | null,
 ): Pick<
   CloudInstantPaintOptions<never>,
   "loadNotebookRecord" | "loadRuntimeStateCacheRecord" | "clearRuntimeStateCacheRecord"
 > {
   return {
-    // Chunk-preferred, strictly read-only: the chunked store is the live
-    // seed store, so its union is fresher than the legacy envelope. An
-    // unverifiable chunk meta degrades to the envelope WITHOUT clearing —
-    // post-handshake seeding owns every discard decision; the paint
-    // (which runs pre-handshake under the principal-matcher heuristic)
-    // must never delete what may be the only copy of offline edits.
+    // Strictly read-only. The chunked store is per-principal sub-ranges;
+    // before the handshake only the MATCHER exists, so scan the
+    // sub-ranges and pick the matching one (unverifiable or foreign
+    // stores are simply ignored — post-handshake seeding owns every
+    // discard decision; the paint must never delete what may be the only
+    // copy of offline edits). The rollback rule mirrors the seed loader:
+    // when a matching envelope is strictly NEWER (written by a
+    // rolled-back app version), it paints instead of the stale chunks.
     loadNotebookRecord: async () => {
-      const chunked = await loadPersistedNotebookDocChunks(adapter, notebookId);
+      const [stores, envelope] = await Promise.all([
+        loadAllPersistedNotebookDocChunkStores(adapter, notebookId),
+        loadPersistedNotebookDoc(adapter, notebookId),
+      ]);
+      const matching = stores
+        .filter((store) => store.meta && (matchesPrincipal?.(store.meta.principal) ?? false))
+        .sort((a, b) => (b.meta?.savedAt ?? 0) - (a.meta?.savedAt ?? 0));
+      const chunked = matching[0];
       if (chunked?.meta) {
+        if (
+          envelope?.meta &&
+          envelope.bytes &&
+          (matchesPrincipal?.(envelope.meta.principal) ?? false) &&
+          envelope.meta.savedAt > chunked.meta.savedAt
+        ) {
+          return envelope;
+        }
         return { bytes: chunked.bytes, meta: chunked.meta };
       }
-      return loadPersistedNotebookDoc(adapter, notebookId);
+      return envelope;
     },
     loadRuntimeStateCacheRecord: () =>
       loadPersistedNotebookRecord(adapter, notebookId, RUNTIME_STATE_CACHE_KEY_SEGMENT),

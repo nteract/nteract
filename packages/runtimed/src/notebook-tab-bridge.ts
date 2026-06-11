@@ -31,6 +31,27 @@
  * path fires `notebookDocChanged$`, persistence captures it, and the
  * chunked store's content addressing makes the resulting concurrent
  * writes idempotent.
+ *
+ * Trust note — the principal is SENDER-ASSERTED. A compromised or buggy
+ * same-origin script can stamp the victim's principal on bytes authored
+ * under foreign actors; the victim applies them, persists them, and the
+ * room's actor-principal validation rejects the flush — which walks the
+ * session's escalation tracker into the poison-pill seed discard
+ * (losing the victim's own unsynced edits) and would re-arm against the
+ * still-open hostile tab forever. The session layer breaks that loop:
+ * an escalated sync rejection quarantines the bridge for the rest of
+ * the session (see the cloud session's tab-bridge quarantine flag).
+ * Receive-side actor validation is deliberately NOT the fix — a
+ * legitimate tab relays room-authorized collaborator changes (other
+ * principals' actors) to an offline sibling, and those must apply.
+ *
+ * Basis note — `lastBroadcastHeadsHex` advances only at broadcast time,
+ * never on apply: advancing it when peer changes apply would skip this
+ * tab's own pending (not-yet-broadcast) changes past the basis, turning
+ * the overlap-never-gap invariant into a gap. The echo cost this buys
+ * is bounded: on a T-tab channel a change set crosses the wire at most
+ * ~T times per throttle window and applies-of-known-changes emit
+ * nothing, so the cascade settles after one echo round.
  */
 
 export const NOTEBOOK_TAB_BRIDGE_CHANNEL_PREFIX = "nteract-notebook-";
@@ -39,9 +60,18 @@ export function notebookTabBridgeChannelName(notebookId: string): string {
   return `${NOTEBOOK_TAB_BRIDGE_CHANNEL_PREFIX}${notebookId}`;
 }
 
-/** The single message kind the bridge sends or accepts. */
+/** Wire version of {@link NotebookTabBridgeChangesMessage}. */
+export const NOTEBOOK_TAB_BRIDGE_MESSAGE_VERSION = 1;
+
+/**
+ * The single message kind the bridge sends or accepts. `v` is the
+ * negotiation hook a future payload change needs: receivers drop
+ * messages whose version they do not speak (today: exactly 1), instead
+ * of leaning on `apply_change_bytes`' garbage-degradation.
+ */
 export interface NotebookTabBridgeChangesMessage {
   kind: "changes";
+  v: typeof NOTEBOOK_TAB_BRIDGE_MESSAGE_VERSION;
   principal: string;
   bytes: Uint8Array;
 }
@@ -186,6 +216,7 @@ export class NotebookTabBridge {
     }
     const message: NotebookTabBridgeChangesMessage = {
       kind: "changes",
+      v: NOTEBOOK_TAB_BRIDGE_MESSAGE_VERSION,
       principal: this.opts.principal,
       bytes,
     };
@@ -223,16 +254,18 @@ function asChangesMessage(data: unknown): NotebookTabBridgeChangesMessage | null
   if (typeof data !== "object" || data === null) return null;
   const candidate = data as Partial<NotebookTabBridgeChangesMessage>;
   if (candidate.kind !== "changes") return null;
+  if (candidate.v !== NOTEBOOK_TAB_BRIDGE_MESSAGE_VERSION) return null;
   if (typeof candidate.principal !== "string") return null;
   const bytes = candidate.bytes;
   if (bytes instanceof Uint8Array) {
-    return { kind: "changes", principal: candidate.principal, bytes };
+    return { kind: "changes", v: candidate.v, principal: candidate.principal, bytes };
   }
   // Structured clone across realms can surface plain views; normalize.
   if (ArrayBuffer.isView(bytes)) {
     const view = bytes as ArrayBufferView;
     return {
       kind: "changes",
+      v: candidate.v,
       principal: candidate.principal,
       bytes: new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
     };

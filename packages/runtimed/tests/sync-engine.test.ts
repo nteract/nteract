@@ -2761,6 +2761,24 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("drops (never half-applies) on a stopped engine", () => {
+      const apply = vi.fn(() => syncAppliedEvent({ changed: true }));
+      handle = createMockHandle({ apply_change_bytes: apply });
+      const engine = createEngine();
+
+      // Never started: the doc must NOT be mutated — applying with the
+      // projection pipelines gone would silently lose the changeset and
+      // the flush, with no way to backfill after start().
+      expect(engine.applyLocalPeerChanges(new Uint8Array([1]))).toBe(false);
+      expect(apply).not.toHaveBeenCalled();
+
+      // Started then stopped: same contract.
+      engine.start();
+      engine.stop();
+      expect(engine.applyLocalPeerChanges(new Uint8Array([1]))).toBe(false);
+      expect(apply).not.toHaveBeenCalled();
+    });
+
     it("returns false without throwing when the handle lacks the export or apply throws", () => {
       const engine = createEngine();
       engine.start();

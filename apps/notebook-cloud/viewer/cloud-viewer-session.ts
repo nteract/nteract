@@ -215,6 +215,13 @@ export function useCloudViewerSession({
   // Set when a seeded session's replayed changes were rejected by the room:
   // the next connect attempt must bootstrap (survives the effect re-run).
   const skipSeedOnceRef = useRef(false);
+  // Escalated AUTOMERGE_SYNC rejections quarantine the cross-tab bridge
+  // for the remainder of the session (page lifetime): the bridge's
+  // principal is sender-asserted, so a hostile/buggy same-origin tab can
+  // feed changes the room will keep rejecting — without this flag the
+  // post-escalation bootstrap would re-arm against the still-open tab
+  // and loop teardown → discard → re-poison forever.
+  const tabBridgeQuarantinedRef = useRef(false);
   // The escalation's dispose-flush → clear chain (never rejects). The next
   // attempt's persistence arming awaits it (clear-then-arm), so a
   // straggling clear can never delete a fresh attempt's first record.
@@ -613,6 +620,10 @@ export function useCloudViewerSession({
     // principal — same-principal reconnects keep it; a principal change
     // recreates it so messages are stamped and filtered correctly.
     const armTabBridge = (liveRuntime: CloudSyncRuntime) => {
+      // Quarantined for the session after an escalated sync rejection —
+      // the rejected changes may have arrived over the bridge, and
+      // re-arming would let the same peer re-poison the fresh bootstrap.
+      if (tabBridgeQuarantinedRef.current) return;
       const principal = cloudPrincipalFromActorLabel(liveRuntime.actorLabel);
       if (tabBridge && tabBridgePrincipal === principal) return;
       tabBridge?.dispose();
@@ -666,8 +677,10 @@ export function useCloudViewerSession({
         const seedSavedHeadsHex = seedTrusted ? seedMeta?.headsHex : undefined;
         // The chunk inventory rides the same gate: it is only
         // compaction-deletable while the seeded bytes are the ones in
-        // storage and stamped with the armed principal.
+        // storage and stamped with the armed principal. The store epoch
+        // travels with it (chunk-seeded sessions only).
         const seedChunks = seedTrusted ? liveRuntime.persistenceSeedChunks : undefined;
+        const seedGeneration = seedChunks ? seedMeta?.generation : undefined;
         notebookPersistence = createCloudNotebookPersistence({
           adapter: persistenceAdapter,
           notebookId: config.notebookId,
@@ -676,6 +689,7 @@ export function useCloudViewerSession({
           handle: liveRuntime.handle,
           seedSavedHeadsHex,
           seedChunks,
+          seedGeneration,
           onError: (error) => console.warn("[notebook-cloud] notebook persistence error", error),
         });
         if (notebookPersistence !== null) {
@@ -896,15 +910,22 @@ export function useCloudViewerSession({
     const instantPaintFresh = () => !disposed && !liveMaterializedRef.current;
     const paintFromPersistedSnapshot = async () => {
       if (!persistenceAdapter) return;
+      // Pre-handshake principal gate from locally stored auth material;
+      // null (no derivable principal) skips the paint. Shared with the
+      // storage bindings, which use it to pick the matching principal's
+      // chunk sub-range.
+      const instantPaintMatcher = cloudInstantPaintPrincipalMatcher(authState, { hasAppSession });
       await runCloudInstantPaint({
         resolveHandle: () =>
           resolveCloudInstantPaintHandle({
-            // Pre-handshake principal gate from locally stored auth
-            // material; null (no derivable principal) skips the paint.
-            matchesPrincipal: cloudInstantPaintPrincipalMatcher(authState, { hasAppSession }),
+            matchesPrincipal: instantPaintMatcher,
             // Record bindings — including that the corrupt-cache clear
             // targets ONLY the runtime-state-cache record, never the seed.
-            ...cloudInstantPaintStorageOptions(persistenceAdapter, config.notebookId),
+            ...cloudInstantPaintStorageOptions(
+              persistenceAdapter,
+              config.notebookId,
+              instantPaintMatcher,
+            ),
             loadRenderHandle: (notebookBytes, runtimeStateBytes) =>
               loadRenderSnapshotHandle(
                 notebookBytes,
@@ -1063,6 +1084,12 @@ export function useCloudViewerSession({
               return;
             }
             const reason = new Error(`Room rejected sync frame: ${message.reason}`);
+            // Escalation means in-place resync could not converge — the
+            // refused changes are IN the doc. One plausible arrival path
+            // is the cross-tab bridge (sender-asserted principal), so
+            // disable it for the rest of the session; legitimate tabs
+            // converge through the room instead.
+            tabBridgeQuarantinedRef.current = true;
             const seededRuntime = liveRuntime?.seededFromPersistence === true;
             if (persistenceSeed && shouldDiscardPersistedSeedOnRejection(message, seededRuntime)) {
               // Poison pill: the record replays changes the room will not

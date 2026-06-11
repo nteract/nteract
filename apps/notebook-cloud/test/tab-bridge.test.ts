@@ -65,9 +65,41 @@ describe("createCloudNotebookTabBridge", () => {
     await sleep(20);
 
     assert.deepEqual(harness.posted, [
-      { kind: "changes", principal: "user:dev:alice", bytes: new Uint8Array([5]) },
+      { kind: "changes", v: 1, principal: "user:dev:alice", bytes: new Uint8Array([5]) },
     ]);
     harness.bridge.dispose();
+  });
+
+  it("arms nothing when the deployed WASM bundle lacks save_since_heads", () => {
+    const notebookDocChanged$ = new Subject<void>();
+    let channelOpened = false;
+    const originalWarn = console.warn;
+    const warnings: unknown[] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      const bridge = createCloudNotebookTabBridge({
+        notebookId: "nb-1",
+        principal: "user:dev:alice",
+        engine: {
+          notebookDocChanged$,
+          applyLocalPeerChanges: () => true,
+        },
+        // An older cached bundle: the export is simply absent.
+        handle: { get_heads_hex: () => ["h1"] },
+        createChannel: () => {
+          channelOpened = true;
+          return { onmessage: null, postMessage: () => {}, close: () => {} };
+        },
+      });
+      assert.equal(bridge, null, "stale bundle degrades to single-tab");
+      assert.equal(channelOpened, false, "no channel is ever opened");
+      assert.equal(notebookDocChanged$.observed, false, "no broadcast subscription");
+      assert.equal(warnings.length, 1, "one-time warn, not per-window spam");
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   it("applies same-principal peer messages through the engine and drops others", () => {
@@ -76,10 +108,10 @@ describe("createCloudNotebookTabBridge", () => {
     const channel = harness.channel()!;
 
     channel.onmessage?.({
-      data: { kind: "changes", principal: "user:dev:alice", bytes: new Uint8Array([7]) },
+      data: { kind: "changes", v: 1, principal: "user:dev:alice", bytes: new Uint8Array([7]) },
     });
     channel.onmessage?.({
-      data: { kind: "changes", principal: "user:dev:mallory", bytes: new Uint8Array([8]) },
+      data: { kind: "changes", v: 1, principal: "user:dev:mallory", bytes: new Uint8Array([8]) },
     });
 
     assert.deepEqual(harness.applied, [new Uint8Array([7])]);
@@ -109,5 +141,28 @@ describe("cloud session tab-bridge wiring", () => {
     const runtimeDisposeIndex = sessionSource.indexOf("disposeCloudSyncRuntime(liveRuntime);");
     assert.ok(disposeIndex !== -1 && runtimeDisposeIndex !== -1);
     assert.ok(disposeIndex < runtimeDisposeIndex, "channel closes before the handle frees");
+  });
+
+  it("quarantines the bridge for the session once a sync rejection escalates", () => {
+    // The bridge principal is sender-asserted: a hostile same-origin tab
+    // can keep feeding room-rejected changes, and without the quarantine
+    // the post-escalation bootstrap would re-arm against it forever
+    // (teardown -> seed discard -> re-poison loop).
+    assert.match(
+      sessionSource,
+      /tabBridgeQuarantinedRef\.current = true;/,
+      "escalation sets the session quarantine flag",
+    );
+    const armBody = sessionSource.slice(
+      sessionSource.indexOf("const armTabBridge"),
+      sessionSource.indexOf("const handleConnectionLost"),
+    );
+    assert.match(
+      armBody,
+      /if \(tabBridgeQuarantinedRef\.current\) return;/,
+      "armTabBridge refuses to re-arm while quarantined",
+    );
+    // The flag is session-scoped (a ref), not effect-scoped state.
+    assert.match(sessionSource, /const tabBridgeQuarantinedRef = useRef\(false\);/);
   });
 });

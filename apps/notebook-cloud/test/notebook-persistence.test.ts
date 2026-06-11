@@ -100,8 +100,9 @@ function createHarness() {
   };
 }
 
-const SEED_SNAPSHOT_CHUNK_KEY = notebookDocSnapshotChunkKey("nb-1", ["doc-head"]).join("/");
-const SEED_CHUNK_META_KEY = notebookDocChunkMetaKey("nb-1").join("/");
+const ALICE = "user:dev:alice";
+const SEED_SNAPSHOT_CHUNK_KEY = notebookDocSnapshotChunkKey("nb-1", ALICE, ["doc-head"]).join("/");
+const SEED_CHUNK_META_KEY = notebookDocChunkMetaKey("nb-1", ALICE).join("/");
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -210,81 +211,157 @@ describe("createCloudNotebookPersistence", () => {
   });
 });
 
-function chunkMeta(principal: string, headsHex = ["chunk-head"]): NotebookDocPersistenceMeta {
-  return { headsHex, savedAt: 1, principal, schemaVersion: 1 };
+function chunkMeta(
+  principal: string,
+  overrides: Partial<NotebookDocPersistenceMeta> = {},
+): NotebookDocPersistenceMeta {
+  return {
+    headsHex: ["chunk-head"],
+    savedAt: 10,
+    principal,
+    schemaVersion: 1,
+    generation: 7,
+    ...overrides,
+  };
 }
 
-function envelopeRecord(principal: string, bytes: Uint8Array): Uint8Array {
+function envelopeRecord(principal: string, bytes: Uint8Array, savedAt = 1): Uint8Array {
   return encodePersistedNotebookDoc(
-    { headsHex: ["env-head"], savedAt: 1, principal, schemaVersion: 1 },
+    { headsHex: ["env-head"], savedAt, principal, schemaVersion: 1 },
     bytes,
   );
 }
 
 describe("loadCloudPersistedNotebookSeed", () => {
-  it("prefers the chunk store and returns its inventory", async () => {
+  it("prefers the chunk store and returns its inventory + generation", async () => {
     const adapter = createRecordingAdapter();
-    await adapter.save(["nb-1", "snapshot"], envelopeRecord("user:dev:alice", new Uint8Array([9])));
-    await adapter.save(notebookDocSnapshotChunkKey("nb-1", ["h1"]), new Uint8Array([1, 2]));
-    await adapter.save(notebookDocIncrementalChunkKey("nb-1", "abcd"), new Uint8Array([3]));
+    await adapter.save(["nb-1", "snapshot"], envelopeRecord(ALICE, new Uint8Array([9])));
+    await adapter.save(notebookDocSnapshotChunkKey("nb-1", ALICE, ["h1"]), new Uint8Array([1, 2]));
+    await adapter.save(notebookDocIncrementalChunkKey("nb-1", ALICE, "abcd"), new Uint8Array([3]));
     await adapter.save(
-      notebookDocChunkMetaKey("nb-1"),
-      encodeNotebookDocChunkMeta(chunkMeta("user:dev:alice")),
+      notebookDocChunkMetaKey("nb-1", ALICE),
+      encodeNotebookDocChunkMeta(chunkMeta(ALICE)),
     );
 
-    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", "user:dev:alice");
+    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", ALICE);
     assert.ok(seed);
     // Concatenated snapshot-then-incremental bytes, not the envelope's.
     assert.deepEqual(seed.bytes, new Uint8Array([1, 2, 3]));
-    assert.equal(seed.meta?.principal, "user:dev:alice");
+    assert.equal(seed.meta?.principal, ALICE);
+    assert.equal(seed.meta?.generation, 7);
     assert.equal(seed.chunks?.length, 2);
     // Reading must not clear anything.
     assert.ok(adapter.records.has("nb-1/snapshot"));
     assert.ok(adapter.records.has(SEED_CHUNK_META_KEY));
   });
 
-  it("clears ONLY the chunk range on principal mismatch and falls back to the envelope", async () => {
+  it("never sees another principal's sub-range — single-principal unions by construction", async () => {
     const adapter = createRecordingAdapter();
-    await adapter.save(["nb-1", "snapshot"], envelopeRecord("user:dev:alice", new Uint8Array([9])));
+    await adapter.save(["nb-1", "snapshot"], envelopeRecord(ALICE, new Uint8Array([9])));
+    // Another principal's store, meta and all — under a different prefix.
     await adapter.save(
-      ["nb-1", RUNTIME_STATE_CACHE_KEY_SEGMENT],
-      envelopeRecord("user:dev:alice", new Uint8Array([8])),
+      notebookDocSnapshotChunkKey("nb-1", "user:dev:mallory", ["h1"]),
+      new Uint8Array([1, 2]),
     );
-    await adapter.save(notebookDocSnapshotChunkKey("nb-1", ["h1"]), new Uint8Array([1, 2]));
     await adapter.save(
-      notebookDocChunkMetaKey("nb-1"),
+      notebookDocChunkMetaKey("nb-1", "user:dev:mallory"),
       encodeNotebookDocChunkMeta(chunkMeta("user:dev:mallory")),
     );
 
-    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", "user:dev:alice");
+    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", ALICE);
     assert.ok(seed);
     assert.deepEqual(seed.bytes, new Uint8Array([9]), "fell back to the envelope record");
     assert.equal(seed.chunks, undefined);
+    // The foreign sub-range is invisible — and untouched (no clears).
+    assert.ok(adapter.records.has(notebookDocChunkMetaKey("nb-1", "user:dev:mallory").join("/")));
+  });
+
+  it("treats missing/corrupt chunk meta as unverifiable: clears ONLY this sub-range, falls back", async () => {
+    const adapter = createRecordingAdapter();
+    await adapter.save(["nb-1", "snapshot"], envelopeRecord(ALICE, new Uint8Array([9])));
+    await adapter.save(
+      ["nb-1", RUNTIME_STATE_CACHE_KEY_SEGMENT],
+      envelopeRecord(ALICE, new Uint8Array([8])),
+    );
+    await adapter.save(notebookDocSnapshotChunkKey("nb-1", ALICE, ["h1"]), new Uint8Array([1, 2]));
+    // No meta record at all.
+    await adapter.save(
+      notebookDocChunkMetaKey("nb-1", "user:dev:mallory"),
+      encodeNotebookDocChunkMeta(chunkMeta("user:dev:mallory")),
+    );
+
+    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", ALICE);
+    assert.ok(seed);
+    assert.deepEqual(seed.bytes, new Uint8Array([9]));
     const remaining = [...adapter.records.keys()].sort();
     assert.deepEqual(
       remaining,
-      ["nb-1/runtime-state-cache", "nb-1/snapshot"],
-      "chunk range cleared; envelope and paint cache survive",
+      [
+        notebookDocChunkMetaKey("nb-1", "user:dev:mallory").join("/"),
+        "nb-1/runtime-state-cache",
+        "nb-1/snapshot",
+      ].sort(),
+      "own sub-range cleared; envelope, paint cache, and the foreign sub-range survive",
     );
   });
 
-  it("treats missing/corrupt chunk meta as unverifiable: clears chunks, falls back", async () => {
+  it("prefers a strictly NEWER envelope (rollback rule) and keeps the chunks in place", async () => {
     const adapter = createRecordingAdapter();
-    await adapter.save(["nb-1", "snapshot"], envelopeRecord("user:dev:alice", new Uint8Array([9])));
-    await adapter.save(notebookDocSnapshotChunkKey("nb-1", ["h1"]), new Uint8Array([1, 2]));
-    // No meta record at all.
+    // Chunks written at savedAt=10; a rolled-back app version then wrote
+    // the envelope at savedAt=20 with offline edits.
+    await adapter.save(notebookDocSnapshotChunkKey("nb-1", ALICE, ["h1"]), new Uint8Array([1, 2]));
+    await adapter.save(
+      notebookDocChunkMetaKey("nb-1", ALICE),
+      encodeNotebookDocChunkMeta(chunkMeta(ALICE, { savedAt: 10 })),
+    );
+    await adapter.save(["nb-1", "snapshot"], envelopeRecord(ALICE, new Uint8Array([9]), 20));
 
-    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", "user:dev:alice");
+    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", ALICE);
     assert.ok(seed);
-    assert.deepEqual(seed.bytes, new Uint8Array([9]));
-    assert.equal(adapter.records.has(SEED_SNAPSHOT_CHUNK_KEY.replace("doc-head", "h1")), false);
+    assert.deepEqual(seed.bytes, new Uint8Array([9]), "the newer envelope seeds");
+    assert.equal(seed.chunks, undefined, "no chunk inventory rides a non-chunk seed");
+    // The stale chunks stay: the session's first save snapshots fresh
+    // into the same sub-range and later loads union both lines.
+    assert.ok(adapter.records.has(notebookDocSnapshotChunkKey("nb-1", ALICE, ["h1"]).join("/")));
+  });
+
+  it("keeps preferring the chunk store when it is as new or newer than the envelope", async () => {
+    const adapter = createRecordingAdapter();
+    await adapter.save(notebookDocSnapshotChunkKey("nb-1", ALICE, ["h1"]), new Uint8Array([1, 2]));
+    await adapter.save(
+      notebookDocChunkMetaKey("nb-1", ALICE),
+      encodeNotebookDocChunkMeta(chunkMeta(ALICE, { savedAt: 20 })),
+    );
+    await adapter.save(["nb-1", "snapshot"], envelopeRecord(ALICE, new Uint8Array([9]), 20));
+
+    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", ALICE);
+    assert.ok(seed);
+    assert.deepEqual(seed.bytes, new Uint8Array([1, 2]), "ties prefer the live chunk format");
+    assert.equal(seed.chunks?.length, 1);
+  });
+
+  it("ignores a newer envelope under ANOTHER principal", async () => {
+    const adapter = createRecordingAdapter();
+    await adapter.save(notebookDocSnapshotChunkKey("nb-1", ALICE, ["h1"]), new Uint8Array([1, 2]));
+    await adapter.save(
+      notebookDocChunkMetaKey("nb-1", ALICE),
+      encodeNotebookDocChunkMeta(chunkMeta(ALICE, { savedAt: 10 })),
+    );
+    await adapter.save(
+      ["nb-1", "snapshot"],
+      envelopeRecord("user:dev:mallory", new Uint8Array([9]), 20),
+    );
+
+    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", ALICE);
+    assert.ok(seed);
+    assert.deepEqual(seed.bytes, new Uint8Array([1, 2]));
   });
 
   it("returns the envelope record when no chunks exist (migration fallback)", async () => {
     const adapter = createRecordingAdapter();
-    await adapter.save(["nb-1", "snapshot"], envelopeRecord("user:dev:alice", new Uint8Array([9])));
+    await adapter.save(["nb-1", "snapshot"], envelopeRecord(ALICE, new Uint8Array([9])));
 
-    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", "user:dev:alice");
+    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", ALICE);
     assert.ok(seed);
     assert.deepEqual(seed.bytes, new Uint8Array([9]));
     assert.equal(seed.chunks, undefined);
@@ -292,18 +369,15 @@ describe("loadCloudPersistedNotebookSeed", () => {
 
   it("returns undefined when nothing is persisted", async () => {
     const adapter = createRecordingAdapter();
-    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", "user:dev:alice");
+    const seed = await loadCloudPersistedNotebookSeed(adapter, "nb-1", ALICE);
     assert.equal(seed, undefined);
   });
 
   it("migration: an envelope-seeded controller's first save writes a snapshot chunk and leaves the envelope", async () => {
     const harness = createHarness();
-    await harness.adapter.save(
-      ["nb-1", "snapshot"],
-      envelopeRecord("user:dev:alice", new Uint8Array([9])),
-    );
+    await harness.adapter.save(["nb-1", "snapshot"], envelopeRecord(ALICE, new Uint8Array([9])));
     // Seeded from the envelope: heads-dedupe initialized, chunk inventory empty.
-    const controller = harness.arm("user:dev:alice", ["env-head"]);
+    const controller = harness.arm(ALICE, ["env-head"]);
     assert.ok(controller);
 
     harness.notebookDocChanged$.next();

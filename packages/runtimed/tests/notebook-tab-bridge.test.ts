@@ -118,7 +118,7 @@ describe("NotebookTabBridge (unit)", () => {
     await vi.advanceTimersByTimeAsync(10);
 
     expect(bus.channels[0]!.posted).toEqual([
-      { kind: "changes", principal: "user:test:alice", bytes: new Uint8Array([42]) },
+      { kind: "changes", v: 1, principal: "user:test:alice", bytes: new Uint8Array([42]) },
     ]);
     // The basis was the heads at construction; the NEXT delta cuts from
     // the heads captured at this broadcast.
@@ -148,17 +148,17 @@ describe("NotebookTabBridge (unit)", () => {
     const channel = bus.channels[0]!;
 
     channel.onmessage?.({
-      data: { kind: "changes", principal: "user:test:alice", bytes: new Uint8Array([7]) },
+      data: { kind: "changes", v: 1, principal: "user:test:alice", bytes: new Uint8Array([7]) },
     });
     channel.onmessage?.({
-      data: { kind: "changes", principal: "user:test:mallory", bytes: new Uint8Array([8]) },
+      data: { kind: "changes", v: 1, principal: "user:test:mallory", bytes: new Uint8Array([8]) },
     });
 
     expect(tab.applied).toEqual([new Uint8Array([7])]);
     tab.bridge.dispose();
   });
 
-  it("drops malformed messages without applying", () => {
+  it("drops malformed and version-mismatched messages without applying", () => {
     const bus = createChannelBus();
     const tab = createUnitBridge(bus);
     const channel = bus.channels[0]!;
@@ -166,11 +166,19 @@ describe("NotebookTabBridge (unit)", () => {
     channel.onmessage?.({ data: null });
     channel.onmessage?.({ data: "changes" });
     channel.onmessage?.({ data: { kind: "changes" } });
-    channel.onmessage?.({ data: { kind: "changes", principal: "user:test:alice" } });
+    channel.onmessage?.({ data: { kind: "changes", v: 1, principal: "user:test:alice" } });
     channel.onmessage?.({
-      data: { kind: "changes", principal: "user:test:alice", bytes: "not bytes" },
+      data: { kind: "changes", v: 1, principal: "user:test:alice", bytes: "not bytes" },
     });
-    channel.onmessage?.({ data: { kind: "other", principal: "user:test:alice" } });
+    channel.onmessage?.({ data: { kind: "other", v: 1, principal: "user:test:alice" } });
+    // Unversioned and future-versioned messages drop — the negotiation
+    // hook for any later payload change.
+    channel.onmessage?.({
+      data: { kind: "changes", principal: "user:test:alice", bytes: new Uint8Array([7]) },
+    });
+    channel.onmessage?.({
+      data: { kind: "changes", v: 2, principal: "user:test:alice", bytes: new Uint8Array([7]) },
+    });
 
     expect(tab.applied).toEqual([]);
     tab.bridge.dispose();
@@ -388,6 +396,49 @@ describe("NotebookTabBridge offline convergence (real WASM)", () => {
     } finally {
       tabA.dispose();
       tabB.dispose();
+    }
+  });
+
+  it("three tabs: one edit settles at exactly one broadcast per tab (bounded echo)", async () => {
+    const Handle = await initWasm();
+    const bus = createChannelBus();
+
+    const origin = new Handle("nb-bridge");
+    origin.set_actor("user:test:alice/browser:origin");
+    const genesis = origin.save();
+    origin.free();
+
+    const tabs = ["a", "b", "c"].map((suffix) => {
+      const handle = Handle.load(genesis);
+      handle.set_actor(`user:test:alice/browser:tab-${suffix}`);
+      return createTab(handle, "user:test:alice", bus);
+    });
+    const [tabA, tabB, tabC] = tabs as [Tab, Tab, Tab];
+    try {
+      tabA.handle.add_cell(0, "cell-a", "code");
+      tabA.handle.update_source("cell-a", "from_tab_a = 1");
+      tabA.engine.flush();
+      await settle();
+      await settle();
+
+      for (const tab of tabs) {
+        expect(tab.handle.cell_count()).toBe(1);
+        expect(tab.handle.get_heads_hex()).toEqual(tabA.handle.get_heads_hex());
+      }
+
+      // The echo bound: A broadcasts the origin; B and C each apply it
+      // and re-broadcast once (their deltas include A's change); those
+      // echoes apply as known-change no-ops everywhere. One edit ⇒
+      // exactly one broadcast per tab, then silence.
+      const counts = tabs.map((tab) => tab.broadcasts());
+      expect(counts).toEqual([1, 1, 1]);
+      await settle();
+      await settle();
+      expect(tabs.map((tab) => tab.broadcasts())).toEqual(counts);
+    } finally {
+      for (const tab of tabs) {
+        tab.dispose();
+      }
     }
   });
 

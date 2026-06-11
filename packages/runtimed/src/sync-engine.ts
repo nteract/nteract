@@ -1189,6 +1189,17 @@ export class SyncEngine {
    *   apply changes nothing about room catch-up.
    */
   applyLocalPeerChanges(bytes: Uint8Array): boolean {
+    if (this.materializeIn === null) {
+      // Stopped engine: drop BEFORE touching the doc. Applying here
+      // would mutate the handle while the projection pipelines are gone
+      // — the changeset and flush would vanish silently, and per-frame
+      // diffs after the next start() could never backfill the gap
+      // (permanent UI divergence). Dropping is safe: the peer tab's
+      // changes reach this doc through the room sync or the next
+      // session's seed instead.
+      this.opts.logger.warn("[sync-engine] peer changes dropped: engine not running");
+      return false;
+    }
     const handle = this.opts.getHandle();
     if (!handle?.apply_change_bytes) {
       this.opts.logger.debug("[sync-engine] peer changes dropped: no handle/apply export");
