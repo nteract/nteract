@@ -113,6 +113,7 @@ Key layout (room for incremental chunks later, without migration):
 | Key | Value |
 |---|---|
 | `[notebookId, "snapshot"]` | one **envelope record**: 4-byte little-endian meta-JSON length, meta JSON utf8 (`{ headsHex, savedAt, principal, schemaVersion: 1 }`), then full `handle.save()` NotebookDoc bytes |
+| `[notebookId, "runtime-state-cache"]` | same envelope shape over `save_state_doc()` RuntimeStateDoc bytes (meta heads = runtime heads) — PR 6's render-only paint cache, never a sync seed |
 
 The envelope is deliberate: a single record means a single IDB transaction,
 so the meta (which carries the principal guard) can never tear apart from
@@ -517,8 +518,13 @@ connection resilience lives.
 
 ## Invariants (load-bearing, checked in review)
 
-- Persist **NotebookDoc bytes only**. RuntimeStateDoc/CommsDoc/sync states are
-  never written to storage.
+- Only **NotebookDoc bytes** may seed a syncing handle. CommsDoc and
+  Automerge sync states are never written to storage. RuntimeStateDoc bytes
+  are stored solely as the render-only `runtime-state-cache` record (PR 6)
+  — a paint source decoded into a throwaway handle, never loaded into the
+  syncing handle, never flushed, never synced; the syncing handle always
+  bootstraps RuntimeStateDoc empty and the daemon/room remains the only
+  writer.
 - After `NotebookHandle.load()`, `set_actor()` with a **fresh per-connection
   label** before any authoring (operator nonce client-minted per connect
   attempt; principal rewritten by the worker). Never reuse an actor label
@@ -557,47 +563,73 @@ point ("merged N offline changes" affordance, never a modal). We will
 inevitably hit this as collaborative offline use grows; scoped follow-up
 once the stack lands.
 
-### PR 6 — Instant first paint from the persisted snapshot
+### PR 6 — Instant first paint from the persisted snapshot (landed)
 
 The persistence layer's second purpose (and a primary motivation for using
-IndexedDB at all): page load should paint the notebook *immediately* from
-the local envelope instead of waiting for the WS dial + `cloud_room_ready` +
-full bootstrap sync. PR 1 deliberately seeds *after* the handshake because
-authoring needs the server-assigned actor label — but **painting needs no
-actor**. The pinned-snapshot path already proves bytes → throwaway handle →
-`materializeCloudNotebookView` works without a live connection. Sketch:
+IndexedDB at all): page load paints the notebook *immediately* from the
+local envelope records instead of waiting for the WS dial +
+`cloud_room_ready` + full bootstrap sync. PR 1 deliberately seeds *after*
+the handshake because authoring needs the server-assigned actor label — but
+**painting needs no actor**. The pinned-snapshot path already proved
+bytes → throwaway handle → `materializeCloudNotebookView` works without a
+live connection. As landed:
 
-- Read the envelope in parallel with the WS dial; if present, materialize a
-  render-only view at once (ms, zero network), letting the live engine's
-  first materialization take over when ready (respecting the no-blanking
-  rules).
-- **Pre-handshake principal gate:** before `cloud_room_ready` we don't know
-  the connection's principal, and IDB may hold another user's notebook on a
-  shared machine. Gate the paint on the principal derivable from the locally
-  stored auth material (collaborator-auth token) matching the envelope meta;
-  no match → skip paint, wait for the room.
-- **Outputs paint too — via a render-only RuntimeStateDoc cache (base
-  case).** Outputs are most of what a notebook visually *is*, so first paint
-  must include them: alongside the NotebookDoc envelope, cache the last
-  received RuntimeStateDoc bytes (`save_state_doc()`) under a sibling key,
-  strictly as a paint source — decoded into a throwaway render handle (the
-  pinned-snapshot path's exact shape), **never** loaded into the syncing
-  handle and never flushed. The authority invariant forbids restoring
-  runtime state into the sync path, not caching pixels; the syncing handle
-  still bootstraps RuntimeStateDoc empty and the room remains the only
-  writer. Blob-backed output *bytes* are already solved: blob refs are
-  content-addressed and immutable, and the cloud blob endpoints serve
-  `Cache-Control: immutable`, so the browser HTTP cache makes
-  `<img src="blobURL">` instant on revisit with no IndexedDB involvement.
-  The gap is **addressing**, not bytes: which execution is current per cell
-  and which manifest/blob refs to resolve all live in RuntimeStateDoc — the
-  render cache is what preserves the execution-id → output → manifest →
-  blob-ref chain, and the real work is running the output-resolution path
-  (manifest decode, execution-id tracking — see
-  [blob-ref-and-chunk-manifest-protocol](./blob-ref-and-chunk-manifest-protocol.md),
-  [arrow-manifest-durable-storage-design](./arrow-manifest-durable-storage-design.md))
-  against cached bytes with no live room. Cloud-only; desktop has the local
-  daemon.
+- **Outputs paint too — via a render-only RuntimeStateDoc cache (the base
+  case).** Outputs are most of what a notebook visually *is*. The session
+  arms a second throttled persistence controller alongside the NotebookDoc
+  seed (`createCloudNotebookPersistence`,
+  `apps/notebook-cloud/viewer/notebook-persistence.ts`): RuntimeStateDoc
+  bytes from `save_state_doc()` under the sibling key
+  `[notebookId, "runtime-state-cache"]`, same envelope codec, own meta
+  (runtime heads via `get_runtime_state_heads_hex()`, savedAt, principal,
+  schemaVersion 1), driven by the engine's `runtimeState$` stream. The
+  record is **strictly a paint source** — decoded into a throwaway render
+  handle, never loaded into the syncing handle, never flushed, never
+  synced. The authority invariant forbids restoring runtime state into the
+  sync path, not caching pixels; the syncing handle still bootstraps
+  RuntimeStateDoc empty and the room remains the only writer. Anonymous
+  sessions and `read_failed` seed outcomes keep the whole save loop
+  disarmed; teardown/pagehide flushes commit both records before the handle
+  frees, and seed-level clears (`removeRange`) discard the cache with the
+  seed. Blob-backed output *bytes* were already solved (content-addressed
+  refs + `Cache-Control: immutable`); the cache preserves the
+  **addressing** — the execution-id → output → manifest → blob-ref chain —
+  so the normal output-resolution path runs against cached bytes with no
+  live room. Cloud-only; desktop has the local daemon.
+- **Paint-before-handshake:** the live-room effect kicks
+  `resolveCloudInstantPaintHandle` (`viewer/instant-paint.ts`) in parallel
+  with the WS dial (after the connect call, so the dial is never delayed).
+  Both envelopes are read (bounded by a 2 s timeout; a failed read skips
+  the paint and clears nothing), decoded via
+  `loadRenderSnapshotHandle` — `load_snapshot(notebook, runtimeState)`
+  with the cache, plain `load(notebook)` without it, **no `set_actor`** —
+  then materialized through `materializeCloudNotebookView` and freed.
+- **Pre-handshake principal gate:** before `cloud_room_ready` the
+  connection's principal is unknown, and IDB may hold another user's
+  notebook on a shared machine. `cloudInstantPaintPrincipalMatcher`
+  derives a matcher from locally stored auth material: the dev-token user
+  maps to the exact `user:dev:<encoded user>` principal (the worker's
+  derivation is deterministic); OIDC matches the stored subject claim as
+  the principal's encoded id segment (the namespace prefix is
+  server-configured and not client-derivable), with expired claims
+  accepted only when the app-session cookie backs them. No derivable
+  principal, or a mismatch on **either** envelope, skips the paint without
+  clearing — post-handshake seeding owns clear decisions. Anonymous
+  principals never match.
+- **Degradations:** notebook envelope without a cache record paints
+  cells-only. A torn cache envelope, or `load_snapshot` rejecting with
+  cache bytes in play, clears **only** the `runtime-state-cache` record
+  and retries cells-only; corrupt notebook bytes skip the paint without
+  clearing; transient WASM asset failures clear nothing.
+- **Race + handoff:** if the live connect wins the race against the cache
+  read, the paint is skipped (`liveMaterializedRef` guards every apply) —
+  stale cache never overwrites a live materialization. When the paint
+  wins, it lands through the same `applyResolvedCells` path, so the #3577
+  preservation gate keeps it across effect re-runs and the live
+  materialization replaces it wholesale in place (no blanking). The paint
+  runs only on the live-room path; the pinned-revision URL keeps its
+  snapshot fetch (mutually exclusive by loading policy). Poison-pill
+  attempts (seed discard in flight) skip the paint along with the seed.
 - Offline *editing* before the first-ever handshake stays out of scope
   (below) — this PR is about read latency, not offline authoring.
 
