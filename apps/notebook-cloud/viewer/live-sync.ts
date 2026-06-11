@@ -1,3 +1,4 @@
+import { isRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
 import { BehaviorSubject, ReplaySubject, type Observable } from "rxjs";
 import {
   SyncEngine,
@@ -537,6 +538,18 @@ export async function resolveCloudNotebookHandle<Handle>({
   try {
     return { handle: await loadFromBytes(persisted.bytes), outcome: "seeded" };
   } catch (error) {
+    // A WASM client/asset failure does not incriminate the persisted bytes:
+    // clearing here destroyed a healthy record in the field when an
+    // init-source refusal cascaded out of loadFromBytes. Fail open and let
+    // the next attempt retry the seed.
+    const message = error instanceof Error ? error.message : String(error);
+    if (isRuntimedWasmAssetFailure(message)) {
+      console.warn(
+        "[notebook-cloud] runtimed WASM failed while seeding; bootstrapping without clearing",
+        error,
+      );
+      return { handle: await createBootstrap(), outcome: "read_failed" };
+    }
     console.warn(
       "[notebook-cloud] persisted NotebookDoc bytes failed to load; clearing and bootstrapping",
       error,
