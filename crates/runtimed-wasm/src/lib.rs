@@ -5540,6 +5540,78 @@ mod tests {
         assert_eq!(peer.get_heads_hex(), author.get_heads_hex());
     }
 
+    // -- pinned fork load contract for the chunked store ------------------
+    //
+    // The chunk store's crash/recovery invariants lean on two
+    // fork-revision-sensitive behaviors of `Automerge::load` (pinned rev
+    // 992effbf): an incremental-only buffer with absent dependencies must
+    // HARD-ERROR (the resolver treats it as corruption: clear +
+    // bootstrap), while a snapshot-first buffer with a dep-orphaned
+    // incremental must load SILENTLY without materializing the orphan. A
+    // future automerge bump that flips either would otherwise pass every
+    // existing test.
+
+    #[test]
+    fn load_rejects_incremental_only_bytes_with_missing_dependencies() {
+        let mut author = handle_with_cell("cell-1", "x = 1");
+        let basis = author.get_heads_hex();
+        author
+            .add_cell(author.cell_count(), "cell-2", "code")
+            .expect("add cell");
+        let incremental = author
+            .save_since_heads_inner(&basis)
+            .expect("incremental save");
+        assert!(!incremental.is_empty());
+
+        // The deps (everything up to `basis`) exist only outside these
+        // bytes: first chunk is a change chunk, queue stays non-empty,
+        // OnPartialLoad::Error (the default) returns MissingDeps. Pinned
+        // through NotebookDoc::load_with_encoding — the exact call
+        // NotebookHandle::load wraps (its JsError wrapper aborts on
+        // native targets, so the inner Result is asserted instead).
+        assert!(
+            NotebookDoc::load_with_encoding(
+                &incremental,
+                notebook_doc::TextEncoding::Utf16CodeUnit
+            )
+            .is_err(),
+            "incremental-only buffer with missing deps must fail to load"
+        );
+    }
+
+    #[test]
+    fn load_tolerates_a_dep_orphaned_incremental_behind_a_snapshot_chunk() {
+        let mut author = handle_with_cell("cell-1", "x = 1");
+        let snapshot = author.save_since_heads_inner(&[]).expect("full save");
+        let snapshot_heads = author.get_heads_hex();
+
+        // c1: snapshot_heads -> mid (NOT serialized below — the gap).
+        author.update_source("cell-1", "x = 2").expect("edit c1");
+        let mid_heads = author.get_heads_hex();
+        // c2: mid -> tip, serialized alone so its parent is missing.
+        author
+            .add_cell(author.cell_count(), "cell-2", "markdown")
+            .expect("add cell");
+        let orphan = author.save_since_heads_inner(&mid_heads).expect("tail");
+        assert!(!orphan.is_empty());
+
+        let mut concatenated = snapshot.clone();
+        concatenated.extend_from_slice(&orphan);
+        let mut loaded =
+            NotebookHandle::load(&concatenated).expect("doc-chunk-first union must load");
+        // The orphan is queued, never materialized: state is exactly the
+        // snapshot's.
+        assert_eq!(loaded.cell_count(), 1);
+        assert_eq!(loaded.get_cell_source("cell-1").as_deref(), Some("x = 1"));
+        assert_eq!(loaded.get_heads_hex(), snapshot_heads);
+        // And `save()` (SaveOptions::default has retain_orphans: true)
+        // keeps carrying the orphan rather than silently shedding it.
+        let resaved = loaded.save();
+        let mut reloaded = NotebookHandle::load(&resaved).expect("re-saved union loads");
+        assert_eq!(reloaded.cell_count(), 1);
+        assert_eq!(reloaded.get_heads_hex(), snapshot_heads);
+    }
+
     #[test]
     fn apply_change_bytes_treats_garbage_as_a_no_op() {
         let mut peer = handle_with_cell("cell-1", "x = 1");
