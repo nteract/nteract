@@ -48,6 +48,7 @@ main
      └─ PR 2  local-first/02-reconnect    transport reconnect loop, session preservation
          └─ PR 3  local-first/03-slot     connection/identity slot (cloud + desktop)
              └─ PR 4  local-first/04-assets  asset retry + degraded states
+                 └─ PR 5  local-first/05-merge-surfacing  quiet offline-merge notice
 ```
 
 ---
@@ -516,6 +517,106 @@ connection resilience lives.
 
 ---
 
+## PR 5 — Surface offline merges
+
+Offline edits merged silently before this PR: the returning user got no
+signal that their changes interleaved with remote ones, and — the sharp
+edge — a cell they edited offline that was deleted remotely stays deleted
+(Automerge does not resurrect; the work vanished wordlessly). PR 5 surfaces
+both, cloud viewer only, as ONE quiet info notice in the PR 3 notices stack:
+
+> **Synced your offline edits.** — extended to "Synced your offline edits —
+> N updates from collaborators merged." when remote changes also applied
+> during the resync window, plus one body line, "A cell you edited offline
+> was removed by a collaborator.", when a locally-edited-offline cell is
+> absent from the post-resync projection.
+
+Never a modal, never header chrome; the notice clears on the next user
+action or a short timeout (`useOfflineMergeNoticeAutoClear`, 10 s); a
+reconnect with nothing pending shows nothing; the suffix is dropped — never
+guessed — when the count is unknowable.
+
+### Derivation (existing signals only, no new engine observables)
+
+`OfflineMergeTracker` (`apps/notebook-cloud/viewer/offline-merge-tracker.ts`)
+is one per session, stable across effect re-runs and escalation teardowns
+like `CloudConnectionStatusBridge` — an outage spanning a transport
+replacement is still one outage. It extends the sustained-reconnecting
+tracker's debounce discipline with a post-recovery settle window:
+
+- **Offline window** — bounded by the bridge's `connectionStatus$`:
+  "reconnecting" opens it, "online" closes it, "connecting" is neutral
+  (replacement transports report it pre-handshake), terminal "offline"
+  drops it. Repeated "reconnecting" deliveries are no-ops.
+- **Local authorship** — two unambiguous sources. `notebookDocChanged$`
+  emissions *inside the window* are local flush attempts by construction:
+  no inbound frame can fire the `sync_applied` source while offline, and
+  the protocol-only emitters (bootstrap flush, post-ready `resetAndResync`)
+  all run after status flips "online". The CRDT bridge's per-cell sync
+  callback (now carrying the mutated `cellId`) supplies the edited-cell ids
+  AND marks work pending directly — an edit landed just before recovery
+  sits inside the engine's 20 ms flush debounce and only flushes
+  post-resync, the exact "unflushed handle changes delivered post-resync"
+  shape.
+- **Remote authorship** — `cellChanges$` is fed exclusively by the
+  `sync_applied` pipeline, so during the settle window
+  (`OFFLINE_MERGE_RESYNC_SETTLE_MS`, 1.5 s after recovery) its changesets
+  are the collaborator backlog. The count is distinct touched cell ids
+  (changed + added + removed); a `null` changeset (full materialization)
+  makes it unknowable → `null` → suffix dropped.
+- **Deleted-while-edited** — pure TS-side set-tracking, no new WASM exports
+  and no second diff: edited-offline cell ids minus the post-resync
+  projection (`getCellIdsSnapshot()`). The user's own deletes are exempted
+  (the viewer's delete handler removes the id), and an empty projection is
+  distrusted rather than read as mass deletion.
+- **Single-fire per outage** — a drop during the settle window cancels the
+  pending evaluation and resumes the SAME outage with accumulated state;
+  only a recovery whose settle window elapses fires, once, and firing
+  resets everything.
+- **Scope gate** — anonymous sessions are out (per-connection principals,
+  persistence never arms); eligibility follows the latest
+  `cloud_room_ready` principal. Desktop is out of scope entirely (the
+  tracker mounts only in `useCloudViewerSession`).
+
+The escalation-teardown path needs no special casing: a mid-outage teardown
+re-seeds the next attempt from the persisted record, the tracker's window
+stays open across the transport replacement, and the eventual recovery
+fires the same single notice.
+
+### Scoped out (recorded, not built)
+
+- **Cross-reload seeded offline edits.** `seededFromPersistence` cannot
+  distinguish "seed carries offline work" from a routine reload — every
+  signed-in reload seeds from the persisted record, and firing on every
+  reload would violate the quiet rules outright. Distinguishing requires
+  the room's heads in the `cloud_room_ready` handshake (compare against
+  the envelope's `headsHex`) or a durable pending-edits marker with
+  multi-tab reconciliation; both are protocol/storage additions beyond
+  TS-side set-tracking. Follow-up if cross-reload offline authoring grows.
+- **Zombie-socket pre-detection edits.** Edits made in the seconds before
+  the transport notices a drop (liveness probe window) are counted only
+  from the moment status leaves "online". They still sync correctly; they
+  just may not trigger the notice. Quiet bias: prefer a false negative.
+- **Same-key deterministic-loss attribution** ("your metadata write lost to
+  a concurrent one"). Needs per-op attribution diffing the changeset stream
+  does not carry; the text-attribution broadcast covers live typing, not an
+  offline merge audit. Out of scope until a real field report demands it.
+
+Tests: tracker derivation units (offline edits + reconnect → one notice
+after settle; clean reconnect/flaps → nothing; distinct-count + null
+unknowability; deleted-while-edited including own-delete exemption and
+empty-projection distrust; settle-interrupted outage continuity;
+eligibility; terminal disconnect; dispose), notice rendering (copy
+exactness, suffix presence/absence, removal line, info tone, stacking
+beside — not disturbing — the sustained-reconnecting line), and auto-clear
+lifecycle (timeout, pointer/key clear, teardown on clear and unmount,
+fresh-notice window restart). The sustained-reconnecting suite is
+untouched: reconnecting still shows its line, and recovery-with-pending
+replaces it naturally because the sustained flag clears at "online", which
+is exactly when the merge notice can first appear.
+
+---
+
 ## Invariants (load-bearing, checked in review)
 
 - Only **NotebookDoc bytes** may seed a syncing handle. CommsDoc and
@@ -550,18 +651,6 @@ connection resilience lives.
   DOM order while projections update in place.
 
 ## Planned follow-ups (beyond the stack)
-
-### PR 5 — Surface offline merges (conflicts are silent today)
-
-Offline edits merge silently on reconnect: the returning user gets no signal
-that their changes interleaved with remote ones, that a same-key write lost
-deterministically, or — the sharp edge — that a cell they edited offline was
-deleted remotely and stays deleted (Automerge does not resurrect). The
-ingredients to surface this already exist: heads before/after resync, the
-text-attribution stream, and the PR 3 slot/notices stack as the quiet mount
-point ("merged N offline changes" affordance, never a modal). We will
-inevitably hit this as collaborative offline use grows; scoped follow-up
-once the stack lands.
 
 ### PR 6 — Instant first paint from the persisted snapshot (landed)
 
