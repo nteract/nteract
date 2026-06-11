@@ -164,8 +164,8 @@ describe("NotebookRail", () => {
     expect(screen.queryByText("Attached")).not.toBeInTheDocument();
     expect(screen.getByTestId("host-workstations-content")).toHaveTextContent("runtime target");
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(16rem,20vw,18rem)]",
-      "min-w-64",
+      "w-[clamp(18rem,22vw,20rem)]",
+      "min-w-72",
     );
   });
 
@@ -279,8 +279,8 @@ describe("NotebookRail", () => {
       screen.getByTestId("notebook-rail").querySelector('[data-slot="notebook-rail-panel"]'),
     ).toBeInTheDocument();
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(16rem,20vw,18rem)]",
-      "min-w-64",
+      "w-[clamp(18rem,22vw,20rem)]",
+      "min-w-72",
       ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
   });
@@ -298,10 +298,10 @@ describe("NotebookRail", () => {
     );
 
     const packagesPanel = container.querySelector('[data-slot="notebook-rail-panel"]');
-    const panelWidthClass = "w-[clamp(16rem,20vw,18rem)]";
+    const panelWidthClass = "w-[clamp(18rem,22vw,20rem)]";
     expect(packagesPanel).toHaveClass(
       panelWidthClass,
-      "min-w-64",
+      "min-w-72",
       ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
 
@@ -319,7 +319,7 @@ describe("NotebookRail", () => {
 
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
       panelWidthClass,
-      "min-w-64",
+      "min-w-72",
     );
   });
 
