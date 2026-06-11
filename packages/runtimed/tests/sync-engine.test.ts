@@ -464,6 +464,49 @@ describe("SyncEngine", () => {
     });
   });
 
+  // ── Notebook sync applied (per inbound exchange) ──────────────
+
+  describe("notebookSyncApplied$", () => {
+    it("fires per applied inbound notebook sync frame, even when nothing changed", () => {
+      // The no-op exchange is the load-bearing case: converging with a
+      // peer at identical heads emits no cellChanges$/notebookDocChanged$,
+      // yet hosts must learn the exchange settled.
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        syncAppliedEvent({ changed: false }),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      let emissions = 0;
+      engine.notebookSyncApplied$.subscribe(() => {
+        emissions += 1;
+      });
+
+      transport.deliver(Array.from([0x00, 1]));
+      expect(emissions).toBe(1);
+      engine.stop();
+    });
+
+    it("stays silent for runtime-state sync frames", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        runtimeStateSyncEvent(makeRuntimeState({})),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      let emissions = 0;
+      engine.notebookSyncApplied$.subscribe(() => {
+        emissions += 1;
+      });
+
+      transport.deliver(Array.from([0x05, 1]));
+      expect(emissions).toBe(0);
+      engine.stop();
+    });
+  });
+
   // ── Cell changes (coalescing) ─────────────────────────────────
 
   describe("cellChanges$", () => {

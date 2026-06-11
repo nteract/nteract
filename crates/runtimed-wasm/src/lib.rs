@@ -2783,6 +2783,30 @@ impl NotebookHandle {
         self.doc.get_heads_hex()
     }
 
+    /// True when the local NotebookDoc contains every head the connected
+    /// peer last advertised on this connection's sync state — the doc has
+    /// provably caught up to everything the peer said it has.
+    ///
+    /// `their_heads` is `None` until the first inbound sync message is
+    /// applied, so this reports `false` before any exchange: an empty
+    /// bootstrap doc is never "caught up" merely because nothing has
+    /// arrived. Local-only changes keep this `true` — only the peer's
+    /// advertised heads must be present locally. `reset_sync_state()`
+    /// (reconnect) returns this to `false` until the new connection's
+    /// first inbound message applies.
+    ///
+    /// Hosted viewers use this to decide when an empty synced doc is the
+    /// room's truth (safe to displace locally painted content) rather
+    /// than a handshake that has not delivered content yet.
+    pub fn notebook_doc_caught_up(&mut self) -> bool {
+        let Some(their_heads) = self.sync_state.their_heads.clone() else {
+            return false;
+        };
+        their_heads
+            .iter()
+            .all(|hash| self.doc.doc_mut().get_change_by_hash(hash).is_some())
+    }
+
     /// Return the current RuntimeStateDoc heads as hex strings.
     pub fn get_runtime_state_heads_hex(&mut self) -> Vec<String> {
         self.state_doc

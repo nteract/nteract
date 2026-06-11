@@ -434,6 +434,21 @@ export class SyncEngine {
    */
   readonly notebookDocChanged$: Observable<void>;
 
+  /**
+   * Fires once per APPLIED inbound NotebookDoc sync frame, whether or not
+   * the document changed.
+   *
+   * `cellChanges$` and `notebookDocChanged$` are silent for no-op
+   * exchanges, but converging with a peer whose doc already matches ours
+   * is exactly such an exchange — e.g. a hosted room at genesis answers
+   * the bootstrap handshake with heads only and no changes. Hosts that
+   * must act once the exchange settles (the cloud viewer polls
+   * `notebook_doc_caught_up()` on each emission to let an authoritative
+   * empty room displace painted content) listen here. Derived 1:1 from
+   * the existing WASM `sync_applied` event — no second diff, no payload.
+   */
+  readonly notebookSyncApplied$: Observable<void>;
+
   // Backing subjects for public observables
   private readonly _cellChanges$ = new Subject<CellChangeset | null>();
   private readonly _broadcasts$ = new Subject<unknown>();
@@ -450,6 +465,7 @@ export class SyncEngine {
   }>();
   private readonly _executionViewChanges$ = new Subject<ExecutionViewChangeset>();
   private readonly _notebookDocChanged$ = new Subject<void>();
+  private readonly _notebookSyncApplied$ = new Subject<void>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -472,6 +488,7 @@ export class SyncEngine {
     this.outputIdChanges$ = this._outputIdChanges$.asObservable();
     this.executionViewChanges$ = this._executionViewChanges$.asObservable();
     this.notebookDocChanged$ = this._notebookDocChanged$.asObservable();
+    this.notebookSyncApplied$ = this._notebookSyncApplied$.asObservable();
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
@@ -629,6 +646,10 @@ export class SyncEngine {
               this._notebookDocChanged$.next();
             }
             this.emitExecutionViewChanges(e.execution_view_changeset);
+            // After the changed/reply handling: the handle has already
+            // applied the frame (receive_frame is synchronous), so
+            // subscribers polling handle facts see post-apply state.
+            this._notebookSyncApplied$.next();
             return EMPTY;
           }),
         )
