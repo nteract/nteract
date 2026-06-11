@@ -66,6 +66,13 @@ export type {
   OutputSegmentationOptions,
   RenderPayload,
 };
+// Renderer-bundle hooks are SSR-safe (provider-absent fallback, effect-scoped
+// listeners), so the docs build re-exports the real implementations.
+export {
+  useHasIsolatedOutputs,
+  useIsolatedRenderer,
+  useRegisterIsolatedOutput,
+} from "../../../../src/components/isolated/isolated-renderer-context";
 
 export interface IsolatedFrameProps {
   id?: string;
