@@ -64,8 +64,15 @@ sources:
 - the flush path, whenever `flush_local_changes()` yields bytes (local
   changes). Emission happens on the flush *attempt*, regardless of send
   success: `cancel_last_flush()` rolls back sync-state bookkeeping, not the
-  doc, so the doc has changed either way — and offline flush attempts are
-  precisely the ones persistence must capture.
+  doc — and offline flush attempts are precisely the ones persistence must
+  capture.
+
+The signal is a **save hint, not a doc-changed proof**: the flush source can
+over-fire, because `generate_sync_message` also yields bytes for
+protocol-only messages (the initial handshake on a fresh `sync::State`,
+resync negotiation). It never under-fires for committed local changes.
+Consumers must treat saves as idempotent; the persistence throttle makes the
+occasional no-op snapshot cheap.
 
 This stays consistent with the projection-convergence ADR: a narrow,
 cross-host observable derived from already-computed WASM facts (the heads
@@ -96,15 +103,24 @@ short-lived transaction per op, writes resolve on `transaction.oncomplete`.
 Where automerge-repo's adapter is thin we harden: `indexedDB` unavailable
 (private mode) → adapter factory returns `null` and persistence is skipped;
 `QuotaExceededError` and other write failures are caught and surfaced through
-an `onPersistenceError` callback (never an unhandled rejection); the
-connection is reopened on `onversionchange`/close.
+an `onError` callback (never an unhandled rejection); the connection is
+reopened on `onversionchange`/close (including a rejected `open()` — the
+cache is cleared through the promise, not the executor), and `close()`
+exists for effect-teardown connection hygiene.
 
 Key layout (room for incremental chunks later, without migration):
 
 | Key | Value |
 |---|---|
-| `[notebookId, "snapshot"]` | `Uint8Array` — full `handle.save()` NotebookDoc bytes |
-| `[notebookId, "meta"]` | JSON bytes: `{ headsHex, savedAt, principal, schemaVersion: 1 }` |
+| `[notebookId, "snapshot"]` | one **envelope record**: 4-byte little-endian meta-JSON length, meta JSON utf8 (`{ headsHex, savedAt, principal, schemaVersion: 1 }`), then full `handle.save()` NotebookDoc bytes |
+
+The envelope is deliberate: a single record means a single IDB transaction,
+so the meta (which carries the principal guard) can never tear apart from
+the bytes it describes — a two-key layout could pair one principal's meta
+with another's bytes after a crash between transactions. Decode failures and
+truncation degrade to `meta: null`, which seeding treats as unverifiable
+(clear + bootstrap); a tear inside the doc bytes is caught by
+`NotebookHandle.load()` throwing at seed time.
 
 PR 1 saves full snapshots (the only surface `NotebookHandle` exposes is
 `save()`); the adapter interface and key scheme already accommodate
@@ -112,10 +128,17 @@ automerge-repo-style content-addressed incremental chunks + compaction if doc
 sizes ever demand it.
 
 `NotebookDocPersistence` controller: subscribes `notebookDocChanged$` through
-a trailing-edge async throttle (serialize saves; latest call wins; final state
-always committed — automerge-repo's `asyncThrottle` semantics), default
-1 000 ms. `flushNow()` is wired to `pagehide`/`visibilitychange: hidden` to
-shrink the tab-kill loss window.
+a trailing-edge async throttle (serialize saves; latest call wins —
+automerge-repo's `asyncThrottle` semantics), default 1 000 ms. `flushNow()`
+is wired to `pagehide`/`visibilitychange: hidden` and to runtime teardown,
+and captures **unconditionally** (ignoring the change-signal dirty flag):
+local edits inside the engine's 20 ms flush debounce have not emitted yet,
+but `handle.save()` already sees them — the capture is synchronous, so the
+session can free the WASM handle immediately after the call returns. After
+three consecutive save failures the controller self-disposes (one
+`[notebook-persistence] disabled after repeated save failures` warning)
+so a dead or quota-exhausted backend cannot generate doomed full-doc
+serializations for the rest of the session.
 
 ### What is persisted — and what is not
 
@@ -130,15 +153,20 @@ already cheap — the sync protocol exchanges only missing changes.
 
 ### Load on init (cloud viewer)
 
-In `connectCloudSyncRuntime`, after `cloud_room_ready` resolves:
+In `connectCloudSyncRuntime`, after `cloud_room_ready` resolves,
+`resolveCloudNotebookHandle` returns `{ handle, outcome }` with `outcome ∈
+{ seeded, bootstrap, cleared, read_failed }`:
 
 ```
-persisted = await persistence.loadPersisted(notebookId)
-if persisted && persisted.meta.principal === currentPrincipal:
-    handle = NotebookHandle.load(persisted.bytes)   // NotebookDoc only; state/comms start empty
-    handle.set_actor(ready.actor_label)             // mandatory: load() leaves a random actor
+if principal is anonymous: bootstrap                 // outcome: bootstrap
+persisted = await loadPersisted(notebookId)          // bounded by a 2 s timeout
+  — rejection/timeout: bootstrap WITHOUT clearing    // outcome: read_failed
+if persisted.meta && persisted.bytes && meta.principal === currentPrincipal:
+    handle = NotebookHandle.load(persisted.bytes)    // NotebookDoc only; state/comms start empty
+    handle.set_actor(ready.actor_label)              // mandatory: load() leaves a random actor
+    — load() throwing: clear record, bootstrap       // outcome: cleared
 else:
-    handle = NotebookHandle.create_bootstrap(ready.actor_label)
+    clear record; bootstrap                          // outcome: cleared
 ```
 
 then the existing `startCloudBootstrapSync` (`start; resetForBootstrap;
@@ -148,20 +176,45 @@ so the fresh-sync-state negotiation converges by exchanging only the delta.
 Offline edits captured in the persisted bytes flow to the room as ordinary
 sync; the room merges them via CRDT convergence — no special merge path.
 
+The session arms the `NotebookDocPersistence` save loop only when
+`outcome !== "read_failed"` and the principal is not anonymous. A failed
+read leaves an unread record (possibly the only copy of offline edits) in
+place; arming the save loop would overwrite it with the bootstrap doc within
+one throttle tick — fail-open for reads must be fail-closed for writes.
+
 Safety rails:
 
 - **Actor uniqueness.** Actor IDs are raw label bytes; reusing a label across
   doc instances collides at `(actor, seq)` (`DuplicateSeqNumber`,
-  `cloud_peer.rs:73-76`). Safe here because the server mints a fresh
-  `actor_label` per connection (`browser:<sessionId>` operator nonce) — the
-  loaded doc continues under a brand-new actor.
-- **Principal guard.** Persisted bytes carry the authoring principal in meta.
-  On mismatch (sign-in changed between sessions) the record is discarded and
-  cleared — otherwise the room's actor-principal authorization would reject
-  the replayed changes on every reconnect, looping forever.
+  `cloud_peer.rs:73-76`). Freshness is **client-supplied**: the browser mints
+  the `browser:<sessionId>` operator nonce per connect-effect run, and the
+  worker rewrites only the principal segment of the presented actor label
+  (`rewriteActorLabelPrincipal`) — it does not mint the operator. The
+  per-run sessionId (crypto-random, with a collision-resistant non-UUID
+  fallback) is therefore load-bearing; making it stable across reconnects
+  would silently reintroduce duplicate seqs against a seeded doc.
+- **Principal guard.** Persisted bytes carry the authoring principal in the
+  envelope meta. On mismatch (sign-in changed between sessions) the record
+  is discarded and cleared — otherwise the room's actor-principal
+  authorization would reject the replayed changes on every reconnect,
+  looping forever.
+- **Anonymous sessions skip persistence entirely** (no seed, no save, no
+  clear): anonymous principals embed the per-connection session nonce, so a
+  record can never match the next session — and an anonymous session must
+  not clear a signed-in user's record on principal mismatch.
 - **Corruption guard.** `NotebookHandle.load()` throwing → clear the record,
   fall back to `create_bootstrap` (mirror automerge-repo's
   storage-unavailable degradation: local cache lost, network still works).
+- **Seeded-rejection escalation (poison pill).** The principal guard cannot
+  catch every record the room will refuse: a scope downgrade (editor →
+  viewer holding offline edits) or a room history regression rejects seeded
+  changes under the *same* principal, and `cloud_frame_rejected
+  (AUTOMERGE_SYNC)` → reconnect → reseed would loop forever. When a seeded
+  session hits a recoverable sync rejection the session disposes the
+  runtime FIRST (teardown's `flushNow` re-writes the record with the
+  rejected changes), then clears the record once that write settles, and
+  marks the next connect attempt bootstrap-only. The rejected changes are
+  unauthorized — losing them is the intended outcome.
 
 Desktop is not wired in PR 1 (the Tauri app persists to the filesystem; a
 desktop client attached to a remote notebook can adopt the same module later —
@@ -169,11 +222,18 @@ that is why it lives in `packages/runtimed`, not in the cloud app).
 
 ### Tests
 
-`fake-indexeddb` (dev dep) for the adapter; sync-engine tests for both
-emission sources (inbound `changed=true`; local flush with bytes; no emission
-on no-op flush); controller tests (throttle, latest-wins, flushNow,
-quota-error surfacing); live-sync test for seed-vs-bootstrap selection,
-principal mismatch, and corrupt-bytes fallback.
+`fake-indexeddb` (dev dep) for the adapter (round-trips, segment-exact
+prefix ranges, unavailable-IDB factory, write-failure surfacing, reopen
+after stale connection / failed open, `close()`); sync-engine tests for both
+emission sources plus the negatives (no emission on `changed=false`, on
+no-op flush, on runtime-state/comms events, or when only non-notebook
+flushes produce bytes); controller tests (throttle, latest-wins, serialized
+writes, unconditional `flushNow`, flush-then-dispose commit, envelope codec
+incl. torn records, failure escalation); live-sync tests for seed-outcome
+selection (seeded / bootstrap / cleared / read_failed incl. timeout),
+anonymous skip, principal mismatch, corrupt-bytes fallback, and the
+seeded-rejection discard predicate; a stub-module test for the real
+`load + set_actor + free-on-error` binding.
 
 ---
 
@@ -236,9 +296,12 @@ attention."
 
 Escalation: a recoverable `cloud_frame_rejected(AUTOMERGE_SYNC)` (sync state
 diverged from the room) is first handled in place — `resetAndResync()` on the
-live connection; if it recurs immediately, fall back to the full teardown path
-(which PR 1 has made loss-less: the persisted snapshot reseeds the fresh
-handle).
+live connection; if it recurs immediately, fall back to the full teardown
+path. For transport-level divergence the persisted snapshot reseeds the
+fresh handle loss-lessly; for content-caused rejections on a seeded session
+the reseed would be the poison, so PR 1's escalation (clear the record after
+the teardown flush settles, bootstrap the next attempt) takes over and the
+retry converges from a fresh bootstrap.
 
 ### Tests
 
@@ -336,14 +399,22 @@ connection resilience lives.
 
 - Persist **NotebookDoc bytes only**. RuntimeStateDoc/CommsDoc/sync states are
   never written to storage.
-- After `NotebookHandle.load()`, `set_actor()` with a **fresh, server-assigned
-  label** before any authoring. Never reuse an actor label across doc
-  instances.
-- Persisted bytes are keyed to a principal; principal mismatch ⇒ discard.
+- After `NotebookHandle.load()`, `set_actor()` with a **fresh per-connection
+  label** before any authoring (operator nonce client-minted per connect
+  attempt; principal rewritten by the worker). Never reuse an actor label
+  across doc instances.
+- Persisted bytes and their authoring principal live in **one atomic
+  envelope record**; principal mismatch or an unverifiable envelope ⇒
+  discard. Anonymous principals never seed, save, or clear.
 - Preserve the handle **xor** mint a new actor — never re-bootstrap a
   preserved handle.
 - Storage failures degrade to no-persistence; they never break the live
-  session. Corrupt local bytes degrade to bootstrap.
+  session. Corrupt local bytes degrade to bootstrap. A failed or timed-out
+  seed read leaves the record in place **and** leaves the save loop
+  disarmed — fail-open reads are fail-closed for writes.
+- A seeded session whose replayed changes the room rejects clears its
+  record (after the teardown flush settles) and retries from bootstrap —
+  a persisted record must never be able to wedge a notebook permanently.
 - `notebookDocChanged$` is a narrow engine observable derived from existing
   WASM-computed facts; persistence I/O stays outside the engine
   (projection-convergence ADR).
@@ -360,5 +431,9 @@ connection resilience lives.
 - Incremental chunk persistence + compaction (key scheme reserves room; add
   `save_incremental`-style WASM exports when doc sizes justify it).
 - Desktop adoption of the persistence module for remote-attached notebooks.
-- Multi-tab write coordination (last-write-wins snapshot today; tabs converge
-  through the room while online; documented limitation).
+- Multi-tab write coordination. The envelope is last-write-wins per
+  notebook: a second tab's save (or pagehide flush) can regress the stored
+  heads and destroy the only copy of another tab's flushed-but-undelivered
+  edits — the room only heals divergence it has seen. Accepted limitation
+  until content-addressed incremental chunks (which the key scheme reserves
+  room for) make concurrent writers structurally safe.
