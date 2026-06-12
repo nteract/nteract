@@ -356,10 +356,16 @@ where
 {
     // -- 1. Connect ---------------------------------------------------------
 
+    let agent_started = std::time::Instant::now();
+    let connect_started = std::time::Instant::now();
     // `connect` owns the transport-specific dial + handshake/auth.
     let (mut frame_source, mut frame_sink) = transport.connect().await?;
 
-    info!("[runtime-agent] Connected, handshake sent");
+    info!(
+        "[runtime-agent] Connected, handshake sent connect_elapsed_ms={} startup_elapsed_ms={}",
+        connect_started.elapsed().as_millis(),
+        agent_started.elapsed().as_millis()
+    );
 
     // The transport hands back a cancel-safe `FrameSource` (backed by a
     // dedicated `FramedReader` actor) so the busy `select!` below stays
@@ -452,6 +458,7 @@ where
     let sync_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut inflight_sync: Option<tokio::task::JoinHandle<()>> = None;
     let mut runtime_state_doc_seen = false;
+    let mut runtime_state_doc_seen_at: Option<std::time::Instant> = None;
     let mut orphan_comm_candidates: HashSet<String> = HashSet::new();
 
     // -- 3b. Launch-on-attach gate (cloud only) -----------------------------
@@ -667,6 +674,9 @@ where
 
                             // RuntimeStateSync -- apply coordinator's changes and check for new queue entries.
                             NotebookFrameType::RuntimeStateSync => {
+                                let sync_started = std::time::Instant::now();
+                                let mut inbound_queued_count = 0usize;
+                                let mut accepted_queued_count = 0usize;
                                 if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                                     let sync_result = ctx.state.with_doc(|sd| {
                                         match sd.receive_sync_message_with_changes_recovering(
@@ -692,7 +702,8 @@ where
                                     match sync_result {
                                         Ok(Some(queued)) => {
                                             runtime_state_doc_seen = true;
-                                            queue_synced_executions(
+                                            inbound_queued_count = queued.len();
+                                            accepted_queued_count = queue_synced_executions(
                                                 queued,
                                                 &mut seen_execution_ids,
                                                 &mut kernel_state,
@@ -710,10 +721,28 @@ where
                                     }
 
                                     if runtime_state_doc_seen {
+                                        if runtime_state_doc_seen_at.is_none() {
+                                            runtime_state_doc_seen_at = Some(std::time::Instant::now());
+                                            info!(
+                                                "[runtime-agent-timing] initial RuntimeStateDoc sync applied startup_elapsed_ms={} sync_elapsed_ms={} inbound_queued_count={}",
+                                                agent_started.elapsed().as_millis(),
+                                                sync_started.elapsed().as_millis(),
+                                                inbound_queued_count
+                                            );
+                                        } else if accepted_queued_count > 0 {
+                                            info!(
+                                                "[runtime-agent-timing] RuntimeStateDoc queued executions observed inbound_count={} accepted_count={} sync_elapsed_ms={}",
+                                                inbound_queued_count,
+                                                accepted_queued_count,
+                                                sync_started.elapsed().as_millis()
+                                            );
+                                        }
                                         if let Some(launch) = pending_initial_launch.take() {
                                             info!(
-                                                "[runtime-agent] Applying launch-on-attach LaunchKernel after RuntimeStateDoc sync"
+                                                "[runtime-agent] Applying launch-on-attach LaunchKernel after RuntimeStateDoc sync startup_elapsed_ms={}",
+                                                agent_started.elapsed().as_millis()
                                             );
+                                            let launch_apply_started = std::time::Instant::now();
                                             let (response, new_cmd_rx) =
                                                 handle_runtime_agent_request(
                                                     launch,
@@ -735,6 +764,12 @@ where
                                                 warn!(
                                                     "[runtime-agent] Launch-on-attach failed: {}",
                                                     error
+                                                );
+                                            } else {
+                                                info!(
+                                                    "[runtime-agent-timing] launch-on-attach completed elapsed_ms={} startup_elapsed_ms={}",
+                                                    launch_apply_started.elapsed().as_millis(),
+                                                    agent_started.elapsed().as_millis()
                                                 );
                                             }
                                         }

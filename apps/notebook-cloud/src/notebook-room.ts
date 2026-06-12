@@ -85,6 +85,8 @@ interface PeerCloseOptions {
   reason?: string;
 }
 
+type RuntimePeerForwardedRequestAction = "interrupt_execution" | "send_comm";
+
 const MAX_STORED_FRAMES = 500;
 
 /// Grace window after the last `runtime_peer` leaves before the room reconciles
@@ -101,6 +103,34 @@ const REJECTED_FRAME_POLICY_CLOSE_REASON = "too many rejected frames";
 /// reconciliation alarm. Persisted so a DO that hibernates between the alarm
 /// being set and firing still knows which room to reconcile.
 const RUNTIME_PEER_WATCH_KEY = "runtime_peer_gone_watch";
+const runtimePeerForwardedRequestActions = new Set<RuntimePeerForwardedRequestAction>([
+  "interrupt_execution",
+  "send_comm",
+]);
+
+function requestActionFromPayload(payload: Uint8Array): string | null {
+  try {
+    const value = JSON.parse(new TextDecoder().decode(payload)) as unknown;
+    if (typeof value !== "object" || value === null) {
+      return null;
+    }
+    const action = (value as Record<string, unknown>).action;
+    return typeof action === "string" ? action : null;
+  } catch {
+    return null;
+  }
+}
+
+function runtimePeerForwardedRequestAction(
+  action: string | null,
+): RuntimePeerForwardedRequestAction | null {
+  if (!action) {
+    return null;
+  }
+  return runtimePeerForwardedRequestActions.has(action as RuntimePeerForwardedRequestAction)
+    ? (action as RuntimePeerForwardedRequestAction)
+    : null;
+}
 
 export class NotebookRoom {
   private readonly peers = new Map<string, Peer>();
@@ -630,6 +660,50 @@ export class NotebookRoom {
       return;
     }
 
+    const forwardedRequestAction =
+      normalizedFrame.type === FrameType.REQUEST
+        ? runtimePeerForwardedRequestAction(requestActionFromPayload(normalizedFrame.payload))
+        : null;
+    if (forwardedRequestAction) {
+      const forwardedPeerCount = this.forwardRequestToActiveRuntimePeer(
+        notebookId,
+        normalizedFrame,
+        peer.id,
+      );
+      if (forwardedPeerCount === 0) {
+        this.rejectFrame(
+          notebookId,
+          peer,
+          normalizedFrame.type,
+          `no runtime peer is attached for ${forwardedRequestAction}`,
+          { countsTowardStreak: false },
+        );
+        return;
+      }
+
+      cloudLog("debug", "room.runtime_peer_request.forwarded", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        principal: peer.identity.principal,
+        scope: peer.identity.scope,
+        action: forwardedRequestAction,
+        forwarded_peer_count: forwardedPeerCount,
+        byte_length: normalizedFrame.payload.byteLength,
+        counter: "runtime_peer_requests_forwarded",
+        counter_delta: 1,
+      });
+      this.sendControl(notebookId, peer, {
+        type: "cloud_frame_accepted",
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        frame_type: normalizedFrame.type,
+        byte_length: normalizedFrame.payload.byteLength,
+        timestamp: receivedAt,
+      });
+      this.resetRejectedFrameStreak(peer);
+      return;
+    }
+
     if (isMaterializedSyncFrame(normalizedFrame.type)) {
       let result: RoomHostFrameResult;
       const materializer = this.materializerFor(notebookId);
@@ -847,6 +921,40 @@ export class NotebookRoom {
       }
       this.sendFrameToPeer(notebookId, target, typedFrameFromRoomHostOutbound(outbound));
     }
+  }
+
+  private forwardRequestToActiveRuntimePeer(
+    notebookId: string,
+    frame: TypedFrame,
+    sourcePeerId: string,
+  ): number {
+    const encoded = encodeTypedFrame(frame.type, frame.payload);
+    const runtimePeer = Array.from(this.peers.values())
+      .filter((peer) => peer.id !== sourcePeerId && peer.identity.scope === "runtime_peer")
+      .sort((a, b) => b.connectedAt.localeCompare(a.connectedAt))[0];
+    if (!runtimePeer) {
+      return 0;
+    }
+
+    // Overlapping runtime peers can happen during reconnect races. Command
+    // requests target the latest peer, matching the workstation attachment's
+    // `updated_at` projection until runtime generations become explicit.
+    this.broadcastDepth += 1;
+    let delivered = 0;
+    try {
+      if (this.trySendFrame(notebookId, runtimePeer, encoded)) {
+        delivered = 1;
+      } else {
+        this.queuePeerRemoval(notebookId, runtimePeer);
+      }
+    } finally {
+      this.broadcastDepth -= 1;
+      if (this.broadcastDepth === 0) {
+        this.flushPendingRemovals();
+      }
+    }
+
+    return delivered;
   }
 
   private async persistFrame(peer: Peer, frame: TypedFrame, receivedAt: string): Promise<void> {

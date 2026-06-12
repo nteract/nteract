@@ -419,6 +419,7 @@ pub struct QueuedCell {
     pub execution_id: String,
     pub cell_id: Option<String>,
     pub code: String,
+    pub queued_at: std::time::Instant,
 }
 
 /// Kernel status.

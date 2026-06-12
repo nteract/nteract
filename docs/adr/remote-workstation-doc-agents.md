@@ -705,20 +705,32 @@ sequence:
   (`use-cloud-workstations.ts`) drives `/api/n/:id/workstation-attachments`;
   attach jobs command the connector, which attaches as `runtime_peer` over
   `CloudWsFrameTransport`.
-- **Execution (steps 10–11).** The room host queues executions from editor
+- **Execution (steps 10–11).** The room host queues executions from owner
   REQUESTs (#3399); viewer requests resolve via `cloud_frame_accepted` /
   `cloud_frame_rejected` acks. Launch-on-attach starts a `current_python`
   kernel through the daemon's launcher (`crates/runtimed/src/workstation/`).
   Verified live: browser submits, workstation executes, output lands in the
   viewer.
+- **Runtime-agent commands.** Cloud now forwards owner-authorized
+  fire-and-forget runtime-agent command REQUESTs (`interrupt_execution` and
+  `send_comm`) directly to attached `runtime_peer` sockets. These requests do
+  not persist as room history and do not produce `RESPONSE` envelopes; visible
+  results must arrive through RuntimeStateDoc/CommsDoc convergence, matching the
+  local runtime-agent command model. During reconnect overlap, command routing
+  targets the newest connected runtime peer, matching the attachment
+  `updated_at` projection until runtime generations become explicit.
 
 Operator instructions: `docs/remote-workstation.md`.
 
-Still open: inbound kernel lifecycle over cloud (interrupt/restart/shutdown —
-the "req 5" channel; launch-on-attach covers only the first launch), the
-attachment-ticket contract (step 6; dev path today is API key / dev token plus
-an explicit `runtime_peer` ACL row), catalog projection (step 5), and the
-provider-specific Outerbounds/JupyterHub smokes (step 12). Tracked in
+Still open: response-bearing kernel lifecycle over cloud
+(`launch_kernel`/`shutdown_kernel`/restart, plus `sync_environment` and kernel
+queries such as completion/history), the attachment-ticket contract (step 6;
+dev path today is API key / dev token plus an explicit `runtime_peer` ACL row),
+catalog projection (step 5), and the provider-specific Outerbounds/JupyterHub
+smokes (step 12). Restart also needs a bounded stale-runtime policy: if the
+selected runtime does not confirm restart in time, the room should assume that
+runtime generation is gone, start a new attachment, and ignore late frames from
+the old runtime. Tracked in
 [#3381](https://github.com/nteract/nteract/issues/3381).
 
 ## Open questions
