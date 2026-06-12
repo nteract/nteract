@@ -71,7 +71,7 @@ function createRecordingAdapter({ withSaveBatch = true } = {}): RecordingAdapter
     removeRange: vi.fn(async (prefix: StorageKey) => {
       const exact = joinKey(prefix);
       const rangePrefix = `${exact}/`;
-      for (const key of [...records.keys()]) {
+      for (const key of Array.from(records.keys())) {
         if (key === exact || key.startsWith(rangePrefix)) {
           records.delete(key);
         }

@@ -46,7 +46,7 @@ function createRecordingAdapter(): RecordingAdapter {
     loadRange: vi.fn(async () => []),
     removeRange: vi.fn(async (prefix: StorageKey) => {
       const rangePrefix = `${prefix.join("\u0000")}\u0000`;
-      for (const key of [...records.keys()]) {
+      for (const key of Array.from(records.keys())) {
         if (key.startsWith(rangePrefix) || key === prefix.join("\u0000")) {
           records.delete(key);
         }
