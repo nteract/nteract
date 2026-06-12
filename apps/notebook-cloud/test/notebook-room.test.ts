@@ -473,6 +473,7 @@ describe("NotebookRoom peer lifecycle", () => {
     const harness = roomHarness(room);
     harness.peers.set(peer.id, peer);
     harness.materializers.set("demo", {
+      syncPeer: async () => noopMaterializedResult(),
       receiveFrame: async () => {
         throw new Error("room host storage temporarily unavailable");
       },
@@ -499,6 +500,42 @@ describe("NotebookRoom peer lifecycle", () => {
             "cloud_frame_rejected",
       ),
     );
+  });
+
+  it("keeps the socket open when initial room-host peer sync is degraded", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "peer-a",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(peer.id, peer);
+    harness.materializers.set("demo", {
+      syncPeer: async () => {
+        throw new Error("Exceeded allowed rows written in Durable Objects free tier.");
+      },
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+    });
+
+    await harness.syncPeerFromRoomHost("demo", peer);
+
+    assert.equal(socket.closed, false);
+    assert.equal(harness.peers.has(peer.id), true);
+    assert.equal(socket.sent.length, 1);
+    assert.equal(socket.sent[0][0], FrameType.SESSION_CONTROL);
+    const degraded = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(degraded.type, "cloud_room_degraded");
+    assert.equal(degraded.peer_id, peer.id);
+    assert.match(String(degraded.reason), /Exceeded allowed rows written/);
   });
 
   it("does not silently resurrect a removed hibernated peer", () => {
@@ -1996,6 +2033,7 @@ interface RoomHarness {
   materializers: Map<
     string,
     {
+      syncPeer?(): Promise<RoomHostFrameResult>;
       receiveFrame(): Promise<RoomHostFrameResult>;
       checkpoint(): Promise<void>;
       getWorkstationAttachment?(): Promise<unknown>;
@@ -2010,6 +2048,7 @@ interface RoomHarness {
     workstation: PeerForTest["workstation"],
   ): Promise<string | null>;
   publishRuntimePeerAttachment(notebookId: string, peer: PeerForTest): Promise<void>;
+  syncPeerFromRoomHost(notebookId: string, peer: PeerForTest): Promise<void>;
   handleMessage(
     notebookId: string,
     peer: PeerForTest,

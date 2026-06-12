@@ -181,7 +181,8 @@ export class RoomMaterializer {
   private async loadHostFromStorage(): Promise<RoomHostHandle> {
     const startedAt = Date.now();
     try {
-      const checkpoint = await this.loadCheckpoint();
+      const checkpointResult = await this.loadCheckpointForHydration(startedAt);
+      const checkpoint = checkpointResult.checkpoint;
       if (checkpoint) {
         const latestPublished = await this.loadLatestPublishedSnapshotPairForCheckpoint();
         if (
@@ -275,6 +276,10 @@ export class RoomMaterializer {
         return host;
       }
 
+      if (checkpointResult.error) {
+        throw checkpointResult.error;
+      }
+
       this.loadedPublishedRevisionId = null;
       this.loadedPublishedNotebookHeads = null;
       this.loadedPublishedRuntimeStateHeads = null;
@@ -298,6 +303,29 @@ export class RoomMaterializer {
         counter_delta: 1,
       });
       throw error;
+    }
+  }
+
+  private async loadCheckpointForHydration(startedAt: number): Promise<{
+    checkpoint: {
+      notebookBytes: Uint8Array;
+      runtimeStateBytes: Uint8Array;
+      commsDocBytes?: Uint8Array;
+      metadata: RoomCheckpointMetadata;
+    } | null;
+    error: unknown | null;
+  }> {
+    try {
+      return { checkpoint: await this.loadCheckpoint(), error: null };
+    } catch (error) {
+      cloudLog("warn", "room.materializer.checkpoint_load_failed", {
+        notebook_id: this.notebookId,
+        duration_ms: durationMs(startedAt),
+        error: errorMessage(error),
+        counter: "materializer_checkpoint_load_failures",
+        counter_delta: 1,
+      });
+      return { checkpoint: null, error };
     }
   }
 
@@ -340,7 +368,16 @@ export class RoomMaterializer {
         published.commsDocBytes,
       );
       this.markLoadedPublishedSnapshot(published.revisionId, host);
-      await this.clearCheckpoint();
+      await this.clearCheckpoint().catch((clearError: unknown) => {
+        cloudLog("warn", "room.materializer.checkpoint_clear_failed", {
+          notebook_id: this.notebookId,
+          operation,
+          published_revision_id: published.revisionId,
+          error: errorMessage(clearError),
+          counter: "materializer_checkpoint_clear_failures",
+          counter_delta: 1,
+        });
+      });
       this.hostReady = Promise.resolve(host);
       cloudLog("warn", "room.materializer.recovered_from_published_snapshot", {
         notebook_id: this.notebookId,

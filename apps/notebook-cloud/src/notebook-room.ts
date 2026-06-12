@@ -378,7 +378,7 @@ export class NotebookRoom {
       }
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        await materializer.checkpoint();
+        await this.checkpointRoomHost(notebookId, materializer, "workstation_attachment_control");
       }
       cloudLog("debug", "room.workstation_attachment.control_published", {
         notebook_id: notebookId,
@@ -447,7 +447,7 @@ export class NotebookRoom {
       const result = await materializer.reconcileRuntimePeerGone(reason);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        await materializer.checkpoint();
+        await this.checkpointRoomHost(notebookId, materializer, "runtime_state_repair");
       }
       cloudLog("info", "room.runtime_state_repair.completed", {
         notebook_id: notebookId,
@@ -925,7 +925,7 @@ export class NotebookRoom {
 
       this.deliverRoomHostFrames(notebookId, result);
       if (result.changed) {
-        this.state.waitUntil(materializer.checkpoint().catch(() => undefined));
+        this.scheduleRoomHostCheckpoint(notebookId, materializer, "materialized_frame");
       }
       this.sendControl(notebookId, peer, {
         type: "cloud_frame_accepted",
@@ -995,17 +995,50 @@ export class NotebookRoom {
       });
       this.deliverRoomHostFrames(notebookId, result);
     } catch (error) {
+      const reason = errorMessage(error);
       cloudLog("warn", "room.peer_sync.failed", {
         notebook_id: notebookId,
         peer_id: peer.id,
         principal: peer.identity.principal,
         scope: peer.identity.scope,
         duration_ms: durationMs(startedAt),
-        error: errorMessage(error),
+        error: reason,
         counter: "peer_sync_failed",
         counter_delta: 1,
       });
-      this.removePeer(notebookId, peer);
+      this.sendControl(notebookId, peer, {
+        type: "cloud_room_degraded",
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        reason,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
+  private scheduleRoomHostCheckpoint(
+    notebookId: string,
+    materializer: RoomMaterializer,
+    operation: string,
+  ): void {
+    this.state.waitUntil(this.checkpointRoomHost(notebookId, materializer, operation));
+  }
+
+  private async checkpointRoomHost(
+    notebookId: string,
+    materializer: RoomMaterializer,
+    operation: string,
+  ): Promise<void> {
+    try {
+      await materializer.checkpoint();
+    } catch (error) {
+      cloudLog("warn", "room.materializer.checkpoint_failed", {
+        notebook_id: notebookId,
+        operation,
+        error: errorMessage(error),
+        counter: "materializer_checkpoint_failures",
+        counter_delta: 1,
+      });
     }
   }
 
@@ -1018,7 +1051,7 @@ export class NotebookRoom {
       );
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        await materializer.checkpoint();
+        await this.checkpointRoomHost(notebookId, materializer, "runtime_peer_attachment");
       }
       cloudLog("debug", "room.workstation_attachment.published", {
         notebook_id: notebookId,
@@ -1617,10 +1650,10 @@ export class NotebookRoom {
       );
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        this.state.waitUntil(
-          this.materializerFor(notebookId)
-            .checkpoint()
-            .catch(() => undefined),
+        this.scheduleRoomHostCheckpoint(
+          notebookId,
+          this.materializerFor(notebookId),
+          "runtime_peer_watch_reconcile",
         );
       }
       cloudLog("info", "room.runtime_peer_watch.reconciled", {
