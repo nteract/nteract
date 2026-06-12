@@ -232,6 +232,8 @@ async function runBrowserSmoke({
         "cell_output_observed_after_execute",
         "restart_button_clicked",
         "cell_output_observed_after_restart",
+        "restart_run_all_button_clicked",
+        "all_cell_outputs_observed_after_restart_run_all",
         "page_reload_preserved_output",
         "cell_output_observed_after_reload_execute",
         "owner_no_workstations_shows_setup_action",
@@ -288,9 +290,20 @@ async function runOwnerAttachAndExecuteSmoke({
   const afterRestartKernelStatus = await readKernelStatus(page);
   assertKernelStatusNotInitializing(afterRestartKernelStatus, "after restart execution");
 
+  const restartRunAllMarkers = [`${runMarker} restart run all 1`, `${runMarker} restart run all 2`];
+  const secondCell = await ensureCodeCellCount(page, 2, timeoutMs).then((cells) => cells.nth(1));
+  await setCellSource(cell, `print(${JSON.stringify(restartRunAllMarkers[0])})`);
+  await setCellSource(secondCell, `print(${JSON.stringify(restartRunAllMarkers[1])})`);
+  await restartAndRunAllAndWait(page, restartRunAllMarkers, timeoutMs);
+  const afterRestartRunAllKernelStatus = await readKernelStatus(page);
+  assertKernelStatusNotInitializing(
+    afterRestartRunAllKernelStatus,
+    "after restart-and-run-all execution",
+  );
+
   await page.reload({ waitUntil: "domcontentloaded", timeout: timeoutMs });
   await waitForNotebookReady(page, timeoutMs);
-  await waitForText(page, restartMarker, timeoutMs);
+  await waitForText(page, restartRunAllMarkers[1], timeoutMs);
   await enterEditMode(page, timeoutMs);
   const reloadedCell = page.locator('[data-cell-type="code"]').first();
   await reloadedCell.waitFor({ state: "visible", timeout: timeoutMs });
@@ -317,11 +330,13 @@ async function runOwnerAttachAndExecuteSmoke({
     afterFirstRunKernelStatus,
     afterFirstRunAria,
     afterRestartKernelStatus,
+    afterRestartRunAllKernelStatus,
     afterReloadKernelStatus,
     afterReloadRunAria,
     beforeReloadRunAria,
     events,
     restartMarker,
+    restartRunAllMarkers,
     screenshotPath: screenshotPath ?? null,
   };
 }
@@ -740,6 +755,21 @@ async function ensureCodeCell(page, timeout) {
   });
 }
 
+async function ensureCodeCellCount(page, count, timeout) {
+  return smokePhase(`ensure ${count} code cells`, async () => {
+    const cells = page.locator('[data-cell-type="code"]');
+    while ((await cells.count()) < count) {
+      await page.getByTestId("add-code-cell-button").click({ timeout });
+      await page.waitForFunction(
+        (expected) => document.querySelectorAll('[data-cell-type="code"]').length >= expected,
+        count,
+        { timeout },
+      );
+    }
+    return cells;
+  });
+}
+
 async function setCellSource(cell, source) {
   await smokePhase("set cell source", async () => {
     await cell.locator('.cm-content[contenteditable="true"]').evaluate((node, text) => {
@@ -817,6 +847,37 @@ async function restartComputeAndWait(page, timeout) {
     // marker execution below is the durable assertion that the new runtime can
     // accept work.
   });
+  await waitForCanExecute(page, timeout);
+}
+
+async function restartAndRunAllAndWait(page, markers, timeout) {
+  const restartRunAllButton = page.getByTestId("restart-run-all-button");
+  await smokePhase("wait for restart-and-run-all button", async () => {
+    await restartRunAllButton.waitFor({ state: "visible", timeout });
+  });
+  await smokePhase("click restart-and-run-all button", async () => {
+    await restartRunAllButton.click({ timeout });
+  });
+  await waitForPagePredicate(
+    page,
+    "wait for hosted restart-and-run-all to leave ready state",
+    () => {
+      const shell = document.querySelector('[data-slot="notebook-document-shell"]');
+      const kernelStatus = document.querySelector('[data-testid="kernel-status"]');
+      return (
+        shell?.getAttribute("data-can-execute") !== "true" ||
+        kernelStatus?.getAttribute("data-kernel-status") !== "idle"
+      );
+    },
+    null,
+    Math.min(timeout, 10_000),
+  ).catch(() => {
+    // Fast replacements can move from ready to ready between browser polls.
+    // The marker outputs below prove the queued run-all survived the gap.
+  });
+  for (const marker of markers) {
+    await waitForText(page, marker, timeout);
+  }
   await waitForCanExecute(page, timeout);
 }
 
