@@ -74,9 +74,11 @@ import { createCloudNotebookTabBridge } from "./tab-bridge";
 import {
   OFFLINE_MERGE_RESYNC_SETTLE_MS,
   OfflineMergeTracker,
+  type OfflineMergeLocalCellEditOptions,
   type OfflineMergeNoticeData,
 } from "./offline-merge-tracker";
 import {
+  cleanupCloudProjectionForRemovedCells,
   projectCloudCellsIntoNotebookViewStores,
   resetCloudProjectionUnlessPreserved,
   resetCloudViewStoreProjection,
@@ -154,9 +156,9 @@ export interface CloudViewerSession {
   offlineMergeNotice: OfflineMergeNoticeData | null;
   clearOfflineMergeNotice: () => void;
   /** A local source edit reached the handle for this cell (CRDT bridge). */
-  noteLocalCellEdit: (cellId: string) => void;
+  noteLocalCellEdit: (cellId: string, options?: OfflineMergeLocalCellEditOptions) => void;
   /** The user deleted this cell locally — never a collaborator removal. */
-  noteLocalCellDelete: (cellId: string) => void;
+  noteLocalCellDelete: (cellId: string, options?: OfflineMergeLocalCellEditOptions) => void;
   presenceStore: CloudViewerPresenceStore;
   requestCloudMaterialization: (liveRuntime: CloudSyncRuntime) => void;
   retryLiveConnection: () => void;
@@ -280,14 +282,14 @@ export function useCloudViewerSession({
     setOfflineMergeNotice(null);
   }, []);
   const noteLocalCellEdit = useCallback(
-    (cellId: string) => {
-      offlineMergeTracker.noteLocalCellEdit(cellId);
+    (cellId: string, options?: OfflineMergeLocalCellEditOptions) => {
+      offlineMergeTracker.noteLocalCellEdit(cellId, options);
     },
     [offlineMergeTracker],
   );
   const noteLocalCellDelete = useCallback(
-    (cellId: string) => {
-      offlineMergeTracker.noteLocalCellDelete(cellId);
+    (cellId: string, options?: OfflineMergeLocalCellEditOptions) => {
+      offlineMergeTracker.noteLocalCellDelete(cellId, options);
     },
     [offlineMergeTracker],
   );
@@ -925,6 +927,9 @@ export function useCloudViewerSession({
       });
       if (disposed || sequence !== materializeSequence) return;
 
+      if (changeset?.removed.length) {
+        cleanupCloudProjectionForRemovedCells(changeset.removed);
+      }
       applyExecutionViewChangeset(liveRuntime.handle.project_execution_view_changeset?.());
 
       const currentCellCount = materializedCellCount();
@@ -1321,9 +1326,9 @@ export function useCloudViewerSession({
           // Offline-merge derivation taps (no new engine observables):
           // notebookDocChanged$ emissions are local flush attempts while
           // the offline window is open (no inbound frames offline), and
-          // cellChanges$ is remote-authored by construction (sync_applied
-          // pipeline) — during the settle window it is the collaborator
-          // backlog that interleaved with the user's offline edits.
+          // cellChanges$ is sync_applied materialization: during the settle
+          // window it is the collaborator backlog, with accepted local
+          // mutation echoes discounted by the offline-merge tracker.
           liveRuntime.engine.notebookDocChanged$.subscribe(() => {
             offlineMergeTracker.noteLocalDocActivity();
           }),

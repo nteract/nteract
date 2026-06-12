@@ -2696,6 +2696,105 @@ describe("SyncEngine", () => {
     });
   });
 
+  // ── Local mutation apply (applyLocalMutationEvent) ───────────────
+
+  describe("applyLocalMutationEvent", () => {
+    it("routes a changed local mutation event without scheduling a flush", () => {
+      const changeset: CellChangeset = {
+        changed: [],
+        added: ["cell-1"],
+        removed: [],
+        order_changed: true,
+      };
+      const executionViewChangeset: NonNullable<FrameEvent["execution_view_changeset"]> = {
+        cell_pointer_changes: [["cell-1", "exec-1"]],
+      };
+      handle = createMockHandle({
+        flush_local_changes: vi.fn(() => new Uint8Array([1])),
+      });
+      const engine = createEngine();
+      engine.start();
+
+      const cellEmissions: Array<CellChangeset | null> = [];
+      engine.cellChanges$.subscribe((cs) => cellEmissions.push(cs));
+      let docChanged = 0;
+      engine.notebookDocChanged$.subscribe(() => docChanged++);
+      let syncApplied = 0;
+      engine.notebookSyncApplied$.subscribe(() => syncApplied++);
+      const executionViewEmissions: NonNullable<FrameEvent["execution_view_changeset"]>[] = [];
+      engine.executionViewChanges$.subscribe((cs) => executionViewEmissions.push(cs));
+      const broadcasts: unknown[] = [];
+      engine.broadcasts$.subscribe((b) => broadcasts.push(b));
+
+      expect(
+        engine.applyLocalMutationEvent(
+          syncAppliedEvent({
+            changed: true,
+            changeset,
+            attributions: [
+              { cell_id: "cell-1", index: 0, text: "hi", deleted: 0, actors: ["user:test:alice"] },
+            ],
+            executionViewChangeset,
+          }),
+        ),
+      ).toBe(true);
+
+      advanceBy(scheduler, 50);
+      expect(cellEmissions).toEqual([changeset]);
+      expect(docChanged).toBe(1);
+      expect(syncApplied).toBe(0);
+      expect(executionViewEmissions).toEqual([executionViewChangeset]);
+      expect(broadcasts).toHaveLength(1);
+      expect(handle.flush_local_changes).not.toHaveBeenCalled();
+
+      engine.stop();
+    });
+
+    it("returns false and emits nothing for missing, non-sync, or unchanged events", () => {
+      const engine = createEngine();
+      engine.start();
+
+      const cellEmissions: Array<CellChangeset | null> = [];
+      engine.cellChanges$.subscribe((cs) => cellEmissions.push(cs));
+      let docChanged = 0;
+      engine.notebookDocChanged$.subscribe(() => docChanged++);
+      const executionViewEmissions: NonNullable<FrameEvent["execution_view_changeset"]>[] = [];
+      engine.executionViewChanges$.subscribe((cs) => executionViewEmissions.push(cs));
+
+      expect(engine.applyLocalMutationEvent(undefined)).toBe(false);
+      expect(engine.applyLocalMutationEvent(null)).toBe(false);
+      expect(engine.applyLocalMutationEvent(broadcastEvent({ ok: true }))).toBe(false);
+      expect(
+        engine.applyLocalMutationEvent(
+          syncAppliedEvent({
+            changed: false,
+            executionViewChangeset: {
+              cell_pointer_changes: [["cell-1", "exec-1"]],
+            },
+          }),
+        ),
+      ).toBe(false);
+
+      advanceBy(scheduler, 100);
+      expect(cellEmissions).toEqual([]);
+      expect(docChanged).toBe(0);
+      expect(executionViewEmissions).toEqual([]);
+      expect(handle.flush_local_changes).not.toHaveBeenCalled();
+      engine.stop();
+    });
+
+    it("returns false on a stopped engine", () => {
+      const event = syncAppliedEvent({ changed: true });
+      const engine = createEngine();
+
+      expect(engine.applyLocalMutationEvent(event)).toBe(false);
+
+      engine.start();
+      engine.stop();
+      expect(engine.applyLocalMutationEvent(event)).toBe(false);
+    });
+  });
+
   // ── Cross-tab apply (applyLocalPeerChanges) ─────────────────────
 
   describe("applyLocalPeerChanges", () => {
@@ -2818,6 +2917,37 @@ describe("SyncEngine", () => {
       engine.applyLocalPeerChanges(new Uint8Array([9]));
 
       expect(broadcasts).toHaveLength(1);
+      engine.stop();
+    });
+
+    it("keeps routing execution-view changes even when peer changes are already known", () => {
+      const executionViewChangeset: NonNullable<FrameEvent["execution_view_changeset"]> = {
+        cell_pointer_changes: [["cell-1", "exec-1"]],
+      };
+      const apply = vi.fn(() =>
+        syncAppliedEvent({
+          changed: false,
+          executionViewChangeset,
+        }),
+      );
+      handle = createMockHandle({ apply_change_bytes: apply });
+      const engine = createEngine();
+      engine.start();
+
+      const cellEmissions: Array<CellChangeset | null> = [];
+      engine.cellChanges$.subscribe((cs) => cellEmissions.push(cs));
+      let docChanged = 0;
+      engine.notebookDocChanged$.subscribe(() => docChanged++);
+      const executionViewEmissions: NonNullable<FrameEvent["execution_view_changeset"]>[] = [];
+      engine.executionViewChanges$.subscribe((cs) => executionViewEmissions.push(cs));
+
+      expect(engine.applyLocalPeerChanges(new Uint8Array([9]))).toBe(false);
+      advanceBy(scheduler, 100);
+
+      expect(cellEmissions).toEqual([]);
+      expect(docChanged).toBe(0);
+      expect(executionViewEmissions).toEqual([executionViewChangeset]);
+      expect(handle.flush_local_changes).not.toHaveBeenCalled();
       engine.stop();
     });
   });

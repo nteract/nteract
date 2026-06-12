@@ -99,6 +99,28 @@ describe("offline merge tracker", () => {
     tracker.dispose();
   });
 
+  it("discounts successful local mutation echoes during the settle window", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { notices, tracker } = tracked();
+
+    tracker.noteConnectionStatus("reconnecting");
+    tracker.noteLocalCellEdit("cell-a");
+    tracker.noteConnectionStatus("online");
+    tracker.noteLocalCellEdit("local-changed", { discountEcho: true });
+    tracker.noteLocalCellEdit("local-added", { discountEcho: true });
+    tracker.noteLocalCellDelete("local-removed", { discountEcho: true });
+    tracker.noteRemoteCellChanges({
+      changed: [{ cell_id: "local-changed" }, { cell_id: "remote-changed" }],
+      added: ["local-added"],
+      removed: ["local-removed"],
+    });
+
+    t.mock.timers.tick(SETTLE_MS);
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].mergedRemoteCellCount, 1);
+    tracker.dispose();
+  });
+
   it("drops the count (null) when a full-materialization changeset is seen", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const { notices, tracker } = tracked();

@@ -57,6 +57,11 @@ export type NotebookStoreCell =
   | NotebookStoreMarkdownCell
   | NotebookStoreRawCell;
 
+export interface NotebookCellStructureProjection {
+  orderedCellIds: string[];
+  upsertedCells?: NotebookStoreCell[];
+}
+
 // ---------------------------------------------------------------------------
 // Reactive cell store backed by the WASM Automerge document.
 //
@@ -277,6 +282,25 @@ function cellChromeEqual(a: NotebookStoreCell, b: NotebookStoreCell): boolean {
   return true;
 }
 
+function preserveReferentialOutputs(
+  prev: NotebookStoreCell | undefined,
+  cell: NotebookStoreCell,
+): NotebookStoreCell {
+  if (!prev || prev.cell_type !== "code" || cell.cell_type !== "code") {
+    return cell;
+  }
+
+  const prevOutputs = prev.outputs;
+  if (
+    prevOutputs.length === cell.outputs.length &&
+    prevOutputs.every((output, index) => output === cell.outputs[index])
+  ) {
+    return { ...cell, outputs: prevOutputs };
+  }
+
+  return cell;
+}
+
 // ── Write operations ────────────────────────────────────────────────────
 
 /**
@@ -353,16 +377,7 @@ export function replaceNotebookCells(cells: NotebookStoreCell[]): void {
       // Even when the cell changed (e.g. metadata), preserve the output
       // array reference if every element is identical. This prevents
       // OutputArea's handleFrameReady from firing and re-rendering iframes.
-      let stored = cell;
-      if (prev && prev.cell_type === "code" && cell.cell_type === "code") {
-        const prevOutputs = prev.outputs;
-        if (
-          prevOutputs.length === cell.outputs.length &&
-          prevOutputs.every((o, i) => o === cell.outputs[i])
-        ) {
-          stored = { ...cell, outputs: prevOutputs };
-        }
-      }
+      const stored = preserveReferentialOutputs(prev, cell);
       newMap.set(stored.id, stored);
       changedIds.push(cell.id);
       if (!prev || prev.source !== cell.source) {
@@ -397,6 +412,95 @@ export function replaceNotebookCells(cells: NotebookStoreCell[]): void {
     if (!newIdSet.has(id)) {
       emitCellChange(id);
     }
+  }
+}
+
+/**
+ * Apply a structural projection from the WASM handle's final cell order.
+ *
+ * Upserted cells are written before publishing the ordered ID list, surviving
+ * cells not present in `upsertedCells` keep their existing object references,
+ * and cells absent from `orderedCellIds` are removed from the map.
+ */
+export function applyNotebookCellStructureProjection({
+  orderedCellIds,
+  upsertedCells = [],
+}: NotebookCellStructureProjection): void {
+  const nextIds = [...orderedCellIds];
+  const idsChanged =
+    nextIds.length !== _cellIds.length || nextIds.some((id, i) => id !== _cellIds[i]);
+  const finalIdSet = new Set(nextIds);
+  const upsertedById = new Map(upsertedCells.map((cell) => [cell.id, cell]));
+  const oldMap = _cellMap;
+
+  const nextMap = new Map<string, NotebookStoreCell>();
+  const changedIds = new Set<string>();
+  let anySourceChanged = false;
+  let materializedChromeChanged = idsChanged;
+
+  for (const id of nextIds) {
+    const prev = oldMap.get(id);
+    const upserted = upsertedById.get(id);
+
+    if (!upserted) {
+      if (prev) nextMap.set(id, prev);
+      continue;
+    }
+
+    if (!prev) {
+      nextMap.set(id, upserted);
+      changedIds.add(id);
+      anySourceChanged = true;
+      materializedChromeChanged = true;
+      continue;
+    }
+
+    if (cellsEqual(prev, upserted)) {
+      nextMap.set(id, prev);
+      continue;
+    }
+
+    nextMap.set(id, preserveReferentialOutputs(prev, upserted));
+    changedIds.add(id);
+    if (!cellChromeEqual(prev, upserted)) {
+      materializedChromeChanged = true;
+    }
+    if (prev.source !== upserted.source) {
+      anySourceChanged = true;
+    }
+  }
+
+  for (const id of nextIds) {
+    if (!oldMap.has(id)) {
+      changedIds.add(id);
+      anySourceChanged = true;
+    }
+  }
+
+  for (const id of oldMap.keys()) {
+    if (!finalIdSet.has(id)) {
+      changedIds.add(id);
+      anySourceChanged = true;
+    }
+  }
+
+  _cellMap = nextMap;
+
+  if (idsChanged) {
+    _cellIds = nextIds;
+    emitIdsChange();
+  }
+
+  if (materializedChromeChanged) {
+    emitMaterializeChange();
+  }
+
+  if (anySourceChanged) {
+    emitSourceChange();
+  }
+
+  for (const id of changedIds) {
+    emitCellChange(id);
   }
 }
 

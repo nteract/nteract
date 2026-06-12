@@ -175,8 +175,7 @@ describe("CellChangeset classification", () => {
       order_changed: true,
     };
     expect(classifyCellChangesetMaterialization(cs)).toEqual({
-      kind: "full",
-      reason: "structural",
+      kind: "incremental",
     });
   });
 

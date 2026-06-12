@@ -213,6 +213,74 @@ describe("cloud viewer render resolution", () => {
     }
   });
 
+  it("keys direct output resolution cache entries by the Rust output stamp", async () => {
+    const cache = createOutputResolutionCache();
+
+    const first = await resolveOutputs(
+      [stampedStreamOutput("output:stamp-direct:1:0", "first\n")],
+      rejectingBlobResolver(),
+      "cell",
+      cache,
+    );
+    const second = await resolveOutputs(
+      [stampedStreamOutput("output:stamp-direct:1:0", "second\n")],
+      rejectingBlobResolver(),
+      "cell",
+      cache,
+    );
+    const third = await resolveOutputs(
+      [stampedStreamOutput("output:stamp-direct:1:1", "third\n")],
+      rejectingBlobResolver(),
+      "cell",
+      cache,
+    );
+
+    assert.equal(second[0], first[0]);
+    assert.equal(second[0].output_type, "stream");
+    if (second[0].output_type === "stream") {
+      assert.equal(second[0].text, "first\n");
+    }
+    assert.notEqual(third[0], first[0]);
+    assert.equal(third[0].output_type, "stream");
+    if (third[0].output_type === "stream") {
+      assert.equal(third[0].text, "third\n");
+    }
+  });
+
+  it("keys JSON string output cache entries by the parsed Rust output stamp", async () => {
+    const cache = createOutputResolutionCache();
+
+    const first = await resolveOutputs(
+      [JSON.stringify(stampedJsonStreamOutput("output:stamp-json:1:0", "first\n"))],
+      rejectingBlobResolver(),
+      "cell",
+      cache,
+    );
+    const second = await resolveOutputs(
+      [JSON.stringify(stampedJsonStreamOutput("output:stamp-json:1:0", "second\n"))],
+      rejectingBlobResolver(),
+      "cell",
+      cache,
+    );
+    const third = await resolveOutputs(
+      [JSON.stringify(stampedJsonStreamOutput("output:stamp-json:1:1", "third\n"))],
+      rejectingBlobResolver(),
+      "cell",
+      cache,
+    );
+
+    assert.equal(second[0], first[0]);
+    assert.equal(second[0].output_type, "stream");
+    if (second[0].output_type === "stream") {
+      assert.equal(second[0].text, "first\n");
+    }
+    assert.notEqual(third[0], first[0]);
+    assert.equal(third[0].output_type, "stream");
+    if (third[0].output_type === "stream") {
+      assert.equal(third[0].text, "third\n");
+    }
+  });
+
   it("keeps synthetic output ids unique when cached raw outputs omit output_id", async () => {
     const cache = createOutputResolutionCache();
     const output = {
@@ -596,6 +664,25 @@ function rejectingBlobResolver(): BlobResolver {
     async fetch() {
       return new Response("missing", { status: 404 });
     },
+  };
+}
+
+function stampedStreamOutput(cacheKey: string, text: string) {
+  return {
+    ...stampedJsonStreamOutput(cacheKey, text),
+    toJSON() {
+      throw new Error("stamped output should not be stringified");
+    },
+  };
+}
+
+function stampedJsonStreamOutput(cacheKey: string, text: string) {
+  return {
+    output_id: "stamp-output",
+    output_type: "stream" as const,
+    name: "stdout" as const,
+    text,
+    _runt_output_cache_key: cacheKey,
   };
 }
 

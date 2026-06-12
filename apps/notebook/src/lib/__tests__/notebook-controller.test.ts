@@ -129,6 +129,95 @@ describe("createNotebookController", () => {
     expect(engine.flush).not.toHaveBeenCalled();
   });
 
+  it("routes accepted wrapper events without running afterMutation and still flushes", () => {
+    const handle = createHandle();
+    const engine = { flush: vi.fn(), scheduleFlush: vi.fn() };
+    const afterMutation = vi.fn();
+    const applyMutationEvent = vi.fn(() => true);
+    const event = { type: "sync_applied", changed: true };
+    handle.add_cell_after_with_changeset = vi.fn((cellId) => {
+      handle.cells.push(cellId);
+      return { result: "position-b", event };
+    });
+    const focusCell = vi.fn();
+    const controller = createNotebookController({
+      getHandle: () => handle,
+      getEngine: () => engine,
+      canWriteCellSource: () => true,
+      canEditStructure: () => true,
+      createCellId: () => "cell-b",
+      applyMutationEvent,
+      afterMutation,
+      onFocusCell: focusCell,
+    });
+
+    const added = controller.addCell("markdown", "cell-a");
+
+    expect(handle.add_cell_after_with_changeset).toHaveBeenCalledWith(
+      "cell-b",
+      "markdown",
+      "cell-a",
+    );
+    expect(handle.cells).toEqual(["cell-a", "cell-b"]);
+    expect(added).toMatchObject({ id: "cell-b", cell_type: "markdown" });
+    expect(applyMutationEvent).toHaveBeenCalledWith(event);
+    expect(afterMutation).not.toHaveBeenCalled();
+    expect(engine.flush).toHaveBeenCalledTimes(1);
+    expect(engine.scheduleFlush).not.toHaveBeenCalled();
+    expect(focusCell).toHaveBeenCalledWith("cell-b");
+  });
+
+  it("falls back to afterMutation when wrapper events are rejected", () => {
+    const handle = createHandle();
+    handle.cells.push("cell-b");
+    const engine = { flush: vi.fn(), scheduleFlush: vi.fn() };
+    const afterMutation = vi.fn();
+    const applyMutationEvent = vi.fn(() => false);
+    const event = { type: "sync_applied", changed: false };
+    handle.move_cell_with_changeset = vi.fn((cellId, afterCellId) => {
+      handle.move_cell(cellId, afterCellId);
+      return { result: "position-b", event };
+    });
+    const controller = createNotebookController({
+      getHandle: () => handle,
+      getEngine: () => engine,
+      canWriteCellSource: () => true,
+      canEditStructure: () => true,
+      applyMutationEvent,
+      afterMutation,
+    });
+
+    controller.moveCell("cell-b", null);
+
+    expect(handle.cells).toEqual(["cell-b", "cell-a"]);
+    expect(applyMutationEvent).toHaveBeenCalledWith(event);
+    expect(afterMutation).toHaveBeenCalledWith(handle, "structure");
+    expect(engine.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps legacy afterMutation behavior when wrappers are absent", () => {
+    const handle = createHandle();
+    handle.cells.push("cell-b");
+    const engine = { flush: vi.fn(), scheduleFlush: vi.fn() };
+    const afterMutation = vi.fn();
+    const applyMutationEvent = vi.fn(() => true);
+    const controller = createNotebookController({
+      getHandle: () => handle,
+      getEngine: () => engine,
+      canWriteCellSource: () => true,
+      canEditStructure: () => true,
+      applyMutationEvent,
+      afterMutation,
+    });
+
+    controller.moveCell("cell-b", null);
+
+    expect(handle.cells).toEqual(["cell-b", "cell-a"]);
+    expect(applyMutationEvent).not.toHaveBeenCalled();
+    expect(afterMutation).toHaveBeenCalledWith(handle, "structure");
+    expect(engine.flush).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps structural mutations closed when the host has not accepted the cells map", () => {
     const handle = createHandle();
     const engine = { flush: vi.fn(), scheduleFlush: vi.fn() };

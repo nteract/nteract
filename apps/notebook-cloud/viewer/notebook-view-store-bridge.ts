@@ -7,6 +7,7 @@ import {
 import { projectMarkdownPlan } from "@/lib/markdown-projection";
 import {
   deleteExecutions,
+  getCellExecutionId,
   getExecutionById,
   setCellExecutionPointer,
   setExecution,
@@ -23,6 +24,9 @@ import type { ResolvedCell } from "./render-resolution";
 
 let cloudOwnedExecutionIds = new Set<string>();
 let cloudOwnedOutputIds = new Set<string>();
+
+const RUNT_OUTPUT_CACHE_KEY = "_runt_output_cache_key";
+const outputCacheKeys = new WeakMap<NotebookStoreOutput, string>();
 
 export function projectCloudCellsIntoNotebookViewStores(cells: readonly ResolvedCell[]): void {
   const projectedCells = cells.map((cell) => {
@@ -78,6 +82,55 @@ export function projectCloudCellsIntoNotebookViewStores(cells: readonly Resolved
   deleteExecutions(difference(cloudOwnedExecutionIds, nextCloudOwnedExecutionIds));
   cloudOwnedOutputIds = nextCloudOwnedOutputIds;
   cloudOwnedExecutionIds = nextCloudOwnedExecutionIds;
+}
+
+export function cleanupCloudProjectionForRemovedCells(removedCellIds: readonly string[]): void {
+  const outputIdsToDelete = new Set<string>();
+  const executionIdsToDelete = new Set<string>();
+
+  for (const cellId of removedCellIds) {
+    const syntheticExecutionId = `cloud-execution:${cellId}`;
+    const executionId =
+      getCellExecutionId(cellId) ??
+      (getExecutionById(syntheticExecutionId) ? syntheticExecutionId : null);
+
+    if (executionId) {
+      const execution = getExecutionById(executionId);
+      if (execution) {
+        for (const outputId of execution.output_ids) {
+          if (cloudOwnedOutputIds.has(outputId)) {
+            outputIdsToDelete.add(outputId);
+          }
+        }
+      }
+      if (cloudOwnedExecutionIds.has(executionId)) {
+        executionIdsToDelete.add(executionId);
+      }
+    }
+
+    const syntheticOutputPrefix = `cloud-output:${cellId}:`;
+    for (const outputId of cloudOwnedOutputIds) {
+      if (outputId.startsWith(syntheticOutputPrefix)) {
+        outputIdsToDelete.add(outputId);
+      }
+    }
+
+    setCellExecutionPointer(cellId, null);
+  }
+
+  if (outputIdsToDelete.size > 0) {
+    deleteOutputs(outputIdsToDelete);
+    for (const outputId of outputIdsToDelete) {
+      cloudOwnedOutputIds.delete(outputId);
+    }
+  }
+
+  if (executionIdsToDelete.size > 0) {
+    deleteExecutions(executionIdsToDelete);
+    for (const executionId of executionIdsToDelete) {
+      cloudOwnedExecutionIds.delete(executionId);
+    }
+  }
 }
 
 export function resetCloudViewStoreProjection(): void {
@@ -180,7 +233,7 @@ function normalizeOutputForNotebookView(
             output_id,
             text,
           };
-    return reusePreviousOutputIfEqual(previous, normalized);
+    return finalizeOutputForNotebookView(reusePreviousOutputIfEqual(previous, normalized));
   }
 
   normalized =
@@ -190,7 +243,7 @@ function normalizeOutputForNotebookView(
           ...output,
           output_id,
         } as NotebookStoreOutput);
-  return reusePreviousOutputIfEqual(previous, normalized);
+  return finalizeOutputForNotebookView(reusePreviousOutputIfEqual(previous, normalized));
 }
 
 function reusePreviousOutputIfEqual(
@@ -198,10 +251,43 @@ function reusePreviousOutputIfEqual(
   next: NotebookStoreOutput,
 ): NotebookStoreOutput {
   if (!previous || previous === next) return next;
+  const previousCacheKey = outputCacheKeyForEquality(previous);
+  const nextCacheKey = outputCacheKeyForEquality(next);
+  if (previousCacheKey !== null && nextCacheKey !== null) {
+    return previousCacheKey === nextCacheKey ? previous : next;
+  }
   const previousSerialized = serializedOutput(previous);
   return previousSerialized !== null && previousSerialized === serializedOutput(next)
     ? previous
     : next;
+}
+
+function finalizeOutputForNotebookView(output: NotebookStoreOutput): NotebookStoreOutput {
+  const cacheKey = outputCacheKeyForEquality(output);
+  const stripped = stripOutputCacheKey(output);
+  if (cacheKey !== null) {
+    outputCacheKeys.set(stripped, cacheKey);
+  }
+  return stripped;
+}
+
+function outputCacheKeyForEquality(output: NotebookStoreOutput): string | null {
+  return stampedOutputCacheKey(output) ?? outputCacheKeys.get(output) ?? null;
+}
+
+function stampedOutputCacheKey(output: unknown): string | null {
+  if (typeof output !== "object" || output === null) return null;
+  const key = (output as Record<string, unknown>)[RUNT_OUTPUT_CACHE_KEY];
+  return typeof key === "string" ? key : null;
+}
+
+function stripOutputCacheKey(output: NotebookStoreOutput): NotebookStoreOutput {
+  if (!Object.prototype.hasOwnProperty.call(output, RUNT_OUTPUT_CACHE_KEY)) {
+    return output;
+  }
+  const { [RUNT_OUTPUT_CACHE_KEY]: _cacheKey, ...stripped } = output as NotebookStoreOutput &
+    Record<string, unknown>;
+  return stripped as NotebookStoreOutput;
 }
 
 function serializedOutput(output: NotebookStoreOutput): string | null {

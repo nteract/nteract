@@ -10,12 +10,13 @@ import {
   needsPlugin,
   preWarmForMimes,
 } from "@/components/isolated/iframe-libraries";
+import { applyNotebookCellStructureProjection } from "@/components/notebook/state/cell-store";
 import {
   isDisplayCapableJupyterOutputType,
   planCellChangesetProjection,
   type BlobResolver,
 } from "runtimed";
-import type { JupyterOutput } from "../types";
+import type { JupyterOutput, NotebookCell } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobResolver } from "./blob-port";
 import type { CellChangeset } from "./cell-changeset";
@@ -89,7 +90,8 @@ function preWarmPluginsForRawOutputs(rawOutputs: unknown[]): void {
  *
  * Falls back to full materialization when:
  * - The changeset is null (WASM couldn't produce one)
- * - The changeset includes structural changes (add/remove/reorder)
+ * - The changeset includes resolved markdown assets
+ * - A structural changeset cannot be projected from the WASM handle
  *
  * Otherwise performs surgical per-cell updates using the WASM handle's
  * per-field accessors — O(changed cells) rather than O(all cells).
@@ -123,10 +125,92 @@ export async function materializeChangeset(
   // materialization branch above; this guard narrows the incremental path.
   if (!changeset) return;
 
-  // ── Per-cell incremental materialization ───────────────────────────
-
   const cache = deps.outputCache;
   const blobResolver = "blobResolver" in deps ? (deps.blobResolver ?? null) : getBlobResolver();
+
+  // ── Structural incremental materialization ────────────────────────
+
+  if (projectionPlan.structural) {
+    if (typeof handle.get_cell_ids !== "function") {
+      logger.debug(
+        "[frame-pipeline] full materialization: structural changeset without get_cell_ids",
+      );
+      await deps.materializeCells(handle);
+      notifyMetadataChanged();
+      return;
+    }
+
+    const orderedCellIds = [...handle.get_cell_ids()];
+    const finalCellIds = new Set(orderedCellIds);
+    const addedCells: NotebookCell[] = [];
+    const materializedCellIds = new Set<string>();
+
+    for (const cellId of projectionPlan.structural.added) {
+      if (!finalCellIds.has(cellId)) continue;
+
+      const cell = materializeCellFromWasm(
+        handle,
+        cellId,
+        cache,
+        getCellById(cellId),
+        blobResolver,
+      );
+      if (!cell) {
+        logger.debug(
+          `[frame-pipeline] full materialization: structural added cell ${cellId.slice(0, 8)} unavailable`,
+        );
+        await deps.materializeCells(handle);
+        notifyMetadataChanged();
+        return;
+      }
+
+      addedCells.push(cell);
+      materializedCellIds.add(cell.id);
+      if (cell.cell_type === "code") {
+        const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
+        preWarmPluginsForRawOutputs(rawOutputs);
+      }
+    }
+
+    for (const cellId of orderedCellIds) {
+      if (materializedCellIds.has(cellId) || getCellById(cellId)) continue;
+
+      const cell = materializeCellFromWasm(
+        handle,
+        cellId,
+        cache,
+        undefined,
+        blobResolver,
+      );
+      if (!cell) {
+        logger.debug(
+          `[frame-pipeline] full materialization: structural ordered cell ${cellId.slice(0, 8)} unavailable`,
+        );
+        await deps.materializeCells(handle);
+        notifyMetadataChanged();
+        return;
+      }
+
+      addedCells.push(cell);
+      materializedCellIds.add(cell.id);
+      if (cell.cell_type === "code") {
+        const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
+        preWarmPluginsForRawOutputs(rawOutputs);
+      }
+    }
+
+    applyNotebookCellStructureProjection({
+      orderedCellIds,
+      upsertedCells: addedCells,
+    });
+
+    logger.debug(
+      `[frame-pipeline] incremental structure: +${projectionPlan.structural.added.length} -${projectionPlan.structural.removed.length} reorder=${projectionPlan.structural.order_changed} materialized-added=${addedCells.length}`,
+    );
+  }
+
+  // ── Per-cell incremental materialization ───────────────────────────
+
   let cellStoreTouched = 0;
   let outputOnlySkipped = 0;
 

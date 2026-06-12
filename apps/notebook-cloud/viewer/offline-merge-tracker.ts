@@ -35,6 +35,15 @@ export interface OfflineMergeNoticeData {
   removedEditedCellCount: number;
 }
 
+export interface OfflineMergeLocalCellEditOptions {
+  /**
+   * A local mutation event is about to emit through the same `cellChanges$`
+   * channel as inbound sync. Discount the matching cell id once if that echo
+   * lands during the post-reconnect settle window.
+   */
+  discountEcho?: boolean;
+}
+
 export interface OfflineMergeTrackerOptions {
   /** Post-recovery settle window before the notice fires. */
   settleMs: number;
@@ -59,9 +68,10 @@ export interface OfflineMergeTrackerOptions {
  *   the CRDT bridge's per-cell sync callbacks (which also supply the cell
  *   ids the deleted-while-edited check needs).
  * - Remote authorship after recovery comes from `cellChanges$`, which is
- *   fed exclusively by the `sync_applied` pipeline: during the settle
- *   window its changesets are the collaborator backlog that interleaved
- *   with the user's offline edits.
+ *   fed by the `sync_applied` pipeline: during the settle window its
+ *   changesets are the collaborator backlog that interleaved with the
+ *   user's offline edits, minus one-shot local mutation echoes recorded by
+ *   the shared controller path.
  *
  * Single-fire discipline (the sustained-reconnecting debounce pattern,
  * extended): repeated "reconnecting" deliveries are no-ops; a drop during
@@ -81,6 +91,7 @@ export class OfflineMergeTracker {
   private eligible = true;
   private pendingLocalFlush = false;
   private readonly offlineEditedCellIds = new Set<string>();
+  private readonly localEchoCellIds = new Set<string>();
   /** null = a full-materialization changeset made the count unknowable. */
   private remoteChangedCellIds: Set<string> | null = new Set();
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -157,8 +168,9 @@ export class OfflineMergeTracker {
    * the engine's flush debounce and only flushes post-resync — exactly the
    * "unflushed handle changes delivered post-resync" shape.
    */
-  noteLocalCellEdit(cellId: string): void {
+  noteLocalCellEdit(cellId: string, options: OfflineMergeLocalCellEditOptions = {}): void {
     if (!this.eligible) return;
+    this.noteLocalEchoCell(cellId, options);
     if (this.phase !== "offline") return;
     this.pendingLocalFlush = true;
     this.offlineEditedCellIds.add(cellId);
@@ -168,7 +180,9 @@ export class OfflineMergeTracker {
    * The user deleted `cellId` themselves; its absence after resync is not
    * a collaborator removal.
    */
-  noteLocalCellDelete(cellId: string): void {
+  noteLocalCellDelete(cellId: string, options: OfflineMergeLocalCellEditOptions = {}): void {
+    if (!this.eligible) return;
+    this.noteLocalEchoCell(cellId, options);
     this.offlineEditedCellIds.delete(cellId);
   }
 
@@ -186,13 +200,13 @@ export class OfflineMergeTracker {
     }
     if (this.remoteChangedCellIds === null) return;
     for (const { cell_id } of changeset.changed) {
-      this.remoteChangedCellIds.add(cell_id);
+      this.noteRemoteCellChange(cell_id);
     }
     for (const id of changeset.added) {
-      this.remoteChangedCellIds.add(id);
+      this.noteRemoteCellChange(id);
     }
     for (const id of changeset.removed) {
-      this.remoteChangedCellIds.add(id);
+      this.noteRemoteCellChange(id);
     }
   }
 
@@ -228,7 +242,19 @@ export class OfflineMergeTracker {
     this.phase = "idle";
     this.pendingLocalFlush = false;
     this.offlineEditedCellIds.clear();
+    this.localEchoCellIds.clear();
     this.remoteChangedCellIds = new Set();
+  }
+
+  private noteLocalEchoCell(cellId: string, options: OfflineMergeLocalCellEditOptions): void {
+    if (!options.discountEcho) return;
+    if (this.phase !== "offline" && this.phase !== "settling") return;
+    this.localEchoCellIds.add(cellId);
+  }
+
+  private noteRemoteCellChange(cellId: string): void {
+    if (this.localEchoCellIds.delete(cellId)) return;
+    this.remoteChangedCellIds?.add(cellId);
   }
 
   private clearSettleTimer(): void {

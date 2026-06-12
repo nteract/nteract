@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { getCellById, updateCellSourceById } from "@/components/notebook/state/cell-store";
 import {
+  getCellExecutionId,
   getExecutionById,
   getNotebookQueueProjection,
   setExecution,
@@ -11,6 +12,7 @@ import { getOutputById } from "@/components/notebook/state/output-store";
 import { createNotebookViewModelFromNotebookCells } from "@/components/notebook/state/view-model-store";
 import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 import {
+  cleanupCloudProjectionForRemovedCells,
   projectCloudCellsIntoNotebookViewStores,
   resetCloudViewStoreProjection,
 } from "../viewer/notebook-view-store-bridge.ts";
@@ -175,6 +177,74 @@ describe("cloud NotebookView store bridge", () => {
 
     assert.notEqual(getOutputById("widget-output"), firstOutput);
   });
+
+  it("reuses stamped output references with equal cache keys without stringifying", () => {
+    projectCloudCellsIntoNotebookViewStores([
+      codeCellWithStampedOutput("widget-cell", "output:widget-output:1:0", "first"),
+    ]);
+
+    const firstOutput = getOutputById("widget-output");
+    assert.ok(firstOutput);
+    assert.equal("_runt_output_cache_key" in firstOutput, false);
+
+    projectCloudCellsIntoNotebookViewStores([
+      codeCellWithStampedOutput("widget-cell", "output:widget-output:1:0", "second"),
+    ]);
+
+    const nextOutput = getOutputById("widget-output");
+    assert.equal(nextOutput, firstOutput);
+    const cell = getCellById("widget-cell");
+    assert.equal(cell?.cell_type, "code");
+    if (cell?.cell_type === "code") {
+      assert.equal(cell.outputs[0], firstOutput);
+      assert.equal("_runt_output_cache_key" in cell.outputs[0], false);
+    }
+  });
+
+  it("replaces stamped output references when cache keys change", () => {
+    projectCloudCellsIntoNotebookViewStores([
+      codeCellWithStampedOutput("widget-cell", "output:widget-output:1:0", "first"),
+    ]);
+
+    const firstOutput = getOutputById("widget-output");
+
+    projectCloudCellsIntoNotebookViewStores([
+      codeCellWithStampedOutput("widget-cell", "output:widget-output:1:1", "second"),
+    ]);
+
+    const nextOutput = getOutputById("widget-output");
+    assert.ok(firstOutput);
+    assert.ok(nextOutput);
+    assert.notEqual(nextOutput, firstOutput);
+    assert.equal("_runt_output_cache_key" in nextOutput, false);
+    assert.equal(nextOutput.output_type, "display_data");
+    if (nextOutput.output_type === "display_data") {
+      assert.equal(nextOutput.data["text/plain"], "second");
+    }
+  });
+
+  it("cleans cloud-owned execution and output entries for removed cells only", () => {
+    projectCloudCellsIntoNotebookViewStores([
+      codeCellWithSyntheticOutput("removed-cell", "gone"),
+      codeCellWithSyntheticOutput("kept-cell", "still here"),
+    ]);
+
+    assert.equal(getCellExecutionId("removed-cell"), "cloud-execution:removed-cell");
+    assert.ok(getExecutionById("cloud-execution:removed-cell"));
+    assert.ok(getOutputById("cloud-output:removed-cell:0"));
+    assert.equal(getCellExecutionId("kept-cell"), "cloud-execution:kept-cell");
+    assert.ok(getExecutionById("cloud-execution:kept-cell"));
+    assert.ok(getOutputById("cloud-output:kept-cell:0"));
+
+    cleanupCloudProjectionForRemovedCells(["removed-cell"]);
+
+    assert.equal(getCellExecutionId("removed-cell"), null);
+    assert.equal(getExecutionById("cloud-execution:removed-cell"), undefined);
+    assert.equal(getOutputById("cloud-output:removed-cell:0"), undefined);
+    assert.equal(getCellExecutionId("kept-cell"), "cloud-execution:kept-cell");
+    assert.ok(getExecutionById("cloud-execution:kept-cell"));
+    assert.ok(getOutputById("cloud-output:kept-cell:0"));
+  });
 });
 
 function codeCellWithWidgetOutput(cellId: string, modelId: string, value: number) {
@@ -196,6 +266,49 @@ function codeCellWithWidgetOutput(cellId: string, modelId: string, value: number
           "text/plain": `IntSlider(value=${value})`,
         },
         metadata: {},
+      },
+    ],
+    metadata: {},
+  };
+}
+
+function codeCellWithStampedOutput(cellId: string, cacheKey: string, text: string) {
+  return {
+    id: cellId,
+    cellType: "code" as const,
+    source: "display(value)",
+    language: "python",
+    executionId: "exec-widget",
+    executionCount: 1,
+    outputs: [
+      {
+        output_id: "widget-output",
+        output_type: "display_data" as const,
+        data: { "text/plain": text },
+        metadata: {},
+        _runt_output_cache_key: cacheKey,
+        toJSON() {
+          throw new Error("stamped output should not be stringified");
+        },
+      },
+    ],
+    metadata: {},
+  };
+}
+
+function codeCellWithSyntheticOutput(cellId: string, text: string) {
+  return {
+    id: cellId,
+    cellType: "code" as const,
+    source: "print(value)",
+    language: "python",
+    executionId: null,
+    executionCount: 1,
+    outputs: [
+      {
+        output_type: "stream" as const,
+        name: "stdout" as const,
+        text,
       },
     ],
     metadata: {},

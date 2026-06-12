@@ -45,17 +45,11 @@ describe("CellChangeset helpers", () => {
     expect(source.changed[0].fields).toEqual(originalSourceFields);
   });
 
-  it("classifies missing or structural changesets as full materialization", () => {
+  it("classifies missing changesets and resolved assets as full materialization", () => {
     expect(classifyCellChangesetMaterialization(null)).toEqual({
       kind: "full",
       reason: "missing_changeset",
     });
-    expect(
-      classifyCellChangesetMaterialization({
-        ...empty,
-        added: ["cell-new"],
-      }),
-    ).toEqual({ kind: "full", reason: "structural" });
     expect(
       classifyCellChangesetMaterialization({
         ...empty,
@@ -64,10 +58,30 @@ describe("CellChangeset helpers", () => {
     ).toEqual({ kind: "full", reason: "resolved_assets" });
   });
 
-  it("classifies non-structural cell updates as incremental materialization", () => {
+  it("classifies cell and structural updates as incremental materialization", () => {
     expect(classifyCellChangesetMaterialization(outputsOnly("cell-1"))).toEqual({
       kind: "incremental",
     });
+    expect(
+      classifyCellChangesetMaterialization({
+        ...empty,
+        added: ["cell-new"],
+        order_changed: true,
+      }),
+    ).toEqual({ kind: "incremental" });
+    expect(
+      classifyCellChangesetMaterialization({
+        ...empty,
+        removed: ["cell-old"],
+        order_changed: true,
+      }),
+    ).toEqual({ kind: "incremental" });
+    expect(
+      classifyCellChangesetMaterialization({
+        ...empty,
+        order_changed: true,
+      }),
+    ).toEqual({ kind: "incremental" });
   });
 
   it("plans output-only updates without cell chrome writes", () => {
@@ -86,14 +100,10 @@ describe("CellChangeset helpers", () => {
     });
   });
 
-  it("plans full projection for missing and structural changesets", () => {
+  it("plans full projection for missing changesets and resolved assets", () => {
     expect(planCellChangesetProjection(null)).toEqual({
       kind: "full",
       reason: "missing_changeset",
-    });
-    expect(planCellChangesetProjection({ ...empty, added: ["cell-new"] })).toEqual({
-      kind: "full",
-      reason: "structural",
     });
     expect(
       planCellChangesetProjection({
@@ -101,6 +111,42 @@ describe("CellChangeset helpers", () => {
         changed: [{ cell_id: "cell-1", fields: { resolved_assets: true } }],
       }),
     ).toEqual({ kind: "full", reason: "resolved_assets" });
+  });
+
+  it("plans structural changes as incremental projections", () => {
+    expect(
+      planCellChangesetProjection({
+        ...empty,
+        added: ["cell-new"],
+        removed: ["cell-old"],
+        order_changed: true,
+      }),
+    ).toEqual({
+      kind: "incremental",
+      structural: {
+        added: ["cell-new"],
+        removed: ["cell-old"],
+        order_changed: true,
+      },
+      cells: [],
+    });
+  });
+
+  it("keeps add-then-remove structural details for final-handle projection", () => {
+    const merged = mergeChangesets(
+      { ...empty, added: ["cell-transient"], order_changed: true },
+      { ...empty, removed: ["cell-transient"], order_changed: true },
+    );
+
+    expect(planCellChangesetProjection(merged)).toEqual({
+      kind: "incremental",
+      structural: {
+        added: ["cell-transient"],
+        removed: ["cell-transient"],
+        order_changed: true,
+      },
+      cells: [],
+    });
   });
 
   it("plans chrome updates and source preservation for app projections", () => {

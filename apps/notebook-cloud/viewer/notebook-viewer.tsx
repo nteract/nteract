@@ -41,7 +41,7 @@ import {
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { EnvironmentSummary } from "@/components/environment";
-import { NotebookClient, type NotebookOutlineItem } from "runtimed";
+import { NotebookClient, type CellChangeset, type NotebookOutlineItem } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import {
   clearCloudPrototypeDevAuth,
@@ -453,6 +453,28 @@ export function NotebookViewer({
           outputs: "scheduleFlush",
           visibility: "scheduleFlush",
         },
+        applyMutationEvent: (event) => {
+          const liveRuntime = liveRuntimeRef.current;
+          if (!liveRuntime) return false;
+          const applied = liveRuntime.engine.applyLocalMutationEvent(
+            event as Parameters<typeof liveRuntime.engine.applyLocalMutationEvent>[0],
+          );
+          if (!applied) return false;
+
+          const changeset = (event as { changeset?: CellChangeset }).changeset;
+          if (changeset) {
+            for (const { cell_id } of changeset.changed) {
+              noteLocalCellEdit(cell_id, { discountEcho: true });
+            }
+            for (const cellId of changeset.added) {
+              noteLocalCellEdit(cellId, { discountEcho: true });
+            }
+            for (const cellId of changeset.removed) {
+              noteLocalCellDelete(cellId, { discountEcho: true });
+            }
+          }
+          return true;
+        },
         afterMutation: (handle) => {
           const liveRuntime = liveRuntimeRef.current;
           if (liveRuntime && liveRuntime.handle === handle) {
@@ -465,6 +487,8 @@ export function NotebookViewer({
     [
       canWriteCellSource,
       focusCellInStore,
+      noteLocalCellDelete,
+      noteLocalCellEdit,
       requestCloudMaterialization,
       shellCapabilities.canEditStructure,
     ],
