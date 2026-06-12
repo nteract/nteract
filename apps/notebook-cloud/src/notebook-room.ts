@@ -1135,9 +1135,14 @@ export class NotebookRoom {
     if (this.pendingRuntimePeerResponses.size >= MAX_PENDING_RUNTIME_PEER_RESPONSES) {
       const oldest = Array.from(this.pendingRuntimePeerResponses.entries()).sort(
         (a, b) => a[1].createdAtMs - b[1].createdAtMs,
-      )[0]?.[0];
+      )[0];
       if (oldest) {
-        this.pendingRuntimePeerResponses.delete(oldest);
+        this.rejectPendingRuntimePeerResponse(
+          oldest[1].notebookId,
+          oldest[0],
+          oldest[1],
+          `runtime peer query ${oldest[1].action} was evicted because too many queries are pending`,
+        );
       }
     }
 
@@ -1239,8 +1244,37 @@ export class NotebookRoom {
   private prunePendingRuntimePeerResponses(nowMs = Date.now()): void {
     for (const [requestId, pending] of this.pendingRuntimePeerResponses) {
       if (nowMs - pending.createdAtMs > PENDING_RUNTIME_PEER_RESPONSE_MAX_AGE_MS) {
-        this.pendingRuntimePeerResponses.delete(requestId);
+        this.rejectPendingRuntimePeerResponse(
+          pending.notebookId,
+          requestId,
+          pending,
+          `runtime peer query ${pending.action} expired before the runtime peer responded`,
+        );
       }
+    }
+  }
+
+  private rejectPendingRuntimePeerResponse(
+    notebookId: string,
+    requestId: string,
+    pending: PendingRuntimePeerResponse,
+    reason: string,
+  ): void {
+    this.pendingRuntimePeerResponses.delete(requestId);
+    const sourcePeer = this.peers.get(pending.sourcePeerId);
+    if (!sourcePeer) {
+      return;
+    }
+
+    const payload = new TextEncoder().encode(
+      JSON.stringify({
+        id: requestId,
+        result: "error",
+        error: reason,
+      }),
+    );
+    if (!this.trySendFrame(notebookId, sourcePeer, encodeTypedFrame(FrameType.RESPONSE, payload))) {
+      this.queuePeerRemoval(notebookId, sourcePeer);
     }
   }
 
@@ -1262,23 +1296,7 @@ export class NotebookRoom {
         continue;
       }
 
-      const sourcePeer = this.peers.get(pending.sourcePeerId);
-      if (!sourcePeer) {
-        continue;
-      }
-
-      const payload = new TextEncoder().encode(
-        JSON.stringify({
-          id: requestId,
-          result: "error",
-          error: reason,
-        }),
-      );
-      if (
-        !this.trySendFrame(notebookId, sourcePeer, encodeTypedFrame(FrameType.RESPONSE, payload))
-      ) {
-        this.queuePeerRemoval(notebookId, sourcePeer);
-      }
+      this.rejectPendingRuntimePeerResponse(notebookId, requestId, pending, reason);
     }
   }
 
