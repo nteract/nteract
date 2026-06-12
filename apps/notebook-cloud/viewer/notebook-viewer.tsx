@@ -71,7 +71,11 @@ import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { cloudPresenceHasRuntimePeer, cloudPresenceRuntimePeerCount } from "./presence";
 import type { ResolvedCell } from "./render-resolution";
-import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
+import {
+  CloudNotebookNotices,
+  cloudNotebookHasNotices,
+  shouldShowCloudAnonymousViewerAuthNotice,
+} from "./notices";
 import { useOfflineMergeNoticeAutoClear } from "./use-offline-merge-notice";
 import { useSustainedReconnecting } from "./use-sustained-reconnecting";
 import type { ViewerStatus } from "./notice-types";
@@ -363,6 +367,16 @@ export function NotebookViewer({
       status,
       workstationAttachment,
     });
+  const isPublicViewer =
+    shellCapabilities.access.isPublic &&
+    shellCapabilities.access.level === "viewer" &&
+    connectionScope === "viewer" &&
+    Boolean(connectionPeerId);
+  const showAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
+    authState,
+    hasAppSession: Boolean(appSessionStatus.session),
+    isPublicViewer,
+  });
   const cloudRuntimeStatus = useMemo<NotebookCommandToolbarStatus | null>(() => {
     if (!shellCapabilities.runtime.connected && !shellCapabilities.runtime.executionAvailable) {
       return null;
@@ -870,6 +884,7 @@ export function NotebookViewer({
         <CloudPresenceStatus connectionError={connectionError} store={presenceStore} />
       }
       authControls={
+        !showAnonymousViewerAuthNotice &&
         shouldShowCloudHeaderSignIn(authState, {
           appSessionLoading: appSessionStatus.status === "loading",
           hasAppSession: Boolean(appSessionStatus.session),
@@ -957,6 +972,7 @@ export function NotebookViewer({
     connectionError,
     diagnostics: accessRequestNotice,
     hasAppSession: Boolean(appSessionStatus.session),
+    isPublicViewer,
     hasReadableSnapshot: notebookHasReadableSnapshot,
     offlineMergeNotice,
     rendererAssetError,
@@ -970,6 +986,7 @@ export function NotebookViewer({
       connectionError={connectionError}
       diagnostics={accessRequestNotice}
       hasAppSession={Boolean(appSessionStatus.session)}
+      isPublicViewer={isPublicViewer}
       hasReadableSnapshot={notebookHasReadableSnapshot}
       offlineMergeNotice={offlineMergeNotice}
       rendererAssetError={rendererAssetError}

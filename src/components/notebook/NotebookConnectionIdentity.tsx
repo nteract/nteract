@@ -81,6 +81,10 @@ export function NotebookConnectionIdentity({
     return null;
   }
 
+  if (isPublicViewerContext(capabilities)) {
+    return null;
+  }
+
   const actor = notebookToolbarActors(capabilities)[0];
   if (!actor) {
     return null;
@@ -124,6 +128,15 @@ export function NotebookConnectionIdentity({
 export function isRemoteNotebookContext(capabilities: NotebookShellCapabilities): boolean {
   return (
     capabilities.access.source !== "local" || capabilities.runtime.target?.kind === "runtime_peer"
+  );
+}
+
+function isPublicViewerContext(capabilities: NotebookShellCapabilities): boolean {
+  return (
+    capabilities.access.source === "cloud" &&
+    capabilities.access.isPublic &&
+    capabilities.access.level === "viewer" &&
+    !capabilities.auth.canUseAuthenticatedIdentity
   );
 }
 
