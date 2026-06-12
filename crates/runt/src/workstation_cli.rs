@@ -44,7 +44,16 @@ pub enum WorkstationCommands {
         name: Option<String>,
     },
     /// Serve attach requests using the stored workstation credential
-    Run,
+    Run {
+        /// Python interpreter used for launch-on-attach kernels.
+        ///
+        /// This is a pragmatic override until workstation setup grows a
+        /// first-run configuration flow. The value is passed to the sibling
+        /// `runtimed workstation-agent`; credentials still ride only in the
+        /// environment.
+        #[arg(long)]
+        python_path: Option<PathBuf>,
+    },
     /// List workstations registered to the stored credential
     Status {
         /// Output raw JSON
@@ -61,7 +70,7 @@ pub async fn command(command: WorkstationCommands) -> Result<()> {
             id,
             name,
         } => connect(url, code, id, name).await,
-        WorkstationCommands::Run => run().await,
+        WorkstationCommands::Run { python_path } => run(python_path).await,
         WorkstationCommands::Status { json } => status(json).await,
     }
 }
@@ -260,7 +269,7 @@ pub(crate) fn minimal_registration_payload(
 // run
 // ---------------------------------------------------------------------------
 
-async fn run() -> Result<()> {
+async fn run(python_path: Option<PathBuf>) -> Result<()> {
     let resolved = resolve_credentials()?;
 
     let runtimed_bin = locate_runtimed_binary().ok_or_else(|| {
@@ -277,21 +286,41 @@ async fn run() -> Result<()> {
         resolved.display_name,
         runtimed_bin.display()
     );
+    if let Some(path) = &python_path {
+        println!("Python interpreter: {}", path.display());
+    }
 
-    let status = std::process::Command::new(&runtimed_bin)
-        .arg("workstation-agent")
-        .arg("--cloud-url")
-        .arg(&resolved.cloud_url)
-        .arg("--workstation-id")
-        .arg(&resolved.workstation_id)
-        .arg("--display-name")
-        .arg(&resolved.display_name)
+    let mut command = std::process::Command::new(&runtimed_bin);
+    command
+        .args(workstation_agent_args(&resolved, python_path.as_deref()))
         // The credential rides the environment, never argv.
-        .env(CLOUD_TOKEN_ENV, &resolved.token)
+        .env(CLOUD_TOKEN_ENV, &resolved.token);
+
+    let status = command
         .status()
         .with_context(|| format!("failed to launch {}", runtimed_bin.display()))?;
 
     std::process::exit(status.code().unwrap_or(1));
+}
+
+fn workstation_agent_args(
+    resolved: &ResolvedCredentials,
+    python_path: Option<&Path>,
+) -> Vec<std::ffi::OsString> {
+    let mut args = vec![
+        "workstation-agent".into(),
+        "--cloud-url".into(),
+        resolved.cloud_url.as_str().into(),
+        "--workstation-id".into(),
+        resolved.workstation_id.as_str().into(),
+        "--display-name".into(),
+        resolved.display_name.as_str().into(),
+    ];
+    if let Some(path) = python_path {
+        args.push("--python-path".into());
+        args.push(path.as_os_str().into());
+    }
+    args
 }
 
 /// Credentials in effect: the stored file, with `RUNT_CLOUD_TOKEN` /
@@ -641,6 +670,57 @@ mod tests {
         let sparse = minimal_registration_payload("ws", "ws", None, None);
         assert!(sparse.get("working_directory").is_none());
         assert!(sparse.get("cpu_count").is_none());
+    }
+
+    #[test]
+    fn workstation_agent_args_include_python_path_override_without_token() {
+        let resolved = ResolvedCredentials {
+            cloud_url: "https://preview.runt.run".to_string(),
+            token: "nwc_secret".to_string(),
+            workstation_id: "ws-lab2".to_string(),
+            display_name: "lab2".to_string(),
+        };
+
+        let args = workstation_agent_args(&resolved, Some(Path::new("/home/ubuntu/k/bin/python")));
+        let rendered = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "workstation-agent",
+                "--cloud-url",
+                "https://preview.runt.run",
+                "--workstation-id",
+                "ws-lab2",
+                "--display-name",
+                "lab2",
+                "--python-path",
+                "/home/ubuntu/k/bin/python",
+            ]
+        );
+        assert!(!rendered.iter().any(|arg| arg.contains("nwc_secret")));
+    }
+
+    #[test]
+    fn workstation_agent_args_omit_python_path_when_not_overridden() {
+        let resolved = ResolvedCredentials {
+            cloud_url: "https://preview.runt.run".to_string(),
+            token: "nwc_secret".to_string(),
+            workstation_id: "ws-lab2".to_string(),
+            display_name: "lab2".to_string(),
+        };
+
+        let args = workstation_agent_args(&resolved, None);
+        let rendered = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(!rendered.iter().any(|arg| arg == "--python-path"));
+        assert!(!rendered.iter().any(|arg| arg.contains("nwc_secret")));
     }
 
     #[test]
