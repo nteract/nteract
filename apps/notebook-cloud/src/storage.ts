@@ -916,6 +916,7 @@ export async function createWorkstationAttachJob(
   input: {
     notebookId: string;
     ownerPrincipal: string;
+    replaceActive?: boolean;
     workstationId: string;
     actorLabel: string;
   },
@@ -929,6 +930,12 @@ export async function createWorkstationAttachJob(
   const nowIso = now.toISOString();
   const staleBefore = new Date(now.getTime() - WORKSTATION_ATTACH_JOB_STALE_MS).toISOString();
   await expireStaleWorkstationAttachJobs(env, input, { now: nowIso, staleBefore });
+  if (input.replaceActive === true) {
+    await cancelActiveWorkstationAttachJobs(env, input, {
+      now: nowIso,
+      errorMessage: "replaced by a newer workstation attach request",
+    });
+  }
   const existing = await getActiveWorkstationAttachJob(env, input, staleBefore);
   if (existing) {
     return existing;
@@ -1037,7 +1044,8 @@ export async function updateWorkstationAttachJobStatus(
             error_message = ?
       WHERE id = ?
         AND owner_principal = ?
-        AND workstation_id = ?`,
+        AND workstation_id = ?
+        AND status IN ('pending', 'accepted', 'running')`,
   )
     .bind(
       input.status,
@@ -1122,6 +1130,37 @@ async function expireStaleWorkstationAttachJobs(
           AND updated_at < ?`,
     )
     .bind(now, now, input.notebookId, input.ownerPrincipal, input.workstationId, staleBefore)
+    .run();
+}
+
+async function cancelActiveWorkstationAttachJobs(
+  env: Env,
+  input: {
+    notebookId: string;
+    ownerPrincipal: string;
+    workstationId: string;
+  },
+  {
+    now,
+    errorMessage,
+  }: {
+    now: string;
+    errorMessage: string;
+  },
+): Promise<void> {
+  await env
+    .DB!.prepare(
+      `UPDATE workstation_attach_jobs
+          SET status = 'cancelled',
+              updated_at = ?,
+              finished_at = ?,
+              error_message = ?
+        WHERE notebook_id = ?
+          AND owner_principal = ?
+          AND workstation_id = ?
+          AND status IN ('pending', 'accepted', 'running')`,
+    )
+    .bind(now, now, errorMessage, input.notebookId, input.ownerPrincipal, input.workstationId)
     .run();
 }
 

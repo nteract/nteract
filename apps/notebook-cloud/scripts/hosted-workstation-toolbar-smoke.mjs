@@ -138,6 +138,7 @@ async function main() {
     timeoutMs,
     tokenStorageJson,
     viewerUrl,
+    workstationDisplayName: scalarString(workstation.display_name) ?? workstationId,
     workstationId,
   });
   const report = {
@@ -179,6 +180,7 @@ async function runBrowserSmoke({
   timeoutMs,
   tokenStorageJson,
   viewerUrl,
+  workstationDisplayName,
   workstationId,
 }) {
   const url = new URL(viewerUrl);
@@ -206,7 +208,7 @@ async function runBrowserSmoke({
         source,
         timeoutMs,
         url,
-        workstationId,
+        workstationDisplayName,
       });
     } finally {
       await ownerContext.close().catch(() => {});
@@ -228,6 +230,10 @@ async function runBrowserSmoke({
         "toolbar_start_compute_clicked",
         "execute_button_rendered_after_compute_start",
         "cell_output_observed_after_execute",
+        "restart_button_clicked",
+        "cell_output_observed_after_restart",
+        "restart_run_all_button_clicked",
+        "all_cell_outputs_observed_after_restart_run_all",
         "page_reload_preserved_output",
         "cell_output_observed_after_reload_execute",
         "owner_no_workstations_shows_setup_action",
@@ -252,7 +258,7 @@ async function runOwnerAttachAndExecuteSmoke({
   source,
   timeoutMs,
   url,
-  workstationId,
+  workstationDisplayName,
 }) {
   const page = await context.newPage();
   const events = collectBrowserDiagnostics(page);
@@ -266,7 +272,7 @@ async function runOwnerAttachAndExecuteSmoke({
   assertToolbarWorkstationAction(action, {
     context: "owner attach",
     label: "Start compute",
-    titleIncludes: [workstationId, "workstation"],
+    titleIncludes: [workstationDisplayName],
   });
   await page.getByTestId("workstation-setup-button").click({ timeout: timeoutMs });
 
@@ -275,9 +281,29 @@ async function runOwnerAttachAndExecuteSmoke({
   assertKernelStatusNotInitializing(afterFirstRunKernelStatus, "after first execution");
   const afterFirstRunAria = await cell.getByTestId("execute-button").getAttribute("aria-label");
 
+  const restartMarker = `${runMarker} after restart`;
+  await restartComputeAndWait(page, timeoutMs);
+  await setCellSource(cell, `print(${JSON.stringify(restartMarker)})`);
+  await executeAndWaitForMarker(page, cell, restartMarker, timeoutMs, {
+    requireOrdinalAdvance: false,
+  });
+  const afterRestartKernelStatus = await readKernelStatus(page);
+  assertKernelStatusNotInitializing(afterRestartKernelStatus, "after restart execution");
+
+  const restartRunAllMarkers = [`${runMarker} restart run all 1`, `${runMarker} restart run all 2`];
+  const secondCell = await ensureCodeCellCount(page, 2, timeoutMs).then((cells) => cells.nth(1));
+  await setCellSource(cell, `print(${JSON.stringify(restartRunAllMarkers[0])})`);
+  await setCellSource(secondCell, `print(${JSON.stringify(restartRunAllMarkers[1])})`);
+  await restartAndRunAllAndWait(page, restartRunAllMarkers, timeoutMs);
+  const afterRestartRunAllKernelStatus = await readKernelStatus(page);
+  assertKernelStatusNotInitializing(
+    afterRestartRunAllKernelStatus,
+    "after restart-and-run-all execution",
+  );
+
   await page.reload({ waitUntil: "domcontentloaded", timeout: timeoutMs });
   await waitForNotebookReady(page, timeoutMs);
-  await waitForText(page, runMarker, timeoutMs);
+  await waitForText(page, restartRunAllMarkers[1], timeoutMs);
   await enterEditMode(page, timeoutMs);
   const reloadedCell = page.locator('[data-cell-type="code"]').first();
   await reloadedCell.waitFor({ state: "visible", timeout: timeoutMs });
@@ -303,10 +329,14 @@ async function runOwnerAttachAndExecuteSmoke({
     action,
     afterFirstRunKernelStatus,
     afterFirstRunAria,
+    afterRestartKernelStatus,
+    afterRestartRunAllKernelStatus,
     afterReloadKernelStatus,
     afterReloadRunAria,
     beforeReloadRunAria,
     events,
+    restartMarker,
+    restartRunAllMarkers,
     screenshotPath: screenshotPath ?? null,
   };
 }
@@ -347,8 +377,7 @@ async function assertOwnerBlockedWorkstationStates({
   const noWorkstations = await assertOwnerToolbarActionWithMockedWorkstations({
     browser,
     expectedLabel: "Set up compute",
-    expectedPanelText:
-      "Run the workstation agent on a machine you own, then attach it here to start compute.",
+    expectedPanelText: "No workstation registered",
     expectedTitleIncludes: ["Open workstations panel"],
     registry: {
       default_workstation_id: null,
@@ -726,6 +755,21 @@ async function ensureCodeCell(page, timeout) {
   });
 }
 
+async function ensureCodeCellCount(page, count, timeout) {
+  return smokePhase(`ensure ${count} code cells`, async () => {
+    const cells = page.locator('[data-cell-type="code"]');
+    while ((await cells.count()) < count) {
+      await page.getByTestId("add-code-cell-button").click({ timeout });
+      await page.waitForFunction(
+        (expected) => document.querySelectorAll('[data-cell-type="code"]').length >= expected,
+        count,
+        { timeout },
+      );
+    }
+    return cells;
+  });
+}
+
 async function setCellSource(cell, source) {
   await smokePhase("set cell source", async () => {
     await cell.locator('.cm-content[contenteditable="true"]').evaluate((node, text) => {
@@ -757,7 +801,13 @@ async function waitForToolbarAction(page, label, timeout) {
   );
 }
 
-async function executeAndWaitForMarker(page, cell, marker, timeout) {
+async function executeAndWaitForMarker(
+  page,
+  cell,
+  marker,
+  timeout,
+  { requireOrdinalAdvance = true } = {},
+) {
   await waitForCanExecute(page, timeout);
   const executeButton = await visibleExecuteButton(cell, timeout);
   const beforeAria = await readExecuteButtonAria(cell, "read pre-execution button state", timeout);
@@ -765,8 +815,70 @@ async function executeAndWaitForMarker(page, cell, marker, timeout) {
   await smokePhase("click cell execute button", async () => {
     await executeButton.click({ timeout });
   });
-  await waitForExecutionOrdinalAdvance(page, beforeOrdinal, timeout);
+  if (requireOrdinalAdvance) {
+    await waitForExecutionOrdinalAdvance(page, beforeOrdinal, timeout);
+  }
   await waitForText(page, marker, timeout);
+}
+
+async function restartComputeAndWait(page, timeout) {
+  const restartButton = page.getByTestId("restart-kernel-button");
+  await smokePhase("wait for restart button", async () => {
+    await restartButton.waitFor({ state: "visible", timeout });
+  });
+  await smokePhase("click restart button", async () => {
+    await restartButton.click({ timeout });
+  });
+  await waitForPagePredicate(
+    page,
+    "wait for hosted restart to leave ready state",
+    () => {
+      const shell = document.querySelector('[data-slot="notebook-document-shell"]');
+      const kernelStatus = document.querySelector('[data-testid="kernel-status"]');
+      return (
+        shell?.getAttribute("data-can-execute") !== "true" ||
+        kernelStatus?.getAttribute("data-kernel-status") !== "idle"
+      );
+    },
+    null,
+    Math.min(timeout, 10_000),
+  ).catch(() => {
+    // Fast replacements can move from ready to ready between browser polls. The
+    // marker execution below is the durable assertion that the new runtime can
+    // accept work.
+  });
+  await waitForCanExecute(page, timeout);
+}
+
+async function restartAndRunAllAndWait(page, markers, timeout) {
+  const restartRunAllButton = page.getByTestId("restart-run-all-button");
+  await smokePhase("wait for restart-and-run-all button", async () => {
+    await restartRunAllButton.waitFor({ state: "visible", timeout });
+  });
+  await smokePhase("click restart-and-run-all button", async () => {
+    await restartRunAllButton.click({ timeout });
+  });
+  await waitForPagePredicate(
+    page,
+    "wait for hosted restart-and-run-all to leave ready state",
+    () => {
+      const shell = document.querySelector('[data-slot="notebook-document-shell"]');
+      const kernelStatus = document.querySelector('[data-testid="kernel-status"]');
+      return (
+        shell?.getAttribute("data-can-execute") !== "true" ||
+        kernelStatus?.getAttribute("data-kernel-status") !== "idle"
+      );
+    },
+    null,
+    Math.min(timeout, 10_000),
+  ).catch(() => {
+    // Fast replacements can move from ready to ready between browser polls.
+    // The marker outputs below prove the queued run-all survived the gap.
+  });
+  for (const marker of markers) {
+    await waitForText(page, marker, timeout);
+  }
+  await waitForCanExecute(page, timeout);
 }
 
 async function visibleExecuteButton(cell, timeout) {

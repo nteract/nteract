@@ -38,11 +38,27 @@ describe("cloud notebook host", () => {
     assert.deepEqual(calls, ["b:sendRequest:save_notebook", "b:sendFrame:1"]);
   });
 
-  it("returns an immediate empty completion result without touching the room transport", async () => {
+  it("delegates hosted completions to the live runtime transport when connected", async () => {
     const calls: string[] = [];
     const host = createCloudNotebookHost({
       blobResolver: fixtureBlobResolver,
       getRuntime: () => createRuntime("cloud", calls),
+      hasRuntimePeer: () => true,
+    });
+
+    assert.deepEqual(
+      await host.transport.sendRequest({ type: "complete", code: "pri", cursor_pos: 3 }),
+      { result: "cloud" },
+    );
+    assert.deepEqual(calls, ["cloud:sendRequest:complete"]);
+  });
+
+  it("returns empty hosted completions when the live room has no runtime peer", async () => {
+    const calls: string[] = [];
+    const host = createCloudNotebookHost({
+      blobResolver: fixtureBlobResolver,
+      getRuntime: () => createRuntime("cloud", calls),
+      hasRuntimePeer: () => false,
     });
 
     assert.deepEqual(

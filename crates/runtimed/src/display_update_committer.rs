@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::{mpsc, oneshot, Notify};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::output_commit_context::OutputCommitContext;
 use crate::output_prep::LifecycleSignal;
@@ -26,6 +26,7 @@ struct PendingDisplayUpdate {
     data: serde_json::Value,
     metadata: serde_json::Map<String, serde_json::Value>,
     buffers: Vec<Vec<u8>>,
+    requested_at: std::time::Instant,
 }
 
 struct SharedPending {
@@ -81,6 +82,7 @@ impl DisplayUpdateCommitterHandle {
                 data,
                 metadata,
                 buffers,
+                requested_at: std::time::Instant::now(),
             },
         );
         drop(updates);
@@ -117,6 +119,16 @@ fn take_pending(pending: &SharedPending) -> HashMap<String, PendingDisplayUpdate
 
 async fn commit_pending_updates(pending: &SharedPending, context: &OutputCommitContext) {
     let updates = take_pending(pending);
+    if updates.is_empty() {
+        return;
+    }
+    let commit_started = std::time::Instant::now();
+    let count = updates.len();
+    let max_request_age_ms = updates
+        .values()
+        .map(|update| update.requested_at.elapsed().as_millis())
+        .max()
+        .unwrap_or(0);
     for (display_id, update) in updates {
         let preflight_wrapper = serde_json::json!({ "data": update.data });
         crate::output_store::preflight_ref_buffers(
@@ -181,6 +193,12 @@ async fn commit_pending_updates(pending: &SharedPending, context: &OutputCommitC
             }
         }
     }
+    info!(
+        "[display-update-committer-timing] display updates committed count={} max_request_age_ms={} elapsed_ms={}",
+        count,
+        max_request_age_ms,
+        commit_started.elapsed().as_millis()
+    );
 }
 
 async fn run_display_update_committer(

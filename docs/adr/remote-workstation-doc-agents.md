@@ -234,10 +234,26 @@ remains for workstations is target selection: how the active runtime peer is
 chosen for accepted executions, and how readiness/disconnect gates the
 dispatch (punchlist 3D-7).
 
-Kernel lifecycle requests should follow the same split. The room host accepts
-`LaunchKernel`, `RestartKernel`, `InterruptExecution`, and `ShutdownKernel`
-requests from allowed user roles, then dispatches the corresponding runtime work
-to the active workstation runtime peer.
+Kernel lifecycle and widget requests should follow the same split, but they do
+not all have the same reply contract. `InterruptExecution` and `SendComm` are
+command-only today: the hosted room can authorize the user request and forward
+the typed frame to the newest active `runtime_peer`. The browser ack for those
+frames means "accepted and delivered to a runtime peer", not "the kernel handled
+it" and not "widget state converged". Widget-visible results must still arrive
+through the normal runtime documents (`CommsDoc` / `RuntimeStateDoc`) and shared
+projections.
+
+Response-bearing runtime requests need a stronger contract. `Complete` can use
+a narrow correlated response bridge because the browser's `NotebookResponse`
+envelope and the runtime peer's `RuntimeAgentResponse` envelope have compatible
+result shapes for that query RPC. `GetHistory` remains hosted-local for now
+because it is a broader notebook feature in Cloud rather than only a kernel
+history query. `LaunchKernel`, `RestartKernel`, `ShutdownKernel`, and
+`SyncEnvironment` require either a room-owned state transition or a mapped
+response path back from the runtime peer. Hosted rooms should reject direct
+runtime request frames for unsupported actions until that orchestration exists
+rather than acknowledging a no-op delivery. This keeps toolbar and environment
+UI from mistaking WebSocket delivery for kernel success.
 
 ## Decision 5: Current Python is a first-class environment policy
 
@@ -705,20 +721,69 @@ sequence:
   (`use-cloud-workstations.ts`) drives `/api/n/:id/workstation-attachments`;
   attach jobs command the connector, which attaches as `runtime_peer` over
   `CloudWsFrameTransport`.
-- **Execution (steps 10–11).** The room host queues executions from editor
+- **Execution (steps 10–11).** The room host queues executions from owner
   REQUESTs (#3399); viewer requests resolve via `cloud_frame_accepted` /
   `cloud_frame_rejected` acks. Launch-on-attach starts a `current_python`
   kernel through the daemon's launcher (`crates/runtimed/src/workstation/`).
   Verified live: browser submits, workstation executes, output lands in the
   viewer.
+- **Runtime-agent commands.** Cloud now forwards owner-authorized
+  fire-and-forget runtime-agent command REQUESTs (`interrupt_execution` and
+  `send_comm`) directly to attached `runtime_peer` sockets. These requests do
+  not persist as room history and do not produce `RESPONSE` envelopes; visible
+  results must arrive through RuntimeStateDoc/CommsDoc convergence, matching the
+  local runtime-agent command model. During reconnect overlap, command routing
+  targets the newest connected runtime peer, matching the attachment
+  `updated_at` projection until runtime generations become explicit.
+  `send_comm` is especially easy to misread: the socket ack only means the room
+  forwarded the comm message to the selected runtime peer. The widget-visible
+  result is still the later CommsDoc/RuntimeStateDoc change; cloud must not
+  invent a response envelope or treat the ack as a completed widget round trip.
+- **Runtime-agent query bridge.** Cloud supports a narrow correlated response
+  bridge for `complete`. The room stores a bounded in-memory pending map,
+  forwards the request to the newest active runtime peer, and routes the
+  matching runtime-peer `RESPONSE` frame back to the original browser peer.
+  This is intentionally narrower than a generic runtime-agent RPC bridge:
+  `complete` works because the browser request/response envelopes and
+  runtime-agent response shape are compatible. The bridge must remain bounded,
+  disconnect-aware, and non-durable until runtime generations and room-owned
+  lifecycle transitions are explicit.
+- **Unsupported response-bearing runtime requests fail honestly.** Hosted cloud
+  rooms reject direct `launch_kernel`, `shutdown_kernel`, `sync_environment`,
+  and `get_history` request frames instead of acknowledging them as empty
+  room-host no-ops. The cloud viewer still handles current hosted history in
+  `CloudNotebookHostTransport`; a real kernel-backed history implementation
+  needs a product decision about whether history is notebook-wide, user-wide,
+  or kernel-local before routing it through the runtime peer.
+
+Runtime request subtleties to keep visible:
+
+- A WebSocket delivery ack is not a kernel success signal. For commands such as
+  `interrupt_execution` and `send_comm`, users should only see success through
+  later runtime-document convergence or explicit lifecycle state.
+- `send_comm` is input to kernel/widget machinery, not durable widget state.
+  It should never bypass CommsDoc/RuntimeStateDoc projection or become a
+  room-authored widget update.
+- Response-bearing requests need per-action contracts. A narrow query bridge is
+  acceptable for `complete`; lifecycle requests such as restart need room-owned
+  state transitions, stale-runtime deadlines, and late-response suppression.
+- The newest-runtime-peer rule is a temporary routing policy. Runtime
+  generations should eventually make "which runtime handled this request"
+  explicit enough to ignore late frames from a replaced peer.
+- Unsupported requests should fail loudly and cheaply. Accepting a delivered
+  frame that the room cannot observe or reconcile creates false UI readiness.
 
 Operator instructions: `docs/remote-workstation.md`.
 
-Still open: inbound kernel lifecycle over cloud (interrupt/restart/shutdown —
-the "req 5" channel; launch-on-attach covers only the first launch), the
-attachment-ticket contract (step 6; dev path today is API key / dev token plus
-an explicit `runtime_peer` ACL row), catalog projection (step 5), and the
-provider-specific Outerbounds/JupyterHub smokes (step 12). Tracked in
+Still open: response-bearing kernel lifecycle over cloud
+(`launch_kernel`/`shutdown_kernel`/restart, plus `sync_environment` and a
+product-shaped history contract), the attachment-ticket contract (step 6; dev
+path today is API key / dev token plus an explicit `runtime_peer` ACL row),
+catalog projection (step 5), and the provider-specific Outerbounds/JupyterHub
+smokes (step 12). Restart also needs a bounded stale-runtime policy: if the
+selected runtime does not confirm restart in time, the room should assume that
+runtime generation is gone, start a new attachment, and ignore late frames from
+the old runtime. Tracked in
 [#3381](https://github.com/nteract/nteract/issues/3381).
 
 ## Open questions

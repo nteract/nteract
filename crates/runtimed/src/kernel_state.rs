@@ -126,6 +126,7 @@ impl KernelState {
             execution_id: execution_id.clone(),
             cell_id,
             code: source,
+            queued_at: std::time::Instant::now(),
         });
 
         // Write to state doc
@@ -167,13 +168,22 @@ impl KernelState {
             // Write to state doc
             {
                 let doc_queued = to_doc_entries(&self.queued_entries());
+                let mut output_count = 0usize;
                 if let Err(e) = self.state.with_doc(|sd| {
+                    output_count = sd.get_outputs(execution_id).len();
                     sd.set_execution_done(execution_id, success)?;
                     sd.set_queue(None, &doc_queued)?;
                     Ok(())
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
+                info!(
+                    "[kernel-state-timing] Execution terminalized: execution_id={} success={} output_count={} remaining_queue={}",
+                    execution_id,
+                    success,
+                    output_count,
+                    doc_queued.len()
+                );
             }
 
             // Process next
@@ -320,6 +330,8 @@ impl KernelState {
         let Some(cell) = self.queue.pop_front() else {
             return Ok(());
         };
+        let queue_wait_ms = cell.queued_at.elapsed().as_millis();
+        let remaining_queue = self.queue.len();
 
         self.executing = Some(cell.execution_id.clone());
         self.status = KernelStatus::Busy;
@@ -342,8 +354,8 @@ impl KernelState {
             .await?;
 
         info!(
-            "[kernel-state] Sent execute_request: execution_id={}",
-            cell.execution_id
+            "[kernel-state] Sent execute_request: execution_id={} queue_wait_ms={} remaining_queue={}",
+            cell.execution_id, queue_wait_ms, remaining_queue
         );
 
         Ok(())

@@ -83,6 +83,28 @@ interface RejectFrameOptions {
 interface PeerCloseOptions {
   code?: number;
   reason?: string;
+  suppressRuntimePeerWatch?: boolean;
+}
+
+type RuntimePeerForwardedRequestAction = "interrupt_execution" | "send_comm";
+type RuntimePeerQueryRequestAction = "complete";
+type UnsupportedHostedRuntimeRequestAction =
+  | "launch_kernel"
+  | "shutdown_kernel"
+  | "sync_environment"
+  | "get_history";
+
+interface RequestEnvelopeMetadata {
+  id: string | null;
+  action: string | null;
+}
+
+interface PendingRuntimePeerResponse {
+  notebookId: string;
+  sourcePeerId: string;
+  runtimePeerId: string;
+  action: RuntimePeerQueryRequestAction;
+  createdAtMs: number;
 }
 
 const MAX_STORED_FRAMES = 500;
@@ -101,6 +123,81 @@ const REJECTED_FRAME_POLICY_CLOSE_REASON = "too many rejected frames";
 /// reconciliation alarm. Persisted so a DO that hibernates between the alarm
 /// being set and firing still knows which room to reconcile.
 const RUNTIME_PEER_WATCH_KEY = "runtime_peer_gone_watch";
+const runtimePeerForwardedRequestActions = new Set<RuntimePeerForwardedRequestAction>([
+  "interrupt_execution",
+  "send_comm",
+]);
+const runtimePeerQueryRequestActions = new Set<RuntimePeerQueryRequestAction>(["complete"]);
+const unsupportedHostedRuntimeRequestActions = new Set<UnsupportedHostedRuntimeRequestAction>([
+  "launch_kernel",
+  "shutdown_kernel",
+  "sync_environment",
+  "get_history",
+]);
+
+const MAX_PENDING_RUNTIME_PEER_RESPONSES = 128;
+const PENDING_RUNTIME_PEER_RESPONSE_MAX_AGE_MS = 60_000;
+
+function requestEnvelopeMetadataFromPayload(payload: Uint8Array): RequestEnvelopeMetadata {
+  try {
+    const value = JSON.parse(new TextDecoder().decode(payload)) as unknown;
+    if (typeof value !== "object" || value === null) {
+      return { id: null, action: null };
+    }
+    const record = value as Record<string, unknown>;
+    const id = typeof record.id === "string" ? record.id : null;
+    const action = typeof record.action === "string" ? record.action : null;
+    return { id, action };
+  } catch {
+    return { id: null, action: null };
+  }
+}
+
+function runtimeResponseIdFromPayload(payload: Uint8Array): string | null {
+  try {
+    const value = JSON.parse(new TextDecoder().decode(payload)) as unknown;
+    if (typeof value !== "object" || value === null) {
+      return null;
+    }
+    const id = (value as Record<string, unknown>).id;
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+function runtimePeerForwardedRequestAction(
+  action: string | null,
+): RuntimePeerForwardedRequestAction | null {
+  if (!action) {
+    return null;
+  }
+  return runtimePeerForwardedRequestActions.has(action as RuntimePeerForwardedRequestAction)
+    ? (action as RuntimePeerForwardedRequestAction)
+    : null;
+}
+
+function runtimePeerQueryRequestAction(
+  action: string | null,
+): RuntimePeerQueryRequestAction | null {
+  if (!action) {
+    return null;
+  }
+  return runtimePeerQueryRequestActions.has(action as RuntimePeerQueryRequestAction)
+    ? (action as RuntimePeerQueryRequestAction)
+    : null;
+}
+
+function unsupportedHostedRuntimeRequestAction(
+  action: string | null,
+): UnsupportedHostedRuntimeRequestAction | null {
+  if (!action) {
+    return null;
+  }
+  return unsupportedHostedRuntimeRequestActions.has(action as UnsupportedHostedRuntimeRequestAction)
+    ? (action as UnsupportedHostedRuntimeRequestAction)
+    : null;
+}
 
 export class NotebookRoom {
   private readonly peers = new Map<string, Peer>();
@@ -114,6 +211,7 @@ export class NotebookRoom {
   private broadcastDepth = 0;
   private readonly materializers = new Map<string, RoomMaterializer>();
   private readonly restoredPeersReady: Promise<void>;
+  private readonly pendingRuntimePeerResponses = new Map<string, PendingRuntimePeerResponse>();
   // In-memory only by design: persisting on the frame hot path would cost more
   // than the data is worth. Hibernation resets it, so peer_closed summaries
   // under-count peers whose connection outlives the DO instance — treat the
@@ -276,10 +374,23 @@ export class NotebookRoom {
     }
 
     const attachment = payload.attachment as WorkstationAttachmentState | null;
+    const closeRuntimePeers =
+      payload.close_runtime_peers === true || payload.closeRuntimePeers === true;
+    const closeReason =
+      typeof payload.close_reason === "string" && payload.close_reason.trim().length > 0
+        ? payload.close_reason.trim().slice(0, 120)
+        : "workstation attachment replaced";
     const startedAt = Date.now();
     try {
       const materializer = this.materializerFor(notebookId);
       const result = await materializer.setWorkstationAttachment(attachment);
+      if (closeRuntimePeers) {
+        this.removeRuntimePeers(notebookId, {
+          code: 1012,
+          reason: closeReason,
+          suppressRuntimePeerWatch: true,
+        });
+      }
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
         await materializer.checkpoint();
@@ -289,6 +400,7 @@ export class NotebookRoom {
         changed: result.changed,
         duration_ms: durationMs(startedAt),
         outbound_frame_count: result.outbound.length,
+        closed_runtime_peers: closeRuntimePeers,
         counter: "workstation_attachment_control_published",
         counter_delta: result.changed ? 1 : 0,
       });
@@ -605,6 +717,21 @@ export class NotebookRoom {
     }
 
     const receivedAt = new Date().toISOString();
+    if (normalizedFrame.type === FrameType.RESPONSE) {
+      const routed = this.routeRuntimePeerResponse(notebookId, peer, normalizedFrame);
+      if (routed) {
+        this.resetRejectedFrameStreak(peer);
+        return;
+      }
+      this.rejectFrame(
+        notebookId,
+        peer,
+        normalizedFrame.type,
+        "runtime peer response does not match an in-flight hosted request",
+      );
+      return;
+    }
+
     if (!shouldBroadcastFrame(normalizedFrame, peer.identity)) {
       // Anonymous public viewers are read-only observers. Their presence is
       // acknowledged locally but not broadcast or persisted as room activity.
@@ -627,6 +754,134 @@ export class NotebookRoom {
         timestamp: receivedAt,
       });
       this.resetRejectedFrameStreak(peer);
+      return;
+    }
+
+    const requestMetadata =
+      normalizedFrame.type === FrameType.REQUEST
+        ? requestEnvelopeMetadataFromPayload(normalizedFrame.payload)
+        : null;
+    const forwardedRequestAction = runtimePeerForwardedRequestAction(
+      requestMetadata?.action ?? null,
+    );
+    if (forwardedRequestAction) {
+      const forwardedRuntimePeerId = this.forwardRequestToActiveRuntimePeer(
+        notebookId,
+        normalizedFrame,
+        peer.id,
+      );
+      if (!forwardedRuntimePeerId) {
+        this.rejectFrame(
+          notebookId,
+          peer,
+          normalizedFrame.type,
+          `no runtime peer is attached for ${forwardedRequestAction}`,
+          { countsTowardStreak: false },
+        );
+        return;
+      }
+
+      cloudLog("debug", "room.runtime_peer_request.forwarded", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        principal: peer.identity.principal,
+        scope: peer.identity.scope,
+        action: forwardedRequestAction,
+        forwarded_runtime_peer_id: forwardedRuntimePeerId,
+        byte_length: normalizedFrame.payload.byteLength,
+        counter: "runtime_peer_requests_forwarded",
+        counter_delta: 1,
+      });
+      this.sendControl(notebookId, peer, {
+        type: "cloud_frame_accepted",
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        frame_type: normalizedFrame.type,
+        byte_length: normalizedFrame.payload.byteLength,
+        timestamp: receivedAt,
+      });
+      this.resetRejectedFrameStreak(peer);
+      return;
+    }
+
+    const runtimePeerQueryAction = runtimePeerQueryRequestAction(requestMetadata?.action ?? null);
+    if (runtimePeerQueryAction) {
+      const requestId = requestMetadata?.id;
+      if (!requestId) {
+        this.rejectFrame(
+          notebookId,
+          peer,
+          normalizedFrame.type,
+          `hosted runtime query ${runtimePeerQueryAction} is missing a request id`,
+          { countsTowardStreak: false },
+        );
+        return;
+      }
+      if (this.pendingRuntimePeerResponses.has(requestId)) {
+        this.rejectFrame(
+          notebookId,
+          peer,
+          normalizedFrame.type,
+          `hosted runtime query ${runtimePeerQueryAction} request id is already pending`,
+          { countsTowardStreak: false },
+        );
+        return;
+      }
+
+      const forwardedRuntimePeerId = this.forwardQueryToActiveRuntimePeer(
+        notebookId,
+        normalizedFrame,
+        peer.id,
+        requestId,
+        runtimePeerQueryAction,
+      );
+      if (!forwardedRuntimePeerId) {
+        this.rejectFrame(
+          notebookId,
+          peer,
+          normalizedFrame.type,
+          `no runtime peer is attached for ${runtimePeerQueryAction}`,
+          { countsTowardStreak: false },
+        );
+        return;
+      }
+
+      cloudLog("debug", "room.runtime_peer_query.forwarded", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        principal: peer.identity.principal,
+        scope: peer.identity.scope,
+        action: runtimePeerQueryAction,
+        request_id: requestId,
+        forwarded_runtime_peer_id: forwardedRuntimePeerId,
+        byte_length: normalizedFrame.payload.byteLength,
+        counter: "runtime_peer_queries_forwarded",
+        counter_delta: 1,
+      });
+      this.sendControl(notebookId, peer, {
+        type: "cloud_frame_accepted",
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        frame_type: normalizedFrame.type,
+        byte_length: normalizedFrame.payload.byteLength,
+        timestamp: receivedAt,
+      });
+      this.resetRejectedFrameStreak(peer);
+      return;
+    }
+
+    const unsupportedRuntimeRequestAction =
+      normalizedFrame.type === FrameType.REQUEST
+        ? unsupportedHostedRuntimeRequestAction(requestMetadata?.action ?? null)
+        : null;
+    if (unsupportedRuntimeRequestAction) {
+      this.rejectFrame(
+        notebookId,
+        peer,
+        normalizedFrame.type,
+        `hosted cloud rooms do not yet support response-bearing runtime request ${unsupportedRuntimeRequestAction}`,
+        { countsTowardStreak: false },
+      );
       return;
     }
 
@@ -729,6 +984,8 @@ export class NotebookRoom {
         return identity.scope === "owner";
       case FrameType.REQUEST:
         return allowsExecutionRequestSubmit(identity.scope);
+      case FrameType.RESPONSE:
+        return identity.scope === "runtime_peer";
       case FrameType.PRESENCE:
         return true;
       default:
@@ -846,6 +1103,199 @@ export class NotebookRoom {
         continue;
       }
       this.sendFrameToPeer(notebookId, target, typedFrameFromRoomHostOutbound(outbound));
+    }
+  }
+
+  private forwardRequestToActiveRuntimePeer(
+    notebookId: string,
+    frame: TypedFrame,
+    sourcePeerId: string,
+  ): string | null {
+    const runtimePeer = this.activeRuntimePeer(sourcePeerId);
+    if (!runtimePeer) {
+      return null;
+    }
+    return this.forwardFrameToRuntimePeer(notebookId, runtimePeer, frame) ? runtimePeer.id : null;
+  }
+
+  private forwardQueryToActiveRuntimePeer(
+    notebookId: string,
+    frame: TypedFrame,
+    sourcePeerId: string,
+    requestId: string,
+    action: RuntimePeerQueryRequestAction,
+  ): string | null {
+    const runtimePeer = this.activeRuntimePeer(sourcePeerId);
+    if (!runtimePeer) {
+      return null;
+    }
+
+    this.prunePendingRuntimePeerResponses();
+    if (this.pendingRuntimePeerResponses.size >= MAX_PENDING_RUNTIME_PEER_RESPONSES) {
+      const oldest = Array.from(this.pendingRuntimePeerResponses.entries()).sort(
+        (a, b) => a[1].createdAtMs - b[1].createdAtMs,
+      )[0];
+      if (oldest) {
+        this.rejectPendingRuntimePeerResponse(
+          oldest[1].notebookId,
+          oldest[0],
+          oldest[1],
+          `runtime peer query ${oldest[1].action} was evicted because too many queries are pending`,
+        );
+      }
+    }
+
+    this.pendingRuntimePeerResponses.set(requestId, {
+      notebookId,
+      sourcePeerId,
+      runtimePeerId: runtimePeer.id,
+      action,
+      createdAtMs: Date.now(),
+    });
+
+    if (!this.forwardFrameToRuntimePeer(notebookId, runtimePeer, frame)) {
+      this.pendingRuntimePeerResponses.delete(requestId);
+      return null;
+    }
+
+    return runtimePeer.id;
+  }
+
+  private activeRuntimePeer(sourcePeerId: string): Peer | undefined {
+    let selected: Peer | undefined;
+    for (const peer of this.peers.values()) {
+      if (peer.id === sourcePeerId || peer.identity.scope !== "runtime_peer") {
+        continue;
+      }
+      if (!selected || peer.connectedAt >= selected.connectedAt) {
+        selected = peer;
+      }
+    }
+    return selected;
+  }
+
+  private forwardFrameToRuntimePeer(
+    notebookId: string,
+    runtimePeer: Peer,
+    frame: TypedFrame,
+  ): boolean {
+    const encoded = encodeTypedFrame(frame.type, frame.payload);
+
+    // Overlapping runtime peers can happen during reconnect races. Command
+    // requests target the latest peer, matching the workstation attachment's
+    // `updated_at` projection until runtime generations become explicit.
+    this.broadcastDepth += 1;
+    let delivered = false;
+    try {
+      if (this.trySendFrame(notebookId, runtimePeer, encoded)) {
+        delivered = true;
+      } else {
+        this.queuePeerRemoval(notebookId, runtimePeer);
+      }
+    } finally {
+      this.broadcastDepth -= 1;
+      if (this.broadcastDepth === 0) {
+        this.flushPendingRemovals();
+      }
+    }
+
+    return delivered;
+  }
+
+  private routeRuntimePeerResponse(notebookId: string, peer: Peer, frame: TypedFrame): boolean {
+    if (peer.identity.scope !== "runtime_peer") {
+      return false;
+    }
+
+    const requestId = runtimeResponseIdFromPayload(frame.payload);
+    if (!requestId) {
+      return false;
+    }
+
+    const pending = this.pendingRuntimePeerResponses.get(requestId);
+    if (!pending || pending.runtimePeerId !== peer.id || pending.notebookId !== notebookId) {
+      return false;
+    }
+
+    this.pendingRuntimePeerResponses.delete(requestId);
+    const sourcePeer = this.peers.get(pending.sourcePeerId);
+    if (!sourcePeer) {
+      return true;
+    }
+
+    const encoded = encodeTypedFrame(frame.type, frame.payload);
+    if (!this.trySendFrame(notebookId, sourcePeer, encoded)) {
+      this.queuePeerRemoval(notebookId, sourcePeer);
+    }
+    cloudLog("debug", "room.runtime_peer_query.response_forwarded", {
+      notebook_id: notebookId,
+      peer_id: sourcePeer.id,
+      runtime_peer_id: peer.id,
+      request_id: requestId,
+      action: pending.action,
+      byte_length: frame.payload.byteLength,
+      counter: "runtime_peer_query_responses_forwarded",
+      counter_delta: 1,
+    });
+    return true;
+  }
+
+  private prunePendingRuntimePeerResponses(nowMs = Date.now()): void {
+    for (const [requestId, pending] of this.pendingRuntimePeerResponses) {
+      if (nowMs - pending.createdAtMs > PENDING_RUNTIME_PEER_RESPONSE_MAX_AGE_MS) {
+        this.rejectPendingRuntimePeerResponse(
+          pending.notebookId,
+          requestId,
+          pending,
+          `runtime peer query ${pending.action} expired before the runtime peer responded`,
+        );
+      }
+    }
+  }
+
+  private rejectPendingRuntimePeerResponse(
+    notebookId: string,
+    requestId: string,
+    pending: PendingRuntimePeerResponse,
+    reason: string,
+  ): void {
+    this.pendingRuntimePeerResponses.delete(requestId);
+    const sourcePeer = this.peers.get(pending.sourcePeerId);
+    if (!sourcePeer) {
+      return;
+    }
+
+    const payload = new TextEncoder().encode(
+      JSON.stringify({
+        id: requestId,
+        result: "error",
+        error: reason,
+      }),
+    );
+    if (!this.trySendFrame(notebookId, sourcePeer, encodeTypedFrame(FrameType.RESPONSE, payload))) {
+      this.queuePeerRemoval(notebookId, sourcePeer);
+    }
+  }
+
+  private rejectPendingRuntimePeerResponsesForPeer(
+    notebookId: string,
+    peerId: string,
+    reason: string,
+  ): void {
+    for (const [requestId, pending] of Array.from(this.pendingRuntimePeerResponses)) {
+      if (
+        pending.notebookId !== notebookId ||
+        (pending.sourcePeerId !== peerId && pending.runtimePeerId !== peerId)
+      ) {
+        continue;
+      }
+
+      this.pendingRuntimePeerResponses.delete(requestId);
+      if (pending.sourcePeerId === peerId) {
+        continue;
+      }
+
+      this.rejectPendingRuntimePeerResponse(notebookId, requestId, pending, reason);
     }
   }
 
@@ -1058,6 +1508,11 @@ export class NotebookRoom {
     if (!this.peers.delete(peer.id)) {
       return;
     }
+    this.rejectPendingRuntimePeerResponsesForPeer(
+      notebookId,
+      peer.id,
+      `${peer.identity.scope} disconnected before runtime query completed`,
+    );
     this.state.waitUntil(
       this.materializerFor(notebookId)
         .removePeer(peer.id)
@@ -1095,7 +1550,7 @@ export class NotebookRoom {
     // A runtime_peer departure is the one failure the daemon can't self-correct
     // (its death IS the trigger). Arm the reconciliation watchdog if it left no
     // runtime_peer behind.
-    if (peer.identity.scope === "runtime_peer") {
+    if (peer.identity.scope === "runtime_peer" && !closeOptions.suppressRuntimePeerWatch) {
       this.refreshRuntimePeerWatch(notebookId);
     }
   }

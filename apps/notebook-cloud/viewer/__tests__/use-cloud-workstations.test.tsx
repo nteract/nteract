@@ -65,6 +65,22 @@ function renderManager() {
   );
 }
 
+const lab2Workstation = {
+  id: "ws-lab2",
+  displayName: "Lab2",
+  provider: "runtime_peer",
+  providerLabel: null,
+  status: "online" as const,
+  statusMessage: null,
+  defaultEnvironmentLabel: "Current Python",
+  environmentPolicy: "current_python",
+  workingDirectory: "/home/ubuntu/project",
+  cpuCount: 8,
+  memoryBytes: 16_000_000_000,
+  updatedAt: null,
+  environments: [],
+};
+
 const futureIso = (ms: number) => new Date(Date.now() + ms).toISOString();
 
 describe("useCloudWorkstationManager pairing", () => {
@@ -253,5 +269,57 @@ describe("useCloudWorkstationManager pairing", () => {
 
     expect(result.current.workstationPairing?.status).toBe("registered");
     expect(result.current.workstationPairing?.workstationName).toBe("Hub devbox");
+  });
+
+  it("starts the launch candidate from toolbar wiring", async () => {
+    clientMocks.fetchCloudWorkstations.mockResolvedValue({
+      defaultWorkstationId: "ws-lab2",
+      workstations: [lab2Workstation],
+    });
+    clientMocks.requestCloudWorkstationAttachment.mockResolvedValue({
+      jobId: "job-1",
+      status: "pending",
+    });
+    const { result } = renderManager();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await result.current.onStartSelectedWorkstation?.();
+    });
+
+    expect(clientMocks.requestCloudWorkstationAttachment).toHaveBeenCalledWith(
+      "/api/n/nb-1/workstation-attachments",
+      devAuth,
+      "ws-lab2",
+      { replaceExisting: false },
+    );
+  });
+
+  it("requests a replacement attach job for toolbar restart", async () => {
+    clientMocks.fetchCloudWorkstations.mockResolvedValue({
+      defaultWorkstationId: "ws-lab2",
+      workstations: [lab2Workstation],
+    });
+    clientMocks.requestCloudWorkstationAttachment.mockResolvedValue({
+      jobId: "job-restart",
+      status: "pending",
+    });
+    const { result } = renderManager();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await result.current.onStartSelectedWorkstation?.({ replaceExisting: true });
+    });
+
+    expect(clientMocks.requestCloudWorkstationAttachment).toHaveBeenCalledWith(
+      "/api/n/nb-1/workstation-attachments",
+      devAuth,
+      "ws-lab2",
+      { replaceExisting: true },
+    );
   });
 });

@@ -7,7 +7,7 @@
 //! are durable in RuntimeStateDoc.
 
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::output_blob_publisher::publish_or_warn;
 use crate::output_commit_context::OutputCommitContext;
@@ -53,15 +53,21 @@ pub(crate) struct OrdinaryOutputCommit {
 }
 
 #[derive(Debug)]
+struct TimedOrdinaryOutputCommit {
+    output: OrdinaryOutputCommit,
+    enqueued_at: std::time::Instant,
+}
+
+#[derive(Debug)]
 struct PriorityOutputRequest {
-    output: Option<OrdinaryOutputCommit>,
+    output: Option<TimedOrdinaryOutputCommit>,
     signal: Option<LifecycleSignal>,
     ack: Option<oneshot::Sender<()>>,
 }
 
 #[derive(Clone)]
 pub(crate) struct OutputCommitterHandle {
-    output_tx: mpsc::Sender<OrdinaryOutputCommit>,
+    output_tx: mpsc::Sender<TimedOrdinaryOutputCommit>,
     priority_tx: mpsc::UnboundedSender<PriorityOutputRequest>,
     lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
 }
@@ -75,11 +81,15 @@ impl OutputCommitterHandle {
     /// output ordering without allowing unbounded queue growth or forcing the
     /// IOPub reader to synchronously drain all pending output work mid-burst.
     pub(crate) async fn enqueue_output(&self, output: OrdinaryOutputCommit) {
-        match self.output_tx.try_send(output) {
+        let timed = TimedOrdinaryOutputCommit {
+            output,
+            enqueued_at: std::time::Instant::now(),
+        };
+        match self.output_tx.try_send(timed) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(output)) => {
+            Err(mpsc::error::TrySendError::Full(timed)) => {
                 debug!("[output-committer] Queue full; waiting for output queue capacity");
-                if self.output_tx.send(output).await.is_err() {
+                if self.output_tx.send(timed).await.is_err() {
                     warn!("[output-committer] Dropping output: committer closed");
                 }
             }
@@ -124,7 +134,7 @@ impl OutputCommitterHandle {
 
 async fn commit_priority_request(
     request: PriorityOutputRequest,
-    output_rx: &mut mpsc::Receiver<OrdinaryOutputCommit>,
+    output_rx: &mut mpsc::Receiver<TimedOrdinaryOutputCommit>,
     context: &OutputCommitContext,
 ) {
     drain_queued_outputs(output_rx, context).await;
@@ -140,7 +150,7 @@ async fn commit_priority_request(
 }
 
 async fn drain_queued_outputs(
-    output_rx: &mut mpsc::Receiver<OrdinaryOutputCommit>,
+    output_rx: &mut mpsc::Receiver<TimedOrdinaryOutputCommit>,
     context: &OutputCommitContext,
 ) {
     loop {
@@ -159,7 +169,7 @@ async fn drain_queued_outputs(
 }
 
 async fn run_output_committer(
-    mut output_rx: mpsc::Receiver<OrdinaryOutputCommit>,
+    mut output_rx: mpsc::Receiver<TimedOrdinaryOutputCommit>,
     mut priority_rx: mpsc::UnboundedReceiver<PriorityOutputRequest>,
     context: OutputCommitContext,
 ) {
@@ -222,14 +232,34 @@ fn start_output_committer_with_capacity(
     }
 }
 
-async fn commit_output_batch(outputs: Vec<OrdinaryOutputCommit>, context: &OutputCommitContext) {
+async fn commit_output_batch(
+    outputs: Vec<TimedOrdinaryOutputCommit>,
+    context: &OutputCommitContext,
+) {
     if outputs.is_empty() {
         return;
     }
 
+    let commit_started = std::time::Instant::now();
+    let max_queue_age_ms = outputs
+        .iter()
+        .map(|output| output.enqueued_at.elapsed().as_millis())
+        .max()
+        .unwrap_or(0);
+    let mut display_data_count = 0usize;
+    let mut execute_result_count = 0usize;
+    let mut error_count = 0usize;
+    for output in &outputs {
+        match output.output.kind {
+            OrdinaryOutputKind::DisplayData => display_data_count += 1,
+            OrdinaryOutputKind::ExecuteResult => execute_result_count += 1,
+            OrdinaryOutputKind::Error => error_count += 1,
+        }
+    }
+
     let mut manifests = Vec::with_capacity(outputs.len());
     for output in &outputs {
-        manifests.push(create_manifest_json(output, context).await);
+        manifests.push(create_manifest_json(&output.output, context).await);
     }
 
     if let Err(e) = context.state.transact_at_current_heads(
@@ -238,9 +268,9 @@ async fn commit_output_batch(outputs: Vec<OrdinaryOutputCommit>, context: &Outpu
         |sd| {
             let mut index = 0;
             while index < outputs.len() {
-                let execution_id = outputs[index].execution_id.as_str();
+                let execution_id = outputs[index].output.execution_id.as_str();
                 let start = index;
-                while index < outputs.len() && outputs[index].execution_id == execution_id {
+                while index < outputs.len() && outputs[index].output.execution_id == execution_id {
                     index += 1;
                 }
                 if let Err(e) = sd.append_outputs(execution_id, &manifests[start..index]) {
@@ -252,6 +282,15 @@ async fn commit_output_batch(outputs: Vec<OrdinaryOutputCommit>, context: &Outpu
     ) {
         warn!("[runtime-state] {}", e);
     }
+    info!(
+        "[output-committer-timing] ordinary output batch committed count={} display_data_count={} execute_result_count={} error_count={} max_queue_age_ms={} elapsed_ms={}",
+        outputs.len(),
+        display_data_count,
+        execute_result_count,
+        error_count,
+        max_queue_age_ms,
+        commit_started.elapsed().as_millis()
+    );
 }
 
 async fn create_manifest_json(

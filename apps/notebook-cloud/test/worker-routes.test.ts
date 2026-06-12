@@ -1866,6 +1866,81 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("replaces active workstation attach jobs when restarting hosted compute", async () => {
+    let runtimeStateRequest: Request | undefined;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            runtimeStateRequest = request;
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "running-job",
+      notebookId: "attach-demo",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      status: "running",
+      updatedAt: new Date().toISOString(),
+    });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2", replace_existing: true }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 202);
+    const body = (await attach.json()) as { job: { job_id: string; status: string } };
+    assert.notEqual(body.job.job_id, "running-job");
+    assert.equal(body.job.status, "pending");
+    assert.equal(env.DB.workstationAttachJobs.get("running-job")?.status, "cancelled");
+    assert.match(
+      env.DB.workstationAttachJobs.get("running-job")?.error_message ?? "",
+      /replaced by a newer workstation attach request/,
+    );
+    assert.ok(runtimeStateRequest);
+    const payload = (await runtimeStateRequest.json()) as {
+      attachment?: { status?: string; status_message?: string | null; workstation_id?: string };
+      close_runtime_peers?: boolean;
+      close_reason?: string;
+    };
+    assert.equal(payload.close_runtime_peers, true);
+    assert.equal(payload.close_reason, "workstation restart requested");
+    assert.deepEqual(payload.attachment, {
+      workstation_id: "ws-lab2",
+      display_name: "Lab2",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "connecting",
+      status_message: "Waiting for Lab2 to accept the compute request.",
+      cpu_count: 8,
+      memory_bytes: 16_000_000_000,
+      working_directory: "/home/ubuntu/project",
+      updated_at: env.DB.workstationAttachJobs.get(body.job.job_id)?.updated_at,
+    });
+  });
+
   it("lists fresh running attach jobs so workstation agents can recover after restart", async () => {
     const env = fakeEnv();
     seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
@@ -2073,6 +2148,72 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 200);
     assert.equal(attachmentStatus, "connecting");
     assert.equal(attachmentMessage, "Lab2 accepted the request and is starting compute.");
+  });
+
+  it("rejects late workstation status patches after a replacement cancelled the job", async () => {
+    let publishCount = 0;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            publishCount += 1;
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-old",
+      notebookId: "nb-old",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      status: "cancelled",
+      errorMessage: "replaced by a newer workstation attach request",
+      finishedAt: "2026-05-22T00:00:01.000Z",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs/job-old", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ status: "completed" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(publishCount, 0);
+    assert.equal(env.DB.workstationAttachJobs.get("job-old")?.status, "cancelled");
+    assert.deepEqual(await response.json(), {
+      error: "workstation attach job is no longer active",
+      job: {
+        job_id: "job-old",
+        notebook_id: "nb-old",
+        workstation_id: "ws-lab2",
+        status: "cancelled",
+        requested_at: "2026-05-22T00:00:00.000Z",
+        updated_at: "2026-05-22T00:00:00.000Z",
+        accepted_at: null,
+        finished_at: "2026-05-22T00:00:01.000Z",
+        error_message: "replaced by a newer workstation attach request",
+        runtime_peer: {
+          cloud_url: "http://localhost",
+          notebook_id: "nb-old",
+          scope: "runtime_peer",
+        },
+      },
+    });
   });
 
   it("lets notebook owners request a room-host runtime-state repair", async () => {
@@ -5060,6 +5201,8 @@ function seedWorkstationAttachJob(
     notebookId: string;
     ownerPrincipal: string;
     workstationId: string;
+    errorMessage?: string | null;
+    finishedAt?: string | null;
     status?: WorkstationAttachJobRow["status"];
     updatedAt?: string;
   },
@@ -5074,8 +5217,8 @@ function seedWorkstationAttachJob(
     requested_at: "2026-05-22T00:00:00.000Z",
     updated_at: input.updatedAt ?? "2026-05-22T00:00:00.000Z",
     accepted_at: null,
-    finished_at: null,
-    error_message: null,
+    finished_at: input.finishedAt ?? null,
+    error_message: input.errorMessage ?? null,
   });
 }
 
@@ -5872,6 +6015,28 @@ class FakeD1Statement implements D1PreparedStatement {
         }
       }
       return okResult(undefined, { changes });
+    } else if (
+      this.query.includes("UPDATE workstation_attach_jobs") &&
+      this.query.includes("SET status = 'cancelled'")
+    ) {
+      const [updatedAt, finishedAt, errorMessage, notebookId, ownerPrincipal, workstationId] = this
+        .values as [string, string, string, string, string, string];
+      let changes = 0;
+      for (const job of this.db.workstationAttachJobs.values()) {
+        if (
+          job.notebook_id === notebookId &&
+          job.owner_principal === ownerPrincipal &&
+          job.workstation_id === workstationId &&
+          (job.status === "pending" || job.status === "accepted" || job.status === "running")
+        ) {
+          job.status = "cancelled";
+          job.updated_at = updatedAt;
+          job.finished_at = finishedAt;
+          job.error_message = errorMessage;
+          changes += 1;
+        }
+      }
+      return okResult(undefined, { changes });
     } else if (this.query.includes("UPDATE workstation_attach_jobs")) {
       const [
         status,
@@ -5898,6 +6063,14 @@ class FakeD1Statement implements D1PreparedStatement {
       ];
       const job = this.db.workstationAttachJobs.get(jobId);
       if (job && job.owner_principal === ownerPrincipal && job.workstation_id === workstationId) {
+        if (
+          this.query.includes("status IN ('pending', 'accepted', 'running')") &&
+          job.status !== "pending" &&
+          job.status !== "accepted" &&
+          job.status !== "running"
+        ) {
+          return okResult(undefined, { changes: 0 });
+        }
         job.status = status;
         job.updated_at = updatedAt;
         if (

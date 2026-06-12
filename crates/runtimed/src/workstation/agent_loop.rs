@@ -547,6 +547,7 @@ struct ActiveJob {
     log_path: PathBuf,
     ready: bool,
     status: &'static str,
+    started_at: Instant,
     last_status_patch_at: Instant,
 }
 
@@ -694,7 +695,19 @@ async fn poll_attach_jobs(
     token: &str,
     active: &mut HashMap<String, ActiveJob>,
 ) -> Result<bool, AgentHttpError> {
+    let poll_started = Instant::now();
     let jobs = api.poll_attach_jobs(&opts.workstation_id).await?;
+    let actionable_job_count = jobs
+        .iter()
+        .filter(|job| !active.contains_key(&job.job_id))
+        .count();
+    if actionable_job_count > 0 {
+        info!(
+            "[workstation-agent] attach jobs polled count={} elapsed_ms={}",
+            actionable_job_count,
+            poll_started.elapsed().as_millis()
+        );
+    }
     for job in jobs {
         if active.contains_key(&job.job_id) {
             continue;
@@ -715,6 +728,7 @@ async fn start_attach_job(
     active: &mut HashMap<String, ActiveJob>,
     job: &AttachJob,
 ) -> Result<(), AgentHttpError> {
+    let attach_started = Instant::now();
     let plan = build_attach_job_spawn_plan(job, opts)
         .map_err(|e| AgentHttpError::local(format!("plan attach job: {e}")))?;
     std::fs::create_dir_all(&plan.blob_root).map_err(|e| {
@@ -724,21 +738,33 @@ async fn start_attach_job(
         ))
     })?;
 
+    let accept_started = Instant::now();
     api.patch_attach_job(&opts.workstation_id, &job.job_id, "accepted", None)
         .await?;
+    info!(
+        "[workstation-agent] attach job accepted job_id={} notebook_id={} accept_elapsed_ms={} elapsed_ms={}",
+        job.job_id,
+        job.notebook_id,
+        accept_started.elapsed().as_millis(),
+        attach_started.elapsed().as_millis()
+    );
 
+    let spawn_started = Instant::now();
     match spawn_runtime_peer(&plan, token) {
         Ok((child, pid)) => {
             if let Some(pid) = pid {
                 write_pid_file(&plan.pid_path, pid);
             }
             info!(
-                "[workstation-agent] attach job spawned job_id={} notebook_id={} pid={:?} log={}",
+                "[workstation-agent] attach job spawned job_id={} notebook_id={} pid={:?} spawn_elapsed_ms={} elapsed_ms={} log={}",
                 job.job_id,
                 job.notebook_id,
                 pid,
+                spawn_started.elapsed().as_millis(),
+                attach_started.elapsed().as_millis(),
                 plan.log_path.display()
             );
+            let now = Instant::now();
             active.insert(
                 job.job_id.clone(),
                 ActiveJob {
@@ -747,7 +773,8 @@ async fn start_attach_job(
                     log_path: plan.log_path,
                     ready: false,
                     status: "accepted",
-                    last_status_patch_at: Instant::now(),
+                    started_at: now,
+                    last_status_patch_at: now,
                 },
             );
         }
@@ -808,6 +835,7 @@ async fn reconcile_active_attach_job(
                 log_path: plan.log_path,
                 ready,
                 status: if ready { "running" } else { "accepted" },
+                started_at: backdated,
                 last_status_patch_at: backdated,
             },
         );
@@ -871,6 +899,10 @@ async fn tick_active_jobs(
         match outcome {
             JobTick::None => {}
             JobTick::BecameReady => {
+                let ready_elapsed_ms = active
+                    .get(&job_id)
+                    .map(|job| job.started_at.elapsed().as_millis())
+                    .unwrap_or_default();
                 // Mark ready before patching: if the patch fails, the periodic
                 // status heartbeat re-sends "running" (same healing path as
                 // the `.mjs` agent).
@@ -879,7 +911,9 @@ async fn tick_active_jobs(
                     job.status = "running";
                     job.last_status_patch_at = Instant::now();
                 }
-                info!("[workstation-agent] attach job ready job_id={job_id}");
+                info!(
+                    "[workstation-agent] attach job ready job_id={job_id} elapsed_ms={ready_elapsed_ms}"
+                );
                 if let Err(e) = api
                     .patch_attach_job(&opts.workstation_id, &job_id, "running", None)
                     .await

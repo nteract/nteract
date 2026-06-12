@@ -163,9 +163,17 @@ flows.
 `runtimed` maintains prewarmed environment pools (uv/conda/pixi) and captured
 per-notebook environments. The workstation endpoint projects these as the
 environments it can offer (`list_environments`), and the hosted room's
-workstation panel surfaces attachment state. Inbound kernel lifecycle dispatch
-(interrupt/restart over the room) is tracked in
-[#3381](https://github.com/nteract/nteract/issues/3381).
+workstation panel surfaces attachment state.
+
+Hosted runtime controls use the workstation contract rather than browser-owned
+kernel launch state. Interrupt requests are forwarded to the active runtime
+peer for the current attachment. Restart requests replace the active
+workstation attachment: the room publishes a fresh pending attachment in the
+RuntimeStateDoc, closes the previous runtime peer, and waits for the selected
+workstation to claim the new job and launch a new runtime peer. Direct
+browser-authored `launch_kernel` / `shutdown_kernel` frames remain unsupported
+for hosted rooms because the workstation owns the Python path, working
+directory, and environment policy.
 
 ## Diagnostics
 
