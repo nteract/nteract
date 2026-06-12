@@ -42,6 +42,7 @@ export interface WorkstationPairingCodeRow {
   created_at: string;
   expires_at: string;
   redeemed_at: string | null;
+  redeemed_by_credential_id: string | null;
   workstation_id: string | null;
 }
 
@@ -207,51 +208,110 @@ export async function redeemWorkstationPairingCode(
   await ensureCatalogSchema(env);
 
   const codeHash = await hashWorkstationSecret(normalizePairingCode(code));
+  const token = generateWorkstationCredentialToken();
+  const credentialId = crypto.randomUUID();
+  const tokenHash = await hashWorkstationSecret(token);
   const now = new Date().toISOString();
-  // Single-statement consume: two concurrent redeems cannot both pass the
-  // redeemed_at IS NULL guard.
-  const consumed = await env.DB.prepare(
-    `UPDATE workstation_pairing_codes
-        SET redeemed_at = ?
-      WHERE code_hash = ?
-        AND redeemed_at IS NULL
-        AND expires_at > ?
-      RETURNING id, owner_principal, principal_namespace`,
-  )
-    .bind(now, codeHash, now)
-    .all<Pick<WorkstationPairingCodeRow, "id" | "owner_principal" | "principal_namespace">>();
-  const pairing = consumed.results?.[0];
+  // One transaction: consume and mint commit together, so a transient
+  // failure can never burn a code without producing its credential. The
+  // INSERT joins on redeemed_by_credential_id — unique per request — rather
+  // than the redeem timestamp, so a concurrent loser (whose UPDATE matched
+  // nothing) cannot mint against the winner's same-millisecond consume.
+  const [consumed] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE workstation_pairing_codes
+          SET redeemed_at = ?,
+              redeemed_by_credential_id = ?
+        WHERE code_hash = ?
+          AND redeemed_at IS NULL
+          AND expires_at > ?
+        RETURNING id, owner_principal, principal_namespace`,
+    ).bind(now, credentialId, codeHash, now),
+    env.DB.prepare(
+      `INSERT INTO workstation_credentials (
+         id,
+         token_hash,
+         owner_principal,
+         principal_namespace,
+         pairing_code_id,
+         created_at
+       )
+       SELECT ?, ?, owner_principal, principal_namespace, id, ?
+         FROM workstation_pairing_codes
+        WHERE redeemed_by_credential_id = ?`,
+    ).bind(credentialId, tokenHash, now, credentialId),
+  ]);
+  const pairing = (
+    consumed?.results as
+      | Array<Pick<WorkstationPairingCodeRow, "id" | "owner_principal" | "principal_namespace">>
+      | undefined
+  )?.[0];
   if (!pairing) {
     return null;
   }
-
-  const token = generateWorkstationCredentialToken();
-  const credentialId = crypto.randomUUID();
-  await env.DB.prepare(
-    `INSERT INTO workstation_credentials (
-       id,
-       token_hash,
-       owner_principal,
-       principal_namespace,
-       pairing_code_id,
-       created_at
-     ) VALUES (?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      credentialId,
-      await hashWorkstationSecret(token),
-      pairing.owner_principal,
-      pairing.principal_namespace,
-      pairing.id,
-      now,
-    )
-    .run();
   return {
     token,
     credential_id: credentialId,
     pairing_code_id: pairing.id,
     owner_principal: pairing.owner_principal,
   };
+}
+
+export interface WorkstationCredentialSummary {
+  id: string;
+  pairing_code_id: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+export async function listWorkstationCredentialsForOwner(
+  env: Env,
+  ownerPrincipal: string,
+): Promise<WorkstationCredentialSummary[]> {
+  if (!env.DB) {
+    return [];
+  }
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT id,
+            pairing_code_id,
+            created_at,
+            last_used_at,
+            revoked_at
+       FROM workstation_credentials
+      WHERE owner_principal = ?
+      ORDER BY created_at DESC`,
+  )
+    .bind(ownerPrincipal)
+    .all<WorkstationCredentialSummary>();
+  return rows.results ?? [];
+}
+
+export async function revokeWorkstationCredential(
+  env: Env,
+  ownerPrincipal: string,
+  credentialId: string,
+): Promise<boolean> {
+  if (!env.DB) {
+    return false;
+  }
+  await ensureCatalogSchema(env);
+  const result = await env.DB.prepare(
+    `UPDATE workstation_credentials
+        SET revoked_at = ?
+      WHERE id = ?
+        AND owner_principal = ?
+        AND revoked_at IS NULL`,
+  )
+    .bind(new Date().toISOString(), credentialId, ownerPrincipal)
+    .run();
+  return d1Changes(result) > 0;
+}
+
+function d1Changes(result: { meta: Record<string, unknown> }): number {
+  const changes = result.meta?.["changes"];
+  return typeof changes === "number" ? changes : 0;
 }
 
 export async function resolveWorkstationCredential(

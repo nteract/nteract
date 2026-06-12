@@ -4667,6 +4667,98 @@ describe("Workstation pairing", () => {
       [attachBody.job.job_id],
     );
   });
+
+  it("consumes and mints in one batch so a code cannot burn without a credential", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+
+    await redeemedCredentialToken(env, pairing.code);
+
+    assert.ok(
+      env.DB.batchSizes.includes(2),
+      "redeem must issue the consume UPDATE and credential INSERT as one batch transaction",
+    );
+    const row = env.DB.workstationPairingCodes.get(pairing.id);
+    assert.ok(row?.redeemed_by_credential_id, "consume stamps the per-request credential marker");
+    const credential = [...env.DB.workstationCredentials.values()][0];
+    assert.equal(credential?.id, row?.redeemed_by_credential_id);
+  });
+
+  it("lists and revokes workstation credentials; revoked bearers lose access", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+    assert.equal((await registerWorkstationWithToken(env, token, "ws-paired")).status, 201);
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations/credentials", { headers: OWNER_HEADERS }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(list.status, 200);
+    const listed = (await list.json()) as {
+      credentials: Array<{ credential_id: string; revoked_at: string | null }>;
+    };
+    assert.equal(listed.credentials.length, 1);
+    assert.equal(listed.credentials[0]?.revoked_at, null);
+    const credentialId = listed.credentials[0]!.credential_id;
+
+    const revoke = await worker.fetch(
+      new Request(`http://localhost/api/workstations/credentials/${credentialId}/revoke`, {
+        method: "POST",
+        headers: OWNER_HEADERS,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(revoke.status, 200);
+    assert.deepEqual(await revoke.json(), {
+      ok: true,
+      credential_id: credentialId,
+      revoked: true,
+    });
+
+    const heartbeat = await registerWorkstationWithToken(env, token, "ws-paired");
+    assert.equal(heartbeat.status, 401);
+    assert.deepEqual(await heartbeat.json(), {
+      error: "workstation credential is not recognized",
+    });
+
+    const replayRevoke = await worker.fetch(
+      new Request(`http://localhost/api/workstations/credentials/${credentialId}/revoke`, {
+        method: "POST",
+        headers: OWNER_HEADERS,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(replayRevoke.status, 404);
+  });
+
+  it("denies the credential-management surface to workstation credentials", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations/credentials", {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(list.status, 403);
+
+    const revoke = await worker.fetch(
+      new Request("http://localhost/api/workstations/credentials/any-id/revoke", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(revoke.status, 403);
+  });
 });
 
 async function ownerPut(
@@ -5788,9 +5880,44 @@ class FakeD1Statement implements D1PreparedStatement {
         created_at: createdAt,
         expires_at: expiresAt,
         redeemed_at: null,
+        redeemed_by_credential_id: null,
         workstation_id: null,
       });
       return okResult(undefined, { changes: 1 });
+    } else if (
+      this.query.includes("UPDATE workstation_pairing_codes") &&
+      this.query.includes("SET redeemed_at")
+    ) {
+      // Batched consume: enforce single-use and expiry exactly like the
+      // RETURNING UPDATE in redeemWorkstationPairingCode, and stamp the
+      // per-request credential marker the companion INSERT...SELECT joins on.
+      const [redeemedAt, credentialMarker, codeHash, now] = this.values as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      for (const pairing of this.db.workstationPairingCodes.values()) {
+        if (
+          pairing.code_hash === codeHash &&
+          pairing.redeemed_at === null &&
+          pairing.expires_at > now
+        ) {
+          pairing.redeemed_at = redeemedAt;
+          pairing.redeemed_by_credential_id = credentialMarker;
+          return okResult(
+            [
+              {
+                id: pairing.id,
+                owner_principal: pairing.owner_principal,
+                principal_namespace: pairing.principal_namespace,
+              },
+            ] as T[],
+            { changes: 1 },
+          );
+        }
+      }
+      return okResult([] as T[], { changes: 0 });
     } else if (
       this.query.includes("UPDATE workstation_pairing_codes") &&
       this.query.includes("SET workstation_id")
@@ -5804,19 +5931,46 @@ class FakeD1Statement implements D1PreparedStatement {
       }
       return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT INTO workstation_credentials")) {
-      const [id, tokenHash, ownerPrincipal, principalNamespace, pairingCodeId, createdAt] = this
-        .values as [string, string, string, string, string | null, string];
+      // INSERT...SELECT joined on the per-request marker: mints only when
+      // this request's UPDATE consumed the code.
+      const [id, tokenHash, createdAt, credentialMarker] = this.values as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      const pairing = [...this.db.workstationPairingCodes.values()].find(
+        (row) => row.redeemed_by_credential_id === credentialMarker,
+      );
+      if (!pairing) {
+        return okResult(undefined, { changes: 0 });
+      }
       this.db.workstationCredentials.set(id, {
         id,
         token_hash: tokenHash,
-        owner_principal: ownerPrincipal,
-        principal_namespace: principalNamespace,
-        pairing_code_id: pairingCodeId,
+        owner_principal: pairing.owner_principal,
+        principal_namespace: pairing.principal_namespace,
+        pairing_code_id: pairing.id,
         created_at: createdAt,
         last_used_at: null,
         revoked_at: null,
       });
       return okResult(undefined, { changes: 1 });
+    } else if (
+      this.query.includes("UPDATE workstation_credentials") &&
+      this.query.includes("SET revoked_at")
+    ) {
+      const [revokedAt, credentialId, ownerPrincipal] = this.values as [string, string, string];
+      const credential = this.db.workstationCredentials.get(credentialId);
+      if (
+        credential &&
+        credential.owner_principal === ownerPrincipal &&
+        credential.revoked_at === null
+      ) {
+        credential.revoked_at = revokedAt;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (
       this.query.includes("UPDATE workstation_credentials") &&
       this.query.includes("SET last_used_at")
@@ -6185,32 +6339,22 @@ class FakeD1Statement implements D1PreparedStatement {
 
   async all<T = unknown>(): Promise<D1Result<T>> {
     if (
-      this.query.includes("UPDATE workstation_pairing_codes") &&
-      this.query.includes("SET redeemed_at")
+      this.query.includes("FROM workstation_credentials") &&
+      this.query.includes("WHERE owner_principal")
     ) {
-      // Single-statement consume: enforce single-use and expiry exactly like
-      // the RETURNING UPDATE in redeemWorkstationPairingCode.
-      const [redeemedAt, codeHash, now] = this.values as [string, string, string];
-      for (const pairing of this.db.workstationPairingCodes.values()) {
-        if (
-          pairing.code_hash === codeHash &&
-          pairing.redeemed_at === null &&
-          pairing.expires_at > now
-        ) {
-          pairing.redeemed_at = redeemedAt;
-          return okResult(
-            [
-              {
-                id: pairing.id,
-                owner_principal: pairing.owner_principal,
-                principal_namespace: pairing.principal_namespace,
-              },
-            ] as T[],
-            { changes: 1 },
-          );
-        }
-      }
-      return okResult([] as T[], { changes: 0 });
+      const ownerPrincipal = this.values[0] as string;
+      return okResult(
+        [...this.db.workstationCredentials.values()]
+          .filter((credential) => credential.owner_principal === ownerPrincipal)
+          .sort((left, right) => right.created_at.localeCompare(left.created_at))
+          .map((credential) => ({
+            id: credential.id,
+            pairing_code_id: credential.pairing_code_id,
+            created_at: credential.created_at,
+            last_used_at: credential.last_used_at,
+            revoked_at: credential.revoked_at,
+          })) as T[],
+      );
     }
     if (this.query.includes("FROM notebook_access_requests")) {
       const notebookId = this.values[0] as string;

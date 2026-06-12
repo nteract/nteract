@@ -317,6 +317,7 @@ const SCHEMA_STATEMENTS = [
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     redeemed_at TEXT,
+    redeemed_by_credential_id TEXT,
     workstation_id TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS workstation_pairing_codes_owner_idx

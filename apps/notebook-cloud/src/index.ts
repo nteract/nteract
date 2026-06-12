@@ -64,7 +64,9 @@ import {
   createWorkstationPairingCode,
   getWorkstationPairingCodeForOwner,
   linkWorkstationToPairing,
+  listWorkstationCredentialsForOwner,
   redeemWorkstationPairingCode,
+  revokeWorkstationCredential,
   workstationCredentialTokenFromRequest,
   workstationPairingStatus,
 } from "./workstation-credentials.ts";
@@ -258,6 +260,19 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     methods: ["GET"],
     handler: ({ params }, request, env) =>
       routeWorkstationPairingCode(request, env, params.pairingId),
+  },
+  {
+    match: exactPath("/api/workstations/credentials"),
+    methods: ["GET"],
+    handler: (_match, request, env) => routeWorkstationCredentials(request, env),
+  },
+  {
+    match: routePath("/api/workstations/credentials/:credentialId/revoke", {
+      trailingSlash: "optional",
+    }),
+    methods: ["POST"],
+    handler: ({ params }, request, env) =>
+      routeWorkstationCredentialRevoke(request, env, params.credentialId),
   },
   {
     match: routePath("/api/workstations/:workstationId/attach-jobs/:jobId", {
@@ -1162,6 +1177,72 @@ async function routeWorkstationPairingCode(
       workstation_id: pairing.workstation_id,
     },
   });
+}
+
+async function routeWorkstationCredentials(request: Request, env: Env): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  // Deliberately NOT opened to workstation credentials: a stolen agent
+  // token must not be able to enumerate or revoke its siblings.
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to manage workstation credentials" }, 401);
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const credentials = await listWorkstationCredentialsForOwner(env, ownerPrincipal);
+  return json({
+    ok: true,
+    credentials: credentials.map((credential) => ({
+      credential_id: credential.id,
+      pairing_code_id: credential.pairing_code_id,
+      created_at: credential.created_at,
+      last_used_at: credential.last_used_at,
+      revoked_at: credential.revoked_at,
+    })),
+  });
+}
+
+async function routeWorkstationCredentialRevoke(
+  request: Request,
+  env: Env,
+  credentialId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to manage workstation credentials" }, 401);
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const revoked = await revokeWorkstationCredential(env, ownerPrincipal, credentialId);
+  if (!revoked) {
+    return json({ error: "workstation credential not found" }, 404);
+  }
+
+  cloudLog("info", "workstation.credential.revoked", {
+    principal: ownerPrincipal,
+    credential_id: credentialId,
+    counter: "workstation_credentials_revoked",
+    counter_delta: 1,
+  });
+  return json({ ok: true, credential_id: credentialId, revoked: true });
 }
 
 async function routeWorkstationPairingCodeRedeem(request: Request, env: Env): Promise<Response> {

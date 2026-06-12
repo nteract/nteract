@@ -364,9 +364,17 @@ Properties:
   guessed code cannot realistically register an attacker workstation —
   important because first registration auto-selects the owner's default
   workstation target.
-- Credentials do not expire in this iteration; they are revocable rows.
-  Short-lived attachment tickets (Decision 4) remain the hardening path for
-  deployments that cannot tolerate long-lived agent credentials.
+- Credentials do not expire in this iteration; they are revocable rows. The
+  owner lists them via `GET /api/workstations/credentials` and kills one via
+  `POST /api/workstations/credentials/:id/revoke` — both owner-auth only, so
+  a stolen agent token cannot enumerate or revoke its siblings. Short-lived
+  attachment tickets (Decision 4) remain the hardening path for deployments
+  that cannot tolerate long-lived agent credentials.
+- Consume and mint commit in one D1 batch transaction, with the credential
+  insert joined on a per-request `redeemed_by_credential_id` marker rather
+  than the redeem timestamp — a transient failure cannot burn a code without
+  minting its credential, and a same-millisecond concurrent redeem cannot
+  mint against the winner's consume.
 - A workstation credential is bound to the owner, not to one workstation id;
   one credential may serve several registrations from the same machine. If
   per-workstation binding becomes necessary (shared multi-user hosts), bind at
