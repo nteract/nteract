@@ -4668,6 +4668,55 @@ describe("Workstation pairing", () => {
     );
   });
 
+  it("lets a paired workstation credential upload runtime output blobs", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "pairing-blob-demo");
+    seedAcl(env, { notebookId: "pairing-blob-demo", subject: "user:dev:alice", scope: "owner" });
+
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+
+    const register = await registerWorkstationWithToken(env, token, "ws-paired");
+    assert.equal(register.status, 201);
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/pairing-blob-demo/workstation-attachments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...OWNER_HEADERS },
+        body: JSON.stringify({ workstation_id: "ws-paired" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(attach.status, 202);
+
+    const body = new Uint8Array([1, 3, 3, 7]);
+    const hash = await sha256Hex(body);
+
+    const response = await scopedPut(env, `/api/n/pairing-blob-demo/blobs/${hash}`, body, {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/vnd.apache.arrow.stream",
+      "X-Scope": "runtime_peer",
+      "X-Operator": "agent:runt:blob-publisher",
+    });
+
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      key: blobKey("pairing-blob-demo", hash),
+      size: body.byteLength,
+    });
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.has(blobKey("pairing-blob-demo", hash)), true);
+    assert.deepEqual(env.DB.blobs.get(`pairing-blob-demo:${hash}`), {
+      notebook_id: "pairing-blob-demo",
+      hash,
+      size: body.byteLength,
+      content_type: "application/vnd.apache.arrow.stream",
+      r2_key: blobKey("pairing-blob-demo", hash),
+      uploaded_at: env.DB.blobs.get(`pairing-blob-demo:${hash}`)?.uploaded_at,
+    });
+  });
+
   it("consumes and mints in one batch so a code cannot burn without a credential", async () => {
     const env = fakeEnv();
     const pairing = await mintPairingCode(env);
