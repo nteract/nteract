@@ -1257,6 +1257,55 @@ describe("NotebookRoom materialized sync persistence", () => {
     assert.equal(rejected.reason, "no runtime peer is attached for interrupt_execution");
   });
 
+  it("rejects response-bearing runtime REQUEST frames instead of acknowledging no-ops", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    let persisted = 0;
+    let materialized = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+    });
+    harness.persistFrame = async () => {
+      persisted += 1;
+    };
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(JSON.stringify({ id: "request-1", action: "shutdown_kernel" })),
+      ),
+    );
+
+    assert.equal(materialized, 0);
+    assert.equal(persisted, 0);
+    assert.equal(peer.consecutiveRejectedFrames, 0);
+    assert.equal(socket.sent.length, 1);
+    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(rejected.type, "cloud_frame_rejected");
+    assert.equal(
+      rejected.reason,
+      "hosted cloud rooms do not yet support response-bearing runtime request shutdown_kernel",
+    );
+  });
+
   it("rejects non-owner REQUEST frames on the WebSocket path", async () => {
     for (const scope of ["editor", "viewer", "runtime_peer"] as const) {
       const room = new NotebookRoom(fakeState(), {} as Env);

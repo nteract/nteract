@@ -723,6 +723,12 @@ sequence:
   forwarded the comm message to the selected runtime peer. The widget-visible
   result is still the later CommsDoc/RuntimeStateDoc change; cloud must not
   invent a response envelope or treat the ack as a completed widget round trip.
+- **Unsupported response-bearing runtime requests fail honestly.** Hosted cloud
+  rooms reject direct `launch_kernel`, `shutdown_kernel`, `sync_environment`,
+  `complete`, and `get_history` request frames instead of acknowledging them as
+  empty room-host no-ops. The cloud viewer still handles current hosted history
+  and empty completions in `CloudNotebookHostTransport`; a real kernel-backed
+  implementation needs a response path rather than a socket delivery ack.
 
 Operator instructions: `docs/remote-workstation.md`.
 

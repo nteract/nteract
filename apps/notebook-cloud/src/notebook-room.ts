@@ -86,6 +86,12 @@ interface PeerCloseOptions {
 }
 
 type RuntimePeerForwardedRequestAction = "interrupt_execution" | "send_comm";
+type UnsupportedHostedRuntimeRequestAction =
+  | "launch_kernel"
+  | "shutdown_kernel"
+  | "sync_environment"
+  | "complete"
+  | "get_history";
 
 const MAX_STORED_FRAMES = 500;
 
@@ -106,6 +112,13 @@ const RUNTIME_PEER_WATCH_KEY = "runtime_peer_gone_watch";
 const runtimePeerForwardedRequestActions = new Set<RuntimePeerForwardedRequestAction>([
   "interrupt_execution",
   "send_comm",
+]);
+const unsupportedHostedRuntimeRequestActions = new Set<UnsupportedHostedRuntimeRequestAction>([
+  "launch_kernel",
+  "shutdown_kernel",
+  "sync_environment",
+  "complete",
+  "get_history",
 ]);
 
 function requestActionFromPayload(payload: Uint8Array): string | null {
@@ -129,6 +142,17 @@ function runtimePeerForwardedRequestAction(
   }
   return runtimePeerForwardedRequestActions.has(action as RuntimePeerForwardedRequestAction)
     ? (action as RuntimePeerForwardedRequestAction)
+    : null;
+}
+
+function unsupportedHostedRuntimeRequestAction(
+  action: string | null,
+): UnsupportedHostedRuntimeRequestAction | null {
+  if (!action) {
+    return null;
+  }
+  return unsupportedHostedRuntimeRequestActions.has(action as UnsupportedHostedRuntimeRequestAction)
+    ? (action as UnsupportedHostedRuntimeRequestAction)
     : null;
 }
 
@@ -701,6 +725,21 @@ export class NotebookRoom {
         timestamp: receivedAt,
       });
       this.resetRejectedFrameStreak(peer);
+      return;
+    }
+
+    const unsupportedRuntimeRequestAction =
+      normalizedFrame.type === FrameType.REQUEST
+        ? unsupportedHostedRuntimeRequestAction(requestActionFromPayload(normalizedFrame.payload))
+        : null;
+    if (unsupportedRuntimeRequestAction) {
+      this.rejectFrame(
+        notebookId,
+        peer,
+        normalizedFrame.type,
+        `hosted cloud rooms do not yet support response-bearing runtime request ${unsupportedRuntimeRequestAction}`,
+        { countsTowardStreak: false },
+      );
       return;
     }
 
