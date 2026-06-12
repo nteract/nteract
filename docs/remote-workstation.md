@@ -61,6 +61,9 @@ runt workstation run
    running → completed/failed). The credential rides the environment
    (`RUNT_CLOUD_TOKEN`), never argv. `RUNT_CLOUD_TOKEN` / `RUNT_CLOUD_URL`
    environment variables override the stored credential when set.
+   Use `--python-path /path/to/python` when the workstation should launch
+   kernels from a project or virtual environment interpreter instead of the
+   first `python3`/`python` on `PATH`.
 
 4. Check what the credential sees:
 
@@ -90,7 +93,7 @@ Description=nteract workstation agent
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/runt workstation run
+ExecStart=%h/.local/bin/runt workstation run --python-path %h/project/.venv/bin/python
 Restart=on-failure
 RestartSec=5
 
