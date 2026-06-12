@@ -82,6 +82,12 @@ pub enum CloudAuth {
     /// treats a bearer as an API key when the provider-selector header is
     /// present; without it the key is parsed as OIDC and rejected.
     AnacondaApiKey { token: String },
+    /// Workstation credential minted by the pairing flow (`nwc_`-prefixed
+    /// token; see `docs/adr/hosted-credential-transport.md` Decision 9). Plain
+    /// `Authorization: Bearer` on the wire — the same shape as
+    /// [`CloudAuth::OidcBearer`], but honestly labeled: the cloud identity
+    /// router recognizes the credential by its token prefix, not a header.
+    WorkstationCredential { token: String },
     /// Dev token (`X-Notebook-Cloud-Dev-Token`) plus a user label.
     Dev { token: String, user: String },
 }
@@ -109,6 +115,7 @@ impl CloudAuth {
         match self {
             CloudAuth::OidcBearer { .. } => CloudAuth::OidcBearer { token },
             CloudAuth::AnacondaApiKey { .. } => CloudAuth::AnacondaApiKey { token },
+            CloudAuth::WorkstationCredential { .. } => CloudAuth::WorkstationCredential { token },
             CloudAuth::Dev { user, .. } => CloudAuth::Dev {
                 token,
                 user: user.clone(),
@@ -543,7 +550,9 @@ impl CloudWsFrameTransport {
                     HeaderValue::from_static("anaconda-api-key"),
                 );
             }
-            CloudAuth::OidcBearer { token } => {
+            // Workstation credentials share OIDC's wire shape (plain bearer);
+            // the cloud side dispatches on the `nwc_` token prefix.
+            CloudAuth::OidcBearer { token } | CloudAuth::WorkstationCredential { token } => {
                 h.insert(
                     HeaderName::from_static("authorization"),
                     HeaderValue::from_str(&format!("Bearer {token}"))?,
@@ -949,6 +958,10 @@ mod tests {
             CloudAuth::AnacondaApiKey { token: "old".into() }.with_token("new".into()),
             CloudAuth::AnacondaApiKey { token } if token == "new"
         ));
+        assert!(matches!(
+            CloudAuth::WorkstationCredential { token: "old".into() }.with_token("new".into()),
+            CloudAuth::WorkstationCredential { token } if token == "new"
+        ));
         // Dev keeps its user label, swaps only the token.
         match (CloudAuth::Dev {
             token: "old".into(),
@@ -1022,6 +1035,40 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("current_python")
         );
+    }
+
+    /// The workstation credential rides as a plain bearer — same wire shape as
+    /// OIDC, no provider-selector or dev-token headers.
+    #[test]
+    fn apply_auth_headers_workstation_credential_is_plain_bearer() {
+        let t = CloudWsFrameTransport::new(CloudWsConfig {
+            cloud_url: "https://preview.runt.run".into(),
+            notebook_id: "abc".into(),
+            scope: "runtime_peer".into(),
+            auth: CloudAuth::WorkstationCredential {
+                token: "nwc_secret".into(),
+            },
+            workstation: None,
+        });
+        let mut request = t.ws_url().into_client_request().unwrap();
+
+        t.apply_auth_headers(
+            &mut request,
+            &CloudAuth::WorkstationCredential {
+                token: "nwc_secret".into(),
+            },
+        )
+        .unwrap();
+
+        let headers = request.headers();
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer nwc_secret")
+        );
+        assert!(headers.get("x-notebook-cloud-auth-provider").is_none());
+        assert!(headers.get("x-notebook-cloud-dev-token").is_none());
     }
 
     #[tokio::test]

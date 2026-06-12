@@ -188,6 +188,38 @@ enum Commands {
         workstation_display_name: Option<String>,
     },
 
+    /// Serve this machine as a workstation for a hosted nteract cloud:
+    /// register/heartbeat, poll attach jobs, and spawn one
+    /// `cloud-runtime-agent` runtime peer per job. The workstation credential
+    /// is read from RUNT_CLOUD_TOKEN (never argv); `runt workstation connect`
+    /// stores it and `runt workstation run` launches this subcommand.
+    #[command(name = "workstation-agent")]
+    WorkstationAgent {
+        /// Base URL of the notebook cloud (https/http).
+        #[arg(long)]
+        cloud_url: String,
+        /// Stable workstation id (default: ws-<hostname slug>). Non-secret.
+        #[arg(long)]
+        workstation_id: Option<String>,
+        /// Workstation name shown in the panel (default: hostname).
+        #[arg(long)]
+        display_name: Option<String>,
+        /// Default working directory for runtime peers (default: current
+        /// directory). Attach jobs may override it per job.
+        #[arg(long)]
+        working_dir: Option<PathBuf>,
+        /// Python interpreter for launch-on-attach kernels (default: python3,
+        /// then python, found on PATH).
+        #[arg(long)]
+        python_path: Option<PathBuf>,
+        /// Attach-job poll interval in milliseconds.
+        #[arg(long, default_value_t = runtimed::workstation::DEFAULT_POLL_MS, value_parser = clap::value_parser!(u64).range(1..))]
+        poll_ms: u64,
+        /// Registration heartbeat interval in milliseconds.
+        #[arg(long, default_value_t = runtimed::workstation::DEFAULT_HEARTBEAT_MS, value_parser = clap::value_parser!(u64).range(1..))]
+        heartbeat_ms: u64,
+    },
+
     /// Warm a pool environment (internal, spawned by daemon warming loops).
     /// Reads JSON config from stdin, writes JSON events to stdout.
     #[command(hide = true, name = "warm-env")]
@@ -592,6 +624,64 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("[cloud-runtime-agent] Fatal: {}", e);
                 e
             })
+        }
+        Some(Commands::WorkstationAgent {
+            cloud_url,
+            workstation_id,
+            display_name,
+            working_dir,
+            python_path,
+            poll_ms,
+            heartbeat_ms,
+        }) => {
+            let token = std::env::var(runtimed::workstation::CLOUD_TOKEN_ENV)
+                .ok()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .ok_or_else(|| {
+                    let msg = format!(
+                        "workstation credential not found; set {} (never passed on argv)",
+                        runtimed::workstation::CLOUD_TOKEN_ENV
+                    );
+                    eprintln!("[workstation-agent] {msg}");
+                    anyhow::anyhow!(msg)
+                })?;
+            let hostname = runt_workspace::machine_hostname();
+            let workstation_id =
+                workstation_id.unwrap_or_else(|| runt_workspace::stable_workstation_id(&hostname));
+            let display_name = display_name.unwrap_or(hostname);
+            let working_dir = match working_dir {
+                Some(dir) => dir,
+                None => std::env::current_dir()
+                    .map_err(|e| anyhow::anyhow!("resolve current directory: {e}"))?,
+            };
+            let python_path = match python_path {
+                Some(path) => path,
+                None => runtimed::workstation::resolve_python_on_path(
+                    std::env::var("PATH").ok().as_deref(),
+                )
+                .ok_or_else(|| {
+                    let msg = "no python3 or python found on PATH; pass --python-path";
+                    eprintln!("[workstation-agent] {msg}");
+                    anyhow::anyhow!(msg)
+                })?,
+            };
+            let options = runtimed::workstation::WorkstationAgentOptions {
+                cloud_url,
+                workstation_id,
+                display_name,
+                working_dir,
+                python_path,
+                poll_interval: std::time::Duration::from_millis(poll_ms),
+                heartbeat_interval: std::time::Duration::from_millis(heartbeat_ms),
+                agent_root: runt_workspace::daemon_base_dir().join("workstation-agent"),
+            };
+            runtimed::workstation::run_workstation_agent(options, token)
+                .await
+                .map_err(|e| {
+                    eprintln!("[workstation-agent] Fatal: {}", e);
+                    e
+                })
         }
         Some(Commands::WarmEnv) => {
             runtimed::warm_env::run().await;

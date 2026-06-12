@@ -17,16 +17,21 @@
 //! (workstation registry, attach jobs) lives in `apps/notebook-cloud`; the
 //! operator path is `docs/remote-workstation.md`.
 
+pub mod agent_loop;
 pub mod allocate;
 pub mod cloud_agent_cli;
 pub mod environments;
 pub mod launch_on_attach;
 
+pub use agent_loop::{
+    resolve_python_on_path, run_workstation_agent, WorkstationAgentOptions, DEFAULT_HEARTBEAT_MS,
+    DEFAULT_POLL_MS,
+};
 pub use allocate::{
     allocate_current_python_runtime, current_python_launch_working_dir,
     current_python_workstation_metadata, plan_current_python_allocation, Allocation, RoomTarget,
 };
-pub use cloud_agent_cli::{build_cloud_config, CloudAgentArgs, CloudAuthKind};
+pub use cloud_agent_cli::{build_cloud_config, CloudAgentArgs, CloudAuthKind, CLOUD_TOKEN_ENV};
 pub use environments::{
     environments_from_pool_state, list_environments, EnvKind, EnvironmentPolicy,
     WorkstationEnvironment,

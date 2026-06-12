@@ -26,6 +26,7 @@ kernel-env = { path = "../kernel-env" }
 rmcp = { version = "1.4", features = ["server", "transport-io"] }
 clap = { version = "4.5.1", features = ["derive", "color"] }
 colored = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 tokio = { version = "1", features = ["full"] }
 petname = "2"
 dirs = "6"

@@ -1215,6 +1215,96 @@ pub fn session_state_path() -> PathBuf {
     }
 }
 
+/// Get the path to the workstation credential file written by
+/// `runt workstation connect` and read by `runt workstation run` / `status`.
+///
+/// In dev mode: stored per-worktree for isolation during development.
+/// In production: stored in config directory alongside settings
+/// (mirrors [`session_state_path`]).
+pub fn workstation_credentials_path() -> PathBuf {
+    if is_dev_mode() {
+        // Per-worktree credential for dev isolation
+        daemon_base_dir().join("workstation.json")
+    } else {
+        // Production: config directory
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(config_namespace())
+            .join("workstation.json")
+    }
+}
+
+/// Best-effort machine hostname for non-secret workstation identity labels.
+///
+/// Tries the kernel (Linux), well-known environment variables, and the
+/// `hostname` binary before falling back to `"localhost"`. This is only used
+/// to derive human-readable defaults (`--display-name`, `ws-<slug>` ids), so
+/// a fallback is acceptable.
+pub fn machine_hostname() -> String {
+    #[cfg(target_os = "linux")]
+    if let Ok(name) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
+        let name = name.trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+    }
+    // HOSTNAME is set by interactive POSIX shells (not services);
+    // COMPUTERNAME is the Windows equivalent.
+    for var in ["HOSTNAME", "COMPUTERNAME"] {
+        if let Ok(name) = std::env::var(var) {
+            let name = name.trim();
+            if !name.is_empty() {
+                return name.to_string();
+            }
+        }
+    }
+    if let Ok(output) = std::process::Command::new("hostname").output() {
+        if output.status.success() {
+            if let Ok(name) = String::from_utf8(output.stdout) {
+                let name = name.trim();
+                if !name.is_empty() {
+                    return name.to_string();
+                }
+            }
+        }
+    }
+    "localhost".to_string()
+}
+
+/// Filesystem- and id-safe slug: lowercase, runs of characters outside
+/// `[a-z0-9._-]` collapse to a single `-`, leading/trailing `-` stripped.
+/// Mirrors `safePathPart` in
+/// `apps/notebook-cloud/scripts/hosted-workstation-agent-core.mjs` so Rust and
+/// Node agents derive identical workstation ids and job directories.
+pub fn safe_path_part(value: &str) -> String {
+    let lower = value.to_lowercase();
+    let mut out = String::with_capacity(lower.len());
+    let mut in_disallowed_run = false;
+    for ch in lower.chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '_' | '-') {
+            out.push(ch);
+            in_disallowed_run = false;
+        } else if !in_disallowed_run {
+            out.push('-');
+            in_disallowed_run = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// Stable default workstation id derived from the hostname:
+/// `ws-<slug>` (slug capped at 80 chars), or `ws-local` when the hostname
+/// yields an empty slug. Mirrors `stableWorkstationId` in
+/// `hosted-workstation-agent-core.mjs`.
+pub fn stable_workstation_id(hostname: &str) -> String {
+    let slug: String = safe_path_part(hostname).chars().take(80).collect();
+    if slug.is_empty() {
+        "ws-local".to_string()
+    } else {
+        format!("ws-{slug}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1250,6 +1340,41 @@ mod tests {
         assert_eq!(
             build_channel_from_str(Some("something-else")),
             BuildChannel::Nightly
+        );
+    }
+
+    #[test]
+    fn test_safe_path_part_mirrors_node_core() {
+        // Same expectations as hosted-workstation-agent-core.mjs safePathPart.
+        assert_eq!(safe_path_part("Job 123"), "job-123");
+        assert_eq!(
+            safe_path_part("lab2.example.internal"),
+            "lab2.example.internal"
+        );
+        assert_eq!(safe_path_part("!!!"), "");
+        assert_eq!(safe_path_part("a!-b"), "a--b");
+        assert_eq!(safe_path_part("--keep--"), "keep");
+    }
+
+    #[test]
+    fn test_stable_workstation_id_mirrors_node_core() {
+        assert_eq!(
+            stable_workstation_id("lab2.example.internal"),
+            "ws-lab2.example.internal"
+        );
+        assert_eq!(stable_workstation_id("!!!"), "ws-local");
+        let long = "h".repeat(200);
+        let id = stable_workstation_id(&long);
+        assert_eq!(id.len(), "ws-".len() + 80);
+    }
+
+    #[test]
+    fn test_workstation_credentials_path_filename() {
+        assert_eq!(
+            workstation_credentials_path()
+                .file_name()
+                .and_then(|n| n.to_str()),
+            Some("workstation.json")
         );
     }
 

@@ -33,6 +33,10 @@ pub enum CloudAuthKind {
     /// Anaconda API key (bearer + provider-selector header).
     #[value(name = "anaconda-key")]
     AnacondaKey,
+    /// Workstation credential from the pairing flow (`nwc_` token; plain
+    /// bearer on the wire).
+    #[value(name = "workstation")]
+    Workstation,
     /// Dev token (`X-Notebook-Cloud-Dev-Token`) + user label.
     #[value(name = "dev")]
     Dev,
@@ -73,6 +77,7 @@ pub fn build_cloud_config(
     let auth = match args.auth_kind {
         CloudAuthKind::Oidc => CloudAuth::OidcBearer { token },
         CloudAuthKind::AnacondaKey => CloudAuth::AnacondaApiKey { token },
+        CloudAuthKind::Workstation => CloudAuth::WorkstationCredential { token },
         CloudAuthKind::Dev => {
             let user = env(CLOUD_DEV_USER_ENV)
                 .map(|u| u.trim().to_string())
@@ -140,6 +145,19 @@ mod tests {
         assert!(matches!(
             cfg.auth,
             CloudAuth::AnacondaApiKey { token } if token == "tok-key"
+        ));
+    }
+
+    #[test]
+    fn workstation_kind_builds_workstation_credential_auth() {
+        let cfg = build_cloud_config(
+            &args(CloudAuthKind::Workstation),
+            env_from(&[(CLOUD_TOKEN_ENV, "nwc_tok")]),
+        )
+        .expect("build");
+        assert!(matches!(
+            cfg.auth,
+            CloudAuth::WorkstationCredential { token } if token == "nwc_tok"
         ));
     }
 
