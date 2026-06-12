@@ -1,15 +1,20 @@
+import { useEffect, useState } from "react";
 import {
+  Check,
   CircleAlert,
   CircleCheck,
   Cloud,
+  Copy,
   FolderOpen,
   Gauge,
   MemoryStick,
   Monitor,
   PlugZap,
+  Plus,
   Server,
   ServerCog,
   ServerOff,
+  X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -25,6 +30,15 @@ import {
 } from "./capabilities";
 import { cn } from "@/lib/utils";
 
+export interface NotebookWorkstationPairingView {
+  code: string;
+  connectCommand: string;
+  expiresAt: string;
+  status: "pending" | "redeemed" | "registered" | "expired";
+  workstationName: string | null;
+  error: string | null;
+}
+
 export interface NotebookWorkstationsPanelProps {
   capabilities: NotebookShellCapabilities;
   selection?: NotebookWorkstationSelectionProjection | null;
@@ -32,6 +46,9 @@ export interface NotebookWorkstationsPanelProps {
   className?: string;
   onAttachWorkstation?: (workstationId: string) => void;
   onSetDefaultWorkstation?: (workstationId: string) => void;
+  pairing?: NotebookWorkstationPairingView | null;
+  onStartPairing?: () => void;
+  onCancelPairing?: () => void;
   statusMessage?: string | null;
 }
 
@@ -42,6 +59,9 @@ export function NotebookWorkstationsPanel({
   className,
   onAttachWorkstation,
   onSetDefaultWorkstation,
+  pairing = null,
+  onStartPairing,
+  onCancelPairing,
   statusMessage = null,
 }: NotebookWorkstationsPanelProps) {
   const projection = projectNotebookWorkstationPanel(capabilities);
@@ -148,7 +168,15 @@ export function NotebookWorkstationsPanel({
         </section>
       ) : null}
 
-      {showRegistrationPrompt ? (
+      {pairing ? (
+        <WorkstationPairingCard
+          pairing={pairing}
+          onCancel={onCancelPairing}
+          onRestart={onStartPairing}
+        />
+      ) : null}
+
+      {showRegistrationPrompt && !pairing ? (
         <section
           className="space-y-1.5 text-xs"
           aria-label="Workstation setup"
@@ -159,11 +187,181 @@ export function NotebookWorkstationsPanel({
             <span>No workstation registered</span>
           </div>
           <p className="leading-5 text-muted-foreground">
-            Run the workstation agent on a machine you own, then attach it here to start compute.
+            Connect a machine you own to run this notebook&rsquo;s compute there.
           </p>
+          {onStartPairing ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-1"
+              onClick={onStartPairing}
+              data-testid="workstation-add-button"
+            >
+              <Plus className="size-3.5" aria-hidden="true" />
+              Add workstation
+            </Button>
+          ) : null}
+        </section>
+      ) : null}
+
+      {!showRegistrationPrompt && !pairing && onStartPairing ? (
+        <section aria-label="Workstation setup">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-xs text-muted-foreground"
+            onClick={onStartPairing}
+            data-testid="workstation-add-button"
+          >
+            <Plus className="size-3.5" aria-hidden="true" />
+            Add workstation
+          </Button>
         </section>
       ) : null}
     </div>
+  );
+}
+
+function WorkstationPairingCard({
+  pairing,
+  onCancel,
+  onRestart,
+}: {
+  pairing: NotebookWorkstationPairingView;
+  onCancel?: () => void;
+  onRestart?: () => void;
+}) {
+  return (
+    <section
+      className="space-y-2 rounded-md border border-border/70 px-2.5 py-2"
+      aria-label="Connect a machine"
+      data-testid="workstation-pairing-card"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-sm font-medium">Connect a machine</h4>
+        {onCancel ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-6"
+            aria-label="Dismiss pairing"
+            onClick={onCancel}
+          >
+            <X className="size-3.5" aria-hidden="true" />
+          </Button>
+        ) : null}
+      </div>
+
+      {pairing.status === "registered" ? (
+        <div className="space-y-2 text-xs" aria-live="polite">
+          <div className="flex min-w-0 items-center gap-2 text-foreground">
+            <CircleCheck className="size-4 shrink-0 text-emerald-500" aria-hidden="true" />
+            <span data-testid="workstation-pairing-status">
+              {pairing.workstationName ?? "Workstation"} is connected.
+            </span>
+          </div>
+          {onCancel ? (
+            <Button type="button" variant="secondary" size="sm" onClick={onCancel}>
+              Done
+            </Button>
+          ) : null}
+        </div>
+      ) : pairing.status === "expired" ? (
+        <div className="space-y-2 text-xs" aria-live="polite">
+          <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
+            <CircleAlert className="size-4 shrink-0 text-amber-500" aria-hidden="true" />
+            <span data-testid="workstation-pairing-status">
+              {pairing.error ?? "The pairing code expired before a machine connected."}
+            </span>
+          </div>
+          {onRestart ? (
+            <Button type="button" variant="outline" size="sm" onClick={onRestart}>
+              Generate a new code
+            </Button>
+          ) : null}
+        </div>
+      ) : (
+        <div className="space-y-2 text-xs">
+          <p className="leading-5 text-muted-foreground">
+            Run this on the machine you want to attach:
+          </p>
+          <PairingCommand command={pairing.connectCommand} />
+          <p className="leading-5 text-muted-foreground" aria-live="polite">
+            {pairing.status === "redeemed" ? (
+              <span data-testid="workstation-pairing-status">Machine connected — registering…</span>
+            ) : (
+              <span data-testid="workstation-pairing-status">
+                Waiting for the machine to connect.
+                <PairingCountdown expiresAt={pairing.expiresAt} />
+              </span>
+            )}
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PairingCommand({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopied(false), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  return (
+    <div className="flex items-start gap-1.5">
+      <code
+        className="min-w-0 flex-1 rounded bg-muted/40 px-2 py-1.5 font-mono text-[11px] leading-4 break-all whitespace-pre-wrap"
+        data-testid="workstation-pairing-command"
+      >
+        {command}
+      </code>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-7 shrink-0"
+        aria-label={copied ? "Copied" : "Copy connect command"}
+        onClick={() => {
+          void navigator.clipboard.writeText(command).then(() => setCopied(true));
+        }}
+      >
+        {copied ? (
+          <Check className="size-3.5 text-emerald-500" aria-hidden="true" />
+        ) : (
+          <Copy className="size-3.5" aria-hidden="true" />
+        )}
+      </Button>
+    </div>
+  );
+}
+
+function PairingCountdown({ expiresAt }: { expiresAt: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const remainingMs = Date.parse(expiresAt) - now;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    return null;
+  }
+  const totalSeconds = Math.floor(remainingMs / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return (
+    <span>
+      {" "}
+      Code expires in {minutes}:{seconds.toString().padStart(2, "0")}.
+    </span>
   );
 }
 
