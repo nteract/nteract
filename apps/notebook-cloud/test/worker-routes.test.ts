@@ -38,6 +38,10 @@ import {
 import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
 import { canonicalAccountPrincipalForProfile } from "../src/sharing-storage.ts";
 import type { PrincipalAccountLinkRow } from "../src/storage.ts";
+import type {
+  WorkstationCredentialRow,
+  WorkstationPairingCodeRow,
+} from "../src/workstation-credentials.ts";
 import { oidcTokenFixture } from "./oidc-jwt-fixture.ts";
 
 const wasmBytes = await readFile(
@@ -4368,6 +4372,395 @@ describe("Worker artifact routes", () => {
   });
 });
 
+describe("Workstation pairing", () => {
+  const PAIRING_CODE_PATTERN =
+    /^[2-9A-HJKMNP-TV-Z]{4}-[2-9A-HJKMNP-TV-Z]{4}-[2-9A-HJKMNP-TV-Z]{4}$/;
+  const OWNER_HEADERS = {
+    "X-User": "alice",
+    "X-Operator": "browser:tab",
+    "X-Scope": "owner",
+  };
+
+  async function mintPairingCode(env: FakeEnv): Promise<{
+    id: string;
+    code: string;
+    expires_at: string;
+  }> {
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/pairing-codes", {
+        method: "POST",
+        headers: OWNER_HEADERS,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(response.status, 201);
+    const body = (await response.json()) as {
+      ok: boolean;
+      pairing: { id: string; code: string; expires_at: string };
+    };
+    assert.equal(body.ok, true);
+    return body.pairing;
+  }
+
+  async function redeemPairingCode(env: FakeEnv, code: string): Promise<Response> {
+    return worker.fetch(
+      new Request("http://localhost/api/workstations/pairing-codes/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      }),
+      env,
+      fakeContext(),
+    );
+  }
+
+  async function redeemedCredentialToken(env: FakeEnv, code: string): Promise<string> {
+    const redeem = await redeemPairingCode(env, code);
+    assert.equal(redeem.status, 201);
+    const body = (await redeem.json()) as { credential: { token: string } };
+    return body.credential.token;
+  }
+
+  async function pairingStatus(
+    env: FakeEnv,
+    pairingId: string,
+  ): Promise<{ status: string; workstation_id: string | null }> {
+    const response = await worker.fetch(
+      new Request(`http://localhost/api/workstations/pairing-codes/${pairingId}`, {
+        headers: OWNER_HEADERS,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      pairing: { status: string; workstation_id: string | null };
+    };
+    return body.pairing;
+  }
+
+  async function registerWorkstationWithToken(
+    env: FakeEnv,
+    token: string,
+    workstationId: string,
+  ): Promise<Response> {
+    return worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          workstation_id: workstationId,
+          display_name: "Paired Lab",
+          provider: "runtime_peer",
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+  }
+
+  it("requires sign-in to mint pairing codes", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/pairing-codes", { method: "POST" }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: "sign in to add a workstation" });
+    assert.equal(env.DB.workstationPairingCodes.size, 0);
+  });
+
+  it("mints, redeems, and registers a workstation through a pairing code", async () => {
+    const env = fakeEnv();
+
+    const pairing = await mintPairingCode(env);
+    assert.match(pairing.code, PAIRING_CODE_PATTERN);
+    assert.ok(pairing.id);
+    assert.ok(Date.parse(pairing.expires_at) > Date.now());
+
+    assert.equal((await pairingStatus(env, pairing.id)).status, "pending");
+
+    const redeem = await redeemPairingCode(env, pairing.code);
+    assert.equal(redeem.status, 201);
+    const redeemed = (await redeem.json()) as {
+      ok: boolean;
+      credential: { token: string; credential_id: string };
+      pairing: { id: string };
+    };
+    assert.equal(redeemed.ok, true);
+    assert.ok(redeemed.credential.token.startsWith("nwc_"));
+    assert.ok(redeemed.credential.credential_id);
+    assert.equal(redeemed.pairing.id, pairing.id);
+
+    assert.equal((await pairingStatus(env, pairing.id)).status, "redeemed");
+
+    const register = await registerWorkstationWithToken(
+      env,
+      redeemed.credential.token,
+      "ws-paired",
+    );
+    assert.equal(register.status, 201);
+    const registered = (await register.json()) as { workstation: Record<string, unknown> };
+    assert.equal(registered.workstation.workstation_id, "ws-paired");
+    assert.equal(registered.workstation.is_default, true);
+
+    const status = await pairingStatus(env, pairing.id);
+    assert.equal(status.status, "registered");
+    assert.equal(status.workstation_id, "ws-paired");
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", { headers: OWNER_HEADERS }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(list.status, 200);
+    const listBody = (await list.json()) as {
+      default_workstation_id: string | null;
+      workstations: Array<Record<string, unknown>>;
+    };
+    assert.equal(listBody.default_workstation_id, "ws-paired");
+    assert.equal(listBody.workstations.length, 1);
+    assert.equal(listBody.workstations[0]?.workstation_id, "ws-paired");
+    assert.equal(listBody.workstations[0]?.is_default, true);
+  });
+
+  it("rejects pairing code replay after the first redeem", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+
+    assert.equal((await redeemPairingCode(env, pairing.code)).status, 201);
+
+    const replay = await redeemPairingCode(env, pairing.code);
+    assert.equal(replay.status, 404);
+    assert.deepEqual(await replay.json(), {
+      error: "pairing code is invalid, expired, or already used",
+    });
+    assert.equal(env.DB.workstationCredentials.size, 1);
+  });
+
+  it("rejects expired pairing codes and reports expired status", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+
+    const row = env.DB.workstationPairingCodes.get(pairing.id);
+    assert.ok(row);
+    row.expires_at = new Date(Date.now() - 1000).toISOString();
+
+    const redeem = await redeemPairingCode(env, pairing.code);
+    assert.equal(redeem.status, 404);
+    assert.equal(env.DB.workstationCredentials.size, 0);
+
+    assert.equal((await pairingStatus(env, pairing.id)).status, "expired");
+  });
+
+  it("accepts pairing codes lowercased with spaces instead of dashes", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+
+    const sloppy = pairing.code.toLowerCase().replaceAll("-", " ");
+    const redeem = await redeemPairingCode(env, sloppy);
+    assert.equal(redeem.status, 201);
+    const redeemed = (await redeem.json()) as { credential: { token: string } };
+    assert.ok(redeemed.credential.token.startsWith("nwc_"));
+  });
+
+  it("rejects workstation credentials outside the workstation surface", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+
+    const createNotebook = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(createNotebook.status, 403);
+    const createBody = (await createNotebook.json()) as { error: string };
+    assert.match(createBody.error, /workstation credentials/);
+    assert.equal(env.DB.notebooks.size, 0);
+
+    const selectDefault = await worker.fetch(
+      new Request("http://localhost/api/workstations/default", {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ workstation_id: "ws-any" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(selectDefault.status, 403);
+  });
+
+  it("clamps workstation credential scope requests", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+
+    const ownerScope = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: { Authorization: `Bearer ${token}`, "X-Scope": "owner" },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(ownerScope.status, 403);
+    const ownerScopeBody = (await ownerScope.json()) as { error: string };
+    assert.match(ownerScopeBody.error, /workstation credentials cannot request owner scope/);
+
+    const runtimePeerScope = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: { Authorization: `Bearer ${token}`, "X-Scope": "runtime_peer" },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(runtimePeerScope.status, 200);
+  });
+
+  it("lets a paired workstation credential poll attach jobs", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "pairing-attach-demo");
+    seedAcl(env, { notebookId: "pairing-attach-demo", subject: "user:dev:alice", scope: "owner" });
+
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+
+    const register = await registerWorkstationWithToken(env, token, "ws-paired");
+    assert.equal(register.status, 201);
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/pairing-attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...OWNER_HEADERS },
+        body: JSON.stringify({}),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(attach.status, 202);
+    const attachBody = (await attach.json()) as { job: { job_id: string } };
+
+    const poll = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-paired/attach-jobs", {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(poll.status, 200);
+    const polled = (await poll.json()) as { jobs: Array<{ job_id: string }> };
+    assert.deepEqual(
+      polled.jobs.map((job) => job.job_id),
+      [attachBody.job.job_id],
+    );
+  });
+
+  it("consumes and mints in one batch so a code cannot burn without a credential", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+
+    await redeemedCredentialToken(env, pairing.code);
+
+    assert.ok(
+      env.DB.batchSizes.includes(2),
+      "redeem must issue the consume UPDATE and credential INSERT as one batch transaction",
+    );
+    const row = env.DB.workstationPairingCodes.get(pairing.id);
+    assert.ok(row?.redeemed_by_credential_id, "consume stamps the per-request credential marker");
+    const credential = [...env.DB.workstationCredentials.values()][0];
+    assert.equal(credential?.id, row?.redeemed_by_credential_id);
+  });
+
+  it("lists and revokes workstation credentials; revoked bearers lose access", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+    assert.equal((await registerWorkstationWithToken(env, token, "ws-paired")).status, 201);
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations/credentials", { headers: OWNER_HEADERS }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(list.status, 200);
+    const listed = (await list.json()) as {
+      credentials: Array<{ credential_id: string; revoked_at: string | null }>;
+    };
+    assert.equal(listed.credentials.length, 1);
+    assert.equal(listed.credentials[0]?.revoked_at, null);
+    const credentialId = listed.credentials[0]!.credential_id;
+
+    const revoke = await worker.fetch(
+      new Request(`http://localhost/api/workstations/credentials/${credentialId}/revoke`, {
+        method: "POST",
+        headers: OWNER_HEADERS,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(revoke.status, 200);
+    assert.deepEqual(await revoke.json(), {
+      ok: true,
+      credential_id: credentialId,
+      revoked: true,
+    });
+
+    const heartbeat = await registerWorkstationWithToken(env, token, "ws-paired");
+    assert.equal(heartbeat.status, 401);
+    assert.deepEqual(await heartbeat.json(), {
+      error: "workstation credential is not recognized",
+    });
+
+    const replayRevoke = await worker.fetch(
+      new Request(`http://localhost/api/workstations/credentials/${credentialId}/revoke`, {
+        method: "POST",
+        headers: OWNER_HEADERS,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(replayRevoke.status, 404);
+  });
+
+  it("denies the credential-management surface to workstation credentials", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations/credentials", {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(list.status, 403);
+
+    const revoke = await worker.fetch(
+      new Request("http://localhost/api/workstations/credentials/any-id/revoke", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(revoke.status, 403);
+  });
+});
+
 async function ownerPut(
   env: FakeEnv,
   pathname: string,
@@ -4960,6 +5353,8 @@ class FakeD1 implements D1Database {
   readonly workstations = new Map<string, WorkstationRow>();
   readonly workstationDefaults = new Map<string, string>();
   readonly workstationAttachJobs = new Map<string, WorkstationAttachJobRow>();
+  readonly workstationPairingCodes = new Map<string, WorkstationPairingCodeRow>();
+  readonly workstationCredentials = new Map<string, WorkstationCredentialRow>();
   readonly batchSizes: number[] = [];
   afterBlockedOwnerDelete?: () => void;
 
@@ -5473,6 +5868,120 @@ class FakeD1Statement implements D1PreparedStatement {
         return okResult(undefined, { changes: 1 });
       }
       return okResult(undefined, { changes: 0 });
+    } else if (this.query.includes("INSERT INTO workstation_pairing_codes")) {
+      const [id, codeHash, ownerPrincipal, principalNamespace, actorLabel, createdAt, expiresAt] =
+        this.values as [string, string, string, string, string, string, string];
+      this.db.workstationPairingCodes.set(id, {
+        id,
+        code_hash: codeHash,
+        owner_principal: ownerPrincipal,
+        principal_namespace: principalNamespace,
+        created_by_actor_label: actorLabel,
+        created_at: createdAt,
+        expires_at: expiresAt,
+        redeemed_at: null,
+        redeemed_by_credential_id: null,
+        workstation_id: null,
+      });
+      return okResult(undefined, { changes: 1 });
+    } else if (
+      this.query.includes("UPDATE workstation_pairing_codes") &&
+      this.query.includes("SET redeemed_at")
+    ) {
+      // Batched consume: enforce single-use and expiry exactly like the
+      // RETURNING UPDATE in redeemWorkstationPairingCode, and stamp the
+      // per-request credential marker the companion INSERT...SELECT joins on.
+      const [redeemedAt, credentialMarker, codeHash, now] = this.values as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      for (const pairing of this.db.workstationPairingCodes.values()) {
+        if (
+          pairing.code_hash === codeHash &&
+          pairing.redeemed_at === null &&
+          pairing.expires_at > now
+        ) {
+          pairing.redeemed_at = redeemedAt;
+          pairing.redeemed_by_credential_id = credentialMarker;
+          return okResult(
+            [
+              {
+                id: pairing.id,
+                owner_principal: pairing.owner_principal,
+                principal_namespace: pairing.principal_namespace,
+              },
+            ] as T[],
+            { changes: 1 },
+          );
+        }
+      }
+      return okResult([] as T[], { changes: 0 });
+    } else if (
+      this.query.includes("UPDATE workstation_pairing_codes") &&
+      this.query.includes("SET workstation_id")
+    ) {
+      // linkWorkstationToPairing: first registration wins.
+      const [workstationId, pairingId] = this.values as [string, string];
+      const pairing = this.db.workstationPairingCodes.get(pairingId);
+      if (pairing && pairing.workstation_id === null) {
+        pairing.workstation_id = workstationId;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
+    } else if (this.query.includes("INSERT INTO workstation_credentials")) {
+      // INSERT...SELECT joined on the per-request marker: mints only when
+      // this request's UPDATE consumed the code.
+      const [id, tokenHash, createdAt, credentialMarker] = this.values as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      const pairing = [...this.db.workstationPairingCodes.values()].find(
+        (row) => row.redeemed_by_credential_id === credentialMarker,
+      );
+      if (!pairing) {
+        return okResult(undefined, { changes: 0 });
+      }
+      this.db.workstationCredentials.set(id, {
+        id,
+        token_hash: tokenHash,
+        owner_principal: pairing.owner_principal,
+        principal_namespace: pairing.principal_namespace,
+        pairing_code_id: pairing.id,
+        created_at: createdAt,
+        last_used_at: null,
+        revoked_at: null,
+      });
+      return okResult(undefined, { changes: 1 });
+    } else if (
+      this.query.includes("UPDATE workstation_credentials") &&
+      this.query.includes("SET revoked_at")
+    ) {
+      const [revokedAt, credentialId, ownerPrincipal] = this.values as [string, string, string];
+      const credential = this.db.workstationCredentials.get(credentialId);
+      if (
+        credential &&
+        credential.owner_principal === ownerPrincipal &&
+        credential.revoked_at === null
+      ) {
+        credential.revoked_at = revokedAt;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
+    } else if (
+      this.query.includes("UPDATE workstation_credentials") &&
+      this.query.includes("SET last_used_at")
+    ) {
+      const [lastUsedAt, credentialId] = this.values as [string, string];
+      const credential = this.db.workstationCredentials.get(credentialId);
+      if (credential) {
+        credential.last_used_at = lastUsedAt;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT INTO notebooks")) {
       const [id, ownerPrincipal, maybeTitleOrCreatedAt, createdAtOrUpdatedAt, maybeUpdatedAt] = this
         .values as [string, string, string | null, string | undefined, string | undefined];
@@ -5727,6 +6236,19 @@ class FakeD1Statement implements D1PreparedStatement {
       }
       return (this.db.accountLinks.get(this.values[0] as string) as T | undefined) ?? null;
     }
+    if (this.query.includes("FROM workstation_pairing_codes")) {
+      const [pairingId, ownerPrincipal] = this.values as [string, string];
+      const pairing = this.db.workstationPairingCodes.get(pairingId);
+      return pairing?.owner_principal === ownerPrincipal ? (pairing as T) : null;
+    }
+    if (this.query.includes("FROM workstation_credentials")) {
+      const [tokenHash] = this.values as [string];
+      return (
+        ([...this.db.workstationCredentials.values()].find(
+          (credential) => credential.token_hash === tokenHash,
+        ) as T | undefined) ?? null
+      );
+    }
     if (this.query.includes("FROM workstations")) {
       const [ownerPrincipal, workstationId] = this.values as [string, string];
       return (
@@ -5816,6 +6338,24 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async all<T = unknown>(): Promise<D1Result<T>> {
+    if (
+      this.query.includes("FROM workstation_credentials") &&
+      this.query.includes("WHERE owner_principal")
+    ) {
+      const ownerPrincipal = this.values[0] as string;
+      return okResult(
+        [...this.db.workstationCredentials.values()]
+          .filter((credential) => credential.owner_principal === ownerPrincipal)
+          .sort((left, right) => right.created_at.localeCompare(left.created_at))
+          .map((credential) => ({
+            id: credential.id,
+            pairing_code_id: credential.pairing_code_id,
+            created_at: credential.created_at,
+            last_used_at: credential.last_used_at,
+            revoked_at: credential.revoked_at,
+          })) as T[],
+      );
+    }
     if (this.query.includes("FROM notebook_access_requests")) {
       const notebookId = this.values[0] as string;
       const limit = typeof this.values[1] === "number" ? this.values[1] : Number.POSITIVE_INFINITY;

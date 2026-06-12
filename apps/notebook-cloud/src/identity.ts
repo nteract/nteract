@@ -43,7 +43,13 @@ export interface IdentityEnvironment {
 }
 
 export interface AuthenticatedConnectionMetadata {
-  provider: "anonymous" | "app-session" | "dev" | "oidc" | "anaconda-api-key";
+  provider:
+    | "anonymous"
+    | "app-session"
+    | "dev"
+    | "oidc"
+    | "anaconda-api-key"
+    | "workstation-credential";
   transport:
     | "anonymous"
     | "app-session-cookie"
@@ -52,11 +58,14 @@ export interface AuthenticatedConnectionMetadata {
     | "dev-token-subprotocol"
     | "api-key-bearer"
     | "oidc-bearer"
-    | "oidc-subprotocol";
+    | "oidc-subprotocol"
+    | "workstation-credential-header";
   principalNamespace: string;
   displayName?: string;
   email?: string;
   emailVerified?: boolean;
+  workstationCredentialId?: string;
+  workstationPairingCodeId?: string;
 }
 
 const ANONYMOUS_PRINCIPAL_PREFIX = "anonymous:";
@@ -746,7 +755,8 @@ function isMetadataProvider(value: string): value is AuthenticatedConnectionMeta
     value === "app-session" ||
     value === "dev" ||
     value === "oidc" ||
-    value === "anaconda-api-key"
+    value === "anaconda-api-key" ||
+    value === "workstation-credential"
   );
 }
 
@@ -759,7 +769,8 @@ function isMetadataTransport(value: string): value is AuthenticatedConnectionMet
     value === "dev-token-subprotocol" ||
     value === "api-key-bearer" ||
     value === "oidc-bearer" ||
-    value === "oidc-subprotocol"
+    value === "oidc-subprotocol" ||
+    value === "workstation-credential-header"
   );
 }
 
