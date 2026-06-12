@@ -25,6 +25,7 @@ interface UseCloudShellCapabilitiesInput {
   codeCellCount: number;
   runtimePeerAvailable: boolean;
   runtimePeerCount: number;
+  kernelStatusLabel: string | null;
   workstationAttachment: WorkstationAttachmentState | null;
   hostCapabilities: CloudViewerConfig["hostCapabilities"];
 }
@@ -55,6 +56,7 @@ export function useCloudShellCapabilities({
   codeCellCount,
   runtimePeerAvailable,
   runtimePeerCount,
+  kernelStatusLabel,
   workstationAttachment,
   hostCapabilities,
 }: UseCloudShellCapabilitiesInput): CloudShellCapabilities {
@@ -89,6 +91,7 @@ export function useCloudShellCapabilities({
         editAccessRequestPending,
         runtimeAvailable: runtimePeerAvailable,
         runtimePeerCount,
+        kernelStatusLabel,
         workstationAttachment,
         hostCapabilities,
       }),
@@ -102,6 +105,7 @@ export function useCloudShellCapabilities({
       connectionPeerLabel,
       connectionScope,
       editAccessRequestPending,
+      kernelStatusLabel,
       runtimePeerCount,
       runtimePeerAvailable,
       selectedMode,

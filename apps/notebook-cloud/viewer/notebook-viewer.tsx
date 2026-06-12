@@ -41,7 +41,13 @@ import {
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { EnvironmentSummary } from "@/components/environment";
-import { NotebookClient, type CellChangeset, type NotebookOutlineItem } from "runtimed";
+import {
+  NotebookClient,
+  workstationAttachmentCanExecute,
+  workstationAttachmentIsConnected,
+  type CellChangeset,
+  type NotebookOutlineItem,
+} from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import {
   clearCloudPrototypeDevAuth,
@@ -352,6 +358,25 @@ export function NotebookViewer({
     authState,
     hasAppSession: Boolean(appSessionStatus.session),
   });
+  const cloudRuntimeConnectedForStatus = workstationAttachment
+    ? workstationAttachmentIsConnected(workstationAttachment)
+    : runtimePeerAvailable;
+  const cloudRuntimeExecutionAvailableForStatus = workstationAttachment
+    ? workstationAttachmentCanExecute(workstationAttachment)
+    : runtimePeerAvailable;
+  const cloudRuntimeStatus = useMemo<NotebookCommandToolbarStatus | null>(() => {
+    if (!cloudRuntimeConnectedForStatus && !cloudRuntimeExecutionAvailableForStatus) {
+      return null;
+    }
+    return projectNotebookCommandRuntimeStatusFromRuntimeState(runtimeState, {
+      executionAvailable: cloudRuntimeExecutionAvailableForStatus,
+    });
+  }, [cloudRuntimeConnectedForStatus, cloudRuntimeExecutionAvailableForStatus, runtimeState]);
+  const cloudKernelStatusLabel = cloudRuntimeExecutionAvailableForStatus
+    ? typeof cloudRuntimeStatus?.label === "string"
+      ? cloudRuntimeStatus.label
+      : null
+    : null;
   const { shellCapabilities, canAcceptCellMutations, editAccessPending } =
     useCloudShellCapabilities({
       authState,
@@ -363,6 +388,7 @@ export function NotebookViewer({
       connectionScope,
       hasAppSession: Boolean(appSessionStatus.session),
       hostCapabilities: config.hostCapabilities,
+      kernelStatusLabel: cloudKernelStatusLabel,
       runtimePeerAvailable,
       runtimePeerCount,
       selectedMode: selectedInteractionMode,
@@ -379,18 +405,6 @@ export function NotebookViewer({
     hasAppSession: Boolean(appSessionStatus.session),
     isPublicViewer,
   });
-  const cloudRuntimeStatus = useMemo<NotebookCommandToolbarStatus | null>(() => {
-    if (!shellCapabilities.runtime.connected && !shellCapabilities.runtime.executionAvailable) {
-      return null;
-    }
-    return projectNotebookCommandRuntimeStatusFromRuntimeState(runtimeState, {
-      executionAvailable: shellCapabilities.runtime.executionAvailable,
-    });
-  }, [
-    runtimeState,
-    shellCapabilities.runtime.connected,
-    shellCapabilities.runtime.executionAvailable,
-  ]);
   const {
     busyWorkstationId,
     onAttachWorkstation,
