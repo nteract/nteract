@@ -472,10 +472,10 @@ describe("cloud live sync", () => {
 
       const response = transport.sendTypedRequest(
         FrameType.REQUEST,
-        new TextEncoder().encode(JSON.stringify({ id: "req-1", action: "complete" })),
+        new TextEncoder().encode(JSON.stringify({ id: "req-1", action: "execute_cell" })),
         "req-1",
         20,
-        "complete",
+        "execute_cell",
       );
       await nextMicrotask();
       socket.control({
@@ -488,6 +488,68 @@ describe("cloud live sync", () => {
       });
 
       assert.deepEqual(await response, { result: "ok" });
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("waits for a runtime peer response for hosted completion requests", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const transport = createTransport();
+      const socket = await waitForSocket(0);
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      let settled = false;
+      const response = transport
+        .sendRequest({ type: "complete", code: "pri", cursor_pos: 3 })
+        .then((value) => {
+          settled = true;
+          return value;
+        });
+      await nextMicrotask();
+
+      assert.equal(socket.sent.length, 1);
+      const requestFrame = socket.sent[0];
+      const requestEnvelope = JSON.parse(new TextDecoder().decode(requestFrame.slice(1))) as {
+        id: string;
+        action: string;
+      };
+      assert.equal(requestEnvelope.action, "complete");
+
+      socket.control({
+        type: "cloud_frame_accepted",
+        notebook_id: "room",
+        peer_id: "peer-1",
+        frame_type: FrameType.REQUEST,
+        byte_length: requestFrame.byteLength - 1,
+        timestamp: "2026-06-06T00:00:00.000Z",
+      });
+      await nextMicrotask();
+      assert.equal(settled, false);
+
+      const responsePayload = new TextEncoder().encode(
+        JSON.stringify({
+          id: requestEnvelope.id,
+          result: "completion_result",
+          items: [{ label: "print", kind: "function" }],
+          cursor_start: 0,
+          cursor_end: 3,
+        }),
+      );
+      const responseFrame = new Uint8Array(responsePayload.byteLength + 1);
+      responseFrame[0] = FrameType.RESPONSE;
+      responseFrame.set(responsePayload, 1);
+      socket.message(responseFrame.buffer);
+
+      assert.deepEqual(await response, {
+        result: "completion_result",
+        items: [{ label: "print", kind: "function" }],
+        cursor_start: 0,
+        cursor_end: 3,
+      });
     } finally {
       fake.restore();
     }

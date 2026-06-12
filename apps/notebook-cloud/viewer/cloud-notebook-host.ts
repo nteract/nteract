@@ -52,10 +52,11 @@ class CloudNotebookHostTransport implements NotebookTransport {
 
   async sendRequest(request: unknown, options?: NotebookRequestOptions): Promise<unknown> {
     if (isNotebookRequest(request)) {
+      const runtime = this.getRuntime();
       if (request.type === "get_history") {
         return historyResultFromLiveNotebook(this.getRuntime(), request);
       }
-      if (request.type === "complete") {
+      if (request.type === "complete" && !runtime) {
         return emptyCompletionResult(request);
       }
     }

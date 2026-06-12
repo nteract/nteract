@@ -38,7 +38,7 @@ describe("cloud notebook host", () => {
     assert.deepEqual(calls, ["b:sendRequest:save_notebook", "b:sendFrame:1"]);
   });
 
-  it("returns an immediate empty completion result without touching the room transport", async () => {
+  it("delegates hosted completions to the live runtime transport when connected", async () => {
     const calls: string[] = [];
     const host = createCloudNotebookHost({
       blobResolver: fixtureBlobResolver,
@@ -47,14 +47,9 @@ describe("cloud notebook host", () => {
 
     assert.deepEqual(
       await host.transport.sendRequest({ type: "complete", code: "pri", cursor_pos: 3 }),
-      {
-        result: "completion_result",
-        items: [],
-        cursor_start: 3,
-        cursor_end: 3,
-      },
+      { result: "cloud" },
     );
-    assert.deepEqual(calls, []);
+    assert.deepEqual(calls, ["cloud:sendRequest:complete"]);
   });
 
   it("returns empty hosted completions even before the live room is connected", async () => {

@@ -139,6 +139,7 @@ export function isClientWritableFrame(type: FrameTypeValue): boolean {
   return (
     type === FrameType.AUTOMERGE_SYNC ||
     type === FrameType.REQUEST ||
+    type === FrameType.RESPONSE ||
     type === FrameType.PRESENCE ||
     type === FrameType.RUNTIME_STATE_SYNC ||
     type === FrameType.COMMS_DOC_SYNC ||

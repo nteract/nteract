@@ -203,6 +203,12 @@ interface PendingFrameAck {
   timeoutId: ReturnType<typeof setTimeout>;
 }
 
+interface PendingRequestResponse {
+  reject: (error: Error) => void;
+  resolve: (response: NotebookResponse) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
+
 /**
  * Browser timers are numbers; Node timers are objects whose `unref()`
  * releases the event loop. The liveness probe's periodic timers must never
@@ -224,6 +230,10 @@ function requestTimeoutMs(request: NotebookRequest): number {
     default:
       return CLOUD_REQUEST_TIMEOUT_MS;
   }
+}
+
+function awaitsRuntimePeerResponse(request: NotebookRequest): boolean {
+  return request.type === "complete";
 }
 
 export function cloudSyncAuthFromLocalStorage(): CloudSyncAuth {
@@ -867,6 +877,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
   // Hosted room accept/reject controls currently carry only the frame type, not
   // a request id, so pending acknowledgements are matched FIFO per frame type.
   private pendingFrameAcks = new Map<number, PendingFrameAck[]>();
+  private pendingRequestResponses = new Map<string, PendingRequestResponse>();
   private readyResolve!: (message: CloudRoomReady) => void;
   private readyReject!: (error: Error) => void;
   /**
@@ -1031,6 +1042,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.stopLivenessProbe();
     // Pending FIFO frame ACKs cannot span sockets.
     this.rejectPendingFrameAcks(reason);
+    this.rejectPendingRequestResponses(reason);
     // Frames queued from a dead connection are bound to that connection's
     // sync state; never replay them into the next one.
     this.queuedFrames = [];
@@ -1242,10 +1254,45 @@ export class CloudWebSocketTransport implements NotebookTransport {
     }
   }
 
+  private async sendRuntimePeerQuery(
+    frameType: FrameTypeValue,
+    payload: Uint8Array,
+    id: string,
+    timeoutMs: number,
+    timeoutLabel = "cloud runtime query",
+  ): Promise<NotebookResponse> {
+    if (frameType !== FrameType.REQUEST) {
+      throw new Error(
+        `cloud viewer transport does not support runtime query frame 0x${frameType.toString(16)}`,
+      );
+    }
+
+    const pendingAck = this.registerFrameAck(frameType, timeoutMs, timeoutLabel);
+    const pendingResponse = this.registerRequestResponse(id, timeoutMs, timeoutLabel);
+    try {
+      await this.sendFrame(frameType, payload);
+      await pendingAck.promise;
+      return await pendingResponse.promise;
+    } catch (error) {
+      pendingAck.cancel();
+      pendingResponse.cancel();
+      throw error;
+    }
+  }
+
   async sendRequest(request: unknown, options?: NotebookRequestOptions): Promise<unknown> {
     const req = request as NotebookRequest;
     const envelope = notebookRequestEnvelope(req, options);
     const payload = new TextEncoder().encode(JSON.stringify(envelope));
+    if (awaitsRuntimePeerResponse(req)) {
+      return this.sendRuntimePeerQuery(
+        FrameType.REQUEST,
+        payload,
+        envelope.id,
+        requestTimeoutMs(req),
+        envelope.action,
+      );
+    }
     return this.sendTypedRequest(
       FrameType.REQUEST,
       payload,
@@ -1278,6 +1325,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
     }
     this.teardownSocket();
     this.rejectPendingFrameAcks(new Error("cloud sync socket disconnected"));
+    this.rejectPendingRequestResponses(new Error("cloud sync socket disconnected"));
     this.listeners.clear();
     this.queuedFrames = [];
     if (!this.readySettled) {
@@ -1321,6 +1369,10 @@ export class CloudWebSocketTransport implements NotebookTransport {
           new Error(`cloud room rejected frame: ${control.reason}`),
         );
       }
+      return;
+    }
+
+    if (bytes[0] === FrameType.RESPONSE && this.resolveRequestResponse(bytes.slice(1))) {
       return;
     }
 
@@ -1439,6 +1491,56 @@ export class CloudWebSocketTransport implements NotebookTransport {
     }
     this.pendingFrameAcks.clear();
   }
+
+  private registerRequestResponse(
+    id: string,
+    timeoutMs: number,
+    timeoutLabel: string,
+  ): { cancel: () => void; promise: Promise<NotebookResponse> } {
+    let pending!: PendingRequestResponse;
+    const promise = new Promise<NotebookResponse>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.pendingRequestResponses.delete(id);
+        reject(new Error(`${timeoutLabel} timed out waiting for runtime peer response`));
+      }, timeoutMs);
+      pending = { reject, resolve, timeoutId };
+      this.pendingRequestResponses.set(id, pending);
+    });
+    promise.catch(() => undefined);
+
+    return {
+      cancel: () => {
+        const current = this.pendingRequestResponses.get(id);
+        if (current !== pending) return;
+        clearTimeout(pending.timeoutId);
+        this.pendingRequestResponses.delete(id);
+      },
+      promise,
+    };
+  }
+
+  private resolveRequestResponse(payload: Uint8Array): boolean {
+    const envelope = notebookResponseEnvelopeFromPayload(payload);
+    if (!envelope) {
+      return false;
+    }
+    const pending = this.pendingRequestResponses.get(envelope.id);
+    if (!pending) {
+      return false;
+    }
+    clearTimeout(pending.timeoutId);
+    this.pendingRequestResponses.delete(envelope.id);
+    pending.resolve(envelope.response);
+    return true;
+  }
+
+  private rejectPendingRequestResponses(error: Error): void {
+    for (const pending of this.pendingRequestResponses.values()) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(error);
+    }
+    this.pendingRequestResponses.clear();
+  }
 }
 
 function notebookRequestEnvelope(
@@ -1457,6 +1559,21 @@ function notebookRequestEnvelope(
     ...(requiredHeads?.length ? { required_heads: requiredHeads } : {}),
     ...rest,
   };
+}
+
+function notebookResponseEnvelopeFromPayload(
+  payload: Uint8Array,
+): { id: string; response: NotebookResponse } | null {
+  try {
+    const value = JSON.parse(new TextDecoder().decode(payload)) as unknown;
+    if (!isRecord(value) || typeof value.id !== "string" || typeof value.result !== "string") {
+      return null;
+    }
+    const { id, ...response } = value;
+    return { id, response: response as NotebookResponse };
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

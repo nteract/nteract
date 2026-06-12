@@ -1209,6 +1209,95 @@ describe("NotebookRoom materialized sync persistence", () => {
     );
   });
 
+  it("routes hosted completion REQUEST frames through the active runtime peer response", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const ownerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const runtimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:new&scope=runtime_peer",
+      ),
+    );
+    const ownerSocket = new FakeSocket();
+    const runtimeSocket = new FakeSocket();
+    const ownerPeer = {
+      id: "owner",
+      socket: ownerSocket.asCloudflareWebSocket(),
+      identity: ownerIdentity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      workstation: null,
+      consecutiveRejectedFrames: 0,
+    };
+    const runtimePeer = {
+      id: "runtime",
+      socket: runtimeSocket.asCloudflareWebSocket(),
+      identity: runtimeIdentity,
+      connectedAt: "2026-05-22T00:00:01.000Z",
+      workstation: null,
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    let persisted = 0;
+    let materialized = 0;
+    harness.peers.set(ownerPeer.id, ownerPeer);
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+    });
+    harness.persistFrame = async () => {
+      persisted += 1;
+    };
+    const requestPayload = new TextEncoder().encode(
+      JSON.stringify({ id: "request-1", action: "complete", code: "pri", cursor_pos: 3 }),
+    );
+
+    await harness.handleMessage(
+      "demo",
+      ownerPeer,
+      encodeTypedFrame(FrameType.REQUEST, requestPayload),
+    );
+
+    assert.equal(runtimeSocket.sent.length, 1);
+    assert.deepEqual(
+      [...runtimeSocket.sent[0]],
+      [FrameType.REQUEST, ...Array.from(requestPayload)],
+    );
+    assert.equal(ownerSocket.sent.length, 1);
+    assert.equal(
+      decodeJsonPayload<Record<string, unknown>>(ownerSocket.sent[0].slice(1)).type,
+      "cloud_frame_accepted",
+    );
+
+    const responsePayload = new TextEncoder().encode(
+      JSON.stringify({
+        id: "request-1",
+        result: "completion_result",
+        items: [{ label: "print", kind: "function" }],
+        cursor_start: 0,
+        cursor_end: 3,
+      }),
+    );
+    await harness.handleMessage(
+      "demo",
+      runtimePeer,
+      encodeTypedFrame(FrameType.RESPONSE, responsePayload),
+    );
+
+    assert.equal(ownerSocket.sent.length, 2);
+    assert.deepEqual(
+      [...ownerSocket.sent[1]],
+      [FrameType.RESPONSE, ...Array.from(responsePayload)],
+    );
+    assert.equal(materialized, 0);
+    assert.equal(persisted, 0);
+  });
+
   it("rejects forwarded runtime-agent command REQUEST frames when no runtime peer is attached", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
