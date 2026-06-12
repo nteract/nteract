@@ -239,8 +239,9 @@ export function NotebookViewer({
       createCloudNotebookHost({
         blobResolver,
         getRuntime: () => liveRuntimeRef.current,
+        hasRuntimePeer: () => cloudPresenceHasRuntimePeer(presenceStore.getSnapshot()),
       }),
-    [blobResolver, liveRuntimeRef],
+    [blobResolver, liveRuntimeRef, presenceStore],
   );
   // Sustained-outage legibility: the connection/identity slot stays an 8px
   // dot by design, so once "reconnecting" outlives the debounce the notices

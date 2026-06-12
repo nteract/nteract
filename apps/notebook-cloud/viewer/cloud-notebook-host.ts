@@ -20,11 +20,15 @@ const unlisten: Unlisten = () => {};
 export interface CreateCloudNotebookHostOptions {
   blobResolver: BlobResolver;
   getRuntime: () => CloudSyncRuntime | null;
+  hasRuntimePeer?: () => boolean;
   openExternalUrl?: (url: string) => void | Promise<void>;
 }
 
 class CloudNotebookHostTransport implements NotebookTransport {
-  constructor(private readonly getRuntime: () => CloudSyncRuntime | null) {}
+  constructor(
+    private readonly getRuntime: () => CloudSyncRuntime | null,
+    private readonly hasRuntimePeer: () => boolean,
+  ) {}
 
   get connected(): boolean {
     return this.getRuntime()?.transport.connected ?? false;
@@ -56,7 +60,7 @@ class CloudNotebookHostTransport implements NotebookTransport {
       if (request.type === "get_history") {
         return historyResultFromLiveNotebook(this.getRuntime(), request);
       }
-      if (request.type === "complete" && !runtime) {
+      if (request.type === "complete" && (!runtime || !this.hasRuntimePeer())) {
         return emptyCompletionResult(request);
       }
     }
@@ -144,9 +148,10 @@ function emptyCompletionResult(
 export function createCloudNotebookHost({
   blobResolver,
   getRuntime,
+  hasRuntimePeer = () => Boolean(getRuntime()),
   openExternalUrl,
 }: CreateCloudNotebookHostOptions): NotebookHost {
-  const transport = new CloudNotebookHostTransport(getRuntime);
+  const transport = new CloudNotebookHostTransport(getRuntime, hasRuntimePeer);
   const openUrl =
     openExternalUrl ??
     ((url: string) => {

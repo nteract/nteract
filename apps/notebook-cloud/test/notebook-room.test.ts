@@ -805,6 +805,61 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.equal(await state.getAlarm(), null, "intentional replacement does not arm stale repair");
   });
 
+  it("keeps runtime peers when replacement workstation attachment publish fails", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const runtimeSocket = new FakeSocket();
+    const runtimePeer = {
+      id: "runtime",
+      socket: runtimeSocket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+        ),
+      ),
+      connectedAt: "2026-06-07T00:00:00.000Z",
+    };
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      setWorkstationAttachment: async () => {
+        throw new Error("publish failed");
+      },
+    } as never);
+
+    const response = await room.fetch(
+      new Request("https://room.internal/internal/n/demo/workstation-attachment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          close_runtime_peers: true,
+          attachment: {
+            workstation_id: "ws-lab2",
+            display_name: "Lab2 workstation",
+            provider: "runtime_peer",
+            default_environment_label: "Current Python",
+            environment_policy: "current_python",
+            status: "connecting",
+            status_message: "Waiting for Lab2 to accept the compute request.",
+            cpu_count: 8,
+            memory_bytes: 16_000_000_000,
+            working_directory: "/home/ubuntu/project",
+            updated_at: "2026-06-07T00:00:01.000Z",
+          },
+        }),
+      }),
+    );
+
+    await state.drain();
+    assert.equal(response.status, 500);
+    assert.equal(harness.hasRuntimePeer(), true);
+    assert.equal(runtimeSocket.closed, false);
+    assert.equal(await state.getAlarm(), null);
+  });
+
   it("projects runtime-peer workstation metadata into the attachment", async () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);
@@ -1244,6 +1299,69 @@ describe("NotebookRoom materialized sync persistence", () => {
       socket: newRuntimeSocket.asCloudflareWebSocket(),
       identity: newRuntimeIdentity,
       connectedAt: "2026-05-22T00:00:01.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(ownerPeer.id, ownerPeer);
+    harness.peers.set(oldRuntimePeer.id, oldRuntimePeer);
+    harness.peers.set(newRuntimePeer.id, newRuntimePeer);
+    harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+    const requestPayload = new TextEncoder().encode(
+      JSON.stringify({ id: "request-1", action: "interrupt_execution" }),
+    );
+
+    await harness.handleMessage(
+      "demo",
+      ownerPeer,
+      encodeTypedFrame(FrameType.REQUEST, requestPayload),
+    );
+
+    assert.equal(oldRuntimeSocket.sent.length, 0);
+    assert.equal(newRuntimeSocket.sent.length, 1);
+    assert.deepEqual(
+      [...newRuntimeSocket.sent[0]],
+      [FrameType.REQUEST, ...Array.from(requestPayload)],
+    );
+  });
+
+  it("breaks equal runtime-peer timestamps in favor of the later connection", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const ownerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const oldRuntimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:old&scope=runtime_peer",
+      ),
+    );
+    const newRuntimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:new&scope=runtime_peer",
+      ),
+    );
+    const ownerSocket = new FakeSocket();
+    const oldRuntimeSocket = new FakeSocket();
+    const newRuntimeSocket = new FakeSocket();
+    const connectedAt = "2026-05-22T00:00:00.000Z";
+    const ownerPeer = {
+      id: "owner",
+      socket: ownerSocket.asCloudflareWebSocket(),
+      identity: ownerIdentity,
+      connectedAt,
+      consecutiveRejectedFrames: 0,
+    };
+    const oldRuntimePeer = {
+      id: "runtime-old",
+      socket: oldRuntimeSocket.asCloudflareWebSocket(),
+      identity: oldRuntimeIdentity,
+      connectedAt,
+      consecutiveRejectedFrames: 0,
+    };
+    const newRuntimePeer = {
+      id: "runtime-new",
+      socket: newRuntimeSocket.asCloudflareWebSocket(),
+      identity: newRuntimeIdentity,
+      connectedAt,
       consecutiveRejectedFrames: 0,
     };
     const harness = roomHarness(room);

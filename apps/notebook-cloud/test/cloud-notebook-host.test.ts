@@ -43,6 +43,7 @@ describe("cloud notebook host", () => {
     const host = createCloudNotebookHost({
       blobResolver: fixtureBlobResolver,
       getRuntime: () => createRuntime("cloud", calls),
+      hasRuntimePeer: () => true,
     });
 
     assert.deepEqual(
@@ -50,6 +51,26 @@ describe("cloud notebook host", () => {
       { result: "cloud" },
     );
     assert.deepEqual(calls, ["cloud:sendRequest:complete"]);
+  });
+
+  it("returns empty hosted completions when the live room has no runtime peer", async () => {
+    const calls: string[] = [];
+    const host = createCloudNotebookHost({
+      blobResolver: fixtureBlobResolver,
+      getRuntime: () => createRuntime("cloud", calls),
+      hasRuntimePeer: () => false,
+    });
+
+    assert.deepEqual(
+      await host.transport.sendRequest({ type: "complete", code: "pri", cursor_pos: 3 }),
+      {
+        result: "completion_result",
+        items: [],
+        cursor_start: 3,
+        cursor_end: 3,
+      },
+    );
+    assert.deepEqual(calls, []);
   });
 
   it("returns empty hosted completions even before the live room is connected", async () => {

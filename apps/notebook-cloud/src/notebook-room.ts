@@ -382,6 +382,8 @@ export class NotebookRoom {
         : "workstation attachment replaced";
     const startedAt = Date.now();
     try {
+      const materializer = this.materializerFor(notebookId);
+      const result = await materializer.setWorkstationAttachment(attachment);
       if (closeRuntimePeers) {
         this.removeRuntimePeers(notebookId, {
           code: 1012,
@@ -389,8 +391,6 @@ export class NotebookRoom {
           suppressRuntimePeerWatch: true,
         });
       }
-      const materializer = this.materializerFor(notebookId);
-      const result = await materializer.setWorkstationAttachment(attachment);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
         await materializer.checkpoint();
@@ -1158,9 +1158,16 @@ export class NotebookRoom {
   }
 
   private activeRuntimePeer(sourcePeerId: string): Peer | undefined {
-    return Array.from(this.peers.values())
-      .filter((peer) => peer.id !== sourcePeerId && peer.identity.scope === "runtime_peer")
-      .sort((a, b) => b.connectedAt.localeCompare(a.connectedAt))[0];
+    let selected: Peer | undefined;
+    for (const peer of this.peers.values()) {
+      if (peer.id === sourcePeerId || peer.identity.scope !== "runtime_peer") {
+        continue;
+      }
+      if (!selected || peer.connectedAt >= selected.connectedAt) {
+        selected = peer;
+      }
+    }
+    return selected;
   }
 
   private forwardFrameToRuntimePeer(
