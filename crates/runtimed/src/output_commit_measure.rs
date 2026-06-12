@@ -10,7 +10,8 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use anyhow::{ensure, Context};
-use runtime_doc::{diff_output_ids, diff_output_ids_in_place, RuntimeStateDoc};
+use automerge::ActorId;
+use runtime_doc::{diff_output_ids, diff_output_ids_in_place, CommsDoc, RuntimeStateDoc};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -19,6 +20,8 @@ use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, DEFAULT_INLINE_THRESHOLD};
 
 const EXECUTION_ID: &str = "exec-output-commit-measure";
+const COMM_OPEN_RUNTIME_ACTOR: &str = "user:perf/agent:runt:00000000";
+const COMM_OPEN_KERNEL_ACTOR: &str = "user:perf/runtime:kernel:00000000";
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,6 +54,21 @@ impl Default for OutputCommitMeasurementConfig {
             output_count: 100,
             payload_bytes: 256,
             kind: OutputCommitKind::DisplayData,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CommOpenMeasurementConfig {
+    pub comm_count: usize,
+    pub state_bytes: usize,
+}
+
+impl Default for CommOpenMeasurementConfig {
+    fn default() -> Self {
+        Self {
+            comm_count: 100,
+            state_bytes: 1024,
         }
     }
 }
@@ -98,6 +116,20 @@ pub struct OutputIdDiffMeasurement {
     pub diff_nanos: u128,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CommOpenMeasurement {
+    pub strategy: &'static str,
+    pub comm_count: usize,
+    pub state_bytes: usize,
+    pub runtime_doc_writes: usize,
+    pub comms_doc_writes: usize,
+    pub committed_topology: usize,
+    pub committed_comm_states: usize,
+    pub runtime_doc_nanos: u128,
+    pub comms_doc_nanos: u128,
+    pub total_nanos: u128,
+}
+
 impl OutputCommitMeasurement {
     fn new(strategy: &'static str, config: OutputCommitMeasurementConfig) -> Self {
         Self {
@@ -116,6 +148,23 @@ impl OutputCommitMeasurement {
             manifest_nanos: 0,
             append_nanos: 0,
             worker_nanos: 0,
+            total_nanos: 0,
+        }
+    }
+}
+
+impl CommOpenMeasurement {
+    fn new(strategy: &'static str, config: CommOpenMeasurementConfig) -> Self {
+        Self {
+            strategy,
+            comm_count: config.comm_count,
+            state_bytes: config.state_bytes,
+            runtime_doc_writes: 0,
+            comms_doc_writes: 0,
+            committed_topology: 0,
+            committed_comm_states: 0,
+            runtime_doc_nanos: 0,
+            comms_doc_nanos: 0,
             total_nanos: 0,
         }
     }
@@ -419,8 +468,228 @@ pub async fn measure_output_id_diff_paths(
     ])
 }
 
+pub fn measure_current_comm_open_loop(
+    config: CommOpenMeasurementConfig,
+) -> anyhow::Result<CommOpenMeasurement> {
+    let started = Instant::now();
+    let mut metrics = CommOpenMeasurement::new("current_per_comm_transactions", config);
+    let mut runtime_doc = RuntimeStateDoc::try_new_with_actor(COMM_OPEN_RUNTIME_ACTOR)?;
+    let mut comms_doc = CommsDoc::try_new_with_actor(COMM_OPEN_RUNTIME_ACTOR)?;
+
+    for index in 0..config.comm_count {
+        let comm_id = measured_comm_id(index);
+        let state = measured_widget_state(index, config.state_bytes);
+        let model_module = state
+            .get("_model_module")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let model_name = state
+            .get("_model_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let runtime_started = Instant::now();
+        runtime_doc.put_comm(
+            &comm_id,
+            "jupyter.widget",
+            model_module,
+            model_name,
+            &serde_json::json!({}),
+            index as u64,
+        )?;
+        metrics.runtime_doc_nanos += runtime_started.elapsed().as_nanos();
+        metrics.runtime_doc_writes += 1;
+
+        let comms_started = Instant::now();
+        let heads = comms_doc.get_heads();
+        comms_doc.transact_at_heads_recovering(
+            &heads,
+            Some(COMM_OPEN_KERNEL_ACTOR),
+            "measure-current-comm-open",
+            |doc| doc.put_comm_state(&comm_id, &state),
+        )?;
+        metrics.comms_doc_nanos += comms_started.elapsed().as_nanos();
+        metrics.comms_doc_writes += 1;
+    }
+
+    metrics.committed_topology = runtime_doc.get_comms().len();
+    metrics.committed_comm_states = comms_doc.get_comms().len();
+    ensure_comm_open_measurement(&metrics)?;
+    metrics.total_nanos = started.elapsed().as_nanos();
+    Ok(metrics)
+}
+
+pub fn measure_batched_comm_open_loop(
+    config: CommOpenMeasurementConfig,
+) -> anyhow::Result<CommOpenMeasurement> {
+    let started = Instant::now();
+    let mut metrics = CommOpenMeasurement::new("batched_comm_open_transactions", config);
+    let mut runtime_doc = RuntimeStateDoc::try_new_with_actor(COMM_OPEN_RUNTIME_ACTOR)?;
+    let mut comms_doc = CommsDoc::try_new_with_actor(COMM_OPEN_RUNTIME_ACTOR)?;
+    let states = measured_widget_states(config);
+
+    let runtime_started = Instant::now();
+    for (index, (comm_id, state)) in states.iter().enumerate() {
+        let model_module = state
+            .get("_model_module")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let model_name = state
+            .get("_model_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        runtime_doc.put_comm(
+            comm_id,
+            "jupyter.widget",
+            model_module,
+            model_name,
+            &serde_json::json!({}),
+            index as u64,
+        )?;
+        metrics.runtime_doc_writes += 1;
+    }
+    metrics.runtime_doc_nanos = runtime_started.elapsed().as_nanos();
+
+    let comms_started = Instant::now();
+    let heads = comms_doc.get_heads();
+    comms_doc.transact_at_heads_recovering(
+        &heads,
+        Some(COMM_OPEN_KERNEL_ACTOR),
+        "measure-batched-comm-open",
+        |doc| {
+            for (comm_id, state) in &states {
+                doc.put_comm_state(comm_id, state)?;
+                metrics.comms_doc_writes += 1;
+            }
+            Ok(())
+        },
+    )?;
+    metrics.comms_doc_nanos = comms_started.elapsed().as_nanos();
+
+    metrics.committed_topology = runtime_doc.get_comms().len();
+    metrics.committed_comm_states = comms_doc.get_comms().len();
+    ensure_comm_open_measurement(&metrics)?;
+    metrics.total_nanos = started.elapsed().as_nanos();
+    Ok(metrics)
+}
+
+pub fn measure_direct_actor_comm_open_loop(
+    config: CommOpenMeasurementConfig,
+) -> anyhow::Result<CommOpenMeasurement> {
+    let started = Instant::now();
+    let mut metrics = CommOpenMeasurement::new("direct_actor_comm_open_writes", config);
+    let mut runtime_doc = RuntimeStateDoc::try_new_with_actor(COMM_OPEN_RUNTIME_ACTOR)?;
+    let mut comms_doc = CommsDoc::try_new_with_actor(COMM_OPEN_RUNTIME_ACTOR)?;
+    let states = measured_widget_states(config);
+
+    let runtime_started = Instant::now();
+    for (index, (comm_id, state)) in states.iter().enumerate() {
+        let model_module = state
+            .get("_model_module")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let model_name = state
+            .get("_model_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        runtime_doc.put_comm(
+            comm_id,
+            "jupyter.widget",
+            model_module,
+            model_name,
+            &serde_json::json!({}),
+            index as u64,
+        )?;
+        metrics.runtime_doc_writes += 1;
+    }
+    metrics.runtime_doc_nanos = runtime_started.elapsed().as_nanos();
+
+    let comms_started = Instant::now();
+    let original_actor = comms_doc.doc().get_actor().clone();
+    comms_doc
+        .doc_mut()
+        .set_actor(ActorId::from(COMM_OPEN_KERNEL_ACTOR.as_bytes()));
+    for (comm_id, state) in &states {
+        comms_doc.put_comm_state(comm_id, state)?;
+        metrics.comms_doc_writes += 1;
+    }
+    comms_doc.doc_mut().set_actor(original_actor);
+    metrics.comms_doc_nanos = comms_started.elapsed().as_nanos();
+
+    metrics.committed_topology = runtime_doc.get_comms().len();
+    metrics.committed_comm_states = comms_doc.get_comms().len();
+    ensure_comm_open_measurement(&metrics)?;
+    metrics.total_nanos = started.elapsed().as_nanos();
+    Ok(metrics)
+}
+
+pub fn measure_comm_open_paths(
+    config: CommOpenMeasurementConfig,
+) -> anyhow::Result<Vec<CommOpenMeasurement>> {
+    Ok(vec![
+        measure_current_comm_open_loop(config)?,
+        measure_batched_comm_open_loop(config)?,
+        measure_direct_actor_comm_open_loop(config)?,
+    ])
+}
+
+fn ensure_comm_open_measurement(metrics: &CommOpenMeasurement) -> anyhow::Result<()> {
+    ensure!(
+        metrics.committed_topology == metrics.comm_count,
+        "{} committed unexpected topology count",
+        metrics.strategy
+    );
+    ensure!(
+        metrics.committed_comm_states == metrics.comm_count,
+        "{} committed unexpected comm state count",
+        metrics.strategy
+    );
+    Ok(())
+}
+
 fn output_commit_measure_blob_root() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("runtimed-output-commit-measure-{}", Uuid::new_v4()))
+}
+
+fn measured_widget_states(config: CommOpenMeasurementConfig) -> Vec<(String, serde_json::Value)> {
+    (0..config.comm_count)
+        .map(|index| {
+            (
+                measured_comm_id(index),
+                measured_widget_state(index, config.state_bytes),
+            )
+        })
+        .collect()
+}
+
+fn measured_comm_id(index: usize) -> String {
+    format!("comm-output-commit-measure-{index:06}")
+}
+
+fn measured_widget_state(index: usize, state_bytes: usize) -> serde_json::Value {
+    let label = format!("Measured widget {index}");
+    let base = serde_json::json!({
+        "_model_module": "@jupyter-widgets/controls",
+        "_model_module_version": "2.0.0",
+        "_model_name": "IntSliderModel",
+        "_view_module": "@jupyter-widgets/controls",
+        "_view_module_version": "2.0.0",
+        "_view_name": "IntSliderView",
+        "description": label,
+        "min": 0,
+        "max": 100,
+        "step": 1,
+        "value": index as i64,
+    });
+
+    let mut object = base.as_object().cloned().unwrap_or_default();
+    let current_len = serde_json::to_string(&object).map(|s| s.len()).unwrap_or(0);
+    let padding_len = state_bytes.saturating_sub(current_len + "\"padding\":\"\"".len());
+    object.insert(
+        "padding".to_string(),
+        serde_json::Value::String("x".repeat(padding_len)),
+    );
+    serde_json::Value::Object(object)
 }
 
 fn measured_output(
@@ -550,5 +819,44 @@ mod tests {
             assert_eq!(metric.removed_outputs, 0);
             assert_eq!(metric.snapshot_outputs, 5);
         }
+    }
+
+    #[test]
+    fn comm_open_measurement_paths_commit_equivalent_state() {
+        let metrics = measure_comm_open_paths(CommOpenMeasurementConfig {
+            comm_count: 4,
+            state_bytes: 256,
+        })
+        .expect("measurement should run");
+
+        assert_eq!(metrics.len(), 3);
+        for metric in metrics {
+            assert_eq!(metric.runtime_doc_writes, 4);
+            assert_eq!(metric.comms_doc_writes, 4);
+            assert_eq!(metric.committed_topology, 4);
+            assert_eq!(metric.committed_comm_states, 4);
+        }
+    }
+
+    #[test]
+    #[ignore = "prints local timing data for runtime comm-open perf investigations"]
+    fn print_comm_open_measurement_paths() {
+        let mut all_metrics = Vec::new();
+        for config in [
+            CommOpenMeasurementConfig {
+                comm_count: 32,
+                state_bytes: 1024,
+            },
+            CommOpenMeasurementConfig {
+                comm_count: 128,
+                state_bytes: 1024,
+            },
+        ] {
+            all_metrics.extend(measure_comm_open_paths(config).expect("measurement should run"));
+        }
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&all_metrics).expect("serialize measurements")
+        );
     }
 }
