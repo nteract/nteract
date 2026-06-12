@@ -3,7 +3,7 @@
 **Status:** Exploration
 **Created:** 2026-06-12
 **Audience:** Product, design, engineering, research, and AI collaborators
-**Promotes to:** ADRs for document model, projection slots, comments, and
+**Promotes to:** ADRs for document model, projection artifacts, comments, and
 hosted storage/API decisions
 
 This memo grounds a possible Markdown/MDX document surface in the current
@@ -28,8 +28,8 @@ Markdown document type:
   metadata comments
 - MDX-like component regions are preserved and rendered only through an approved
   component registry or isolated sandbox
-- comments attach to projected document anchors, source ranges, outputs, and
-  component slots
+- comments attach to projected document anchors, source ranges, output artifacts,
+  and component artifacts
 
 ## Current Source Facts
 
@@ -83,7 +83,8 @@ TypeScript projection shape:
 - `crates/nteract-markdown-wasm/src/lib.rs:252` and `:784` carry byte/UTF-16
   spans into the flattened JSON.
 - The TypeScript plan does not currently expose `isolated_regions`, the root
-  tree, diagnostics, output slots, or component slots.
+  tree, diagnostics, output artifact references, or component artifact
+  references.
 
 ### The Rendered Markdown View Is Already Host-Rendered
 
@@ -207,8 +208,8 @@ Package versions checked with `npm view` and `cargo search` from this workspace:
 | `react-markdown` | lockfile `10.1.0` | `10.1.0` | Current. |
 | `remark` | transitive `15.0.1` | `15.0.1` | Current. |
 | `rehype-raw` | lockfile `7.0.0` | `7.0.0` | Current. |
-| `@lexical/markdown` | not installed | `0.45.0` | Viable editor research, not needed for v0. |
-| `@milkdown/kit` | not installed | `7.21.2` | ProseMirror-based Markdown editor option. |
+| `@lexical/markdown` | not installed | `0.45.0` | Ecosystem reference, not the recommended document model. |
+| `@milkdown/kit` | not installed | `7.21.2` | ProseMirror-based reference, not the recommended document model. |
 | `@markdoc/markdoc` | not installed | `0.5.7` | Safer component-tag alternative to full MDX. |
 | `@automerge/automerge` | Rust fork in repo | `3.2.6` | JS ecosystem has rich text/text APIs, but repo is pinned to nteract fork. |
 | `automerge-repo` | not installed | `0.1.0` | Interesting sync reference, not a direct replacement. |
@@ -237,12 +238,12 @@ Relevant upstream docs:
 - Markdoc tags/schema:
   https://markdoc.dev/docs/tags
 
-The main ecosystem read: CodeMirror remains the lowest-risk v0 choice because it
-matches current nteract editor/presence code and can use decorations/widgets for
-source annotations. ProseMirror/Milkdown/Lexical become interesting only if the
-source/render split proves too awkward for a "rich editor" feel. Full MDX should
-be treated as a component syntax to preserve and selectively render, not as
-arbitrary host-executed JavaScript.
+The main ecosystem read: CodeMirror plus nteract's projection engine is the path.
+It matches current editor/presence code, and the markdown engine already gives us
+block knowledge. ProseMirror/Milkdown/Lexical are useful references, but adopting
+their document model would fight the source/projection architecture we already
+have. Full MDX should be treated as a component syntax to preserve and
+selectively render, not as arbitrary host-executed JavaScript.
 
 ## Proposed Direction
 
@@ -257,22 +258,28 @@ Introduce a first-class document type:
 ```text
 MarkdownDoc
   body: Automerge text/string
-  title: string?
-  frontmatter: map?
-  attachments: map<attachment_id, AttachmentRef>
-  output_slots: map<slot_id, OutputSlot>
-  component_slots: map<slot_id, ComponentSlot>
+  artifact_refs: map<artifact_id, ArtifactRef>
+  output_artifacts: map<artifact_id, OutputArtifact>
+  component_artifacts: map<artifact_id, ComponentArtifact>
   comments_doc_id: string?
   metadata: map
 ```
+
+`body` is the authoring source of truth. Frontmatter lives in the body when the
+author writes frontmatter, and projection derives the current frontmatter view
+from the current body. Output and component declarations also live in the body;
+the sidecar maps resolve the durable artifacts those declarations reference.
+If the body removes or renames a declaration, the artifact can remain stored but
+is no longer rendered until a body declaration references it again.
 
 The local desktop projection can sync `body` to a `.md` file. The hosted room can
 replicate `MarkdownDoc`, `CommentsDoc`, and any runtime/output/component sidecar
 state through the same room/snapshot/ACL patterns as notebooks.
 
-Open design issue: Automerge text gives natural collaborative source editing,
-but long LLM-authored Markdown files may produce heavy tombstone histories. This
-needs a benchmark before committing to a production storage shape.
+Automerge text gives natural collaborative source editing. Long LLM-authored
+Markdown files mean we should evolve document versioning and compaction sooner:
+record a durable version, copy the visible Automerge state into a fresh document
+when history gets too heavy, and keep old snapshots as version history.
 
 ### 2. Keep The Viewer Zen And Projection-Driven
 
@@ -297,14 +304,14 @@ This matches existing source:
 
 ### 3. Treat Code Outputs As Attached Snapshots, Not Execution
 
-For non-executable Markdown, a code block may reference an output slot through a
-structured HTML comment immediately after the block:
+For non-executable Markdown, a code block may reference an output artifact
+through a structured comment immediately after the block:
 
 ````markdown
 ```python
 df.head()
 ```
-<!-- nteract:output {"slot_id":"out_01","execution_id":"exec_abc","source_hash":"sha256:..."} -->
+<!-- nteract:output {"artifact_id":"out_01","execution_id":"exec_abc","source_hash":"sha256:..."} -->
 ````
 
 Rules:
@@ -312,15 +319,21 @@ Rules:
 - The comment is metadata, not an execution instruction.
 - `source_hash` lets the UI mark an output as attached-to-current-source or
   stale-after-edit.
-- `slot_id` is the durable attachment key; `execution_id` is provenance.
-- The projection engine should parse this into `outputSlots`, not surface it as
-  visible document text.
+- `artifact_id` is the durable attachment key in `output_artifacts`;
+  `execution_id` is provenance for the captured output.
+- The projection engine should parse this into output artifact references, not
+  surface it as visible document text.
 - The rendered view should place the output after the code block without showing
   cell boundaries.
 
 Output payloads can be imported from notebooks, copied from runtime snapshots,
 or attached through an MCP/cloud API. They should live in sidecar state or
 attachments, not inline base64 in Markdown by default.
+
+Open syntax check: ordinary Markdown should accept `<!-- nteract:output ... -->`.
+MDX import may require `{/* nteract:output ... */}` instead. The projection
+engine should test and support both forms if MDX import makes HTML comments
+awkward.
 
 ### 4. Preserve MDX, Render Only Approved Components
 
@@ -353,8 +366,8 @@ document
 source_range { utf16_start, utf16_end, snippet_hash? }
 projected_block { block_id, source_span? }
 heading_anchor { slug, source_span? }
-output_slot { slot_id }
-component_slot { slot_id }
+output_artifact { artifact_id }
+component_artifact { artifact_id }
 ```
 
 The projection layer should compute display indexes and badges from
@@ -371,16 +384,17 @@ Cloud/local authority semantics can reuse the ADR:
 ### 6. Extend Presence From Cell-First To Document-First
 
 Current presence is notebook/cell oriented. For Markdown docs we need targets
-that do not require fake cells:
+that do not require fake cells. The room/document channel already scopes the
+target, so the target payload only needs the thing being indicated:
 
 ```ts
 type MarkdownDocumentInteractionTarget =
-  | { kind: "markdown_document"; document_id: string }
-  | { kind: "markdown_source"; document_id: string; source_range?: [number, number] }
-  | { kind: "markdown_block"; document_id: string; block_id: string }
-  | { kind: "markdown_anchor"; document_id: string; anchor_id: string }
-  | { kind: "markdown_output"; document_id: string; slot_id: string }
-  | { kind: "markdown_component"; document_id: string; slot_id: string };
+  | { kind: "markdown_document" }
+  | { kind: "markdown_source"; source_range?: [number, number] }
+  | { kind: "markdown_block"; block_id: string }
+  | { kind: "markdown_anchor"; anchor_id: string }
+  | { kind: "markdown_output"; artifact_id: string }
+  | { kind: "markdown_component"; artifact_id: string };
 ```
 
 Source editor presence can continue to originate in CodeMirror line/column and
@@ -405,60 +419,43 @@ The pragmatic product route is:
 Suggested Cloud API shape:
 
 ```http
-POST /api/markdown-documents
-Content-Type: text/markdown
-
-POST /api/markdown-documents
-Content-Type: application/json
-{
-  "title": "...",
-  "body": "...",
-  "attachments": [],
-  "source": "mcp|desktop|upload"
-}
+POST /api/markdown-documents      # create/import body
+PATCH /api/markdown-documents/:id # edit body or artifact refs
+POST /api/markdown-documents/:id/publish
 ```
 
 Return a document id, edit URL, live URL, and publish URL. Store durable
 snapshots in the same R2/D1 style as notebooks, with a document-kind field rather
 than a parallel hosting system.
 
-Suggested MCP tools:
-
-- `create_markdown_document`
-- `get_markdown_document`
-- `replace_markdown_document`
-- `replace_markdown_range`
-- `append_markdown`
-- `attach_markdown_output`
-- `register_markdown_component`
-- `create_markdown_comment`
-- `reply_markdown_comment`
-- `resolve_markdown_comment`
-- `publish_markdown_document`
+Suggested MCP surface: create/get/update/publish Markdown documents, attach
+artifacts, and create/reply/resolve comments. Keep the first tool set small and
+let range-edit or component-specific tools appear when the route proves the
+workflow.
 
 ## Open Comments
 
 OC-1: Document model
 
-Use Automerge text/string for `body` initially, but benchmark LLM-heavy editing
-and long Markdown plans. The automerge-sync skill notes tombstones accumulate and
-there is no history GC. If long documents churn badly, consider chunked body
-blocks with explicit ordering, but only after measuring.
+Use Automerge text/string for `body` initially. Treat compaction and versioning
+as part of the product path, not as a blocker: record a version, copy visible
+state into a fresh Automerge document when history gets heavy, and retain old
+snapshots as version history. Benchmark LLM-heavy editing so we know when to
+compact.
 
 OC-2: Projection schema v2
 
 The Rust engine has richer structure than the TypeScript plan exposes. Add
 `isolatedRegions`, `root` or a stable tree summary, parse diagnostics,
-`outputSlots`, and `componentSlots` to the WASM/TS schema before building much UI
-on top of the flattened shape.
+`outputArtifacts`, and `componentArtifacts` to the WASM/TS schema before building
+much UI on top of the flattened shape.
 
 OC-3: Editor choice
 
-Stay with CodeMirror plus projection for v0. It already matches the repo's
-presence sender and can annotate source through decorations/widgets. Revisit
-ProseMirror/Milkdown/Lexical only if source/render mode switching fails product
-review. A rich WYSIWYG editor would be a larger document-model choice, not just a
-component swap.
+Stay with CodeMirror plus projection. We already have full block knowledge from
+the markdown engine, and CodeMirror is the raw projection editor. Rich rendered
+editing should lean into the projection/block model rather than introduce a
+separate ProseMirror/Milkdown/Lexical document model.
 
 OC-4: MDX trust and component registry
 
@@ -481,7 +478,7 @@ is made.
 
 OC-7: Output lifecycle
 
-When a code block changes, the output slot should not disappear silently. The
+When a code block changes, the output artifact should not disappear silently. The
 `source_hash` in the metadata comment should drive a visible stale state and an
 API path for reattaching/replacing the output.
 
@@ -510,9 +507,9 @@ but preserve Automerge as the live collaboration source while the app is open.
 
 1. Build an Elements fixture for a Markdown Plan shell:
    left rail outline, rendered Markdown, source editor mode, rendered presence
-   overlays, output-slot placeholders, and comments placeholders.
+   overlays, output-artifact placeholders, and comments placeholders.
 2. Extend the markdown projection engine to parse `<!-- nteract:output ... -->`
-   comments after code blocks into `outputSlots`.
+   comments after code blocks into output artifact references.
 3. Expose `isolated_regions` and component/diagnostic placeholders through the
    WASM/TypeScript projection schema.
 4. Draft a comments ADR amendment for generic document locators.
