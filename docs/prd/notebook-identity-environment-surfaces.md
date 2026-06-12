@@ -64,7 +64,7 @@ execution output.
 ## Non-Goals
 
 - This PRD does not change the actor-label, room ACL, or credential decisions in
-  `identity-and-trust.md` and `hosted-room-authorization.md`.
+  `../adr/identity-and-trust.md` and `../adr/hosted-room-authorization.md`.
 - This PRD does not launch a new sharing product, invite flow, or organization
   permissions model.
 - This PRD does not let shared React components import Cloudflare Worker,

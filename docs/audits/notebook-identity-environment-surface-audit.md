@@ -206,18 +206,18 @@ access, and environment projections as the header and rail.
 
 This pass also tightened nearby docs that affect identity/environment work:
 
-- `apps/notebook-cloud/README.md`, `hosted-notebook-artifacts.md`, and
-  `runtime-state-document-identity.md` now describe the current hybrid snapshot
-  layout: notebook snapshots under the compatibility notebook path and
+- `apps/notebook-cloud/README.md`, `../adr/hosted-notebook-artifacts.md`, and
+  `../adr/runtime-state-document-identity.md` now describe the current hybrid
+  snapshot layout: notebook snapshots under the compatibility notebook path and
   runtime-state snapshots under `docs/{runtimeStateDocId}/...`.
 - `crates/notebook-wire/AGENTS.md` now names protocol v4, NotebookDoc schema v5,
   and `PUT_BLOB` frame `0x08`.
 - `crates/notebook-doc/AGENTS.md` now treats `RuntimeStateDoc` as the durable
   execution/output record instead of teaching broadcast-driven output state.
-- `document-split.md` now names schema v5 and current runtime-doc policy
+- `../adr/document-split.md` now names schema v5 and current runtime-doc policy
   enforcement.
 
-Remaining follow-up: `hosted-room-authorization.md` should keep current
+Remaining follow-up: `../adr/hosted-room-authorization.md` should keep current
 frame-level gating clearly separated from future semantic execution-intent
 dispatch once the next hosted mutation/runtime slices land.
 
