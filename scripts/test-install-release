@@ -128,19 +128,14 @@ grep -q "runt daemon doctor --fix --no-start" "$DARWIN_LOG" || fail "darwin: dae
 grep -q "App:      $APP_DEST" "$WORK/darwin-out.log" || fail "darwin: summary should name the installed app"
 grep -q "not writable" "$WORK/darwin-out.log" && fail "darwin explicit: no fallback note expected"
 
-note "darwin desktop default prefers /Applications, falls back per-user"
-# On this test host /Applications does not exist, so the deterministic
-# outcome of the default is the documented ~/Applications fallback.
-FALLBACK_HOME="$WORK/fallback-home"
-FALLBACK_APP="$FALLBACK_HOME/Applications/nteract.app"
-PATH="$WORK/shim-darwin:$PATH" run_installer "$FALLBACK_HOME" \
-  --from-dir "$WORK/darwin-assets" --no-start > "$WORK/fallback-out.log" 2>&1
-assert_file "$FALLBACK_APP/Contents/MacOS/runt"
-assert_link "$FALLBACK_HOME/.local/bin/runt" "$FALLBACK_APP/Contents/MacOS/runt"
-if [[ ! -d /Applications ]]; then
-  grep -q "not writable; installing to $FALLBACK_HOME/Applications" "$WORK/fallback-out.log" \
-    || fail "darwin default: missing fallback note"
-fi
+note "darwin desktop default installs to ~/Applications (per-user by design)"
+DEFAULT_HOME="$WORK/default-home"
+DEFAULT_APP="$DEFAULT_HOME/Applications/nteract.app"
+PATH="$WORK/shim-darwin:$PATH" run_installer "$DEFAULT_HOME" \
+  --from-dir "$WORK/darwin-assets" --no-start > "$WORK/default-out.log" 2>&1
+assert_file "$DEFAULT_APP/Contents/MacOS/runt"
+assert_link "$DEFAULT_HOME/.local/bin/runt" "$DEFAULT_APP/Contents/MacOS/runt"
+grep -q "App:      $DEFAULT_APP" "$WORK/default-out.log" || fail "darwin default: summary should name ~/Applications app"
 
 note "darwin desktop reinstall replaces the bundle"
 PATH="$WORK/shim-darwin:$PATH" run_installer "$DARWIN_HOME" \
