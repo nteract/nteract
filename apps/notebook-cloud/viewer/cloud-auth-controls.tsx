@@ -60,9 +60,11 @@ export function CloudNotebookEditModeButton({
 export function CloudNotebookSignInButton({
   authConfig,
   authState,
+  idleLabel,
 }: {
   authConfig: CloudViewerAuthConfig;
   authState: CloudPrototypeAuthState;
+  idleLabel?: string;
 }) {
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +73,7 @@ export function CloudNotebookSignInButton({
     return null;
   }
   const copy = cloudNotebookSignInCopy(authState, authAction, error);
+  const label = idleLabel && authAction === "idle" && !error ? idleLabel : copy.label;
 
   const beginOidcAuth = async () => {
     if (!authConfig.oidc) return;
@@ -99,7 +102,7 @@ export function CloudNotebookSignInButton({
       onClick={beginOidcAuth}
     >
       <LogIn aria-hidden="true" />
-      <span>{copy.label}</span>
+      <span>{label}</span>
     </button>
   );
 }

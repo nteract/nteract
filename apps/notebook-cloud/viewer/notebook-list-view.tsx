@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   AlertCircle,
+  ArrowUpRight,
   BookOpen,
   FilePlus2,
-  KeyRound,
   Loader2,
   LogOut,
   RotateCcw,
+  Sparkles,
 } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import {
@@ -285,34 +286,25 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
           <p>{headerDetail}</p>
         </div>
         <div className="cloud-notebook-list-actions">
-          <button
-            type="button"
-            disabled={!signedIn || listState.kind === "loading"}
-            onClick={refreshList}
-          >
-            <RotateCcw aria-hidden="true" />
-            Refresh
-          </button>
-          <button
-            type="button"
-            disabled={!signedIn || createState === "starting"}
-            onClick={openCreateForm}
-          >
-            {createState === "starting" ? (
-              <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
-            ) : (
-              <FilePlus2 aria-hidden="true" />
-            )}
-            {createState === "starting" ? "Creating" : "New notebook"}
-          </button>
-          {hasExplicitAuth || hasAppSession ? null : (
-            <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
-          )}
           {signedIn ? (
-            <button type="button" onClick={signOut}>
-              <LogOut aria-hidden="true" />
-              Sign out
-            </button>
+            <>
+              <button type="button" disabled={listState.kind === "loading"} onClick={refreshList}>
+                <RotateCcw aria-hidden="true" />
+                Refresh
+              </button>
+              <button type="button" disabled={createState === "starting"} onClick={openCreateForm}>
+                {createState === "starting" ? (
+                  <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+                ) : (
+                  <FilePlus2 aria-hidden="true" />
+                )}
+                {createState === "starting" ? "Creating" : "New notebook"}
+              </button>
+              <button type="button" onClick={signOut}>
+                <LogOut aria-hidden="true" />
+                Sign out
+              </button>
+            </>
           ) : null}
         </div>
       </header>
@@ -368,10 +360,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
             <span>Loading notebooks</span>
           </div>
         ) : listState.kind === "signed_out" ? (
-          <div className="cloud-notebook-list-state" data-kind="signed-out">
-            <KeyRound aria-hidden="true" />
-            <span>Sign in to view notebooks.</span>
-          </div>
+          <CloudNotebookSignedOutPanel authConfig={authConfig} authState={authState} />
         ) : listState.kind === "error" ? (
           <div className="cloud-notebook-list-state" data-kind="error" role="alert">
             <AlertCircle aria-hidden="true" />
@@ -406,6 +395,41 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   );
 }
 
+function CloudNotebookSignedOutPanel({
+  authConfig,
+  authState,
+}: {
+  authConfig: CloudViewerAuthConfig;
+  authState: CloudPrototypeAuthState;
+}) {
+  return (
+    <div className="cloud-notebook-signed-out" aria-labelledby="cloud-notebook-signed-out-title">
+      <div className="cloud-notebook-signed-out-copy">
+        <div className="cloud-notebook-signed-out-kicker">
+          <Sparkles aria-hidden="true" />
+          Cloud preview
+        </div>
+        <h2 id="cloud-notebook-signed-out-title">Bring a notebook room to life.</h2>
+        <p>
+          Sign in to create live notebooks, share work, and attach compute when the document is
+          ready to run.
+        </p>
+      </div>
+      <div className="cloud-notebook-signed-out-actions">
+        <CloudNotebookSignInButton
+          authConfig={authConfig}
+          authState={authState}
+          idleLabel="Sign in with Anaconda"
+        />
+        <a href="https://nteract.io/" target="_blank" rel="noreferrer">
+          Visit nteract.io
+          <ArrowUpRight aria-hidden="true" />
+        </a>
+      </div>
+    </div>
+  );
+}
+
 function cloudNotebookListHeaderDetail(
   authState: CloudPrototypeAuthState,
   hasAppSession: boolean,
@@ -414,7 +438,7 @@ function cloudNotebookListHeaderDetail(
     return "Session expired";
   }
   if (authState.mode === "anonymous" && !hasAppSession) {
-    return "Signed out";
+    return "Cloud preview";
   }
   const firstName = cloudNotebookListFirstName(authState);
   return firstName ? `by ${firstName}` : "Signed in";
