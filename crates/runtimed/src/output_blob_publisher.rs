@@ -230,7 +230,10 @@ fn apply_auth_headers(
     auth: &CloudAuth,
 ) -> reqwest::RequestBuilder {
     match auth {
-        CloudAuth::OidcBearer { token } => request.bearer_auth(token),
+        // Workstation credentials share OIDC's wire shape (plain bearer).
+        CloudAuth::OidcBearer { token } | CloudAuth::WorkstationCredential { token } => {
+            request.bearer_auth(token)
+        }
         CloudAuth::AnacondaApiKey { token } => request
             .bearer_auth(token)
             .header("X-Notebook-Cloud-Auth-Provider", "anaconda-api-key"),

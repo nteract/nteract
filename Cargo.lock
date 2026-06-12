@@ -7426,6 +7426,7 @@ dependencies = [
  "notify",
  "nteract-telemetry",
  "petname",
+ "reqwest 0.12.28",
  "rmcp",
  "runt-mcp",
  "runt-publish",

@@ -3,6 +3,7 @@
 
 extern crate runtimed_client as runtimed;
 mod notebook_cli;
+mod workstation_cli;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -177,6 +178,11 @@ enum Commands {
     Nb {
         #[command(subcommand)]
         command: Box<notebook_cli::NotebookCommands>,
+    },
+    /// Offer this machine's compute to hosted notebooks (pair, run, status)
+    Workstation {
+        #[command(subcommand)]
+        command: workstation_cli::WorkstationCommands,
     },
 
     // =========================================================================
@@ -558,6 +564,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
         }
         Some(Commands::Diagnostics { output }) => diagnostics_command(output).await?,
         Some(Commands::Nb { command }) => notebook_cli::command(*command).await?,
+        Some(Commands::Workstation { command }) => workstation_cli::command(command).await?,
         Some(Commands::Config { command }) => config_command(command).await?,
         Some(Commands::Mcp { no_show, socket }) => {
             if let Some(socket) = socket {

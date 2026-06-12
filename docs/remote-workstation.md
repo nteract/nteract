@@ -31,7 +31,84 @@ live.)
 For air-gapped installs, download the release assets yourself and use
 `--from-dir`.
 
-## Attach to a hosted notebook
+## Pair and serve (recommended)
+
+The pairing flow needs no externally issued credential
+(`docs/adr/hosted-credential-transport.md`, Decision 9):
+
+1. In the hosted workstation panel, mint a pairing code. Codes look like
+   `XXXX-XXXX-XXXX`, live 10 minutes, and are single use.
+2. On the workstation:
+
+```bash
+runt workstation connect https://app.runt.run --code XXXX-XXXX-XXXX
+```
+
+   (Omit `--code` to be prompted.) This redeems the code for a long-lived
+   workstation credential scoped to the workstation surface only, stores it
+   at `~/.config/nteract/workstation.json` (mode 0600), and registers the
+   workstation so it appears in the panel immediately. `--id` / `--name`
+   override the default `ws-<hostname>` identity. If the code is rejected,
+   mint a fresh one from the panel — codes expire and cannot be reused.
+
+3. Serve attach requests:
+
+```bash
+runt workstation run
+```
+
+   This launches `runtimed workstation-agent`, which heartbeats the
+   registration, polls for attach jobs, and spawns one
+   `runtimed cloud-runtime-agent` runtime peer per job (pending → accepted →
+   running → completed/failed). The credential rides the environment
+   (`RUNT_CLOUD_TOKEN`), never argv. `RUNT_CLOUD_TOKEN` / `RUNT_CLOUD_URL`
+   environment variables override the stored credential when set.
+
+4. Check what the credential sees:
+
+```bash
+runt workstation status          # workstations, status, last-seen, default
+runt workstation status --json
+```
+
+In the hosted notebook, attaching compute to a workstation dispatches an
+attach job; the agent accepts it and the runtime peer attaches to the room as
+`runtime_peer` over an outbound WebSocket. The peer reconnects with backoff
+across room evictions and network blips and keeps the kernel alive across
+reconnects; a clean room close does not tear the kernel down. If the agent
+restarts, it adopts runtime peers that are still alive (per-job pid + log
+files under the daemon cache) and reports the ones that are gone.
+
+## Run it as a service
+
+The installer's systemd unit runs the *daemon*. To serve attach requests
+permanently, add a user unit for the workstation agent (after a one-time
+`runt workstation connect`):
+
+```ini
+# ~/.config/systemd/user/nteract-workstation.service
+[Unit]
+Description=nteract workstation agent
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/runt workstation run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user enable --now nteract-workstation
+```
+
+## Attach a single room directly (legacy / dev)
+
+Before the pairing flow, the operator path was a per-notebook agent with an
+externally issued bearer. It still works and remains useful for dev and for
+deployments that issue their own credentials:
 
 1. In the hosted notebook, grant the workstation principal an explicit
    `runtime_peer` ACL row (owner alone is not sufficient — compute access is
@@ -47,48 +124,17 @@ RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \
 
 The credential always rides the environment, never argv. Defaults: scope
 `runtime_peer`, auth kind `oidc` (use `--auth-kind anaconda-key` for Anaconda
-API keys). Prefer API-key auth for long-lived headless workstations; OIDC
-bearers are best for browser-coupled sessions where refresh is active. Blob
-root defaults under the daemon's standard cache. `--python-path`
-launches a kernel in that interpreter immediately on attach
-(launch-on-attach); omit it to attach idle and wait for the room to dispatch
-work. `--workstation-id` / `--workstation-display-name` set the non-secret
-identity shown in the notebook's workstation panel.
+API keys, `--auth-kind workstation` for a pairing-flow credential). Blob root
+defaults under the daemon's standard cache. `--python-path` launches a kernel
+in that interpreter immediately on attach (launch-on-attach); omit it to
+attach idle and wait for the room to dispatch work. `--workstation-id` /
+`--workstation-display-name` set the non-secret identity shown in the
+notebook's workstation panel.
 
-The agent reconnects with backoff across room evictions and network blips and
-keeps the kernel alive across reconnects; a clean room close does not tear the
-kernel down.
-
-## Run it as a service
-
-The installer's systemd unit runs the *daemon*. To keep a long-lived agent
-attached to a specific room, add a user unit alongside it:
-
-```ini
-# ~/.config/systemd/user/nteract-workstation@.service
-[Unit]
-Description=nteract workstation agent for notebook %i
-After=network-online.target
-
-[Service]
-Environment=RUNT_CLOUD_AUTH_KIND=anaconda-key
-EnvironmentFile=%h/.config/nteract/workstation.env
-ExecStart=%h/.local/bin/runtimed cloud-runtime-agent \
-  --auth-kind anaconda-key --cloud-url https://app.runt.run --notebook-id %i \
-  --workstation-id %H
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
-
-Put `RUNT_CLOUD_TOKEN=...` in `~/.config/nteract/workstation.env` (mode 0600),
-then:
-
-```bash
-systemctl --user enable --now nteract-workstation@<notebook-id>
-```
+The Node connector (`apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`)
+is the dev-loop equivalent of `runtimed workstation-agent` and keeps working
+against the same attach-job surface with `NTERACT_API_KEY` or
+`NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN`.
 
 For browser-coupled OIDC peers whose token expires, mint fresh tokens via a
 refresher (the transport supports per-connect refresh; see
@@ -123,8 +169,12 @@ workstation panel surfaces attachment state. Inbound kernel lifecycle dispatch
 ## Diagnostics
 
 ```bash
+runt workstation status     # workstations the credential can see
 runt daemon status          # daemon state, pool sizes
 runt daemon logs -f         # tail the daemon log
 runt diagnostics            # bundle logs + system info into an archive
-journalctl --user -u 'nteract-workstation@*'   # agent service logs
+journalctl --user -u nteract-workstation      # agent service logs
 ```
+
+Per-job runtime peer logs land under the daemon cache
+(`~/.cache/runt*/workstation-agent/<job>/runtime-peer.log`).
