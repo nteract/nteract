@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# Install a published nteract Linux release for the current user.
+# Install a published nteract release for the current user (Linux x64,
+# macOS Apple silicon / Intel). The file keeps its historical
+# `install-linux-release` name because released installers and
+# https://sh.nteract.io fetch it by that asset name.
 #
-# Intended future entrypoint:
+# Entrypoint:
 #   curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash
 #
-# Installs the AppImage plus runt/runtimed/nteract-mcp sidecars into a durable
-# per-user directory, links commands into ~/.local/bin, repairs/installs the
-# user systemd daemon with `runt daemon doctor --fix`, and starts it by default.
+# Linux installs the AppImage plus runt/runtimed/nteract-mcp sidecars into a
+# durable per-user directory and links commands into ~/.local/bin. macOS
+# installs the signed .app bundle (which carries the same sidecars in
+# Contents/MacOS) into ~/Applications and links the commands from there.
+# Both repair/install the per-user daemon service with
+# `runt daemon doctor --fix` (systemd on Linux, launchd on macOS) and start
+# it by default.
 
 set -euo pipefail
 
@@ -27,18 +34,27 @@ Options:
   --prefix <dir>       Install root (default: $XDG_DATA_HOME/nteract/<channel>,
                        or ~/.local/share/nteract/<channel>).
   --bin-dir <dir>      Symlink directory (default: ~/.local/bin).
-  --headless           Skip the desktop AppImage: install only runt, runtimed,
+  --headless           Skip the desktop app: install only runt, runtimed,
                        and nteract-mcp. For remote workstations (Outerbounds,
                        JupyterHub) that offer compute to hosted notebooks.
                        See docs/remote-workstation.md.
+  --applications-dir <dir>
+                       macOS only: where the .app bundle is installed
+                       (default: ~/Applications — the install is per-user
+                       by design, like the daemon service).
   --no-start           Install/repair the daemon service but do not start it.
   -h, --help           Show this help.
 
-Installs, for stable:
+Installs, for stable on Linux x64:
   nteract-stable-linux-x64.AppImage -> <prefix>/nteract.AppImage   (unless --headless)
   runt-linux-x64                    -> <prefix>/bin/runt
   runtimed-linux-x64                -> <prefix>/bin/runtimed
   nteract-mcp-linux-x64             -> <prefix>/bin/nteract-mcp
+
+For stable on macOS (arm64/x64), one bundle carries app and sidecars:
+  nteract-stable-darwin-<arch>.app.tar.gz -> ~/Applications/nteract.app
+  (--headless keeps the bundle under <prefix> instead and skips
+   Applications entirely; commands link to <bundle>/Contents/MacOS)
 
 Then links:
   ~/.local/bin/nteract   (unless --headless)
@@ -46,7 +62,7 @@ Then links:
   ~/.local/bin/runtimed
   ~/.local/bin/nteract-mcp
 
-For nightly, the installed AppImage and public commands are channel-suffixed:
+For nightly, the installed app and public commands are channel-suffixed:
   ~/.local/bin/nteract-nightly
   ~/.local/bin/runt-nightly
   ~/.local/bin/runtimed-nightly
@@ -64,15 +80,23 @@ require_option_value() {
   fi
 }
 
-if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "nteract Linux installer can only run on Linux." >&2
-  exit 1
-fi
-
-case "$(uname -m)" in
-  x86_64|amd64) ARCH="x64" ;;
+case "$(uname -s):$(uname -m)" in
+  Linux:x86_64|Linux:amd64)
+    OS="linux"
+    ARCH="x64"
+    ;;
+  Darwin:arm64)
+    OS="darwin"
+    ARCH="arm64"
+    ;;
+  Darwin:x86_64)
+    OS="darwin"
+    ARCH="x64"
+    ;;
   *)
-    echo "Unsupported architecture: $(uname -m). Only Linux x64 release assets exist today." >&2
+    echo "Unsupported platform: $(uname -s) $(uname -m)." >&2
+    echo "Release assets exist for Linux x64 and macOS (Apple silicon, Intel)." >&2
+    echo "Windows users: download the installer from https://github.com/nteract/nteract/releases" >&2
     exit 1
     ;;
 esac
@@ -88,6 +112,7 @@ HEADLESS=0
 XDG_DATA_HOME_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}"
 PREFIX=""
 BIN_DIR="$HOME/.local/bin"
+APPLICATIONS_DIR="$HOME/Applications"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -119,6 +144,11 @@ while [[ $# -gt 0 ]]; do
     --bin-dir)
       require_option_value "$1" "${2:-}"
       BIN_DIR="${2:-}"
+      shift 2
+      ;;
+    --applications-dir)
+      require_option_value "$1" "${2:-}"
+      APPLICATIONS_DIR="${2:-}"
       shift 2
       ;;
     --headless)
@@ -182,6 +212,10 @@ else
   APPIMAGE_NAME="nteract-nightly"
 fi
 
+# One macOS bundle carries the app and the runt/runtimed/nteract-mcp sidecars
+# in Contents/MacOS; there are no standalone darwin daemon/mcp assets.
+BUNDLE_ASSET="nteract-$CHANNEL-darwin-$ARCH.app.tar.gz"
+
 APPIMAGE_DEST="$PREFIX/$APPIMAGE_NAME.AppImage"
 SIDE_BIN_DIR="$PREFIX/bin"
 TMP_DIR="$(mktemp -d)"
@@ -227,35 +261,94 @@ atomic_install() {
   echo "Installed $dest"
 }
 
-mkdir -p "$PREFIX" "$SIDE_BIN_DIR" "$BIN_DIR"
+install_app_bundle() {
+  local archive="$1"
+  local dest_dir="$2"
 
-if [[ "$HEADLESS" == "0" ]]; then
-  fetch_asset "$APPIMAGE_ASSET" "$TMP_DIR/$APPIMAGE_ASSET"
-fi
-fetch_asset "$CLI_ASSET" "$TMP_DIR/$CLI_NAME"
-fetch_asset "$DAEMON_ASSET" "$TMP_DIR/$DAEMON_NAME"
-fetch_asset "$MCP_ASSET" "$TMP_DIR/$MCP_NAME"
+  local extract_dir="$TMP_DIR/bundle"
+  mkdir -p "$extract_dir"
+  tar -xzf "$archive" -C "$extract_dir"
+  local app_src
+  app_src="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -name '*.app' -type d | head -n 1)"
+  if [[ -z "$app_src" ]]; then
+    echo "No .app bundle found inside $archive" >&2
+    exit 1
+  fi
+  APP_BASENAME="$(basename "$app_src")"
+  APP_DEST="$dest_dir/$APP_BASENAME"
 
-if [[ "$HEADLESS" == "0" ]]; then
-  atomic_install "$TMP_DIR/$APPIMAGE_ASSET" "$APPIMAGE_DEST"
+  mkdir -p "$dest_dir"
+  rm -rf "$APP_DEST.new"
+  mv "$app_src" "$APP_DEST.new"
+  rm -rf "$APP_DEST"
+  mv "$APP_DEST.new" "$APP_DEST"
+  echo "Installed $APP_DEST"
+}
+
+mkdir -p "$PREFIX" "$BIN_DIR"
+
+if [[ "$OS" == "linux" ]]; then
+  mkdir -p "$SIDE_BIN_DIR"
+
+  if [[ "$HEADLESS" == "0" ]]; then
+    fetch_asset "$APPIMAGE_ASSET" "$TMP_DIR/$APPIMAGE_ASSET"
+  fi
+  fetch_asset "$CLI_ASSET" "$TMP_DIR/$CLI_NAME"
+  fetch_asset "$DAEMON_ASSET" "$TMP_DIR/$DAEMON_NAME"
+  fetch_asset "$MCP_ASSET" "$TMP_DIR/$MCP_NAME"
+
+  if [[ "$HEADLESS" == "0" ]]; then
+    atomic_install "$TMP_DIR/$APPIMAGE_ASSET" "$APPIMAGE_DEST"
+  fi
+  atomic_install "$TMP_DIR/$CLI_NAME" "$SIDE_BIN_DIR/$CLI_NAME"
+  atomic_install "$TMP_DIR/$DAEMON_NAME" "$SIDE_BIN_DIR/$DAEMON_NAME"
+  atomic_install "$TMP_DIR/$MCP_NAME" "$SIDE_BIN_DIR/$MCP_NAME"
+
+  RUNT_BIN="$SIDE_BIN_DIR/$CLI_NAME"
+  DAEMON_BIN="$SIDE_BIN_DIR/$DAEMON_NAME"
+  MCP_BIN="$SIDE_BIN_DIR/$MCP_NAME"
+else
+  # macOS: the signed .app bundle is the only artifact; it carries the
+  # runt/runtimed/nteract-mcp sidecars in Contents/MacOS. Desktop installs
+  # place it where Finder, Spotlight, and the channel's app-launch
+  # candidates look; headless installs keep it under the prefix so a
+  # workstation box never grows an Applications entry.
+  fetch_asset "$BUNDLE_ASSET" "$TMP_DIR/$BUNDLE_ASSET"
+  if [[ "$HEADLESS" == "0" ]]; then
+    # ~/Applications, not /Applications: the whole install is per-user by
+    # design (per-user daemon service, per-user bin links), and the
+    # channel's app-launch candidates search ~/Applications too.
+    install_app_bundle "$TMP_DIR/$BUNDLE_ASSET" "$APPLICATIONS_DIR"
+  else
+    install_app_bundle "$TMP_DIR/$BUNDLE_ASSET" "$PREFIX"
+  fi
+
+  MACOS_BIN="$APP_DEST/Contents/MacOS"
+  for sidecar in runt runtimed nteract-mcp; do
+    if [[ ! -x "$MACOS_BIN/$sidecar" ]]; then
+      echo "Bundle is missing expected sidecar: $MACOS_BIN/$sidecar" >&2
+      exit 1
+    fi
+  done
+
+  RUNT_BIN="$MACOS_BIN/runt"
+  DAEMON_BIN="$MACOS_BIN/runtimed"
+  MCP_BIN="$MACOS_BIN/nteract-mcp"
 fi
-atomic_install "$TMP_DIR/$CLI_NAME" "$SIDE_BIN_DIR/$CLI_NAME"
-atomic_install "$TMP_DIR/$DAEMON_NAME" "$SIDE_BIN_DIR/$DAEMON_NAME"
-atomic_install "$TMP_DIR/$MCP_NAME" "$SIDE_BIN_DIR/$MCP_NAME"
 
 # Public command links. Stable owns `nteract`; nightly owns `nteract-nightly`
 # so the two channels can be installed side-by-side without clobbering launchers.
-if [[ "$HEADLESS" == "0" ]]; then
+if [[ "$OS" == "linux" && "$HEADLESS" == "0" ]]; then
   ln -sfn "$APPIMAGE_DEST" "$BIN_DIR/$APPIMAGE_NAME"
   echo "Linked $BIN_DIR/$APPIMAGE_NAME -> $APPIMAGE_DEST"
 fi
-ln -sfn "$SIDE_BIN_DIR/$CLI_NAME" "$BIN_DIR/$CLI_NAME"
-ln -sfn "$SIDE_BIN_DIR/$DAEMON_NAME" "$BIN_DIR/$DAEMON_NAME"
-ln -sfn "$SIDE_BIN_DIR/$MCP_NAME" "$BIN_DIR/$MCP_NAME"
+ln -sfn "$RUNT_BIN" "$BIN_DIR/$CLI_NAME"
+ln -sfn "$DAEMON_BIN" "$BIN_DIR/$DAEMON_NAME"
+ln -sfn "$MCP_BIN" "$BIN_DIR/$MCP_NAME"
 
-echo "Linked $BIN_DIR/$CLI_NAME -> $SIDE_BIN_DIR/$CLI_NAME"
-echo "Linked $BIN_DIR/$DAEMON_NAME -> $SIDE_BIN_DIR/$DAEMON_NAME"
-echo "Linked $BIN_DIR/$MCP_NAME -> $SIDE_BIN_DIR/$MCP_NAME"
+echo "Linked $BIN_DIR/$CLI_NAME -> $RUNT_BIN"
+echo "Linked $BIN_DIR/$DAEMON_NAME -> $DAEMON_BIN"
+echo "Linked $BIN_DIR/$MCP_NAME -> $MCP_BIN"
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   echo "Note: $BIN_DIR is not on PATH for this shell. Add it to use nteract/runt commands directly." >&2
@@ -268,15 +361,20 @@ if [[ "$NO_START" == "1" ]]; then
   DOCTOR_ARGS+=(--no-start)
 fi
 
-echo "Repairing daemon service with $SIDE_BIN_DIR/$CLI_NAME ${DOCTOR_ARGS[*]}"
-env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$SIDE_BIN_DIR:$BIN_DIR:$PATH" \
-  "$SIDE_BIN_DIR/$CLI_NAME" "${DOCTOR_ARGS[@]}"
+RUNT_DIR="$(dirname "$RUNT_BIN")"
+echo "Repairing daemon service with $RUNT_BIN ${DOCTOR_ARGS[*]}"
+env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$RUNT_DIR:$BIN_DIR:$PATH" \
+  "$RUNT_BIN" "${DOCTOR_ARGS[@]}"
 
 echo
 echo "nteract $CHANNEL install complete."
 if [[ "$HEADLESS" == "0" ]]; then
-  echo "AppImage: $APPIMAGE_DEST"
-  echo "Launcher: $BIN_DIR/$APPIMAGE_NAME"
+  if [[ "$OS" == "linux" ]]; then
+    echo "AppImage: $APPIMAGE_DEST"
+    echo "Launcher: $BIN_DIR/$APPIMAGE_NAME"
+  else
+    echo "App:      $APP_DEST"
+  fi
 fi
 echo "CLI:      $BIN_DIR/$CLI_NAME"
 echo "Daemon:   $BIN_DIR/$DAEMON_NAME"
@@ -284,13 +382,15 @@ echo "MCP:      $BIN_DIR/$MCP_NAME"
 if [[ "$NO_START" == "1" ]]; then
   echo "Daemon was installed/repaired but not started (--no-start). Start with: $CLI_NAME daemon start"
 else
-  env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$SIDE_BIN_DIR:$BIN_DIR:$PATH" \
-    "$SIDE_BIN_DIR/$CLI_NAME" daemon status || true
+  env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$RUNT_DIR:$BIN_DIR:$PATH" \
+    "$RUNT_BIN" daemon status || true
 fi
 if [[ "$HEADLESS" == "1" ]]; then
   echo
   echo "Headless workstation install. To offer this machine's compute to a hosted"
-  echo "notebook, see docs/remote-workstation.md, or run:"
-  echo "  RUNT_CLOUD_TOKEN=... $DAEMON_NAME cloud-runtime-agent \\"
-  echo "    --cloud-url https://app.runt.run --notebook-id <id> --python-path \$(command -v python3)"
+  echo "notebook, mint a pairing code from the notebook's workstation panel, then:"
+  echo "  $CLI_NAME workstation connect https://app.runt.run --code <code>"
+  echo "  $CLI_NAME workstation run"
+  echo "(Releases without 'runt workstation' can use the cloud-runtime-agent flow"
+  echo "in docs/remote-workstation.md.)"
 fi

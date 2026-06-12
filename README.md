@@ -8,20 +8,24 @@ Built on [jupyter-zmq-client](https://crates.io/crates/jupyter-zmq-client) and [
 
 Download the latest release from [GitHub Releases](https://github.com/nteract/nteract/releases).
 
-Linux desktop users should use the AppImage from GitHub Releases, or run
-`scripts/install-linux-release` to install the AppImage plus CLI/daemon and
-the per-user systemd service in one step. DEB/RPM/APT installs are not
-currently supported because `runtimed` is a per-user daemon managed by the app
-and CLI, not by system package-manager scripts.
+Linux x64 and macOS (Apple silicon or Intel) can install with one command —
+the AppImage or signed .app bundle plus CLI/daemon and the per-user service
+(systemd or launchd) in one step:
 
-For remote Linux workstations (Outerbounds, JupyterHub) that offer compute to
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash
+```
+
+macOS users can equally drag the DMG from GitHub Releases. DEB/RPM/APT
+installs are not currently supported because `runtimed` is a per-user daemon
+managed by the app and CLI, not by system package-manager scripts.
+
+For remote workstations (Outerbounds, JupyterHub) that offer compute to
 hosted notebooks, use the headless one-liner — see
 [Remote workstations](docs/remote-workstation.md):
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSfL \
-  https://raw.githubusercontent.com/nteract/nteract/main/scripts/install-linux-release | \
-  bash -s -- --headless
+curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless
 ```
 
 The desktop app bundles everything — `runt` CLI and `runtimed` daemon.

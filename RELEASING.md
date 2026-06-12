@@ -26,7 +26,7 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 | macOS ARM64 (Apple Silicon) | `nteract-{channel}-darwin-arm64.dmg` |
 | Windows x64 | `nteract-{channel}-windows-x64.exe` |
 | Linux x64 | `nteract-{channel}-linux-x64.AppImage` |
-| Linux installer script | `install-linux-release` |
+| Installer script (Linux x64, macOS) | `install-linux-release` |
 | CLI (macOS ARM64) | `runt-darwin-arm64` |
 | CLI (Linux x64) | `runt-linux-x64` |
 

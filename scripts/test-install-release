@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Fixture tests for scripts/install-linux-release.
+#
+# Runs the real installer against --from-dir fixtures with HOME pointed at a
+# sandbox. Darwin code paths run on any host through a PATH-shimmed `uname`,
+# so CI on Linux still covers the macOS bundle install, link layout, and
+# headless variant.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALLER="$SCRIPT_DIR/install-linux-release"
+
+WORK="$(mktemp -d)"
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+
+FAILURES=0
+note() { printf '\n=== %s ===\n' "$1"; }
+fail() {
+  echo "FAIL: $1" >&2
+  FAILURES=$((FAILURES + 1))
+}
+assert_link() {
+  local link="$1"
+  local target="$2"
+  if [[ "$(readlink "$link" 2>/dev/null)" != "$target" ]]; then
+    fail "$link should link to $target (got: $(readlink "$link" 2>/dev/null || echo '<missing>'))"
+  fi
+}
+assert_file() {
+  [[ -e "$1" ]] || fail "expected $1 to exist"
+}
+assert_missing() {
+  [[ ! -e "$1" ]] || fail "expected $1 to be absent"
+}
+
+make_fake_tool() {
+  # A recording binary: appends its argv to calls.log next to the fixture
+  # root so tests can assert the daemon doctor/status invocations.
+  local path="$1"
+  local log="$2"
+  mkdir -p "$(dirname "$path")"
+  cat > "$path" <<EOF
+#!/usr/bin/env bash
+echo "\$(basename "\$0") \$*" >> "$log"
+exit 0
+EOF
+  chmod 0755 "$path"
+}
+
+make_linux_fixtures() {
+  local dir="$1"
+  local log="$2"
+  mkdir -p "$dir"
+  make_fake_tool "$dir/runt-linux-x64" "$log"
+  make_fake_tool "$dir/runtimed-linux-x64" "$log"
+  make_fake_tool "$dir/nteract-mcp-linux-x64" "$log"
+  echo "fake appimage" > "$dir/nteract-stable-linux-x64.AppImage"
+}
+
+make_darwin_fixtures() {
+  local dir="$1"
+  local log="$2"
+  local stage="$dir/.stage"
+  mkdir -p "$dir" "$stage/nteract.app/Contents/MacOS"
+  for tool in nteract runt runtimed nteract-mcp; do
+    make_fake_tool "$stage/nteract.app/Contents/MacOS/$tool" "$log"
+  done
+  tar -czf "$dir/nteract-stable-darwin-arm64.app.tar.gz" -C "$stage" "nteract.app"
+  rm -rf "$stage"
+}
+
+make_uname_shim() {
+  # The installer consults plain `uname`, so a PATH shim is enough to walk
+  # the Darwin branches on a Linux host.
+  local dir="$1"
+  local kernel="$2"
+  local machine="$3"
+  mkdir -p "$dir"
+  cat > "$dir/uname" <<EOF
+#!/usr/bin/env bash
+case "\${1:-}" in
+  -s) echo "$kernel" ;;
+  -m) echo "$machine" ;;
+  *) echo "$kernel" ;;
+esac
+EOF
+  chmod 0755 "$dir/uname"
+}
+
+run_installer() {
+  local home="$1"
+  shift
+  mkdir -p "$home"
+  HOME="$home" XDG_DATA_HOME="" bash "$INSTALLER" "$@"
+}
+
+note "linux desktop install"
+LINUX_HOME="$WORK/linux-home"
+LINUX_LOG="$WORK/linux-calls.log"
+make_linux_fixtures "$WORK/linux-assets" "$LINUX_LOG"
+run_installer "$LINUX_HOME" --from-dir "$WORK/linux-assets" --no-start > "$WORK/linux-out.log"
+PREFIX="$LINUX_HOME/.local/share/nteract/stable"
+assert_file "$PREFIX/nteract.AppImage"
+assert_link "$LINUX_HOME/.local/bin/runt" "$PREFIX/bin/runt"
+assert_link "$LINUX_HOME/.local/bin/runtimed" "$PREFIX/bin/runtimed"
+assert_link "$LINUX_HOME/.local/bin/nteract-mcp" "$PREFIX/bin/nteract-mcp"
+assert_link "$LINUX_HOME/.local/bin/nteract" "$PREFIX/nteract.AppImage"
+grep -q "runt daemon doctor --fix --no-start" "$LINUX_LOG" || fail "linux: daemon doctor --fix --no-start not invoked"
+
+note "darwin desktop install (explicit --applications-dir)"
+DARWIN_HOME="$WORK/darwin-home"
+DARWIN_LOG="$WORK/darwin-calls.log"
+make_darwin_fixtures "$WORK/darwin-assets" "$DARWIN_LOG"
+make_uname_shim "$WORK/shim-darwin" "Darwin" "arm64"
+APPS_DIR="$WORK/fake-applications"
+APP_DEST="$APPS_DIR/nteract.app"
+PATH="$WORK/shim-darwin:$PATH" run_installer "$DARWIN_HOME" \
+  --from-dir "$WORK/darwin-assets" --applications-dir "$APPS_DIR" --no-start \
+  > "$WORK/darwin-out.log" 2>&1
+assert_file "$APP_DEST/Contents/MacOS/runt"
+assert_link "$DARWIN_HOME/.local/bin/runt" "$APP_DEST/Contents/MacOS/runt"
+assert_link "$DARWIN_HOME/.local/bin/runtimed" "$APP_DEST/Contents/MacOS/runtimed"
+assert_link "$DARWIN_HOME/.local/bin/nteract-mcp" "$APP_DEST/Contents/MacOS/nteract-mcp"
+assert_missing "$DARWIN_HOME/.local/share/nteract/stable/nteract.app"
+grep -q "runt daemon doctor --fix --no-start" "$DARWIN_LOG" || fail "darwin: daemon doctor --fix --no-start not invoked"
+grep -q "App:      $APP_DEST" "$WORK/darwin-out.log" || fail "darwin: summary should name the installed app"
+grep -q "not writable" "$WORK/darwin-out.log" && fail "darwin explicit: no fallback note expected"
+
+note "darwin desktop default installs to ~/Applications (per-user by design)"
+DEFAULT_HOME="$WORK/default-home"
+DEFAULT_APP="$DEFAULT_HOME/Applications/nteract.app"
+PATH="$WORK/shim-darwin:$PATH" run_installer "$DEFAULT_HOME" \
+  --from-dir "$WORK/darwin-assets" --no-start > "$WORK/default-out.log" 2>&1
+assert_file "$DEFAULT_APP/Contents/MacOS/runt"
+assert_link "$DEFAULT_HOME/.local/bin/runt" "$DEFAULT_APP/Contents/MacOS/runt"
+grep -q "App:      $DEFAULT_APP" "$WORK/default-out.log" || fail "darwin default: summary should name ~/Applications app"
+
+note "darwin desktop reinstall replaces the bundle"
+PATH="$WORK/shim-darwin:$PATH" run_installer "$DARWIN_HOME" \
+  --from-dir "$WORK/darwin-assets" --applications-dir "$APPS_DIR" --no-start \
+  > "$WORK/darwin-out2.log"
+assert_file "$APP_DEST/Contents/MacOS/runt"
+assert_missing "$APP_DEST.new"
+
+note "darwin headless install"
+HEADLESS_HOME="$WORK/headless-home"
+PATH="$WORK/shim-darwin:$PATH" run_installer "$HEADLESS_HOME" \
+  --from-dir "$WORK/darwin-assets" --headless --no-start > "$WORK/headless-out.log"
+HEADLESS_APP="$HEADLESS_HOME/.local/share/nteract/stable/nteract.app"
+assert_file "$HEADLESS_APP/Contents/MacOS/runtimed"
+assert_missing "$HEADLESS_HOME/Applications"
+assert_link "$HEADLESS_HOME/.local/bin/runt" "$HEADLESS_APP/Contents/MacOS/runt"
+grep -q "workstation connect" "$WORK/headless-out.log" || fail "headless: summary should mention the workstation pairing flow"
+
+note "unsupported platform is rejected with guidance"
+make_uname_shim "$WORK/shim-unsupported" "Linux" "armv7l"
+if PATH="$WORK/shim-unsupported:$PATH" run_installer "$WORK/unsupported-home" \
+  --from-dir "$WORK/linux-assets" > "$WORK/unsupported-out.log" 2>&1; then
+  fail "unsupported platform should exit nonzero"
+fi
+grep -q "Unsupported platform" "$WORK/unsupported-out.log" || fail "unsupported: missing platform message"
+
+if [[ "$FAILURES" -gt 0 ]]; then
+  echo
+  echo "$FAILURES failure(s)." >&2
+  exit 1
+fi
+echo
+echo "All install-release fixture tests passed."
