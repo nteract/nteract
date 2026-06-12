@@ -53,22 +53,19 @@ async function findCellOutputElement(cell, cellId, outputSelectors) {
 
 /**
  * Wait for the app to be fully loaded (toolbar visible).
- * Uses browser.execute() (executeScript) which goes through the JS bridge
- * directly, avoiding potential findElement timing issues.
+ *
+ * Prefer WebDriver element commands over browser.execute() for readiness
+ * polling. WebKitGTK/WRY can intermittently fail executeScript with
+ * "Unsupported result type" while the native app is otherwise healthy; a
+ * data-testid element lookup avoids that script-result serialization path.
  */
 export async function waitForAppReady() {
-  await browser.waitUntil(
-    async () => {
-      return await browser.execute(() => {
-        return !!document.querySelector('[data-testid="notebook-toolbar"]');
-      });
-    },
-    {
-      timeout: 15000,
-      interval: 300,
-      timeoutMsg: "App not ready — toolbar not found within 15s",
-    },
-  );
+  const toolbar = await $('[data-testid="notebook-toolbar"]');
+  await toolbar.waitForExist({
+    timeout: 15000,
+    interval: 300,
+    timeoutMsg: "App not ready — toolbar not found within 15s",
+  });
 }
 
 /**
@@ -83,10 +80,11 @@ export async function waitForNotebookSynced(timeout = 15000) {
   await waitForAppReady();
   await browser.waitUntil(
     async () => {
-      return await browser.execute(() => {
-        const el = document.querySelector("[data-notebook-synced]");
-        return el?.getAttribute("data-notebook-synced") === "true";
-      });
+      const el = await $("[data-notebook-synced]");
+      if (!(await el.isExisting())) {
+        return false;
+      }
+      return (await el.getAttribute("data-notebook-synced")) === "true";
     },
     {
       timeout,
@@ -134,10 +132,8 @@ export async function waitForCodeCells(expectedCount, timeout = 15000) {
   await waitForAppReady();
   await browser.waitUntil(
     async () => {
-      return await browser.execute((count) => {
-        const cells = document.querySelectorAll('[data-cell-type="code"]');
-        return cells.length >= count;
-      }, expectedCount);
+      const cells = await $$('[data-cell-type="code"]');
+      return cells.length >= expectedCount;
     },
     {
       timeout,
@@ -499,30 +495,31 @@ export async function waitForKernelReadyWithTrust(timeout = 300000) {
  * Get the current session-control runtime state.
  */
 export async function getSessionRuntimeState() {
-  return await browser.execute(() => {
-    const el = document.querySelector("[data-session-runtime-state]");
-    return el?.getAttribute("data-session-runtime-state") ?? "missing";
-  });
+  const el = await $("[data-session-runtime-state]");
+  if (!(await el.isExisting())) {
+    return "missing";
+  }
+  return (await el.getAttribute("data-session-runtime-state")) ?? "missing";
 }
 
 /**
  * Get the current kernel status text from the toolbar.
  */
 export async function getKernelStatus() {
-  return await browser.execute(() => {
-    // Prefer the data-kernel-status attribute (added in #1041) — it reflects
-    // the raw status enum value and doesn't depend on DOM text rendering.
-    const statusEl = document.querySelector('[data-testid="kernel-status"]');
-    if (statusEl) {
-      const attr = statusEl.getAttribute("data-kernel-status");
-      if (attr) return attr.trim().toLowerCase();
-    }
-    // Fallback: read the visible status text from the toolbar
-    const el = document.querySelector(
-      '[data-testid="notebook-toolbar"] .capitalize',
-    );
-    return el ? el.textContent.trim().toLowerCase() : "";
-  });
+  // Prefer the data-kernel-status attribute (added in #1041) — it reflects
+  // the raw status enum value and doesn't depend on DOM text rendering.
+  const statusEl = await $('[data-testid="kernel-status"]');
+  if (await statusEl.isExisting()) {
+    const attr = await statusEl.getAttribute("data-kernel-status");
+    if (attr) return attr.trim().toLowerCase();
+  }
+
+  // Fallback: read the visible status text from the toolbar.
+  const el = await $('[data-testid="notebook-toolbar"] .capitalize');
+  if (!(await el.isExisting())) {
+    return "";
+  }
+  return (await el.getText()).trim().toLowerCase();
 }
 
 /**
