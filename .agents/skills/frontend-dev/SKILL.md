@@ -126,8 +126,6 @@ should not fork cell, output, rail, toolbar, or execution UI.
 - When adding new API facts for UI, keep them structured and host-owned. Avoid
   parsing principal strings, display labels, or notebook IDs in React except as
   compatibility fallback.
-- Capture product/architecture decisions in `.context/` during exploration and
-  graduate them to ADRs when they become durable.
 
 ## Hot Reload
 

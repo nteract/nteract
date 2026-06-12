@@ -8,9 +8,27 @@ This is a map. Subsystem details live in nested `AGENTS.md` files next to code, 
 
 nteract is a local-first, agent-ready notebook environment where humans, kernels, and AI agents work against the same live notebook document set. Describe that in concrete system terms: Automerge-backed notebook state, explicit runtime state, daemon-owned kernels, outputs, and execution, and programmatic control through the same runtime model. Avoid broad AI slogans; prefer the mechanics users and developers can verify.
 
+## Documentation taxonomy
+
+Use `docs/README.md` as the front door for repo documentation. Start working
+notes in `.context/` while exploring. Do not create a persistent doc for routine
+implementation notes, test plans, or context that only explains the current
+patch; use the PR description, code comments, or final response instead.
+
+Promote `.context/` notes into `docs/` only when they should persist for product,
+design, engineering, research, or AI collaborators. Use `docs/memos/` for shared
+thinking, research, options, and RFC-style proposals; do not file exploratory
+work as a Draft ADR just because it mentions architecture. Graduate durable
+technical decisions to `docs/adr/`, durable product requirements to `docs/prd/`,
+scoped execution work to `docs/plans/`, evidence and follow-up lists to
+`docs/audits/`, benchmark evidence to `docs/measurements/`, operational
+procedures to `docs/runbooks/`, and time-bound transfer notes to
+`docs/handoffs/`.
+
 ## Skills
 
 Use `.agents/skills/` when the task matches:
+- `architecture` — docs taxonomy, ADR/memo/PRD placement, cross-cutting architecture, and source-grounded proposal work
 - `automerge-sync` — sync protocol internals, document model, reconnection, peer state, in-flight suppression, protocol design patterns, convergence debugging
 - `daemon-dev` — daemon development, Python bindings, build system, kernel debugging, xtask workflows
 - `execution-pipeline` — end-to-end cell execution: required_heads → ExecuteCell → CellQueued → RuntimeStateDoc polling → output-sync grace → output resolution
