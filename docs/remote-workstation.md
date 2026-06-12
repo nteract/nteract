@@ -13,20 +13,18 @@ This doc is the operator path. The architecture lives in
 
 ## Install (one-liner)
 
-On a Linux x64 machine:
+On a Linux x64 or macOS (Apple silicon / Intel) machine:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSfL \
-  https://raw.githubusercontent.com/nteract/nteract/main/scripts/install-linux-release | \
-  bash -s -- --headless
+curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless
 ```
 
-`--headless` skips the desktop AppImage and installs just `runt`, `runtimed`,
-and `nteract-mcp` into `~/.local/share/nteract/stable`, links them into
-`~/.local/bin`, and installs the per-user systemd service for the daemon
-(`runt daemon doctor --fix`). Everything is per-user; no root required. Re-run
-to upgrade. (`https://sh.nteract.io` will front this script once the domain is
-live.)
+`--headless` skips the desktop app and installs just `runt`, `runtimed`, and
+`nteract-mcp` into `~/.local/share/nteract/stable` (on macOS, as the sidecars
+of the .app bundle kept under that prefix), links them into `~/.local/bin`,
+and installs the per-user daemon service (`runt daemon doctor --fix` —
+systemd on Linux, launchd on macOS). Everything is per-user; no root
+required. Re-run to upgrade.
 
 For air-gapped installs, download the release assets yourself and use
 `--from-dir`.
