@@ -108,6 +108,78 @@ export async function requestCloudWorkstationAttachment(
   };
 }
 
+export type CloudWorkstationPairingStatus = "pending" | "redeemed" | "registered" | "expired";
+
+export interface MintedCloudWorkstationPairing {
+  id: string;
+  code: string;
+  expiresAt: string;
+}
+
+export interface CloudWorkstationPairingStatusState {
+  status: CloudWorkstationPairingStatus;
+  expiresAt: string | null;
+  workstationId: string | null;
+}
+
+export const CLOUD_WORKSTATION_PAIRING_POLL_INTERVAL_MS = 2_000;
+
+export async function mintCloudWorkstationPairingCode(
+  workstationsEndpoint: string,
+  authState: CloudPrototypeAuthState,
+): Promise<MintedCloudWorkstationPairing> {
+  const response = await fetchWithCloudPrototypeAuth(
+    `${workstationsEndpoint}/pairing-codes`,
+    {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    },
+    authState,
+  );
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "Unable to create a pairing code"));
+  }
+  const payload = (await response.json()) as { pairing?: Record<string, unknown> };
+  const id = scalarString(payload.pairing?.id);
+  const code = scalarString(payload.pairing?.code);
+  const expiresAt = scalarString(payload.pairing?.expires_at);
+  if (!id || !code || !expiresAt) {
+    throw new Error("Pairing code response was incomplete");
+  }
+  return { id, code, expiresAt };
+}
+
+export async function fetchCloudWorkstationPairingStatus(
+  workstationsEndpoint: string,
+  authState: CloudPrototypeAuthState,
+  pairingId: string,
+  signal?: AbortSignal,
+): Promise<CloudWorkstationPairingStatusState> {
+  const response = await fetchWithCloudPrototypeAuth(
+    `${workstationsEndpoint}/pairing-codes/${encodeURIComponent(pairingId)}`,
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    },
+    authState,
+  );
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "Unable to check pairing status"));
+  }
+  const payload = (await response.json()) as { pairing?: Record<string, unknown> };
+  const status = payload.pairing?.status;
+  return {
+    status:
+      status === "pending" || status === "redeemed" || status === "registered" ? status : "expired",
+    expiresAt: scalarString(payload.pairing?.expires_at),
+    workstationId: scalarString(payload.pairing?.workstation_id),
+  };
+}
+
+export function cloudWorkstationConnectCommand(origin: string, code: string): string {
+  return `runt workstation connect ${origin} --code ${code} && runt workstation run`;
+}
+
 export function cloudWorkstationRefreshIntervalMs({
   canChooseHostedWorkstation,
   hasRegisteredWorkstations,

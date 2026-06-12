@@ -394,7 +394,10 @@ export function NotebookViewer({
     busyWorkstationId,
     onAttachWorkstation,
     onSetDefaultWorkstation,
+    onStartPairing,
+    onCancelPairing,
     workstationAction,
+    workstationPairing,
     workstationPanelStatusMessage,
     workstationSelection,
   } = useCloudWorkstationManager({
@@ -845,6 +848,9 @@ export function NotebookViewer({
           busyWorkstationId={busyWorkstationId}
           onAttachWorkstation={onAttachWorkstation}
           onSetDefaultWorkstation={onSetDefaultWorkstation}
+          pairing={workstationPairing}
+          onStartPairing={onStartPairing}
+          onCancelPairing={onCancelPairing}
         />
       }
       packagesPanel={

@@ -5,8 +5,11 @@ import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 import {
   CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS,
   CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS,
+  cloudWorkstationConnectCommand,
   cloudWorkstationRefreshIntervalMs,
+  fetchCloudWorkstationPairingStatus,
   fetchCloudWorkstations,
+  mintCloudWorkstationPairingCode,
   requestCloudWorkstationAttachment,
   setCloudDefaultWorkstation,
 } from "../viewer/workstations-client";
@@ -169,6 +172,71 @@ describe("cloud workstations client", () => {
         panelIsOpen: false,
       }),
       CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS,
+    );
+  });
+
+  it("mints a pairing code and reads its status", async (t) => {
+    const calls: string[] = [];
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      if (url.endsWith("/api/workstations/pairing-codes")) {
+        return jsonResponse(
+          {
+            ok: true,
+            pairing: {
+              id: "pair-1",
+              code: "ABCD-EFGH-JKMN",
+              expires_at: "2026-06-12T12:00:00.000Z",
+            },
+          },
+          201,
+        );
+      }
+      return jsonResponse({
+        ok: true,
+        pairing: {
+          id: "pair-1",
+          status: "registered",
+          expires_at: "2026-06-12T12:00:00.000Z",
+          workstation_id: "ws-hub",
+        },
+      });
+    });
+
+    const minted = await mintCloudWorkstationPairingCode("/api/workstations", devAuth);
+    assert.deepEqual(minted, {
+      id: "pair-1",
+      code: "ABCD-EFGH-JKMN",
+      expiresAt: "2026-06-12T12:00:00.000Z",
+    });
+
+    const status = await fetchCloudWorkstationPairingStatus("/api/workstations", devAuth, "pair-1");
+    assert.deepEqual(status, {
+      status: "registered",
+      expiresAt: "2026-06-12T12:00:00.000Z",
+      workstationId: "ws-hub",
+    });
+    assert.deepEqual(calls, [
+      "POST /api/workstations/pairing-codes",
+      "GET /api/workstations/pairing-codes/pair-1",
+    ]);
+  });
+
+  it("surfaces server errors from pairing mint", async (t) => {
+    t.mock.method(globalThis, "fetch", async () =>
+      jsonResponse({ error: "sign in to add a workstation" }, 401),
+    );
+    await assert.rejects(
+      mintCloudWorkstationPairingCode("/api/workstations", devAuth),
+      /sign in to add a workstation/,
+    );
+  });
+
+  it("builds the connect one-liner from origin and code", () => {
+    assert.equal(
+      cloudWorkstationConnectCommand("https://preview.runt.run", "ABCD-EFGH-JKMN"),
+      "runt workstation connect https://preview.runt.run --code ABCD-EFGH-JKMN && runt workstation run",
     );
   });
 });

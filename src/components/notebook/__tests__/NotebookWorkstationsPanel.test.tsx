@@ -175,9 +175,7 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByTestId("workstation-registration-empty")).toBeVisible();
     expect(screen.getByText("No workstation registered")).toBeVisible();
     expect(
-      screen.getByText(
-        "Run the workstation agent on a machine you own, then attach it here to start compute.",
-      ),
+      screen.getByText("Connect a machine you own to run this notebook’s compute there."),
     ).toBeVisible();
   });
 
@@ -524,5 +522,103 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByText("1")).toBeVisible();
     expect(screen.queryByText("CPUs")).not.toBeInTheDocument();
     expect(screen.queryByText("RAM")).not.toBeInTheDocument();
+  });
+
+  it("offers Add workstation and starts pairing", () => {
+    const started: number[] = [];
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={localReadyCapabilities}
+        onStartPairing={() => started.push(1)}
+      />,
+    );
+
+    const addButton = screen.getByTestId("workstation-add-button");
+    fireEvent.click(addButton);
+    expect(started).toHaveLength(1);
+  });
+
+  it("renders the pending pairing card with the connect command and countdown", () => {
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={localReadyCapabilities}
+        pairing={{
+          code: "ABCD-EFGH-JKMN",
+          connectCommand:
+            "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN && runt workstation run",
+          expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+          status: "pending",
+          workstationName: null,
+          error: null,
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("workstation-pairing-command")).toHaveTextContent(
+      "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN && runt workstation run",
+    );
+    expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
+      /Waiting for the machine to connect/,
+    );
+    expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
+      /Code expires in 8:5\d/,
+    );
+    expect(screen.getByRole("button", { name: "Copy connect command" })).toBeVisible();
+  });
+
+  it("announces redemption and registration, and Done dismisses", () => {
+    const dismissed: number[] = [];
+    const pairingBase = {
+      code: "ABCD-EFGH-JKMN",
+      connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      workstationName: null,
+      error: null,
+    };
+    const { rerender } = render(
+      <NotebookWorkstationsPanel
+        capabilities={localReadyCapabilities}
+        pairing={{ ...pairingBase, status: "redeemed" }}
+        onCancelPairing={() => dismissed.push(1)}
+      />,
+    );
+    expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(/Machine connected/);
+
+    rerender(
+      <NotebookWorkstationsPanel
+        capabilities={localReadyCapabilities}
+        pairing={{ ...pairingBase, status: "registered", workstationName: "Hub devbox" }}
+        onCancelPairing={() => dismissed.push(1)}
+      />,
+    );
+    expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
+      "Hub devbox is connected.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(dismissed).toHaveLength(1);
+  });
+
+  it("offers a fresh code when the pairing expires", () => {
+    const restarted: number[] = [];
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={localReadyCapabilities}
+        pairing={{
+          code: "ABCD-EFGH-JKMN",
+          connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+          expiresAt: new Date(Date.now() - 1_000).toISOString(),
+          status: "expired",
+          workstationName: null,
+          error: null,
+        }}
+        onStartPairing={() => restarted.push(1)}
+      />,
+    );
+
+    expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
+      /pairing code expired/i,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate a new code" }));
+    expect(restarted).toHaveLength(1);
   });
 });
