@@ -1,7 +1,7 @@
 # Notebook Pristine-Seeding Implementation Plan
 
 - Status: Implemented (shipped in #3342)
-- Implements: [ADR 0001 - Notebook seeding invariant](0001-notebook-seeding-invariant.md)
+- Implements: [ADR 0001 - Notebook seeding invariant](../adr/0001-notebook-seeding-invariant.md)
 
 Task-by-task, test-first breakdown; checkbox (`- [ ]`) steps track progress. Retained as the implementation record for ADR 0001.
 

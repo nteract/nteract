@@ -4,8 +4,8 @@
 
 ## Context
 
-This audit follows `deployment-topology.md`, which makes Cloudflare the hosted
-room/document host and JupyterHub compute an outbound `runtime_peer`
+This audit follows `../adr/deployment-topology.md`, which makes Cloudflare the
+hosted room/document host and JupyterHub compute an outbound `runtime_peer`
 attachment. Two contracts need to stay sharp as implementation moves from the
 single-user daemon toward hosted rooms:
 
@@ -16,13 +16,13 @@ single-user daemon toward hosted rooms:
 
 Neighbors:
 
-- `identity-and-trust.md` defines scopes and per-frame actor validation.
-- `hosted-room-authorization.md` defines ACL-derived room scope.
-- `deployment-topology.md` defines hosted and daemon-mediated runtime
+- `../adr/identity-and-trust.md` defines scopes and per-frame actor validation.
+- `../adr/hosted-room-authorization.md` defines ACL-derived room scope.
+- `../adr/deployment-topology.md` defines hosted and daemon-mediated runtime
   topologies.
-- `typed-frame-v4-wire-protocol.md` defines the `RuntimeAgent` channel and
+- `../adr/typed-frame-v4-wire-protocol.md` defines the `RuntimeAgent` channel and
   `PutBlob` frame.
-- `blob-storage-and-content-addressing.md` defines content addressing,
+- `../adr/blob-storage-and-content-addressing.md` defines content addressing,
   multipart upload, durability, and resolver boundaries.
 
 ## Audit 1: Runtime peer contract
@@ -71,7 +71,7 @@ local client/daemon -> room host or bridge <-> remote daemon(runtime_peer)
   (`receive_request`), and the runtime peer consumes them through normal
   `RuntimeStateDoc` sync while the shared policy rejects runtime-peer-forged
   execution intent. Active-target selection and disconnect/liveness gating
-  remain open in `remote-workstation-doc-agents.md`.
+  remain open in `../adr/remote-workstation-doc-agents.md`.
 
 ### Findings
 
@@ -94,7 +94,7 @@ local client/daemon -> room host or bridge <-> remote daemon(runtime_peer)
 - Treat `runtime_peer` sidecars as normal authenticated room connections.
 - Request variants are owner-only today and route through the
   `RuntimeStateDoc` queue. The remaining dispatch work is active-target
-  selection and liveness gating (see `remote-workstation-doc-agents.md`).
+  selection and liveness gating (see `../adr/remote-workstation-doc-agents.md`).
 - Do not expose the `RuntimeAgent` handshake as a cross-machine API without a
   new protocol decision.
 
@@ -129,7 +129,7 @@ document path that later references the content hash.
   `runtime_peer` and `owner`, checked at both the `PUT_BLOB` frame prefilter
   and the HTTP upload route. Editor uploads stay denied until reference-path
   validation ships with them (staged policy recorded in
-  `hosted-room-authorization.md` Decision 3).
+  `../adr/hosted-room-authorization.md` Decision 3).
 - The local notebook peer loop still enqueues `PutBlob` frames without a
   scope check, and multipart request handling is intercepted before generic
   request dispatch with no scope annotation. That is acceptable for the
@@ -140,7 +140,7 @@ document path that later references the content hash.
   the destination blob store, before any D1 revision row is recorded.
 - Blob reads are unauthenticated on the local loopback HTTP origin and rely on
   same-machine isolation plus hash unguessability; that surface is now
-  declared permanently single-user (`blob-storage-and-content-addressing.md`
+  declared permanently single-user (`../adr/blob-storage-and-content-addressing.md`
   open question 3). Hosted reads ride the viewer-authorized
   `/api/n/:id/blobs/:hash` route; private sharing still needs the capability
   mechanism tracked as HCA-6.

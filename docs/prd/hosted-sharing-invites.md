@@ -13,7 +13,7 @@ Related docs:
 - `docs/adr/identity-and-trust.md`
 - `docs/adr/hosted-room-authorization.md`
 - `docs/adr/hosted-credential-transport.md`
-- `docs/adr/hosted-direct-oidc-demo-runbook.md`
+- `docs/runbooks/hosted-direct-oidc-demo-runbook.md`
 
 Prototype code:
 

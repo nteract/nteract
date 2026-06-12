@@ -428,7 +428,7 @@ NTERACT_API_KEY=... \
 runt publish --source-notebook-id <open-notebook-uuid> --vanity-name markdown-harness
 ```
 
-See `docs/adr/hosted-direct-oidc-demo-runbook.md`.
+See `docs/runbooks/hosted-direct-oidc-demo-runbook.md`.
 
 Requests with no dev credential become anonymous public viewers. The Worker derives:
 

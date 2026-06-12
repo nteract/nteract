@@ -168,5 +168,5 @@ state.
 
 - [Identity and Trust](identity-and-trust.md)
 - [Hosted Room Authorization and Cloud Room Host](hosted-room-authorization.md)
-- [Notebook Identity and Environment Surfaces](notebook-identity-environment-surfaces.md)
+- [Notebook Identity and Environment Surfaces](../prd/notebook-identity-environment-surfaces.md)
 - [Remote Workstation Doc Agents](remote-workstation-doc-agents.md)

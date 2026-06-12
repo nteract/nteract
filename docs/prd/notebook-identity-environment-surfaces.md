@@ -13,7 +13,7 @@ Related docs:
 
 - `docs/adr/identity-and-trust.md`
 - `docs/adr/hosted-room-authorization.md`
-- `docs/adr/hosted-sharing-invites.md`
+- `docs/prd/hosted-sharing-invites.md`
 - `docs/adr/captured-environment-lifecycle.md`
 - `docs/adr/notebook-host-shell-convergence.md`
 - `apps/elements/content/docs/identity-environment-surfaces.mdx`
@@ -64,7 +64,7 @@ execution output.
 ## Non-Goals
 
 - This PRD does not change the actor-label, room ACL, or credential decisions in
-  `identity-and-trust.md` and `hosted-room-authorization.md`.
+  `../adr/identity-and-trust.md` and `../adr/hosted-room-authorization.md`.
 - This PRD does not launch a new sharing product, invite flow, or organization
   permissions model.
 - This PRD does not let shared React components import Cloudflare Worker,

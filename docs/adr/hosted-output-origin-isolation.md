@@ -263,7 +263,7 @@ depending on `srcDoc` as the security boundary.
 - This ADR does not replace `hosted-credential-transport.md`; it relies on that
   ADR for credential transport and WebSocket origin policy.
 - This ADR does not define invite or ACL semantics; those remain in
-  `hosted-room-authorization.md` and `hosted-sharing-invites.md`.
+  `hosted-room-authorization.md` and `../prd/hosted-sharing-invites.md`.
 - This ADR does not make output frames trusted. They remain untrusted even when
   served from a first-party controlled output domain.
 

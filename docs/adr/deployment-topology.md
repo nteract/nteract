@@ -20,9 +20,9 @@ layers:
   layout.
 - `hosted-output-origin-isolation.md` defines why authenticated app origins,
   renderer asset origins, and untrusted output-document origins stay separate.
-- `runtime-peer-and-blob-authority-audit.md` clarifies that `runtime_peer` is
-  the room role, `RuntimeAgent` is local daemon machinery, and `PutBlob` is not
-  runtime topology.
+- `../audits/runtime-peer-and-blob-authority-audit.md` clarifies that
+  `runtime_peer` is the room role, `RuntimeAgent` is local daemon machinery,
+  and `PutBlob` is not runtime topology.
 - `remote-workstation-doc-agents.md` specializes the dial-home workstation/doc
   agent path for JupyterHub, Outerbounds Workstations, and `preview.runt.run`.
 

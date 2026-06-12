@@ -23,4 +23,7 @@ plans. Time-bound transfer notes belong in `docs/handoffs/`.
 
 | Memo | Status | Notes |
 |------|--------|-------|
+| [Arrow Manifest Durable Storage](arrow-manifest-durable-storage-design.md) | Exploration | Durable storage design framing for Arrow manifest outputs. |
+| [Execution Liveness](execution-liveness.md) | Exploration | Divergence-detection framing; not a recovery decision yet. |
 | [Markdown Plan Documents](markdown-plan-documents.md) | Exploration | First pass on a first-class Markdown/MDX document surface, comments, presence, outputs, and hosted publishing. |
+| [Runtime Redaction Refresh](runtime-redaction-refresh-design.md) | Exploration | Output redaction refresh design referenced by the traceback protocol. |

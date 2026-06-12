@@ -1,6 +1,6 @@
 # Runtime Redaction Candidate Refresh Design
 
-**Status:** Design memo.
+**Status:** Exploration.
 
 ## Context
 
