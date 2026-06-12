@@ -5,6 +5,11 @@ runtime state, output transport, hosted sharing, and related daemon invariants.
 Most entries are still draft because this register is actively being extracted
 from shipped code, in-flight hosted work, and follow-up audits.
 
+Exploratory research and cross-functional framing now start in
+[`docs/memos`](../memos/). Memos are source-grounded but not
+decision-authoritative; durable technical decisions graduate back into this ADR
+register.
+
 ## Document Types and Statuses
 
 - **Accepted**: load-bearing decision that current and future work should treat
@@ -15,8 +20,9 @@ from shipped code, in-flight hosted work, and follow-up audits.
   product/design validation before architecture or implementation depends on
   them. PRDs can cite ADRs, but they should not silently make low-level
   transport, storage, or security decisions.
-- **Design memo**: analysis that frames a decision but intentionally stops short
-  of recording one.
+- **Design memo**: legacy analysis in this register that frames a decision but
+  intentionally stops short of recording one. New exploratory memos should start
+  in `docs/memos/`.
 - **Runbook**: operational instructions tied to a design; not itself an ADR.
 - **Measurement**: benchmark evidence or performance model; not itself an ADR.
 - **Audit**: evidence and follow-up list for a boundary or subsystem.
