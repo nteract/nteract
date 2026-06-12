@@ -199,6 +199,37 @@ test("cloud shell capabilities prefer RuntimeStateDoc workstation attachment ove
   assert.equal(capabilities.canExecute, true);
 });
 
+test("cloud shell capabilities surface RuntimeStateDoc kernel status on workstation targets", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimePeerCount: 1,
+    kernelStatusLabel: "launching kernel",
+    workstationAttachment: {
+      workstation_id: "ws-lab2",
+      display_name: "Lab 2",
+      provider: "local_daemon",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: 8,
+      memory_bytes: 32 * 1024 ** 3,
+      working_directory: "/home/ubuntu/notebooks",
+      updated_at: "2026-06-07T21:00:00Z",
+    },
+  });
+
+  assert.equal(capabilities.runtime.connected, true);
+  assert.equal(capabilities.runtime.executionAvailable, true);
+  assert.equal(capabilities.runtime.target?.id, "ws-lab2");
+  assert.equal(capabilities.runtime.target?.status, "ready");
+  assert.equal(capabilities.runtime.target?.kernelStatusLabel, "launching kernel");
+  assert.equal(capabilities.canExecute, true);
+});
+
 test("cloud shell capabilities show connecting workstation attachment without enabling execution", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "owner"),

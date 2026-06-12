@@ -47,6 +47,11 @@ export interface CloudNotebookShellCapabilityInput {
    */
   runtimePeerCount?: number;
   /**
+   * RuntimeStateDoc-derived kernel lifecycle label. This keeps the workstation
+   * target honest during the peer-connected/kernel-launching gap.
+   */
+  kernelStatusLabel?: string | null;
+  /**
    * Room-host-owned RuntimeStateDoc workstation attachment snapshot. When
    * present this is the durable notebook-visible source for the selected
    * compute target; live presence remains the fallback while older rooms have
@@ -74,6 +79,7 @@ export function cloudNotebookShellCapabilities({
   editAccessRequestPending = false,
   runtimeAvailable = false,
   runtimePeerCount = runtimeAvailable ? 1 : 0,
+  kernelStatusLabel = null,
   workstationAttachment = null,
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
@@ -122,6 +128,7 @@ export function cloudNotebookShellCapabilities({
       isRuntimePeer,
       runtimeAvailable: effectiveRuntimeAvailable,
       runtimePeerCount,
+      kernelStatusLabel,
       workstationAttachment,
     }),
   };
@@ -170,11 +177,13 @@ function cloudRuntimeTarget({
   isRuntimePeer,
   runtimeAvailable,
   runtimePeerCount,
+  kernelStatusLabel,
   workstationAttachment,
 }: {
   isRuntimePeer: boolean;
   runtimeAvailable: boolean;
   runtimePeerCount: number;
+  kernelStatusLabel: string | null;
   workstationAttachment: WorkstationAttachmentState | null;
 }): NotebookShellRuntimeTargetProjection {
   const visibleRuntimePeerCount = Math.max(0, Math.floor(runtimePeerCount));
@@ -194,7 +203,7 @@ function cloudRuntimeTarget({
   }
   const attachmentTarget = projectNotebookRuntimeTargetFromWorkstationAttachment(
     workstationAttachment,
-    { runtimePeerCount: visibleRuntimePeerCount },
+    { runtimePeerCount: visibleRuntimePeerCount, kernelStatusLabel },
   );
   if (attachmentTarget) {
     return attachmentTarget;
@@ -210,6 +219,7 @@ function cloudRuntimeTarget({
       providerLabel: "Cloud room",
       defaultEnvironmentLabel: "Current Python",
       environmentLabel: "Current Python",
+      kernelStatusLabel,
       runtimePeerCount: visibleRuntimePeerCount || 1,
     };
   }
