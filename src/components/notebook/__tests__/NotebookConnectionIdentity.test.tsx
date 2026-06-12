@@ -79,6 +79,23 @@ function cloudCapabilities(): NotebookShellCapabilities {
   });
 }
 
+function publicViewerCapabilities(): NotebookShellCapabilities {
+  return capabilities({
+    access: {
+      level: "viewer",
+      source: "cloud",
+      isPublic: true,
+      actorLabel: "anonymous:viewer:session-1/browser:tab",
+      identityLabel: null,
+    },
+    auth: {
+      canSignIn: true,
+      canUseAuthenticatedIdentity: false,
+      needsAttention: false,
+    },
+  });
+}
+
 function localCapabilities(): NotebookShellCapabilities {
   return capabilities({
     access: {
@@ -152,6 +169,11 @@ describe("NotebookConnectionIdentity", () => {
   it("renders for a local session attached to a runtime peer", () => {
     const { container } = renderSlot(runtimePeerCapabilities());
     expect(slotElement(container)).toBeTruthy();
+  });
+
+  it("renders nothing for an anonymous public viewer", () => {
+    const { container } = renderSlot(publicViewerCapabilities());
+    expect(container.innerHTML).toBe("");
   });
 
   it.each([

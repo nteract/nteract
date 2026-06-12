@@ -21,6 +21,12 @@ export interface CloudNotebookNoticesProps {
   authRenewal: CloudAuthRenewalState;
   connectionError: string | null;
   hasAppSession?: boolean;
+  /**
+   * The room accepted this browser as an anonymous public viewer. In this
+   * state stale browser auth is not blocking notebook readability, so auth
+   * renewal internals collapse into one calm sign-in invitation.
+   */
+  isPublicViewer?: boolean;
   hasReadableSnapshot?: boolean;
   /**
    * The live-room status has been "reconnecting" past the debounce window
@@ -107,6 +113,7 @@ export function cloudNotebookHasNotices({
   authRenewal,
   connectionError,
   hasAppSession = false,
+  isPublicViewer = false,
   hasReadableSnapshot = false,
   offlineMergeNotice = null,
   rendererAssetError = null,
@@ -123,11 +130,23 @@ export function cloudNotebookHasNotices({
     !(status.kind === "empty" && hasReadableSnapshot) &&
     !isStatusDerivedFromConnectionError(status, connectionError);
 
+  const shouldShowAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
+    authState,
+    hasAppSession,
+    isPublicViewer,
+  });
   const shouldShowAuthNotice =
-    !hasAppSession && (authState.mode === "invalid" || authState.mode === "oidc_expired");
-  const shouldShowAuthRenewalNotice = !hasAppSession && authRenewal.kind !== "idle";
+    !shouldShowAnonymousViewerAuthNotice &&
+    !hasAppSession &&
+    (authState.mode === "invalid" || authState.mode === "oidc_expired");
+  const shouldShowAuthRenewalNotice =
+    !shouldShowAnonymousViewerAuthNotice &&
+    !shouldShowAuthNotice &&
+    !hasAppSession &&
+    authRenewal.kind !== "idle";
 
   return (
+    shouldShowAnonymousViewerAuthNotice ||
     shouldShowAuthNotice ||
     shouldShowAuthRenewalNotice ||
     sustainedReconnecting ||
@@ -145,6 +164,7 @@ export function CloudNotebookNotices({
   authRenewal,
   connectionError,
   hasAppSession = false,
+  isPublicViewer = false,
   hasReadableSnapshot = false,
   offlineMergeNotice = null,
   rendererAssetError = null,
@@ -163,6 +183,7 @@ export function CloudNotebookNotices({
       authRenewal,
       connectionError,
       hasAppSession,
+      isPublicViewer,
       hasReadableSnapshot,
       offlineMergeNotice,
       rendererAssetError,
@@ -182,12 +203,39 @@ export function CloudNotebookNotices({
     status.kind !== "ready" &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
     !isStatusDerivedFromConnectionError(status, connectionError);
+  const shouldShowAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
+    authState,
+    hasAppSession,
+    isPublicViewer,
+  });
   const shouldShowAuthNotice =
-    !hasAppSession && (authState.mode === "invalid" || authState.mode === "oidc_expired");
-  const shouldShowAuthRenewalNotice = !hasAppSession && authRenewal.kind !== "idle";
+    !shouldShowAnonymousViewerAuthNotice &&
+    !hasAppSession &&
+    (authState.mode === "invalid" || authState.mode === "oidc_expired");
+  const shouldShowAuthRenewalNotice =
+    !shouldShowAnonymousViewerAuthNotice &&
+    !shouldShowAuthNotice &&
+    !hasAppSession &&
+    authRenewal.kind !== "idle";
 
   return (
     <NotebookNoticeStack>
+      {shouldShowAnonymousViewerAuthNotice ? (
+        <NotebookNotice
+          tone="info"
+          icon={<LogIn className="h-4 w-4" />}
+          title="Viewing anonymously."
+          actions={
+            onSignInAgain ? (
+              <SignInNoticeAction onSignInAgain={onSignInAgain}>Sign in</SignInNoticeAction>
+            ) : null
+          }
+        >
+          This public notebook is open read-only. Use your account to edit or access private
+          features.
+        </NotebookNotice>
+      ) : null}
+
       {shouldShowAuthNotice ? (
         <NotebookNotice
           tone="error"
@@ -305,6 +353,22 @@ export function CloudNotebookNotices({
   );
 }
 
+export function shouldShowCloudAnonymousViewerAuthNotice({
+  authState,
+  hasAppSession = false,
+  isPublicViewer = false,
+}: {
+  authState: CloudPrototypeAuthState;
+  hasAppSession?: boolean;
+  isPublicViewer?: boolean;
+}): boolean {
+  return (
+    isPublicViewer &&
+    !hasAppSession &&
+    (authState.mode === "invalid" || authState.mode === "oidc_expired")
+  );
+}
+
 function AuthNoticeAction({
   onResetAuth,
   onSignInAgain,
@@ -313,21 +377,31 @@ function AuthNoticeAction({
   onSignInAgain?: () => void | Promise<void>;
 }) {
   if (onSignInAgain) {
-    return (
-      <NotebookNoticeAction
-        onClick={() => {
-          void onSignInAgain();
-        }}
-        icon={<LogIn className="h-3 w-3" />}
-      >
-        Sign in again
-      </NotebookNoticeAction>
-    );
+    return <SignInNoticeAction onSignInAgain={onSignInAgain}>Sign in again</SignInNoticeAction>;
   }
 
   return (
     <NotebookNoticeAction onClick={onResetAuth} icon={<RotateCcw className="h-3 w-3" />}>
       Clear stale sign-in
+    </NotebookNoticeAction>
+  );
+}
+
+function SignInNoticeAction({
+  children,
+  onSignInAgain,
+}: {
+  children: ReactNode;
+  onSignInAgain: () => void | Promise<void>;
+}) {
+  return (
+    <NotebookNoticeAction
+      onClick={() => {
+        void onSignInAgain();
+      }}
+      icon={<LogIn className="h-3 w-3" />}
+    >
+      {children}
     </NotebookNoticeAction>
   );
 }
@@ -353,16 +427,7 @@ function ConnectionNoticeAction({
   }
 
   if (connectionError === CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC && onSignInAgain) {
-    return (
-      <NotebookNoticeAction
-        onClick={() => {
-          void onSignInAgain();
-        }}
-        icon={<LogIn className="h-3 w-3" />}
-      >
-        Sign in again
-      </NotebookNoticeAction>
-    );
+    return <SignInNoticeAction onSignInAgain={onSignInAgain}>Sign in again</SignInNoticeAction>;
   }
 
   if (onRetryConnection) {

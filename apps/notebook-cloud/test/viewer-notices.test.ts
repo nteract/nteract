@@ -89,10 +89,45 @@ test("cloud notebook notices render auth and connection policy through the share
   assert.match(html, /data-slot="notebook-notice-stack"/);
   assert.match(html, /Auth needs attention/);
   assert.match(html, /Your browser sign-in needs renewal/);
-  assert.match(html, /Sign-in refresh failed/);
+  assert.doesNotMatch(html, /Sign-in refresh failed/);
   assert.match(html, /Live room needs attention/);
   assert.match(html, /Sign in again/);
+  assert.equal(html.match(/Sign in again/g)?.length, 1);
   assert.doesNotMatch(html, /Reset to anonymous/);
+});
+
+test("cloud notebook notices collapse stale auth into one public-viewer banner", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("oidc_expired"),
+      authRenewal: { kind: "failed", message: "refresh failed" },
+      connectionError: null,
+      isPublicViewer: true,
+      status: { kind: "ready", message: "Ready" },
+    }),
+    true,
+  );
+
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc_expired"),
+      authRenewal: { kind: "failed", message: "refresh failed" },
+      connectionError: null,
+      isPublicViewer: true,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+      onSignInAgain: () => {},
+    }),
+  );
+
+  assert.match(html, /Viewing anonymously/);
+  assert.match(html, /This public notebook is open read-only/);
+  assert.match(html, /Use your account to edit/);
+  assert.match(html, /Sign in/);
+  assert.doesNotMatch(html, /Auth needs attention/);
+  assert.doesNotMatch(html, /Sign-in refresh failed/);
+  assert.doesNotMatch(html, /Your browser sign-in needs renewal/);
+  assert.equal(html.match(/Sign in/g)?.length, 1);
 });
 
 test("cloud notebook notices trust a fresh app session over stale localStorage auth", () => {
