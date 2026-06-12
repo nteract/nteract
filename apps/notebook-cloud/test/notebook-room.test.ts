@@ -16,7 +16,6 @@ import {
   runtimePeerWorkstationMetadataFromRequest,
   rewritePresenceFrame,
   shouldBroadcastFrame,
-  shouldPersistMaterializedSyncFrame,
   webSocketUpgradeHeaders,
 } from "../src/notebook-room.ts";
 import {
@@ -191,6 +190,44 @@ describe("NotebookRoom presence rewrite", () => {
 
     assert.equal(shouldBroadcastFrame(frame, anonymous), false);
     assert.equal(shouldBroadcastFrame(frame, editor), true);
+  });
+
+  it("broadcasts authenticated presence without durable room history", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "peer-a",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    let broadcasted = 0;
+    harness.peers.set(peer.id, peer);
+    harness.broadcastFrame = () => {
+      broadcasted += 1;
+    };
+    const message = encodeTypedFrame(
+      FrameType.PRESENCE,
+      await encodePresenceFrame({
+        type: "heartbeat",
+        peer_id: "client-peer",
+      }),
+    );
+
+    await harness.handleMessage("demo", peer, message);
+
+    assert.equal(broadcasted, 1);
+    assert.equal(socket.sent.length, 1);
+    assert.equal(
+      decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1)).type,
+      "cloud_frame_accepted",
+    );
+    assert.equal(peer.consecutiveRejectedFrames, 0);
   });
 });
 
@@ -448,48 +485,6 @@ describe("NotebookRoom peer lifecycle", () => {
         "demo",
         peer,
         encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array([1])),
-      );
-    }
-
-    assert.equal(socket.closed, false);
-    assert.equal(peer.consecutiveRejectedFrames, 0);
-    assert.equal(socket.sent.length, 10);
-    assert(
-      socket.sent.every(
-        (frame) =>
-          frame[0] === FrameType.SESSION_CONTROL &&
-          decodeJsonPayload<Record<string, unknown>>(frame.slice(1)).type ===
-            "cloud_frame_rejected",
-      ),
-    );
-  });
-
-  it("does not count server-side frame persistence failures toward peer close", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
-    const identity = authenticateDevRequest(
-      new Request(
-        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:a&scope=runtime_peer",
-      ),
-    );
-    const socket = new FakeSocket();
-    const peer = {
-      id: "runtime-peer",
-      socket: socket.asCloudflareWebSocket(),
-      identity,
-      connectedAt: "2026-05-22T00:00:00.000Z",
-      consecutiveRejectedFrames: 0,
-    };
-    const harness = roomHarness(room);
-    harness.peers.set(peer.id, peer);
-    harness.persistFrame = async () => {
-      throw new Error("storage temporarily unavailable");
-    };
-
-    for (let i = 0; i < 10; i += 1) {
-      await harness.handleMessage(
-        "demo",
-        peer,
-        encodeTypedFrame(FrameType.PUT_BLOB, new Uint8Array([1])),
       );
     }
 
@@ -946,31 +941,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 });
 
-describe("NotebookRoom materialized sync persistence", () => {
-  it("persists only sync frames that changed a materialized document", () => {
-    assert.equal(
-      shouldPersistMaterializedSyncFrame({
-        notebook_changed: false,
-        runtime_state_changed: false,
-      }),
-      false,
-    );
-    assert.equal(
-      shouldPersistMaterializedSyncFrame({
-        notebook_changed: true,
-        runtime_state_changed: false,
-      }),
-      true,
-    );
-    assert.equal(
-      shouldPersistMaterializedSyncFrame({
-        notebook_changed: false,
-        runtime_state_changed: true,
-      }),
-      true,
-    );
-  });
-
+describe("NotebookRoom materialized sync routing", () => {
   it("acknowledges no-op sync control frames without persisted room history", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
@@ -984,11 +955,7 @@ describe("NotebookRoom materialized sync persistence", () => {
       connectedAt: "2026-05-22T00:00:00.000Z",
     };
     const harness = roomHarness(room);
-    let persisted = 0;
     harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
-    harness.persistFrame = async () => {
-      persisted += 1;
-    };
 
     await harness.handleMessage(
       "demo",
@@ -996,7 +963,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array()),
     );
 
-    assert.equal(persisted, 0);
     assert.equal(socket.sent.length, 1);
     assert.equal(
       decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1)).type,
@@ -1004,7 +970,7 @@ describe("NotebookRoom materialized sync persistence", () => {
     );
   });
 
-  it("persists materialized sync frames that change document state", async () => {
+  it("acknowledges changed materialized sync frames without persisted room history", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
@@ -1017,18 +983,18 @@ describe("NotebookRoom materialized sync persistence", () => {
       connectedAt: "2026-05-22T00:00:00.000Z",
     };
     const harness = roomHarness(room);
-    let persisted = 0;
-    harness.materializers.set(
-      "demo",
-      fakeMaterializer({
+    let checkpointed = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => ({
         ...noopMaterializedResult(),
         changed: true,
         notebook_changed: true,
       }),
-    );
-    harness.persistFrame = async () => {
-      persisted += 1;
-    };
+      checkpoint: async () => {
+        checkpointed += 1;
+      },
+      removePeer: async () => undefined,
+    });
 
     await harness.handleMessage(
       "demo",
@@ -1036,7 +1002,7 @@ describe("NotebookRoom materialized sync persistence", () => {
       encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array([1])),
     );
 
-    assert.equal(persisted, 1);
+    assert.equal(checkpointed, 1);
     assert.equal(socket.sent.length, 1);
     assert.equal(
       decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1)).type,
@@ -1067,7 +1033,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       connectedAt: "2026-05-22T00:00:00.000Z",
     };
     const harness = roomHarness(room);
-    let persisted = 0;
     harness.peers.set(editorPeer.id, editorPeer);
     harness.peers.set(viewerPeer.id, viewerPeer);
     harness.materializers.set(
@@ -1085,9 +1050,6 @@ describe("NotebookRoom materialized sync persistence", () => {
         ],
       }),
     );
-    harness.persistFrame = async () => {
-      persisted += 1;
-    };
 
     await harness.handleMessage(
       "demo",
@@ -1095,7 +1057,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array([1])),
     );
 
-    assert.equal(persisted, 1);
     assert.equal(viewerSocket.sent.length, 1);
     assert.deepEqual([...viewerSocket.sent[0]], [FrameType.AUTOMERGE_SYNC, 7, 8, 9]);
     assert.equal(editorSocket.sent.length, 1);
@@ -1118,10 +1079,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       connectedAt: "2026-05-22T00:00:00.000Z",
     };
     const harness = roomHarness(room);
-    let persisted = 0;
-    harness.persistFrame = async () => {
-      persisted += 1;
-    };
 
     await harness.handleMessage(
       "demo",
@@ -1129,7 +1086,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       encodeTypedFrame(FrameType.PUT_BLOB, new Uint8Array([1, 2, 3])),
     );
 
-    assert.equal(persisted, 0);
     assert.equal(socket.sent.length, 1);
     const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
     assert.equal(rejected.type, "cloud_frame_rejected");
@@ -1149,7 +1105,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       connectedAt: "2026-05-22T00:00:00.000Z",
     };
     const harness = roomHarness(room);
-    let persisted = 0;
     let materialized = 0;
     harness.materializers.set("demo", {
       receiveFrame: async () => {
@@ -1158,9 +1113,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       },
       checkpoint: async () => undefined,
     });
-    harness.persistFrame = async () => {
-      persisted += 1;
-    };
 
     await harness.handleMessage(
       "demo",
@@ -1174,7 +1126,6 @@ describe("NotebookRoom materialized sync persistence", () => {
     );
 
     assert.equal(materialized, 1);
-    assert.equal(persisted, 0);
     assert.equal(socket.sent.length, 1);
     const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
     assert.equal(accepted.type, "cloud_frame_accepted");
@@ -1207,7 +1158,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       consecutiveRejectedFrames: 0,
     };
     const harness = roomHarness(room);
-    let persisted = 0;
     let materialized = 0;
     harness.peers.set(ownerPeer.id, ownerPeer);
     harness.peers.set(runtimePeer.id, runtimePeer);
@@ -1219,9 +1169,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       checkpoint: async () => undefined,
       removePeer: async () => undefined,
     });
-    harness.persistFrame = async () => {
-      persisted += 1;
-    };
     const actions = ["interrupt_execution", "send_comm"] as const;
     for (const action of actions) {
       const envelope =
@@ -1259,7 +1206,6 @@ describe("NotebookRoom materialized sync persistence", () => {
     }
 
     assert.equal(materialized, 0);
-    assert.equal(persisted, 0);
   });
 
   it("forwards runtime-agent command REQUEST frames only to the newest runtime peer", async () => {
@@ -1416,7 +1362,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       consecutiveRejectedFrames: 0,
     };
     const harness = roomHarness(room);
-    let persisted = 0;
     let materialized = 0;
     harness.peers.set(ownerPeer.id, ownerPeer);
     harness.peers.set(runtimePeer.id, runtimePeer);
@@ -1428,9 +1373,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       checkpoint: async () => undefined,
       removePeer: async () => undefined,
     });
-    harness.persistFrame = async () => {
-      persisted += 1;
-    };
     const requestPayload = new TextEncoder().encode(
       JSON.stringify({ id: "request-1", action: "complete", code: "pri", cursor_pos: 3 }),
     );
@@ -1473,7 +1415,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       [FrameType.RESPONSE, ...Array.from(responsePayload)],
     );
     assert.equal(materialized, 0);
-    assert.equal(persisted, 0);
   });
 
   it("settles the oldest hosted completion when the pending query cap evicts it", async () => {
@@ -1643,7 +1584,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       consecutiveRejectedFrames: 0,
     };
     const harness = roomHarness(room);
-    let persisted = 0;
     let materialized = 0;
     harness.materializers.set("demo", {
       receiveFrame: async () => {
@@ -1653,9 +1593,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       checkpoint: async () => undefined,
       removePeer: async () => undefined,
     });
-    harness.persistFrame = async () => {
-      persisted += 1;
-    };
 
     await harness.handleMessage(
       "demo",
@@ -1669,7 +1606,6 @@ describe("NotebookRoom materialized sync persistence", () => {
     );
 
     assert.equal(materialized, 0);
-    assert.equal(persisted, 0);
     assert.equal(peer.consecutiveRejectedFrames, 0);
     assert.equal(socket.sent.length, 1);
     const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
@@ -1691,7 +1627,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       consecutiveRejectedFrames: 0,
     };
     const harness = roomHarness(room);
-    let persisted = 0;
     let materialized = 0;
     harness.materializers.set("demo", {
       receiveFrame: async () => {
@@ -1701,9 +1636,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       checkpoint: async () => undefined,
       removePeer: async () => undefined,
     });
-    harness.persistFrame = async () => {
-      persisted += 1;
-    };
 
     await harness.handleMessage(
       "demo",
@@ -1715,7 +1647,6 @@ describe("NotebookRoom materialized sync persistence", () => {
     );
 
     assert.equal(materialized, 0);
-    assert.equal(persisted, 0);
     assert.equal(peer.consecutiveRejectedFrames, 0);
     assert.equal(socket.sent.length, 1);
     const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
@@ -1742,7 +1673,6 @@ describe("NotebookRoom materialized sync persistence", () => {
         connectedAt: "2026-05-22T00:00:00.000Z",
       };
       const harness = roomHarness(room);
-      let persisted = 0;
       let materialized = 0;
       harness.materializers.set("demo", {
         receiveFrame: async () => {
@@ -1751,9 +1681,6 @@ describe("NotebookRoom materialized sync persistence", () => {
         },
         checkpoint: async () => undefined,
       });
-      harness.persistFrame = async () => {
-        persisted += 1;
-      };
 
       await harness.handleMessage(
         "demo",
@@ -1767,7 +1694,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       );
 
       assert.equal(materialized, 0, `${scope} request reached room host`);
-      assert.equal(persisted, 0, `${scope} request was persisted`);
       assert.equal(socket.sent.length, 1);
       const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
       assert.equal(rejected.type, "cloud_frame_rejected");
@@ -1790,10 +1716,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       connectedAt: "2026-05-22T00:00:00.000Z",
     };
     const harness = roomHarness(room);
-    let persisted = 0;
-    harness.persistFrame = async () => {
-      persisted += 1;
-    };
 
     await harness.handleMessage(
       "demo",
@@ -1801,7 +1723,6 @@ describe("NotebookRoom materialized sync persistence", () => {
       encodeTypedFrame(FrameType.PUT_BLOB, new Uint8Array([1, 2, 3])),
     );
 
-    assert.equal(persisted, 1);
     assert.equal(socket.sent.length, 1);
     assert.equal(
       decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1)).type,
@@ -2094,7 +2015,6 @@ interface RoomHarness {
     peer: PeerForTest,
     message: string | ArrayBuffer | ArrayBufferView,
   ): Promise<void>;
-  persistFrame(): Promise<void>;
   removePeer(notebookId: string, peer: PeerForTest): void;
   peerForSocket(socket: CloudflareWebSocket): PeerForTest | undefined;
   broadcastFrame(notebookId: string, frame: Uint8Array, excludePeerId?: string): void;

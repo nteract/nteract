@@ -230,11 +230,12 @@ requests, or ACL mutations.
 Public viewer presence is a product policy layered on top of this ACL. The
 minimum hosted-room behavior keeps anonymous public presence connection-local,
 matching the current prototype: the server acknowledges the frame to the sender
-but does not broadcast it to other peers or persist it as room activity.
-Authenticated viewers can use normal broadcast presence. If product later wants
-public viewer presence, that change should be explicit and should define whether
-anonymous users appear as aggregate document presence or full cursor/cell
-presence.
+but does not broadcast it to other peers. Authenticated viewers can use normal
+live broadcast presence. Room frames are not persisted as a separate activity
+log; the materialized `NotebookDoc`/`RuntimeStateDoc`/`CommsDoc` checkpoint path
+is the durable recovery boundary. If product later wants public viewer presence,
+that change should be explicit and should define whether anonymous users appear
+as aggregate document presence or full cursor/cell presence.
 
 ## Decision 5: Room creation is a privileged operation
 
