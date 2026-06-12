@@ -41,6 +41,8 @@ interface CloudWorkstationMutationState {
 }
 
 interface AttachWorkstationOptions {
+  message?: string;
+  replaceExisting?: boolean;
   revealPanel?: boolean;
 }
 
@@ -153,7 +155,8 @@ export function useCloudWorkstationManager({
       }
       setWorkstationMutation({
         kind: "attach",
-        message: "Starting compute. Waiting for the workstation to join this notebook.",
+        message:
+          options.message ?? "Starting compute. Waiting for the workstation to join this notebook.",
         workstationId,
       });
       if (options.revealPanel) {
@@ -164,6 +167,7 @@ export function useCloudWorkstationManager({
           config.workstationAttachEndpoint,
           authState,
           workstationId,
+          { replaceExisting: options.replaceExisting === true },
         );
         setWorkstationsError(null);
         await refreshCloudWorkstations();
@@ -426,9 +430,22 @@ export function useCloudWorkstationManager({
     }
   }, [workstationAttachment?.workstation_id, workstationMutation]);
 
+  const startSelectedWorkstation = useCallback(
+    async (options: Omit<AttachWorkstationOptions, "revealPanel"> = {}) => {
+      const workstationId = workstationLaunchReadiness.workstationId;
+      if (!workstationId) {
+        onOpenWorkstationsRail();
+        return;
+      }
+      await handleAttachWorkstation(workstationId, options);
+    },
+    [handleAttachWorkstation, onOpenWorkstationsRail, workstationLaunchReadiness.workstationId],
+  );
+
   return useMemo(
     () => ({
       busyWorkstationId: workstationMutation.workstationId,
+      onStartSelectedWorkstation: canChooseHostedWorkstation ? startSelectedWorkstation : undefined,
       onAttachWorkstation: canChooseHostedWorkstation
         ? (workstationId: string) => handleAttachWorkstation(workstationId, { revealPanel: true })
         : undefined,
@@ -446,6 +463,7 @@ export function useCloudWorkstationManager({
       handleCancelPairing,
       handleSetDefaultWorkstation,
       handleStartPairing,
+      startSelectedWorkstation,
       pairingWithName,
       workstationAction,
       workstationMutation.workstationId,

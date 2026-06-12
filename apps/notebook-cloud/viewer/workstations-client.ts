@@ -31,6 +31,10 @@ interface CloudWorkstationAttachmentResponse {
   };
 }
 
+export interface RequestCloudWorkstationAttachmentOptions {
+  replaceExisting?: boolean;
+}
+
 export async function fetchCloudWorkstations(
   endpoint: string,
   authState: CloudPrototypeAuthState,
@@ -85,6 +89,7 @@ export async function requestCloudWorkstationAttachment(
   endpoint: string,
   authState: CloudPrototypeAuthState,
   workstationId: string,
+  options: RequestCloudWorkstationAttachmentOptions = {},
 ): Promise<{ jobId: string | null; status: string | null }> {
   const response = await fetchWithCloudPrototypeAuth(
     endpoint,
@@ -94,7 +99,10 @@ export async function requestCloudWorkstationAttachment(
         Accept: "application/json",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ workstation_id: workstationId }),
+      body: JSON.stringify({
+        workstation_id: workstationId,
+        ...(options.replaceExisting ? { replace_existing: true, intent: "restart" } : {}),
+      }),
     },
     authState,
   );

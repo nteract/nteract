@@ -394,6 +394,7 @@ export function NotebookViewer({
     busyWorkstationId,
     onAttachWorkstation,
     onSetDefaultWorkstation,
+    onStartSelectedWorkstation,
     onStartPairing,
     onCancelPairing,
     workstationAction,
@@ -571,21 +572,10 @@ export function NotebookViewer({
     });
   }, [createCloudNotebookClient]);
   const handleCloudStartRuntime = useCallback(() => {
-    const runtimeClient = createCloudNotebookClient("start kernel");
-    if (!runtimeClient) return;
-
-    void (async () => {
-      const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
-      if (!delivered) {
-        console.warn("[notebook-cloud] start kernel request skipped; notebook sync failed");
-        return;
-      }
-
-      await runtimeClient.client.launchKernel("auto", "auto");
-    })().catch((error: unknown) => {
+    void onStartSelectedWorkstation?.().catch((error: unknown) => {
       console.warn("[notebook-cloud] start kernel request failed", error);
     });
-  }, [createCloudNotebookClient]);
+  }, [onStartSelectedWorkstation]);
   const handleCloudInterruptRuntime = useCallback(() => {
     const runtimeClient = createCloudNotebookClient("interrupt kernel");
     if (!runtimeClient) return;
@@ -595,22 +585,13 @@ export function NotebookViewer({
     });
   }, [createCloudNotebookClient]);
   const handleCloudRestartRuntime = useCallback(() => {
-    const runtimeClient = createCloudNotebookClient("restart kernel");
-    if (!runtimeClient) return;
-
-    void (async () => {
-      const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
-      if (!delivered) {
-        console.warn("[notebook-cloud] restart kernel request skipped; notebook sync failed");
-        return;
-      }
-
-      await runtimeClient.client.shutdownKernel();
-      await runtimeClient.client.launchKernel("auto", "auto");
-    })().catch((error: unknown) => {
+    void onStartSelectedWorkstation?.({
+      message: "Restarting compute. Waiting for the workstation to replace the runtime peer.",
+      replaceExisting: true,
+    }).catch((error: unknown) => {
       console.warn("[notebook-cloud] restart kernel request failed", error);
     });
-  }, [createCloudNotebookClient]);
+  }, [onStartSelectedWorkstation]);
   const handleCloudRestartAndRunAll = useCallback(() => {
     const runtimeClient = createCloudNotebookClient("restart kernel and run all cells");
     if (!runtimeClient) return;
@@ -624,13 +605,15 @@ export function NotebookViewer({
         return;
       }
 
-      await runtimeClient.client.shutdownKernel();
-      await runtimeClient.client.launchKernel("auto", "auto");
+      await onStartSelectedWorkstation?.({
+        message: "Restarting compute. Run all is queued for the replacement runtime.",
+        replaceExisting: true,
+      });
       await runtimeClient.client.runAllCells();
     })().catch((error: unknown) => {
       console.warn("[notebook-cloud] restart kernel and run all cells request failed", error);
     });
-  }, [createCloudNotebookClient]);
+  }, [createCloudNotebookClient, onStartSelectedWorkstation]);
   const handleCloudSetCellSourceHidden = useCallback(
     (cellId: string, hidden: boolean) => {
       cloudNotebookController.setCellSourceHidden(cellId, hidden);

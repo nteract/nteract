@@ -127,6 +127,34 @@ describe("cloud workstations client", () => {
     );
   });
 
+  it("requests replacement notebook attachment for hosted restarts", async (t) => {
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      assert.equal(String(input), "/api/n/nb-1/workstation-attachments");
+      assert.equal(init?.method, "POST");
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        workstation_id: "ws-lab2",
+        replace_existing: true,
+        intent: "restart",
+      });
+      return jsonResponse({
+        job: {
+          job_id: "job-restart",
+          status: "pending",
+        },
+      });
+    });
+
+    assert.deepEqual(
+      await requestCloudWorkstationAttachment(
+        "/api/n/nb-1/workstation-attachments",
+        devAuth,
+        "ws-lab2",
+        { replaceExisting: true },
+      ),
+      { jobId: "job-restart", status: "pending" },
+    );
+  });
+
   it("keeps registry refresh bounded to owner flows that can change workstation selection", () => {
     assert.equal(
       cloudWorkstationRefreshIntervalMs({

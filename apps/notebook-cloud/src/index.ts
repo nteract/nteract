@@ -1340,6 +1340,10 @@ async function routeNotebookWorkstationAttachment(
   if (!workstationId) {
     return json({ error: "choose a default workstation before attaching compute" }, 409);
   }
+  const replaceExisting =
+    payload?.replace_existing === true ||
+    payload?.replaceExisting === true ||
+    payload?.intent === "restart";
 
   const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
   if (!workstation) {
@@ -1370,18 +1374,24 @@ async function routeNotebookWorkstationAttachment(
   const job = await createWorkstationAttachJob(env, {
     notebookId,
     ownerPrincipal,
+    replaceActive: replaceExisting,
     workstationId,
     actorLabel: identity.actorLabel,
   });
   if (!job) {
     return json({ error: "workstation attach job was not created" }, 500);
   }
+  await publishWorkstationAttachJobRuntimeState(env, job, workstation, {
+    closeRuntimePeers: replaceExisting,
+    closeReason: replaceExisting ? "workstation restart requested" : undefined,
+  });
 
   cloudLog("info", "workstation.attach.requested", {
     notebook_id: notebookId,
     principal: ownerPrincipal,
     workstation_id: workstationId,
     job_id: job.id,
+    replace_existing: replaceExisting,
     counter: "workstation_attach_requests",
     counter_delta: 1,
   });
@@ -1558,6 +1568,15 @@ async function routeWorkstationAttachJob(
   });
   if (!job) {
     return json({ error: "workstation attach job not found" }, 404);
+  }
+  if (job.status !== statusValue) {
+    return json(
+      {
+        error: "workstation attach job is no longer active",
+        job: workstationAttachJobResponseRow(request, job),
+      },
+      409,
+    );
   }
   const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
   if (workstation) {
@@ -1860,6 +1879,10 @@ async function publishWorkstationAttachJobRuntimeState(
   env: Env,
   job: WorkstationAttachJobRow,
   workstation: WorkstationRow,
+  options: {
+    closeReason?: string;
+    closeRuntimePeers?: boolean;
+  } = {},
 ): Promise<void> {
   const attachment = workstationAttachmentStateForJob(job, workstation);
   const id = env.NOTEBOOK_ROOMS.idFromName(job.notebook_id);
@@ -1873,7 +1896,15 @@ async function publishWorkstationAttachJobRuntimeState(
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ attachment }),
+          body: JSON.stringify({
+            attachment,
+            ...(options.closeRuntimePeers
+              ? {
+                  close_runtime_peers: true,
+                  close_reason: options.closeReason ?? "workstation attachment replaced",
+                }
+              : {}),
+          }),
         },
       ),
     );

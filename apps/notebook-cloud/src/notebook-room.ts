@@ -83,6 +83,7 @@ interface RejectFrameOptions {
 interface PeerCloseOptions {
   code?: number;
   reason?: string;
+  suppressRuntimePeerWatch?: boolean;
 }
 
 type RuntimePeerForwardedRequestAction = "interrupt_execution" | "send_comm";
@@ -373,8 +374,21 @@ export class NotebookRoom {
     }
 
     const attachment = payload.attachment as WorkstationAttachmentState | null;
+    const closeRuntimePeers =
+      payload.close_runtime_peers === true || payload.closeRuntimePeers === true;
+    const closeReason =
+      typeof payload.close_reason === "string" && payload.close_reason.trim().length > 0
+        ? payload.close_reason.trim().slice(0, 120)
+        : "workstation attachment replaced";
     const startedAt = Date.now();
     try {
+      if (closeRuntimePeers) {
+        this.removeRuntimePeers(notebookId, {
+          code: 1012,
+          reason: closeReason,
+          suppressRuntimePeerWatch: true,
+        });
+      }
       const materializer = this.materializerFor(notebookId);
       const result = await materializer.setWorkstationAttachment(attachment);
       if (result.changed) {
@@ -386,6 +400,7 @@ export class NotebookRoom {
         changed: result.changed,
         duration_ms: durationMs(startedAt),
         outbound_frame_count: result.outbound.length,
+        closed_runtime_peers: closeRuntimePeers,
         counter: "workstation_attachment_control_published",
         counter_delta: result.changed ? 1 : 0,
       });
@@ -1511,7 +1526,7 @@ export class NotebookRoom {
     // A runtime_peer departure is the one failure the daemon can't self-correct
     // (its death IS the trigger). Arm the reconciliation watchdog if it left no
     // runtime_peer behind.
-    if (peer.identity.scope === "runtime_peer") {
+    if (peer.identity.scope === "runtime_peer" && !closeOptions.suppressRuntimePeerWatch) {
       this.refreshRuntimePeerWatch(notebookId);
     }
   }
