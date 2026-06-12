@@ -697,10 +697,14 @@ async fn poll_attach_jobs(
 ) -> Result<bool, AgentHttpError> {
     let poll_started = Instant::now();
     let jobs = api.poll_attach_jobs(&opts.workstation_id).await?;
-    if !jobs.is_empty() {
+    let actionable_job_count = jobs
+        .iter()
+        .filter(|job| !active.contains_key(&job.job_id))
+        .count();
+    if actionable_job_count > 0 {
         info!(
             "[workstation-agent] attach jobs polled count={} elapsed_ms={}",
-            jobs.len(),
+            actionable_job_count,
             poll_started.elapsed().as_millis()
         );
     }

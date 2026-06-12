@@ -138,6 +138,7 @@ async function main() {
     timeoutMs,
     tokenStorageJson,
     viewerUrl,
+    workstationDisplayName: scalarString(workstation.display_name) ?? workstationId,
     workstationId,
   });
   const report = {
@@ -179,6 +180,7 @@ async function runBrowserSmoke({
   timeoutMs,
   tokenStorageJson,
   viewerUrl,
+  workstationDisplayName,
   workstationId,
 }) {
   const url = new URL(viewerUrl);
@@ -206,7 +208,7 @@ async function runBrowserSmoke({
         source,
         timeoutMs,
         url,
-        workstationId,
+        workstationDisplayName,
       });
     } finally {
       await ownerContext.close().catch(() => {});
@@ -252,7 +254,7 @@ async function runOwnerAttachAndExecuteSmoke({
   source,
   timeoutMs,
   url,
-  workstationId,
+  workstationDisplayName,
 }) {
   const page = await context.newPage();
   const events = collectBrowserDiagnostics(page);
@@ -266,7 +268,7 @@ async function runOwnerAttachAndExecuteSmoke({
   assertToolbarWorkstationAction(action, {
     context: "owner attach",
     label: "Start compute",
-    titleIncludes: [workstationId, "workstation"],
+    titleIncludes: [workstationDisplayName],
   });
   await page.getByTestId("workstation-setup-button").click({ timeout: timeoutMs });
 
@@ -347,8 +349,7 @@ async function assertOwnerBlockedWorkstationStates({
   const noWorkstations = await assertOwnerToolbarActionWithMockedWorkstations({
     browser,
     expectedLabel: "Set up compute",
-    expectedPanelText:
-      "Run the workstation agent on a machine you own, then attach it here to start compute.",
+    expectedPanelText: "No workstation registered",
     expectedTitleIncludes: ["Open workstations panel"],
     registry: {
       default_workstation_id: null,

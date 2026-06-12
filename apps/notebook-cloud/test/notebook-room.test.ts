@@ -1123,9 +1123,7 @@ describe("NotebookRoom materialized sync persistence", () => {
               },
             }
           : { id: `request-${action}`, action };
-      const requestPayload = new TextEncoder().encode(
-        JSON.stringify(envelope),
-      );
+      const requestPayload = new TextEncoder().encode(JSON.stringify(envelope));
 
       await harness.handleMessage(
         "demo",

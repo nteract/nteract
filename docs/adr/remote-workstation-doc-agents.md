@@ -719,6 +719,10 @@ sequence:
   local runtime-agent command model. During reconnect overlap, command routing
   targets the newest connected runtime peer, matching the attachment
   `updated_at` projection until runtime generations become explicit.
+  `send_comm` is especially easy to misread: the socket ack only means the room
+  forwarded the comm message to the selected runtime peer. The widget-visible
+  result is still the later CommsDoc/RuntimeStateDoc change; cloud must not
+  invent a response envelope or treat the ack as a completed widget round trip.
 
 Operator instructions: `docs/remote-workstation.md`.
 
