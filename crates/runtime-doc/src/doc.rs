@@ -2718,15 +2718,19 @@ impl RuntimeStateDoc {
         seq: u64,
     ) -> Result<(), RuntimeStateError> {
         let comms = self.scaffold_map("comms")?;
-        let entry = self.doc.put_object(&comms, comm_id, ObjType::Map)?;
-        self.doc.put(&entry, "target_name", target_name)?;
-        self.doc.put(&entry, "model_module", model_module)?;
-        self.doc.put(&entry, "model_name", model_name)?;
-        #[allow(deprecated)]
-        automunge::put_json_at_key(&mut self.doc, &entry, "state", state)?;
-        self.doc.put(&entry, "seq", seq as i64)?;
-        self.doc.put_object(&entry, "outputs", ObjType::List)?;
-        self.doc.put(&entry, "capture_msg_id", "")?;
+        // A comm-open owns this topology record as a replaceable snapshot. The
+        // mutable widget values live in CommsDoc, where existing object identity
+        // is preserved on later comm_msg updates.
+        let entry = serde_json::json!({
+            "target_name": target_name,
+            "model_module": model_module,
+            "model_name": model_name,
+            "state": state,
+            "seq": seq as i64,
+            "outputs": [],
+            "capture_msg_id": "",
+        });
+        automunge::put_json_at_key_batched(&mut self.doc, &comms, comm_id, &entry)?;
         Ok(())
     }
 

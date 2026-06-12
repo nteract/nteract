@@ -8,7 +8,10 @@
 //! can cover the workspace Automerge API we need. Until then, this is the
 //! single source of truth for JSON/Automerge conversion.
 
-use automerge::{transaction::Transactable, AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
+use automerge::{
+    hydrate, transaction::Transactable, AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc,
+    ScalarValue,
+};
 
 /// Read a string scalar at `prop`, distinguishing "absent" from "empty".
 ///
@@ -132,6 +135,46 @@ pub fn put_json_at_key(
     Ok(())
 }
 
+/// Write a JSON value at a map key, using Automerge's batched object creation
+/// for fresh object trees.
+///
+/// This is intended for new keys where replacing an existing object would be
+/// correct, such as a fresh widget `comm_id` from `comm_open`. For shared keys
+/// that may already have concurrent object identity, use
+/// [`update_json_at_key`].
+pub fn put_json_at_key_batched(
+    doc: &mut AutoCommit,
+    parent: &ObjId,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), AutomergeError> {
+    match value {
+        serde_json::Value::Null => {
+            doc.put(parent, key, ScalarValue::Null)?;
+        }
+        serde_json::Value::Bool(b) => {
+            doc.put(parent, key, *b)?;
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                doc.put(parent, key, i)?;
+            } else if let Some(u) = n.as_u64() {
+                doc.put(parent, key, u)?;
+            } else if let Some(f) = n.as_f64() {
+                doc.put(parent, key, f)?;
+            }
+        }
+        serde_json::Value::String(s) => {
+            doc.put(parent, key, s.as_str())?;
+        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            let hydrated = json_to_hydrate(value);
+            doc.batch_create_object(parent, key, &hydrated, false)?;
+        }
+    }
+    Ok(())
+}
+
 /// Recursively insert a JSON value into an Automerge List at a given index.
 ///
 /// Safe when the parent list was just created by the caller (no competing
@@ -177,6 +220,38 @@ pub fn insert_json_at_index(
         }
     }
     Ok(())
+}
+
+fn json_to_hydrate(value: &serde_json::Value) -> hydrate::Value {
+    match value {
+        serde_json::Value::Null => hydrate::Value::Scalar(ScalarValue::Null),
+        serde_json::Value::Bool(b) => hydrate::Value::Scalar(ScalarValue::Boolean(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                hydrate::Value::Scalar(ScalarValue::Int(i))
+            } else if let Some(u) = n.as_u64() {
+                hydrate::Value::Scalar(ScalarValue::Uint(u))
+            } else if let Some(f) = n.as_f64() {
+                hydrate::Value::Scalar(ScalarValue::F64(f))
+            } else {
+                hydrate::Value::Scalar(ScalarValue::Null)
+            }
+        }
+        serde_json::Value::String(s) => hydrate::Value::Scalar(ScalarValue::Str(s.into())),
+        serde_json::Value::Array(values) => hydrate::Value::List(
+            values
+                .iter()
+                .map(json_to_hydrate)
+                .collect::<Vec<_>>()
+                .into(),
+        ),
+        serde_json::Value::Object(map) => hydrate::Value::Map(
+            map.iter()
+                .map(|(key, value)| (key.clone(), json_to_hydrate(value)))
+                .collect::<std::collections::HashMap<_, _>>()
+                .into(),
+        ),
+    }
 }
 
 /// Recursively update a JSON value in an Automerge Map, reusing existing objects.
@@ -359,6 +434,23 @@ mod tests {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "count", 7i64)?;
         assert_eq!(read_str_if_present(&doc, &ROOT, "count"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn put_json_at_key_batched_roundtrips_nested_json() -> Result<(), AutomergeError> {
+        let mut doc = AutoCommit::new();
+        let value = serde_json::json!({
+            "name": "widget",
+            "count": 7,
+            "enabled": true,
+            "tags": ["a", "b"],
+            "nested": { "value": 42 },
+        });
+
+        put_json_at_key_batched(&mut doc, &ROOT, "state", &value)?;
+
+        assert_eq!(read_json_value(&doc, &ROOT, "state"), Some(value));
         Ok(())
     }
 }

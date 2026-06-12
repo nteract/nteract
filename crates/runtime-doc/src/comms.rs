@@ -222,7 +222,11 @@ impl CommsDoc {
         state: &serde_json::Value,
     ) -> Result<(), RuntimeStateError> {
         let comms = self.scaffold_map("comms")?;
-        automunge::update_json_at_key(&mut self.doc, &comms, comm_id, state)?;
+        if self.doc.get(&comms, comm_id)?.is_some() {
+            automunge::update_json_at_key(&mut self.doc, &comms, comm_id, state)?;
+        } else {
+            automunge::put_json_at_key_batched(&mut self.doc, &comms, comm_id, state)?;
+        }
         Ok(())
     }
 
