@@ -919,9 +919,13 @@ heal-retry with an exhaustion signal; "confirmation is just another
 sync") applied to our shapeless spot: resync verification.
 
 **Resync heal loop** (`apps/notebook-cloud/viewer/sync-heal.ts`,
-upstream `SyncScheduler` shape). Both fire-and-forget `resetAndResync()`
-sites — the per-roomReady re-establish and the rejection tracker's
-strike-1 in-place recovery — now arm a verification deadline. The
+upstream `SyncScheduler` shape). All three fire-and-forget sync
+exchanges — the **initial bootstrap** (armed in the connect resolution
+block: the replayed first handshake trips the `applyRoomReady` peer-id
+dedupe, so the roomReady arming never covers the cold load — the
+review's confirmed finding), the per-roomReady re-establish, and the
+rejection tracker's strike-1 in-place recovery — now arm a
+verification deadline. The
 confirmation primitive is the #3588 pair: `notebook_doc_caught_up()`
 polled on each `notebookSyncApplied$` emission — a re-verification that
 returns true iff the previous exchange landed. Not caught up within the

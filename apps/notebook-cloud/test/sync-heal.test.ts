@@ -281,6 +281,18 @@ describe("cloud session sync-heal wiring", () => {
     );
   });
 
+  it("arms verification for the initial bootstrap exchange", () => {
+    // The replayed first handshake trips the applyRoomReady peer-id dedupe,
+    // so the roomReady$ arming never covers the cold load — the connect
+    // resolution block must arm it directly or a first-connection stall
+    // never kicks, never exhausts, and never surfaces.
+    assert.match(
+      sessionSource,
+      /armTabBridge\(liveRuntime\);[\s\S]{0,600}?syncHeal\.noteResyncKicked\(NOTEBOOK_DOC_HEAL_KEY\);/,
+      "the connect resolution block arms initial-exchange verification",
+    );
+  });
+
   it("feeds the caught-up confirmation from notebookSyncApplied$", () => {
     assert.match(
       sessionSource,

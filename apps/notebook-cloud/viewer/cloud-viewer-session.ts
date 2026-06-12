@@ -1198,6 +1198,14 @@ export function useCloudViewerSession({
         installCloudWidgetCommWriter(liveRuntime);
         armPersistence(liveRuntime);
         armTabBridge(liveRuntime);
+        // Arm convergence verification for the INITIAL bootstrap exchange.
+        // The roomReady$ arming never covers it: the replayed first
+        // handshake trips the applyRoomReady peer-id dedupe, so without
+        // this a first-connection stall (wedged room host answering
+        // liveness pings without converging) would never kick, exhaust,
+        // or surface — and the cold load is the most common connection
+        // event.
+        syncHeal.noteResyncKicked(NOTEBOOK_DOC_HEAL_KEY);
         // Anonymous sessions are out of scope for offline-merge surfacing
         // (per-connection principals; persistence never arms for them).
         offlineMergeTracker.noteSessionEligibility(
