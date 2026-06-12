@@ -234,10 +234,22 @@ remains for workstations is target selection: how the active runtime peer is
 chosen for accepted executions, and how readiness/disconnect gates the
 dispatch (punchlist 3D-7).
 
-Kernel lifecycle requests should follow the same split. The room host accepts
-`LaunchKernel`, `RestartKernel`, `InterruptExecution`, and `ShutdownKernel`
-requests from allowed user roles, then dispatches the corresponding runtime work
-to the active workstation runtime peer.
+Kernel lifecycle and widget requests should follow the same split, but they do
+not all have the same reply contract. `InterruptExecution` and `SendComm` are
+command-only today: the hosted room can authorize the user request and forward
+the typed frame to the newest active `runtime_peer`. The browser ack for those
+frames means "accepted and delivered to a runtime peer", not "the kernel handled
+it" and not "widget state converged". Widget-visible results must still arrive
+through the normal runtime documents (`CommsDoc` / `RuntimeStateDoc`) and shared
+projections.
+
+Response-bearing runtime requests need a stronger contract. `LaunchKernel`,
+`RestartKernel`, `ShutdownKernel`, `SyncEnvironment`, `Complete`, and
+`GetHistory` require either a room-owned state transition or a correlated
+response path back from the runtime peer. Hosted rooms should reject direct
+runtime request frames for these actions until that response path exists rather
+than acknowledging a no-op delivery. This keeps toolbar/history/completion UI
+from mistaking WebSocket delivery for kernel success.
 
 ## Decision 5: Current Python is a first-class environment policy
 
