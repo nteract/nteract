@@ -3368,7 +3368,9 @@ async function routeBlob(
     return originRejection;
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrResponse(request, env, {
+    allowWorkstationCredential: true,
+  });
   if (identity instanceof Response) {
     return identity;
   }

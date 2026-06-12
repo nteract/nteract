@@ -336,6 +336,7 @@ fn runtime_peer_status_transition_allowed(before: &str, after: &str) -> bool {
         ("queued", "running")
             | ("queued", "done")
             | ("queued", "error")
+            | ("queued", "cancelled")
             | ("running", "done")
             | ("running", "error")
     )
@@ -383,7 +384,10 @@ fn validate_runtime_peer_queue_delta(
                 "queue entries must reference existing executions",
             ));
         };
-        if matches!(execution_after.status.as_str(), "done" | "error") {
+        if matches!(
+            execution_after.status.as_str(),
+            "done" | "error" | "cancelled"
+        ) {
             return Err(runtime_state_policy_error(
                 scope,
                 "queue",
@@ -833,6 +837,22 @@ mod tests {
             )
             .unwrap();
         after_doc.set_execution_done("exec-accepted", true).unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+            .unwrap();
+    }
+
+    #[test]
+    fn runtime_peer_policy_allows_queued_execution_cancellation() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .create_execution_with_source("exec-accepted", "print('accepted')", 0)
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        after_doc.set_execution_cancelled("exec-accepted").unwrap();
         let after = runtime_state_policy_snapshot(&after_doc);
 
         validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
