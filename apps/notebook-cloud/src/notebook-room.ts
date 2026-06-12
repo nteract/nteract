@@ -728,7 +728,6 @@ export class NotebookRoom {
         peer,
         normalizedFrame.type,
         "runtime peer response does not match an in-flight hosted request",
-        { countsTowardStreak: false },
       );
       return;
     }

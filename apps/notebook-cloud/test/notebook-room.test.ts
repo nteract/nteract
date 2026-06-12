@@ -1589,6 +1589,46 @@ describe("NotebookRoom materialized sync persistence", () => {
     assert.match(String(expired.error), /expired before the runtime peer responded/);
   });
 
+  it("counts unmatched runtime-peer RESPONSE frames toward rejected-frame close", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const runtimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:new&scope=runtime_peer",
+      ),
+    );
+    const runtimeSocket = new FakeSocket();
+    const runtimePeer = {
+      id: "runtime",
+      socket: runtimeSocket.asCloudflareWebSocket(),
+      identity: runtimeIdentity,
+      connectedAt: "2026-05-22T00:00:01.000Z",
+      workstation: null,
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+    const responsePayload = new TextEncoder().encode(
+      JSON.stringify({ id: "missing-request", result: "completion_result", items: [] }),
+    );
+
+    await harness.handleMessage(
+      "demo",
+      runtimePeer,
+      encodeTypedFrame(FrameType.RESPONSE, responsePayload),
+    );
+
+    assert.equal(runtimePeer.consecutiveRejectedFrames, 1);
+    assert.equal(runtimeSocket.closed, false);
+    assert.equal(runtimeSocket.sent.length, 1);
+    const rejected = decodeJsonPayload<Record<string, unknown>>(runtimeSocket.sent[0].slice(1));
+    assert.equal(rejected.type, "cloud_frame_rejected");
+    assert.equal(
+      rejected.reason,
+      "runtime peer response does not match an in-flight hosted request",
+    );
+  });
+
   it("rejects forwarded runtime-agent command REQUEST frames when no runtime peer is attached", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
