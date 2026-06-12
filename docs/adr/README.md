@@ -67,6 +67,7 @@ These entries define the center of gravity for the system:
 | [Live Notebook Projection Policy](live-notebook-projection-policy.md) | Draft | Full materialization fallback boundaries and narrow live store projections. |
 | [MCP Session Lifecycle and Daemon Supervision](mcp-session-lifecycle.md) | Draft | MCP proxy, daemon, and session lifetime boundaries. |
 | [MCP Resource Addressing](mcp-resource-addressing.md) | Draft | Local `nteract://` MCP resource namespace. |
+| [Cloud-Connected Local MCP Clients](cloud-connected-local-mcp.md) | Draft | Local MCP target resolution for hosted notebook URLs and machine-local cloud remote config. |
 
 ### Environment and Trust
 
