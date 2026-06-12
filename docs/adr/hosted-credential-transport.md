@@ -327,6 +327,51 @@ when an allowlist is configured. If any client sends `Origin`, malformed or
 untrusted values are rejected. One-time ticket flows still benefit from origin
 checks, but they do not rely on ambient cookies and therefore reduce CSRF risk.
 
+## Decision 9: Workstation pairing codes mint scoped workstation credentials
+
+Workstation registration previously required an externally issued bearer
+credential (Anaconda API key or OIDC token) or a dev token. That blocks the
+operator path on another provider's key-issuance flow and hands the agent a
+full-user credential when it only needs the workstation surface.
+
+The pairing flow replaces that for provider-neutral registration:
+
+1. A signed-in owner mints a pairing code from the workstation panel
+   (`POST /api/workstations/pairing-codes`). The code is short-lived
+   (10 minutes), single use, and stored hashed. The response is the only time
+   the cleartext code exists server-side.
+2. The operator runs the connect one-liner on the remote machine. The agent
+   redeems the code (`POST /api/workstations/pairing-codes/redeem`, no other
+   auth; the code is the credential) and receives a long-lived workstation
+   credential token (`nwc_` prefix, 256-bit random, stored hashed, revocable
+   via `revoked_at`).
+3. The agent registers and heartbeats with `Authorization: Bearer nwc_...`.
+   The browser dialog polls `GET /api/workstations/pairing-codes/:id` (owner
+   auth) and reports pending → redeemed → registered as the workstation row
+   appears.
+
+Properties:
+
+- The workstation credential maps to the minting owner's canonical principal,
+  so existing room attachment (owner-principal `runtime_peer` ACL row) and the
+  WebSocket dial work unchanged.
+- The credential is least-privilege by allowlist: it authenticates only the
+  workstation surface (registration/heartbeat, attach-job polling and status
+  patches) and room WebSocket dials, and may request only `viewer` or
+  `runtime_peer` connection scope. Every other route rejects it by default —
+  the gate sits in the central request-auth wrapper, not per-route opt-outs.
+- Pairing codes use a 12-character unambiguous alphabet (~59 bits) so a
+  guessed code cannot realistically register an attacker workstation —
+  important because first registration auto-selects the owner's default
+  workstation target.
+- Credentials do not expire in this iteration; they are revocable rows.
+  Short-lived attachment tickets (Decision 4) remain the hardening path for
+  deployments that cannot tolerate long-lived agent credentials.
+- A workstation credential is bound to the owner, not to one workstation id;
+  one credential may serve several registrations from the same machine. If
+  per-workstation binding becomes necessary (shared multi-user hosts), bind at
+  redeem time instead.
+
 ## Operational path for the Anaconda demo
 
 The exact deployment steps, direct OIDC variables, route takeover, and smoke

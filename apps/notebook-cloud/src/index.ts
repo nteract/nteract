@@ -59,6 +59,15 @@ import {
   type WorkstationRow,
   type WorkstationStatus,
 } from "./storage.ts";
+import {
+  authenticateWorkstationCredentialRequest,
+  createWorkstationPairingCode,
+  getWorkstationPairingCodeForOwner,
+  linkWorkstationToPairing,
+  redeemWorkstationPairingCode,
+  workstationCredentialTokenFromRequest,
+  workstationPairingStatus,
+} from "./workstation-credentials.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
 import {
   createNotebookCloudBlobResolver,
@@ -231,6 +240,24 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: exactPath("/api/workstations/default"),
     methods: ["PATCH"],
     handler: (_match, request, env) => routeDefaultWorkstation(request, env),
+  },
+  {
+    match: exactPath("/api/workstations/pairing-codes"),
+    methods: ["POST"],
+    handler: (_match, request, env) => routeWorkstationPairingCodes(request, env),
+  },
+  {
+    match: exactPath("/api/workstations/pairing-codes/redeem"),
+    methods: ["POST"],
+    handler: (_match, request, env) => routeWorkstationPairingCodeRedeem(request, env),
+  },
+  {
+    match: routePath("/api/workstations/pairing-codes/:pairingId", {
+      trailingSlash: "optional",
+    }),
+    methods: ["GET"],
+    handler: ({ params }, request, env) =>
+      routeWorkstationPairingCode(request, env, params.pairingId),
   },
   {
     match: routePath("/api/workstations/:workstationId/attach-jobs/:jobId", {
@@ -457,7 +484,9 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     return json({ error: "notebook id is required" }, 400);
   }
   const appSessionIdentity = await appSessionIdentityFromWebSocketRequest(request, env);
-  const identity = appSessionIdentity ?? (await authenticateRequestOrResponse(request, env));
+  const identity =
+    appSessionIdentity ??
+    (await authenticateRequestOrResponse(request, env, { allowWorkstationCredential: true }));
   if (identity instanceof Response) {
     return identity;
   }
@@ -934,8 +963,10 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
 
   const identity =
     request.method === "GET"
-      ? await authenticateRequestOrAppSessionOrResponse(request, env, "owner")
-      : await authenticateRequestOrResponse(request, env);
+      ? await authenticateRequestOrAppSessionOrResponse(request, env, "owner", {
+          allowWorkstationCredential: true,
+        })
+      : await authenticateRequestOrResponse(request, env, { allowWorkstationCredential: true });
   if (identity instanceof Response) {
     return identity;
   }
@@ -978,6 +1009,13 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
   const workstation = await registerWorkstation(env, ownerPrincipal, registration);
   if (!workstation) {
     return json({ error: "workstation was not registered" }, 500);
+  }
+  if (identity.metadata.workstationPairingCodeId) {
+    await linkWorkstationToPairing(
+      env,
+      identity.metadata.workstationPairingCodeId,
+      workstation.workstation_id,
+    );
   }
   const existingDefaultWorkstationId = await getDefaultWorkstationId(env, ownerPrincipal);
   const defaultWorkstationId =
@@ -1043,6 +1081,139 @@ async function routeDefaultWorkstation(request: Request, env: Env): Promise<Resp
     ok: true,
     default_workstation_id: selected,
   });
+}
+
+async function routeWorkstationPairingCodes(request: Request, env: Env): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to add a workstation" }, 401);
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const minted = await createWorkstationPairingCode(env, {
+    ownerPrincipal,
+    principalNamespace: identity.metadata.principalNamespace,
+    actorLabel: identity.actorLabel,
+  });
+  if (!minted) {
+    return json({ error: "pairing code was not created" }, 500);
+  }
+
+  cloudLog("info", "workstation.pairing.minted", {
+    principal: ownerPrincipal,
+    pairing_id: minted.id,
+    counter: "workstation_pairing_codes_minted",
+    counter_delta: 1,
+  });
+  return json(
+    {
+      ok: true,
+      pairing: {
+        id: minted.id,
+        code: minted.code,
+        expires_at: minted.expires_at,
+      },
+    },
+    201,
+  );
+}
+
+async function routeWorkstationPairingCode(
+  request: Request,
+  env: Env,
+  pairingId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to check pairing status" }, 401);
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const pairing = await getWorkstationPairingCodeForOwner(env, ownerPrincipal, pairingId);
+  if (!pairing) {
+    return json({ error: "pairing code not found" }, 404);
+  }
+
+  return json({
+    ok: true,
+    pairing: {
+      id: pairing.id,
+      status: workstationPairingStatus(pairing, Date.now()),
+      expires_at: pairing.expires_at,
+      workstation_id: pairing.workstation_id,
+    },
+  });
+}
+
+async function routeWorkstationPairingCodeRedeem(request: Request, env: Env): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const payload = await readRequiredJsonObject(request, "pairing redeem body");
+  if (payload instanceof Response) {
+    return payload;
+  }
+  const code = boundedStringField(payload.code, "code", 64);
+  if (code instanceof Response) {
+    return code;
+  }
+
+  const redeemed = await redeemWorkstationPairingCode(env, code);
+  if (!redeemed) {
+    // Unknown, expired, and already-redeemed codes are indistinguishable in
+    // the response so the endpoint does not oracle live codes.
+    cloudLog("info", "workstation.pairing.redeem_rejected", {
+      counter: "workstation_pairing_redeem_rejections",
+      counter_delta: 1,
+    });
+    return json({ error: "pairing code is invalid, expired, or already used" }, 404);
+  }
+
+  cloudLog("info", "workstation.pairing.redeemed", {
+    principal: redeemed.owner_principal,
+    pairing_id: redeemed.pairing_code_id,
+    credential_id: redeemed.credential_id,
+    counter: "workstation_pairing_codes_redeemed",
+    counter_delta: 1,
+  });
+  return json(
+    {
+      ok: true,
+      credential: {
+        token: redeemed.token,
+        credential_id: redeemed.credential_id,
+      },
+      pairing: {
+        id: redeemed.pairing_code_id,
+      },
+    },
+    201,
+  );
 }
 
 async function routeNotebookWorkstationAttachment(
@@ -1215,7 +1386,9 @@ async function routeWorkstationAttachJobs(
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrResponse(request, env, {
+    allowWorkstationCredential: true,
+  });
   if (identity instanceof Response) {
     return identity;
   }
@@ -1259,7 +1432,9 @@ async function routeWorkstationAttachJob(
     return originRejection;
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrResponse(request, env, {
+    allowWorkstationCredential: true,
+  });
   if (identity instanceof Response) {
     return identity;
   }
@@ -3409,8 +3584,20 @@ async function safeEnsureCatalogSchema(env: Env, ctx: ExecutionContext): Promise
 async function authenticateRequestOrResponse(
   request: Request,
   env: Env,
+  options?: { allowWorkstationCredential?: boolean },
 ): Promise<AuthenticatedConnection | Response> {
   try {
+    // Workstation credentials are least-privilege by allowlist: only the
+    // workstation surface and room dials opt in. Every other route rejects
+    // the prefix here, before provider dispatch, so a leaked agent token
+    // cannot act on notebooks, ACLs, or account state.
+    const workstationToken = workstationCredentialTokenFromRequest(request);
+    if (workstationToken) {
+      if (!options?.allowWorkstationCredential) {
+        throw new AuthError("workstation credentials cannot access this resource", 403);
+      }
+      return await authenticateWorkstationCredentialRequest(env, request, workstationToken);
+    }
     const identity = await authenticateRequestWithProviders(request, env);
     await syncAuthenticatedProfile(env, identity);
     return identity;
@@ -3493,8 +3680,9 @@ async function authenticateRequestOrAppSessionOrResponse(
   request: Request,
   env: Env,
   appSessionScope: Exclude<ConnectionScope, "runtime_peer">,
+  options?: { allowWorkstationCredential?: boolean },
 ): Promise<AuthenticatedConnection | Response> {
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrResponse(request, env, options);
   if (identity instanceof Response || !isAnonymousViewer(identity)) {
     return identity;
   }

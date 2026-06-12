@@ -308,6 +308,31 @@ const SCHEMA_STATEMENTS = [
     WHERE status IN ('pending', 'accepted', 'running')`,
   `CREATE INDEX IF NOT EXISTS workstation_attach_jobs_poll_idx
     ON workstation_attach_jobs(owner_principal, workstation_id, status, requested_at)`,
+  `CREATE TABLE IF NOT EXISTS workstation_pairing_codes (
+    id TEXT PRIMARY KEY,
+    code_hash TEXT NOT NULL UNIQUE,
+    owner_principal TEXT NOT NULL,
+    principal_namespace TEXT NOT NULL,
+    created_by_actor_label TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    redeemed_at TEXT,
+    workstation_id TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS workstation_pairing_codes_owner_idx
+    ON workstation_pairing_codes(owner_principal, created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS workstation_credentials (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    owner_principal TEXT NOT NULL,
+    principal_namespace TEXT NOT NULL,
+    pairing_code_id TEXT,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS workstation_credentials_owner_idx
+    ON workstation_credentials(owner_principal, created_at DESC)`,
 ];
 
 const SCHEMA_MIGRATIONS = [
