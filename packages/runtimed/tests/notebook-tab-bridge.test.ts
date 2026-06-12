@@ -413,7 +413,7 @@ describe("NotebookTabBridge offline convergence (real WASM)", () => {
       handle.set_actor(`user:test:alice/browser:tab-${suffix}`);
       return createTab(handle, "user:test:alice", bus);
     });
-    const [tabA, tabB, tabC] = tabs as [Tab, Tab, Tab];
+    const [tabA, _tabB, _tabC] = tabs as [Tab, Tab, Tab];
     try {
       tabA.handle.add_cell(0, "cell-a", "code");
       tabA.handle.update_source("cell-a", "from_tab_a = 1");

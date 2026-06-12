@@ -24,6 +24,7 @@ import {
   type StorageKey,
 } from "runtimed";
 import {
+  PersistenceRearmGate,
   createCloudNotebookPersistence,
   loadCloudPersistedNotebookSeed,
 } from "../viewer/notebook-persistence.ts";
@@ -389,5 +390,68 @@ describe("loadCloudPersistedNotebookSeed", () => {
       "fresh snapshot chunk written; envelope left in place for rollback",
     );
     controller.dispose();
+  });
+});
+
+describe("persistence single heal (self-disable -> one re-arm)", () => {
+  it("the controller pair signals self-disable ONCE even when both controllers die", async () => {
+    const harness = createHarness();
+    let heads = 0;
+    harness.handle.get_heads_hex = () => [`h${heads}`];
+    let stateHeads = 0;
+    harness.handle.get_runtime_state_heads_hex = () => [`s${stateHeads}`];
+    harness.adapter.save = async () => {
+      throw new Error("quota exceeded");
+    };
+    const selfDisabled: number[] = [];
+    const controller = createCloudNotebookPersistence({
+      adapter: harness.adapter,
+      notebookId: "nb-1",
+      principal: ALICE,
+      engine: {
+        notebookDocChanged$: harness.notebookDocChanged$,
+        runtimeState$: harness.runtimeState$,
+      },
+      handle: harness.handle,
+      throttleMs: 5,
+      onSelfDisabled: () => selfDisabled.push(1),
+    });
+    assert.ok(controller);
+
+    // Kill the NotebookDoc controller: three failed captures (heads must
+    // move; a failed write forgets its optimistic key, but distinct heads
+    // keep this honest).
+    for (let i = 0; i < 3; i++) {
+      heads += 1;
+      harness.notebookDocChanged$.next();
+      await sleep(20);
+    }
+    assert.equal(selfDisabled.length, 1, "first controller death signals");
+
+    // Kill the runtime-state cache controller too: no second signal —
+    // they share one backend and one heal budget.
+    for (let i = 0; i < 3; i++) {
+      stateHeads += 1;
+      harness.runtimeState$.next({});
+      await sleep(20);
+    }
+    assert.equal(selfDisabled.length, 1, "the pair signals at most once");
+    controller.dispose();
+  });
+
+  it("PersistenceRearmGate: one retry on the next trigger; a second failure stays disabled", () => {
+    const gate = new PersistenceRearmGate();
+
+    // No self-disable yet: online transitions consume nothing.
+    assert.equal(gate.takeRearm(), false);
+
+    // Self-disable, then the next online event -> the single re-arm.
+    gate.noteSelfDisabled();
+    assert.equal(gate.takeRearm(), true, "one retry is owed");
+    assert.equal(gate.takeRearm(), false, "and only one");
+
+    // The re-armed controller fails again: disabled for the session.
+    gate.noteSelfDisabled();
+    assert.equal(gate.takeRearm(), false, "the single heal is spent");
   });
 });

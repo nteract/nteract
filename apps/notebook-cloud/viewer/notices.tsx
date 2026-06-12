@@ -31,6 +31,15 @@ export interface CloudNotebookNoticesProps {
    */
   sustainedReconnecting?: boolean;
   /**
+   * The resync heal loop exhausted its ladder without the doc catching
+   * up to the room (sync-heal.ts). One calm line under the quiet rules —
+   * never a modal — cleared the moment convergence lands. While the
+   * sustained-reconnecting line is up it stays silent: the link-down
+   * line owns that surface, and the heal loop does not even re-kick
+   * while the transport is reconnecting.
+   */
+  syncHealStalled?: boolean;
+  /**
    * One quiet line per outage after a reconnect completed with
    * locally-authored work pending across the gap (offline-merge tracker).
    * Cleared by the next user action or a short timeout; a reconnect with
@@ -102,6 +111,7 @@ export function cloudNotebookHasNotices({
   offlineMergeNotice = null,
   rendererAssetError = null,
   sustainedReconnecting = false,
+  syncHealStalled = false,
   status,
   diagnostics,
 }: Omit<CloudNotebookNoticesProps, "onResetAuth">): boolean {
@@ -121,6 +131,7 @@ export function cloudNotebookHasNotices({
     shouldShowAuthNotice ||
     shouldShowAuthRenewalNotice ||
     sustainedReconnecting ||
+    (syncHealStalled && !sustainedReconnecting) ||
     Boolean(offlineMergeNotice) ||
     Boolean(connectionNotice) ||
     Boolean(rendererAssetError) ||
@@ -138,6 +149,7 @@ export function CloudNotebookNotices({
   offlineMergeNotice = null,
   rendererAssetError = null,
   sustainedReconnecting = false,
+  syncHealStalled = false,
   status,
   diagnostics,
   onResetAuth,
@@ -155,6 +167,7 @@ export function CloudNotebookNotices({
       offlineMergeNotice,
       rendererAssetError,
       sustainedReconnecting,
+      syncHealStalled,
       status,
       diagnostics,
     })
@@ -210,6 +223,16 @@ export function CloudNotebookNotices({
       {sustainedReconnecting ? (
         <NotebookNotice tone="info" icon={<CloudOff className="h-4 w-4" />} title="Reconnecting.">
           Your edits are kept locally and will sync when the connection returns.
+        </NotebookNotice>
+      ) : null}
+
+      {syncHealStalled && !sustainedReconnecting ? (
+        <NotebookNotice
+          tone="info"
+          icon={<CloudOff className="h-4 w-4" />}
+          title="Sync is stalled."
+        >
+          Your edits are kept locally. This clears as soon as the room catches up.
         </NotebookNotice>
       ) : null}
 

@@ -284,6 +284,17 @@ export interface NotebookDocPersistenceOptions {
   /** Persistence failures route here; they never throw into the session. */
   onError?: (error: unknown) => void;
 
+  /**
+   * Fired exactly once when the controller self-disables after
+   * `MAX_CONSECUTIVE_SAVE_FAILURES` (never on a manual `dispose()`).
+   * The session layer uses it for the single heal: ONE re-arm attempt
+   * (a fresh controller) on the next `online` event or successful
+   * resync — storage that failed three times is usually quota or a dead
+   * backend, but a transient-network IndexedDB hiccup deserves one
+   * second chance. Exhaustion of that one attempt stays disabled.
+   */
+  onSelfDisabled?: () => void;
+
   logger?: NotebookDocPersistenceLogger;
 }
 
@@ -740,6 +751,11 @@ export class NotebookDocPersistence {
       // session. A fresh session recreates persistence and retries.
       this.logger.warn("[notebook-persistence] disabled after repeated save failures");
       this.dispose();
+      try {
+        this.opts.onSelfDisabled?.();
+      } catch {
+        // the self-disable signal must never throw back into the pipeline
+      }
     }
   }
 }
