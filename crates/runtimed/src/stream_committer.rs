@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::output_blob_publisher::publish_or_warn;
 use crate::output_commit_context::OutputCommitContext;
@@ -25,9 +25,15 @@ const STREAM_COMMITTER_QUEUE_CAPACITY: usize = 32;
 
 #[derive(Debug)]
 struct PriorityStreamCommit {
-    flushes: Vec<PendingStreamFlush>,
+    flushes: Vec<TimedPendingStreamFlush>,
     signal: Option<LifecycleSignal>,
     ack: Option<oneshot::Sender<()>>,
+}
+
+#[derive(Debug)]
+struct TimedPendingStreamFlush {
+    flush: PendingStreamFlush,
+    requested_at: std::time::Instant,
 }
 
 struct StreamCommitterContext {
@@ -37,7 +43,7 @@ struct StreamCommitterContext {
 
 #[derive(Clone)]
 pub(crate) struct StreamCommitterHandle {
-    periodic_tx: mpsc::Sender<PendingStreamFlush>,
+    periodic_tx: mpsc::Sender<TimedPendingStreamFlush>,
     priority_tx: mpsc::UnboundedSender<PriorityStreamCommit>,
     lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
 }
@@ -50,7 +56,11 @@ impl StreamCommitterHandle {
     /// and a later flush (especially the final execution flush) will publish
     /// the newest content.
     pub(crate) fn request_flush(&self, flush: PendingStreamFlush) {
-        match self.periodic_tx.try_send(flush) {
+        let timed = TimedPendingStreamFlush {
+            flush,
+            requested_at: std::time::Instant::now(),
+        };
+        match self.periodic_tx.try_send(timed) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 debug!("[stream-committer] Dropping periodic stream flush: queue full");
@@ -76,7 +86,7 @@ impl StreamCommitterHandle {
 
         let (ack_tx, ack_rx) = oneshot::channel();
         let request = PriorityStreamCommit {
-            flushes,
+            flushes: timed_stream_flushes(flushes),
             signal: None,
             ack: Some(ack_tx),
         };
@@ -110,7 +120,7 @@ impl StreamCommitterHandle {
         // commit_priority_streams costs nothing.
 
         let request = PriorityStreamCommit {
-            flushes,
+            flushes: timed_stream_flushes(flushes),
             signal: Some(signal),
             ack: None,
         };
@@ -122,24 +132,82 @@ impl StreamCommitterHandle {
     }
 }
 
+fn timed_stream_flushes(flushes: Vec<PendingStreamFlush>) -> Vec<TimedPendingStreamFlush> {
+    let now = std::time::Instant::now();
+    flushes
+        .into_iter()
+        .map(|flush| TimedPendingStreamFlush {
+            flush,
+            requested_at: now,
+        })
+        .collect()
+}
+
+fn lifecycle_signal_label(signal: &LifecycleSignal) -> &'static str {
+    match signal {
+        LifecycleSignal::ExecutionDone { .. } => "execution_done",
+        LifecycleSignal::KernelIdle { .. } => "kernel_idle",
+        LifecycleSignal::CellError { .. } => "cell_error",
+        LifecycleSignal::KernelDied => "kernel_died",
+    }
+}
+
 async fn commit_priority_streams(request: PriorityStreamCommit, context: &StreamCommitterContext) {
+    let commit_started = std::time::Instant::now();
+    let flush_count = request.flushes.len();
+    let max_request_age_ms = request
+        .flushes
+        .iter()
+        .map(|flush| flush.requested_at.elapsed().as_millis())
+        .max()
+        .unwrap_or(0);
+    let signal_label = request
+        .signal
+        .as_ref()
+        .map(lifecycle_signal_label)
+        .unwrap_or("none");
     for flush in request.flushes {
-        commit_stream_flush(&context.output, &context.stream_terminals, flush).await;
+        commit_stream_flush(&context.output, &context.stream_terminals, flush.flush).await;
     }
     if let Some(signal) = request.signal {
         let _ = context.output.lifecycle_tx.send(signal);
+    }
+    if flush_count > 0 || signal_label != "none" {
+        info!(
+            "[stream-committer-timing] priority stream flush committed flush_count={} max_request_age_ms={} elapsed_ms={} signal={}",
+            flush_count,
+            max_request_age_ms,
+            commit_started.elapsed().as_millis(),
+            signal_label
+        );
     }
     if let Some(ack) = request.ack {
         let _ = ack.send(());
     }
 }
 
-async fn commit_periodic_stream(flush: PendingStreamFlush, context: &StreamCommitterContext) {
-    commit_stream_flush(&context.output, &context.stream_terminals, flush).await;
+async fn commit_periodic_stream(flush: TimedPendingStreamFlush, context: &StreamCommitterContext) {
+    let commit_started = std::time::Instant::now();
+    let request_age_ms = flush.requested_at.elapsed().as_millis();
+    commit_stream_flush(&context.output, &context.stream_terminals, flush.flush).await;
+    let elapsed_ms = commit_started.elapsed().as_millis();
+    if request_age_ms >= 100 || elapsed_ms >= 100 {
+        info!(
+            "[stream-committer-timing] periodic stream flush committed request_age_ms={} elapsed_ms={}",
+            request_age_ms,
+            elapsed_ms
+        );
+    } else {
+        debug!(
+            "[stream-committer-timing] periodic stream flush committed request_age_ms={} elapsed_ms={}",
+            request_age_ms,
+            elapsed_ms
+        );
+    }
 }
 
 async fn run_stream_committer(
-    mut periodic_rx: mpsc::Receiver<PendingStreamFlush>,
+    mut periodic_rx: mpsc::Receiver<TimedPendingStreamFlush>,
     mut priority_rx: mpsc::UnboundedReceiver<PriorityStreamCommit>,
     context: StreamCommitterContext,
 ) {
@@ -512,8 +580,8 @@ mod tests {
         });
 
         let received = periodic_rx.try_recv().expect("first flush stays queued");
-        assert_eq!(received.execution_id, "exec-1");
-        assert_eq!(received.stream_name, "stdout");
+        assert_eq!(received.flush.execution_id, "exec-1");
+        assert_eq!(received.flush.stream_name, "stdout");
         assert!(
             periodic_rx.try_recv().is_err(),
             "second flush should be dropped"

@@ -168,13 +168,22 @@ impl KernelState {
             // Write to state doc
             {
                 let doc_queued = to_doc_entries(&self.queued_entries());
+                let mut output_count = 0usize;
                 if let Err(e) = self.state.with_doc(|sd| {
+                    output_count = sd.get_outputs(execution_id).len();
                     sd.set_execution_done(execution_id, success)?;
                     sd.set_queue(None, &doc_queued)?;
                     Ok(())
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
+                info!(
+                    "[kernel-state-timing] Execution terminalized: execution_id={} success={} output_count={} remaining_queue={}",
+                    execution_id,
+                    success,
+                    output_count,
+                    doc_queued.len()
+                );
             }
 
             // Process next
