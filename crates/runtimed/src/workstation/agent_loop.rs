@@ -412,6 +412,8 @@ pub fn parse_response_body(text: &str) -> Value {
 pub struct AgentHttpError {
     pub message: String,
     pub retry_after_ms: u64,
+    status: Option<u16>,
+    body: Value,
 }
 
 impl AgentHttpError {
@@ -419,6 +421,8 @@ impl AgentHttpError {
         Self {
             message,
             retry_after_ms: 0,
+            status: None,
+            body: Value::Null,
         }
     }
 }
@@ -534,6 +538,8 @@ impl CloudApi {
         Err(AgentHttpError {
             message: format!("{label} failed: HTTP {status} {snippet}"),
             retry_after_ms: retry_after_ms(status, retry_after_header.as_deref()),
+            status: Some(status),
+            body,
         })
     }
 }
@@ -876,8 +882,15 @@ async fn heartbeat_active_jobs(
             Some(job) => job.status,
             None => continue,
         };
-        api.patch_attach_job(&opts.workstation_id, job_id, status, None)
-            .await?;
+        if let Err(error) = api
+            .patch_attach_job(&opts.workstation_id, job_id, status, None)
+            .await
+        {
+            if drop_terminal_attach_job(active, job_id, "heartbeat", &error).await {
+                continue;
+            }
+            return Err(error);
+        }
         if let Some(job) = active.get_mut(job_id) {
             job.last_status_patch_at = Instant::now();
         }
@@ -918,6 +931,9 @@ async fn tick_active_jobs(
                     .patch_attach_job(&opts.workstation_id, &job_id, "running", None)
                     .await
                 {
+                    if drop_terminal_attach_job(active, &job_id, "ready patch", &e).await {
+                        continue;
+                    }
                     error!(
                         "[workstation-agent] ready patch failed job_id={job_id}: {}",
                         e.message
@@ -945,15 +961,96 @@ async fn tick_active_jobs(
                 {
                     // Job already dropped from the active set; the server's
                     // stale-job sweep finishes it if this patch never lands.
-                    error!(
-                        "[workstation-agent] exit patch failed job_id={job_id}: {}",
-                        e.message
-                    );
+                    if attach_job_patch_no_longer_active(&e) {
+                        info!(
+                            "[workstation-agent] exit patch ignored for inactive job job_id={job_id}"
+                        );
+                    } else {
+                        error!(
+                            "[workstation-agent] exit patch failed job_id={job_id}: {}",
+                            e.message
+                        );
+                    }
                 }
             }
         }
     }
 }
+
+async fn drop_terminal_attach_job(
+    active: &mut HashMap<String, ActiveJob>,
+    job_id: &str,
+    context: &str,
+    error: &AgentHttpError,
+) -> bool {
+    if !attach_job_patch_no_longer_active(error) {
+        return false;
+    }
+    let job = active.remove(job_id);
+    if let Some(job) = job {
+        terminate_active_job(job).await;
+    }
+    info!(
+        "[workstation-agent] attach job no longer active; dropped local peer job_id={job_id} context={context}"
+    );
+    true
+}
+
+fn attach_job_patch_no_longer_active(error: &AgentHttpError) -> bool {
+    if error.status != Some(409) {
+        return false;
+    }
+    let error_message = error
+        .body
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if error_message.contains("workstation attach job is no longer active") {
+        return true;
+    }
+    matches!(
+        error.body.pointer("/job/status").and_then(Value::as_str),
+        Some("cancelled" | "completed" | "failed")
+    )
+}
+
+async fn terminate_active_job(mut job: ActiveJob) {
+    if let Some(child) = job.child.as_mut() {
+        if let Err(error) = child.start_kill() {
+            warn!("[workstation-agent] failed to terminate inactive child job: {error}");
+            return;
+        }
+        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+            Ok(Ok(_status)) => {}
+            Ok(Err(error)) => {
+                warn!("[workstation-agent] failed to reap inactive child job: {error}");
+            }
+            Err(_) => {
+                warn!("[workstation-agent] timed out reaping inactive child job");
+            }
+        }
+        return;
+    }
+    if let Some(pid) = job.pid {
+        terminate_pid(pid);
+    }
+}
+
+#[cfg(unix)]
+fn terminate_pid(pid: u32) {
+    let Ok(pid) = i32::try_from(pid) else {
+        return;
+    };
+    if let Err(error) = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        Some(nix::sys::signal::Signal::SIGTERM),
+    ) {
+        warn!("[workstation-agent] failed to terminate inactive pid={pid}: {error}");
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_pid(_pid: u32) {}
 
 fn poll_job_once(job_id: &str, job: &mut ActiveJob) -> JobTick {
     if let Some(child) = job.child.as_mut() {
@@ -1134,6 +1231,27 @@ mod tests {
         }
     }
 
+    fn http_error(status: u16, body: Value) -> AgentHttpError {
+        AgentHttpError {
+            message: format!("HTTP {status} {body}"),
+            retry_after_ms: retry_after_ms(status, None),
+            status: Some(status),
+            body,
+        }
+    }
+
+    fn active_job() -> ActiveJob {
+        ActiveJob {
+            child: None,
+            pid: None,
+            log_path: PathBuf::from("/tmp/runtime-peer.log"),
+            ready: true,
+            status: "running",
+            started_at: Instant::now(),
+            last_status_patch_at: Instant::now(),
+        }
+    }
+
     /// (c) Heartbeat payload field set matches the `.mjs` agent exactly.
     #[test]
     fn registration_payload_matches_mjs_field_set() {
@@ -1172,6 +1290,47 @@ mod tests {
         let payload = registration_payload("ws", "ws", "/w", "/usr/bin/python3", None, None);
         assert!(payload.get("cpu_count").is_none());
         assert!(payload.get("memory_bytes").is_none());
+    }
+
+    #[test]
+    fn inactive_attach_job_patch_is_terminal_only_for_server_409() {
+        assert!(attach_job_patch_no_longer_active(&http_error(
+            409,
+            json!({ "error": "workstation attach job is no longer active" })
+        )));
+        assert!(attach_job_patch_no_longer_active(&http_error(
+            409,
+            json!({ "job": { "status": "cancelled" } })
+        )));
+        assert!(!attach_job_patch_no_longer_active(&http_error(
+            500,
+            json!({ "error": "workstation attach job is no longer active" })
+        )));
+        assert!(!attach_job_patch_no_longer_active(&http_error(
+            409,
+            json!({ "error": "database busy" })
+        )));
+    }
+
+    #[tokio::test]
+    async fn terminal_attach_job_patch_drops_local_active_job() {
+        let mut active = HashMap::from([("job-1".to_string(), active_job())]);
+        let error = http_error(
+            409,
+            json!({ "error": "workstation attach job is no longer active" }),
+        );
+
+        assert!(drop_terminal_attach_job(&mut active, "job-1", "heartbeat", &error).await);
+        assert!(!active.contains_key("job-1"));
+    }
+
+    #[tokio::test]
+    async fn non_terminal_attach_job_patch_keeps_local_active_job() {
+        let mut active = HashMap::from([("job-1".to_string(), active_job())]);
+        let error = http_error(503, json!({ "error": "temporarily unavailable" }));
+
+        assert!(!drop_terminal_attach_job(&mut active, "job-1", "heartbeat", &error).await);
+        assert!(active.contains_key("job-1"));
     }
 
     /// (d) Attach-job → spawn argv mapping mirrors the `.mjs` plan, with the
