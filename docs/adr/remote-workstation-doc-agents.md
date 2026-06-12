@@ -41,8 +41,8 @@ Neighbors:
 - `deployment-topology.md` defines hosted rooms, room hosts, and runtime peers.
 - `hosted-room-authorization.md` defines the `runtime_peer` ACL scope.
 - `hosted-credential-transport.md` defines API-key and bearer-token transport.
-- `runtime-peer-and-blob-authority-audit.md` keeps `runtime_peer` distinct from
-  local `RuntimeAgent`.
+- `../audits/runtime-peer-and-blob-authority-audit.md` keeps `runtime_peer`
+  distinct from local `RuntimeAgent`.
 - `typed-frame-v4-wire-protocol.md` defines the room WebSocket frame protocol.
 - PR #3380, `quod/content-explorer-prototype`, defines the shared content rail
   host-provided-section contract that can later show workstation catalogs.

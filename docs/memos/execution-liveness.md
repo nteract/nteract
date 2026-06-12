@@ -1,6 +1,6 @@
 # Execution Liveness: Detecting Divergence, Not Policing Time
 
-**Status:** Design memo, 2026-05-23.
+**Status:** Exploration, 2026-05-23.
 
 This is a design memo, not an ADR. It explores what "stuck execution" actually means in nteract, why a wall-clock watchdog is the wrong frame, and what shape a real fix would take. Code is a follow-up after review.
 

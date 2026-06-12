@@ -1,7 +1,7 @@
 # CommsDoc Split: Implementation Plan (Phase 1 - Foundation)
 
 - Status: Implementation plan (Draft)
-- Implements: [ADR 0002 - CommsDoc split](0002-comms-document-split.md), Phase 1 of 4
+- Implements: [ADR 0002 - CommsDoc split](../adr/0002-comms-document-split.md), Phase 1 of 4
 - Date: 2026-06-04
 
 Implement task-by-task, test-first: each task adds a failing test, the minimal code to pass it, and a commit. Checkbox (`- [ ]`) steps track progress. Every task is independently testable and ends green; the two crate lanes (notebook-doc, runtime-doc) are independent and can be built concurrently, joining at the final room task.

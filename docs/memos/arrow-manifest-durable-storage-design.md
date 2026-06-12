@@ -1,6 +1,6 @@
 # Arrow Manifest Durable Storage Design
 
-**Status:** Design memo.
+**Status:** Exploration.
 
 ## Objective
 

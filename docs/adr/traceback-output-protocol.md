@@ -29,7 +29,7 @@ Neighbors:
   messages before send.
 - `crates/runtimed/src/output_redaction.rs` - daemon-side durable output
   redaction before RuntimeStateDoc and blob-store writes.
-- `docs/adr/runtime-redaction-refresh-design.md` -
+- `docs/memos/runtime-redaction-refresh-design.md` -
   follow-up design for runtime-created redaction candidates.
 - `docs/adr/execution-pipeline.md` - output ordering and runtime
   manifest durability.

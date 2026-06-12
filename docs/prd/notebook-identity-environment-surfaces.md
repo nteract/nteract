@@ -13,7 +13,7 @@ Related docs:
 
 - `docs/adr/identity-and-trust.md`
 - `docs/adr/hosted-room-authorization.md`
-- `docs/adr/hosted-sharing-invites.md`
+- `docs/prd/hosted-sharing-invites.md`
 - `docs/adr/captured-environment-lifecycle.md`
 - `docs/adr/notebook-host-shell-convergence.md`
 - `apps/elements/content/docs/identity-environment-surfaces.mdx`

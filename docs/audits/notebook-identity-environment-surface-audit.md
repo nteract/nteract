@@ -4,7 +4,7 @@
 
 **Related:**
 
-- `docs/adr/notebook-identity-environment-surfaces.md`
+- `docs/prd/notebook-identity-environment-surfaces.md`
 - `docs/adr/notebook-host-shell-convergence.md`
 - `docs/adr/identity-and-trust.md`
 - `docs/adr/hosted-room-authorization.md`

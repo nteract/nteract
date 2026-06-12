@@ -383,7 +383,7 @@ Properties:
 ## Operational path for the Anaconda demo
 
 The exact deployment steps, direct OIDC variables, route takeover, and smoke
-shape live in `docs/adr/hosted-direct-oidc-demo-runbook.md`.
+shape live in `docs/runbooks/hosted-direct-oidc-demo-runbook.md`.
 
 1. Transfer `preview.runt.run` from the retired `runtimed/intheloop` preview
    Worker to notebook-cloud.
@@ -429,7 +429,7 @@ namespace, and optional perimeter configuration.
    different OIDC provider, define the principal namespace and future
    subject-linking story up front.
 3. **Invite-by-email.** D1 ACLs key by principal, but people share by email.
-   `docs/adr/hosted-sharing-invites.md` sketches the pending-invite
+   `docs/prd/hosted-sharing-invites.md` sketches the pending-invite
    table, first-login resolution, display metadata, and public viewer UX.
 4. **Provider maximum capabilities.** The hosted prototype currently treats
    dev credentials as effectively owner-bounded and relies on ACL rows. Real
@@ -448,9 +448,9 @@ namespace, and optional perimeter configuration.
   actor validation, and base credential vocabulary.
 - `docs/adr/hosted-room-authorization.md` - room ACLs and scope
   derivation.
-- `docs/adr/hosted-direct-oidc-demo-runbook.md` - exact direct OIDC
+- `docs/runbooks/hosted-direct-oidc-demo-runbook.md` - exact direct OIDC
   Anaconda demo deployment and smoke steps.
-- `docs/adr/hosted-sharing-invites.md` - email invite to principal ACL
+- `docs/prd/hosted-sharing-invites.md` - email invite to principal ACL
   resolution.
 - `docs/adr/hosted-output-origin-isolation.md` - hosted output
   document, renderer asset, and blob-origin separation.
