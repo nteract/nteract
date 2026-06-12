@@ -109,14 +109,16 @@ assert_link "$LINUX_HOME/.local/bin/nteract-mcp" "$PREFIX/bin/nteract-mcp"
 assert_link "$LINUX_HOME/.local/bin/nteract" "$PREFIX/nteract.AppImage"
 grep -q "runt daemon doctor --fix --no-start" "$LINUX_LOG" || fail "linux: daemon doctor --fix --no-start not invoked"
 
-note "darwin desktop install"
+note "darwin desktop install (explicit --applications-dir)"
 DARWIN_HOME="$WORK/darwin-home"
 DARWIN_LOG="$WORK/darwin-calls.log"
 make_darwin_fixtures "$WORK/darwin-assets" "$DARWIN_LOG"
 make_uname_shim "$WORK/shim-darwin" "Darwin" "arm64"
-APP_DEST="$DARWIN_HOME/Applications/nteract.app"
+APPS_DIR="$WORK/fake-applications"
+APP_DEST="$APPS_DIR/nteract.app"
 PATH="$WORK/shim-darwin:$PATH" run_installer "$DARWIN_HOME" \
-  --from-dir "$WORK/darwin-assets" --no-start > "$WORK/darwin-out.log"
+  --from-dir "$WORK/darwin-assets" --applications-dir "$APPS_DIR" --no-start \
+  > "$WORK/darwin-out.log" 2>&1
 assert_file "$APP_DEST/Contents/MacOS/runt"
 assert_link "$DARWIN_HOME/.local/bin/runt" "$APP_DEST/Contents/MacOS/runt"
 assert_link "$DARWIN_HOME/.local/bin/runtimed" "$APP_DEST/Contents/MacOS/runtimed"
@@ -124,10 +126,26 @@ assert_link "$DARWIN_HOME/.local/bin/nteract-mcp" "$APP_DEST/Contents/MacOS/nter
 assert_missing "$DARWIN_HOME/.local/share/nteract/stable/nteract.app"
 grep -q "runt daemon doctor --fix --no-start" "$DARWIN_LOG" || fail "darwin: daemon doctor --fix --no-start not invoked"
 grep -q "App:      $APP_DEST" "$WORK/darwin-out.log" || fail "darwin: summary should name the installed app"
+grep -q "not writable" "$WORK/darwin-out.log" && fail "darwin explicit: no fallback note expected"
+
+note "darwin desktop default prefers /Applications, falls back per-user"
+# On this test host /Applications does not exist, so the deterministic
+# outcome of the default is the documented ~/Applications fallback.
+FALLBACK_HOME="$WORK/fallback-home"
+FALLBACK_APP="$FALLBACK_HOME/Applications/nteract.app"
+PATH="$WORK/shim-darwin:$PATH" run_installer "$FALLBACK_HOME" \
+  --from-dir "$WORK/darwin-assets" --no-start > "$WORK/fallback-out.log" 2>&1
+assert_file "$FALLBACK_APP/Contents/MacOS/runt"
+assert_link "$FALLBACK_HOME/.local/bin/runt" "$FALLBACK_APP/Contents/MacOS/runt"
+if [[ ! -d /Applications ]]; then
+  grep -q "not writable; installing to $FALLBACK_HOME/Applications" "$WORK/fallback-out.log" \
+    || fail "darwin default: missing fallback note"
+fi
 
 note "darwin desktop reinstall replaces the bundle"
 PATH="$WORK/shim-darwin:$PATH" run_installer "$DARWIN_HOME" \
-  --from-dir "$WORK/darwin-assets" --no-start > "$WORK/darwin-out2.log"
+  --from-dir "$WORK/darwin-assets" --applications-dir "$APPS_DIR" --no-start \
+  > "$WORK/darwin-out2.log"
 assert_file "$APP_DEST/Contents/MacOS/runt"
 assert_missing "$APP_DEST.new"
 

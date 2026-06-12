@@ -40,7 +40,8 @@ Options:
                        See docs/remote-workstation.md.
   --applications-dir <dir>
                        macOS only: where the .app bundle is installed
-                       (default: ~/Applications).
+                       (default: /Applications, falling back to
+                       ~/Applications when /Applications is not writable).
   --no-start           Install/repair the daemon service but do not start it.
   -h, --help           Show this help.
 
@@ -51,9 +52,10 @@ Installs, for stable on Linux x64:
   nteract-mcp-linux-x64             -> <prefix>/bin/nteract-mcp
 
 For stable on macOS (arm64/x64), one bundle carries app and sidecars:
-  nteract-stable-darwin-<arch>.app.tar.gz -> ~/Applications/nteract.app
-  (--headless keeps the bundle under <prefix> instead and skips
-   ~/Applications; commands link to <bundle>/Contents/MacOS)
+  nteract-stable-darwin-<arch>.app.tar.gz -> /Applications/nteract.app
+  (~/Applications when /Applications is not writable; --headless keeps the
+   bundle under <prefix> instead and skips Applications entirely; commands
+   link to <bundle>/Contents/MacOS)
 
 Then links:
   ~/.local/bin/nteract   (unless --headless)
@@ -111,7 +113,7 @@ HEADLESS=0
 XDG_DATA_HOME_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}"
 PREFIX=""
 BIN_DIR="$HOME/.local/bin"
-APPLICATIONS_DIR="$HOME/Applications"
+APPLICATIONS_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -314,6 +316,17 @@ else
   # workstation box never grows an Applications entry.
   fetch_asset "$BUNDLE_ASSET" "$TMP_DIR/$BUNDLE_ASSET"
   if [[ "$HEADLESS" == "0" ]]; then
+    if [[ -z "$APPLICATIONS_DIR" ]]; then
+      # The standard location first: admin accounts can write /Applications
+      # without sudo. Non-admin accounts fall back to ~/Applications, which
+      # the channel's app-launch candidates also search.
+      if [[ -d /Applications && -w /Applications ]]; then
+        APPLICATIONS_DIR="/Applications"
+      else
+        APPLICATIONS_DIR="$HOME/Applications"
+        echo "Note: /Applications is not writable; installing to $APPLICATIONS_DIR instead." >&2
+      fi
+    fi
     install_app_bundle "$TMP_DIR/$BUNDLE_ASSET" "$APPLICATIONS_DIR"
   else
     install_app_bundle "$TMP_DIR/$BUNDLE_ASSET" "$PREFIX"
