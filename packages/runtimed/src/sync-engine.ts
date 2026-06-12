@@ -1162,6 +1162,40 @@ export class SyncEngine {
     this._outputIdChanges$.next({ changed, removed_ids });
   }
 
+  private routeLocalSyncAppliedEvent(event: FrameEvent, opts: { scheduleFlush: boolean }): boolean {
+    if (event.attributions && event.attributions.length > 0) {
+      this._broadcasts$.next(createTextAttributionEvent(event.attributions));
+    }
+    if (event.changed) {
+      this.materializeIn?.next(event.changeset ?? null);
+      this._notebookDocChanged$.next();
+      if (opts.scheduleFlush) {
+        this.scheduleFlush();
+      }
+    }
+    this.emitExecutionViewChanges(event.execution_view_changeset);
+    return event.changed === true;
+  }
+
+  // ── Local mutation apply ─────────────────────────────────────────
+
+  /**
+   * Route a WASM local-mutation `sync_applied` event through the same
+   * materialization and execution-view projection path as peer-applied
+   * changes, without touching sync state or scheduling an outbound flush.
+   */
+  applyLocalMutationEvent(event: FrameEvent | null | undefined): boolean {
+    if (this.materializeIn === null) {
+      this.opts.logger.warn("[sync-engine] local mutation event dropped: engine not running");
+      return false;
+    }
+    if (!event || event.type !== "sync_applied" || !event.changed) {
+      return false;
+    }
+
+    return this.routeLocalSyncAppliedEvent(event, { scheduleFlush: false });
+  }
+
   // ── Cross-tab apply ──────────────────────────────────────────────
 
   /**
@@ -1216,17 +1250,7 @@ export class SyncEngine {
       return false;
     }
 
-    if (event.attributions && event.attributions.length > 0) {
-      this._broadcasts$.next(createTextAttributionEvent(event.attributions));
-    }
-    if (event.changed) {
-      this.materializeIn?.next(event.changeset ?? null);
-      this._notebookDocChanged$.next();
-      // Propagate to the room through the normal outbound path.
-      this.scheduleFlush();
-    }
-    this.emitExecutionViewChanges(event.execution_view_changeset);
-    return event.changed === true;
+    return this.routeLocalSyncAppliedEvent(event, { scheduleFlush: true });
   }
 
   // ── Outbound sync ────────────────────────────────────────────────

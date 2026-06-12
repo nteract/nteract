@@ -6,8 +6,9 @@
  * implementations.
  *
  * Methods mirror the subset of `NotebookHandle` used by the sync pipeline.
- * Cell mutation methods (add_cell, update_source, etc.) are NOT part of
- * this interface — they're used directly by consumers, not the engine.
+ * Most cell mutation methods (update_source, etc.) are NOT part of this
+ * interface — they're used directly by consumers, not the engine. Optional
+ * changeset-returning wrappers are declared here for feature detection.
  */
 
 import type { CellChangeset } from "./cell-changeset";
@@ -113,6 +114,11 @@ export interface FrameEvent {
    * execution snapshots.
    */
   execution_view_changeset?: ExecutionViewChangeset;
+}
+
+export interface LocalMutationResult<T = unknown> {
+  result: T;
+  event?: FrameEvent;
 }
 
 // ── SyncableHandle ───────────────────────────────────────────────────
@@ -261,4 +267,29 @@ export interface SyncableHandle {
    * dedupe to `changed: false`. Optional for the same reason as above.
    */
   apply_change_bytes?(bytes: Uint8Array): FrameEvent | undefined;
+
+  add_cell_after_with_changeset?(
+    cell_id: string,
+    cell_type: string,
+    after_cell_id?: string | null,
+  ): LocalMutationResult<string>;
+
+  move_cell_with_changeset?(
+    cell_id: string,
+    after_cell_id?: string | null,
+  ): LocalMutationResult<string>;
+
+  delete_cell_with_changeset?(cell_id: string): LocalMutationResult<boolean>;
+
+  clear_outputs_with_changeset?(cell_id: string): LocalMutationResult<boolean>;
+
+  set_cell_source_hidden_with_changeset?(
+    cell_id: string,
+    hidden: boolean,
+  ): LocalMutationResult<boolean>;
+
+  set_cell_outputs_hidden_with_changeset?(
+    cell_id: string,
+    hidden: boolean,
+  ): LocalMutationResult<boolean>;
 }

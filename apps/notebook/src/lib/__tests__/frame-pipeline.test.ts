@@ -14,6 +14,10 @@ import { type MaterializeDeps, materializeChangeset } from "../frame-pipeline";
 const cellStore = new Map<string, Record<string, unknown>>();
 const updateCalls: Array<{ cellId: string; cell: Record<string, unknown> }> =
   [];
+const structureProjectionCalls: Array<{
+  orderedCellIds: string[];
+  upsertedCells?: Array<Record<string, unknown>>;
+}> = [];
 
 vi.mock("../notebook-cells", () => ({
   getCellById: (id: string) => cellStore.get(id) ?? null,
@@ -25,6 +29,27 @@ vi.mock("../notebook-cells", () => ({
     const next = fn(prev);
     cellStore.set(id, next);
     updateCalls.push({ cellId: id, cell: next });
+  },
+}));
+
+vi.mock("@/components/notebook/state/cell-store", () => ({
+  applyNotebookCellStructureProjection: ({
+    orderedCellIds,
+    upsertedCells = [],
+  }: {
+    orderedCellIds: string[];
+    upsertedCells?: Array<Record<string, unknown>>;
+  }) => {
+    structureProjectionCalls.push({ orderedCellIds, upsertedCells });
+    const finalIds = new Set(orderedCellIds);
+    for (const cell of upsertedCells) {
+      if (typeof cell.id === "string" && finalIds.has(cell.id)) {
+        cellStore.set(cell.id, cell);
+      }
+    }
+    for (const id of [...cellStore.keys()]) {
+      if (!finalIds.has(id)) cellStore.delete(id);
+    }
   },
 }));
 
@@ -387,9 +412,15 @@ describe("materializeChangeset", () => {
         metadata?: Record<string, unknown>;
       }
     >,
+    orderedCellIds = Object.keys(cells),
   ) {
     return {
-      get_cell_type: vi.fn((id: string) => cells[id]?.type ?? "code"),
+      get_cell_ids: vi.fn(() => orderedCellIds),
+      get_cell_type: vi.fn((id: string) =>
+        Object.prototype.hasOwnProperty.call(cells, id)
+          ? (cells[id]?.type ?? "code")
+          : null,
+      ),
       get_cell_source: vi.fn((id: string) => cells[id]?.source ?? ""),
       get_cell_outputs: vi.fn((id: string) => cells[id]?.outputs ?? []),
       get_cell_execution_count: vi.fn(
@@ -413,6 +444,7 @@ describe("materializeChangeset", () => {
   beforeEach(() => {
     cellStore.clear();
     updateCalls.length = 0;
+    structureProjectionCalls.length = 0;
     blobRegistry.clear();
   });
 
@@ -557,8 +589,323 @@ describe("materializeChangeset", () => {
     expect(deps.materializeCells).toHaveBeenCalledWith(handle);
   });
 
-  it("falls back to full materialization for structural changes", async () => {
-    const handle = createMockHandle({});
+  it("projects a pure insert by materializing exactly the new final cell", async () => {
+    const existingA = {
+      id: "a",
+      cell_type: "code",
+      source: "keep-a",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    const existingB = {
+      id: "b",
+      cell_type: "code",
+      source: "keep-b",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    cellStore.set("a", existingA);
+    cellStore.set("b", existingB);
+
+    const handle = createMockHandle(
+      {
+        inserted: {
+          type: "code",
+          source: "new source",
+          outputs: [],
+          execution_count: "null",
+          metadata: { trusted: true },
+        },
+      },
+      ["a", "inserted", "b"],
+    );
+    const deps = createDeps(handle);
+
+    await materializeChangeset(
+      {
+        changed: [],
+        added: ["inserted"],
+        removed: [],
+        order_changed: true,
+      },
+      deps,
+    );
+
+    expect(deps.materializeCells).not.toHaveBeenCalled();
+    expect(structureProjectionCalls).toHaveLength(1);
+    expect(structureProjectionCalls[0]).toMatchObject({
+      orderedCellIds: ["a", "inserted", "b"],
+      upsertedCells: [
+        {
+          id: "inserted",
+          cell_type: "code",
+          source: "new source",
+          metadata: { trusted: true },
+        },
+      ],
+    });
+    expect(handle.get_cell_type).toHaveBeenCalledTimes(1);
+    expect(handle.get_cell_type).toHaveBeenCalledWith("inserted");
+    expect(updateCalls).toHaveLength(0);
+    expect(cellStore.get("a")).toBe(existingA);
+    expect(cellStore.get("b")).toBe(existingB);
+    expect(cellStore.get("inserted")).toMatchObject({
+      id: "inserted",
+      source: "new source",
+    });
+  });
+
+  it("projects a pure remove without rematerializing surviving cells", async () => {
+    const existingA = {
+      id: "a",
+      cell_type: "code",
+      source: "keep-a",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    const removed = {
+      id: "removed",
+      cell_type: "code",
+      source: "delete me",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    const existingB = {
+      id: "b",
+      cell_type: "code",
+      source: "keep-b",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    cellStore.set("a", existingA);
+    cellStore.set("removed", removed);
+    cellStore.set("b", existingB);
+
+    const handle = createMockHandle({}, ["a", "b"]);
+    const deps = createDeps(handle);
+
+    await materializeChangeset(
+      {
+        changed: [],
+        added: [],
+        removed: ["removed"],
+        order_changed: true,
+      },
+      deps,
+    );
+
+    expect(deps.materializeCells).not.toHaveBeenCalled();
+    expect(structureProjectionCalls).toEqual([
+      { orderedCellIds: ["a", "b"], upsertedCells: [] },
+    ]);
+    expect(handle.get_cell_type).not.toHaveBeenCalled();
+    expect(updateCalls).toHaveLength(0);
+    expect(cellStore.get("a")).toBe(existingA);
+    expect(cellStore.get("b")).toBe(existingB);
+    expect(cellStore.has("removed")).toBe(false);
+  });
+
+  it("projects order_changed-only moves through the ordered ID list", async () => {
+    const existingA = {
+      id: "a",
+      cell_type: "code",
+      source: "a",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    const existingB = {
+      id: "b",
+      cell_type: "code",
+      source: "b",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    cellStore.set("a", existingA);
+    cellStore.set("b", existingB);
+
+    const handle = createMockHandle({}, ["b", "a"]);
+    const deps = createDeps(handle);
+
+    await materializeChangeset(
+      {
+        changed: [],
+        added: [],
+        removed: [],
+        order_changed: true,
+      },
+      deps,
+    );
+
+    expect(deps.materializeCells).not.toHaveBeenCalled();
+    expect(structureProjectionCalls).toEqual([
+      { orderedCellIds: ["b", "a"], upsertedCells: [] },
+    ]);
+    expect(handle.get_cell_type).not.toHaveBeenCalled();
+    expect(updateCalls).toHaveLength(0);
+    expect(cellStore.get("a")).toBe(existingA);
+    expect(cellStore.get("b")).toBe(existingB);
+  });
+
+  it("materializes final ordered IDs missing from the store even when omitted from added", async () => {
+    const existingA = {
+      id: "a",
+      cell_type: "code",
+      source: "keep-a",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    const existingB = {
+      id: "b",
+      cell_type: "code",
+      source: "keep-b",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    cellStore.set("a", existingA);
+    cellStore.set("b", existingB);
+
+    const handle = createMockHandle(
+      {
+        late: {
+          type: "markdown",
+          source: "late materialized",
+          metadata: { collapsed: false },
+        },
+      },
+      ["a", "late", "b"],
+    );
+    const deps = createDeps(handle);
+
+    await materializeChangeset(
+      {
+        changed: [],
+        added: [],
+        removed: [],
+        order_changed: true,
+      },
+      deps,
+    );
+
+    expect(deps.materializeCells).not.toHaveBeenCalled();
+    expect(structureProjectionCalls).toHaveLength(1);
+    expect(structureProjectionCalls[0]).toMatchObject({
+      orderedCellIds: ["a", "late", "b"],
+      upsertedCells: [
+        {
+          id: "late",
+          cell_type: "markdown",
+          source: "late materialized",
+          metadata: { collapsed: false },
+        },
+      ],
+    });
+    expect(handle.get_cell_type).toHaveBeenCalledTimes(1);
+    expect(handle.get_cell_type).toHaveBeenCalledWith("late");
+    expect(cellStore.get("a")).toBe(existingA);
+    expect(cellStore.get("b")).toBe(existingB);
+    expect(cellStore.get("late")).toMatchObject({
+      id: "late",
+      source: "late materialized",
+    });
+  });
+
+  it("falls back to full materialization when a missing ordered ID cannot be read", async () => {
+    const existing = {
+      id: "a",
+      cell_type: "code",
+      source: "keep",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    cellStore.set("a", existing);
+
+    const handle = createMockHandle({}, ["a", "missing"]);
+    const deps = createDeps(handle);
+
+    await materializeChangeset(
+      {
+        changed: [],
+        added: [],
+        removed: [],
+        order_changed: true,
+      },
+      deps,
+    );
+
+    expect(deps.materializeCells).toHaveBeenCalledWith(handle);
+    expect(structureProjectionCalls).toHaveLength(0);
+  });
+
+  it("skips materializing an add-then-remove ID absent from the final handle order", async () => {
+    const existing = {
+      id: "a",
+      cell_type: "code",
+      source: "keep",
+      outputs: [],
+      execution_count: null,
+      metadata: {},
+    };
+    cellStore.set("a", existing);
+
+    const handle = createMockHandle({}, ["a"]);
+    const deps = createDeps(handle);
+
+    await materializeChangeset(
+      {
+        changed: [],
+        added: ["transient"],
+        removed: ["transient"],
+        order_changed: true,
+      },
+      deps,
+    );
+
+    expect(deps.materializeCells).not.toHaveBeenCalled();
+    expect(structureProjectionCalls).toEqual([
+      { orderedCellIds: ["a"], upsertedCells: [] },
+    ]);
+    expect(handle.get_cell_type).not.toHaveBeenCalledWith("transient");
+    expect(updateCalls).toHaveLength(0);
+    expect(cellStore.get("a")).toBe(existing);
+    expect(cellStore.has("transient")).toBe(false);
+  });
+
+  it("falls back to full materialization when a final added cell cannot be read", async () => {
+    const handle = createMockHandle({}, ["missing"]);
+    const deps = createDeps(handle);
+
+    await materializeChangeset(
+      {
+        changed: [],
+        added: ["missing"],
+        removed: [],
+        order_changed: true,
+      },
+      deps,
+    );
+
+    expect(deps.materializeCells).toHaveBeenCalledWith(handle);
+    expect(structureProjectionCalls).toHaveLength(0);
+  });
+
+  it("falls back to full materialization when structural order is unavailable", async () => {
+    const handle = {
+      get_cell_type: vi.fn(),
+      get_cell_source: vi.fn(),
+      get_cell_outputs: vi.fn(),
+      get_cell_execution_count: vi.fn(),
+      get_cell_metadata: vi.fn(),
+    } as unknown as import("../../wasm/runtimed-wasm/runtimed_wasm.js").NotebookHandle;
     const deps = createDeps(handle);
 
     await materializeChangeset(
@@ -566,12 +913,13 @@ describe("materializeChangeset", () => {
         changed: [],
         added: ["new-cell"],
         removed: [],
-        order_changed: false,
+        order_changed: true,
       },
       deps,
     );
 
     expect(deps.materializeCells).toHaveBeenCalledWith(handle);
+    expect(structureProjectionCalls).toHaveLength(0);
   });
 
   it("falls back to full materialization for resolved_assets changes", async () => {

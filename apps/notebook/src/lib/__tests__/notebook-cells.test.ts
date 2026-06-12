@@ -1,15 +1,20 @@
 import { renderHook, act } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import { applyNotebookCellStructureProjection } from "@/components/notebook/state/cell-store";
 import type { NotebookCell } from "../../types";
 import {
   getCellById,
+  getCellIdsSnapshot,
   getNotebookCellsSnapshot,
   replaceNotebookCells,
   resetNotebookCells,
   updateCellById,
   updateCellSourceById,
   updateNotebookCells,
+  useCell,
+  useCellIds,
   useMaterializeVersion,
+  useSourceVersion,
 } from "../notebook-cells";
 import { setMarkdownProjectionProjector } from "../markdown-projection";
 
@@ -115,6 +120,96 @@ describe("updateNotebookCells", () => {
       ),
     );
     expect(getNotebookCellsSnapshot()[0].source).toBe("print('world')");
+  });
+});
+
+describe("applyNotebookCellStructureProjection", () => {
+  it("projects a pure insert and preserves surviving cell references", () => {
+    replaceNotebookCells([codeCell("a", "keep-a"), codeCell("b", "keep-b")]);
+    const refA = getCellById("a");
+    const refB = getCellById("b");
+    const inserted = codeCell("inserted", "new");
+
+    applyNotebookCellStructureProjection({
+      orderedCellIds: ["a", "inserted", "b"],
+      upsertedCells: [inserted],
+    });
+
+    expect(getCellIdsSnapshot()).toEqual(["a", "inserted", "b"]);
+    expect(getCellById("a")).toBe(refA);
+    expect(getCellById("b")).toBe(refB);
+    expect(getCellById("inserted")).toEqual(inserted);
+  });
+
+  it("projects a pure remove and preserves surviving cell references", () => {
+    replaceNotebookCells([
+      codeCell("a", "keep-a"),
+      codeCell("removed", "delete"),
+      codeCell("b", "keep-b"),
+    ]);
+    const refA = getCellById("a");
+    const refB = getCellById("b");
+
+    applyNotebookCellStructureProjection({
+      orderedCellIds: ["a", "b"],
+    });
+
+    expect(getCellIdsSnapshot()).toEqual(["a", "b"]);
+    expect(getCellById("a")).toBe(refA);
+    expect(getCellById("b")).toBe(refB);
+    expect(getCellById("removed")).toBeUndefined();
+  });
+
+  it("projects a move by updating only the ordered IDs", () => {
+    replaceNotebookCells([
+      codeCell("a", "keep-a"),
+      codeCell("b", "keep-b"),
+      codeCell("c", "keep-c"),
+    ]);
+    const refA = getCellById("a");
+    const refB = getCellById("b");
+    const refC = getCellById("c");
+
+    applyNotebookCellStructureProjection({
+      orderedCellIds: ["c", "a", "b"],
+    });
+
+    expect(getCellIdsSnapshot()).toEqual(["c", "a", "b"]);
+    expect(getCellById("a")).toBe(refA);
+    expect(getCellById("b")).toBe(refB);
+    expect(getCellById("c")).toBe(refC);
+  });
+
+  it("emits structural notifications once and notifies removed cell subscribers", () => {
+    replaceNotebookCells([codeCell("a", "keep"), codeCell("removed", "delete")]);
+
+    const idsRenderCount = { current: 0 };
+    const removedRenderCount = { current: 0 };
+    const idsHook = renderHook(() => {
+      idsRenderCount.current++;
+      return useCellIds();
+    });
+    const removedHook = renderHook(() => {
+      removedRenderCount.current++;
+      return useCell("removed");
+    });
+    const materializeHook = renderHook(() => useMaterializeVersion());
+    const sourceHook = renderHook(() => useSourceVersion());
+    const initialMaterializeVersion = materializeHook.result.current;
+    const initialSourceVersion = sourceHook.result.current;
+
+    act(() => {
+      applyNotebookCellStructureProjection({
+        orderedCellIds: ["a"],
+      });
+    });
+
+    expect(idsHook.result.current).toEqual(["a"]);
+    expect(idsRenderCount.current).toBe(2);
+    expect(removedHook.result.current).toBeUndefined();
+    expect(removedRenderCount.current).toBe(2);
+    expect(materializeHook.result.current).toBe(initialMaterializeVersion + 1);
+    expect(sourceHook.result.current).toBe(initialSourceVersion + 1);
   });
 });
 

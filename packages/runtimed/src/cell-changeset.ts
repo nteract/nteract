@@ -35,7 +35,7 @@ export interface CellChangeset {
 }
 
 export type CellChangesetMaterialization =
-  | { kind: "full"; reason: "missing_changeset" | "structural" | "resolved_assets" }
+  | { kind: "full"; reason: "missing_changeset" | "resolved_assets" }
   | { kind: "incremental" };
 
 export interface IncrementalCellProjection {
@@ -47,9 +47,19 @@ export interface IncrementalCellProjection {
   field_summary: string[];
 }
 
+export interface StructuralCellProjection {
+  added: string[];
+  removed: string[];
+  order_changed: boolean;
+}
+
 export type CellChangesetProjectionPlan =
-  | { kind: "full"; reason: "missing_changeset" | "structural" | "resolved_assets" }
-  | { kind: "incremental"; cells: IncrementalCellProjection[] };
+  | { kind: "full"; reason: "missing_changeset" | "resolved_assets" }
+  | {
+      kind: "incremental";
+      cells: IncrementalCellProjection[];
+      structural?: StructuralCellProjection;
+    };
 
 export type CellPointerRefreshPlan =
   | { kind: "all" }
@@ -104,19 +114,16 @@ export function mergeChangesets(a: CellChangeset, b: CellChangeset): CellChanges
 /**
  * Classify how a frontend projection should consume a coalesced changeset.
  *
- * Structural changes and `resolved_assets` updates require a full notebook
- * materialization because per-cell WASM accessors do not expose every value the
- * app-level cell snapshot needs. Pure cell chrome/output updates can use the
- * incremental projection path.
+ * Missing changesets and `resolved_assets` updates require a full notebook
+ * materialization. Structural changes are incremental: consumers read the
+ * authoritative final order from the WASM handle and only materialize cells
+ * that are still present after the coalescing window.
  */
 export function classifyCellChangesetMaterialization(
   changeset: CellChangeset | null,
 ): CellChangesetMaterialization {
   if (!changeset) {
     return { kind: "full", reason: "missing_changeset" };
-  }
-  if (changeset.added.length > 0 || changeset.removed.length > 0 || changeset.order_changed) {
-    return { kind: "full", reason: "structural" };
   }
   if (changeset.changed.some((c) => c.fields.resolved_assets)) {
     return { kind: "full", reason: "resolved_assets" };
@@ -137,6 +144,9 @@ export function summarizeChangedFields(fields: ChangedFields): string[] {
  *
  * This keeps protocol-field interpretation in the runtimed package while
  * allowing apps to supply their own store writes and renderer pre-warming.
+ * Structural details are included only when cells were added, removed, or the
+ * order changed. Do not infer moves from `order_changed`: Rust currently sets
+ * it on add/delete as well, so consumers must trust the handle's final order.
  */
 export function planCellChangesetProjection(
   changeset: CellChangeset | null,
@@ -148,8 +158,18 @@ export function planCellChangesetProjection(
   if (!changeset) {
     return { kind: "full", reason: "missing_changeset" };
   }
+  const structural =
+    changeset.added.length > 0 || changeset.removed.length > 0 || changeset.order_changed
+      ? {
+          added: [...changeset.added],
+          removed: [...changeset.removed],
+          order_changed: changeset.order_changed,
+        }
+      : undefined;
+
   return {
     kind: "incremental",
+    ...(structural ? { structural } : {}),
     cells: changeset.changed.map(({ cell_id, fields }) => ({
       cell_id,
       fields,
@@ -163,8 +183,9 @@ export function planCellChangesetProjection(
 
 /**
  * Plan which notebook-doc cell execution_id pointers need refreshing after a
- * materialization pass. Incremental non-structural changes only need touched
- * cells; full/structural materialization refreshes the whole document.
+ * materialization pass. This intentionally preserves the historic behavior:
+ * missing changesets and additions refresh all pointers, touched cells refresh
+ * individually, and removals/reorders without touched cells do not refresh.
  */
 export function planCellPointerRefresh(changeset: CellChangeset | null): CellPointerRefreshPlan {
   if (!changeset || changeset.added.length > 0) {

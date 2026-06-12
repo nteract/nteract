@@ -106,6 +106,44 @@ function rawSnapshot(id: string, source: string): CellSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// outputCacheKey
+// ---------------------------------------------------------------------------
+
+describe("outputCacheKey", () => {
+  it("prefers the Rust-owned output cache key on object outputs", () => {
+    const output = {
+      output_id: "output-1",
+      output_type: "stream",
+      name: "stdout",
+      text: "hello\n",
+      _runt_output_cache_key: "output:output-1:2:7",
+    };
+
+    expect(outputCacheKey(output)).toBe("output:output-1:2:7");
+  });
+
+  it("strips the Rust-owned output cache key from raw resolved outputs", async () => {
+    const output = {
+      output_id: "output-1",
+      output_type: "stream",
+      name: "stdout",
+      text: "hello\n",
+      _runt_output_cache_key: "output:output-1:2:7",
+    };
+
+    const resolved = await resolveOutput(output, null, new Map());
+
+    expect(resolved).toEqual({
+      output_id: "output-1",
+      output_type: "stream",
+      name: "stdout",
+      text: "hello\n",
+    });
+    expect(resolved).not.toHaveProperty("_runt_output_cache_key");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // reuseOutputsIfUnchanged
 // ---------------------------------------------------------------------------
 

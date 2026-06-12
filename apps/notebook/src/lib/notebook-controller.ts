@@ -1,4 +1,4 @@
-import type { SyncEngine } from "runtimed";
+import type { LocalMutationResult, SyncEngine } from "runtimed";
 import { logger } from "./logger";
 import { createNotebookCellId } from "./notebook-cell-id";
 import { getNotebookCellsSnapshot, updateCellSourceById } from "./notebook-cells";
@@ -15,12 +15,31 @@ export type NotebookControllerSyncMode = "flush" | "scheduleFlush";
 export interface NotebookControllerHandle {
   update_source(cellId: string, source: string): boolean;
   add_cell_after(cellId: string, cellType: NotebookControllerCellType, afterCellId: string | null): void;
+  add_cell_after_with_changeset?(
+    cellId: string,
+    cellType: NotebookControllerCellType,
+    afterCellId: string | null,
+  ): LocalMutationResult<string>;
   move_cell(cellId: string, afterCellId: string | null): void;
+  move_cell_with_changeset?(
+    cellId: string,
+    afterCellId: string | null,
+  ): LocalMutationResult<string>;
   cell_count(): number;
   delete_cell(cellId: string): boolean;
+  delete_cell_with_changeset?(cellId: string): LocalMutationResult<boolean>;
   clear_outputs(cellId: string): boolean;
+  clear_outputs_with_changeset?(cellId: string): LocalMutationResult<boolean>;
   set_cell_source_hidden(cellId: string, hidden: boolean): boolean;
+  set_cell_source_hidden_with_changeset?(
+    cellId: string,
+    hidden: boolean,
+  ): LocalMutationResult<boolean>;
   set_cell_outputs_hidden(cellId: string, hidden: boolean): boolean;
+  set_cell_outputs_hidden_with_changeset?(
+    cellId: string,
+    hidden: boolean,
+  ): LocalMutationResult<boolean>;
   has_cells_map?(): boolean;
 }
 
@@ -34,6 +53,7 @@ export interface NotebookControllerOptions<THandle extends NotebookControllerHan
   canAcceptStructure?: (handle: THandle) => boolean;
   createCellId?: () => string;
   syncMode?: Partial<Record<NotebookControllerMutationKind, NotebookControllerSyncMode>>;
+  applyMutationEvent?: (event: unknown) => boolean;
   afterMutation?: (handle: THandle, kind: NotebookControllerMutationKind) => void;
   refreshCanAcceptCellMutations?: (handle?: THandle) => void;
   onFocusCell?: (cellId: string) => void;
@@ -67,12 +87,18 @@ export function createNotebookController<THandle extends NotebookControllerHandl
   canAcceptStructure = (handle) => handle.has_cells_map?.() ?? true,
   createCellId = createNotebookCellId,
   syncMode = {},
+  applyMutationEvent,
   afterMutation,
   refreshCanAcceptCellMutations,
   onFocusCell,
   fallbackCell = defaultFallbackCell,
   logPrefix = "[notebook-controller]",
 }: NotebookControllerOptions<THandle>): NotebookController {
+  type MutationOutcome = {
+    changed: boolean;
+    eventApplied: boolean;
+  };
+
   const syncAfterMutation = (
     engine: Pick<SyncEngine, "flush" | "scheduleFlush">,
     kind: NotebookControllerMutationKind,
@@ -85,10 +111,21 @@ export function createNotebookController<THandle extends NotebookControllerHandl
     engine.flush();
   };
 
+  const localMutationOutcome = <T>(
+    mutation: LocalMutationResult<T>,
+    isChanged: (result: T) => boolean,
+  ): MutationOutcome => {
+    const changed = isChanged(mutation.result);
+    if (!changed) return { changed: false, eventApplied: false };
+    const eventApplied =
+      mutation.event !== undefined && applyMutationEvent?.(mutation.event) === true;
+    return { changed: true, eventApplied };
+  };
+
   const commit = (
     kind: NotebookControllerMutationKind,
     canWrite: () => boolean,
-    mutate: (handle: THandle) => boolean,
+    mutate: (handle: THandle) => MutationOutcome,
   ): boolean => {
     const handle = getHandle();
     const engine = getEngine();
@@ -100,9 +137,12 @@ export function createNotebookController<THandle extends NotebookControllerHandl
       logger.debug(`${logPrefix} ${kind} mutation skipped: capability denied`);
       return false;
     }
-    if (!mutate(handle)) return false;
+    const outcome = mutate(handle);
+    if (!outcome.changed) return false;
 
-    afterMutation?.(handle, kind);
+    if (!outcome.eventApplied) {
+      afterMutation?.(handle, kind);
+    }
     syncAfterMutation(engine, kind);
     return true;
   };
@@ -143,15 +183,24 @@ export function createNotebookController<THandle extends NotebookControllerHandl
       }
 
       const cellId = createCellId();
+      let eventApplied = false;
       try {
-        handle.add_cell_after(cellId, cellType, afterCellId);
+        if (handle.add_cell_after_with_changeset && applyMutationEvent) {
+          const mutation = handle.add_cell_after_with_changeset(cellId, cellType, afterCellId);
+          eventApplied =
+            mutation.event !== undefined && applyMutationEvent(mutation.event) === true;
+        } else {
+          handle.add_cell_after(cellId, cellType, afterCellId);
+        }
       } catch (error) {
         logger.warn(`${logPrefix} addCell failed:`, error);
         refreshCanAcceptCellMutations?.(handle);
         return null;
       }
 
-      afterMutation?.(handle, "structure");
+      if (!eventApplied) {
+        afterMutation?.(handle, "structure");
+      }
       syncAfterMutation(engine, "structure");
       onFocusCell?.(cellId);
 
@@ -160,15 +209,24 @@ export function createNotebookController<THandle extends NotebookControllerHandl
 
     moveCell(cellId, afterCellId = null) {
       commit("structure", canEditStructure, (handle) => {
+        if (handle.move_cell_with_changeset && applyMutationEvent) {
+          return localMutationOutcome(
+            handle.move_cell_with_changeset(cellId, afterCellId),
+            () => true,
+          );
+        }
         handle.move_cell(cellId, afterCellId);
-        return true;
+        return { changed: true, eventApplied: false };
       });
     },
 
     deleteCell(cellId) {
       commit("structure", canEditStructure, (handle) => {
-        if (handle.cell_count() <= 1) return false;
-        return !!handle.delete_cell(cellId);
+        if (handle.cell_count() <= 1) return { changed: false, eventApplied: false };
+        if (handle.delete_cell_with_changeset && applyMutationEvent) {
+          return localMutationOutcome(handle.delete_cell_with_changeset(cellId), Boolean);
+        }
+        return { changed: !!handle.delete_cell(cellId), eventApplied: false };
       });
     },
 
@@ -178,22 +236,49 @@ export function createNotebookController<THandle extends NotebookControllerHandl
 
       return commit("outputs", canEditOutputs, (handle) => {
         let changed = false;
+        let eventApplied = true;
         for (const cellId of ids) {
-          changed = !!handle.clear_outputs(cellId) || changed;
+          if (handle.clear_outputs_with_changeset && applyMutationEvent) {
+            const outcome = localMutationOutcome(
+              handle.clear_outputs_with_changeset(cellId),
+              Boolean,
+            );
+            if (outcome.changed) {
+              changed = true;
+              eventApplied = eventApplied && outcome.eventApplied;
+            }
+            continue;
+          }
+
+          const cellChanged = !!handle.clear_outputs(cellId);
+          changed = cellChanged || changed;
+          if (cellChanged) eventApplied = false;
         }
-        return changed;
+        return { changed, eventApplied: changed && eventApplied };
       });
     },
 
     setCellSourceHidden(cellId, hidden) {
       commit("visibility", canEditVisibility, (handle) => {
-        return !!handle.set_cell_source_hidden(cellId, hidden);
+        if (handle.set_cell_source_hidden_with_changeset && applyMutationEvent) {
+          return localMutationOutcome(
+            handle.set_cell_source_hidden_with_changeset(cellId, hidden),
+            Boolean,
+          );
+        }
+        return { changed: !!handle.set_cell_source_hidden(cellId, hidden), eventApplied: false };
       });
     },
 
     setCellOutputsHidden(cellId, hidden) {
       commit("visibility", canEditVisibility, (handle) => {
-        return !!handle.set_cell_outputs_hidden(cellId, hidden);
+        if (handle.set_cell_outputs_hidden_with_changeset && applyMutationEvent) {
+          return localMutationOutcome(
+            handle.set_cell_outputs_hidden_with_changeset(cellId, hidden),
+            Boolean,
+          );
+        }
+        return { changed: !!handle.set_cell_outputs_hidden(cellId, hidden), eventApplied: false };
       });
     },
   };

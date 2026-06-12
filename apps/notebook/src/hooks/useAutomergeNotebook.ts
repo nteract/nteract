@@ -225,6 +225,14 @@ export function useNotebook() {
         canWriteCellSource: () => canWriteNotebookRef.current,
         canEditStructure: () => canWriteNotebookRef.current,
         canAcceptStructure: (handle) => handle.has_cells_map(),
+        applyMutationEvent: (event) => {
+          const engine = engineRef.current;
+          return engine
+            ? engine.applyLocalMutationEvent(
+                event as Parameters<typeof engine.applyLocalMutationEvent>[0],
+              )
+            : false;
+        },
         afterMutation: (handle, kind) => {
           rematerializeCellsSync(handle);
           if (kind === "outputs" || kind === "visibility" || kind === "structure") {

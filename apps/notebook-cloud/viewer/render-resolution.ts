@@ -38,6 +38,7 @@ export type OutputResolutionCache = Map<string, OutputResolutionCacheEntry>;
 export const OUTPUT_RESOLUTION_CACHE_MAX_ENTRIES = 1024;
 
 const ASYNC_OUTPUT_REQUIRED = Symbol("async-output-required");
+const RUNT_OUTPUT_CACHE_KEY = "_runt_output_cache_key";
 
 type SyncOutputResolution = JupyterOutput | null | typeof ASYNC_OUTPUT_REQUIRED;
 
@@ -296,18 +297,40 @@ function jupyterOutputNeedsAsyncResolution(output: JupyterOutput): boolean {
 }
 
 function outputResolutionCacheKey(output: unknown, syntheticOutputId: string): string | null {
-  const serialized = serializedOutputCacheKey(output);
+  const cacheSubject = outputCacheKeySubject(output);
+  const serialized = serializedOutputCacheKey(output, cacheSubject.value);
   if (serialized === null) return null;
-  return outputNeedsSyntheticOutputId(output) ? `${syntheticOutputId}:${serialized}` : serialized;
+  const needsSyntheticOutputId =
+    cacheSubject.parsedString || typeof output !== "string"
+      ? outputNeedsSyntheticOutputId(cacheSubject.value)
+      : false;
+  return needsSyntheticOutputId ? `${syntheticOutputId}:${serialized}` : serialized;
 }
 
-function serializedOutputCacheKey(output: unknown): string | null {
+function serializedOutputCacheKey(output: unknown, cacheSubject: unknown = output): string | null {
+  const stamped = stampedOutputCacheKey(cacheSubject);
+  if (stamped !== null) return stamped;
   if (typeof output === "string") return output;
   try {
     return JSON.stringify(output);
   } catch {
     return null;
   }
+}
+
+function outputCacheKeySubject(output: unknown): { value: unknown; parsedString: boolean } {
+  if (typeof output !== "string") return { value: output, parsedString: false };
+  try {
+    return { value: JSON.parse(output) as unknown, parsedString: true };
+  } catch {
+    return { value: output, parsedString: false };
+  }
+}
+
+function stampedOutputCacheKey(output: unknown): string | null {
+  if (typeof output !== "object" || output === null) return null;
+  const key = (output as Record<string, unknown>)[RUNT_OUTPUT_CACHE_KEY];
+  return typeof key === "string" ? key : null;
 }
 
 function outputNeedsSyntheticOutputId(output: unknown): boolean {

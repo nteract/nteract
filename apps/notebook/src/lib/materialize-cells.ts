@@ -20,6 +20,8 @@ export {
   resolveManifestSync,
 } from "./manifest-resolution";
 
+const RUNT_OUTPUT_CACHE_KEY = "_runt_output_cache_key";
+
 /** Resolve execution_count from the execution the notebook doc points at. */
 function getExecutionCountFromRuntime(
   _cellId: string,
@@ -53,12 +55,33 @@ function resolveExecutionCount(
  * - Strings are used directly (legacy JSON or other string values).
  */
 export function outputCacheKey(output: unknown): string {
+  const stamped = stampedOutputCacheKey(output);
+  if (stamped !== null) return stamped;
   if (typeof output === "string") return output;
   try {
     return JSON.stringify(output);
   } catch {
     return String(output);
   }
+}
+
+function stampedOutputCacheKey(output: unknown): string | null {
+  if (typeof output !== "object" || output === null) return null;
+  const key = (output as Record<string, unknown>)[RUNT_OUTPUT_CACHE_KEY];
+  return typeof key === "string" ? key : null;
+}
+
+function stripOutputCacheKey<T extends JupyterOutput>(output: T): T {
+  if (
+    typeof output !== "object" ||
+    output === null ||
+    !Object.prototype.hasOwnProperty.call(output, RUNT_OUTPUT_CACHE_KEY)
+  ) {
+    return output;
+  }
+  const { [RUNT_OUTPUT_CACHE_KEY]: _cacheKey, ...stripped } = output as T &
+    Record<string, unknown>;
+  return stripped as T;
 }
 
 /**
@@ -139,7 +162,7 @@ export async function resolveOutput(
     output !== null &&
     "output_type" in output
   ) {
-    const jupyterOutput = output as JupyterOutput;
+    const jupyterOutput = stripOutputCacheKey(output as JupyterOutput);
     cache.set(key, jupyterOutput);
     return jupyterOutput;
   }
@@ -147,7 +170,7 @@ export async function resolveOutput(
   // Legacy string path (backward compat during transition)
   if (typeof output === "string") {
     try {
-      const parsed = JSON.parse(output) as JupyterOutput;
+      const parsed = stripOutputCacheKey(JSON.parse(output) as JupyterOutput);
       cache.set(key, parsed);
       return parsed;
     } catch {
@@ -196,7 +219,7 @@ function resolveOutputSync(
     output !== null &&
     "output_type" in output
   ) {
-    const jupyterOutput = output as JupyterOutput;
+    const jupyterOutput = stripOutputCacheKey(output as JupyterOutput);
     cache.set(key, jupyterOutput);
     return jupyterOutput;
   }
@@ -204,7 +227,7 @@ function resolveOutputSync(
   // Legacy string path
   if (typeof output === "string") {
     try {
-      const parsed = JSON.parse(output) as JupyterOutput;
+      const parsed = stripOutputCacheKey(JSON.parse(output) as JupyterOutput);
       cache.set(key, parsed);
       return parsed;
     } catch {

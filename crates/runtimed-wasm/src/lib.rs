@@ -34,6 +34,7 @@ use wasm_bindgen::prelude::*;
 
 const MARKDOWN_PROJECTION_MIME: &str = "application/vnd.nteract.markdown+json";
 const MARKDOWN_SOURCE_MIME: &str = "text/markdown";
+const RUNT_OUTPUT_CACHE_KEY: &str = "_runt_output_cache_key";
 
 /// Install the panic hook on module init so Rust panics inside WASM
 /// surface as `console.error` entries with file/line and backtrace,
@@ -104,6 +105,13 @@ pub struct OutputChangeset {
     /// Output IDs no longer present in any execution.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub removed: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct LocalMutationResult<T: Serialize> {
+    result: T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event: Option<FrameEvent>,
 }
 
 impl OutputChangeset {
@@ -1847,6 +1855,11 @@ pub struct NotebookHandle {
     /// Previous per-`output_id` manifest snapshot. Used to produce the
     /// per-output diff emitted on `RuntimeStateSyncApplied.output_changeset`.
     prev_output_by_id: HashMap<String, serde_json::Value>,
+    /// Volatile render-identity epoch for output manifests handed to JS.
+    output_identity_epoch: u64,
+    /// Per-output render revision, bumped when a manifest changes without
+    /// changing its stable `output_id`.
+    output_revision_by_id: HashMap<String, u64>,
     /// Cross-document execution materialized-view projector.
     execution_view_projector: ExecutionViewProjector,
     /// Pool state doc — daemon-authoritative, global, synced read-only.
@@ -2119,6 +2132,8 @@ impl NotebookHandle {
                 .map_err(|e| JsError::new(&format!("create comms doc failed: {}", e)))?,
             comms_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
+            output_identity_epoch: 0,
+            output_revision_by_id: HashMap::new(),
             execution_view_projector: ExecutionViewProjector::default(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
@@ -2149,6 +2164,8 @@ impl NotebookHandle {
             comms_doc,
             comms_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
+            output_identity_epoch: 0,
+            output_revision_by_id: HashMap::new(),
             execution_view_projector: ExecutionViewProjector::default(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
@@ -2187,6 +2204,8 @@ impl NotebookHandle {
                 .map_err(|e| JsError::new(&format!("create comms doc failed: {}", e)))?,
             comms_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
+            output_identity_epoch: 0,
+            output_revision_by_id: HashMap::new(),
             execution_view_projector: ExecutionViewProjector::default(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
@@ -2228,6 +2247,7 @@ impl NotebookHandle {
         self.state_doc = RuntimeStateDoc::from_doc(doc);
         self.state_sync_state = sync::State::new();
         self.prev_output_by_id.clear();
+        self.bump_output_identity_epoch();
         self.execution_view_projector.reset();
         Ok(())
     }
@@ -2447,6 +2467,21 @@ impl NotebookHandle {
         }
     }
 
+    fn get_output_by_id_value(&self, output_id: &str) -> Option<serde_json::Value> {
+        let state = self.state_doc.read_state();
+        for exec in state.executions.values() {
+            for output in &exec.outputs {
+                if let Some(id) = output.get("output_id").and_then(|v| v.as_str()) {
+                    if id == output_id {
+                        let narrowed = self.narrow_output_data(output.clone());
+                        return Some(self.stamp_output_cache_key(narrowed));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Return a single output manifest by `output_id`, narrowed to the
     /// active MIME priority set. Returns `undefined` when no output carries
     /// that id.
@@ -2457,18 +2492,9 @@ impl NotebookHandle {
     /// hot path we can cache an `output_id -> (execution_id, index)` map
     /// here — the doc is already the source of truth.
     pub fn get_output_by_id(&self, output_id: &str) -> JsValue {
-        let state = self.state_doc.read_state();
-        for exec in state.executions.values() {
-            for output in &exec.outputs {
-                if let Some(id) = output.get("output_id").and_then(|v| v.as_str()) {
-                    if id == output_id {
-                        let narrowed = self.narrow_output_data(output.clone());
-                        return serialize_to_js(&narrowed).unwrap_or(JsValue::UNDEFINED);
-                    }
-                }
-            }
-        }
-        JsValue::UNDEFINED
+        self.get_output_by_id_value(output_id)
+            .and_then(|value| serialize_to_js(&value).ok())
+            .unwrap_or(JsValue::UNDEFINED)
     }
 
     /// Set the MIME type priority list for output selection.
@@ -2476,6 +2502,11 @@ impl NotebookHandle {
     /// If empty, all MIME types are returned (backward compatible).
     pub fn set_mime_priority(&mut self, priority: JsValue) {
         if let Ok(p) = serde_wasm_bindgen::from_value::<Vec<String>>(priority) {
+            // Narrowing inputs shape the manifest JS caches by identity key,
+            // so a different priority list must invalidate stamped keys.
+            if self.mime_priority != p {
+                self.bump_output_identity_epoch();
+            }
             self.mime_priority = p;
         }
     }
@@ -2483,6 +2514,11 @@ impl NotebookHandle {
     /// Set the blob server port for resolving binary ContentRefs to URLs.
     /// Call after init and whenever the daemon restarts with a new port.
     pub fn set_blob_port(&mut self, port: u16) {
+        // Binary ContentRefs resolve to port-qualified URLs; a port change
+        // must invalidate identity-keyed caches of the narrowed manifests.
+        if self.blob_port != Some(port) {
+            self.bump_output_identity_epoch();
+        }
         self.blob_port = Some(port);
     }
 
@@ -2500,8 +2536,72 @@ impl NotebookHandle {
         self.state_doc
             .get_outputs(&eid)
             .into_iter()
-            .map(|o| self.narrow_output_data(o))
+            .map(|o| self.stamp_output_cache_key(self.narrow_output_data(o)))
             .collect()
+    }
+
+    fn stamp_output_cache_key(&self, mut output: serde_json::Value) -> serde_json::Value {
+        let output_id = output
+            .get("output_id")
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+            .map(str::to_string);
+        let Some(output_id) = output_id else {
+            return output;
+        };
+
+        let Some(obj) = output.as_object_mut() else {
+            return output;
+        };
+
+        let revision = self
+            .output_revision_by_id
+            .get(&output_id)
+            .copied()
+            .unwrap_or(0);
+        obj.insert(
+            RUNT_OUTPUT_CACHE_KEY.to_string(),
+            serde_json::Value::String(format!(
+                "output:{}:{}:{}",
+                output_id, self.output_identity_epoch, revision
+            )),
+        );
+        output
+    }
+
+    fn bump_output_identity_epoch(&mut self) {
+        self.output_identity_epoch += 1;
+        self.prev_output_by_id.clear();
+        self.output_revision_by_id.clear();
+    }
+
+    fn build_output_changeset(&mut self, current_state: &RuntimeState) -> OutputChangeset {
+        let id_diff =
+            diff_output_ids_in_place(&mut self.prev_output_by_id, &current_state.executions);
+
+        for (id, _) in &id_diff.changed {
+            *self.output_revision_by_id.entry(id.clone()).or_insert(0) += 1;
+        }
+        for id in &id_diff.removed_output_ids {
+            self.output_revision_by_id.remove(id);
+        }
+
+        // Narrow and stamp each changed manifest inline so the frontend writes
+        // directly into the outputs store with no second snapshot walk.
+        let changed: Vec<(String, serde_json::Value)> = id_diff
+            .changed
+            .into_iter()
+            .map(|(id, manifest)| {
+                (
+                    id,
+                    self.stamp_output_cache_key(self.narrow_output_data(manifest)),
+                )
+            })
+            .collect();
+        OutputChangeset {
+            changed,
+            removed: id_diff.removed_output_ids,
+        }
     }
 
     /// Narrow an output manifest's data bundle to the winning MIME type,
@@ -2635,6 +2735,100 @@ impl NotebookHandle {
             })
     }
 
+    fn run_local_mutation<T, E, F>(
+        &mut self,
+        operation: &str,
+        mutator: F,
+    ) -> Result<LocalMutationResult<T>, JsError>
+    where
+        T: Serialize,
+        E: std::fmt::Display,
+        F: FnOnce(&mut NotebookDoc) -> Result<T, E>,
+    {
+        let heads_before = self.doc.doc_mut().get_heads();
+        let result = mutator(&mut self.doc)
+            .map_err(|e| JsError::new(&format!("{operation} failed: {e}")))?;
+        let heads_after = self.doc.doc_mut().get_heads();
+
+        let event = if heads_before != heads_after {
+            let doc_changeset = diff_doc(self.doc.doc_mut(), &heads_before, &heads_after);
+            if doc_changeset.metadata_changed {
+                self.metadata_fingerprint_cache = None;
+            }
+            let state = self.state_doc.read_state();
+            let execution_view_changeset = self
+                .execution_view_projector
+                .project_all(notebook_execution_pointers(&self.doc), &state);
+
+            Some(FrameEvent::SyncApplied {
+                changed: true,
+                changeset: Some(doc_changeset.cells),
+                attributions: Vec::new(),
+                reply: None,
+                execution_view_changeset,
+            })
+        } else {
+            None
+        };
+
+        Ok(LocalMutationResult { result, event })
+    }
+
+    fn add_cell_after_with_changeset_inner(
+        &mut self,
+        cell_id: &str,
+        cell_type: &str,
+        after_cell_id: Option<String>,
+    ) -> Result<LocalMutationResult<String>, JsError> {
+        self.run_local_mutation("add_cell_after", |doc| {
+            doc.add_cell_after(cell_id, cell_type, after_cell_id.as_deref())
+        })
+    }
+
+    fn move_cell_with_changeset_inner(
+        &mut self,
+        cell_id: &str,
+        after_cell_id: Option<String>,
+    ) -> Result<LocalMutationResult<String>, JsError> {
+        self.run_local_mutation("move_cell", |doc| {
+            doc.move_cell(cell_id, after_cell_id.as_deref())
+        })
+    }
+
+    fn delete_cell_with_changeset_inner(
+        &mut self,
+        cell_id: &str,
+    ) -> Result<LocalMutationResult<bool>, JsError> {
+        self.run_local_mutation("delete_cell", |doc| doc.delete_cell(cell_id))
+    }
+
+    fn clear_outputs_with_changeset_inner(
+        &mut self,
+        cell_id: &str,
+    ) -> Result<LocalMutationResult<bool>, JsError> {
+        self.run_local_mutation("clear_outputs", |doc| doc.clear_outputs(cell_id))
+    }
+
+    fn set_cell_source_hidden_with_changeset_inner(
+        &mut self,
+        cell_id: &str,
+        hidden: bool,
+    ) -> Result<LocalMutationResult<bool>, JsError> {
+        self.run_local_mutation("set_cell_source_hidden", |doc| {
+            doc.set_cell_source_hidden(cell_id, hidden)
+        })
+    }
+
+    fn set_cell_outputs_hidden_with_changeset_inner(
+        &mut self,
+        cell_id: &str,
+        hidden: bool,
+    ) -> Result<LocalMutationResult<bool>, JsError> {
+        self.run_local_mutation("set_cell_outputs_hidden", |doc| {
+            doc.set_cell_outputs_hidden(cell_id, hidden)
+        })
+    }
+
     /// Add a new cell at the given index (backward-compatible API).
     ///
     /// Internally converts the index to an after_cell_id for fractional indexing.
@@ -2666,6 +2860,17 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("add_cell_after failed: {}", e)))
     }
 
+    pub fn add_cell_after_with_changeset(
+        &mut self,
+        cell_id: &str,
+        cell_type: &str,
+        after_cell_id: Option<String>,
+    ) -> Result<JsValue, JsError> {
+        let result = self.add_cell_after_with_changeset_inner(cell_id, cell_type, after_cell_id)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize local mutation result: {e}")))
+    }
+
     /// Move a cell to a new position (after the specified cell).
     ///
     /// - `after_cell_id = null` → move to the beginning
@@ -2683,6 +2888,16 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("move_cell failed: {}", e)))
     }
 
+    pub fn move_cell_with_changeset(
+        &mut self,
+        cell_id: &str,
+        after_cell_id: Option<String>,
+    ) -> Result<JsValue, JsError> {
+        let result = self.move_cell_with_changeset_inner(cell_id, after_cell_id)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize local mutation result: {e}")))
+    }
+
     /// Delete a cell by ID. Returns true if the cell was found and deleted.
     pub fn delete_cell(&mut self, cell_id: &str) -> Result<bool, JsError> {
         self.doc
@@ -2690,11 +2905,43 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("delete_cell failed: {}", e)))
     }
 
+    pub fn delete_cell_with_changeset(&mut self, cell_id: &str) -> Result<JsValue, JsError> {
+        let result = self.delete_cell_with_changeset_inner(cell_id)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize local mutation result: {e}")))
+    }
+
     /// Clear a cell's visible outputs by removing its current execution pointer.
     pub fn clear_outputs(&mut self, cell_id: &str) -> Result<bool, JsError> {
         self.doc
             .clear_outputs(cell_id)
             .map_err(|e| JsError::new(&format!("clear_outputs failed: {}", e)))
+    }
+
+    pub fn clear_outputs_with_changeset(&mut self, cell_id: &str) -> Result<JsValue, JsError> {
+        let result = self.clear_outputs_with_changeset_inner(cell_id)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize local mutation result: {e}")))
+    }
+
+    pub fn set_cell_source_hidden_with_changeset(
+        &mut self,
+        cell_id: &str,
+        hidden: bool,
+    ) -> Result<JsValue, JsError> {
+        let result = self.set_cell_source_hidden_with_changeset_inner(cell_id, hidden)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize local mutation result: {e}")))
+    }
+
+    pub fn set_cell_outputs_hidden_with_changeset(
+        &mut self,
+        cell_id: &str,
+        hidden: bool,
+    ) -> Result<JsValue, JsError> {
+        let result = self.set_cell_outputs_hidden_with_changeset_inner(cell_id, hidden)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize local mutation result: {e}")))
     }
 
     /// Update a cell's source text using Automerge Text CRDT (Myers diff).
@@ -3593,6 +3840,7 @@ impl NotebookHandle {
     /// Delegates to `RuntimeStateDoc::rebuild_from_save`, which preserves the actor.
     fn rebuild_state_doc(&mut self) {
         let _ = self.state_doc.rebuild_from_save();
+        self.bump_output_identity_epoch();
     }
 
     /// Receive a typed frame from the daemon, demux by type byte, return events for the frontend.
@@ -3811,23 +4059,7 @@ impl NotebookHandle {
                 };
 
                 let output_changeset = if let Some(current_state) = state.as_ref() {
-                    let id_diff = diff_output_ids_in_place(
-                        &mut self.prev_output_by_id,
-                        &current_state.executions,
-                    );
-
-                    // Narrow each changed manifest inline so the frontend
-                    // writes directly into the outputs store with no
-                    // second snapshot walk.
-                    let changed: Vec<(String, serde_json::Value)> = id_diff
-                        .changed
-                        .into_iter()
-                        .map(|(id, manifest)| (id, self.narrow_output_data(manifest)))
-                        .collect();
-                    OutputChangeset {
-                        changed,
-                        removed: id_diff.removed_output_ids,
-                    }
+                    self.build_output_changeset(current_state)
                 } else {
                     OutputChangeset::default()
                 };
@@ -5373,6 +5605,315 @@ mod tests {
             .expect("add cell");
         handle.update_source(cell_id, source).expect("set source");
         handle
+    }
+
+    fn changed_local_mutation<T: Serialize>(
+        mutation: LocalMutationResult<T>,
+    ) -> (T, CellChangeset) {
+        let LocalMutationResult { result, event } = mutation;
+        match event {
+            Some(FrameEvent::SyncApplied {
+                changed,
+                changeset,
+                attributions,
+                reply,
+                ..
+            }) => {
+                assert!(changed, "local mutation event must report changed=true");
+                assert!(
+                    reply.is_none(),
+                    "local mutation event must not carry a sync reply"
+                );
+                assert!(
+                    attributions.is_empty(),
+                    "local mutation event must not carry remote text attributions"
+                );
+                (
+                    result,
+                    changeset.expect("changed local mutation carries a changeset"),
+                )
+            }
+            _ => panic!("expected a sync_applied local mutation event"),
+        }
+    }
+
+    fn assert_no_local_event<T>(mutation: LocalMutationResult<T>, expected_result: T)
+    where
+        T: Serialize + std::fmt::Debug + PartialEq,
+    {
+        assert_eq!(mutation.result, expected_result);
+        assert!(
+            mutation.event.is_none(),
+            "no-op local mutation must not emit an event"
+        );
+    }
+
+    fn changed_cell<'a>(
+        changeset: &'a CellChangeset,
+        cell_id: &str,
+    ) -> &'a notebook_doc::diff::ChangedCell {
+        changeset
+            .changed
+            .iter()
+            .find(|cell| cell.cell_id == cell_id)
+            .unwrap_or_else(|| panic!("missing changed cell {cell_id}: {changeset:?}"))
+    }
+
+    #[test]
+    fn local_add_cell_after_with_changeset_reports_added_cell() {
+        let mut handle =
+            NotebookHandle::create_bootstrap("user:dev:test/browser:a").expect("create handle");
+
+        let mutation = handle
+            .add_cell_after_with_changeset_inner("cell-1", "code", None)
+            .expect("add cell with changeset");
+        let (position, changeset) = changed_local_mutation(mutation);
+
+        assert_eq!(
+            handle.get_cell_position("cell-1").as_deref(),
+            Some(position.as_str())
+        );
+        assert_eq!(changeset.added, vec!["cell-1".to_string()]);
+        assert!(changeset.removed.is_empty());
+        assert!(changeset.changed.is_empty());
+        assert!(changeset.order_changed);
+    }
+
+    #[test]
+    fn local_move_cell_with_changeset_reports_position_change() {
+        let mut handle =
+            NotebookHandle::create_bootstrap("user:dev:test/browser:a").expect("create handle");
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+        handle
+            .add_cell_after("cell-2", "code", Some("cell-1".to_string()))
+            .unwrap();
+
+        let mutation = handle
+            .move_cell_with_changeset_inner("cell-2", None)
+            .expect("move cell with changeset");
+        let (position, changeset) = changed_local_mutation(mutation);
+        let moved = changed_cell(&changeset, "cell-2");
+
+        assert_eq!(
+            handle.get_cell_position("cell-2").as_deref(),
+            Some(position.as_str())
+        );
+        assert!(moved.fields.position);
+        assert!(changeset.order_changed);
+        assert!(changeset.added.is_empty());
+        assert!(changeset.removed.is_empty());
+    }
+
+    #[test]
+    fn local_delete_cell_with_changeset_reports_removed_and_noops_missing() {
+        let mut handle =
+            NotebookHandle::create_bootstrap("user:dev:test/browser:a").expect("create handle");
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+
+        let mutation = handle
+            .delete_cell_with_changeset_inner("cell-1")
+            .expect("delete cell with changeset");
+        let (deleted, changeset) = changed_local_mutation(mutation);
+
+        assert!(deleted);
+        assert_eq!(changeset.removed, vec!["cell-1".to_string()]);
+        assert!(changeset.added.is_empty());
+        assert!(changeset.changed.is_empty());
+        assert!(changeset.order_changed);
+
+        let missing = handle
+            .delete_cell_with_changeset_inner("missing")
+            .expect("delete missing cell");
+        assert_no_local_event(missing, false);
+    }
+
+    #[test]
+    fn local_clear_outputs_with_changeset_reports_output_pointer_change_and_noops_missing() {
+        let mut handle =
+            NotebookHandle::create_bootstrap("user:dev:test/browser:a").expect("create handle");
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+        handle
+            .doc
+            .set_execution_id("cell-1", Some("exec-1"))
+            .expect("seed execution pointer");
+
+        let mutation = handle
+            .clear_outputs_with_changeset_inner("cell-1")
+            .expect("clear outputs with changeset");
+        let (cleared, changeset) = changed_local_mutation(mutation);
+        let changed = changed_cell(&changeset, "cell-1");
+
+        assert!(cleared);
+        assert!(changed.fields.outputs);
+        assert!(changeset.added.is_empty());
+        assert!(changeset.removed.is_empty());
+
+        let missing = handle
+            .clear_outputs_with_changeset_inner("missing")
+            .expect("clear outputs for missing cell");
+        assert_no_local_event(missing, false);
+    }
+
+    #[test]
+    fn local_visibility_wrappers_report_metadata_changes_and_noop_missing() {
+        let mut handle =
+            NotebookHandle::create_bootstrap("user:dev:test/browser:a").expect("create handle");
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+
+        let source_mutation = handle
+            .set_cell_source_hidden_with_changeset_inner("cell-1", true)
+            .expect("set source hidden with changeset");
+        let (source_changed, source_changeset) = changed_local_mutation(source_mutation);
+        assert!(source_changed);
+        assert!(changed_cell(&source_changeset, "cell-1").fields.metadata);
+
+        let outputs_mutation = handle
+            .set_cell_outputs_hidden_with_changeset_inner("cell-1", true)
+            .expect("set outputs hidden with changeset");
+        let (outputs_changed, outputs_changeset) = changed_local_mutation(outputs_mutation);
+        assert!(outputs_changed);
+        assert!(changed_cell(&outputs_changeset, "cell-1").fields.metadata);
+
+        let missing = handle
+            .set_cell_source_hidden_with_changeset_inner("missing", true)
+            .expect("set source hidden on missing cell");
+        assert_no_local_event(missing, false);
+    }
+
+    fn runtime_output_manifest(output_id: &str, text: &str) -> serde_json::Value {
+        json!({
+            "output_type": "stream",
+            "output_id": output_id,
+            "name": "stdout",
+            "text": { "inline": text },
+        })
+    }
+
+    fn handle_with_runtime_output(text: &str) -> NotebookHandle {
+        let mut handle =
+            NotebookHandle::create_bootstrap("user:dev:test/browser:a").expect("create handle");
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+        handle
+            .doc
+            .set_execution_id("cell-1", Some("exec-1"))
+            .expect("seed execution pointer");
+        handle
+            .state_doc
+            .create_execution("exec-1")
+            .expect("create execution");
+        handle
+            .state_doc
+            .append_output("exec-1", &runtime_output_manifest("out-1", text))
+            .expect("append output");
+        handle
+    }
+
+    fn output_cache_key(output: &serde_json::Value) -> &str {
+        output
+            .get(RUNT_OUTPUT_CACHE_KEY)
+            .and_then(|value| value.as_str())
+            .expect("output cache key")
+    }
+
+    #[test]
+    fn output_cache_key_stays_stable_for_unchanged_outputs_and_bumps_on_payload_change() {
+        let mut handle = handle_with_runtime_output("first\n");
+
+        let state = handle.state_doc.read_state();
+        let first_changeset = handle.build_output_changeset(&state);
+        assert_eq!(first_changeset.changed.len(), 1);
+        let first_key = output_cache_key(&first_changeset.changed[0].1).to_string();
+        assert_eq!(first_key, "output:out-1:0:1");
+
+        let fetched = handle.fetch_and_narrow_outputs("cell-1");
+        assert_eq!(output_cache_key(&fetched[0]), first_key);
+
+        let state = handle.state_doc.read_state();
+        let unchanged = handle.build_output_changeset(&state);
+        assert!(unchanged.is_empty());
+        let stable = handle.fetch_and_narrow_outputs("cell-1");
+        assert_eq!(output_cache_key(&stable[0]), first_key);
+
+        let replacement = runtime_output_manifest("out-1", "second\n");
+        assert!(handle
+            .state_doc
+            .replace_output("exec-1", "out-1", &replacement)
+            .expect("replace output"));
+        let state = handle.state_doc.read_state();
+        let bumped = handle.build_output_changeset(&state);
+        assert_eq!(bumped.changed.len(), 1);
+        let bumped_key = output_cache_key(&bumped.changed[0].1);
+        assert_eq!(bumped_key, "output:out-1:0:2");
+        assert_ne!(bumped_key, first_key);
+
+        let lookup = handle
+            .get_output_by_id_value("out-1")
+            .expect("lookup output");
+        assert_eq!(output_cache_key(&lookup), bumped_key);
+        let stored = handle
+            .state_doc
+            .get_output("exec-1", "out-1")
+            .expect("stored output");
+        assert!(
+            stored.get(RUNT_OUTPUT_CACHE_KEY).is_none(),
+            "cache key must be stamped on cloned output values only"
+        );
+    }
+
+    #[test]
+    fn output_cache_epoch_increments_after_load_state_doc() {
+        let mut handle = handle_with_runtime_output("first\n");
+        let before = handle.fetch_and_narrow_outputs("cell-1");
+        assert_eq!(output_cache_key(&before[0]), "output:out-1:0:0");
+
+        let bytes = handle.state_doc.doc_mut().save();
+        handle.load_state_doc(&bytes).expect("reload state doc");
+
+        let after = handle.fetch_and_narrow_outputs("cell-1");
+        assert_eq!(output_cache_key(&after[0]), "output:out-1:1:0");
+    }
+
+    #[test]
+    fn output_identity_epoch_bump_reemits_known_outputs_after_blob_port_change() {
+        let mut handle = handle_with_runtime_output("first\n");
+
+        let state = handle.state_doc.read_state();
+        let first = handle.build_output_changeset(&state);
+        assert_eq!(first.changed.len(), 1);
+
+        let state = handle.state_doc.read_state();
+        let unchanged = handle.build_output_changeset(&state);
+        assert!(unchanged.is_empty());
+
+        handle.set_blob_port(49152);
+        assert!(
+            handle.prev_output_by_id.is_empty(),
+            "identity-affecting changes must invalidate the output diff basis"
+        );
+
+        let state = handle.state_doc.read_state();
+        let reemitted = handle.build_output_changeset(&state);
+        assert_eq!(reemitted.changed.len(), 1);
+        assert_eq!(reemitted.changed[0].0, "out-1");
+    }
+
+    #[test]
+    fn output_cache_key_requires_non_empty_output_id() {
+        let handle =
+            NotebookHandle::create_bootstrap("user:dev:test/browser:a").expect("create handle");
+
+        let missing = handle.stamp_output_cache_key(json!({
+            "output_type": "stream",
+            "text": {"inline": "missing id\n"},
+        }));
+        assert!(missing.get(RUNT_OUTPUT_CACHE_KEY).is_none());
+
+        let empty = handle.stamp_output_cache_key(json!({
+            "output_type": "stream",
+            "output_id": "",
+            "text": {"inline": "empty id\n"},
+        }));
+        assert!(empty.get(RUNT_OUTPUT_CACHE_KEY).is_none());
     }
 
     #[test]

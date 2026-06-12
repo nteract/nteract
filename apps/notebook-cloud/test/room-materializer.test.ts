@@ -450,6 +450,7 @@ describe("RoomHostHandle", () => {
       output_id: "out-stdout-1",
       name: "stdout",
       text: "hosted runtime\n",
+      _runt_output_cache_key: "output:out-stdout-1:0:1",
     });
   });
 
