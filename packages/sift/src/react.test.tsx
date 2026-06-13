@@ -266,6 +266,51 @@ describe("SiftTable", () => {
     vi.useFakeTimers();
   });
 
+  it("keeps sampled Arrow stream manifests provisional with the total row hint", async () => {
+    vi.useRealTimers();
+    const chunkBytes = new Uint8Array([1, 2, 3, 4]);
+    const milestones: string[] = [];
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true,
+        arrayBuffer: async () => chunkBytes.buffer,
+      }),
+    );
+
+    const { container, unmount } = render(
+      <SiftTable
+        source={{
+          kind: "arrow-stream-manifest",
+          manifest: {
+            summary: {
+              included_rows: 2,
+              total_rows: 5,
+              sampled: true,
+            },
+            chunks: [{ url: "http://127.0.0.1:9000/blob/chunk", row_count: 2 }],
+            complete: true,
+          },
+        }}
+        onLoadMilestone={(milestone) => milestones.push(milestone.phase)}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
+      expect(container.querySelector(".sift-table-container")).not.toBeNull();
+      expect((container.querySelector(".sift-stat-rows") as HTMLElement)?.dataset.value).toBe(
+        "2 of 5 rows loaded",
+      );
+    });
+
+    expect(predicateModule.finish_arrow_stream_store).not.toHaveBeenCalled();
+    expect(milestones).toContain("partial-row-set");
+
+    unmount();
+    vi.unstubAllGlobals();
+    vi.useFakeTimers();
+  });
+
   it("fetches trailing Arrow stream chunks sequentially after each append", async () => {
     vi.useRealTimers();
     const fetchResolvers: ((response: {
