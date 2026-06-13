@@ -18,6 +18,8 @@ import {
   writeSmokeJsonReport,
 } from "./smoke-paths.mjs";
 
+const smokePhaseTimings = [];
+
 if (isMainModule()) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
@@ -57,6 +59,10 @@ async function main() {
   const source =
     process.env.NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_CODE ??
     `print(${JSON.stringify(runMarker)})`;
+  const runOutputProbes = parseBoolean(
+    process.env.NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_OUTPUT_PROBES,
+    false,
+  );
   const title =
     process.env.NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_TITLE ??
     `Toolbar attach smoke ${new Date().toISOString()}`;
@@ -140,6 +146,7 @@ async function main() {
     viewerUrl,
     workstationDisplayName: scalarString(workstation.display_name) ?? workstationId,
     workstationId,
+    runOutputProbes,
   });
   const report = {
     ok: true,
@@ -159,6 +166,7 @@ async function main() {
       wasDefaultBeforeSmoke: workstationWasDefault,
       status: scalarString(workstation.status),
     },
+    phaseTimings: smokePhaseTimings,
     checks: [
       "workstation_registered_online",
       workstationWasDefault
@@ -182,6 +190,7 @@ async function runBrowserSmoke({
   viewerUrl,
   workstationDisplayName,
   workstationId,
+  runOutputProbes,
 }) {
   const url = new URL(viewerUrl);
   const browser = await chromium.launch({ headless: true });
@@ -209,6 +218,7 @@ async function runBrowserSmoke({
         timeoutMs,
         url,
         workstationDisplayName,
+        runOutputProbes,
       });
     } finally {
       await ownerContext.close().catch(() => {});
@@ -230,6 +240,9 @@ async function runBrowserSmoke({
         "toolbar_start_compute_clicked",
         "execute_button_rendered_after_compute_start",
         "cell_output_observed_after_execute",
+        ...(runOutputProbes
+          ? ["error_output_probe_observed", "display_update_output_probe_observed"]
+          : []),
         "restart_button_clicked",
         "cell_output_observed_after_restart",
         "restart_run_all_button_clicked",
@@ -259,6 +272,7 @@ async function runOwnerAttachAndExecuteSmoke({
   timeoutMs,
   url,
   workstationDisplayName,
+  runOutputProbes,
 }) {
   const page = await context.newPage();
   const events = collectBrowserDiagnostics(page);
@@ -320,6 +334,9 @@ async function runOwnerAttachAndExecuteSmoke({
   );
   const afterReloadKernelStatus = await readKernelStatus(page);
   assertKernelStatusNotInitializing(afterReloadKernelStatus, "after reload execution");
+  const outputProbes = runOutputProbes
+    ? await runOutputTimingProbes(page, runMarker, timeoutMs)
+    : null;
 
   if (screenshotPath) {
     await saveSmokeScreenshot(page, screenshotPath);
@@ -335,9 +352,57 @@ async function runOwnerAttachAndExecuteSmoke({
     afterReloadRunAria,
     beforeReloadRunAria,
     events,
+    outputProbes,
     restartMarker,
     restartRunAllMarkers,
     screenshotPath: screenshotPath ?? null,
+  };
+}
+
+async function runOutputTimingProbes(page, runMarker, timeoutMs) {
+  const probeBase = `${runMarker} output probe`;
+  const errorMarker = `${probeBase} error complete`;
+  const displayMarker = `${probeBase} display update complete`;
+  const cells = await ensureCodeCellCount(page, 4, timeoutMs);
+  const errorCell = cells.nth(2);
+  const displayCell = cells.nth(3);
+
+  await setCellSource(
+    errorCell,
+    [
+      "raise RuntimeError(",
+      `  ${JSON.stringify(errorMarker.slice(0, Math.ceil(errorMarker.length / 2)))} +`,
+      `  ${JSON.stringify(errorMarker.slice(Math.ceil(errorMarker.length / 2)))}`,
+      ")",
+    ].join("\n"),
+  );
+  await executeAndWaitForMarker(page, errorCell, errorMarker, timeoutMs);
+  const afterErrorKernelStatus = await readKernelStatus(page);
+  assertKernelStatusNotInitializing(afterErrorKernelStatus, "after error output probe");
+
+  await setCellSource(
+    displayCell,
+    [
+      "from IPython.display import display, update_display",
+      "display('display probe starting', display_id='nteract_latency_probe')",
+      "for index in range(4):",
+      "    update_display(f'display probe update {index}', display_id='nteract_latency_probe')",
+      `update_display(${JSON.stringify(
+        displayMarker.slice(0, Math.ceil(displayMarker.length / 2)),
+      )} + ${JSON.stringify(
+        displayMarker.slice(Math.ceil(displayMarker.length / 2)),
+      )}, display_id='nteract_latency_probe')`,
+    ].join("\n"),
+  );
+  await executeAndWaitForMarkerEverywhere(page, displayCell, displayMarker, timeoutMs);
+  const afterDisplayKernelStatus = await readKernelStatus(page);
+  assertKernelStatusNotInitializing(afterDisplayKernelStatus, "after display-update output probe");
+
+  return {
+    afterDisplayKernelStatus,
+    afterErrorKernelStatus,
+    displayMarker,
+    errorMarker,
   };
 }
 
@@ -554,6 +619,22 @@ async function assertViewModeDoesNotExposeExecutionControls({
 
 async function authenticatedContext(browser, { origin, scope, tokenStorageJson }) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const token = JSON.parse(tokenStorageJson);
+  const accessToken = typeof token.accessToken === "string" ? token.accessToken : null;
+  if (!accessToken) {
+    throw new Error("authenticated browser context requires an OIDC accessToken");
+  }
+  const sessionResponse = await context.request.post(new URL("/api/auth/session", origin).href, {
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+  if (!sessionResponse.ok()) {
+    throw new Error(
+      `establish browser app session failed: ${sessionResponse.status()} ${await sessionResponse.text()}`,
+    );
+  }
   await context.addInitScript(
     ({ expectedOrigin, requestedScope, tokenJson }) => {
       try {
@@ -588,9 +669,21 @@ async function enterEditMode(page, timeoutMs) {
 }
 
 async function smokePhase(label, operation) {
+  const startedAt = Date.now();
   try {
-    return await operation();
+    const result = await operation();
+    smokePhaseTimings.push({
+      elapsed_ms: Date.now() - startedAt,
+      label,
+      ok: true,
+    });
+    return result;
   } catch (error) {
+    smokePhaseTimings.push({
+      elapsed_ms: Date.now() - startedAt,
+      label,
+      ok: false,
+    });
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${label}: ${message}`);
   }
@@ -821,6 +914,26 @@ async function executeAndWaitForMarker(
   await waitForText(page, marker, timeout);
 }
 
+async function executeAndWaitForMarkerEverywhere(
+  page,
+  cell,
+  marker,
+  timeout,
+  { requireOrdinalAdvance = true } = {},
+) {
+  await waitForCanExecute(page, timeout);
+  const executeButton = await visibleExecuteButton(cell, timeout);
+  const beforeAria = await readExecuteButtonAria(cell, "read pre-execution button state", timeout);
+  const beforeOrdinal = executionOrdinal(beforeAria);
+  await smokePhase("click cell execute button", async () => {
+    await executeButton.click({ timeout });
+  });
+  if (requireOrdinalAdvance) {
+    await waitForExecutionOrdinalAdvance(page, beforeOrdinal, timeout);
+  }
+  await waitForTextEverywhere(page, marker, timeout);
+}
+
 async function restartComputeAndWait(page, timeout) {
   const restartButton = page.getByTestId("restart-kernel-button");
   await smokePhase("wait for restart button", async () => {
@@ -915,6 +1028,45 @@ async function waitForText(page, text, timeout) {
     text,
     timeout,
   );
+}
+
+async function waitForTextEverywhere(page, text, timeout) {
+  await smokePhase(
+    `wait for text ${JSON.stringify(textSample(text))} in page or frames`,
+    async () => {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        if (await pageOrFrameTextIncludes(page, text)) {
+          return;
+        }
+        await page.waitForTimeout(100);
+      }
+      throw new Error(`text was not found in page or frames: ${text}`);
+    },
+  );
+}
+
+async function pageOrFrameTextIncludes(page, text) {
+  const bodyIncludes = await page
+    .evaluate((expected) => (document.body.textContent ?? "").includes(expected), text)
+    .catch(() => false);
+  if (bodyIncludes) {
+    return true;
+  }
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) {
+      continue;
+    }
+    const frameIncludes = await frame
+      .locator("body")
+      .textContent({ timeout: 100 })
+      .then((value) => (value ?? "").includes(text))
+      .catch(() => false);
+    if (frameIncludes) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function waitForExecutionOrdinalAdvance(page, beforeOrdinal, timeout) {
@@ -1037,6 +1189,11 @@ function parsePositiveInteger(value, label, fallback) {
     throw new Error(`${label} must be a positive integer`);
   }
   return parsed;
+}
+
+function parseBoolean(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return /^(1|true|yes|on)$/i.test(value);
 }
 
 function isMainModule() {

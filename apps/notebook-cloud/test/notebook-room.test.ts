@@ -1430,6 +1430,65 @@ describe("NotebookRoom materialized sync routing", () => {
     );
   });
 
+  it("replaces duplicate runtime peers for the same workstation only", () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const sameWorkstationIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:old&scope=runtime_peer",
+      ),
+    );
+    const otherWorkstationIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:other&scope=runtime_peer",
+      ),
+    );
+    const incomingIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:new&scope=runtime_peer",
+      ),
+    );
+    const sameWorkstationSocket = new FakeSocket();
+    const otherWorkstationSocket = new FakeSocket();
+    const incomingSocket = new FakeSocket();
+    const sameWorkstationPeer = {
+      id: "runtime-old",
+      socket: sameWorkstationSocket.asCloudflareWebSocket(),
+      identity: sameWorkstationIdentity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      workstation: { workstationId: "ws-lab2" },
+      consecutiveRejectedFrames: 0,
+    };
+    const otherWorkstationPeer = {
+      id: "runtime-other",
+      socket: otherWorkstationSocket.asCloudflareWebSocket(),
+      identity: otherWorkstationIdentity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      workstation: { workstationId: "ws-other" },
+      consecutiveRejectedFrames: 0,
+    };
+    const incomingPeer = {
+      id: "runtime-new",
+      socket: incomingSocket.asCloudflareWebSocket(),
+      identity: incomingIdentity,
+      connectedAt: "2026-05-22T00:00:01.000Z",
+      workstation: { workstationId: "ws-lab2" },
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(sameWorkstationPeer.id, sameWorkstationPeer);
+    harness.peers.set(otherWorkstationPeer.id, otherWorkstationPeer);
+    harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+
+    harness.removeDuplicateRuntimePeers?.("demo", incomingPeer);
+
+    assert.equal(harness.peers.has(sameWorkstationPeer.id), false);
+    assert.equal(sameWorkstationSocket.closed, true);
+    assert.equal(sameWorkstationSocket.closeCode, 1000);
+    assert.equal(sameWorkstationSocket.closeReason, "replaced by newer runtime peer");
+    assert.equal(harness.peers.has(otherWorkstationPeer.id), true);
+    assert.equal(otherWorkstationSocket.closed, false);
+  });
+
   it("breaks equal runtime-peer timestamps in favor of the later connection", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const ownerIdentity = authenticateDevRequest(
@@ -2172,6 +2231,7 @@ interface RoomHarness {
     notebookId: string,
     workstation: PeerForTest["workstation"],
   ): Promise<string | null>;
+  removeDuplicateRuntimePeers?(notebookId: string, incomingPeer: PeerForTest): void;
   publishRuntimePeerAttachment(notebookId: string, peer: PeerForTest): Promise<void>;
   syncPeerFromRoomHost(notebookId: string, peer: PeerForTest): Promise<void>;
   handleMessage(
