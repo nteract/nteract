@@ -318,6 +318,20 @@ describe("Worker artifact routes", () => {
     }
   });
 
+  it("short-circuits notebook shell HEAD requests before asset bootstrap", async () => {
+    const seenAssetPaths: string[] = [];
+    const response = await worker.fetch(
+      new Request("http://localhost/n/head-demo/Example", { method: "HEAD" }),
+      fakeEnv({ ASSETS: fakeNotebookRouteAssets(seenAssetPaths) }),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("Content-Type") ?? "", /text\/html/);
+    assert.equal(await response.text(), "");
+    assert.deepEqual(seenAssetPaths, []);
+  });
+
   it("serves loopback local dev auth bootstrap without exposing external credentials", async () => {
     const response = await worker.fetch(
       new Request("http://127.0.0.1/local-auth?user=alice&scope=owner&next=/n"),

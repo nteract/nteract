@@ -4224,6 +4224,10 @@ async function viewer(
   headsHash?: string,
   routeTitleSegment?: string,
 ): Promise<Response> {
+  if (request.method === "HEAD") {
+    return viewerShellHead(env);
+  }
+
   const shellMetadata = await publicViewerShellMetadata(
     env,
     notebookId,
@@ -4295,6 +4299,10 @@ function rootNotebookListRedirect(request: Request): Response {
 }
 
 async function notebookListViewer(request: Request, env: Env): Promise<Response> {
+  if (request.method === "HEAD") {
+    return viewerShellHead(env);
+  }
+
   const bootstrap = await notebookListBootstrap(request, env);
   const resourceHints = notebookListBootstrapHasNotebooks(bootstrap)
     ? {
@@ -4319,6 +4327,10 @@ async function notebookListViewer(request: Request, env: Env): Promise<Response>
 }
 
 function oidcCallbackViewer(request: Request, env: Env): Response {
+  if (request.method === "HEAD") {
+    return viewerShellHead(env);
+  }
+
   return responseForRequestMethod(
     request,
     viewerShell(
@@ -4338,6 +4350,20 @@ function responseForRequestMethod(request: Request, response: Response): Respons
     return response;
   }
   return new Response(null, response);
+}
+
+function viewerShellHead(env: Env): Response {
+  return withCors(
+    withBrowserSecurityHeaders(
+      new Response(null, {
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "text/html; charset=utf-8",
+        },
+      }),
+      viewerContentSecurityPolicy(env),
+    ),
+  );
 }
 
 interface ViewerShellMetadata {
