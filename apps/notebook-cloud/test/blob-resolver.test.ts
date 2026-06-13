@@ -129,6 +129,32 @@ describe("notebook cloud blob resolver", () => {
     ]);
   });
 
+  it("lets ordinary authenticated blob fetches use the browser cache", async () => {
+    const fetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    const resolver = createNotebookCloudBlobResolver({
+      baseUrl: "https://viewer.example.test/n/notebook-1",
+      blobBasePath: "/api/n/notebook-1/blobs/",
+      authenticatedBinaryDisplayUrls: true,
+      fetchImpl: async (input, init) => {
+        fetchCalls.push({ input, init });
+        return new Response("<table></table>", {
+          headers: { "Content-Type": "text/html" },
+        });
+      },
+    });
+
+    const response = await resolver.fetch({ blob: "sha256:html", media_type: "text/html" });
+
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "<table></table>");
+    assert.deepEqual(fetchCalls, [
+      {
+        input: "https://viewer.example.test/api/n/notebook-1/blobs/sha256%3Ahtml",
+        init: undefined,
+      },
+    ]);
+  });
+
   it("coalesces concurrent protected binary display URL requests", async () => {
     const originalFileReader = globalThis.FileReader;
     class TestFileReader {

@@ -28,7 +28,6 @@ export function createNotebookCloudBlobResolver(input: {
     url,
     ...(authenticatedBinaryDisplayUrls
       ? {
-          requestInit: { cache: "no-store" },
           async displayUrl(ref: BlobRef, mediaType?: string) {
             const cacheKey = displayUrlCacheKey(ref, mediaType);
             const cached = displayUrls.get(cacheKey);
