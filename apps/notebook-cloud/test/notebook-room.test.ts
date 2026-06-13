@@ -1200,23 +1200,27 @@ describe("NotebookRoom peer lifecycle", () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);
     const harness = roomHarness(room);
+    let attachmentReads = 0;
     harness.materializers.set("demo", {
       receiveFrame: async () => noopMaterializedResult(),
       checkpoint: async () => undefined,
-      getWorkstationAttachment: async () => ({
-        workstation_id: "lab2",
-        display_name: "lab2 workstation",
-        provider: "runtime_peer",
-        default_environment_label: "Current Python",
-        environment_policy: "current_python",
-        status: "connecting",
-        status_message: "lab2 accepted the request",
-        cpu_count: null,
-        memory_bytes: null,
-        working_directory: "/home/ubuntu/codex/nteract",
-        runtime_session_id: "job-123",
-        updated_at: "2026-06-07T00:00:00.000Z",
-      }),
+      getWorkstationAttachment: async () => {
+        attachmentReads += 1;
+        return {
+          workstation_id: "lab2",
+          display_name: "lab2 workstation",
+          provider: "runtime_peer",
+          default_environment_label: "Current Python",
+          environment_policy: "current_python",
+          status: "connecting",
+          status_message: "lab2 accepted the request",
+          cpu_count: null,
+          memory_bytes: null,
+          working_directory: "/home/ubuntu/codex/nteract",
+          runtime_session_id: "job-123",
+          updated_at: "2026-06-07T00:00:00.000Z",
+        };
+      },
       setWorkstationAttachment: async () => noopMaterializedResult(),
     } as never);
 
@@ -1242,6 +1246,95 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.match(String(missingSession), /does not match selected runtime session job-123/);
     assert.match(String(mismatched), /does not match selected workstation lab2/);
     assert.match(String(missing), /runtime-peer does not match selected workstation lab2/);
+    assert.equal(
+      attachmentReads,
+      1,
+      "selected runtime session is cached after the first attachment read",
+    );
+  });
+
+  it("refreshes the selected runtime session cache when a runtime peer publishes", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    let attachmentReads = 0;
+    let publishedAttachment: unknown;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      getWorkstationAttachment: async () => {
+        attachmentReads += 1;
+        return {
+          workstation_id: "lab2",
+          display_name: "lab2 workstation",
+          provider: "runtime_peer",
+          default_environment_label: "Current Python",
+          environment_policy: "current_python",
+          status: "ready",
+          status_message: null,
+          cpu_count: null,
+          memory_bytes: null,
+          working_directory: "/home/ubuntu/codex/nteract",
+          runtime_session_id: "old-job",
+          updated_at: "2026-06-07T00:00:00.000Z",
+        };
+      },
+      setWorkstationAttachment: async (attachment: unknown) => {
+        publishedAttachment = attachment;
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+        };
+      },
+    } as never);
+
+    assert.equal(
+      await harness.runtimePeerAuthorityError?.("demo", {
+        workstationId: "lab2",
+        runtimeSessionId: "old-job",
+      }),
+      null,
+    );
+
+    await harness.publishRuntimePeerAttachment("demo", {
+      id: "runtime",
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+        ),
+      ),
+      connectedAt: "2026-06-07T00:00:01.000Z",
+      workstation: {
+        workstationId: "lab2",
+        runtimeSessionId: "new-job",
+        displayName: "lab2",
+      },
+      consecutiveRejectedFrames: 0,
+    });
+
+    assert.equal(
+      (publishedAttachment as { runtime_session_id?: string }).runtime_session_id,
+      "new-job",
+    );
+    assert.match(
+      String(
+        await harness.runtimePeerAuthorityError?.("demo", {
+          workstationId: "lab2",
+          runtimeSessionId: "old-job",
+        }),
+      ),
+      /does not match selected runtime session new-job/,
+    );
+    assert.equal(
+      await harness.runtimePeerAuthorityError?.("demo", {
+        workstationId: "lab2",
+        runtimeSessionId: "new-job",
+      }),
+      null,
+    );
+    assert.equal(attachmentReads, 1, "runtime publish refreshes the cache without rereading");
   });
 });
 
