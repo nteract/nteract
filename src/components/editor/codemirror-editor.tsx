@@ -30,6 +30,8 @@ export interface CodeMirrorEditorRef {
   getEditor: () => EditorView | null;
 }
 
+type CodeMirrorContentAttributes = Record<string, string>;
+
 /**
  * Annotation marking a transaction as an external (inbound) change.
  * The editor's updateListener skips the onValueChange callback for these.
@@ -64,6 +66,8 @@ export interface CodeMirrorEditorProps {
   lineWrapping?: boolean;
   /** Additional CodeMirror extensions */
   extensions?: Extension[];
+  /** Additional DOM attributes for CodeMirror's editable content element */
+  contentAttributes?: Readonly<CodeMirrorContentAttributes>;
   /** Replace default extensions entirely */
   baseExtensions?: Extension[];
   /** Read-only mode */
@@ -76,6 +80,12 @@ export interface CodeMirrorEditorProps {
 
 function readOnlyExtensions(readOnly: boolean): Extension[] {
   return readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [];
+}
+
+function contentAttributeExtensions(
+  contentAttributes?: Readonly<CodeMirrorContentAttributes>,
+): Extension[] {
+  return contentAttributes ? [EditorView.contentAttributes.of({ ...contentAttributes })] : [];
 }
 
 /**
@@ -105,6 +115,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
       maxHeight,
       lineWrapping = false,
       extensions: additionalExtensions,
+      contentAttributes,
       baseExtensions = defaultExtensions,
       readOnly = false,
       theme = "system",
@@ -128,6 +139,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
     const placeholderCompartment = useRef(new Compartment());
     const lineWrappingCompartment = useRef(new Compartment());
     const readOnlyCompartment = useRef(new Compartment());
+    const contentAttributesCompartment = useRef(new Compartment());
     const additionalCompartment = useRef(new Compartment());
 
     // Track dark mode state for "system" theme
@@ -254,6 +266,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
           placeholderCompartment.current.of(placeholder ? placeholderExt(placeholder) : []),
           lineWrappingCompartment.current.of(lineWrapping ? EditorView.lineWrapping : []),
           readOnlyCompartment.current.of(readOnlyExtensions(readOnly)),
+          contentAttributesCompartment.current.of(contentAttributeExtensions(contentAttributes)),
           additionalCompartment.current.of(additionalExtensions ?? []),
           ...maxHeightTheme,
           updateListener,
@@ -348,6 +361,14 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
         effects: readOnlyCompartment.current.reconfigure(readOnlyExtensions(readOnly)),
       });
     }, [readOnly]);
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: contentAttributesCompartment.current.reconfigure(
+          contentAttributeExtensions(contentAttributes),
+        ),
+      });
+    }, [contentAttributes]);
 
     useEffect(() => {
       const view = viewRef.current;

@@ -102,7 +102,11 @@ vi.mock("@/components/cell/CellContainer", () => ({
 
 vi.mock("@/components/editor/codemirror-editor", () => ({
   CodeMirrorEditor: React.forwardRef(function CodeMirrorEditor(
-    props: { initialValue?: string; keyMap?: Array<{ key: string; run: () => boolean }> },
+    props: {
+      contentAttributes?: Readonly<Record<string, string>>;
+      initialValue?: string;
+      keyMap?: Array<{ key: string; run: () => boolean }>;
+    },
     ref,
   ) {
     React.useImperativeHandle(ref, () => ({
@@ -125,6 +129,9 @@ vi.mock("@/components/editor/codemirror-editor", () => ({
     return (
       <div
         data-testid="markdown-editor"
+        data-autocapitalize={props.contentAttributes?.autocapitalize}
+        data-autocorrect={props.contentAttributes?.autocorrect}
+        data-spellcheck={props.contentAttributes?.spellcheck}
         tabIndex={0}
         onKeyDown={(event) => {
           const key = event.ctrlKey && event.key === "Enter" ? "Ctrl-Enter" : event.key;
@@ -561,6 +568,19 @@ describe("MarkdownCell theme sync", () => {
     await waitFor(() => {
       expect(preview.className).toContain("hidden");
     });
+  });
+
+  it("enables browser spellcheck and autocorrect for markdown editing", () => {
+    mockIsFocused = true;
+
+    const { getByTestId } = render(
+      <MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const editor = getByTestId("markdown-editor");
+    expect(editor.getAttribute("data-autocapitalize")).toBe("sentences");
+    expect(editor.getAttribute("data-autocorrect")).toBe("on");
+    expect(editor.getAttribute("data-spellcheck")).toBe("true");
   });
 
   it("Ctrl+Enter exits edit mode for markdown cells", async () => {

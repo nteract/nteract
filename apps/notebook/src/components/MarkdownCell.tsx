@@ -59,6 +59,11 @@ import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 const handleIframeError = (err: { message: string; stack?: string }) =>
   logger.error("[MarkdownCell] iframe error:", err);
 const EMPTY_HEADING_ANCHORS: readonly MarkdownHeadingAnchor[] = [];
+const MARKDOWN_EDITOR_CONTENT_ATTRIBUTES = {
+  autocapitalize: "sentences",
+  autocorrect: "on",
+  spellcheck: "true",
+} as const;
 const MARKDOWN_PREVIEW_MIN_HEIGHT = 24;
 const MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT = 720;
 
@@ -835,6 +840,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 onSelectionChange={noteEditorSourcePosition}
                 keyMap={keyMap}
                 extensions={editorExtensions}
+                contentAttributes={MARKDOWN_EDITOR_CONTENT_ATTRIBUTES}
                 placeholder="Enter markdown..."
                 className="min-h-[2rem]"
                 autoFocus={editing}

@@ -67,6 +67,30 @@ describe("CodeMirrorEditor", () => {
     expect(editorView?.state.facet(EditorState.readOnly)).toBe(true);
   });
 
+  it("applies custom content attributes to the editable surface", async () => {
+    render(
+      <CodeMirrorEditor
+        initialValue="markdown words"
+        contentAttributes={{
+          autocapitalize: "sentences",
+          autocorrect: "on",
+          spellcheck: "true",
+        }}
+        theme="light"
+      />,
+    );
+
+    const content = await waitFor(() => {
+      const el = document.querySelector(".cm-content");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+
+    expect(content.getAttribute("autocapitalize")).toBe("sentences");
+    expect(content.getAttribute("autocorrect")).toBe("on");
+    expect(content.getAttribute("spellcheck")).toBe("true");
+  });
+
   it("reports primary cursor position changes", async () => {
     const ref = createRef<CodeMirrorEditorRef>();
     const onSelectionChange = vi.fn();
