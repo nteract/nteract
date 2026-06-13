@@ -106,6 +106,7 @@ import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
 import {
   projectCloudAccessRequestNotice,
   projectCloudAccessRequestTransition,
+  shouldLoadOwnCloudAccessRequest,
   type CloudAccessRequestNoticeProjection,
 } from "./cloud-access-request-state";
 import {
@@ -568,6 +569,13 @@ export function NotebookViewer({
     connectionScope,
   });
   const effectiveAccessRequest = catalogGrantsDocumentEdit ? null : latestAccessRequest;
+  const shouldLoadOwnEditAccessRequest = shouldLoadOwnCloudAccessRequest({
+    canUseAuthenticatedCloudApi,
+    catalogGrantsDocumentEdit,
+    connectionScope,
+    hasBrowserAppIdentity,
+    selectedMode: selectedInteractionMode,
+  });
   const selectedInteractionModeForAccess = cloudNotebookInteractionModeForAccess({
     accessRequestStatus: effectiveAccessRequest?.status,
     accessScope: accessConnectionScope,
@@ -949,11 +957,7 @@ export function NotebookViewer({
   );
   const loadOwnAccessRequest = useCallback(
     async (options?: { signal?: AbortSignal }) => {
-      if (
-        connectionScope !== "viewer" ||
-        !canUseAuthenticatedCloudApi ||
-        catalogGrantsDocumentEdit
-      ) {
+      if (!shouldLoadOwnEditAccessRequest) {
         return;
       }
 
@@ -983,37 +987,21 @@ export function NotebookViewer({
     [
       applyLatestAccessRequest,
       browserApiAuthState,
-      canUseAuthenticatedCloudApi,
-      catalogGrantsDocumentEdit,
       config.accessRequestsEndpoint,
-      connectionScope,
+      shouldLoadOwnEditAccessRequest,
     ],
   );
   useEffect(() => {
-    if (connectionScope !== "viewer" || !hasBrowserAppIdentity || catalogGrantsDocumentEdit) {
+    if (!shouldLoadOwnEditAccessRequest) {
       setLatestAccessRequest(null);
-      return;
-    }
-    if (!canUseAuthenticatedCloudApi) {
       return;
     }
     const controller = new AbortController();
     void loadOwnAccessRequest({ signal: controller.signal });
     return () => controller.abort();
-  }, [
-    canUseAuthenticatedCloudApi,
-    catalogGrantsDocumentEdit,
-    connectionScope,
-    hasBrowserAppIdentity,
-    loadOwnAccessRequest,
-  ]);
+  }, [loadOwnAccessRequest, shouldLoadOwnEditAccessRequest]);
   useEffect(() => {
-    if (
-      effectiveAccessRequest?.status !== "pending" ||
-      connectionScope !== "viewer" ||
-      !canUseAuthenticatedCloudApi ||
-      catalogGrantsDocumentEdit
-    ) {
+    if (effectiveAccessRequest?.status !== "pending" || !shouldLoadOwnEditAccessRequest) {
       return;
     }
 
@@ -1040,13 +1028,7 @@ export function NotebookViewer({
       window.clearInterval(intervalId);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [
-    canUseAuthenticatedCloudApi,
-    catalogGrantsDocumentEdit,
-    connectionScope,
-    effectiveAccessRequest?.status,
-    loadOwnAccessRequest,
-  ]);
+  }, [effectiveAccessRequest?.status, loadOwnAccessRequest, shouldLoadOwnEditAccessRequest]);
   const requestCloudEditAccess = useCallback(() => {
     void (async () => {
       setAccessRequestError(null);

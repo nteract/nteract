@@ -26,6 +26,14 @@ export interface ProjectCloudAccessRequestTransitionOptions {
   selectedMode: CloudNotebookUrlMode;
 }
 
+export interface CloudAccessRequestLoadProjectionInput {
+  canUseAuthenticatedCloudApi: boolean;
+  catalogGrantsDocumentEdit: boolean;
+  connectionScope: string | null;
+  hasBrowserAppIdentity: boolean;
+  selectedMode: CloudNotebookUrlMode;
+}
+
 const NO_CLOUD_ACCESS_REQUEST_TRANSITION: CloudAccessRequestTransition = Object.freeze({
   requestedScope: null,
   selectedMode: null,
@@ -86,6 +94,22 @@ export function cloudPrototypeAuthCarriesRequestedScope(
     return false;
   }
   return mode === "oidc" || mode === "invalid";
+}
+
+export function shouldLoadOwnCloudAccessRequest({
+  canUseAuthenticatedCloudApi,
+  catalogGrantsDocumentEdit,
+  connectionScope,
+  hasBrowserAppIdentity,
+  selectedMode,
+}: CloudAccessRequestLoadProjectionInput): boolean {
+  return (
+    selectedMode === "edit" &&
+    connectionScope === "viewer" &&
+    hasBrowserAppIdentity &&
+    canUseAuthenticatedCloudApi &&
+    !catalogGrantsDocumentEdit
+  );
 }
 
 export function projectCloudAccessRequestNotice({

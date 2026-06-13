@@ -4,6 +4,7 @@ import {
   cloudPrototypeAuthCarriesRequestedScope,
   projectCloudAccessRequestNotice,
   projectCloudAccessRequestTransition,
+  shouldLoadOwnCloudAccessRequest,
 } from "../viewer/cloud-access-request-state";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 
@@ -179,6 +180,49 @@ describe("cloud access-request state projection", () => {
         title: "Edit request failed.",
         message: "network failed",
       },
+    );
+  });
+
+  it("loads own edit-request state only for explicit editable viewer intent", () => {
+    assert.equal(
+      shouldLoadOwnCloudAccessRequest({
+        canUseAuthenticatedCloudApi: true,
+        catalogGrantsDocumentEdit: false,
+        connectionScope: "viewer",
+        hasBrowserAppIdentity: true,
+        selectedMode: "edit",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldLoadOwnCloudAccessRequest({
+        canUseAuthenticatedCloudApi: true,
+        catalogGrantsDocumentEdit: false,
+        connectionScope: "viewer",
+        hasBrowserAppIdentity: true,
+        selectedMode: "view",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldLoadOwnCloudAccessRequest({
+        canUseAuthenticatedCloudApi: true,
+        catalogGrantsDocumentEdit: true,
+        connectionScope: "viewer",
+        hasBrowserAppIdentity: true,
+        selectedMode: "edit",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldLoadOwnCloudAccessRequest({
+        canUseAuthenticatedCloudApi: true,
+        catalogGrantsDocumentEdit: false,
+        connectionScope: "editor",
+        hasBrowserAppIdentity: true,
+        selectedMode: "edit",
+      }),
+      false,
     );
   });
 });
