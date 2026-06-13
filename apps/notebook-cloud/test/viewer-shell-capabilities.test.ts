@@ -70,6 +70,10 @@ test("cloud shell capabilities grant editors full cell and structure editing wit
   assert.equal(capabilities.access.actor?.operator.kind, "browser");
   assert.equal(capabilities.auth.canUseAuthenticatedIdentity, true);
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
+  assert.equal(
+    capabilities.runtime.target?.detail,
+    "Only the notebook owner can attach compute to run cells in this notebook.",
+  );
 });
 
 test("cloud shell capabilities wait for host mutation support before activating editor mode", () => {
@@ -102,6 +106,10 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(withoutRuntime.runtime.target?.id, "workstation:none");
   assert.equal(withoutRuntime.runtime.target?.label, "No compute session");
   assert.equal(withoutRuntime.runtime.target?.status, "offline");
+  assert.equal(
+    withoutRuntime.runtime.target?.detail,
+    "Start compute from a user-owned workstation to run cells in this notebook.",
+  );
   assert.equal(withoutRuntime.runtime.target?.defaultEnvironmentLabel, "Not running");
   assert.equal(withoutRuntime.canExecute, false);
 
@@ -151,6 +159,19 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(editorWithRuntime.runtime.target?.label, "Connected workstation");
   assert.equal(editorWithRuntime.runtime.target?.runtimePeerCount, 1);
   assert.equal(editorWithRuntime.canExecute, false);
+
+  const viewerWithoutRuntime = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "viewer"),
+    connectionScope: "viewer",
+    hasCodeCells: true,
+  });
+  assert.equal(viewerWithoutRuntime.runtime.executionAvailable, false);
+  assert.equal(viewerWithoutRuntime.runtime.target?.id, "workstation:none");
+  assert.equal(
+    viewerWithoutRuntime.runtime.target?.detail,
+    "Only the notebook owner can attach compute to run cells in this notebook.",
+  );
+  assert.equal(viewerWithoutRuntime.canExecute, false);
 
   const ownerWithRuntime = cloudNotebookShellCapabilities({
     authState: authState("oidc", "owner"),

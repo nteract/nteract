@@ -122,6 +122,7 @@ export function cloudNotebookShellCapabilities({
     canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
     needsAttention: authNeedsAttention,
   };
+  const canChooseHostedWorkstation = accessLevel === "owner" && auth.canUseAuthenticatedIdentity;
   const access = {
     level: accessLevel,
     source: "cloud" as const,
@@ -142,6 +143,7 @@ export function cloudNotebookShellCapabilities({
       runtimePeerCount,
       kernelStatusLabel,
       workstationAttachment,
+      canChooseHostedWorkstation,
     }),
   };
   const accessActor = notebookActorProjectionWithPrincipalImage(
@@ -191,12 +193,14 @@ function cloudRuntimeTarget({
   runtimePeerCount,
   kernelStatusLabel,
   workstationAttachment,
+  canChooseHostedWorkstation,
 }: {
   isRuntimePeer: boolean;
   runtimeAvailable: boolean;
   runtimePeerCount: number;
   kernelStatusLabel: string | null;
   workstationAttachment: WorkstationAttachmentState | null;
+  canChooseHostedWorkstation: boolean;
 }): NotebookShellRuntimeTargetProjection {
   const visibleRuntimePeerCount = Math.max(0, Math.floor(runtimePeerCount));
   if (isRuntimePeer) {
@@ -241,7 +245,9 @@ function cloudRuntimeTarget({
     status: "offline",
     label: "No compute session",
     statusLabel: "Offline",
-    detail: "Start compute from a user-owned workstation to run cells in this notebook.",
+    detail: canChooseHostedWorkstation
+      ? "Start compute from a user-owned workstation to run cells in this notebook."
+      : "Only the notebook owner can attach compute to run cells in this notebook.",
     providerLabel: "Cloud room",
     defaultEnvironmentLabel: "Not running",
     environmentLabel: "Not running",
