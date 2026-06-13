@@ -16,6 +16,7 @@ import {
   projectNotebookCommandRuntimeActions,
   type NotebookCommandRuntimeState,
   type NotebookShellCapabilities,
+  type NotebookShellRuntimeTargetProjection,
 } from "./capabilities";
 
 export type { NotebookCommandRuntimeState } from "./capabilities";
@@ -55,6 +56,7 @@ export interface NotebookCommandToolbarProps {
     | "auth"
   >;
   runtime?: string | null;
+  runtimeTarget?: NotebookShellRuntimeTargetProjection | null;
   environmentManager?: NotebookEnvironmentManager | null;
   environmentPanelOpen?: boolean;
   environmentOutOfSync?: boolean;
@@ -85,6 +87,7 @@ export interface NotebookCommandToolbarProps {
 export function NotebookCommandToolbar({
   capabilities,
   runtime = null,
+  runtimeTarget = null,
   environmentManager = null,
   environmentPanelOpen = false,
   environmentOutOfSync = false,
@@ -126,6 +129,8 @@ export function NotebookCommandToolbar({
     },
   });
   const showPackageToggle = Boolean(runtime && canViewPackages && onTogglePackages);
+  const runtimePeerCount = runtimeTarget?.runtimePeerCount ?? 0;
+  const showRuntimePeerIndicator = runtimePeerCount > 0;
   const showAuthControls =
     Boolean(authControls) &&
     (auth.canSignIn || auth.canUseAuthenticatedIdentity || auth.needsAttention);
@@ -301,6 +306,8 @@ export function NotebookCommandToolbar({
           data-testid="deps-toggle"
           data-runtime={runtime ?? undefined}
           data-env-manager={environmentManager || undefined}
+          data-runtime-target={runtimeTarget?.kind}
+          data-runtime-peer-count={showRuntimePeerIndicator ? runtimePeerCount : undefined}
           className={cn(
             "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
             runtime === "deno"
@@ -308,14 +315,12 @@ export function NotebookCommandToolbar({
               : "bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 dark:text-blue-400",
             environmentPanelOpen && "ring-1 ring-current/25",
           )}
-          title={(() => {
-            const lang = runtime === "deno" ? "Deno/TypeScript" : "Python";
-            const manager = environmentManager ? ` / ${environmentManager}` : "";
-            const action = environmentPanelOpen
-              ? "close environment panel"
-              : "open environment panel";
-            return `${lang}${manager} - ${action}`;
-          })()}
+          title={runtimeChipTitle({
+            environmentManager,
+            environmentPanelOpen,
+            runtime,
+            runtimeTarget,
+          })}
         >
           {runtime === "deno" ? (
             <>
@@ -340,6 +345,12 @@ export function NotebookCommandToolbar({
               {environmentManager === "pixi" ? (
                 <PixiIcon className="h-2.5 w-2.5 text-amber-600 dark:text-amber-400" />
               ) : null}
+            </>
+          ) : null}
+          {showRuntimePeerIndicator ? (
+            <>
+              <span className="opacity-40">/</span>
+              <ServerCog className="h-2.5 w-2.5" aria-hidden="true" />
             </>
           ) : null}
         </button>
@@ -379,4 +390,49 @@ export function NotebookCommandToolbar({
       {trailingControls}
     </div>
   );
+}
+
+function runtimeChipTitle({
+  environmentManager,
+  environmentPanelOpen,
+  runtime,
+  runtimeTarget,
+}: {
+  environmentManager: NotebookEnvironmentManager | null;
+  environmentPanelOpen: boolean;
+  runtime: string | null;
+  runtimeTarget: NotebookShellRuntimeTargetProjection | null;
+}): string {
+  const lang = runtime === "deno" ? "Deno/TypeScript" : "Python";
+  const manager = environmentManager ? ` / ${environmentManager}` : "";
+  const action = environmentPanelOpen ? "close environment panel" : "open environment panel";
+  const targetParts = runtimeTargetTitleParts(runtimeTarget);
+  return targetParts.length > 0
+    ? `${lang}${manager} - ${targetParts.join(" · ")} - ${action}`
+    : `${lang}${manager} - ${action}`;
+}
+
+function runtimeTargetTitleParts(
+  runtimeTarget: NotebookShellRuntimeTargetProjection | null,
+): string[] {
+  if (!runtimeTarget) return [];
+
+  const parts: string[] = [];
+  if (runtimeTarget.label) {
+    parts.push(runtimeTarget.label);
+  }
+  if (runtimeTarget.statusLabel) {
+    parts.push(runtimeTarget.statusLabel);
+  }
+  if (runtimeTarget.kernelStatusLabel) {
+    parts.push(`Kernel ${runtimeTarget.kernelStatusLabel}`);
+  }
+  if (typeof runtimeTarget.runtimePeerCount === "number" && runtimeTarget.runtimePeerCount > 0) {
+    parts.push(
+      runtimeTarget.runtimePeerCount === 1
+        ? "1 compute session"
+        : `${runtimeTarget.runtimePeerCount} compute sessions`,
+    );
+  }
+  return parts;
 }

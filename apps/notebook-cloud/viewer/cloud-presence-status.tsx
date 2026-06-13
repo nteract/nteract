@@ -28,6 +28,9 @@ export function CloudPresenceStatus({
     ? `Room unavailable: ${cloudConnectionStatusErrorTitle(connectionError)}`
     : presenceDisplay.title;
   const state = connected ? "live" : presence.connection === "connecting" ? "joining" : "waiting";
+  if (connected && presenceDisplay.peers.length === 0 && presenceDisplay.hiddenCount === 0) {
+    return null;
+  }
 
   return (
     <span

@@ -1,4 +1,4 @@
-import type { SessionControlMessage } from "../src/protocol";
+import type { CloudRoomPeerRosterEntry, SessionControlMessage } from "../src/protocol";
 import type { ConnectionScope } from "../src/auth-shared";
 import { notebookActorIdentityFromProjection, notebookActorProjectionFromLabel } from "runtimed";
 
@@ -24,9 +24,10 @@ export interface CloudViewerPresenceDisplay {
 
 export interface CloudViewerPresencePeer {
   id: string;
+  participantKey: string;
   label: string;
   connectionScope: ConnectionScope | null;
-  kind: "self" | "peer" | "anonymous" | "unknown";
+  kind: "self" | "peer" | "anonymous" | "runtime" | "unknown";
   status: "active" | "idle" | "offline";
   count?: number;
 }
@@ -100,72 +101,66 @@ export function reduceCloudViewerPresenceMessage(
 ): CloudViewerPresenceState {
   switch (message.type) {
     case "cloud_room_ready":
-      return withRoomPeerCount(
-        {
-          connection: "connected",
-          ownPeerId: message.peer_id,
+      return {
+        connection: "connected",
+        ownPeerId: message.peer_id,
+        actorLabel: message.actor_label,
+        ownPeerLabel: cloudFriendlyPeerLabel({
+          displayName: message.display_name,
+          email: message.email,
           actorLabel: message.actor_label,
-          ownPeerLabel: cloudFriendlyPeerLabel({
-            displayName: message.display_name,
-            email: message.email,
-            actorLabel: message.actor_label,
-          }),
-          peers: [
-            cloudPresencePeerFromMessage({
-              peerId: message.peer_id,
-              displayName: message.display_name,
-              email: message.email,
-              actorLabel: message.actor_label,
-              connectionScope: message.connection_scope,
-              kind: "self",
-            }),
-          ],
-          roomPeerCount: safeRoomPeerCount(message.room_peer_count),
-          runtimePeerCount: safeRuntimePeerCount(
-            message.runtime_peer_count,
-            message.connection_scope === "runtime_peer" ? 1 : 0,
-          ),
-        },
-        message.room_peer_count,
-      );
+        }),
+        peers:
+          message.peers && message.peers.length > 0
+            ? cloudPresencePeersFromRoster(message.peers, message.peer_id)
+            : [
+                cloudPresencePeerFromMessage({
+                  peerId: message.peer_id,
+                  displayName: message.display_name,
+                  email: message.email,
+                  actorLabel: message.actor_label,
+                  connectionScope: message.connection_scope,
+                  kind: "self",
+                }),
+              ],
+        roomPeerCount: safeRoomPeerCount(message.room_peer_count),
+        runtimePeerCount: safeRuntimePeerCount(
+          message.runtime_peer_count,
+          message.connection_scope === "runtime_peer" ? 1 : 0,
+        ),
+      };
     case "cloud_peer_joined":
-      return withRoomPeerCount(
-        {
-          ...state,
-          connection: "connected",
-          peers: upsertCloudPresencePeer(
-            state.peers,
-            cloudPresencePeerFromMessage({
-              peerId: message.peer_id,
-              displayName: message.display_name,
-              email: message.email,
-              actorLabel: message.actor_label,
-              connectionScope: message.connection_scope ?? null,
-              kind: "peer",
-            }),
-          ),
-          roomPeerCount: safeRoomPeerCount(message.room_peer_count),
-          runtimePeerCount: safeRuntimePeerCount(
-            message.runtime_peer_count,
-            state.runtimePeerCount + (message.connection_scope === "runtime_peer" ? 1 : 0),
-          ),
-        },
-        message.room_peer_count,
-      );
+      return {
+        ...state,
+        connection: "connected",
+        peers: upsertCloudPresencePeer(
+          state.peers,
+          cloudPresencePeerFromMessage({
+            peerId: message.peer_id,
+            displayName: message.display_name,
+            actorLabel: message.actor_label,
+            connectionScope: message.connection_scope ?? null,
+            participantKey: message.participant_key,
+            kind: "peer",
+          }),
+        ),
+        roomPeerCount: safeRoomPeerCount(message.room_peer_count),
+        runtimePeerCount: safeRuntimePeerCount(
+          message.runtime_peer_count,
+          state.runtimePeerCount + (message.connection_scope === "runtime_peer" ? 1 : 0),
+        ),
+      };
     case "cloud_peer_left":
-      return withRoomPeerCount(
-        {
-          ...state,
-          connection: "connected",
-          peers: state.peers.filter((peer) => peer.id !== message.peer_id),
-          roomPeerCount: safeRoomPeerCount(message.room_peer_count),
-          runtimePeerCount: safeRuntimePeerCount(
-            message.runtime_peer_count,
-            state.runtimePeerCount - (message.connection_scope === "runtime_peer" ? 1 : 0),
-          ),
-        },
-        message.room_peer_count,
-      );
+      return {
+        ...state,
+        connection: "connected",
+        peers: state.peers.filter((peer) => peer.id !== message.peer_id),
+        roomPeerCount: safeRoomPeerCount(message.room_peer_count),
+        runtimePeerCount: safeRuntimePeerCount(
+          message.runtime_peer_count,
+          state.runtimePeerCount - (message.connection_scope === "runtime_peer" ? 1 : 0),
+        ),
+      };
     default:
       return state;
   }
@@ -177,6 +172,7 @@ function cloudPresencePeerFromMessage({
   email,
   actorLabel,
   connectionScope,
+  participantKey,
   kind,
 }: {
   peerId: string;
@@ -184,16 +180,37 @@ function cloudPresencePeerFromMessage({
   email?: string | null;
   actorLabel?: string | null;
   connectionScope?: string | null;
+  participantKey?: string | null;
   kind: "self" | "peer";
 }): CloudViewerPresencePeer {
   const label = cloudFriendlyPeerLabel({ displayName, email, actorLabel });
+  const normalizedConnectionScope = normalizePresenceConnectionScope(connectionScope);
+  const isRuntimePeer = normalizedConnectionScope === "runtime_peer";
+  const isAnonymous = !isRuntimePeer && label === "Anonymous";
   return {
     id: peerId,
+    participantKey: cloudPresenceParticipantKey({ participantKey, actorLabel, peerId }),
     label,
-    connectionScope: normalizePresenceConnectionScope(connectionScope),
-    kind: label === "Anonymous" ? "anonymous" : kind === "self" ? "self" : "peer",
+    connectionScope: normalizedConnectionScope,
+    kind: isRuntimePeer ? "runtime" : isAnonymous ? "anonymous" : kind === "self" ? "self" : "peer",
     status: "active",
   };
+}
+
+function cloudPresencePeersFromRoster(
+  roster: readonly CloudRoomPeerRosterEntry[],
+  ownPeerId: string,
+): CloudViewerPresencePeer[] {
+  return roster.map((entry) =>
+    cloudPresencePeerFromMessage({
+      peerId: entry.peer_id,
+      displayName: entry.display_name,
+      actorLabel: entry.actor_label,
+      connectionScope: entry.connection_scope,
+      participantKey: entry.participant_key,
+      kind: entry.peer_id === ownPeerId ? "self" : "peer",
+    }),
+  );
 }
 
 function upsertCloudPresencePeer(
@@ -202,47 +219,23 @@ function upsertCloudPresencePeer(
 ): CloudViewerPresencePeer[] {
   const existingIndex = peers.findIndex((peer) => peer.id === nextPeer.id);
   if (existingIndex === -1) {
-    return [...peers.filter((peer) => peer.kind !== "unknown"), nextPeer];
+    return [...peers, nextPeer];
   }
 
   return peers.map((peer, index) => (index === existingIndex ? nextPeer : peer));
-}
-
-function withRoomPeerCount(
-  state: CloudViewerPresenceState,
-  roomPeerCount: number,
-): CloudViewerPresenceState {
-  const count = safeRoomPeerCount(roomPeerCount);
-  const knownPeers = state.peers.filter((peer) => peer.kind !== "unknown").slice(0, count);
-  const missingCount = Math.max(0, count - knownPeers.length);
-  const placeholders = Array.from({ length: missingCount }, (_, index): CloudViewerPresencePeer => {
-    const ordinal = knownPeers.length + index + 1;
-    return {
-      id: `unknown-${ordinal}`,
-      label: "Anonymous",
-      connectionScope: null,
-      kind: "unknown",
-      status: state.connection === "connected" ? "active" : "idle",
-    };
-  });
-
-  return {
-    ...state,
-    roomPeerCount: count,
-    peers: [...knownPeers, ...placeholders],
-  };
 }
 
 export function cloudViewerPresenceDisplay(
   state: CloudViewerPresenceState,
 ): CloudViewerPresenceDisplay {
   if (state.connection === "disconnected") {
+    const displayPeers = cloudHumanPresenceDisplayPeers(state.peers, state.ownPeerId);
     return {
       label: "Offline",
       title: "Room unavailable",
       connected: false,
-      peers: state.peers.map((peer) => ({ ...peer, status: "offline" })),
-      hiddenCount: 0,
+      peers: displayPeers.peers.map((peer) => ({ ...peer, status: "offline" })),
+      hiddenCount: displayPeers.hiddenCount,
     };
   }
 
@@ -254,6 +247,7 @@ export function cloudViewerPresenceDisplay(
       peers: [
         {
           id: "joining",
+          participantKey: "joining",
           label: "Joining room",
           connectionScope: null,
           kind: "unknown",
@@ -264,12 +258,35 @@ export function cloudViewerPresenceDisplay(
     };
   }
 
-  const count = Math.max(1, state.roomPeerCount);
-  const knownPeers = state.peers.filter((peer) => peer.kind !== "unknown");
-  const anonymousCount = state.peers.filter(
-    (peer) => peer.kind === "anonymous" || peer.kind === "unknown",
-  ).length;
-  const namedPeers = knownPeers.filter((peer) => peer.kind !== "anonymous");
+  const displayPeers = cloudHumanPresenceDisplayPeers(state.peers, state.ownPeerId);
+  const count = displayPeers.count;
+  const title =
+    count === 0
+      ? "No one else here"
+      : count === 1
+        ? "1 other participant"
+        : `${count} other participants`;
+  return {
+    label: count === 0 ? "No one else here" : count === 1 ? "1 other here" : `${count} others here`,
+    title,
+    connected: true,
+    peers: displayPeers.peers,
+    hiddenCount: displayPeers.hiddenCount,
+  };
+}
+
+function cloudHumanPresenceDisplayPeers(
+  peers: readonly CloudViewerPresencePeer[],
+  ownPeerId: string | null,
+): {
+  count: number;
+  peers: CloudViewerPresencePeer[];
+  hiddenCount: number;
+} {
+  const otherPeers = cloudOtherPresencePeers(peers, ownPeerId);
+  const humanPeerGroups = cloudHumanPresenceGroups(otherPeers);
+  const anonymousCount = otherPeers.filter((peer) => peer.kind === "anonymous").length;
+  const namedPeers = humanPeerGroups.filter((peer) => peer.kind !== "anonymous");
   const visibleNamedPeerLimit = anonymousCount > 0 ? 2 : 3;
   const visibleNamedPeers = namedPeers.slice(0, visibleNamedPeerLimit);
   const visiblePeers =
@@ -278,6 +295,7 @@ export function cloudViewerPresenceDisplay(
           ...visibleNamedPeers,
           {
             id: "anonymous-group",
+            participantKey: "anonymous",
             label:
               anonymousCount === 1 ? "Anonymous viewer" : `${anonymousCount} anonymous viewers`,
             connectionScope: null,
@@ -288,14 +306,44 @@ export function cloudViewerPresenceDisplay(
         ]
       : visibleNamedPeers;
   const hiddenCount = Math.max(0, namedPeers.length - visibleNamedPeers.length);
-  const title = count === 1 ? "1 participant" : `${count} participants`;
+  const count = namedPeers.length + anonymousCount;
   return {
-    label: count === 1 ? "1 here now" : `${count} here now`,
-    title,
-    connected: true,
+    count,
     peers: visiblePeers,
     hiddenCount,
   };
+}
+
+function cloudOtherPresencePeers(
+  peers: readonly CloudViewerPresencePeer[],
+  ownPeerId: string | null,
+): CloudViewerPresencePeer[] {
+  const ownPeer = ownPeerId ? peers.find((peer) => peer.id === ownPeerId) : null;
+  const ownParticipantKey = ownPeer?.participantKey ?? null;
+  return peers.filter((peer) => {
+    if (ownPeerId && peer.id === ownPeerId) return false;
+    if (ownParticipantKey && peer.participantKey === ownParticipantKey) return false;
+    return true;
+  });
+}
+
+function cloudHumanPresenceGroups(
+  peers: readonly CloudViewerPresencePeer[],
+): CloudViewerPresencePeer[] {
+  const groups = new Map<string, CloudViewerPresencePeer>();
+  for (const peer of peers) {
+    if (peer.kind === "runtime" || peer.kind === "unknown") {
+      continue;
+    }
+    if (peer.kind === "anonymous") {
+      continue;
+    }
+    const existing = groups.get(peer.participantKey);
+    if (!existing || (peer.kind === "self" && existing.kind !== "self")) {
+      groups.set(peer.participantKey, peer);
+    }
+  }
+  return Array.from(groups.values());
 }
 
 export function cloudPresenceHasRuntimePeer(state: CloudViewerPresenceState): boolean {
@@ -377,6 +425,29 @@ function safeRoomPeerCount(value: number): number {
 function safeRuntimePeerCount(value: number | undefined, fallback: number): number {
   const count = value ?? fallback;
   return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+}
+
+function cloudPresenceParticipantKey({
+  participantKey,
+  actorLabel,
+  peerId,
+}: {
+  participantKey?: string | null;
+  actorLabel?: string | null;
+  peerId: string;
+}): string {
+  const trimmedParticipantKey = participantKey?.trim();
+  if (trimmedParticipantKey) return trimmedParticipantKey;
+
+  const trimmedActorLabel = actorLabel?.trim();
+  if (trimmedActorLabel) {
+    return notebookActorProjectionFromLabel(trimmedActorLabel, {
+      source: "cloud",
+      isPublic: trimmedActorLabel.startsWith("anonymous:"),
+    }).principal.id;
+  }
+
+  return `peer:${peerId}`;
 }
 
 function looksLikeRawIdentityLabel(value: string): boolean {
