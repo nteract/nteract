@@ -898,6 +898,10 @@ export class NotebookRoom {
       try {
         result = await materializer.receiveFrame(peer, normalizedFrame);
       } catch (error) {
+        if (isRoomStorageDegradedError(error)) {
+          this.sendRoomDegradedControl(notebookId, peer, errorMessage(error));
+          return;
+        }
         this.rejectFrame(
           notebookId,
           peer,
@@ -1006,14 +1010,18 @@ export class NotebookRoom {
         counter: "peer_sync_failed",
         counter_delta: 1,
       });
-      this.sendControl(notebookId, peer, {
-        type: "cloud_room_degraded",
-        notebook_id: notebookId,
-        peer_id: peer.id,
-        reason,
-        timestamp: new Date().toISOString(),
-      });
+      this.sendRoomDegradedControl(notebookId, peer, reason);
     }
+  }
+
+  private sendRoomDegradedControl(notebookId: string, peer: Peer, reason: string): void {
+    this.sendControl(notebookId, peer, {
+      type: "cloud_room_degraded",
+      notebook_id: notebookId,
+      peer_id: peer.id,
+      reason,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   private scheduleRoomHostCheckpoint(
@@ -1916,6 +1924,15 @@ function webSocketMessageByteLength(message: string | ArrayBuffer | ArrayBufferV
     return message.byteLength;
   }
   return message.byteLength;
+}
+
+function isRoomStorageDegradedError(error: unknown): boolean {
+  const message = errorMessage(error);
+  return (
+    message.includes("Exceeded allowed rows written in Durable Objects free tier") ||
+    message.includes("SQLITE_FULL") ||
+    message.includes("database or disk is full")
+  );
 }
 
 function json(value: unknown, status: number): Response {

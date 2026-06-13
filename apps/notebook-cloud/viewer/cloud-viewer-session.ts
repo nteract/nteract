@@ -1125,6 +1125,15 @@ export function useCloudViewerSession({
           setConnectionActorLabel(message.actor_label);
           setConnectionPeerLabel(presenceStore.getSnapshot().ownPeerLabel);
         }
+        if (message.type === "cloud_room_degraded") {
+          const reason = `Cloud room storage is temporarily unavailable: ${message.reason}`;
+          setConnectionError(reason);
+          setStatus({
+            kind: "error",
+            message: reason,
+          });
+          return;
+        }
         if (message.type === "cloud_frame_rejected") {
           if (isRecoverableCloudFrameRejection(message)) {
             const liveRuntime = liveRuntimeRef.current;
