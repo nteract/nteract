@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { BookOpen, House, Loader2 } from "lucide-react";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { setLoggerHost } from "../../notebook/src/lib/logger";
 import { setOpenUrlHost } from "../../notebook/src/lib/open-url";
@@ -97,12 +98,38 @@ function ViewerStartupError({ message }: { message: string }) {
 
 function ViewerStartupLoading({ title }: { title: string }) {
   return (
-    <main className="flex min-h-screen w-full flex-col px-8 py-4 pr-4">
-      <header className="mb-4">
-        <h1 className="text-2xl font-semibold tracking-normal">{title}</h1>
+    <main className="cloud-startup-shell" aria-busy="true">
+      <header className="cloud-startup-toolbar">
+        <div className="cloud-notebook-title-group">
+          <a className="cloud-notebook-home-link" href="/n" aria-label="Open notebooks dashboard">
+            <House aria-hidden="true" />
+          </a>
+          <div className="cloud-notebook-title">
+            <h1 className="cloud-startup-title">{title}</h1>
+            <p className="cloud-startup-status" role="status">
+              <Loader2 aria-hidden="true" />
+              Opening notebook
+            </p>
+          </div>
+        </div>
+        <div className="cloud-startup-toolbar-actions" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
       </header>
-      <div className="cloud-state" role="status">
-        Loading notebook.
+      <div className="cloud-startup-workspace" aria-hidden="true">
+        <aside className="cloud-startup-rail">
+          <BookOpen aria-hidden="true" />
+          <span />
+        </aside>
+        <section className="cloud-startup-stage">
+          <div className="cloud-startup-cell">
+            <span className="cloud-startup-line cloud-startup-line--wide" />
+            <span className="cloud-startup-line" />
+            <span className="cloud-startup-line cloud-startup-line--short" />
+          </div>
+        </section>
       </div>
     </main>
   );
