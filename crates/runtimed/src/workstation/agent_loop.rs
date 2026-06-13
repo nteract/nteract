@@ -957,16 +957,51 @@ async fn reconcile_active_attach_job(
         job.status,
         plan.pid_path.display()
     );
-    api.patch_attach_job(
-        &opts.workstation_id,
-        &job.job_id,
-        "failed",
-        Some(&format!(
-            "Runtime peer for {} attach job was not running after workstation agent restart",
-            job.status
-        )),
-    )
-    .await
+    let failure_message = format!(
+        "Runtime peer for {} attach job was not running after workstation agent restart",
+        job.status
+    );
+    match api
+        .patch_attach_job(
+            &opts.workstation_id,
+            &job.job_id,
+            "failed",
+            Some(&failure_message),
+        )
+        .await
+    {
+        Ok(()) => {
+            remove_stale_pid_file(&plan.pid_path);
+            Ok(())
+        }
+        Err(error) if attach_job_patch_no_longer_active(&error) => {
+            remove_stale_pid_file(&plan.pid_path);
+            info!(
+                "[workstation-agent] recovery patch ignored for inactive job job_id={}",
+                job.job_id
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_stale_pid_file(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            info!(
+                "[workstation-agent] removed stale runtime peer pid file path={}",
+                path.display()
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            warn!(
+                "[workstation-agent] stale pid file cleanup failed path={}: {error}",
+                path.display()
+            );
+        }
+    }
 }
 
 async fn heartbeat_active_jobs(
@@ -1494,6 +1529,20 @@ mod tests {
 
         assert!(!drop_terminal_attach_job(&mut active, "job-1", "heartbeat", &error).await);
         assert!(active.contains_key("job-1"));
+    }
+
+    #[test]
+    fn stale_pid_file_cleanup_removes_existing_file_and_ignores_missing() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let pid_path = tmp.path().join("runtime-peer.pid");
+        std::fs::write(&pid_path, "123\n")?;
+
+        remove_stale_pid_file(&pid_path);
+        assert!(!pid_path.exists());
+
+        remove_stale_pid_file(&pid_path);
+        assert!(!pid_path.exists());
+        Ok(())
     }
 
     #[cfg(unix)]
