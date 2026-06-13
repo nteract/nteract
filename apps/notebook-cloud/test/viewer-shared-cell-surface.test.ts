@@ -635,6 +635,25 @@ test("cloud sync keeps routine frame logs out of the browser console", () => {
   assert.match(sourceText, /warn: \(message: string, \.\.\.args: unknown\[\]\) => console\.warn/);
 });
 
+test("cloud command client keeps routine command logs out of the browser console", () => {
+  const sourceText = viewerFileContaining("const createCloudNotebookClient = useCallback");
+
+  assert.match(sourceText, /const cloudNotebookClientLogger: SyncEngineLogger = \{/);
+  assert.match(
+    sourceText,
+    /const cloudNotebookClientLogger: SyncEngineLogger = \{[\s\S]*debug: \(\) => \{\}/,
+  );
+  assert.match(
+    sourceText,
+    /const cloudNotebookClientLogger: SyncEngineLogger = \{[\s\S]*info: \(\) => \{\}/,
+  );
+  assert.match(
+    sourceText,
+    /logger: cloudNotebookClientLogger,[\s\S]*getRequiredHeads: \(\) => liveRuntime\.handle\.get_heads_hex\(\)/,
+  );
+  assert.doesNotMatch(sourceText, /logger: console/);
+});
+
 test("cloud installs a host logger sink for shared notebook components", () => {
   const sourceText = viewerCorpus;
 

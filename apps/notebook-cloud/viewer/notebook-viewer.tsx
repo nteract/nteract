@@ -47,6 +47,7 @@ import {
   workstationAttachmentIsConnected,
   type CellChangeset,
   type NotebookOutlineItem,
+  type SyncEngineLogger,
 } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import {
@@ -129,6 +130,13 @@ import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { CloudNotebookEditModeButton, CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { CloudNotebookTitle, cloudNotebookRouteTitle } from "./cloud-notebook-title";
 import { CloudPresenceStatus } from "./cloud-presence-status";
+
+const cloudNotebookClientLogger: SyncEngineLogger = {
+  debug: () => {},
+  info: () => {},
+  warn: (message: string, ...args: unknown[]) => console.warn(message, ...args),
+  error: (message: string, ...args: unknown[]) => console.error(message, ...args),
+};
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
 const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 30_000;
@@ -731,7 +739,7 @@ export function NotebookViewer({
         liveRuntime,
         client: new NotebookClient({
           transport: liveRuntime.transport,
-          logger: console,
+          logger: cloudNotebookClientLogger,
           getRequiredHeads: () => liveRuntime.handle.get_heads_hex(),
         }),
       };
