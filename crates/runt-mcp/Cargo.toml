@@ -13,10 +13,12 @@ workspace = true
 [dependencies]
 base64 = { workspace = true }
 rmcp = { version = "1.4", features = ["server", "transport-io"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 repr-llm = { path = "../repr-llm" }
 runtimed-client = { path = "../runtimed-client" }
 runtimed-outputs = { path = "../runtimed-outputs" }
 notebook-protocol = { path = "../notebook-protocol" }
+notebook-cloud-transport = { path = "../notebook-cloud-transport" }
 notebook-sync = { path = "../notebook-sync" }
 notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
@@ -26,12 +28,16 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
+toml = "1"
 dirs = "6"
 regex = "1"
 fancy-regex = "0.14"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
+url = "2"
 
 [dev-dependencies]
 chrono = "0.4"
+futures-util = "0.3"
 tempfile = "3"
+tokio-tungstenite = "0.26"

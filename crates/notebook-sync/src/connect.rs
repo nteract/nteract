@@ -25,7 +25,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 
 use notebook_protocol::connection::{
-    self, ConnectionBootstrap, Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4,
+    self, ConnectionBootstrap, FrameSink, FrameSource, Handshake, NotebookConnectionInfo,
+    ProtocolCapabilities, PROTOCOL_V4,
 };
 use notebook_protocol::protocol::NotebookBroadcast;
 
@@ -394,6 +395,38 @@ async fn connect_create_inner(
         })
 }
 
+/// Connect to a notebook room over already-authenticated typed-frame halves.
+///
+/// This is the hosted-room bootstrap path. The transport-specific dial,
+/// credential exchange, and room-ready handshake happen before this function
+/// is called; this function only creates the local document replicas and
+/// starts the normal sync task over the supplied typed-frame source/sink.
+pub async fn connect_frame_io<S, W>(
+    notebook_id: String,
+    actor_label: &str,
+    source: S,
+    sink: W,
+) -> Result<ConnectResult, SyncError>
+where
+    S: FrameSource + Send + 'static,
+    W: FrameSink + Send + 'static,
+{
+    let bootstrap = notebook_doc::NotebookDoc::bootstrap(
+        notebook_doc::TextEncoding::UnicodeCodePoint,
+        actor_label,
+    );
+    let doc = bootstrap.into_inner();
+    let peer_state = sync::State::new();
+
+    build_and_spawn_frame_io(doc, peer_state, notebook_id, source, sink)
+        .await
+        .map(|(handle, broadcast_rx)| ConnectResult {
+            handle,
+            broadcast_rx,
+            initial_metadata: None,
+        })
+}
+
 // =========================================================================
 // Internal helpers
 // =========================================================================
@@ -413,6 +446,67 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    let (handle, task_config, broadcast_rx) =
+        build_sync_task_state(doc, peer_state, notebook_id.clone())?;
+
+    let notebook_id_for_task = notebook_id;
+    tokio::spawn(async move {
+        info!(
+            "[notebook-sync] Sync task started for {}",
+            notebook_id_for_task
+        );
+        sync_task::run(task_config, reader, writer).await;
+        info!(
+            "[notebook-sync] Sync task stopped for {}",
+            notebook_id_for_task
+        );
+    });
+
+    Ok((handle, broadcast_rx.into()))
+}
+
+async fn build_and_spawn_frame_io<S, W>(
+    doc: AutoCommit,
+    peer_state: sync::State,
+    notebook_id: String,
+    source: S,
+    sink: W,
+) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
+where
+    S: FrameSource + Send + 'static,
+    W: FrameSink + Send + 'static,
+{
+    let (handle, task_config, broadcast_rx) =
+        build_sync_task_state(doc, peer_state, notebook_id.clone())?;
+
+    let notebook_id_for_task = notebook_id;
+    tokio::spawn(async move {
+        info!(
+            "[notebook-sync] Frame sync task started for {}",
+            notebook_id_for_task
+        );
+        sync_task::run_with_frame_io(task_config, source, sink).await;
+        info!(
+            "[notebook-sync] Frame sync task stopped for {}",
+            notebook_id_for_task
+        );
+    });
+
+    Ok((handle, broadcast_rx.into()))
+}
+
+fn build_sync_task_state(
+    doc: AutoCommit,
+    peer_state: sync::State,
+    notebook_id: String,
+) -> Result<
+    (
+        DocHandle,
+        sync_task::SyncTaskConfig,
+        tokio::sync::broadcast::Receiver<NotebookBroadcast>,
+    ),
+    SyncError,
+> {
     let mut shared_state = SharedDocState::try_new(doc, notebook_id.clone())?;
     shared_state.peer_state = peer_state;
 
@@ -443,7 +537,7 @@ where
         snapshot_rx,
         runtime_state_rx,
         status_rx,
-        notebook_id.clone(),
+        notebook_id,
     );
 
     let task_config = sync_task::SyncTaskConfig {
@@ -456,20 +550,7 @@ where
         broadcast_tx,
     };
 
-    let notebook_id_for_task = notebook_id;
-    tokio::spawn(async move {
-        info!(
-            "[notebook-sync] Sync task started for {}",
-            notebook_id_for_task
-        );
-        sync_task::run(task_config, reader, writer).await;
-        info!(
-            "[notebook-sync] Sync task stopped for {}",
-            notebook_id_for_task
-        );
-    });
-
-    Ok((handle, broadcast_rx.into()))
+    Ok((handle, task_config, broadcast_rx))
 }
 
 // =========================================================================

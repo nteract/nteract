@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use runtimed_client::client::PoolClient;
 
+use crate::cloud::{self, CloudRegistry, NotebookTarget};
 use crate::formatting;
 use crate::session::{NotebookSession, SessionDropInfo, SessionDropReason};
 use crate::NteractMcp;
@@ -41,22 +42,22 @@ const MAX_PARKED_SESSIONS: usize = 8;
 /// kernel survive. When the agent switches back, the parked session is
 /// resumed without a new connection.
 ///
-/// When `new_notebook_id` is `Some`, the parking is skipped if we're
+/// When `new_session_key` is `Some`, the parking is skipped if we're
 /// reconnecting to the same notebook (no-op switch). When `None` (e.g.
 /// `create_notebook`), the old session is always parked.
 ///
 /// If parking would exceed [`MAX_PARKED_SESSIONS`], the oldest parked
 /// session is evicted (LRU). HashMap iteration order is arbitrary, so we
 /// use insertion order tracking via a separate `parked_order` Vec.
-async fn park_previous_session(server: &NteractMcp, new_notebook_id: Option<&str>) {
+async fn park_previous_session(server: &NteractMcp, new_session_key: Option<&str>) {
     // Take the old session under a short-lived write lock.
     let old_session = {
         let mut guard = server.session.write().await;
         match guard.as_ref() {
             Some(s) => {
                 // Skip if reconnecting to the same notebook.
-                if let Some(new_id) = new_notebook_id {
-                    if s.notebook_id == new_id {
+                if let Some(new_key) = new_session_key {
+                    if s.session_key() == new_key {
                         return;
                     }
                 }
@@ -71,13 +72,14 @@ async fn park_previous_session(server: &NteractMcp, new_notebook_id: Option<&str
             "[mcp] Parking session {} before notebook switch",
             old.notebook_id
         );
-        let notebook_id = old.notebook_id.clone();
+        let session_key = old.session_key();
         // Record the switch so "no session" errors can point agents back
         // if the parked session is later evicted.
         *server.last_session_drop.write().await = Some(SessionDropInfo {
             reason: SessionDropReason::Switched,
             notebook_id: old.notebook_id.clone(),
             notebook_path: old.notebook_path.clone(),
+            rejoin_target: Some(old.rejoin_target()),
         });
         // Park the session — peer connection stays alive, no eviction.
         let mut parked = server.parked_sessions.write().await;
@@ -97,7 +99,7 @@ async fn park_previous_session(server: &NteractMcp, new_notebook_id: Option<&str
             }
         }
 
-        parked.insert(notebook_id, old);
+        parked.insert(session_key, old);
     }
 }
 
@@ -461,6 +463,10 @@ async fn readable_notebook_session_response(
 #[allow(dead_code)] // Fields used by schemars for tool input schema generation
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenNotebookParams {
+    /// Hidden target locator for configured local/cloud connection modes.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub target: Option<String>,
     /// Canonical file path to open (e.g. "~/analysis.ipynb").
     /// Either this OR notebook_id must be provided, not both.
     #[serde(default)]
@@ -469,6 +475,23 @@ pub struct OpenNotebookParams {
     /// Either this OR path must be provided, not both.
     #[serde(default)]
     pub notebook_id: Option<String>,
+    /// Hidden domain selector for configured local/cloud connection modes.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub domain: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListNotebooksParams {
+    /// Hidden domain selector for configured local/cloud connection modes.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub domain: Option<String>,
+    /// Hidden listing limit for configured non-default notebook sources.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub limit: Option<u16>,
 }
 
 #[allow(dead_code)]
@@ -564,6 +587,7 @@ pub async fn disconnect_notebook(
                         reason: SessionDropReason::Disconnected,
                         notebook_id: session.notebook_id.clone(),
                         notebook_path: session.notebook_path.clone(),
+                        rejoin_target: Some(session.rejoin_target()),
                     });
                     tracing::info!("[mcp] Disconnecting active session {}", id);
                     drop(session);
@@ -591,6 +615,7 @@ pub async fn disconnect_notebook(
                         reason: SessionDropReason::Disconnected,
                         notebook_id: session.notebook_id.clone(),
                         notebook_path: session.notebook_path.clone(),
+                        rejoin_target: Some(session.rejoin_target()),
                     });
                     tracing::info!("[mcp] Disconnecting active session {}", notebook_id);
                     drop(session);
@@ -633,29 +658,243 @@ pub async fn list_active_notebooks(server: &NteractMcp) -> Result<CallToolResult
     }
 }
 
+fn list_limit_arg(request: &CallToolRequestParams) -> Result<Option<u16>, McpError> {
+    let Some(value) = request
+        .arguments
+        .as_ref()
+        .and_then(|args| args.get("limit"))
+    else {
+        return Ok(None);
+    };
+    let Some(number) = value.as_u64() else {
+        return Err(McpError::invalid_params(
+            "limit must be an integer between 1 and 500",
+            None,
+        ));
+    };
+    if !(1..=500).contains(&number) {
+        return Err(McpError::invalid_params(
+            "limit must be an integer between 1 and 500",
+            None,
+        ));
+    }
+    Ok(Some(number as u16))
+}
+
+fn resolve_registry_domain(
+    registry: &CloudRegistry,
+    requested_domain: Option<&str>,
+) -> Result<cloud::ResolvedCloudDomain, String> {
+    let domain = match requested_domain {
+        Some(domain) => cloud::normalize_domain(domain)?,
+        None => match (registry.default_domain()?, registry.domains.as_slice()) {
+            (Some(domain), _) => domain,
+            (None, [domain]) => cloud::normalize_domain(&domain.base_url)?,
+            (None, _) => {
+                return Err(
+                    "No cloud domain specified and cloud registry has no default_domain"
+                        .to_string(),
+                );
+            }
+        },
+    };
+    registry
+        .domain(&domain)?
+        .ok_or_else(|| format!("Cloud domain {domain} is not configured in the local registry"))
+}
+
+fn load_cloud_registry_for_tools() -> Result<CloudRegistry, String> {
+    CloudRegistry::load_default()?.ok_or_else(|| {
+        format!(
+            "No cloud domain registry found at {}",
+            cloud::registry_path().display()
+        )
+    })
+}
+
+pub async fn list_notebooks(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let requested_domain = arg_str(request, "domain");
+    if requested_domain.is_none_or(cloud::is_local_domain_alias) {
+        return list_active_notebooks(server).await;
+    }
+
+    let registry = match load_cloud_registry_for_tools() {
+        Ok(registry) => registry,
+        Err(e) => return tool_error(&e),
+    };
+    let domain = match resolve_registry_domain(&registry, requested_domain) {
+        Ok(domain) => domain,
+        Err(e) => return tool_error(&e),
+    };
+    let limit = list_limit_arg(request)?;
+
+    match cloud::list_hosted_notebooks(&domain, limit).await {
+        Ok(mut body) => {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("domain".to_string(), serde_json::json!(domain.base_url));
+                obj.insert("source".to_string(), serde_json::json!("hosted"));
+            }
+            Ok(notebook_json_response(body))
+        }
+        Err(e) => tool_error(&e),
+    }
+}
+
+async fn connect_hosted_notebook(
+    server: &NteractMcp,
+    domain: String,
+    notebook_id: String,
+    prev: Option<String>,
+) -> Result<CallToolResult, McpError> {
+    let registry = match load_cloud_registry_for_tools() {
+        Ok(registry) => registry,
+        Err(e) => return tool_error(&e),
+    };
+    let domain_config = match resolve_registry_domain(&registry, Some(&domain)) {
+        Ok(domain_config) => domain_config,
+        Err(e) => return tool_error(&e),
+    };
+    let session_key = cloud::hosted_notebook_url(&domain_config.base_url, &notebook_id);
+
+    park_previous_session(server, Some(&session_key)).await;
+
+    if let Some(parked) = take_parked_session(server, &session_key).await {
+        tracing::info!("[mcp] Resuming parked hosted session {}", session_key);
+        let handle = &parked.handle;
+        let runtime_info = collect_runtime_info(handle).await;
+        let deps = get_dependencies(handle);
+        let cells_summary = format_cell_summaries(handle);
+        let project_context = read_project_context(handle);
+
+        let mut response = serde_json::json!({
+            "notebook_id": handle.notebook_id(),
+            "connected": true,
+            "resumed": true,
+            "source": "hosted",
+            "domain": domain_config.base_url,
+            "target": session_key,
+            "runtime": runtime_info,
+            "dependencies": deps,
+            "project_context": project_context,
+            "cells": cells_summary,
+        });
+
+        if let Some(ref prev_id) = prev {
+            if *prev_id != notebook_id {
+                response["switched_from"] = serde_json::json!(prev_id);
+            }
+        }
+
+        *server.session.write().await = Some(parked);
+        return Ok(notebook_session_response(response, &notebook_id));
+    }
+
+    match cloud::connect_hosted_notebook(&domain_config, &notebook_id).await {
+        Ok(result) => {
+            let handle = &result.handle;
+            let peer_label = server.get_peer_label().await;
+            crate::presence::announce(handle, &peer_label).await;
+
+            // Hosted rooms do not currently emit the daemon's sync_status
+            // control frame. Give the first sync exchange a short opportunity
+            // to populate snapshots before formatting the connect response.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+            let runtime_info = collect_runtime_info(handle).await;
+            let deps = get_dependencies(handle);
+            let cells_summary = format_cell_summaries(handle);
+            let project_context = read_project_context(handle);
+
+            let mut response = serde_json::json!({
+                "notebook_id": handle.notebook_id(),
+                "connected": true,
+                "source": "hosted",
+                "domain": domain_config.base_url.clone(),
+                "target": session_key,
+                "runtime": runtime_info,
+                "dependencies": deps,
+                "project_context": project_context,
+                "cells": cells_summary,
+            });
+
+            if let Some(ref prev_id) = prev {
+                if *prev_id != notebook_id {
+                    response["switched_from"] = serde_json::json!(prev_id);
+                }
+            }
+
+            let call_result = notebook_session_response(response, handle.notebook_id());
+            let session = NotebookSession::hosted(
+                result.handle,
+                result.broadcast_rx,
+                notebook_id,
+                domain_config.base_url,
+            );
+            *server.session.write().await = Some(session);
+
+            Ok(call_result)
+        }
+        Err(e) => tool_error(&e),
+    }
+}
+
 /// Open a notebook — either from a file path on disk or by connecting to an
 /// existing daemon session by UUID.
 ///
-/// Requires exactly one of `path` or `notebook_id` — not both, not neither.
+/// Requires exactly one of `target`, `path`, or `notebook_id` — not more.
 pub async fn open_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let path_arg = arg_str(request, "path").map(str::to_string);
-    let id_arg = arg_str(request, "notebook_id").map(str::to_string);
+    let mut path_arg = arg_str(request, "path").map(str::to_string);
+    let mut id_arg = arg_str(request, "notebook_id").map(str::to_string);
+    let target_arg = arg_str(request, "target").map(str::to_string);
+    let domain_arg = arg_str(request, "domain").map(str::to_string);
+
+    if target_arg.is_some() || domain_arg.is_some() {
+        let parsed = cloud::parse_connect_target(
+            target_arg.as_deref(),
+            path_arg.as_deref(),
+            id_arg.as_deref(),
+            domain_arg.as_deref(),
+        )
+        .map_err(|message| McpError::invalid_params(message, None))?;
+
+        match parsed {
+            NotebookTarget::LocalPath(path) => {
+                path_arg = Some(path);
+                id_arg = None;
+            }
+            NotebookTarget::LocalNotebookId(id) => {
+                path_arg = None;
+                id_arg = Some(id);
+            }
+            NotebookTarget::Hosted {
+                domain,
+                notebook_id,
+                ..
+            } => {
+                let prev = previous_notebook_id(server).await;
+                return connect_hosted_notebook(server, domain, notebook_id, prev).await;
+            }
+        }
+    }
 
     // Exactly one must be provided.
     match (&path_arg, &id_arg) {
         (None, None) => {
             return Err(McpError::invalid_params(
-                "Missing required parameter: provide either 'path' (file path) or \
-                 'notebook_id' (UUID from list_active_notebooks), not both.",
+                "Missing required parameter: provide one of 'target', 'path', or \
+                 'notebook_id'.",
                 None,
             ));
         }
         (Some(_), Some(_)) => {
             return Err(McpError::invalid_params(
-                "Ambiguous parameters: provide either 'path' or 'notebook_id', not both.",
+                "Ambiguous parameters: provide only one of 'target', 'path', or 'notebook_id'.",
                 None,
             ));
         }
@@ -755,12 +994,12 @@ pub async fn open_notebook(
                 crate::presence::announce(handle, &peer_label).await;
 
                 let call_result = notebook_session_response(response, &notebook_id);
-                let session = NotebookSession {
-                    handle: result.handle,
-                    broadcast_rx: result.broadcast_rx,
+                let session = NotebookSession::local(
+                    result.handle,
+                    result.broadcast_rx,
                     notebook_id,
-                    notebook_path: Some(abs_path.to_string_lossy().into_owned()),
-                };
+                    Some(abs_path.to_string_lossy().into_owned()),
+                );
                 *server.session.write().await = Some(session);
 
                 Ok(call_result)
@@ -859,12 +1098,8 @@ pub async fn open_notebook(
                 crate::presence::announce(handle, &peer_label).await;
 
                 let call_result = notebook_session_response(response, &notebook_id);
-                let session = NotebookSession {
-                    handle: result.handle,
-                    broadcast_rx: result.broadcast_rx,
-                    notebook_id,
-                    notebook_path: None,
-                };
+                let session =
+                    NotebookSession::local(result.handle, result.broadcast_rx, notebook_id, None);
                 *server.session.write().await = Some(session);
 
                 Ok(call_result)
@@ -954,12 +1189,12 @@ pub async fn create_notebook(
                 )
             };
 
-            let session = NotebookSession {
-                handle: result.handle,
-                broadcast_rx: result.broadcast_rx,
-                notebook_id: notebook_id.clone(),
-                notebook_path: None,
-            };
+            let session = NotebookSession::local(
+                result.handle,
+                result.broadcast_rx,
+                notebook_id.clone(),
+                None,
+            );
             *server.session.write().await = Some(session);
 
             let runtime_info_handle = {
@@ -1188,6 +1423,22 @@ pub async fn show_notebook(
 mod tests {
     use super::*;
 
+    fn make_request(name: &str, arguments: serde_json::Value) -> CallToolRequestParams {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "arguments": arguments
+        }))
+        .unwrap()
+    }
+
+    fn first_text(result: &CallToolResult) -> &str {
+        result.content[0]
+            .as_text()
+            .expect("tool response text")
+            .text
+            .as_str()
+    }
+
     /// When package_manager is explicitly provided, it takes precedence
     /// over whatever the daemon detected.
     #[test]
@@ -1304,6 +1555,40 @@ mod tests {
             serde_json::from_str(text).expect("session response should be JSON");
         assert_eq!(response["notebook_id"], "daemon-only");
         assert!(response.get("resources").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_notebooks_defaults_to_desktop_listing() {
+        let missing_socket = std::env::temp_dir().join(format!(
+            "nteract-missing-list-notebooks-{}.sock",
+            uuid::Uuid::new_v4()
+        ));
+        let server = NteractMcp::new(missing_socket, None, None);
+        let request = make_request("list_notebooks", serde_json::json!({}));
+
+        let result = list_notebooks(&server, &request).await.unwrap();
+
+        assert_eq!(result.is_error, Some(true));
+        let text = first_text(&result);
+        assert!(text.contains("Failed to list notebooks"));
+        assert!(!text.contains("cloud domain registry"));
+    }
+
+    #[tokio::test]
+    async fn list_notebooks_desktop_domain_uses_local_listing() {
+        let missing_socket = std::env::temp_dir().join(format!(
+            "nteract-missing-desktop-list-notebooks-{}.sock",
+            uuid::Uuid::new_v4()
+        ));
+        let server = NteractMcp::new(missing_socket, None, None);
+        let request = make_request("list_notebooks", serde_json::json!({"domain": "desktop"}));
+
+        let result = list_notebooks(&server, &request).await.unwrap();
+
+        assert_eq!(result.is_error, Some(true));
+        let text = first_text(&result);
+        assert!(text.contains("Failed to list notebooks"));
+        assert!(!text.contains("cloud domain registry"));
     }
 
     /// Lifecycle states that carry error_reason/error_details must be

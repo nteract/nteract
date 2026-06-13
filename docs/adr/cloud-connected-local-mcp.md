@@ -229,11 +229,14 @@ Local `list_active_notebooks` should remain a daemon-local view. It lists active
 local daemon rooms and should not surprise callers with network traffic.
 
 Do not add a separate hosted-listing tool. The cloud-aware listing surface
-should be one `list_notebooks` tool with an optional `domain` parameter:
+should be one `list_notebooks` tool with an optional `domain` parameter. While
+hosted MCP access remains hidden/early, omitted `domain` defaults to the
+desktop-local daemon view so existing clients do not unexpectedly make network
+requests:
 
 | `domain` | Source |
 | --- | --- |
-| omitted | grouped local plus configured hosted domains, subject to implementation cost |
+| omitted | local daemon rooms |
 | `"local"` or `"desktop"` | local daemon rooms |
 | `https://<host>` | hosted catalog for that configured domain |
 

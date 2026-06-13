@@ -99,6 +99,13 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().read_only(true).open_world(false))
         .with_meta(always_load_meta()),
         Tool::new(
+            "list_notebooks",
+            "List active notebook sessions.",
+            schema_for::<session::ListNotebooksParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(true))
+        .with_meta(always_load_meta()),
+        Tool::new(
             "connect_notebook",
             "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both.",
             schema_for::<session::OpenNotebookParams>(),
@@ -300,6 +307,7 @@ pub async fn dispatch(
         // (advertised in the tool list) are `connect_notebook` and
         // `show_notebook`. Safe to remove after one release cycle.
         "list_active_notebooks" => session::list_active_notebooks(server).await,
+        "list_notebooks" => session::list_notebooks(server, request).await,
         "connect_notebook" | "open_notebook" => session::open_notebook(server, request).await,
         "create_notebook" => session::create_notebook(server, request).await,
         "save_notebook" => session::save_notebook(server, request).await,
@@ -494,10 +502,16 @@ pub async fn no_session_error(server: &crate::NteractMcp) -> Result<CallToolResu
     match drop_info.as_ref() {
         Some(info) => {
             let mut msg = format!("No active notebook session ({}). ", info.reason);
-            msg.push_str(&format!(
-                "Reconnect with: connect_notebook(notebook_id=\"{}\")",
-                info.notebook_id
-            ));
+            if let Some(target) = info.rejoin_target.as_deref() {
+                msg.push_str(&format!(
+                    "Reconnect with: connect_notebook(target=\"{target}\")"
+                ));
+            } else {
+                msg.push_str(&format!(
+                    "Reconnect with: connect_notebook(notebook_id=\"{}\")",
+                    info.notebook_id
+                ));
+            }
             if let Some(ref path) = info.notebook_path {
                 msg.push_str(&format!(" — file: {path}"));
             }

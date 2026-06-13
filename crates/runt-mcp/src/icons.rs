@@ -36,7 +36,7 @@ pub(crate) fn icons(kind: IconKind) -> Vec<Icon> {
 
 pub(crate) fn tool_icon(name: &str) -> Option<IconKind> {
     Some(match name {
-        "list_active_notebooks" => IconKind::ListActiveNotebooks,
+        "list_active_notebooks" | "list_notebooks" => IconKind::ListActiveNotebooks,
         "connect_notebook" | "show_notebook" => IconKind::OpenNotebook,
         "create_notebook" => IconKind::CreateNotebook,
         "save_notebook" => IconKind::SaveNotebook,

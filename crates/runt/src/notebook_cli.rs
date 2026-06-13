@@ -34,16 +34,32 @@ pub struct NotebookCallArgs {
     #[arg(long, conflicts_with = "args")]
     pub args_file: Option<PathBuf>,
 
+    /// Attach to a local or hosted notebook target before calling the tool
+    #[arg(
+        long,
+        value_name = "TARGET",
+        conflicts_with_all = ["path", "notebook_id", "create"]
+    )]
+    pub target: Option<String>,
+
     /// Attach to a notebook path before calling the tool
-    #[arg(long, value_name = "PATH", conflicts_with_all = ["notebook_id", "create"])]
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = ["target", "notebook_id", "create"]
+    )]
     pub path: Option<PathBuf>,
 
     /// Attach to an active notebook ID before calling the tool
-    #[arg(long, value_name = "UUID", conflicts_with_all = ["path", "create"])]
+    #[arg(
+        long,
+        value_name = "UUID",
+        conflicts_with_all = ["target", "path", "create"]
+    )]
     pub notebook_id: Option<String>,
 
     /// Create an ephemeral notebook before calling the tool
-    #[arg(long, conflicts_with_all = ["path", "notebook_id"])]
+    #[arg(long, conflicts_with_all = ["target", "path", "notebook_id"])]
     pub create: bool,
 
     /// Runtime for --create, usually python or deno
@@ -165,7 +181,12 @@ fn validate_create_options(args: &NotebookCallArgs) -> Result<()> {
 }
 
 async fn bootstrap_session(server: &runt_mcp::NteractMcp, args: &NotebookCallArgs) -> Result<()> {
-    let bootstrap = if let Some(path) = &args.path {
+    let bootstrap = if let Some(target) = &args.target {
+        Some(request(
+            "connect_notebook",
+            serde_json::json!({ "target": target }),
+        )?)
+    } else if let Some(path) = &args.path {
         Some(request(
             "connect_notebook",
             serde_json::json!({ "path": path.to_string_lossy() }),

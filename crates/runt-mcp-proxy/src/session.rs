@@ -29,15 +29,24 @@ pub fn extract_session_id(
         // may still be invoking it from stale tool caches.
         "connect_notebook" | "open_notebook" | "create_notebook" => {
             // Try request arguments first (connect_notebook)
-            let from_args = params
-                .arguments
-                .as_ref()
-                .and_then(|args| {
-                    args.get("notebook_id")
-                        .or_else(|| args.get("path"))
-                        .and_then(Value::as_str)
-                })
-                .map(String::from);
+            let from_args = params.arguments.as_ref().and_then(|args| {
+                let target = args.get("target").and_then(Value::as_str);
+                if target.is_some() {
+                    return target.map(String::from);
+                }
+
+                let notebook_id = args.get("notebook_id").and_then(Value::as_str);
+                let domain = args.get("domain").and_then(Value::as_str);
+                if let (Some(notebook_id), Some(domain)) = (notebook_id, domain) {
+                    if !is_local_domain_alias(domain) {
+                        return Some(hosted_notebook_target(domain, notebook_id));
+                    }
+                }
+
+                notebook_id
+                    .or_else(|| args.get("path").and_then(Value::as_str))
+                    .map(String::from)
+            });
 
             if from_args.is_some() {
                 return from_args;
@@ -63,6 +72,17 @@ fn extract_notebook_id_from_result(result: &CallToolResult) -> Option<String> {
         }
     }
     None
+}
+
+fn is_local_domain_alias(domain: &str) -> bool {
+    matches!(
+        domain.trim().to_ascii_lowercase().as_str(),
+        "local" | "desktop"
+    )
+}
+
+fn hosted_notebook_target(domain: &str, notebook_id: &str) -> String {
+    format!("{}/n/{}", domain.trim().trim_end_matches('/'), notebook_id)
 }
 
 #[cfg(test)]
@@ -111,6 +131,54 @@ mod tests {
         assert_eq!(
             extract_session_id(&params, &success_result()),
             Some("abc-123-def".to_string())
+        );
+    }
+
+    #[test]
+    fn tracks_connect_notebook_with_hosted_notebook_id_and_domain() {
+        let params = make_params(
+            "connect_notebook",
+            serde_json::json!({
+                "notebook_id": "01KTZA152886TK1WAHYA48G7HJ",
+                "domain": "https://preview.runt.run/"
+            }),
+        );
+        assert_eq!(
+            extract_session_id(&params, &success_result()),
+            Some("https://preview.runt.run/n/01KTZA152886TK1WAHYA48G7HJ".to_string())
+        );
+    }
+
+    #[test]
+    fn tracks_connect_notebook_with_local_domain_as_local_id() {
+        let params = make_params(
+            "connect_notebook",
+            serde_json::json!({
+                "notebook_id": "550e8400-e29b-41d4-a716-446655440000",
+                "domain": " desktop "
+            }),
+        );
+        assert_eq!(
+            extract_session_id(&params, &success_result()),
+            Some("550e8400-e29b-41d4-a716-446655440000".to_string())
+        );
+    }
+
+    #[test]
+    fn tracks_connect_notebook_with_target_first() {
+        let params = make_params(
+            "connect_notebook",
+            serde_json::json!({
+                "target": "https://preview.runt.run/n/01KTZA152886TK1WAHYA48G7HJ/view-only-quill",
+                "notebook_id": "550e8400-e29b-41d4-a716-446655440000",
+                "path": "/tmp/test.ipynb"
+            }),
+        );
+        assert_eq!(
+            extract_session_id(&params, &success_result()),
+            Some(
+                "https://preview.runt.run/n/01KTZA152886TK1WAHYA48G7HJ/view-only-quill".to_string()
+            )
         );
     }
 

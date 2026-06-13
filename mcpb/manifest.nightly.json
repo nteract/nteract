@@ -65,6 +65,10 @@
       "name": "list_active_notebooks"
     },
     {
+      "description": "List active notebook sessions.",
+      "name": "list_notebooks"
+    },
+    {
       "description": "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both.",
       "name": "connect_notebook"
     },
