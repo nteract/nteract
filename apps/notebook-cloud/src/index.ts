@@ -4236,6 +4236,7 @@ interface ViewerShellConfig extends Record<string, unknown> {
 
 interface ViewerShellResourceHints {
   notebookRouteAssets?: ViewerNotebookRouteAssets;
+  notebookRouteStyleHint?: "preload" | "prefetch";
   outputDocumentBaseUrl?: string | null;
   rendererAssetsBasePath?: string;
   runtimedWasmModulePath?: string | null;
@@ -4251,7 +4252,10 @@ function rootNotebookListRedirect(request: Request): Response {
 async function notebookListViewer(request: Request, env: Env): Promise<Response> {
   const bootstrap = await notebookListBootstrap(request, env);
   const resourceHints = notebookListBootstrapHasNotebooks(bootstrap)
-    ? { notebookRouteAssets: await notebookRouteAssetNames(env) }
+    ? {
+        notebookRouteAssets: await notebookRouteAssetNames(env),
+        notebookRouteStyleHint: "prefetch" as const,
+      }
     : null;
   return responseForRequestMethod(
     request,
@@ -4450,7 +4454,10 @@ function viewerResourceHints(config: ViewerShellResourceHints | null): string {
       config.runtimedWasmModulePath,
     ]),
     viewerEntryHint,
-    ...notebookRouteResourceHints(config.notebookRouteAssets),
+    ...notebookRouteResourceHints(
+      config.notebookRouteAssets,
+      config.notebookRouteStyleHint ?? "preload",
+    ),
   ];
   if (config.runtimedWasmModulePath) {
     hints.push(
@@ -4467,17 +4474,22 @@ function viewerResourceHints(config: ViewerShellResourceHints | null): string {
   return hints.join("\n  ");
 }
 
-function notebookRouteResourceHints(assets: ViewerNotebookRouteAssets | undefined): string[] {
+function notebookRouteResourceHints(
+  assets: ViewerNotebookRouteAssets | undefined,
+  styleHint: "preload" | "prefetch",
+): string[] {
   if (!assets) {
     return [];
   }
+  const styleRel =
+    styleHint === "prefetch"
+      ? (name: string) => `<link rel="prefetch" href="/assets/${escapeHtml(name)}" as="style" />`
+      : (name: string) => `<link rel="preload" href="/assets/${escapeHtml(name)}" as="style" />`;
   return [
     ...assets.modulepreload.map(
       (name) => `<link rel="modulepreload" href="/assets/${escapeHtml(name)}" />`,
     ),
-    ...assets.stylepreload.map(
-      (name) => `<link rel="preload" href="/assets/${escapeHtml(name)}" as="style" />`,
-    ),
+    ...assets.stylepreload.map(styleRel),
   ];
 }
 
