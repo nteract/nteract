@@ -178,7 +178,7 @@ export function cloudNotebookShortId(notebookId: string): string {
 }
 
 function cloudNotebookDefaultOpenMode(notebook: CloudNotebookListItem): CloudNotebookUrlMode {
-  return notebook.scope === "owner" ? "edit" : "view";
+  return notebook.scope === "owner" || notebook.scope === "editor" ? "edit" : "view";
 }
 
 export function isCloudNotebookListItem(value: unknown): value is CloudNotebookListItem {

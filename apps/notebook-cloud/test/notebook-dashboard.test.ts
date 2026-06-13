@@ -123,7 +123,7 @@ describe("cloud notebook dashboard projection", () => {
     );
   });
 
-  it("opens owned notebooks in edit mode while preserving shared notebooks in view mode", () => {
+  it("opens editable notebooks in edit mode while preserving viewer notebooks in view mode", () => {
     const owned = notebook({
       id: "owned-notebook",
       title: "Owned notebook",
@@ -147,7 +147,7 @@ describe("cloud notebook dashboard projection", () => {
     });
 
     assert.equal(cloudNotebookDashboardOpenUrl(owned), "/n/owned-notebook/notebook?mode=edit");
-    assert.equal(cloudNotebookDashboardOpenUrl(editor), "/n/editor-notebook/notebook?mode=view");
+    assert.equal(cloudNotebookDashboardOpenUrl(editor), "/n/editor-notebook/notebook?mode=edit");
     assert.equal(cloudNotebookDashboardOpenUrl(viewer), "/n/viewer-notebook/notebook?mode=view");
   });
 
