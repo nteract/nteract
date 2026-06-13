@@ -1200,6 +1200,9 @@ impl KernelConnection for JupyterKernel {
             }
         };
 
+        #[cfg(not(unix))]
+        let _ = &stderr_buffer;
+
         #[cfg(unix)]
         let kernel_pid = process.id().map(|pid| pid as i32);
 
