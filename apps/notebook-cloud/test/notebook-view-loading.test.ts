@@ -125,6 +125,20 @@ describe("cloud notebook header chrome projection", () => {
     assert.deepEqual(
       projectCloudNotebookHeaderChrome({
         bodyAccessBlocked: true,
+        liveRoomAccessPending: false,
+      }),
+      {
+        showConnectionIdentity: false,
+        showPresenceStatus: false,
+      },
+    );
+  });
+
+  it("hides live collaboration chrome while catalog access is still pending", () => {
+    assert.deepEqual(
+      projectCloudNotebookHeaderChrome({
+        bodyAccessBlocked: false,
+        liveRoomAccessPending: true,
       }),
       {
         showConnectionIdentity: false,
@@ -137,6 +151,7 @@ describe("cloud notebook header chrome projection", () => {
     assert.deepEqual(
       projectCloudNotebookHeaderChrome({
         bodyAccessBlocked: false,
+        liveRoomAccessPending: false,
       }),
       {
         showConnectionIdentity: true,
