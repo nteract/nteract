@@ -79,7 +79,7 @@ describe("NotebookView shell capabilities", () => {
     expect(sourceText).toMatch(/data-notebook-synced=\{!isLoading && !loadError\}/);
   });
 
-  it("does not install code execution keybindings when execution is unavailable", () => {
+  it("consumes code execution keybindings when execution is unavailable", () => {
     const sourceText = readFileSync(
       join(process.cwd(), "apps/notebook/src/components/CodeCell.tsx"),
       "utf8",
@@ -87,7 +87,9 @@ describe("NotebookView shell capabilities", () => {
 
     expect(sourceText).toMatch(/canExecute\?: boolean;/);
     expect(sourceText).toMatch(/onExecute: canExecute \? handleExecute : undefined/);
+    expect(sourceText).toMatch(/onExecuteInPlace: canExecute \? handleExecuteInPlace : undefined/);
     expect(sourceText).toMatch(/onExecuteAndInsert:\s+canExecute && onInsertCellAfter/);
+    expect(sourceText).toMatch(/consumeExecutionShortcuts: !readOnly \|\| canExecute/);
     expect(sourceText).toMatch(/canExecute=\{canExecute\}/);
     expect(sourceText).toMatch(/showReadoutWhenDisabled=\{!readOnly\}/);
   });
