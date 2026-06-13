@@ -1865,6 +1865,118 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(materialized, 0);
   });
 
+  it("rejects late hosted completion responses from replaced runtime sessions", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const ownerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const selectedRuntimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:selected&scope=runtime_peer",
+      ),
+    );
+    const staleRuntimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:stale&scope=runtime_peer",
+      ),
+    );
+    const ownerSocket = new FakeSocket();
+    const selectedRuntimeSocket = new FakeSocket();
+    const staleRuntimeSocket = new FakeSocket();
+    const ownerPeer = {
+      id: "owner",
+      socket: ownerSocket.asCloudflareWebSocket(),
+      identity: ownerIdentity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const selectedRuntimePeer = {
+      id: "runtime-selected",
+      socket: selectedRuntimeSocket.asCloudflareWebSocket(),
+      identity: selectedRuntimeIdentity,
+      connectedAt: "2026-05-22T00:00:01.000Z",
+      workstation: { workstationId: "ws-lab2", runtimeSessionId: "job-selected" },
+      consecutiveRejectedFrames: 0,
+    };
+    const staleRuntimePeer = {
+      id: "runtime-stale",
+      socket: staleRuntimeSocket.asCloudflareWebSocket(),
+      identity: staleRuntimeIdentity,
+      connectedAt: "2026-05-22T00:00:02.000Z",
+      workstation: { workstationId: "ws-lab2", runtimeSessionId: "job-stale" },
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(ownerPeer.id, ownerPeer);
+    harness.peers.set(selectedRuntimePeer.id, selectedRuntimePeer);
+    harness.peers.set(staleRuntimePeer.id, staleRuntimePeer);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab2",
+        display_name: "Lab2 workstation",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "ready",
+        status_message: null,
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: "/home/ubuntu/codex/nteract",
+        runtime_session_id: "job-selected",
+        updated_at: "2026-06-07T00:00:00.000Z",
+      }),
+    });
+
+    const requestPayload = new TextEncoder().encode(
+      JSON.stringify({ id: "request-1", action: "complete", code: "pri", cursor_pos: 3 }),
+    );
+    await harness.handleMessage(
+      "demo",
+      ownerPeer,
+      encodeTypedFrame(FrameType.REQUEST, requestPayload),
+    );
+
+    assert.equal(selectedRuntimeSocket.sent.length, 1);
+    assert.equal(staleRuntimeSocket.sent.length, 0);
+
+    const responsePayload = new TextEncoder().encode(
+      JSON.stringify({
+        id: "request-1",
+        result: "completion_result",
+        items: [{ label: "print", kind: "function" }],
+        cursor_start: 0,
+        cursor_end: 3,
+      }),
+    );
+    await harness.handleMessage(
+      "demo",
+      staleRuntimePeer,
+      encodeTypedFrame(FrameType.RESPONSE, responsePayload),
+    );
+
+    assert.equal(staleRuntimeSocket.sent.length, 0, "stale session did not receive an echo");
+    assert.equal(staleRuntimeSocket.closed, true);
+    assert.equal(staleRuntimeSocket.closeCode, 1008);
+    assert.equal(staleRuntimeSocket.closeReason, "stale runtime session");
+    assert.equal(ownerSocket.sent.filter((frame) => frame[0] === FrameType.RESPONSE).length, 0);
+
+    await harness.handleMessage(
+      "demo",
+      selectedRuntimePeer,
+      encodeTypedFrame(FrameType.RESPONSE, responsePayload),
+    );
+
+    const ownerResponseFrames = ownerSocket.sent.filter((frame) => frame[0] === FrameType.RESPONSE);
+    assert.equal(ownerResponseFrames.length, 1);
+    assert.deepEqual(
+      [...ownerResponseFrames[0]],
+      [FrameType.RESPONSE, ...Array.from(responsePayload)],
+    );
+  });
+
   it("settles the oldest hosted completion when the pending query cap evicts it", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const ownerIdentity = authenticateDevRequest(
