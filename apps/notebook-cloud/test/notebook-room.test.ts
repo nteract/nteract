@@ -1336,6 +1336,88 @@ describe("NotebookRoom peer lifecycle", () => {
     );
     assert.equal(attachmentReads, 1, "runtime publish refreshes the cache without rereading");
   });
+
+  it("invalidates the selected runtime session cache after runtime-peer-gone repair", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    let attachmentReads = 0;
+    let selectedAttachment: Record<string, unknown> = {
+      workstation_id: "lab2",
+      display_name: "lab2 workstation",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: null,
+      memory_bytes: null,
+      working_directory: "/home/ubuntu/codex/nteract",
+      runtime_session_id: "old-job",
+      updated_at: "2026-06-07T00:00:00.000Z",
+    };
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      getWorkstationAttachment: async () => {
+        attachmentReads += 1;
+        return selectedAttachment;
+      },
+      reconcileRuntimePeerGone: async () => {
+        selectedAttachment = {
+          ...selectedAttachment,
+          status: "error",
+          status_message: "runtime peer left",
+          runtime_session_id: "new-job",
+        };
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+        };
+      },
+    } as never);
+
+    assert.equal(
+      await harness.runtimePeerAuthorityError?.("demo", {
+        workstationId: "lab2",
+        runtimeSessionId: "old-job",
+      }),
+      null,
+    );
+    assert.equal(attachmentReads, 1);
+
+    const response = await room.fetch(
+      new Request("https://room.internal/internal/n/demo/runtime-state-repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "test repair" }),
+      }),
+    );
+    assert.equal(response.status, 200);
+
+    assert.match(
+      String(
+        await harness.runtimePeerAuthorityError?.("demo", {
+          workstationId: "lab2",
+          runtimeSessionId: "old-job",
+        }),
+      ),
+      /does not match selected runtime session new-job/,
+    );
+    assert.equal(
+      await harness.runtimePeerAuthorityError?.("demo", {
+        workstationId: "lab2",
+        runtimeSessionId: "new-job",
+      }),
+      null,
+    );
+    assert.equal(
+      attachmentReads,
+      2,
+      "runtime-state repair invalidates the selected session cache for one fresh read",
+    );
+  });
 });
 
 describe("NotebookRoom materialized sync routing", () => {

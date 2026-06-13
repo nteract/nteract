@@ -469,6 +469,7 @@ export class NotebookRoom {
     try {
       const materializer = this.materializerFor(notebookId);
       const result = await materializer.reconcileRuntimePeerGone(reason);
+      this.invalidateSelectedRuntimePeerSession(notebookId);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
       }
@@ -1390,6 +1391,10 @@ export class NotebookRoom {
     );
   }
 
+  private invalidateSelectedRuntimePeerSession(notebookId: string): void {
+    this.selectedRuntimePeerSessions.delete(notebookId);
+  }
+
   private forwardFrameToRuntimePeer(
     notebookId: string,
     runtimePeer: Peer,
@@ -1863,6 +1868,7 @@ export class NotebookRoom {
       const result = await this.materializerFor(notebookId).reconcileRuntimePeerGone(
         "runtime peer left the room and did not return within the grace window",
       );
+      this.invalidateSelectedRuntimePeerSession(notebookId);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
         this.scheduleRoomHostCheckpoint(
