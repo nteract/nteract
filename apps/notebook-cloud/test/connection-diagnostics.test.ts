@@ -6,6 +6,7 @@ import {
   CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
   CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
+  cloudConnectionDiagnosticBlocksNotebookBody,
   cloudConnectionErrorWithAccessDiagnostic,
   diagnoseCloudConnectionAccess,
   isCloudConnectionAccessDiagnostic,
@@ -160,6 +161,27 @@ describe("late access diagnostics never displace a terminal WASM-failure notice"
     assert.equal(isCloudConnectionAccessDiagnostic(CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC), true);
     assert.equal(isCloudConnectionAccessDiagnostic("cloud sync socket failed"), false);
     assert.equal(isCloudConnectionAccessDiagnostic(null), false);
+  });
+
+  it("identifies diagnostics that should block notebook body rendering", () => {
+    assert.equal(
+      cloudConnectionDiagnosticBlocksNotebookBody(CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC),
+      true,
+    );
+    assert.equal(
+      cloudConnectionDiagnosticBlocksNotebookBody(CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC),
+      true,
+    );
+    assert.equal(
+      cloudConnectionDiagnosticBlocksNotebookBody(CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC),
+      false,
+    );
+    assert.equal(
+      cloudConnectionDiagnosticBlocksNotebookBody(CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC),
+      false,
+    );
+    assert.equal(cloudConnectionDiagnosticBlocksNotebookBody("cloud sync socket failed"), false);
+    assert.equal(cloudConnectionDiagnosticBlocksNotebookBody(null), false);
   });
 
   // Session wiring pins (the hook cannot run under node): the kick-time

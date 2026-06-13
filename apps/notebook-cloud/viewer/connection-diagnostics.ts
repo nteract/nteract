@@ -21,6 +21,13 @@ export function isCloudConnectionAccessDiagnostic(message: string | null): boole
   return Boolean(message && ACCESS_DIAGNOSTICS.has(message));
 }
 
+export function cloudConnectionDiagnosticBlocksNotebookBody(message: string | null): boolean {
+  return (
+    message === CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC ||
+    message === CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC
+  );
+}
+
 /**
  * Whether an access diagnostic may replace the current connection error.
  *

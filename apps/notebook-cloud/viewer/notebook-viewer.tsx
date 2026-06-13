@@ -87,8 +87,11 @@ import {
   cloudNotebookHasNotices,
   shouldShowCloudAnonymousViewerAuthNotice,
 } from "./notices";
-import { isCloudConnectionAccessDiagnostic } from "./connection-diagnostics";
-import { projectCloudNotebookViewLoading } from "./notebook-view-loading";
+import {
+  cloudConnectionDiagnosticBlocksNotebookBody,
+  isCloudConnectionAccessDiagnostic,
+} from "./connection-diagnostics";
+import { projectCloudNotebookViewSurface } from "./notebook-view-loading";
 import { useOfflineMergeNoticeAutoClear } from "./use-offline-merge-notice";
 import { useSustainedReconnecting } from "./use-sustained-reconnecting";
 import type { ViewerStatus } from "./notice-types";
@@ -1203,7 +1206,8 @@ export function NotebookViewer({
   const notebookHasReadableSnapshot =
     notebookCellIds.length > 0 ||
     (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
-  const notebookViewIsLoading = projectCloudNotebookViewLoading({
+  const notebookViewSurface = projectCloudNotebookViewSurface({
+    bodyAccessBlocked: cloudConnectionDiagnosticBlocksNotebookBody(connectionError),
     cellCount: notebookCellIds.length,
     canEditStructure: shellCapabilities.canEditStructure,
     connectionError,
@@ -1214,6 +1218,7 @@ export function NotebookViewer({
     liveMaterialized: liveMaterializedRef.current,
     status,
   });
+  const notebookViewIsLoading = notebookViewSurface.isLoading;
   const noticeStatus: ViewerStatus =
     notebookViewIsLoading && (status.kind === "ready" || status.kind === "empty")
       ? { kind: "loading", message: "Preparing notebook view..." }
@@ -1291,27 +1296,29 @@ export function NotebookViewer({
             onSyncNeeded={handleSourceSyncNeeded}
             localActor={connectionActorLabel ?? ""}
           >
-            <NotebookView
-              cellIds={notebookCellIds}
-              isLoading={notebookViewIsLoading}
-              capabilities={shellCapabilities}
-              canAcceptCellMutations={canAcceptCellMutations}
-              runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
-              sessionRuntimeState={connectionError ? "error" : "ready"}
-              onFocusCell={handleNotebookViewFocus}
-              onExecuteCell={handleCloudExecuteCell}
-              onInterruptKernel={() => {}}
-              onDeleteCell={handleCloudDeleteCell}
-              onAddCell={handleCloudAddCell}
-              onMoveCell={handleCloudMoveCell}
-              onSetCellSourceHidden={handleCloudSetCellSourceHidden}
-              onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
-              markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
-              outputHostContext={outputHostContext}
-              deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
-              deferredOutputIsolatedFrameRootMargin={CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN}
-              autoFocusFirstCell={false}
-            />
+            {notebookViewSurface.shouldRenderNotebookView ? (
+              <NotebookView
+                cellIds={notebookCellIds}
+                isLoading={notebookViewIsLoading}
+                capabilities={shellCapabilities}
+                canAcceptCellMutations={canAcceptCellMutations}
+                runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
+                sessionRuntimeState={connectionError ? "error" : "ready"}
+                onFocusCell={handleNotebookViewFocus}
+                onExecuteCell={handleCloudExecuteCell}
+                onInterruptKernel={() => {}}
+                onDeleteCell={handleCloudDeleteCell}
+                onAddCell={handleCloudAddCell}
+                onMoveCell={handleCloudMoveCell}
+                onSetCellSourceHidden={handleCloudSetCellSourceHidden}
+                onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
+                markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
+                outputHostContext={outputHostContext}
+                deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
+                deferredOutputIsolatedFrameRootMargin={CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN}
+                autoFocusFirstCell={false}
+              />
+            ) : null}
           </CrdtBridgeProvider>
         </PresenceValueProvider>
       </NotebookDocumentShell>

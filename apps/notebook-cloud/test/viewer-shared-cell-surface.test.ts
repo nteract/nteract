@@ -405,7 +405,11 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
 
   assert.match(sourceText, /const hasNotices =/);
   assert.match(sourceText, /const noticeStatus: ViewerStatus =/);
-  assert.match(sourceText, /projectCloudNotebookViewLoading\(\{/);
+  assert.match(sourceText, /projectCloudNotebookViewSurface\(\{/);
+  assert.match(
+    sourceText,
+    /bodyAccessBlocked: cloudConnectionDiagnosticBlocksNotebookBody\(connectionError\)/,
+  );
   assert.match(
     sourceText,
     /hasAccessDiagnostic: isCloudConnectionAccessDiagnostic\(connectionError\)/,
