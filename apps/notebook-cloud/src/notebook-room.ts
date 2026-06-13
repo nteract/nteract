@@ -50,16 +50,6 @@ interface Peer {
   consecutiveRejectedFrames: number;
 }
 
-interface StoredRoomFrame {
-  sequence: number;
-  peerId: string;
-  actorLabel: string;
-  connectionScope: string;
-  frameType: number;
-  byteLength: number;
-  receivedAt: string;
-}
-
 interface PeerAttachment {
   notebookId: string;
   peerId: string;
@@ -106,8 +96,6 @@ interface PendingRuntimePeerResponse {
   action: RuntimePeerQueryRequestAction;
   createdAtMs: number;
 }
-
-const MAX_STORED_FRAMES = 500;
 
 /// Grace window after the last `runtime_peer` leaves before the room reconciles
 /// its in-flight state (lifecycle-analysis reqs #3/#7). Tolerates a transient
@@ -205,9 +193,6 @@ export class NotebookRoom {
     string,
     { notebookId: string; peer: Peer; closeOptions: PeerCloseOptions }
   >();
-  private nextFrameSequence = 0;
-  private frameSequenceReady: Promise<void> | undefined;
-  private framePersistQueue: Promise<void> = Promise.resolve();
   private broadcastDepth = 0;
   private readonly materializers = new Map<string, RoomMaterializer>();
   private readonly restoredPeersReady: Promise<void>;
@@ -393,18 +378,24 @@ export class NotebookRoom {
       }
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        await materializer.checkpoint();
       }
+      const checkpointPersisted = result.changed
+        ? await this.checkpointRoomHost(notebookId, materializer, "workstation_attachment_control")
+        : true;
       cloudLog("debug", "room.workstation_attachment.control_published", {
         notebook_id: notebookId,
         changed: result.changed,
+        checkpoint_persisted: checkpointPersisted,
         duration_ms: durationMs(startedAt),
         outbound_frame_count: result.outbound.length,
         closed_runtime_peers: closeRuntimePeers,
         counter: "workstation_attachment_control_published",
         counter_delta: result.changed ? 1 : 0,
       });
-      return json({ ok: true, changed: result.changed }, 200);
+      return json(
+        { ok: true, changed: result.changed, checkpoint_persisted: checkpointPersisted },
+        200,
+      );
     } catch (error) {
       cloudLog("warn", "room.workstation_attachment.control_publish_failed", {
         notebook_id: notebookId,
@@ -462,12 +453,15 @@ export class NotebookRoom {
       const result = await materializer.reconcileRuntimePeerGone(reason);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        await materializer.checkpoint();
       }
+      const checkpointPersisted = result.changed
+        ? await this.checkpointRoomHost(notebookId, materializer, "runtime_state_repair")
+        : true;
       cloudLog("info", "room.runtime_state_repair.completed", {
         notebook_id: notebookId,
         changed: result.changed,
         forced: force,
+        checkpoint_persisted: checkpointPersisted,
         runtime_peer_count: this.runtimePeerCount(),
         duration_ms: durationMs(startedAt),
         outbound_frame_count: result.outbound.length,
@@ -479,6 +473,7 @@ export class NotebookRoom {
           ok: true,
           changed: result.changed,
           forced: force,
+          checkpoint_persisted: checkpointPersisted,
           runtime_peer_count: this.runtimePeerCount(),
         },
         200,
@@ -734,7 +729,7 @@ export class NotebookRoom {
 
     if (!shouldBroadcastFrame(normalizedFrame, peer.identity)) {
       // Anonymous public viewers are read-only observers. Their presence is
-      // acknowledged locally but not broadcast or persisted as room activity.
+      // acknowledged locally but not broadcast as room activity.
       cloudLog("debug", "room.presence.local_only", {
         notebook_id: notebookId,
         peer_id: peer.id,
@@ -745,6 +740,27 @@ export class NotebookRoom {
         counter: "local_only_presence_frames",
         counter_delta: 1,
       });
+      this.sendControl(notebookId, peer, {
+        type: "cloud_frame_accepted",
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        frame_type: normalizedFrame.type,
+        byte_length: normalizedFrame.payload.byteLength,
+        timestamp: receivedAt,
+      });
+      this.resetRejectedFrameStreak(peer);
+      return;
+    }
+
+    if (normalizedFrame.type === FrameType.PRESENCE) {
+      // Presence is live-only coordination. Persisting it burns Durable Object
+      // storage writes without improving recovery; reconnecting peers send a
+      // fresh heartbeat/cursor snapshot.
+      this.broadcastFrame(
+        notebookId,
+        encodeTypedFrame(normalizedFrame.type, normalizedFrame.payload),
+        peer.id,
+      );
       this.sendControl(notebookId, peer, {
         type: "cloud_frame_accepted",
         notebook_id: notebookId,
@@ -892,6 +908,10 @@ export class NotebookRoom {
       try {
         result = await materializer.receiveFrame(peer, normalizedFrame);
       } catch (error) {
+        if (isRoomStorageDegradedError(error)) {
+          this.sendRoomDegradedControl(notebookId, peer, errorMessage(error));
+          return;
+        }
         this.rejectFrame(
           notebookId,
           peer,
@@ -901,7 +921,6 @@ export class NotebookRoom {
         );
         return;
       }
-      const persistMaterializedFrame = shouldPersistMaterializedSyncFrame(result);
       cloudLog("debug", "room.materialized_frame.applied", {
         notebook_id: notebookId,
         peer_id: peer.id,
@@ -913,20 +932,14 @@ export class NotebookRoom {
         changed: result.changed,
         notebook_changed: result.notebook_changed,
         runtime_state_changed: result.runtime_state_changed,
-        persisted: persistMaterializedFrame,
         outbound_frame_count: result.outbound.length,
         counter: "materialized_frames_applied",
         counter_delta: 1,
       });
 
-      if (persistMaterializedFrame) {
-        this.state.waitUntil(
-          this.persistFrame(peer, normalizedFrame, receivedAt).catch(() => undefined),
-        );
-      }
       this.deliverRoomHostFrames(notebookId, result);
       if (result.changed) {
-        this.state.waitUntil(materializer.checkpoint().catch(() => undefined));
+        this.scheduleRoomHostCheckpoint(notebookId, materializer, "materialized_frame");
       }
       this.sendControl(notebookId, peer, {
         type: "cloud_frame_accepted",
@@ -937,19 +950,6 @@ export class NotebookRoom {
         timestamp: receivedAt,
       });
       this.resetRejectedFrameStreak(peer);
-      return;
-    }
-
-    try {
-      await this.persistFrame(peer, normalizedFrame, receivedAt);
-    } catch (error) {
-      this.rejectFrame(
-        notebookId,
-        peer,
-        normalizedFrame.type,
-        `failed to persist ${frameTypeName(normalizedFrame.type)} frame: ${String(error)}`,
-        { countsTowardStreak: false },
-      );
       return;
     }
 
@@ -1009,17 +1009,63 @@ export class NotebookRoom {
       });
       this.deliverRoomHostFrames(notebookId, result);
     } catch (error) {
+      const reason = errorMessage(error);
       cloudLog("warn", "room.peer_sync.failed", {
         notebook_id: notebookId,
         peer_id: peer.id,
         principal: peer.identity.principal,
         scope: peer.identity.scope,
         duration_ms: durationMs(startedAt),
-        error: errorMessage(error),
+        error: reason,
         counter: "peer_sync_failed",
         counter_delta: 1,
       });
-      this.removePeer(notebookId, peer);
+      if (!isRoomStorageDegradedError(error)) {
+        this.removePeer(notebookId, peer, {
+          code: 1011,
+          reason: "room sync failed",
+        });
+        return;
+      }
+      this.sendRoomDegradedControl(notebookId, peer, reason);
+    }
+  }
+
+  private sendRoomDegradedControl(notebookId: string, peer: Peer, reason: string): void {
+    this.sendControl(notebookId, peer, {
+      type: "cloud_room_degraded",
+      notebook_id: notebookId,
+      peer_id: peer.id,
+      reason,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  private scheduleRoomHostCheckpoint(
+    notebookId: string,
+    materializer: RoomMaterializer,
+    operation: string,
+  ): void {
+    this.state.waitUntil(this.checkpointRoomHost(notebookId, materializer, operation));
+  }
+
+  private async checkpointRoomHost(
+    notebookId: string,
+    materializer: RoomMaterializer,
+    operation: string,
+  ): Promise<boolean> {
+    try {
+      await materializer.checkpoint();
+      return true;
+    } catch (error) {
+      cloudLog("warn", "room.materializer.checkpoint_failed", {
+        notebook_id: notebookId,
+        operation,
+        error: errorMessage(error),
+        counter: "materializer_checkpoint_failures",
+        counter_delta: 1,
+      });
+      return false;
     }
   }
 
@@ -1032,7 +1078,7 @@ export class NotebookRoom {
       );
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        await materializer.checkpoint();
+        await this.checkpointRoomHost(notebookId, materializer, "runtime_peer_attachment");
       }
       cloudLog("debug", "room.workstation_attachment.published", {
         notebook_id: notebookId,
@@ -1297,55 +1343,6 @@ export class NotebookRoom {
 
       this.rejectPendingRuntimePeerResponse(notebookId, requestId, pending, reason);
     }
-  }
-
-  private async persistFrame(peer: Peer, frame: TypedFrame, receivedAt: string): Promise<void> {
-    const operation = this.framePersistQueue
-      .catch(() => undefined)
-      .then(async () => {
-        await this.prepareFrameSequence();
-        const sequence = this.nextFrameSequence + 1;
-        const stored: StoredRoomFrame = {
-          sequence,
-          peerId: peer.id,
-          actorLabel: peer.identity.actorLabel,
-          connectionScope: peer.identity.scope,
-          frameType: frame.type,
-          byteLength: frame.payload.byteLength,
-          receivedAt,
-        };
-
-        await this.state.storage.put(frameStorageKey(sequence), stored);
-        await this.state.storage.put("frame_sequence", sequence);
-        this.nextFrameSequence = sequence;
-        this.state.waitUntil(
-          this.evictStoredFrame(sequence - MAX_STORED_FRAMES).catch(() => undefined),
-        );
-      });
-
-    this.framePersistQueue = operation.then(
-      () => undefined,
-      () => undefined,
-    );
-    await operation;
-  }
-
-  private async prepareFrameSequence(): Promise<void> {
-    this.frameSequenceReady ??= this.state.storage
-      .get<number>("frame_sequence")
-      .then((sequence) => {
-        this.nextFrameSequence = sequence ?? 0;
-      });
-
-    await this.frameSequenceReady;
-  }
-
-  private async evictStoredFrame(sequence: number): Promise<void> {
-    if (sequence < 1) {
-      return;
-    }
-
-    await this.state.storage.delete(frameStorageKey(sequence));
   }
 
   private rejectFrame(
@@ -1680,10 +1677,10 @@ export class NotebookRoom {
       );
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        this.state.waitUntil(
-          this.materializerFor(notebookId)
-            .checkpoint()
-            .catch(() => undefined),
+        this.scheduleRoomHostCheckpoint(
+          notebookId,
+          this.materializerFor(notebookId),
+          "runtime_peer_watch_reconcile",
         );
       }
       cloudLog("info", "room.runtime_peer_watch.reconciled", {
@@ -1706,12 +1703,6 @@ export function shouldBroadcastFrame(
   identity: AuthenticatedConnection,
 ): boolean {
   return !(frame.type === FrameType.PRESENCE && isAnonymousViewer(identity));
-}
-
-export function shouldPersistMaterializedSyncFrame(
-  result: Pick<RoomHostFrameResult, "notebook_changed" | "runtime_state_changed">,
-): boolean {
-  return result.notebook_changed || result.runtime_state_changed;
 }
 
 export function rejectedFramePolicy(
@@ -1954,15 +1945,23 @@ function webSocketMessageByteLength(message: string | ArrayBuffer | ArrayBufferV
   return message.byteLength;
 }
 
+function isRoomStorageDegradedError(error: unknown): boolean {
+  const message = errorMessage(error);
+  // Cloudflare Durable Objects and SQLite surface storage quota/full-disk
+  // failures as message text, not typed errors. Keep this classifier narrow so
+  // only storage pressure enters the recoverable degraded-room path.
+  return (
+    message.includes("Exceeded allowed rows written in Durable Objects free tier") ||
+    message.includes("SQLITE_FULL") ||
+    message.includes("database or disk is full")
+  );
+}
+
 function json(value: unknown, status: number): Response {
   return new Response(JSON.stringify(value), {
     status,
     headers: { "Content-Type": "application/json" },
   });
-}
-
-function frameStorageKey(sequence: number): string {
-  return `frame:${sequence.toString().padStart(12, "0")}`;
 }
 
 function socketAttachment(socket: CloudflareWebSocket): PeerAttachment | undefined {

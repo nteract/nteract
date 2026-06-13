@@ -500,8 +500,9 @@ Accepted WebSocket frame payload caps mirror `notebook-wire` per-frame limits:
 Automerge sync, runtime-state sync, and response frames may be up to 64 MiB;
 `PUT_BLOB` up to 32 MiB; request and broadcast frames up to 16 MiB; presence
 frames up to 4 KiB; and pool-state/session-control frames up to 1 MiB. The
-Durable Object keeps only the latest 500 `frame:*` metadata entries in object
-storage; D1 is not a frame replay log.
+Durable Object does not persist a frame replay log. Reconnecting peers recover
+from the materialized `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`
+checkpoints, with published snapshots as the fallback durable boundary.
 
 Published revision artifacts follow `docs/adr/hosted-notebook-artifacts.md`:
 

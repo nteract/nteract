@@ -60,6 +60,13 @@ export type SessionControlMessage =
       timestamp: string;
     }
   | {
+      type: "cloud_room_degraded";
+      notebook_id: string;
+      peer_id: string;
+      reason: string;
+      timestamp: string;
+    }
+  | {
       type: "cloud_peer_joined" | "cloud_peer_left";
       notebook_id: string;
       peer_id: string;
