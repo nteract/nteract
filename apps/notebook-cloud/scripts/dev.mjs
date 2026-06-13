@@ -29,6 +29,9 @@ if (!hasOption(extraArgs, "port")) {
 if (!hasOption(extraArgs, "inspector-port")) {
   args.push("--inspector-port", String(inspectorPort));
 }
+if (!hasVar(extraArgs, "NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP")) {
+  args.push("--var", "NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP:true");
+}
 
 args.push(...extraArgs);
 
@@ -74,6 +77,20 @@ function optionValue(args, name) {
     }
   }
   return undefined;
+}
+
+function hasVar(args, name) {
+  const prefix = `${name}:`;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--var" && args[index + 1]?.startsWith(prefix)) {
+      return true;
+    }
+    if (arg.startsWith(`--var=${prefix}`)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function formatHostForUrl(host) {

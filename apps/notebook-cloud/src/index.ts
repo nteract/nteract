@@ -133,7 +133,11 @@ import {
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   NOTEBOOK_CLOUD_USER_STORAGE_KEY,
 } from "./dev-auth-storage.ts";
-import { isLoopbackHostname, isLoopbackWorkerRequest } from "./loopback.ts";
+import {
+  isLoopbackHostname,
+  isLoopbackWorkerRequest,
+  trustsLoopbackClientIpHeader,
+} from "./loopback.ts";
 
 export { NotebookRoom };
 
@@ -209,7 +213,7 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: exactPath("/local-auth", "/dev/local-auth"),
     methods: ["GET", "HEAD"],
-    handler: (_match, request) => routeLocalDevAuth(request),
+    handler: (_match, request, env) => routeLocalDevAuth(request, env),
   },
   {
     match: exactPath("/", "/index.html"),
@@ -449,9 +453,9 @@ function routeFavicon(request: Request): Response {
   );
 }
 
-function routeLocalDevAuth(request: Request): Response {
+function routeLocalDevAuth(request: Request, env: Env): Response {
   const url = new URL(request.url);
-  if (!isLoopbackWorkerRequest(request, url)) {
+  if (!isLoopbackWorkerRequest(request, url, loopbackRequestOptions(env))) {
     return json({ error: "local dev auth is only available on loopback hosts" }, 403);
   }
 
@@ -768,7 +772,7 @@ function rejectUntrustedMutationOrigin(request: Request, env: Env): Response | n
 
 function allowedTrustedOrigins(request: Request, env: Env): Set<string> {
   const origins = new Set<string>([new URL(request.url).origin]);
-  const loopbackOrigin = trustedLoopbackBrowserOrigin(request);
+  const loopbackOrigin = trustedLoopbackBrowserOrigin(request, env);
   if (loopbackOrigin) {
     origins.add(loopbackOrigin);
   }
@@ -801,8 +805,8 @@ function hasOriginHeader(value: string | null): boolean {
   return Boolean(value?.trim());
 }
 
-function trustedLoopbackBrowserOrigin(request: Request): string | null {
-  if (!isLoopbackWorkerRequest(request)) {
+function trustedLoopbackBrowserOrigin(request: Request, env?: Env): string | null {
+  if (!isLoopbackWorkerRequest(request, undefined, loopbackRequestOptions(env))) {
     return null;
   }
 
@@ -811,6 +815,12 @@ function trustedLoopbackBrowserOrigin(request: Request): string | null {
     loopbackHeaderOrigin(request.headers.get("Referer")) ??
     loopbackHostOrigin(request.headers.get("Host"))
   );
+}
+
+function loopbackRequestOptions(env?: Env): { trustClientIp?: boolean } {
+  return {
+    trustClientIp: trustsLoopbackClientIpHeader(env?.NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP),
+  };
 }
 
 function loopbackHeaderOrigin(value: string | null): string | null {
@@ -1060,7 +1070,7 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
     counter_delta: 1,
   });
 
-  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName ?? notebookTitle);
+  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName ?? notebookTitle, env);
   const apiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   return json(
     {
@@ -1116,13 +1126,14 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
   const notebooks = await listNotebooksForPrincipal(env, principal, limit);
   return json({
     ok: true,
-    notebooks: notebookListResponseRows(request, notebooks),
+    notebooks: notebookListResponseRows(request, notebooks, env),
   });
 }
 
 function notebookListResponseRows(
   request: Request,
   notebooks: ListedNotebookRow[],
+  env?: Env,
 ): Array<Record<string, unknown>> {
   return notebooks.map((notebook) => {
     const notebookPathId = encodeURIComponent(notebook.id);
@@ -1135,7 +1146,7 @@ function notebookListResponseRows(
       created_at: notebook.created_at,
       updated_at: notebook.updated_at,
       latest_revision_id: notebook.latest_revision_id,
-      viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title),
+      viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title, env),
       endpoints: {
         catalog: apiBasePath,
         acl: `${apiBasePath}/acl`,
@@ -2217,8 +2228,9 @@ function viewerUrlForRequest(
   request: Request,
   notebookId: string,
   vanityName: string | null,
+  env?: Env,
 ): string {
-  const url = new URL(trustedLoopbackBrowserOrigin(request) ?? request.url);
+  const url = new URL(trustedLoopbackBrowserOrigin(request, env) ?? request.url);
   const vanitySegment = vanityName?.trim() || "notebook";
   url.pathname = `/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanitySegment)}`;
   url.search = "";
@@ -3302,7 +3314,7 @@ async function routeUpdateNotebookMetadata(
     notebook_id: notebook.id,
     title: notebook.title,
     updated_at: notebook.updated_at,
-    viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title),
+    viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title, env),
   });
 }
 
@@ -4392,7 +4404,7 @@ async function notebookListBootstrap(
   return {
     kind: "notebook-list",
     session: appSessionResponse(session),
-    notebooks: notebookListResponseRows(request, notebooks),
+    notebooks: notebookListResponseRows(request, notebooks, env),
     saved_at: new Date().toISOString(),
   };
 }

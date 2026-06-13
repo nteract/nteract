@@ -366,11 +366,23 @@ describe("Worker artifact routes", () => {
       new Request("https://preview.runt.run/local-auth?user=alice&scope=owner", {
         headers: { "CF-Connecting-IP": "127.0.0.1" },
       }),
-      fakeEnv(),
+      fakeEnv({ NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP: "true" }),
       fakeContext(),
     );
 
     assert.equal(response.status, 200);
+  });
+
+  it("rejects local dev auth bootstrap when loopback client IP headers are not trusted", async () => {
+    const response = await worker.fetch(
+      new Request("https://preview.runt.run/local-auth?user=alice&scope=owner", {
+        headers: { "CF-Connecting-IP": "127.0.0.1" },
+      }),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
   });
 
   it("normalizes unsafe local dev auth bootstrap inputs", async () => {
@@ -1435,7 +1447,7 @@ describe("Worker artifact routes", () => {
   });
 
   it("keeps local Browser viewer URLs on loopback when Wrangler preserves the custom-domain URL", async () => {
-    const env = fakeEnv();
+    const env = fakeEnv({ NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP: "true" });
     const localBrowserHeaders = {
       "CF-Connecting-IP": "127.0.0.1",
       "Content-Type": "application/json",
