@@ -336,11 +336,18 @@ export function cloudVisiblePeerLabel(
   actorLabel?: string | null,
 ): string {
   const trimmedPeerLabel = peerLabel?.trim();
-  if (trimmedPeerLabel && !looksLikeRawIdentityLabel(trimmedPeerLabel)) {
+  if (
+    trimmedPeerLabel &&
+    !looksLikeRawIdentityLabel(trimmedPeerLabel) &&
+    !looksLikeEmailAddress(trimmedPeerLabel)
+  ) {
     return trimmedPeerLabel;
   }
 
-  return cloudFriendlyPeerLabel({ actorLabel: actorLabel ?? trimmedPeerLabel });
+  return cloudFriendlyPeerLabel({
+    actorLabel: actorLabel ?? trimmedPeerLabel,
+    email: looksLikeEmailAddress(trimmedPeerLabel ?? "") ? trimmedPeerLabel : null,
+  });
 }
 
 export function cloudFriendlyPeerLabel({
@@ -353,17 +360,14 @@ export function cloudFriendlyPeerLabel({
     return trimmedDisplayName;
   }
 
-  const trimmedEmail = email?.trim();
-  if (trimmedEmail) {
-    return trimmedEmail;
+  const trimmedActorLabel = actorLabel?.trim();
+  if (trimmedActorLabel) {
+    return notebookActorIdentityFromProjection(
+      notebookActorProjectionFromLabel(trimmedActorLabel, { source: "cloud", isPublic: false }),
+    ).label;
   }
 
-  const trimmedActorLabel = actorLabel?.trim();
-  if (!trimmedActorLabel) return "Peer";
-
-  return notebookActorIdentityFromProjection(
-    notebookActorProjectionFromLabel(trimmedActorLabel, { source: "cloud", isPublic: false }),
-  ).label;
+  return email?.trim() ? "User" : "Peer";
 }
 
 function safeRoomPeerCount(value: number): number {

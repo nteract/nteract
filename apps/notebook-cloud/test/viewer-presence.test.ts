@@ -300,7 +300,17 @@ describe("cloud viewer presence", () => {
         email: "alice@example.com",
         actorLabel: "user:anaconda:550e8400-e29b-41d4-a716-446655440000/browser:tab",
       }),
-      "alice@example.com",
+      "Anaconda user",
+    );
+    assert.equal(
+      cloudFriendlyPeerLabel({
+        email: "alice@example.com",
+      }),
+      "User",
+    );
+    assert.equal(
+      cloudVisiblePeerLabel("alice@example.com", "user:anaconda:alice/browser:tab"),
+      "Alice",
     );
     assert.equal(
       cloudFriendlyPeerLabel({
