@@ -127,7 +127,11 @@ import {
   cloudNotebookModeFromSearch,
   replaceCloudNotebookModeInCurrentUrl,
 } from "./cloud-notebook-mode";
-import type { CloudViewerAuthConfig, ViewerRuntime } from "./cloud-viewer-types";
+import type {
+  CloudNotebookUpdateResponse,
+  CloudViewerAuthConfig,
+  ViewerRuntime,
+} from "./cloud-viewer-types";
 import {
   useCloudAppSessionBridge,
   useCloudAppSessionStatus,
@@ -137,6 +141,13 @@ import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { CloudNotebookEditModeButton, CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { CloudNotebookTitle, cloudNotebookRouteTitle } from "./cloud-notebook-title";
+import {
+  cloudNotebookCatalogResponseTitle,
+  cloudNotebookDocumentTitle,
+  cloudNotebookTitleDisplay,
+  cloudNotebookUrlAfterRename,
+  type CloudNotebookCatalogResponse,
+} from "./cloud-notebook-title-state";
 import { CloudPresenceStatus } from "./cloud-presence-status";
 
 const cloudNotebookClientLogger: SyncEngineLogger = {
@@ -190,6 +201,15 @@ export function NotebookViewer({
 }) {
   const { config } = runtime;
   const routeTitle = useMemo(() => cloudNotebookRouteTitle(), []);
+  const [catalogNotebookTitle, setCatalogNotebookTitle] = useState<string | null | undefined>(
+    undefined,
+  );
+  const [notebookTitleSaving, setNotebookTitleSaving] = useState(false);
+  const [notebookTitleError, setNotebookTitleError] = useState<string | null>(null);
+  const notebookTitle = useMemo(
+    () => cloudNotebookTitleDisplay(catalogNotebookTitle, routeTitle),
+    [catalogNotebookTitle, routeTitle],
+  );
   const loadingPolicy = useMemo(() => cloudViewerLoadingPolicy(config), [config.headsHash]);
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { store: widgetStore } = useWidgetStoreRequired();
@@ -288,6 +308,56 @@ export function NotebookViewer({
       }),
     [browserApiAuthState, config.notebookId],
   );
+  useEffect(() => {
+    if (!canUseAuthenticatedCloudApi) {
+      setCatalogNotebookTitle(undefined);
+      setNotebookTitleError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetchWithCloudPrototypeAuth(
+          config.catalogEndpoint,
+          {
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+            signal: controller.signal,
+          },
+          browserApiAuthState,
+        );
+        if (!response.ok) {
+          throw await cloudResponseError(response, "Unable to load notebook title");
+        }
+        const body = (await response.json()) as CloudNotebookCatalogResponse;
+        const title = cloudNotebookCatalogResponseTitle(body, config.notebookId);
+        if (!cancelled) {
+          setCatalogNotebookTitle(title);
+          setNotebookTitleError(null);
+        }
+      } catch (error) {
+        if (
+          cancelled ||
+          (typeof DOMException !== "undefined" &&
+            error instanceof DOMException &&
+            error.name === "AbortError")
+        ) {
+          return;
+        }
+        console.warn("[notebook-cloud] unable to load notebook title", error);
+        if (!cancelled) {
+          setCatalogNotebookTitle(undefined);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [browserApiAuthState, canUseAuthenticatedCloudApi, config.catalogEndpoint, config.notebookId]);
   const catalogLiveRoomPolicy = useMemo(
     () =>
       cloudNotebookLiveRoomConnectionPolicy({
@@ -448,6 +518,9 @@ export function NotebookViewer({
     applyDocumentTheme(resolvedTheme);
   }, [resolvedTheme]);
   useEffect(() => {
+    document.title = cloudNotebookDocumentTitle(notebookTitle.title);
+  }, [notebookTitle.title]);
+  useEffect(() => {
     replaceCloudNotebookModeInCurrentUrl(selectedInteractionMode);
   }, [selectedInteractionMode]);
 
@@ -543,6 +616,61 @@ export function NotebookViewer({
     };
   }, [canUseAuthenticatedCloudApi, catalogAccessLoader]);
   const catalogGrantsDocumentEdit = cloudNotebookScopeCanEditDocument(catalogAccessScope);
+  const saveCloudNotebookTitle = useCallback(
+    async (nextTitle: string): Promise<boolean> => {
+      if (!canUseAuthenticatedCloudApi || !catalogGrantsDocumentEdit || notebookTitleSaving) {
+        return false;
+      }
+
+      try {
+        setNotebookTitleSaving(true);
+        setNotebookTitleError(null);
+        const response = await fetchWithCloudPrototypeAuth(
+          config.catalogEndpoint,
+          {
+            method: "PATCH",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ title: nextTitle.trim() || null }),
+          },
+          {
+            ...browserApiAuthState,
+            requestedScope: "editor",
+          },
+        );
+        if (!response.ok) {
+          throw await cloudResponseError(response, "Unable to rename notebook");
+        }
+        const body = (await response.json()) as CloudNotebookUpdateResponse;
+        if (body.ok !== true || body.notebook_id !== config.notebookId) {
+          throw new Error("Unable to rename notebook: response shape was invalid");
+        }
+        setCatalogNotebookTitle(body.title ?? null);
+        if (body.viewer_url) {
+          const nextHref = cloudNotebookUrlAfterRename(window.location.href, body.viewer_url);
+          if (nextHref !== window.location.href) {
+            window.history.replaceState(window.history.state, "", nextHref);
+          }
+        }
+        return true;
+      } catch (error) {
+        setNotebookTitleError(error instanceof Error ? error.message : String(error));
+        return false;
+      } finally {
+        setNotebookTitleSaving(false);
+      }
+    },
+    [
+      browserApiAuthState,
+      canUseAuthenticatedCloudApi,
+      catalogGrantsDocumentEdit,
+      config.catalogEndpoint,
+      config.notebookId,
+      notebookTitleSaving,
+    ],
+  );
   const cloudRuntimeConnectedForStatus = workstationAttachment
     ? workstationAttachmentIsConnected(workstationAttachment)
     : runtimePeerAvailable;
@@ -1156,7 +1284,16 @@ export function NotebookViewer({
       capabilities={shellCapabilities}
       frameClassName="z-20"
       headerClassName="cloud-room-toolbar"
-      presence={<CloudNotebookTitle />}
+      presence={
+        <CloudNotebookTitle
+          title={notebookTitle}
+          renameTitle={catalogNotebookTitle?.trim() ?? ""}
+          canRename={catalogAccessResolved && catalogGrantsDocumentEdit}
+          renameSaving={notebookTitleSaving}
+          renameError={notebookTitleError}
+          onRename={saveCloudNotebookTitle}
+        />
+      }
       utilityControls={
         notebookHeaderChrome.showPresenceStatus ? (
           <CloudPresenceStatus connectionError={connectionError} store={presenceStore} />
@@ -1313,7 +1450,7 @@ export function NotebookViewer({
         rail={rail}
         stageLabel="Hosted notebook"
       >
-        <h1 className="sr-only">{routeTitle.title}</h1>
+        <h1 className="sr-only">{notebookTitle.title}</h1>
 
         <PresenceValueProvider value={cloudPresenceContext}>
           <CrdtBridgeProvider
