@@ -51,7 +51,7 @@ describe("cloud notebook dashboard projection", () => {
       [
         ["all", "Recent", 3, "work"],
         ["owned", "Owned", 1, "work"],
-        ["shared", "Shared", 2, "work"],
+        ["shared", "Shared with me", 2, "work"],
         ["published", "Published", 2, "work"],
       ],
     );
@@ -267,6 +267,22 @@ describe("cloud notebook dashboard projection", () => {
       ],
     );
     assert.deepEqual(
+      defaultView.sections.map((section) => [
+        section.id,
+        section.title,
+        section.detail,
+        section.notebooks.map((item) => item.notebook_id),
+      ]),
+      [
+        [
+          "shared",
+          "Shared with me",
+          "2 notebooks shared with this account",
+          ["renderer-regression", "archive"],
+        ],
+      ],
+    );
+    assert.deepEqual(
       sharedView.sections.map((section) => [section.id, section.title, section.notebooks.length]),
       [
         ["latest", "Latest activity", 1],
@@ -324,6 +340,46 @@ describe("cloud notebook dashboard projection", () => {
     assert.deepEqual(
       searchView.sections.flatMap((section) => section.rows.map((row) => row.notebook.notebook_id)),
       ["topic-viz"],
+    );
+  });
+
+  it("surfaces shared notebooks as their own default dashboard section", () => {
+    const owned = notebook({
+      id: "owned-notes",
+      title: "Owned Notes",
+      scope: "owner",
+      updatedAt: "2026-06-06T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const sharedEditor = notebook({
+      id: "shared-editor",
+      title: "Shared Editor",
+      scope: "editor",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const sharedViewer = notebook({
+      id: "shared-viewer",
+      title: "Shared Viewer",
+      scope: "viewer",
+      updatedAt: "2026-06-05T12:00:00.000Z",
+      latestRevisionId: null,
+    });
+
+    const model = projectCloudNotebookDashboard([sharedViewer, owned, sharedEditor]);
+    const view = projectCloudNotebookDashboardView(model);
+
+    assert.equal(model.continueNotebook?.notebook_id, "shared-editor");
+    assert.deepEqual(
+      view.sections.map((section) => [
+        section.id,
+        section.title,
+        section.notebooks.map((item) => item.notebook_id),
+      ]),
+      [
+        ["named", "Recent work", ["owned-notes"]],
+        ["shared", "Shared with me", ["shared-editor", "shared-viewer"]],
+      ],
     );
   });
 
