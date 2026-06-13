@@ -236,7 +236,7 @@ function cloudNotebookDashboardFilters(
     filters.push({ id: "owned", label: "Owned", count: ownerCount, group: "work" });
   }
   if (sharedCount > 0) {
-    filters.push({ id: "shared", label: "Shared", count: sharedCount, group: "work" });
+    filters.push({ id: "shared", label: "Shared with me", count: sharedCount, group: "work" });
   }
   if (publishedCount > 0) {
     filters.push({ id: "published", label: "Published", count: publishedCount, group: "work" });
@@ -356,8 +356,18 @@ function cloudNotebookWorkSections(
     if (notebook.notebook_id === options.omitNotebookId) {
       return false;
     }
-    return cloudNotebookHasTitle(notebook) && !cloudNotebookIsGeneratedRun(notebook);
+    return (
+      notebook.scope === "owner" &&
+      cloudNotebookHasTitle(notebook) &&
+      !cloudNotebookIsGeneratedRun(notebook)
+    );
   });
+  const sharedWithMe = notebooks.filter(
+    (notebook) =>
+      notebook.scope !== "owner" &&
+      cloudNotebookHasTitle(notebook) &&
+      !cloudNotebookIsGeneratedRun(notebook),
+  );
   const generatedRuns = notebooks.filter(cloudNotebookIsGeneratedRun);
   const untitled = notebooks.filter((notebook) => !cloudNotebookHasTitle(notebook));
 
@@ -374,6 +384,11 @@ function cloudNotebookWorkSections(
       totalCount: namedWork.length,
     });
   }
+  if (sharedWithMe.length > 0) {
+    sections.push(
+      sharedWithMeNotebookSection(sharedWithMe, { limit: SECONDARY_DASHBOARD_SECTION_LIMIT }),
+    );
+  }
   if (generatedRuns.length > 0) {
     sections.push(
       generatedNotebookSection(generatedRuns, { limit: SECONDARY_DASHBOARD_SECTION_LIMIT }),
@@ -383,6 +398,31 @@ function cloudNotebookWorkSections(
     sections.push(untitledNotebookSection(untitled, { limit: SECONDARY_DASHBOARD_SECTION_LIMIT }));
   }
   return sections;
+}
+
+function sharedWithMeNotebookSection(
+  notebooks: readonly CloudNotebookListItem[],
+  options: { limit: number | null },
+): CloudNotebookDashboardSection {
+  const visibleNotebooks = limitNotebooks(notebooks, options.limit);
+  const overflowAction =
+    options.limit && notebooks.length > visibleNotebooks.length
+      ? {
+          filterId: "shared" as const,
+          kind: "filter" as const,
+          label: "View all shared",
+        }
+      : null;
+  return {
+    action: overflowAction,
+    detail: bucketDetail(notebooks.length, "shared with this account"),
+    id: "shared",
+    notebooks: visibleNotebooks,
+    overflowAction,
+    rows: dashboardRows(visibleNotebooks),
+    title: "Shared with me",
+    totalCount: notebooks.length,
+  };
 }
 
 function generatedNotebookSection(
