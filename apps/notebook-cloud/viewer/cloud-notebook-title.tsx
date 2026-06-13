@@ -21,7 +21,7 @@ export function CloudNotebookTitle() {
   );
 }
 
-function cloudNotebookRouteTitle(): {
+export function cloudNotebookRouteTitle(): {
   label: string;
   detail: string | null;
   title: string;

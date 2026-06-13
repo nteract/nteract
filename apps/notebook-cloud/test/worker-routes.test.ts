@@ -214,7 +214,7 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     const html = await response.text();
-    assert.match(html, /nteract cloud notebook notebook-123/);
+    assert.match(html, /<title>nteract notebook: Topic Viz<\/title>/);
     assert.match(html, /"notebookId":"notebook-123"/);
     assert.doesNotMatch(html, /topic-viz.*render/);
   });
@@ -265,7 +265,7 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     const html = await response.text();
-    assert.match(html, /<title>nteract cloud notebook private-meta-demo<\/title>/);
+    assert.match(html, /<title>nteract notebook: Secret Plan<\/title>/);
     assert.match(html, /Private notebook metadata is shown after access is verified\./);
     assert.doesNotMatch(html, /Secret Research Plan|revision-private-metadata/);
   });

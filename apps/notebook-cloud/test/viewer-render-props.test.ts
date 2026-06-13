@@ -112,6 +112,20 @@ test("cloud callback keeps sign-in handoff in the entry surface language", () =>
   assert.doesNotMatch(callbackSource, /className="flex min-h-screen/);
 });
 
+test("cloud viewer keeps pending access-request polling quiet", () => {
+  const sourceText = viewerFileContaining("CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS");
+
+  assert.match(sourceText, /const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 30_000;/);
+  assert.match(sourceText, /function shouldPollPendingCloudAccessRequest\(\): boolean/);
+  assert.match(sourceText, /document\.visibilityState !== "hidden"/);
+  assert.match(sourceText, /let pollInFlight = false;/);
+  assert.match(sourceText, /if \(!shouldPollPendingCloudAccessRequest\(\) \|\| pollInFlight\)/);
+  assert.match(
+    sourceText,
+    /document\.addEventListener\("visibilitychange", handleVisibilityChange\)/,
+  );
+});
+
 test("cloud viewer routes notebook header controls through the shared shell chrome", () => {
   const sourceText = viewerCorpus;
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
@@ -137,7 +151,10 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(sourceText, /<NotebookDocumentToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(sourceText, /presence=\{<CloudNotebookTitle \/>/);
-  assert.match(sourceText, /import \{ CloudNotebookTitle \} from "\.\/cloud-notebook-title";/);
+  assert.match(
+    sourceText,
+    /import \{ CloudNotebookTitle, cloudNotebookRouteTitle \} from "\.\/cloud-notebook-title";/,
+  );
   assert.match(titleSourceText, /className="cloud-notebook-home-link"/);
   assert.match(titleSourceText, /<House aria-hidden="true" \/>/);
   assert.doesNotMatch(titleSourceText, /cloud-notebook-logo/);
@@ -154,9 +171,11 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
   assert.match(
     sourceText,
-    /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState, \{[\s\S]*hasAppSession: Boolean\(appSessionStatus\.session\),[\s\S]*\}\) \? \(/,
+    /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState, \{[\s\S]*hasAppSession,[\s\S]*\}\) \? \(/,
   );
   assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
+  assert.match(sourceText, /const hasAppSession = Boolean\(appSessionStatus\.session\)/);
+  assert.match(sourceText, /projectCloudAccessRequestTransition\(\{/);
   // The connection/identity slot is filled by the shared quiet component:
   // avatar + connectivity dot, driven by the stable status bridge. It must
   // never regress into a text pill or a second status label surface. The

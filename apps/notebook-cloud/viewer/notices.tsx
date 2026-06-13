@@ -128,6 +128,7 @@ export function cloudNotebookHasNotices({
   const shouldShowStatusNotice =
     status.kind !== "ready" &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
+    !(connectionNotice && status.kind === "loading") &&
     !isStatusDerivedFromConnectionError(status, connectionError);
 
   const shouldShowAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
@@ -202,6 +203,7 @@ export function CloudNotebookNotices({
   const shouldShowStatusNotice =
     status.kind !== "ready" &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
+    !(connectionNotice && status.kind === "loading") &&
     !isStatusDerivedFromConnectionError(status, connectionError);
   const shouldShowAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
     authState,

@@ -13,7 +13,7 @@ test("cloud notebook edit links stay view-only for viewers without an access req
   );
   assert.equal(
     cloudNotebookInteractionModeForAccess({
-      accessRequestStatus: "rejected",
+      accessRequestStatus: "denied",
       connectionScope: "viewer",
       selectedMode: "edit",
     }),

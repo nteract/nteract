@@ -190,6 +190,32 @@ test("cloud notebook notices distinguish sign-in and access diagnostics from soc
   assert.doesNotMatch(noAccessHtml, /Live room unavailable/);
 });
 
+test("cloud notebook notices let access diagnostics own private-route loading", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+      status: { kind: "loading", message: "Connecting to live notebook room..." },
+    }),
+    true,
+  );
+
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+      status: { kind: "loading", message: "Connecting to live notebook room..." },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /Notebook access needed/);
+  assert.doesNotMatch(html, /Loading notebook/);
+  assert.doesNotMatch(html, /Connecting to live notebook room/);
+});
+
 test("cloud notebook notices aggregate renderer-asset failures into one quiet line with retry", () => {
   assert.equal(
     cloudNotebookHasNotices({

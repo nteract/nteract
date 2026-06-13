@@ -299,8 +299,8 @@ describe("cloud notebook dashboard projection", () => {
         ]),
       ),
       [
-        ["renderer-regression", "Shared edit access", [["access", "editor"]], null],
-        ["archive", "Shared view access", [["access", "viewer"]], null],
+        ["renderer-regression", "Shared notebook", [["access", "editor"]], null],
+        ["archive", "Shared notebook", [["access", "viewer"]], null],
       ],
     );
   });

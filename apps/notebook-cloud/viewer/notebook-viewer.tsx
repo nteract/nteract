@@ -63,7 +63,7 @@ import type { ConnectionScope } from "../src/auth-shared";
 
 import { useCloudViewerSession } from "./cloud-viewer-session";
 import {
-  cloudBlobAuthStateForBrowserFetch,
+  cloudBrowserApiAuthStateForFetch,
   cloudSyncAuthConnectionKey,
 } from "./session-auth-stability";
 import {
@@ -97,6 +97,7 @@ import { cloudResponseError } from "./cloud-response";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
+import { projectCloudAccessRequestTransition } from "./cloud-access-request-state";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import {
   cloudNotebookInteractionModeForAccess,
@@ -112,12 +113,12 @@ import {
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { CloudNotebookEditModeButton, CloudNotebookSignInButton } from "./cloud-auth-controls";
-import { CloudNotebookTitle } from "./cloud-notebook-title";
+import { CloudNotebookTitle, cloudNotebookRouteTitle } from "./cloud-notebook-title";
 import { CloudPresenceStatus } from "./cloud-presence-status";
 import { isCloudNotebookListItem } from "./notebook-dashboard";
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
-const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 10_000;
+const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 30_000;
 const CLOUD_EMPTY_ROOM_GRACE_MS = 900;
 
 function decodeHashAnchorId(hash: string): string {
@@ -127,6 +128,10 @@ function decodeHashAnchorId(hash: string): string {
   } catch {
     return raw;
   }
+}
+
+function shouldPollPendingCloudAccessRequest(): boolean {
+  return typeof document === "undefined" || document.visibilityState !== "hidden";
 }
 
 async function resolveCloudAppSessionSyncScope(
@@ -164,10 +169,12 @@ export function NotebookViewer({
   authConfig: CloudViewerAuthConfig;
 }) {
   const { config } = runtime;
+  const routeTitle = useMemo(() => cloudNotebookRouteTitle(), []);
   const loadingPolicy = cloudViewerLoadingPolicy(config);
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { store: widgetStore } = useWidgetStoreRequired();
   const appSessionStatus = useCloudAppSessionStatus(config.session ?? null);
+  const hasAppSession = Boolean(appSessionStatus.session);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
     appSessionRefreshFallback: true,
     appSessionLoading: appSessionStatus.status === "loading",
@@ -220,8 +227,8 @@ export function NotebookViewer({
     selectedInteractionModeRef.current = selectedInteractionMode;
   }, [selectedInteractionMode]);
   const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
-  const blobAuthState = useMemo(
-    () => cloudBlobAuthStateForBrowserFetch(authState),
+  const browserApiAuthState = useMemo(
+    () => cloudBrowserApiAuthStateForFetch(authState),
     [
       authState.mode,
       authState.mode === "dev" ? authState.token : null,
@@ -235,10 +242,10 @@ export function NotebookViewer({
       createNotebookCloudBlobResolver({
         baseUrl: location.href,
         blobBasePath: config.blobBasePath,
-        fetchImpl: (input, init) => fetchWithCloudPrototypeAuth(input, init, blobAuthState),
+        fetchImpl: (input, init) => fetchWithCloudPrototypeAuth(input, init, browserApiAuthState),
         authenticatedBinaryDisplayUrls: true,
       }),
-    [blobAuthState, config.blobBasePath],
+    [browserApiAuthState, config.blobBasePath],
   );
   const preloadSiftWasm = useCallback(
     (nextCells: readonly ResolvedCell[]) => {
@@ -252,7 +259,7 @@ export function NotebookViewer({
     [config.blobBasePath, config.rendererAssetsBasePath, config.rendererAssets.siftWasm],
   );
   const syncAuthConnectionKey = cloudSyncAuthConnectionKey(authState, {
-    hasAppSession: Boolean(appSessionStatus.session),
+    hasAppSession,
   });
   const resolveSyncAuth = useCallback(
     async (sessionId: string) => {
@@ -302,7 +309,7 @@ export function NotebookViewer({
     authState,
     blobResolver,
     config,
-    hasAppSession: Boolean(appSessionStatus.session),
+    hasAppSession,
     loadingPolicy,
     preloadSiftWasm,
     resolveSyncAuth,
@@ -421,10 +428,10 @@ export function NotebookViewer({
     setActiveRailPanel("workstations");
   }, []);
   const hasBrowserAppIdentity =
-    Boolean(appSessionStatus.session) || authState.mode === "dev" || authState.mode === "oidc";
+    hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
   const canUseAuthenticatedCloudApi = cloudBrowserCanUseAuthenticatedApi({
     authState,
-    hasAppSession: Boolean(appSessionStatus.session),
+    hasAppSession,
   });
   const cloudRuntimeConnectedForStatus = workstationAttachment
     ? workstationAttachmentIsConnected(workstationAttachment)
@@ -459,7 +466,7 @@ export function NotebookViewer({
       connectionPeerId,
       connectionPeerLabel,
       connectionScope,
-      hasAppSession: Boolean(appSessionStatus.session),
+      hasAppSession,
       hostCapabilities: config.hostCapabilities,
       kernelStatusLabel: cloudKernelStatusLabel,
       runtimePeerAvailable,
@@ -475,7 +482,7 @@ export function NotebookViewer({
     Boolean(connectionPeerId);
   const showAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
     authState,
-    hasAppSession: Boolean(appSessionStatus.session),
+    hasAppSession,
     isPublicViewer,
   });
   const {
@@ -782,25 +789,36 @@ export function NotebookViewer({
   const applyLatestAccessRequest = useCallback(
     (request: CloudNotebookAccessRequest | null) => {
       setLatestAccessRequest(request);
-      if (request?.status === "pending" || request?.status === "approved") {
-        storeCloudRequestedScope(window.localStorage, "editor");
-        setSelectedInteractionMode("edit");
-        if (request.status === "approved") {
-          retryLiveConnection();
-        }
-        if (authState.requestedScope !== "editor") {
-          refreshAuthState();
-        }
-        return;
+      const transition = projectCloudAccessRequestTransition({
+        authState: {
+          mode: authState.mode,
+          requestedScope: authState.requestedScope,
+        },
+        connectionScope,
+        hasAppSession,
+        request,
+      });
+      if (transition.requestedScope) {
+        storeCloudRequestedScope(window.localStorage, transition.requestedScope);
       }
-
-      if (authState.requestedScope === "editor" && connectionScope === "viewer") {
-        storeCloudRequestedScope(window.localStorage, "viewer");
-        setSelectedInteractionMode("view");
+      if (transition.selectedMode) {
+        setSelectedInteractionMode(transition.selectedMode);
+      }
+      if (transition.retryLiveConnection) {
+        retryLiveConnection();
+      }
+      if (transition.refreshPrototypeAuth) {
         refreshAuthState();
       }
     },
-    [authState.requestedScope, connectionScope, refreshAuthState, retryLiveConnection],
+    [
+      authState.mode,
+      authState.requestedScope,
+      connectionScope,
+      hasAppSession,
+      refreshAuthState,
+      retryLiveConnection,
+    ],
   );
   const loadOwnAccessRequest = useCallback(
     async (options?: { signal?: AbortSignal }) => {
@@ -812,7 +830,7 @@ export function NotebookViewer({
         const response = await fetchWithCloudPrototypeAuth(
           config.accessRequestsEndpoint,
           { headers: { Accept: "application/json" }, signal: options?.signal },
-          authState,
+          browserApiAuthState,
         );
         if (options?.signal?.aborted) {
           return;
@@ -833,7 +851,7 @@ export function NotebookViewer({
     },
     [
       applyLatestAccessRequest,
-      authState,
+      browserApiAuthState,
       canUseAuthenticatedCloudApi,
       config.accessRequestsEndpoint,
       connectionScope,
@@ -861,12 +879,27 @@ export function NotebookViewer({
     }
 
     const controller = new AbortController();
+    let pollInFlight = false;
+    const poll = () => {
+      if (!shouldPollPendingCloudAccessRequest() || pollInFlight) {
+        return;
+      }
+      pollInFlight = true;
+      void loadOwnAccessRequest({ signal: controller.signal }).finally(() => {
+        pollInFlight = false;
+      });
+    };
     const intervalId = window.setInterval(() => {
-      void loadOwnAccessRequest({ signal: controller.signal });
+      poll();
     }, CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS);
+    const handleVisibilityChange = () => {
+      poll();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       controller.abort();
       window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [
     canUseAuthenticatedCloudApi,
@@ -888,7 +921,7 @@ export function NotebookViewer({
             },
             body: JSON.stringify({ scope: "editor" }),
           },
-          authState,
+          browserApiAuthState,
         );
         if (!response.ok) {
           throw await cloudResponseError(response, "Unable to request edit access");
@@ -917,7 +950,12 @@ export function NotebookViewer({
         setAccessRequestError(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [applyLatestAccessRequest, authState, config.accessRequestsEndpoint, config.notebookId]);
+  }, [
+    applyLatestAccessRequest,
+    browserApiAuthState,
+    config.accessRequestsEndpoint,
+    config.notebookId,
+  ]);
   const shouldShowPackageEnvironmentSummary =
     shellCapabilities.canExecute || shellCapabilities.canManagePackages;
   const toolbarAddAfterCellId =
@@ -989,7 +1027,7 @@ export function NotebookViewer({
         !showAnonymousViewerAuthNotice &&
         shouldShowCloudHeaderSignIn(authState, {
           appSessionLoading: appSessionStatus.status === "loading",
-          hasAppSession: Boolean(appSessionStatus.session),
+          hasAppSession,
         }) ? (
           <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
         ) : null
@@ -1006,7 +1044,7 @@ export function NotebookViewer({
       editControls={
         <CloudNotebookEditModeButton
           authState={authState}
-          hasAppSession={Boolean(appSessionStatus.session)}
+          hasAppSession={hasAppSession}
           interaction={shellCapabilities.interaction ?? null}
           accessLevel={shellCapabilities.access.level}
           accessPending={editAccessPending}
@@ -1073,7 +1111,7 @@ export function NotebookViewer({
     authRenewal,
     connectionError,
     diagnostics: accessRequestNotice,
-    hasAppSession: Boolean(appSessionStatus.session),
+    hasAppSession,
     isPublicViewer,
     hasReadableSnapshot: notebookHasReadableSnapshot,
     offlineMergeNotice,
@@ -1088,7 +1126,7 @@ export function NotebookViewer({
       authRenewal={authRenewal}
       connectionError={connectionError}
       diagnostics={accessRequestNotice}
-      hasAppSession={Boolean(appSessionStatus.session)}
+      hasAppSession={hasAppSession}
       isPublicViewer={isPublicViewer}
       hasReadableSnapshot={notebookHasReadableSnapshot}
       offlineMergeNotice={offlineMergeNotice}
@@ -1121,7 +1159,7 @@ export function NotebookViewer({
         rail={rail}
         stageLabel="Hosted notebook"
       >
-        <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
+        <h1 className="sr-only">{routeTitle.title}</h1>
 
         <PresenceValueProvider value={cloudPresenceContext}>
           <CrdtBridgeProvider

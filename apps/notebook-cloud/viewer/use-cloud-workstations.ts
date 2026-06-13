@@ -83,10 +83,11 @@ export function useCloudWorkstationManager({
     capabilities.access.source === "cloud" &&
     capabilities.auth.canUseAuthenticatedIdentity &&
     capabilities.access.level === "owner";
+  const canLoadHostedWorkstations = canLoadCloudWorkstations && canChooseHostedWorkstation;
 
   const refreshCloudWorkstations = useCallback(
     async (signal?: AbortSignal) => {
-      if (!canLoadCloudWorkstations || !config.workstationsEndpoint) {
+      if (!canLoadHostedWorkstations || !config.workstationsEndpoint) {
         if (!capabilities.auth.canUseAuthenticatedIdentity) {
           setWorkstationsState({ defaultWorkstationId: null, workstations: [] });
         }
@@ -105,7 +106,7 @@ export function useCloudWorkstationManager({
     },
     [
       authState,
-      canLoadCloudWorkstations,
+      canLoadHostedWorkstations,
       capabilities.auth.canUseAuthenticatedIdentity,
       config.workstationsEndpoint,
     ],
@@ -314,7 +315,7 @@ export function useCloudWorkstationManager({
   }, [pairing, workstationsState.workstations]);
 
   const workstationRefreshIntervalMs = cloudWorkstationRefreshIntervalMs({
-    canChooseHostedWorkstation: canChooseHostedWorkstation && canLoadCloudWorkstations,
+    canChooseHostedWorkstation: canLoadHostedWorkstations,
     hasRegisteredWorkstations: workstationsState.workstations.length > 0,
     mutationKind: workstationMutation.kind,
     panelIsOpen,

@@ -15,6 +15,7 @@ import {
   cloudConnectionErrorAcceptsAccessDiagnostic,
   cloudConnectionErrorWithAccessDiagnostic,
   diagnoseCloudConnectionAccess,
+  isCloudConnectionAccessDiagnostic,
 } from "./connection-diagnostics";
 import {
   applyExecutionViewChangeset,
@@ -617,6 +618,11 @@ export function useCloudViewerSession({
       }
     });
     let ranConnectionDiagnostics = false;
+    const stopPendingTransportForAccessDiagnostic = (diagnostic: string) => {
+      if (!isCloudConnectionAccessDiagnostic(diagnostic) || liveRuntimeRef.current) return;
+      pendingTransport?.disconnect();
+      pendingTransport = null;
+    };
     // One full-materialization kick per runtime when the syncing doc first
     // catches up to the room's advertised heads (see the notebookSyncApplied$
     // subscription) — the only path that displaces painted cells when the
@@ -796,7 +802,9 @@ export function useCloudViewerSession({
       if (disposed) return;
       console.warn("[notebook-cloud] live room connection lost; transport is reconnecting", reason);
       presenceStore.reduceConnection("disconnected");
-      setConnectionError(reason.message);
+      setConnectionError((current) =>
+        isCloudConnectionAccessDiagnostic(current) ? current : reason.message,
+      );
       if (!liveRuntimeRef.current && !ranConnectionDiagnostics) {
         // First pre-ready failure: surface an actionable access diagnosis
         // while the retry loop keeps running in the background.
@@ -814,6 +822,7 @@ export function useCloudViewerSession({
             setConnectionError((current) =>
               cloudConnectionErrorWithAccessDiagnostic(current, diagnostic),
             );
+            stopPendingTransportForAccessDiagnostic(diagnostic);
           })
           .catch(() => undefined);
       }
@@ -1415,6 +1424,7 @@ export function useCloudViewerSession({
               setConnectionError((current) =>
                 cloudConnectionErrorWithAccessDiagnostic(current, diagnostic),
               );
+              stopPendingTransportForAccessDiagnostic(diagnostic);
             })
             .catch(() => undefined);
         }

@@ -371,7 +371,11 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
   assert.doesNotMatch(cssText, /cloud-command-toolbar-placeholder/);
   assert.match(authControlsSourceText, /if \(mode === "edit" && !canSwitchToEdit\) \{/);
-  assert.match(sourceText, /storeCloudRequestedScope\(window\.localStorage, "editor"\)/);
+  assert.match(sourceText, /projectCloudAccessRequestTransition\(\{/);
+  assert.match(
+    sourceText,
+    /if \(transition\.requestedScope\) \{[\s\S]*storeCloudRequestedScope\(window\.localStorage, transition\.requestedScope\);/,
+  );
   assert.doesNotMatch(sourceText, /mode === "edit" \? "editor" : NOTEBOOK_CLOUD_DEFAULT_SCOPE/);
   assert.doesNotMatch(sourceText, /className="cloud-scope-toggle-button"/);
   assert.doesNotMatch(cssText, /cloud-scope-toggle-button/);

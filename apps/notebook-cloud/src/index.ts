@@ -221,7 +221,8 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: routePath("/n/:notebookId/:vanityName", { trailingSlash: "optional" }),
     methods: ["GET", "HEAD"],
-    handler: ({ params }, request, env) => viewer(params.notebookId, request, env),
+    handler: ({ params }, request, env) =>
+      viewer(params.notebookId, request, env, undefined, params.vanityName),
   },
   {
     match: exactPath("/api/n"),
@@ -3961,8 +3962,14 @@ async function viewer(
   request: Request,
   env: Env,
   headsHash?: string,
+  routeTitleSegment?: string,
 ): Promise<Response> {
-  const shellMetadata = await publicViewerShellMetadata(env, notebookId, headsHash);
+  const shellMetadata = await publicViewerShellMetadata(
+    env,
+    notebookId,
+    headsHash,
+    routeTitleSegment,
+  );
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   const runtimeWasmAssets = await runtimeWasmAssetNames(env);
   const rendererSidecarAssets = await rendererSidecarAssetNames(env);
@@ -4063,8 +4070,9 @@ async function publicViewerShellMetadata(
   env: Env,
   notebookId: string,
   headsHash?: string,
+  routeTitleSegment?: string,
 ): Promise<ViewerShellMetadata> {
-  const generic = genericNotebookShellMetadata(notebookId, headsHash);
+  const generic = genericNotebookShellMetadata(notebookId, headsHash, routeTitleSegment);
   if (!env.DB) {
     return generic;
   }
@@ -4084,13 +4092,55 @@ async function publicViewerShellMetadata(
   };
 }
 
-function genericNotebookShellMetadata(notebookId: string, headsHash?: string): ViewerShellMetadata {
+function genericNotebookShellMetadata(
+  notebookId: string,
+  headsHash?: string,
+  routeTitleSegment?: string,
+): ViewerShellMetadata {
+  const routeTitle = notebookRouteSegmentTitle(routeTitleSegment);
+  if (routeTitle) {
+    return {
+      title: `nteract notebook: ${routeTitle}`,
+      description:
+        "A hosted nteract notebook. Private notebook metadata is shown after access is verified.",
+    };
+  }
   const suffix = headsHash ? ` @ ${headsHash}` : "";
   return {
     title: `nteract cloud notebook ${notebookId}${suffix}`,
     description:
       "A hosted nteract notebook. Private notebook metadata is shown after access is verified.",
   };
+}
+
+function notebookRouteSegmentTitle(value: string | null | undefined): string | null {
+  const decoded = safeDecodeRouteSegment(value);
+  if (!decoded) {
+    return null;
+  }
+  return decoded
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .map((word) => {
+      if (!word) {
+        return word;
+      }
+      return `${word[0]?.toUpperCase() ?? ""}${word.slice(1).toLowerCase()}`;
+    })
+    .join(" ");
+}
+
+function safeDecodeRouteSegment(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(value).trim() || null;
+  } catch {
+    return value.trim() || null;
+  }
 }
 
 function shortNotebookId(value: string): string {

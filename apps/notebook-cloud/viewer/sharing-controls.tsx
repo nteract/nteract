@@ -361,9 +361,11 @@ export function CloudSharingControls({
         </section>
 
         <form className="cloud-share-invite" onSubmit={submitInvite}>
-          <label>
+          <label htmlFor="cloud-share-invite-email">
             <span>Invite by email</span>
             <input
+              id="cloud-share-invite-email"
+              name="invite-email"
               type="email"
               value={inviteEmail}
               placeholder="name@example.com"
@@ -374,9 +376,11 @@ export function CloudSharingControls({
               }}
             />
           </label>
-          <label>
+          <label htmlFor="cloud-share-invite-scope">
             <span>Access</span>
             <select
+              id="cloud-share-invite-scope"
+              name="invite-scope"
               value={inviteScope}
               onChange={(event) => setInviteScope(event.target.value as CloudShareInviteScope)}
             >

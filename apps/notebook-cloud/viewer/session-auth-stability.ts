@@ -9,11 +9,12 @@ const CLOUD_COOKIE_BLOB_AUTH_STATE: CloudPrototypeAuthState = Object.freeze({
   problem: null,
 });
 
-export function cloudBlobAuthStateForBrowserFetch(
+export function cloudBrowserApiAuthStateForFetch(
   authState: CloudPrototypeAuthState,
 ): CloudPrototypeAuthState {
-  // Cookie/app-session browser fetches do not add OIDC bearer headers, so they
-  // intentionally share one stable auth object across OIDC token refreshes.
+  // Cookie/app-session browser fetches do not add OIDC bearer headers, so
+  // host-owned APIs and blob fetches intentionally share one stable auth
+  // object across OIDC token refreshes.
   if (authState.mode !== "dev") {
     return CLOUD_COOKIE_BLOB_AUTH_STATE;
   }
@@ -25,6 +26,12 @@ export function cloudBlobAuthStateForBrowserFetch(
     requestedScope: authState.requestedScope,
     problem: authState.problem,
   };
+}
+
+export function cloudBlobAuthStateForBrowserFetch(
+  authState: CloudPrototypeAuthState,
+): CloudPrototypeAuthState {
+  return cloudBrowserApiAuthStateForFetch(authState);
 }
 
 export function cloudSyncAuthConnectionKey(

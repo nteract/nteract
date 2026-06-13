@@ -521,9 +521,9 @@ function cloudNotebookDashboardRowContextLabel(notebook: CloudNotebookListItem):
   }
   switch (notebook.scope) {
     case "editor":
-      return "Shared edit access";
+      return "Shared notebook";
     case "viewer":
-      return "Shared view access";
+      return "Shared notebook";
     case "runtime_peer":
       return "Runtime peer access";
     case "owner":
