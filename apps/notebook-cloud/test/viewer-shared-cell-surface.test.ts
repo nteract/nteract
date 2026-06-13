@@ -405,10 +405,12 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
 
   assert.match(sourceText, /const hasNotices =/);
   assert.match(sourceText, /const noticeStatus: ViewerStatus =/);
+  assert.match(sourceText, /projectCloudNotebookViewLoading\(\{/);
   assert.match(
     sourceText,
-    /notebookViewIsLoading && \(status\.kind === "ready" \|\| status\.kind === "empty"\)[\s\S]*Preparing notebook view/,
+    /hasAccessDiagnostic: isCloudConnectionAccessDiagnostic\(connectionError\)/,
   );
+  assert.match(sourceText, /Preparing notebook view/);
   assert.match(sourceText, /const notices = hasNotices \? \(/);
   assert.match(sourceText, /notices=\{notices\}/);
   assert.match(sourceText, /noticesClassName="cloud-notebook-notices"/);
@@ -472,14 +474,19 @@ test("cloud outline keeps iframe heading hashes at parent cell anchors", () => {
 
 test("cloud live materialization skips empty room handles before resolving outputs", () => {
   const sourceText = viewerCorpus;
+  const loadingProjectionSourcePath = new URL(
+    "../viewer/notebook-view-loading.ts",
+    import.meta.url,
+  );
+  const loadingProjectionSourceText = readFileSync(loadingProjectionSourcePath, "utf8");
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
   assert.match(sourceText, /const CLOUD_EMPTY_ROOM_GRACE_MS = 900;/);
   assert.match(sourceText, /const \[emptyRoomGraceElapsed, setEmptyRoomGraceElapsed\]/);
   assert.match(
-    sourceText,
-    /status\.kind === "empty" && notebookCellIds\.length === 0 && !emptyRoomGraceElapsed/,
+    loadingProjectionSourceText,
+    /status\.kind === "empty" && cellCount === 0 && !emptyRoomGraceElapsed/,
   );
   assert.match(sessionSourceText, /const rawCellCount = liveRuntime\.handle\.cell_count\(\);/);
   // The zero-cell guard routes through the displacement policy: a painted

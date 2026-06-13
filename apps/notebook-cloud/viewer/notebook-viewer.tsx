@@ -87,6 +87,8 @@ import {
   cloudNotebookHasNotices,
   shouldShowCloudAnonymousViewerAuthNotice,
 } from "./notices";
+import { isCloudConnectionAccessDiagnostic } from "./connection-diagnostics";
+import { projectCloudNotebookViewLoading } from "./notebook-view-loading";
 import { useOfflineMergeNoticeAutoClear } from "./use-offline-merge-notice";
 import { useSustainedReconnecting } from "./use-sustained-reconnecting";
 import type { ViewerStatus } from "./notice-types";
@@ -1201,14 +1203,17 @@ export function NotebookViewer({
   const notebookHasReadableSnapshot =
     notebookCellIds.length > 0 ||
     (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
-  const notebookViewIsLoading =
-    status.kind === "loading" ||
-    editAccessPending ||
-    (status.kind === "empty" && notebookCellIds.length === 0 && !emptyRoomGraceElapsed) ||
-    (Boolean(connectionError) && !notebookHasReadableSnapshot) ||
-    (shellCapabilities.canEditStructure &&
-      notebookCellIds.length === 0 &&
-      !liveMaterializedRef.current);
+  const notebookViewIsLoading = projectCloudNotebookViewLoading({
+    cellCount: notebookCellIds.length,
+    canEditStructure: shellCapabilities.canEditStructure,
+    connectionError,
+    editAccessPending,
+    emptyRoomGraceElapsed,
+    hasAccessDiagnostic: isCloudConnectionAccessDiagnostic(connectionError),
+    hasReadableSnapshot: notebookHasReadableSnapshot,
+    liveMaterialized: liveMaterializedRef.current,
+    status,
+  });
   const noticeStatus: ViewerStatus =
     notebookViewIsLoading && (status.kind === "ready" || status.kind === "empty")
       ? { kind: "loading", message: "Preparing notebook view..." }
