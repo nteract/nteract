@@ -378,18 +378,24 @@ export class NotebookRoom {
       }
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        await this.checkpointRoomHost(notebookId, materializer, "workstation_attachment_control");
       }
+      const checkpointPersisted = result.changed
+        ? await this.checkpointRoomHost(notebookId, materializer, "workstation_attachment_control")
+        : true;
       cloudLog("debug", "room.workstation_attachment.control_published", {
         notebook_id: notebookId,
         changed: result.changed,
+        checkpoint_persisted: checkpointPersisted,
         duration_ms: durationMs(startedAt),
         outbound_frame_count: result.outbound.length,
         closed_runtime_peers: closeRuntimePeers,
         counter: "workstation_attachment_control_published",
         counter_delta: result.changed ? 1 : 0,
       });
-      return json({ ok: true, changed: result.changed }, 200);
+      return json(
+        { ok: true, changed: result.changed, checkpoint_persisted: checkpointPersisted },
+        200,
+      );
     } catch (error) {
       cloudLog("warn", "room.workstation_attachment.control_publish_failed", {
         notebook_id: notebookId,
@@ -447,12 +453,15 @@ export class NotebookRoom {
       const result = await materializer.reconcileRuntimePeerGone(reason);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        await this.checkpointRoomHost(notebookId, materializer, "runtime_state_repair");
       }
+      const checkpointPersisted = result.changed
+        ? await this.checkpointRoomHost(notebookId, materializer, "runtime_state_repair")
+        : true;
       cloudLog("info", "room.runtime_state_repair.completed", {
         notebook_id: notebookId,
         changed: result.changed,
         forced: force,
+        checkpoint_persisted: checkpointPersisted,
         runtime_peer_count: this.runtimePeerCount(),
         duration_ms: durationMs(startedAt),
         outbound_frame_count: result.outbound.length,
@@ -464,6 +473,7 @@ export class NotebookRoom {
           ok: true,
           changed: result.changed,
           forced: force,
+          checkpoint_persisted: checkpointPersisted,
           runtime_peer_count: this.runtimePeerCount(),
         },
         200,
@@ -1010,6 +1020,13 @@ export class NotebookRoom {
         counter: "peer_sync_failed",
         counter_delta: 1,
       });
+      if (!isRoomStorageDegradedError(error)) {
+        this.removePeer(notebookId, peer, {
+          code: 1011,
+          reason: "room sync failed",
+        });
+        return;
+      }
       this.sendRoomDegradedControl(notebookId, peer, reason);
     }
   }
@@ -1036,9 +1053,10 @@ export class NotebookRoom {
     notebookId: string,
     materializer: RoomMaterializer,
     operation: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await materializer.checkpoint();
+      return true;
     } catch (error) {
       cloudLog("warn", "room.materializer.checkpoint_failed", {
         notebook_id: notebookId,
@@ -1047,6 +1065,7 @@ export class NotebookRoom {
         counter: "materializer_checkpoint_failures",
         counter_delta: 1,
       });
+      return false;
     }
   }
 
@@ -1928,6 +1947,9 @@ function webSocketMessageByteLength(message: string | ArrayBuffer | ArrayBufferV
 
 function isRoomStorageDegradedError(error: unknown): boolean {
   const message = errorMessage(error);
+  // Cloudflare Durable Objects and SQLite surface storage quota/full-disk
+  // failures as message text, not typed errors. Keep this classifier narrow so
+  // only storage pressure enters the recoverable degraded-room path.
   return (
     message.includes("Exceeded allowed rows written in Durable Objects free tier") ||
     message.includes("SQLITE_FULL") ||

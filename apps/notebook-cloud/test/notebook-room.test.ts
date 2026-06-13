@@ -538,6 +538,39 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.match(String(degraded.reason), /Exceeded allowed rows written/);
   });
 
+  it("closes the socket when initial room-host peer sync fails for non-storage errors", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "peer-a",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(peer.id, peer);
+    harness.materializers.set("demo", {
+      syncPeer: async () => {
+        throw new Error("host document could not be materialized");
+      },
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+    });
+
+    await harness.syncPeerFromRoomHost("demo", peer);
+
+    assert.equal(socket.closed, true);
+    assert.equal(socket.closeCode, 1011);
+    assert.equal(socket.closeReason, "room sync failed");
+    assert.equal(harness.peers.has(peer.id), false);
+    assert.equal(socket.sent.length, 0);
+  });
+
   it("reports materialized sync storage degradation without rejecting the frame", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
@@ -811,10 +844,60 @@ describe("NotebookRoom peer lifecycle", () => {
     );
 
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { ok: true, changed: true });
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      changed: true,
+      checkpoint_persisted: true,
+    });
     assert.deepEqual(publishedAttachment, attachment);
     assert.equal(checkpointed, 1, "changed control updates are checkpointed");
     assert.deepEqual([...viewerSocket.sent[0]], [FrameType.RUNTIME_STATE_SYNC, 4, 5, 6]);
+  });
+
+  it("reports workstation attachment control when checkpoint persistence fails", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => {
+        throw new Error("Exceeded allowed rows written in Durable Objects free tier.");
+      },
+      setWorkstationAttachment: async () => ({
+        ...noopMaterializedResult(),
+        changed: true,
+        runtime_state_changed: true,
+      }),
+    } as never);
+
+    const response = await room.fetch(
+      new Request("https://room.internal/internal/n/demo/workstation-attachment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          attachment: {
+            workstation_id: "ws-lab2",
+            display_name: "Lab2 workstation",
+            provider: "runtime_peer",
+            default_environment_label: "Current Python",
+            environment_policy: "current_python",
+            status: "connecting",
+            status_message: "Waiting for Lab2 to accept the compute request.",
+            cpu_count: null,
+            memory_bytes: null,
+            working_directory: null,
+            updated_at: "2026-06-07T00:00:01.000Z",
+          },
+        }),
+      }),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      changed: true,
+      checkpoint_persisted: false,
+    });
   });
 
   it("disconnects runtime peers when replacement workstation attachment control is published", async () => {
@@ -1965,6 +2048,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
       ok: true,
       changed: true,
       forced: false,
+      checkpoint_persisted: true,
       runtime_peer_count: 0,
     });
     assert.equal(repairReason, "manual repair: stale topic-viz runtime");
@@ -2044,6 +2128,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
       ok: true,
       changed: true,
       forced: true,
+      checkpoint_persisted: true,
       runtime_peer_count: 0,
     });
     assert.equal(reconcileCalls, 1);
