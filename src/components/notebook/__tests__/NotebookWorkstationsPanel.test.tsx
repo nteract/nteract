@@ -566,7 +566,8 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByText("Current Python")).toBeVisible();
     expect(screen.getByText("Resources")).toBeVisible();
     expect(screen.getByText("4 CPU / 16 GB RAM")).toBeVisible();
-    expect(screen.getByText("Runtime peers")).toBeVisible();
+    expect(screen.getByText("Compute sessions")).toBeVisible();
+    expect(screen.queryByText("Runtime peers")).not.toBeInTheDocument();
     expect(screen.getByText("1")).toBeVisible();
     expect(screen.queryByText("CPUs")).not.toBeInTheDocument();
     expect(screen.queryByText("RAM")).not.toBeInTheDocument();

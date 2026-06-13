@@ -106,7 +106,7 @@ export function projectNotebookWorkstationPanel(
     facts.push(workstationFact("resource", "Resources", target.resourceLabel));
   }
   if (typeof target.runtimePeerCount === "number" && target.runtimePeerCount > 0) {
-    facts.push(workstationFact("runtime_peers", "Runtime peers", `${target.runtimePeerCount}`));
+    facts.push(workstationFact("runtime_peers", "Compute sessions", `${target.runtimePeerCount}`));
   }
   if (target.workingDirectoryLabel) {
     facts.push(workstationFact("working_directory", "Working dir", target.workingDirectoryLabel));

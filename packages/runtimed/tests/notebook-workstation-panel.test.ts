@@ -206,7 +206,7 @@ describe("projectNotebookWorkstationPanel", () => {
     expect(projection.facts.map((fact) => [fact.kind, fact.label, fact.value])).toEqual([
       ["provider", "Provider", "Cloud room"],
       ["default_environment", "Default env", "Current Python"],
-      ["runtime_peers", "Runtime peers", "2"],
+      ["runtime_peers", "Compute sessions", "2"],
       ["execution_state", "State", "Can run"],
     ]);
   });
