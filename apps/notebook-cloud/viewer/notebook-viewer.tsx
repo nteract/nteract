@@ -211,6 +211,10 @@ export function NotebookViewer({
   const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
     () => cloudNotebookModeFromSearch(window.location.search),
   );
+  // Scope resolution reads the latest selected mode at connect time, but
+  // access-mode correction itself must not rebuild the live-room callback:
+  // viewer-owned `?mode=edit` links are corrected to view mode after access is
+  // known, and making that correction a dependency tears the room down.
   const selectedInteractionModeRef = useRef(selectedInteractionMode);
   useEffect(() => {
     selectedInteractionModeRef.current = selectedInteractionMode;

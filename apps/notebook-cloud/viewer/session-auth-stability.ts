@@ -12,6 +12,8 @@ const CLOUD_COOKIE_BLOB_AUTH_STATE: CloudPrototypeAuthState = Object.freeze({
 export function cloudBlobAuthStateForBrowserFetch(
   authState: CloudPrototypeAuthState,
 ): CloudPrototypeAuthState {
+  // Cookie/app-session browser fetches do not add OIDC bearer headers, so they
+  // intentionally share one stable auth object across OIDC token refreshes.
   if (authState.mode !== "dev") {
     return CLOUD_COOKIE_BLOB_AUTH_STATE;
   }
@@ -29,6 +31,9 @@ export function cloudSyncAuthConnectionKey(
   authState: CloudPrototypeAuthState,
   options: { hasAppSession: boolean },
 ): string {
+  // App-session sockets authenticate with HttpOnly cookies plus a per-attempt
+  // operator nonce, not the localStorage OIDC object. Keep the connection key
+  // stable across equivalent session refreshes.
   if (options.hasAppSession) {
     return "app-session";
   }
