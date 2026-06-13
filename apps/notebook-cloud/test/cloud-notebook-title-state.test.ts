@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   cloudNotebookCatalogResponseTitle,
   cloudNotebookDocumentTitle,
+  cloudNotebookRouteTitleFromPathname,
   cloudNotebookTitleDisplay,
   cloudNotebookUrlAfterRename,
   type CloudNotebookRouteTitle,
@@ -32,6 +33,22 @@ describe("cloud notebook title state", () => {
   it("keeps the browser document title in the notebook title namespace", () => {
     assert.equal(cloudNotebookDocumentTitle("Research Notes"), "nteract notebook: Research Notes");
     assert.equal(cloudNotebookDocumentTitle("   "), "nteract notebook: Untitled notebook");
+  });
+
+  it("projects notebook route titles for startup loading chrome", () => {
+    assert.deepEqual(
+      cloudNotebookRouteTitleFromPathname("/n/01KTZA152886TK1WAHYA48G7HJ/view-only-quill"),
+      {
+        label: "View Only Quill",
+        detail: null,
+        title: "View Only Quill",
+      },
+    );
+    assert.deepEqual(cloudNotebookRouteTitleFromPathname("/n/01KTZA152886TK1WAHYA48G7HJ"), {
+      label: "Cloud Notebook",
+      detail: null,
+      title: "Cloud Notebook",
+    });
   });
 
   it("reads the catalog title only from the requested notebook row", () => {

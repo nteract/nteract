@@ -1,3 +1,5 @@
+import { notebookRouteSegmentTitle } from "../src/notebook-route-title";
+
 export interface CloudNotebookRouteTitle {
   label: string;
   detail: string | null;
@@ -37,6 +39,26 @@ export function cloudNotebookTitleDisplay(
 
 export function cloudNotebookDocumentTitle(displayTitle: string): string {
   return `nteract notebook: ${displayTitle.trim() || UNTITLED_NOTEBOOK_LABEL}`;
+}
+
+export function cloudNotebookRouteTitleFromPathname(pathname: string): CloudNotebookTitleDisplay {
+  const pathParts = pathname.split("/").filter(Boolean);
+  const routeSlug = pathParts[0] === "n" ? pathParts[2] : null;
+  const routeTitle = notebookRouteSegmentTitle(routeSlug);
+
+  if (routeTitle) {
+    return {
+      label: routeTitle,
+      detail: null,
+      title: routeTitle,
+    };
+  }
+
+  return {
+    label: "Cloud Notebook",
+    detail: null,
+    title: "Cloud Notebook",
+  };
 }
 
 export function cloudNotebookCatalogResponseTitle(
