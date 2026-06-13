@@ -195,6 +195,11 @@ describe("late access diagnostics never displace a terminal WASM-failure notice"
       2,
       "both diagnostic resolution sites must stop the pre-ready retry loop",
     );
+    assert.match(
+      sessionSource,
+      /connectionStatusBridge\.noteLiveRoomDisabled\(\);[\s\S]{0,120}?presenceStore\.reduceConnection\("disconnected"\);/,
+      "catalog-resolved no-access routes must render the connection slot as offline, not connecting",
+    );
   });
 });
 

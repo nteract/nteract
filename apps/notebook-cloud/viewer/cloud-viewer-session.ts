@@ -339,12 +339,19 @@ export function useCloudViewerSession({
     ) {
       return;
     }
+    connectionStatusBridge.noteLiveRoomDisabled();
     presenceStore.reduceConnection("disconnected");
     setConnectionError(
       liveRoomDisabledStatus.kind === "error" ? liveRoomDisabledStatus.message : null,
     );
     setStatus(liveRoomDisabledStatus);
-  }, [authRenewalKind, liveRoomDisabledStatus, loadingPolicy.shouldConnectLiveRoom, presenceStore]);
+  }, [
+    authRenewalKind,
+    connectionStatusBridge,
+    liveRoomDisabledStatus,
+    loadingPolicy.shouldConnectLiveRoom,
+    presenceStore,
+  ]);
 
   // Identity of the notebook whose cells are currently painted into the
   // view stores — the flicker gate's "previous" side (see effect cleanup).

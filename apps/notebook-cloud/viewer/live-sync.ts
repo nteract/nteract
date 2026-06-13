@@ -700,6 +700,17 @@ export class CloudConnectionStatusBridge {
     this.next("reconnecting");
   }
 
+  /**
+   * The host has decided not to open a live-room transport for this route.
+   * This is not a reconnect loop: no socket exists, and the user-facing
+   * connection chrome should read as offline instead of the default
+   * first-paint "connecting" state.
+   */
+  noteLiveRoomDisabled(): void {
+    this.detach();
+    this.next("offline");
+  }
+
   /** Stop following the current transport (effect cleanup). */
   detach(): void {
     this.subscription?.unsubscribe();

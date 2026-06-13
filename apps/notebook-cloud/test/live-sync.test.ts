@@ -2030,6 +2030,18 @@ describe("cloud connection status bridge", () => {
     assert.equal(bridge.current, "online");
   });
 
+  it("reports an intentionally disabled live room as offline, not connecting", () => {
+    const bridge = new CloudConnectionStatusBridge();
+    const statuses: string[] = [];
+    bridge.status$.subscribe((status) => statuses.push(status));
+
+    bridge.noteLiveRoomDisabled();
+    bridge.noteLiveRoomDisabled();
+
+    assert.deepEqual(statuses, ["connecting", "offline"]);
+    assert.equal(bridge.current, "offline");
+  });
+
   it("implements the slot source contract: subscribe replay + getCurrent snapshot", () => {
     const bridge = new CloudConnectionStatusBridge();
     const transport = new BehaviorSubject<"connecting" | "online" | "offline" | "reconnecting">(
