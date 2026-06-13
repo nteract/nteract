@@ -539,6 +539,18 @@ test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange
   );
 });
 
+test("cloud notebook list refresh re-establishes app sessions before listing notebooks", () => {
+  const routeSourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
+  const routeSourceText = readFileSync(routeSourcePath, "utf8");
+
+  assert.match(routeSourceText, /import \{ clearCloudAppSession, establishCloudAppSession \}/);
+  assert.match(
+    routeSourceText,
+    /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*establishCloudAppSession\(authState\)[\s\S]*appSessionStatus\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
+    "manual notebook-list refresh should re-run the trusted session exchange so pending invites can resolve",
+  );
+});
+
 test("cloud notebook list waits for app-session cookies before catalog fetches", () => {
   const sourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
