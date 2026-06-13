@@ -570,6 +570,50 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /bootstrap@example\.test|bootstrap-user|Bootstrap User/);
   });
 
+  it("preloads notebook route assets when the bootstrapped notebook home has rows", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "home-preload-user",
+      email: "home-preload@example.test",
+      extraPayload: { email_verified: true },
+      name: "Home Preload User",
+    });
+    const seenAssetPaths: string[] = [];
+    const env = fakeEnv({
+      ...oidcEnv,
+      ASSETS: fakeNotebookRouteAssets(seenAssetPaths),
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "home-preload-visible");
+    seedAcl(env, {
+      notebookId: "home-preload-visible",
+      subject: "user:anaconda:home-preload-user",
+      scope: "owner",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.deepEqual(seenAssetPaths, ["/assets/notebook-route-assets.json"]);
+    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-route\.0123456789abcdef\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/MarkdownText\.0123456789abcdef\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/markdown\.0123456789abcdef\.js"/);
+    assert.match(
+      html,
+      /rel="preload" href="\/assets\/notebook-route\.0123456789abcdef\.css" as="style"/,
+    );
+    assert.match(html, /rel="preload" href="\/assets\/katex\.0123456789abcdef\.css" as="style"/);
+    assert.doesNotMatch(html, /id="nteract-cloud-viewer-config"/);
+    assert.doesNotMatch(html, /runtimed_wasm\.0123456789abcdef/);
+  });
+
   it("bootstraps notebook viewers with safe app session status", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({
       subject: "viewer-bootstrap-user",
@@ -2131,6 +2175,7 @@ describe("Worker artifact routes", () => {
       provider: "runtime_peer",
       default_environment_label: "Current Python",
       environment_policy: "current_python",
+      runtime_session_id: body.job.job_id,
       status: "connecting",
       status_message: "Waiting for Lab2 to accept the compute request.",
       cpu_count: 8,
@@ -2291,6 +2336,7 @@ describe("Worker artifact routes", () => {
       provider: "runtime_peer",
       default_environment_label: "Current Python",
       environment_policy: "current_python",
+      runtime_session_id: "job-1",
       status: "ready",
       status_message: null,
       cpu_count: 8,
@@ -5583,6 +5629,27 @@ function jsonResponse(value: unknown): Response {
       "Content-Type": "application/json",
     },
   });
+}
+
+function fakeNotebookRouteAssets(seenPaths: string[] = []): Env["ASSETS"] {
+  return {
+    fetch: async (request: Request) => {
+      const pathname = new URL(request.url).pathname;
+      seenPaths.push(pathname);
+      if (pathname === "/assets/notebook-route-assets.json") {
+        return jsonResponse({
+          modulepreload: [
+            "notebook-route.0123456789abcdef.js",
+            "MarkdownText.0123456789abcdef.js",
+            "markdown.0123456789abcdef.js",
+            "katex.min.0123456789abcdef.js",
+          ],
+          stylepreload: ["notebook-route.0123456789abcdef.css", "katex.0123456789abcdef.css"],
+        });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  };
 }
 
 async function oidcAppSessionCookie(env: Env, token: string): Promise<string> {

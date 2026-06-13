@@ -4234,6 +4234,14 @@ interface ViewerShellConfig extends Record<string, unknown> {
   workstationsEndpoint?: string;
 }
 
+interface ViewerShellResourceHints {
+  notebookRouteAssets?: ViewerNotebookRouteAssets;
+  outputDocumentBaseUrl?: string | null;
+  rendererAssetsBasePath?: string;
+  runtimedWasmModulePath?: string | null;
+  runtimedWasmPath?: string | null;
+}
+
 function rootNotebookListRedirect(request: Request): Response {
   const url = new URL(request.url);
   url.pathname = "/n";
@@ -4242,6 +4250,9 @@ function rootNotebookListRedirect(request: Request): Response {
 
 async function notebookListViewer(request: Request, env: Env): Promise<Response> {
   const bootstrap = await notebookListBootstrap(request, env);
+  const resourceHints = notebookListBootstrapHasNotebooks(bootstrap)
+    ? { notebookRouteAssets: await notebookRouteAssetNames(env) }
+    : null;
   return responseForRequestMethod(
     request,
     viewerShell(
@@ -4253,6 +4264,7 @@ async function notebookListViewer(request: Request, env: Env): Promise<Response>
       authConfigForRequest(request, env),
       null,
       bootstrap,
+      resourceHints,
     ),
   );
 }
@@ -4341,6 +4353,7 @@ function viewerShell(
   authConfig: unknown,
   config: ViewerShellConfig | null,
   bootstrap: unknown | null = null,
+  resourceHints: ViewerShellResourceHints | null = config,
 ): Response {
   const title = escapeHtml(metadata.title);
   const description = escapeHtml(metadata.description);
@@ -4358,7 +4371,7 @@ function viewerShell(
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style id="nteract-cloud-viewer-theme-surface">${viewerThemeFirstPaintStyle()}</style>
   <script>${viewerThemeBootstrapScript()}</script>
-  ${viewerResourceHints(config)}
+  ${viewerResourceHints(resourceHints)}
   <link rel="stylesheet" href="/assets/notebook-cloud-viewer.css" />
 </head>
 <body>
@@ -4419,13 +4432,18 @@ async function notebookListBootstrap(
   };
 }
 
-function viewerResourceHints(config: ViewerShellConfig | null): string {
+function notebookListBootstrapHasNotebooks(bootstrap: Record<string, unknown> | null): boolean {
+  const notebooks = bootstrap?.notebooks;
+  return Array.isArray(notebooks) && notebooks.length > 0;
+}
+
+function viewerResourceHints(config: ViewerShellResourceHints | null): string {
   const viewerEntryHint = `<link rel="modulepreload" href="/assets/notebook-cloud-viewer.js" />`;
   if (!config) {
     return viewerEntryHint;
   }
 
-  return [
+  const hints = [
     ...preconnectResourceHints([
       config.rendererAssetsBasePath,
       config.outputDocumentBaseUrl,
@@ -4433,11 +4451,20 @@ function viewerResourceHints(config: ViewerShellConfig | null): string {
     ]),
     viewerEntryHint,
     ...notebookRouteResourceHints(config.notebookRouteAssets),
-    `<link rel="modulepreload" href="${escapeHtml(config.runtimedWasmModulePath)}" crossorigin />`,
-    `<link rel="prefetch" href="${escapeHtml(
-      config.runtimedWasmPath,
-    )}" as="fetch" type="application/wasm" crossorigin />`,
-  ].join("\n  ");
+  ];
+  if (config.runtimedWasmModulePath) {
+    hints.push(
+      `<link rel="modulepreload" href="${escapeHtml(config.runtimedWasmModulePath)}" crossorigin />`,
+    );
+  }
+  if (config.runtimedWasmPath) {
+    hints.push(
+      `<link rel="prefetch" href="${escapeHtml(
+        config.runtimedWasmPath,
+      )}" as="fetch" type="application/wasm" crossorigin />`,
+    );
+  }
+  return hints.join("\n  ");
 }
 
 function notebookRouteResourceHints(assets: ViewerNotebookRouteAssets | undefined): string[] {
