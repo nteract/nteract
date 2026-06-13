@@ -5,6 +5,7 @@ export interface CloudOidcAuthConfig {
   issuer: string;
   clientId: string;
   redirectUri: string;
+  providerLabel?: string;
   scope?: string;
 }
 
@@ -58,6 +59,7 @@ export function normalizeOidcAuthConfig(
   const issuer = input?.issuer?.trim();
   const clientId = input?.clientId?.trim();
   const redirectUri = input?.redirectUri?.trim();
+  const providerLabel = input?.providerLabel?.trim();
   if (!issuer || !clientId || !redirectUri) {
     return null;
   }
@@ -65,6 +67,7 @@ export function normalizeOidcAuthConfig(
     issuer,
     clientId,
     redirectUri,
+    ...(providerLabel ? { providerLabel } : {}),
     scope: input?.scope?.trim() || DEFAULT_OIDC_SCOPE,
   };
 }

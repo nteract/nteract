@@ -374,24 +374,24 @@ export function cloudNotebookSignInCopy(
   if (action === "starting") {
     return {
       label: "Signing in",
-      title: "Starting Anaconda sign-in",
+      title: "Starting sign-in",
     };
   }
   if (state.mode === "oidc_expired") {
     return {
       label: "Sign in again",
-      title: "Renew your Anaconda sign-in for this notebook",
+      title: "Renew your sign-in for this notebook",
     };
   }
   if (state.mode === "invalid") {
     return {
       label: "Sign in",
-      title: "Replace the invalid stored auth state with Anaconda sign-in",
+      title: "Replace the invalid stored auth state with sign-in",
     };
   }
   return {
     label: "Sign in",
-    title: "Sign in with Anaconda",
+    title: "Sign in",
   };
 }
 

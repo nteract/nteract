@@ -407,20 +407,13 @@ function CloudNotebookSignedOutPanel({
       <div className="cloud-notebook-signed-out-copy">
         <div className="cloud-notebook-signed-out-kicker">
           <Sparkles aria-hidden="true" />
-          Cloud preview
+          NTERACT
         </div>
-        <h2 id="cloud-notebook-signed-out-title">Bring a notebook room to life.</h2>
-        <p>
-          Sign in to create live notebooks, share work, and attach compute when the document is
-          ready to run.
-        </p>
+        <h2 id="cloud-notebook-signed-out-title">Bring computation to life.</h2>
+        <p>Sign in to create live notebooks, share work with colleagues, and attach compute.</p>
       </div>
       <div className="cloud-notebook-signed-out-actions">
-        <CloudNotebookSignInButton
-          authConfig={authConfig}
-          authState={authState}
-          idleLabel="Sign in with Anaconda"
-        />
+        <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
         <a href="https://nteract.io/" target="_blank" rel="noreferrer">
           Visit nteract.io
           <ArrowUpRight aria-hidden="true" />

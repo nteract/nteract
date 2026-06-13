@@ -28,11 +28,13 @@ describe("cloud OIDC browser auth", () => {
       normalizeOidcAuthConfig({
         issuer: " https://auth.stage.anaconda.com/api/auth ",
         clientId: " client-id ",
+        providerLabel: " Anaconda ",
         redirectUri: " https://preview.runt.run/oidc ",
       }),
       {
         issuer: "https://auth.stage.anaconda.com/api/auth",
         clientId: "client-id",
+        providerLabel: "Anaconda",
         redirectUri: "https://preview.runt.run/oidc",
         scope: "openid email profile offline_access",
       },

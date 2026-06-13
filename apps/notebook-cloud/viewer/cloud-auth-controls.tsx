@@ -14,6 +14,11 @@ import {
 import { beginOidcLogin } from "./oidc-auth";
 import type { CloudViewerAuthConfig } from "./cloud-viewer-types";
 
+export function cloudNotebookSignInLabel(authConfig: CloudViewerAuthConfig): string {
+  const providerLabel = authConfig.oidc?.providerLabel?.trim();
+  return providerLabel ? `Sign in with ${providerLabel}` : "Sign in";
+}
+
 export function CloudNotebookEditModeButton({
   authState,
   hasAppSession,
@@ -73,7 +78,10 @@ export function CloudNotebookSignInButton({
     return null;
   }
   const copy = cloudNotebookSignInCopy(authState, authAction, error);
-  const label = idleLabel && authAction === "idle" && !error ? idleLabel : copy.label;
+  const label =
+    authAction === "idle" && !error
+      ? (idleLabel ?? cloudNotebookSignInLabel(authConfig))
+      : copy.label;
 
   const beginOidcAuth = async () => {
     if (!authConfig.oidc) return;

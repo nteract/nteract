@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { KeyRound, LogIn, LogOut, RotateCcw, UserRound } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import { clearCloudAppSession } from "./app-session";
+import { cloudNotebookSignInLabel } from "./cloud-auth-controls";
 import { clearCloudPrototypeDevAuth, prepareCloudOidcViewerLogin } from "./collaborator-auth";
 import { beginOidcLogin } from "./oidc-auth";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
@@ -149,7 +150,7 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
                     ? "Sign-in unavailable"
                     : hasAppSession
                       ? "Renew sign-in"
-                      : "Sign in with Anaconda"}
+                      : cloudNotebookSignInLabel(authConfig)}
               </button>
             )}
             {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (

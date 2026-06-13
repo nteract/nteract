@@ -336,11 +336,11 @@ describe("cloud collaborator auth", () => {
     const anonymous = readCloudPrototypeAuth(new MemoryStorage());
     assert.deepEqual(cloudNotebookSignInCopy(anonymous, "idle"), {
       label: "Sign in",
-      title: "Sign in with Anaconda",
+      title: "Sign in",
     });
     assert.deepEqual(cloudNotebookSignInCopy(anonymous, "starting"), {
       label: "Signing in",
-      title: "Starting Anaconda sign-in",
+      title: "Starting sign-in",
     });
     assert.deepEqual(cloudNotebookSignInCopy(anonymous, "idle", "network failed"), {
       label: "Sign-in failed",
@@ -360,7 +360,7 @@ describe("cloud collaborator auth", () => {
 
     assert.deepEqual(cloudNotebookSignInCopy(readCloudPrototypeAuth(storage), "idle"), {
       label: "Sign in again",
-      title: "Renew your Anaconda sign-in for this notebook",
+      title: "Renew your sign-in for this notebook",
     });
   });
 

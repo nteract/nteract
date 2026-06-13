@@ -4226,6 +4226,7 @@ function preconnectResourceHints(urls: Array<string | null | undefined>): string
 function authConfigForRequest(request: Request, env: Env): { oidc: Record<string, string> | null } {
   const issuer = env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim();
   const clientId = env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim();
+  const providerLabel = env.NOTEBOOK_CLOUD_OIDC_PROVIDER_LABEL?.trim();
   if (!issuer || !clientId) {
     return { oidc: null };
   }
@@ -4235,6 +4236,7 @@ function authConfigForRequest(request: Request, env: Env): { oidc: Record<string
       clientId,
       redirectUri:
         env.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI?.trim() || new URL("/oidc", request.url).href,
+      ...(providerLabel ? { providerLabel } : {}),
     },
   };
 }
