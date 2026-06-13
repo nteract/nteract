@@ -16,6 +16,7 @@ import {
   parsePositiveInteger,
   retryCooldownMs,
   retryAfterMs,
+  runtimePeerExitMessage,
   stableWorkstationId,
 } from "./hosted-workstation-agent-core.mjs";
 import { notebookCloudBaseUrl, notebookCloudWorkspaceRoot } from "./local-dev.mjs";
@@ -347,8 +348,7 @@ async function watchRuntimePeer(jobId, active) {
     activeJobs.delete(jobId);
     await patchAttachJob(jobId, {
       status: code === 0 ? "completed" : "failed",
-      error_message:
-        code === 0 ? null : `Runtime peer exited with code=${code}, signal=${signal ?? ""}`,
+      error_message: code === 0 ? null : runtimePeerExitMessage(code, signal),
     }).catch((error) => {
       console.error(
         JSON.stringify({
