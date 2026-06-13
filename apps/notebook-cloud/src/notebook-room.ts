@@ -547,27 +547,33 @@ export class NotebookRoom {
         restored_peer_count: this.peers.size,
       });
     }
-    await Promise.all(
-      restored.map(async ({ notebookId, peer }) => {
-        if (peer.identity.scope === "runtime_peer") {
-          const authorityError = await this.runtimePeerAuthorityError(notebookId, peer.workstation);
-          if (authorityError) {
-            cloudLog("warn", "room.runtime_peer.rejected_on_restore", {
-              notebook_id: notebookId,
-              peer_id: peer.id,
-              principal: peer.identity.principal,
-              reason: authorityError,
-              workstation_id: runtimePeerWorkstationId(peer.workstation),
-              counter: "runtime_peers_rejected_on_restore",
-              counter_delta: 1,
-            });
-            this.removePeer(notebookId, peer, {
-              code: 1008,
-              reason: "workstation mismatch",
-            });
-            return;
-          }
+    const authorizedRestored: Array<{ notebookId: string; peer: Peer }> = [];
+    for (const { notebookId, peer } of restored) {
+      if (peer.identity.scope === "runtime_peer") {
+        const authorityError = await this.runtimePeerAuthorityError(notebookId, peer.workstation);
+        if (authorityError) {
+          cloudLog("warn", "room.runtime_peer.rejected_on_restore", {
+            notebook_id: notebookId,
+            peer_id: peer.id,
+            principal: peer.identity.principal,
+            reason: authorityError,
+            workstation_id: runtimePeerWorkstationId(peer.workstation),
+            counter: "runtime_peers_rejected_on_restore",
+            counter_delta: 1,
+          });
+          this.removePeer(notebookId, peer, {
+            code: 1008,
+            reason: "workstation mismatch",
+          });
+          continue;
         }
+      }
+      authorizedRestored.push({ notebookId, peer });
+    }
+
+    const activeRestored = this.removeDuplicateRestoredRuntimePeers(authorizedRestored);
+    await Promise.all(
+      activeRestored.map(async ({ notebookId, peer }) => {
         await this.syncPeerFromRoomHost(notebookId, peer);
         if (peer.identity.scope === "runtime_peer") {
           this.refreshRuntimePeerWatch(notebookId);
@@ -575,6 +581,62 @@ export class NotebookRoom {
         }
       }),
     );
+  }
+
+  private removeDuplicateRestoredRuntimePeers(
+    restored: Array<{ notebookId: string; peer: Peer }>,
+  ): Array<{ notebookId: string; peer: Peer }> {
+    const latestByWorkstation = new Map<string, { notebookId: string; peer: Peer }>();
+    for (const restoredPeer of restored) {
+      const { notebookId, peer } = restoredPeer;
+      if (peer.identity.scope !== "runtime_peer") {
+        continue;
+      }
+      const workstationId = runtimePeerWorkstationId(peer.workstation);
+      if (!workstationId) {
+        continue;
+      }
+      const key = `${notebookId}\0${workstationId}`;
+      const latest = latestByWorkstation.get(key);
+      if (!latest || peer.connectedAt >= latest.peer.connectedAt) {
+        latestByWorkstation.set(key, restoredPeer);
+      }
+    }
+
+    const active: Array<{ notebookId: string; peer: Peer }> = [];
+    for (const restoredPeer of restored) {
+      const { notebookId, peer } = restoredPeer;
+      if (peer.identity.scope !== "runtime_peer") {
+        active.push(restoredPeer);
+        continue;
+      }
+      const workstationId = runtimePeerWorkstationId(peer.workstation);
+      if (!workstationId) {
+        active.push(restoredPeer);
+        continue;
+      }
+      const key = `${notebookId}\0${workstationId}`;
+      const latest = latestByWorkstation.get(key);
+      if (latest?.peer.id === peer.id) {
+        active.push(restoredPeer);
+        continue;
+      }
+      this.removePeer(notebookId, peer, {
+        code: DUPLICATE_RUNTIME_PEER_CLOSE_CODE,
+        reason: DUPLICATE_RUNTIME_PEER_CLOSE_REASON,
+        suppressRuntimePeerWatch: true,
+      });
+      cloudLog("warn", "room.runtime_peer.duplicate_replaced_on_restore", {
+        notebook_id: notebookId,
+        closed_peer_id: peer.id,
+        replacement_peer_id: latest?.peer.id,
+        workstation_id: workstationId,
+        counter: "runtime_peer_restore_duplicates_replaced",
+        counter_delta: 1,
+      });
+    }
+
+    return active;
   }
 
   private acceptPeerSocket(notebookId: string, peer: Peer): void {
