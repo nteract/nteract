@@ -21,8 +21,36 @@ test("cloud notebook edit links stay view-only for viewers without an access req
   );
   assert.equal(
     cloudNotebookInteractionModeForAccess({
+      accessRequestStatus: "denied",
+      catalogResolved: true,
+      connectionScope: null,
+      selectedMode: "edit",
+    }),
+    "view",
+  );
+  assert.equal(
+    cloudNotebookInteractionModeForAccess({
+      accessRequestStatus: "dismissed",
+      catalogResolved: true,
+      connectionScope: null,
+      selectedMode: "edit",
+    }),
+    "view",
+  );
+  assert.equal(
+    cloudNotebookInteractionModeForAccess({
       accessRequestStatus: "pending",
+      catalogResolved: true,
       connectionScope: "viewer",
+      selectedMode: "edit",
+    }),
+    "edit",
+  );
+  assert.equal(
+    cloudNotebookInteractionModeForAccess({
+      accessRequestStatus: "pending",
+      catalogResolved: true,
+      connectionScope: null,
       selectedMode: "edit",
     }),
     "edit",
@@ -76,5 +104,14 @@ test("cloud notebook edit links stay view-only for viewers without an access req
       selectedMode: "view",
     }),
     "view",
+  );
+  assert.equal(
+    cloudNotebookInteractionModeForAccess({
+      accessRequestStatus: null,
+      catalogResolved: false,
+      connectionScope: null,
+      selectedMode: "edit",
+    }),
+    "edit",
   );
 });

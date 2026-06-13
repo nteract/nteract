@@ -554,6 +554,7 @@ export function NotebookViewer({
   const selectedInteractionModeForAccess = cloudNotebookInteractionModeForAccess({
     accessRequestStatus: effectiveAccessRequest?.status,
     accessScope: accessConnectionScope,
+    catalogResolved: catalogAccessResolved,
     connectionScope,
     selectedMode: selectedInteractionMode,
   });
