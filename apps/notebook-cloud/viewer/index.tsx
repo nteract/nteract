@@ -1,14 +1,9 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
-import { MediaProvider } from "@/components/outputs/media-provider";
 import { ErrorBoundary } from "@/lib/error-boundary";
-import { setLoggerHost, setOpenUrlHost } from "../../notebook/src/notebook-surface";
-import { rendererAssetBasePathForProvider } from "./renderer-assets";
-import { loadSupplementalViewerCss } from "./supplemental-css";
+import { setLoggerHost } from "../../notebook/src/lib/logger";
+import { setOpenUrlHost } from "../../notebook/src/lib/open-url";
 import { installDocumentThemeSync } from "./theme";
-import { CLOUD_WIDGET_RENDERERS, CloudWidgetStoreProvider } from "./widget-runtime";
-import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
   isHomePath,
   isNotebookListPath,
@@ -17,13 +12,16 @@ import {
   loadViewerRuntime,
   requireElement,
 } from "./cloud-viewer-config";
-import type { CloudViewerConfig } from "./cloud-viewer-session";
 import type { CloudViewerAuthConfig, ViewerRuntimeState } from "./cloud-viewer-types";
 import { CloudHomeView } from "./home-view";
 import { CloudNotebookListView } from "./notebook-list-view";
+import { loadNotebookRouteModule } from "./notebook-route-preload";
 import { OidcCallbackView } from "./oidc-callback-view";
-import { NotebookViewer } from "./notebook-viewer";
 import "./index.css";
+
+const NotebookRoute = lazy(() =>
+  loadNotebookRouteModule().then((module) => ({ default: module.NotebookRoute })),
+);
 
 setLoggerHost({
   debug: () => {},
@@ -71,42 +69,9 @@ function App() {
   }
 
   return (
-    <CloudNotebookProviders config={runtimeState.runtime.config}>
-      <NotebookViewer runtime={runtimeState.runtime} authConfig={authConfig} />
-    </CloudNotebookProviders>
-  );
-}
-
-function CloudNotebookProviders({
-  children,
-  config,
-}: {
-  children: ReactNode;
-  config: CloudViewerConfig;
-}) {
-  useEffect(() => {
-    loadSupplementalViewerCss();
-  }, []);
-
-  // Manifest filenames (content-hashed when deployed) keep the renderer
-  // bundle on the asset origin's immutable cache path; the stable names
-  // remain the fallback for shells without manifest names.
-  const rendererAssetNames = useMemo(
-    () => ({ js: config.rendererAssets.js, css: config.rendererAssets.css }),
-    [config.rendererAssets.css, config.rendererAssets.js],
-  );
-
-  return (
-    <IsolatedRendererProvider
-      basePath={rendererAssetBasePathForProvider(config.rendererAssetsBasePath)}
-      assetNames={rendererAssetNames}
-    >
-      <CloudWidgetStoreProvider>
-        <MediaProvider priority={CLOUD_VIEWER_PRIORITY} renderers={CLOUD_WIDGET_RENDERERS}>
-          {children}
-        </MediaProvider>
-      </CloudWidgetStoreProvider>
-    </IsolatedRendererProvider>
+    <Suspense fallback={<ViewerStartupLoading />}>
+      <NotebookRoute runtime={runtimeState.runtime} authConfig={authConfig} />
+    </Suspense>
   );
 }
 
@@ -118,6 +83,19 @@ function ViewerStartupError({ message }: { message: string }) {
       </header>
       <div className="cloud-state" data-kind="error">
         {message}
+      </div>
+    </main>
+  );
+}
+
+function ViewerStartupLoading() {
+  return (
+    <main className="flex min-h-screen w-full flex-col px-8 py-4 pr-4">
+      <header className="mb-4">
+        <h1 className="text-2xl font-semibold tracking-normal">nteract cloud notebook</h1>
+      </header>
+      <div className="cloud-state" role="status">
+        Loading notebook.
       </div>
     </main>
   );
