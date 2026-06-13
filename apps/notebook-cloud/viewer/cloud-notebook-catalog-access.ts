@@ -1,5 +1,6 @@
 import type { ConnectionScope } from "../src/auth-shared";
 import type { NotebookInteractionMode } from "@/components/notebook";
+import { CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC } from "./connection-diagnostics";
 import { isCloudNotebookListItem, type CloudNotebookListItem } from "./notebook-dashboard";
 
 export type CloudNotebookCatalogAccessScope = Exclude<
@@ -27,6 +28,18 @@ export interface CloudNotebookSyncScopeProjectionInput {
   catalogResolved: boolean;
   catalogScope?: CloudNotebookCatalogAccessScope | null;
   selectedMode: NotebookInteractionMode;
+}
+
+export interface CloudNotebookLiveRoomConnectionProjectionInput {
+  canUseAuthenticatedCloudApi: boolean;
+  catalogLoadFailed?: boolean;
+  catalogResolved: boolean;
+  catalogScope?: CloudNotebookCatalogAccessScope | null;
+}
+
+export interface CloudNotebookLiveRoomConnectionPolicy {
+  shouldConnectLiveRoom: boolean;
+  disabledStatus: { kind: "error" | "loading"; message: string } | null;
 }
 
 export function cloudNotebookCatalogScopeFromList(
@@ -94,6 +107,27 @@ export function cloudNotebookSyncScopeForCatalogAccess({
     return "viewer";
   }
   return selectedMode === "edit" ? "owner" : "viewer";
+}
+
+export function cloudNotebookLiveRoomConnectionPolicy({
+  canUseAuthenticatedCloudApi,
+  catalogLoadFailed = false,
+  catalogResolved,
+  catalogScope = null,
+}: CloudNotebookLiveRoomConnectionProjectionInput): CloudNotebookLiveRoomConnectionPolicy {
+  if (!canUseAuthenticatedCloudApi || catalogLoadFailed || catalogScope) {
+    return { shouldConnectLiveRoom: true, disabledStatus: null };
+  }
+  if (!catalogResolved) {
+    return {
+      shouldConnectLiveRoom: false,
+      disabledStatus: { kind: "loading", message: "Checking notebook access..." },
+    };
+  }
+  return {
+    shouldConnectLiveRoom: false,
+    disabledStatus: { kind: "error", message: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC },
+  };
 }
 
 export function cloudNotebookScopeCanEditDocument(

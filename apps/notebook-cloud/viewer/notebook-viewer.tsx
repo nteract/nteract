@@ -100,6 +100,7 @@ import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
 import { projectCloudAccessRequestTransition } from "./cloud-access-request-state";
 import {
   cloudNotebookAccessScopeForShell,
+  cloudNotebookLiveRoomConnectionPolicy,
   cloudNotebookScopeCanEditDocument,
   cloudNotebookSyncScopeForCatalogAccess,
   createCloudNotebookCatalogAccessLoader,
@@ -168,7 +169,7 @@ export function NotebookViewer({
 }) {
   const { config } = runtime;
   const routeTitle = useMemo(() => cloudNotebookRouteTitle(), []);
-  const loadingPolicy = cloudViewerLoadingPolicy(config);
+  const loadingPolicy = useMemo(() => cloudViewerLoadingPolicy(config), [config.headsHash]);
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { store: widgetStore } = useWidgetStoreRequired();
   const appSessionStatus = useCloudAppSessionStatus(config.session ?? null);
@@ -214,6 +215,8 @@ export function NotebookViewer({
   );
   const [catalogAccessScope, setCatalogAccessScope] =
     useState<CloudNotebookCatalogAccessScope | null>(null);
+  const [catalogAccessResolved, setCatalogAccessResolved] = useState(false);
+  const [catalogAccessLoadFailed, setCatalogAccessLoadFailed] = useState(false);
   const [accessRequestError, setAccessRequestError] = useState<string | null>(null);
   const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
     () => cloudNotebookModeFromSearch(window.location.search),
@@ -237,6 +240,10 @@ export function NotebookViewer({
       authState.mode === "dev" ? authState.problem : null,
     ],
   );
+  const canUseAuthenticatedCloudApi = cloudBrowserCanUseAuthenticatedApi({
+    authState,
+    hasAppSession,
+  });
   const catalogAccessLoader = useMemo(
     () =>
       createCloudNotebookCatalogAccessLoader({
@@ -259,6 +266,31 @@ export function NotebookViewer({
         },
       }),
     [browserApiAuthState, config.notebookId],
+  );
+  const catalogLiveRoomPolicy = useMemo(
+    () =>
+      cloudNotebookLiveRoomConnectionPolicy({
+        canUseAuthenticatedCloudApi,
+        catalogLoadFailed: catalogAccessLoadFailed,
+        catalogResolved: catalogAccessResolved,
+        catalogScope: catalogAccessScope,
+      }),
+    [
+      canUseAuthenticatedCloudApi,
+      catalogAccessLoadFailed,
+      catalogAccessResolved,
+      catalogAccessScope,
+    ],
+  );
+  const effectiveLoadingPolicy = useMemo(
+    () => ({
+      ...loadingPolicy,
+      shouldConnectLiveRoom:
+        loadingPolicy.shouldConnectLiveRoom && catalogLiveRoomPolicy.shouldConnectLiveRoom,
+      initialStatusMessage:
+        catalogLiveRoomPolicy.disabledStatus?.message ?? loadingPolicy.initialStatusMessage,
+    }),
+    [catalogLiveRoomPolicy, loadingPolicy],
   );
   const blobResolver = useMemo(
     () =>
@@ -333,7 +365,10 @@ export function NotebookViewer({
     blobResolver,
     config,
     hasAppSession,
-    loadingPolicy,
+    loadingPolicy: effectiveLoadingPolicy,
+    liveRoomDisabledStatus: loadingPolicy.shouldConnectLiveRoom
+      ? catalogLiveRoomPolicy.disabledStatus
+      : null,
     preloadSiftWasm,
     resolveSyncAuth,
     widgetStore,
@@ -452,24 +487,32 @@ export function NotebookViewer({
   }, []);
   const hasBrowserAppIdentity =
     hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
-  const canUseAuthenticatedCloudApi = cloudBrowserCanUseAuthenticatedApi({
-    authState,
-    hasAppSession,
-  });
   useEffect(() => {
     if (!canUseAuthenticatedCloudApi) {
       setCatalogAccessScope(null);
+      setCatalogAccessResolved(false);
+      setCatalogAccessLoadFailed(false);
       return;
     }
 
     let cancelled = false;
+    setCatalogAccessScope(null);
+    setCatalogAccessResolved(false);
+    setCatalogAccessLoadFailed(false);
     void (async () => {
       try {
         const access = await catalogAccessLoader.load();
         if (!cancelled) {
           setCatalogAccessScope(access.catalogScope);
+          setCatalogAccessResolved(access.catalogResolved);
+          setCatalogAccessLoadFailed(false);
         }
       } catch {
+        if (!cancelled) {
+          setCatalogAccessScope(null);
+          setCatalogAccessResolved(false);
+          setCatalogAccessLoadFailed(true);
+        }
         return;
       }
     })();

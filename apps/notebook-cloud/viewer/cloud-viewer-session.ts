@@ -181,6 +181,7 @@ interface UseCloudViewerSessionOptions {
   config: CloudViewerConfig;
   hasAppSession?: boolean;
   loadingPolicy: CloudViewerLoadingPolicy;
+  liveRoomDisabledStatus?: Extract<ViewerStatus, { kind: "error" | "loading" }> | null;
   preloadSiftWasm: (cells: readonly ResolvedCell[]) => void;
   resolveSyncAuth?: (sessionId: string) => Promise<CloudSyncAuth>;
   widgetStore: WidgetStore;
@@ -204,6 +205,7 @@ export function useCloudViewerSession({
   config,
   hasAppSession = false,
   loadingPolicy,
+  liveRoomDisabledStatus = null,
   preloadSiftWasm,
   resolveSyncAuth,
   widgetStore,
@@ -328,6 +330,21 @@ export function useCloudViewerSession({
       setConnectAttempt((attempt) => attempt + 1);
     }
   }, [authRenewalKind, loadingPolicy.shouldConnectLiveRoom]);
+
+  useEffect(() => {
+    if (
+      authRenewalKind === "refreshing" ||
+      loadingPolicy.shouldConnectLiveRoom ||
+      liveRoomDisabledStatus === null
+    ) {
+      return;
+    }
+    presenceStore.reduceConnection("disconnected");
+    setConnectionError(
+      liveRoomDisabledStatus.kind === "error" ? liveRoomDisabledStatus.message : null,
+    );
+    setStatus(liveRoomDisabledStatus);
+  }, [authRenewalKind, liveRoomDisabledStatus, loadingPolicy.shouldConnectLiveRoom, presenceStore]);
 
   // Identity of the notebook whose cells are currently painted into the
   // view stores — the flicker gate's "previous" side (see effect cleanup).

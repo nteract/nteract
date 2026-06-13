@@ -4,10 +4,12 @@ import {
   cloudNotebookAccessScopeForShell,
   cloudNotebookCatalogAccessFromList,
   cloudNotebookCatalogScopeFromList,
+  cloudNotebookLiveRoomConnectionPolicy,
   cloudNotebookScopeCanEditDocument,
   cloudNotebookSyncScopeForCatalogAccess,
   createCloudNotebookCatalogAccessLoader,
 } from "../viewer/cloud-notebook-catalog-access";
+import { CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC } from "../viewer/connection-diagnostics";
 import type { CloudNotebookListItem } from "../viewer/notebook-dashboard";
 
 describe("cloud notebook catalog access projection", () => {
@@ -143,6 +145,70 @@ describe("cloud notebook catalog access projection", () => {
         selectedMode: "edit",
       }),
       "owner",
+    );
+  });
+
+  it("holds live-room connection while authenticated catalog access is still loading", () => {
+    assert.deepEqual(
+      cloudNotebookLiveRoomConnectionPolicy({
+        canUseAuthenticatedCloudApi: true,
+        catalogResolved: false,
+        catalogScope: null,
+      }),
+      {
+        shouldConnectLiveRoom: false,
+        disabledStatus: { kind: "loading", message: "Checking notebook access..." },
+      },
+    );
+  });
+
+  it("blocks live-room connection once authenticated catalog access resolves without the notebook", () => {
+    assert.deepEqual(
+      cloudNotebookLiveRoomConnectionPolicy({
+        canUseAuthenticatedCloudApi: true,
+        catalogResolved: true,
+        catalogScope: null,
+      }),
+      {
+        shouldConnectLiveRoom: false,
+        disabledStatus: { kind: "error", message: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC },
+      },
+    );
+  });
+
+  it("connects the live room when authenticated catalog access grants any browser scope", () => {
+    for (const catalogScope of ["viewer", "editor", "owner"] as const) {
+      assert.deepEqual(
+        cloudNotebookLiveRoomConnectionPolicy({
+          canUseAuthenticatedCloudApi: true,
+          catalogResolved: true,
+          catalogScope,
+        }),
+        { shouldConnectLiveRoom: true, disabledStatus: null },
+      );
+    }
+  });
+
+  it("keeps live-room fallback when authenticated catalog access could not be loaded", () => {
+    assert.deepEqual(
+      cloudNotebookLiveRoomConnectionPolicy({
+        canUseAuthenticatedCloudApi: true,
+        catalogLoadFailed: true,
+        catalogResolved: false,
+        catalogScope: null,
+      }),
+      { shouldConnectLiveRoom: true, disabledStatus: null },
+    );
+  });
+
+  it("does not gate anonymous or prototype live-room access on the authenticated catalog", () => {
+    assert.deepEqual(
+      cloudNotebookLiveRoomConnectionPolicy({
+        canUseAuthenticatedCloudApi: false,
+        catalogResolved: false,
+        catalogScope: null,
+      }),
+      { shouldConnectLiveRoom: true, disabledStatus: null },
     );
   });
 });
