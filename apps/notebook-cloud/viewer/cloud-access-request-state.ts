@@ -30,7 +30,15 @@ export interface CloudAccessRequestLoadProjectionInput {
   canUseAuthenticatedCloudApi: boolean;
   catalogGrantsDocumentEdit: boolean;
   connectionScope: string | null;
+  editAccessRequested: boolean;
   hasBrowserAppIdentity: boolean;
+  selectedMode: CloudNotebookUrlMode;
+}
+
+export interface CloudEditModeFallbackProjectionInput {
+  catalogGrantsDocumentEdit: boolean;
+  catalogResolved: boolean;
+  editAccessRequested: boolean;
   selectedMode: CloudNotebookUrlMode;
 }
 
@@ -100,15 +108,28 @@ export function shouldLoadOwnCloudAccessRequest({
   canUseAuthenticatedCloudApi,
   catalogGrantsDocumentEdit,
   connectionScope,
+  editAccessRequested,
   hasBrowserAppIdentity,
   selectedMode,
 }: CloudAccessRequestLoadProjectionInput): boolean {
   return (
     selectedMode === "edit" &&
+    editAccessRequested &&
     connectionScope === "viewer" &&
     hasBrowserAppIdentity &&
     canUseAuthenticatedCloudApi &&
     !catalogGrantsDocumentEdit
+  );
+}
+
+export function shouldFallbackCloudEditUrlToView({
+  catalogGrantsDocumentEdit,
+  catalogResolved,
+  editAccessRequested,
+  selectedMode,
+}: CloudEditModeFallbackProjectionInput): boolean {
+  return (
+    selectedMode === "edit" && catalogResolved && !catalogGrantsDocumentEdit && !editAccessRequested
   );
 }
 
