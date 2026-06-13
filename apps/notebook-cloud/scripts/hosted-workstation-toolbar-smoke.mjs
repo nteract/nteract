@@ -851,13 +851,16 @@ async function ensureCodeCell(page, timeout) {
 async function ensureCodeCellCount(page, count, timeout) {
   return smokePhase(`ensure ${count} code cells`, async () => {
     const cells = page.locator('[data-cell-type="code"]');
-    while ((await cells.count()) < count) {
+    let currentCount = await cells.count();
+    while (currentCount < count) {
+      const expectedCount = currentCount + 1;
       await page.getByTestId("add-code-cell-button").click({ timeout });
       await page.waitForFunction(
         (expected) => document.querySelectorAll('[data-cell-type="code"]').length >= expected,
-        count,
+        expectedCount,
         { timeout },
       );
+      currentCount = await cells.count();
     }
     return cells;
   });

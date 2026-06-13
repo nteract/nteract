@@ -303,14 +303,15 @@ fn cloud_frame_rejection_error(payload: &[u8]) -> Option<std::io::Error> {
 
 fn terminal_cloud_close_error(code: Option<u16>, reason: &str) -> Option<std::io::Error> {
     let reason = reason.trim();
-    let terminal_by_code = matches!(code, Some(1008));
     let terminal_by_reason = matches!(
         reason,
-        "replaced by newer runtime peer"
+        "too many rejected frames"
+            | "replaced by newer runtime peer"
             | "workstation attachment replaced"
             | "workstation restart requested"
+            | "workstation mismatch"
     );
-    if !terminal_by_code && !terminal_by_reason {
+    if !terminal_by_reason {
         return None;
     }
 
@@ -908,6 +909,8 @@ mod tests {
         let policy = terminal_cloud_close_error(Some(1008), "too many rejected frames")
             .expect("policy close should be terminal");
         assert_eq!(policy.kind(), std::io::ErrorKind::PermissionDenied);
+
+        assert!(terminal_cloud_close_error(Some(1008), "runtime state repair").is_none());
 
         let replacement = terminal_cloud_close_error(Some(1000), "replaced by newer runtime peer")
             .expect("replacement reason should be terminal even on normal close code");

@@ -38,6 +38,7 @@ import {
   type CloudPrototypeAuthState,
   type CloudSyncAuth,
 } from "./collaborator-auth";
+import { cloudSyncAuthConnectionKey } from "./session-auth-stability";
 import { materializeCloudNotebookView } from "./cloud-view-model";
 import { CloudLivePresenceStore } from "./live-presence";
 import {
@@ -301,6 +302,31 @@ export function useCloudViewerSession({
   const [connectionActorLabel, setConnectionActorLabel] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
+  // The live-room effect must not depend on raw auth/session object identity:
+  // browser auth refreshes can rebuild those objects without changing the
+  // effective socket credentials. Key the effect by the transport credential
+  // shape, and read the latest auth through refs at connect/diagnostic time.
+  const authStateRef = useRef(authState);
+  authStateRef.current = authState;
+  const hasAppSessionRef = useRef(hasAppSession);
+  hasAppSessionRef.current = hasAppSession;
+  const authRenewalKindRef = useRef(authRenewalKind);
+  authRenewalKindRef.current = authRenewalKind;
+  const previousAuthRenewalKindRef = useRef(authRenewalKind);
+  const syncAuthConnectionKey = cloudSyncAuthConnectionKey(authState, { hasAppSession });
+
+  useEffect(() => {
+    const previousKind = previousAuthRenewalKindRef.current;
+    previousAuthRenewalKindRef.current = authRenewalKind;
+    if (
+      previousKind === "refreshing" &&
+      authRenewalKind !== "refreshing" &&
+      loadingPolicy.shouldConnectLiveRoom &&
+      liveRuntimeRef.current === null
+    ) {
+      setConnectAttempt((attempt) => attempt + 1);
+    }
+  }, [authRenewalKind, loadingPolicy.shouldConnectLiveRoom]);
 
   // Identity of the notebook whose cells are currently painted into the
   // view stores — the flicker gate's "previous" side (see effect cleanup).
@@ -525,7 +551,7 @@ export function useCloudViewerSession({
   ]);
 
   useEffect(() => {
-    if (authRenewalKind === "refreshing") {
+    if (authRenewalKindRef.current === "refreshing") {
       return;
     }
     if (!loadingPolicy.shouldConnectLiveRoom) {
@@ -777,8 +803,8 @@ export function useCloudViewerSession({
         ranConnectionDiagnostics = true;
         void diagnoseCloudConnectionAccess({
           accessRequestsEndpoint: config.accessRequestsEndpoint,
-          authState,
-          hasAppSession,
+          authState: authStateRef.current,
+          hasAppSession: hasAppSessionRef.current,
         })
           .then((diagnostic) => {
             if (disposed || !diagnostic) return;
@@ -981,7 +1007,9 @@ export function useCloudViewerSession({
       // null (no derivable principal) skips the paint. Shared with the
       // storage bindings, which use it to pick the matching principal's
       // chunk sub-range.
-      const instantPaintMatcher = cloudInstantPaintPrincipalMatcher(authState, { hasAppSession });
+      const instantPaintMatcher = cloudInstantPaintPrincipalMatcher(authStateRef.current, {
+        hasAppSession: hasAppSessionRef.current,
+      });
       await runCloudInstantPaint({
         resolveHandle: () =>
           resolveCloudInstantPaintHandle({
@@ -1096,7 +1124,7 @@ export function useCloudViewerSession({
         resolveAuth: (attemptSessionId) =>
           resolveSyncAuth
             ? resolveSyncAuth(attemptSessionId)
-            : cloudSyncAuthFromPrototypeAuthState(authState),
+            : cloudSyncAuthFromPrototypeAuthState(authStateRef.current),
       }),
       runtimedWasmModulePath: config.runtimedWasmModulePath,
       runtimedWasmPath: config.runtimedWasmPath,
@@ -1371,8 +1399,8 @@ export function useCloudViewerSession({
         if (cloudConnectionErrorAcceptsAccessDiagnostic(message)) {
           void diagnoseCloudConnectionAccess({
             accessRequestsEndpoint: config.accessRequestsEndpoint,
-            authState,
-            hasAppSession,
+            authState: authStateRef.current,
+            hasAppSession: hasAppSessionRef.current,
           })
             .then((diagnostic) => {
               if (disposed || !diagnostic) return;
@@ -1462,8 +1490,6 @@ export function useCloudViewerSession({
       setConnectionPeerLabel(null);
     };
   }, [
-    authRenewalKind,
-    authState,
     blobResolver,
     config.accessRequestsEndpoint,
     config.blobBasePath,
@@ -1471,7 +1497,7 @@ export function useCloudViewerSession({
     config.runtimedWasmPath,
     config.syncEndpoint,
     connectAttempt,
-    hasAppSession,
+    syncAuthConnectionKey,
     loadingPolicy.shouldConnectLiveRoom,
     presenceStore,
     applyResolvedCells,

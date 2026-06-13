@@ -208,5 +208,28 @@ describe("cloud projection flicker gate", () => {
         /useEffect\(\s*\(\) => \(\) => \{\s*resetCloudViewStoreProjection\(\);\s*resetRuntimeState\(\);\s*resetRuntimeStoresProjection\(\);\s*\},\s*\[\],\s*\);/,
       );
     });
+
+    it("keys live-room reconnects by effective auth credentials, not auth object identity", () => {
+      assert.match(
+        sessionSource,
+        /const syncAuthConnectionKey = cloudSyncAuthConnectionKey\(authState, \{ hasAppSession \}\);/,
+      );
+      assert.match(
+        sessionSource,
+        /const authStateRef = useRef\(authState\);\s*authStateRef\.current = authState;[\s\S]*const hasAppSessionRef = useRef\(hasAppSession\);/,
+      );
+      const liveRoomDependencies = sessionSource.match(
+        /\[\s*blobResolver,[\s\S]*?widgetStore,\s*\]\);/,
+      )?.[0];
+      assert.ok(liveRoomDependencies, "live-room dependency list should be identifiable");
+      assert.match(
+        liveRoomDependencies,
+        /connectAttempt,\s*syncAuthConnectionKey,\s*loadingPolicy\.shouldConnectLiveRoom,/,
+      );
+      assert.doesNotMatch(
+        liveRoomDependencies,
+        /\bauthRenewalKind\b|\bauthState\b|\bhasAppSession\b/,
+      );
+    });
   });
 });
