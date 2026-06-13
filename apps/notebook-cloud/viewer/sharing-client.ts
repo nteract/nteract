@@ -106,10 +106,20 @@ export type CloudShareAccessRow =
       removable: boolean;
     };
 
+export interface CloudShareAccessProjection {
+  allRows: CloudShareAccessRow[];
+  notebookAccessRows: CloudShareAccessRow[];
+  runtimeAccessRows: CloudShareAccessRow[];
+  notebookAccessSummary: string | null;
+  runtimeAccessSummary: string | null;
+}
+
 const SHARE_ACCESS_ROW_CACHE = new Map<string, CloudShareAccessRow>();
 const SHARE_ACCESS_ROWS_CACHE = new Map<string, CloudShareAccessRow[]>();
+const SHARE_ACCESS_PROJECTION_CACHE = new Map<string, CloudShareAccessProjection>();
 const SHARE_ACCESS_ROW_CACHE_LIMIT = 512;
 const SHARE_ACCESS_ROWS_CACHE_LIMIT = 128;
+const SHARE_ACCESS_PROJECTION_CACHE_LIMIT = 128;
 const CLOUD_NOTEBOOK_ACL_ROW_FIELDS = {
   notebook_id: true,
   subject_kind: true,
@@ -153,6 +163,39 @@ const CLOUD_NOTEBOOK_ACCESS_REQUEST_FIELDS = {
 export function clearCloudShareAccessRowsCachesForTests(): void {
   SHARE_ACCESS_ROW_CACHE.clear();
   SHARE_ACCESS_ROWS_CACHE.clear();
+  SHARE_ACCESS_PROJECTION_CACHE.clear();
+}
+
+export function buildCloudShareAccessProjection(input: {
+  acl: CloudNotebookAclRow[];
+  invites: CloudNotebookInvite[];
+  accessRequests?: CloudNotebookAccessRequest[];
+}): CloudShareAccessProjection {
+  const allRows = buildCloudShareAccessRows(input);
+  const projectionKey = stableCacheKey(allRows.map(cloudShareAccessRowProjectionKey));
+  const cached = getBoundedCacheValue(SHARE_ACCESS_PROJECTION_CACHE, projectionKey);
+  if (cached) return cached;
+
+  const notebookAccessRows = Object.freeze(
+    allRows.filter((row) => !isCloudShareRuntimeAccessRow(row)),
+  ) as CloudShareAccessRow[];
+  const runtimeAccessRows = Object.freeze(
+    allRows.filter(isCloudShareRuntimeAccessRow),
+  ) as CloudShareAccessRow[];
+  const projection = Object.freeze({
+    allRows,
+    notebookAccessRows,
+    runtimeAccessRows,
+    notebookAccessSummary: cloudShareAccessSummary(notebookAccessRows),
+    runtimeAccessSummary: cloudShareRuntimeAccessSummary(runtimeAccessRows),
+  });
+  setBoundedCacheValue(
+    SHARE_ACCESS_PROJECTION_CACHE,
+    projectionKey,
+    projection,
+    SHARE_ACCESS_PROJECTION_CACHE_LIMIT,
+  );
+  return projection;
 }
 
 export function buildCloudShareAccessRows(input: {
@@ -171,7 +214,8 @@ export function buildCloudShareAccessRows(input: {
     const badge = scopeLabel(acl.scope);
     const stateLabel = acl.subject_kind === "public" ? "Enabled" : null;
     const stateTone = acl.subject_kind === "public" ? "success" : null;
-    const removable = acl.subject_kind === "public" || acl.scope !== "owner";
+    const removable =
+      acl.subject_kind === "public" || (acl.scope !== "owner" && acl.scope !== "runtime_peer");
     const rowKey = stableCacheKey([
       "acl",
       cloudNotebookAclRowCacheKey(acl),
@@ -305,6 +349,17 @@ export function cloudShareAccessSummary(rows: CloudShareAccessRow[]): string | n
   return parts.join(", ") || null;
 }
 
+export function cloudShareRuntimeAccessSummary(rows: CloudShareAccessRow[]): string | null {
+  const runtimePeers = rows.filter(isCloudShareRuntimeAccessRow).length;
+  return runtimePeers > 0 ? pluralize(runtimePeers, "runtime peer", "runtime peers") : null;
+}
+
+export function isCloudShareRuntimeAccessRow(
+  row: CloudShareAccessRow,
+): row is Extract<CloudShareAccessRow, { kind: "acl" }> {
+  return row.kind === "acl" && row.acl.subject_kind === "principal" && row.scope === "runtime_peer";
+}
+
 export function hasPublicViewerAccess(acl: CloudNotebookAclRow[]): boolean {
   return acl.some(
     (row) => row.subject_kind === "public" && row.subject === "anonymous" && row.scope === "viewer",
@@ -355,6 +410,9 @@ function labelForAcl(row: CloudNotebookAclRow): string {
 function detailForAcl(row: CloudNotebookAclRow): string {
   if (row.subject_kind === "public") {
     return row.display?.label || "Anyone with the link";
+  }
+  if (row.scope === "runtime_peer") {
+    return "Compute access for runtime peers";
   }
   const display = row.display;
   if (display?.kind === "principal") {
@@ -451,6 +509,21 @@ function compareAclRows(a: CloudNotebookAclRow, b: CloudNotebookAclRow): number 
   const rankDelta = rank(a) - rank(b);
   if (rankDelta !== 0) return rankDelta;
   return `${labelForAcl(a)}:${a.scope}`.localeCompare(`${labelForAcl(b)}:${b.scope}`);
+}
+
+function cloudShareAccessRowProjectionKey(row: CloudShareAccessRow): string {
+  return stableCacheKey([
+    row.kind,
+    row.id,
+    row.label,
+    row.detail,
+    row.title,
+    row.scope,
+    row.badge,
+    row.stateLabel,
+    row.stateTone,
+    row.removable,
+  ]);
 }
 
 function cachedCloudShareAccessRow<Row extends CloudShareAccessRow>(

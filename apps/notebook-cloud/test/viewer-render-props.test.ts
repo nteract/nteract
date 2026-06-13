@@ -240,31 +240,30 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.doesNotMatch(sourceText, /setPresence\(/);
   assert.doesNotMatch(sourceText, /label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/);
   assert.match(sharingSourceText, /export function CloudSharingControls/);
+  assert.match(sharingSourceText, /Invite people, review requests, and manage link access\./);
   assert.match(
     sharingSourceText,
-    /Public link, collaborators, pending invites, and edit requests\./,
-  );
-  assert.match(
-    sharingSourceText,
-    /const accessSummary = useMemo\(\(\) => cloudShareAccessSummary\(accessRows\)/,
+    /const accessProjection = useMemo\(\s*\(\) => buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,
   );
   assert.match(sharingSourceText, /<div className="cloud-share-current-heading">/);
+  assert.match(sharingSourceText, /aria-label="Compute access"/);
+  assert.match(sharingSourceText, /accessProjection\.runtimeAccessRows\.map/);
   assert.match(sharingSourceText, /<div className="cloud-share-row-actions">/);
   assert.match(
     sharingSourceText,
     /<span className="cloud-share-state" data-tone=\{row\.stateTone \?\? undefined\}>/,
   );
   assert.match(sharingSourceText, /Can view this notebook without signing in/);
-  assert.match(sharingSourceText, /Only invited people can open this notebook/);
+  assert.match(sharingSourceText, /Link access is off\. Only listed people can open this notebook/);
   assert.match(sharingSourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
   assert.match(sharingSourceText, /const compactCopyLinkLabel =[\s\S]*"Copy"/);
   assert.match(
     sharingSourceText,
-    /buildCloudShareAccessRows\(\{ acl, invites, accessRequests \}\)/,
+    /buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,
   );
   assert.match(
     sharingSourceText,
-    /accessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong>\{row\.label\}<\/strong>[\s\S]*<span>\{row\.detail\}<\/span>/,
+    /accessProjection\.notebookAccessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong>\{row\.label\}<\/strong>[\s\S]*<span>\{row\.detail\}<\/span>/,
   );
   assert.match(sharingSourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
   const sharePanelCss = cssText.match(/\.cloud-share-panel \{(?<body>[\s\S]*?)\n\}/)?.groups?.body;

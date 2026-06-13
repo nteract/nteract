@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  buildCloudShareAccessProjection,
   buildCloudShareAccessRows,
   clearCloudShareAccessRowsCachesForTests,
   cloudShareAccessSummary,
@@ -83,6 +84,50 @@ describe("cloud viewer sharing client", () => {
       ],
     );
     assert.equal(cloudShareAccessSummary(rows), "2 people, public link, 1 invite, 1 request");
+  });
+
+  it("projects runtime peer access separately from notebook collaborators", () => {
+    const acl: CloudNotebookAclRow[] = [
+      aclRow({
+        subject: "user:anaconda:owner",
+        scope: "owner",
+        display: {
+          kind: "principal",
+          label: "Owner User",
+          principal: "user:anaconda:owner",
+          email: "owner@example.com",
+        },
+      }),
+      aclRow({
+        subject: "user:anaconda:runtime",
+        scope: "runtime_peer",
+        display: {
+          kind: "principal",
+          label: "Lab Runtime",
+          principal: "user:anaconda:runtime",
+          email: "runtime@example.com",
+        },
+      }),
+    ];
+    const invites = [inviteRow({ id: "invite-runtime-split", email: "bob@example.com" })];
+    const projection = buildCloudShareAccessProjection({ acl, invites });
+
+    assert.deepEqual(
+      projection.notebookAccessRows.map((row) => [row.label, row.badge, row.removable]),
+      [
+        ["Owner User", "Owner", false],
+        ["b...b@example.com", "Can edit", true],
+      ],
+    );
+    assert.deepEqual(
+      projection.runtimeAccessRows.map((row) => [row.label, row.detail, row.badge, row.removable]),
+      [["Lab Runtime", "Compute access for runtime peers", "Runtime", false]],
+    );
+    assert.equal(projection.notebookAccessSummary, "1 person, 1 invite");
+    assert.equal(projection.runtimeAccessSummary, "1 runtime peer");
+    assert.equal(Object.isFrozen(projection), true);
+    assert.equal(Object.isFrozen(projection.notebookAccessRows), true);
+    assert.equal(Object.isFrozen(projection.runtimeAccessRows), true);
   });
 
   it("detects public viewer access from explicit public ACL rows", () => {
