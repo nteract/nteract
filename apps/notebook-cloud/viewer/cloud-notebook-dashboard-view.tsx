@@ -88,6 +88,8 @@ export function CloudNotebookDashboard({
             <label className="cloud-dashboard-search">
               <Search aria-hidden="true" />
               <input
+                id="cloud-dashboard-search-input"
+                name="notebook-search"
                 type="search"
                 value={query}
                 placeholder="Search notebooks"

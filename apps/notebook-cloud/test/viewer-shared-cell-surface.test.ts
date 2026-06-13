@@ -20,6 +20,19 @@ test("cloud notebook body renders through the desktop NotebookView surface", () 
   assert.doesNotMatch(sourceText, /<NotebookReadOnlyView/);
 });
 
+test("cloud notebook dashboard search input has stable form metadata", () => {
+  const dashboardSourcePath = new URL(
+    "../viewer/cloud-notebook-dashboard-view.tsx",
+    import.meta.url,
+  );
+  const dashboardSourceText = readFileSync(dashboardSourcePath, "utf8");
+
+  assert.match(dashboardSourceText, /id="cloud-dashboard-search-input"/);
+  assert.match(dashboardSourceText, /name="notebook-search"/);
+  assert.match(dashboardSourceText, /type="search"/);
+  assert.match(dashboardSourceText, /aria-label="Search notebooks"/);
+});
+
 test("cloud viewer imports desktop notebook code only through public surfaces", () => {
   const viewerDir = new URL("../viewer", import.meta.url);
   const offenders: string[] = [];
