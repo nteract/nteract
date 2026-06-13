@@ -243,6 +243,11 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(
     sourceText,
+    /const renderedActiveRailPanel =[\s\S]*!shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"[\s\S]*\? "outline"[\s\S]*: activeRailPanel/,
+  );
+  assert.match(sourceText, /activePanelId=\{renderedActiveRailPanel\}/);
+  assert.match(
+    sourceText,
     /workstationsPanel=\{[\s\S]*shouldShowCloudWorkstationsPanel \? \([\s\S]*<NotebookWorkstationsPanel/,
   );
   assert.match(
