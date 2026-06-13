@@ -1,17 +1,17 @@
 export function isLoopbackWorkerRequest(
   request: Request,
   url = new URL(request.url),
-  options: { trustClientIp?: boolean } = {},
+  options: { trustHeaders?: boolean } = {},
 ): boolean {
   return (
     isLoopbackHostname(url.hostname) ||
-    isLoopbackHostHeader(request.headers.get("Host")) ||
-    (options.trustClientIp === true &&
-      isLoopbackHostname(request.headers.get("CF-Connecting-IP") ?? ""))
+    (options.trustHeaders === true &&
+      (isLoopbackHostHeader(request.headers.get("Host")) ||
+        isLoopbackHostname(request.headers.get("CF-Connecting-IP") ?? "")))
   );
 }
 
-export function trustsLoopbackClientIpHeader(value: string | undefined): boolean {
+export function trustsLoopbackRequestHeaders(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
   return normalized === "1" || normalized === "true";
 }
