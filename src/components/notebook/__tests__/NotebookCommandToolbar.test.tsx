@@ -176,6 +176,37 @@ describe("NotebookCommandToolbar", () => {
     expect(screen.queryByTestId("run-all-button")).toBeNull();
   });
 
+  it("surfaces attached compute metadata on the runtime chip", () => {
+    render(
+      <NotebookCommandToolbar
+        capabilities={editableToolbarCapabilities}
+        runtime="python"
+        runtimeTarget={{
+          id: "ws-lab2",
+          kind: "cloud_workstation",
+          status: "ready",
+          label: "Lab2 workstation",
+          statusLabel: "Ready",
+          detail: "Runtime peer attached",
+          providerLabel: "Cloud room",
+          defaultEnvironmentLabel: "Current Python",
+          environmentLabel: "Current Python",
+          kernelStatusLabel: "idle",
+          runtimePeerCount: 1,
+        }}
+        onTogglePackages={() => {}}
+      />,
+    );
+
+    const chip = screen.getByTestId("deps-toggle");
+    expect(chip).toHaveAttribute("data-runtime-target", "cloud_workstation");
+    expect(chip).toHaveAttribute("data-runtime-peer-count", "1");
+    expect(chip).toHaveAttribute(
+      "title",
+      "Python - Lab2 workstation · Ready · Kernel idle · 1 compute session - open environment panel",
+    );
+  });
+
   it("can direct eligible users toward workstation setup without a runtime status", () => {
     const onWorkstationSetup = vi.fn();
 

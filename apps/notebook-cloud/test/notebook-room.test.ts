@@ -42,6 +42,67 @@ before(async () => {
 });
 
 describe("NotebookRoom presence rewrite", () => {
+  it("builds room-ready rosters from current peers", () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const harness = roomHarness(room);
+    const ownerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const runtimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=alice&operator=runtime:py&scope=runtime_peer",
+      ),
+    );
+    harness.peers.set("owner", {
+      id: "owner",
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity: {
+        ...ownerIdentity,
+        metadata: {
+          ...ownerIdentity.metadata,
+          displayName: "Alice Demo",
+        },
+      },
+      connectedAt: "2026-06-13T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    });
+    harness.peers.set("runtime", {
+      id: "runtime",
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity: runtimeIdentity,
+      connectedAt: "2026-06-13T00:00:01.000Z",
+      consecutiveRejectedFrames: 0,
+    });
+
+    const roster = harness.roomPeerRoster();
+
+    assert.deepEqual(
+      roster.map((peer) => ({
+        peer_id: peer.peer_id,
+        actor_label: peer.actor_label,
+        connection_scope: peer.connection_scope,
+        participant_key: peer.participant_key,
+        display_name: peer.display_name,
+      })),
+      [
+        {
+          peer_id: "owner",
+          actor_label: "user:dev:alice/browser:a",
+          connection_scope: "owner",
+          participant_key: "user:dev:alice",
+          display_name: "Alice Demo",
+        },
+        {
+          peer_id: "runtime",
+          actor_label: "user:dev:alice/runtime:py",
+          connection_scope: "runtime_peer",
+          participant_key: "user:dev:alice",
+          display_name: "alice",
+        },
+      ],
+    );
+  });
+
   it("rewrites canonical CBOR presence to the server peer and friendly display label", async () => {
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
@@ -2269,6 +2330,7 @@ type PeerForTest = {
   socket: CloudflareWebSocket;
   identity: ReturnType<typeof authenticateDevRequest>;
   connectedAt: string;
+  consecutiveRejectedFrames?: number;
   workstation?: {
     workstationId?: string;
     displayName?: string;
@@ -2307,6 +2369,13 @@ interface RoomHarness {
   ): Promise<void>;
   removePeer(notebookId: string, peer: PeerForTest): void;
   peerForSocket(socket: CloudflareWebSocket): PeerForTest | undefined;
+  roomPeerRoster(): Array<{
+    peer_id: string;
+    actor_label: string;
+    connection_scope: string;
+    participant_key: string;
+    display_name?: string;
+  }>;
   broadcastFrame(notebookId: string, frame: Uint8Array, excludePeerId?: string): void;
   hasRuntimePeer(): boolean;
   prunePendingRuntimePeerResponses(nowMs?: number): void;

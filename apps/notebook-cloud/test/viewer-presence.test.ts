@@ -13,16 +13,17 @@ import {
 } from "../viewer/presence.ts";
 
 describe("cloud viewer presence", () => {
-  it("tracks the authoritative room count from session-control messages", () => {
+  it("tracks actual anonymous viewers from session-control messages", () => {
     let state = initialCloudViewerPresence();
 
     state = reduceCloudViewerPresenceMessage(state, {
       type: "cloud_room_ready",
       protocol: "v4",
       notebook_id: "demo",
-      peer_id: "peer-a",
-      actor_label: "anonymous:viewer:session-a/desktop:browser",
-      connection_scope: "viewer",
+      peer_id: "peer-owner",
+      actor_label: "user:anaconda:alice/browser:tab",
+      connection_scope: "owner",
+      display_name: "Alice Demo",
       room_peer_count: 1,
       timestamp: "2026-05-23T00:00:00.000Z",
     });
@@ -37,9 +38,9 @@ describe("cloud viewer presence", () => {
       },
       {
         connection: "connected",
-        ownPeerId: "peer-a",
-        actorLabel: "anonymous:viewer:session-a/desktop:browser",
-        ownPeerLabel: "Anonymous",
+        ownPeerId: "peer-owner",
+        actorLabel: "user:anaconda:alice/browser:tab",
+        ownPeerLabel: "Alice Demo",
         roomPeerCount: 1,
         runtimePeerCount: 0,
       },
@@ -49,8 +50,8 @@ describe("cloud viewer presence", () => {
     state = reduceCloudViewerPresenceMessage(state, {
       type: "cloud_peer_joined",
       notebook_id: "demo",
-      peer_id: "peer-b",
-      actor_label: "anonymous:viewer:session-b/desktop:browser",
+      peer_id: "peer-anon",
+      actor_label: "anonymous:viewer:session-a/desktop:browser",
       connection_scope: "viewer",
       room_peer_count: 2,
       timestamp: "2026-05-23T00:00:01.000Z",
@@ -63,14 +64,17 @@ describe("cloud viewer presence", () => {
         label: peer.label,
         count: peer.count,
       })),
-      [{ kind: "anonymous", label: "2 anonymous viewers", count: 2 }],
+      [
+        { kind: "self", label: "Alice Demo", count: undefined },
+        { kind: "anonymous", label: "Anonymous viewer", count: 1 },
+      ],
     );
 
     state = reduceCloudViewerPresenceMessage(state, {
       type: "cloud_peer_left",
       notebook_id: "demo",
-      peer_id: "peer-b",
-      actor_label: "anonymous:viewer:session-b/desktop:browser",
+      peer_id: "peer-anon",
+      actor_label: "anonymous:viewer:session-a/desktop:browser",
       connection_scope: "viewer",
       room_peer_count: 1,
       timestamp: "2026-05-23T00:00:02.000Z",
@@ -98,14 +102,14 @@ describe("cloud viewer presence", () => {
     assert.equal(display.label, "Offline");
     assert.equal(display.title, "Room unavailable");
     assert.equal(display.connected, false);
-    assert.equal(display.peers.length, 3);
+    assert.equal(display.peers.length, 1);
     assert.equal(
       display.peers.every((peer) => peer.status === "offline"),
       true,
     );
   });
 
-  it("uses friendly display metadata in the connected status title", () => {
+  it("does not turn count-only private peers into anonymous viewers", () => {
     const state = reduceCloudViewerPresenceMessage(initialCloudViewerPresence(), {
       type: "cloud_room_ready",
       protocol: "v4",
@@ -121,9 +125,62 @@ describe("cloud viewer presence", () => {
 
     assert.equal(state.ownPeerLabel, "Alice Demo");
     const display = cloudViewerPresenceDisplay(state);
-    assert.equal(display.label, "2 here now");
-    assert.equal(display.title, "2 participants");
+    assert.equal(display.label, "1 here now");
+    assert.equal(display.title, "1 participant");
     assert.equal(display.connected, true);
+    assert.deepEqual(
+      display.peers.map((peer) => ({
+        kind: peer.kind,
+        label: peer.label,
+        count: peer.count,
+      })),
+      [{ kind: "self", label: "Alice Demo", count: undefined }],
+    );
+  });
+
+  it("uses the room-ready roster for existing peers", () => {
+    const state = reduceCloudViewerPresenceMessage(initialCloudViewerPresence(), {
+      type: "cloud_room_ready",
+      protocol: "v4",
+      notebook_id: "demo",
+      peer_id: "peer-owner",
+      actor_label: "user:anaconda:alice/browser:tab",
+      connection_scope: "owner",
+      display_name: "Alice Demo",
+      room_peer_count: 3,
+      runtime_peer_count: 1,
+      peers: [
+        {
+          peer_id: "peer-owner",
+          actor_label: "user:anaconda:alice/browser:tab",
+          connection_scope: "owner",
+          participant_key: "user:anaconda:alice",
+          display_name: "Alice Demo",
+          connected_at: "2026-05-23T00:00:00.000Z",
+        },
+        {
+          peer_id: "peer-bob",
+          actor_label: "user:anaconda:bob/browser:tab",
+          connection_scope: "editor",
+          participant_key: "user:anaconda:bob",
+          display_name: "Bob Demo",
+          connected_at: "2026-05-23T00:00:01.000Z",
+        },
+        {
+          peer_id: "peer-runtime",
+          actor_label: "user:anaconda:alice/agent:runt-cloud-peer",
+          connection_scope: "runtime_peer",
+          participant_key: "user:anaconda:alice",
+          display_name: "Alice Workstation",
+          connected_at: "2026-05-23T00:00:02.000Z",
+        },
+      ],
+      timestamp: "2026-05-23T00:00:03.000Z",
+    });
+
+    const display = cloudViewerPresenceDisplay(state);
+
+    assert.equal(display.label, "2 here now");
     assert.deepEqual(
       display.peers.map((peer) => ({
         kind: peer.kind,
@@ -132,7 +189,106 @@ describe("cloud viewer presence", () => {
       })),
       [
         { kind: "self", label: "Alice Demo", count: undefined },
-        { kind: "anonymous", label: "Anonymous viewer", count: 1 },
+        { kind: "peer", label: "Bob Demo", count: undefined },
+      ],
+    );
+    assert.equal(cloudPresenceHasRuntimePeer(state), true);
+    assert.equal(cloudPresenceRuntimePeerCount(state), 1);
+  });
+
+  it("collapses multiple same-account browser peers to one human avatar", () => {
+    const state = reduceCloudViewerPresenceMessage(initialCloudViewerPresence(), {
+      type: "cloud_room_ready",
+      protocol: "v4",
+      notebook_id: "demo",
+      peer_id: "peer-owner-a",
+      actor_label: "user:anaconda:alice/browser:tab-a",
+      connection_scope: "owner",
+      display_name: "Alice Demo",
+      room_peer_count: 2,
+      peers: [
+        {
+          peer_id: "peer-owner-a",
+          actor_label: "user:anaconda:alice/browser:tab-a",
+          connection_scope: "owner",
+          participant_key: "user:anaconda:alice",
+          display_name: "Alice Demo",
+          connected_at: "2026-05-23T00:00:00.000Z",
+        },
+        {
+          peer_id: "peer-owner-b",
+          actor_label: "user:anaconda:alice/browser:tab-b",
+          connection_scope: "owner",
+          participant_key: "user:anaconda:alice",
+          display_name: "Alice Demo",
+          connected_at: "2026-05-23T00:00:01.000Z",
+        },
+      ],
+      timestamp: "2026-05-23T00:00:02.000Z",
+    });
+
+    const display = cloudViewerPresenceDisplay(state);
+
+    assert.equal(display.label, "1 here now");
+    assert.deepEqual(
+      display.peers.map((peer) => ({
+        kind: peer.kind,
+        label: peer.label,
+        count: peer.count,
+      })),
+      [{ kind: "self", label: "Alice Demo", count: undefined }],
+    );
+  });
+
+  it("groups true anonymous public viewers from the room roster", () => {
+    const state = reduceCloudViewerPresenceMessage(initialCloudViewerPresence(), {
+      type: "cloud_room_ready",
+      protocol: "v4",
+      notebook_id: "demo",
+      peer_id: "peer-owner",
+      actor_label: "user:anaconda:alice/browser:tab",
+      connection_scope: "owner",
+      display_name: "Alice Demo",
+      room_peer_count: 3,
+      peers: [
+        {
+          peer_id: "peer-owner",
+          actor_label: "user:anaconda:alice/browser:tab",
+          connection_scope: "owner",
+          participant_key: "user:anaconda:alice",
+          display_name: "Alice Demo",
+          connected_at: "2026-05-23T00:00:00.000Z",
+        },
+        {
+          peer_id: "peer-anon-a",
+          actor_label: "anonymous:viewer:session-a/browser",
+          connection_scope: "viewer",
+          participant_key: "anonymous:peer-anon-a",
+          connected_at: "2026-05-23T00:00:01.000Z",
+        },
+        {
+          peer_id: "peer-anon-b",
+          actor_label: "anonymous:viewer:session-b/browser",
+          connection_scope: "viewer",
+          participant_key: "anonymous:peer-anon-b",
+          connected_at: "2026-05-23T00:00:02.000Z",
+        },
+      ],
+      timestamp: "2026-05-23T00:00:03.000Z",
+    });
+
+    const display = cloudViewerPresenceDisplay(state);
+
+    assert.equal(display.label, "3 here now");
+    assert.deepEqual(
+      display.peers.map((peer) => ({
+        kind: peer.kind,
+        label: peer.label,
+        count: peer.count,
+      })),
+      [
+        { kind: "self", label: "Alice Demo", count: undefined },
+        { kind: "anonymous", label: "2 anonymous viewers", count: 2 },
       ],
     );
   });
@@ -157,7 +313,6 @@ describe("cloud viewer presence", () => {
       actor_label: "user:anaconda:bob/browser:tab",
       connection_scope: "editor",
       display_name: "Bob Demo",
-      email: "bob@example.com",
       room_peer_count: 2,
       timestamp: "2026-05-23T00:00:01.000Z",
     });
@@ -201,6 +356,7 @@ describe("cloud viewer presence", () => {
       peer_id: "peer-owner",
       actor_label: "user:anaconda:alice/browser:tab",
       connection_scope: "owner",
+      display_name: "Alice Demo",
       room_peer_count: 1,
       runtime_peer_count: 0,
       timestamp: "2026-05-23T00:00:00.000Z",
@@ -220,6 +376,13 @@ describe("cloud viewer presence", () => {
     });
     assert.equal(cloudPresenceHasRuntimePeer(state), true);
     assert.equal(cloudPresenceRuntimePeerCount(state), 1);
+    assert.deepEqual(
+      cloudViewerPresenceDisplay(state).peers.map((peer) => ({
+        kind: peer.kind,
+        label: peer.label,
+      })),
+      [{ kind: "self", label: "Alice Demo" }],
+    );
 
     state = reduceCloudViewerPresenceMessage(state, {
       type: "cloud_peer_left",

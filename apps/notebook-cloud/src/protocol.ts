@@ -22,6 +22,17 @@ export const NOTEBOOK_PROTOCOL = "v4";
 export const LIVENESS_PING = "nteract-liveness-ping";
 export const LIVENESS_PONG = "nteract-liveness-pong";
 
+export interface CloudRoomPeerRosterEntry {
+  peer_id: string;
+  actor_label: string;
+  connection_scope: string;
+  participant_key: string;
+  identity_provider?: string;
+  principal_namespace?: string;
+  display_name?: string;
+  connected_at: string;
+}
+
 export interface TypedFrame {
   type: FrameTypeValue;
   payload: Uint8Array;
@@ -41,6 +52,7 @@ export type SessionControlMessage =
       email?: string;
       room_peer_count: number;
       runtime_peer_count?: number;
+      peers?: CloudRoomPeerRosterEntry[];
       timestamp: string;
     }
   | {
@@ -72,8 +84,8 @@ export type SessionControlMessage =
       peer_id: string;
       actor_label: string;
       connection_scope?: string;
+      participant_key?: string;
       display_name?: string;
-      email?: string;
       room_peer_count: number;
       runtime_peer_count?: number;
       timestamp: string;

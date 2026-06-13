@@ -1200,6 +1200,7 @@ export function NotebookViewer({
       reserveCommandToolbar={editAccessPending}
       commandToolbar={{
         runtime: toolbarRuntime,
+        runtimeTarget: shellCapabilities.runtime.target ?? null,
         environmentManager: toolbarEnvironmentManager,
         environmentPanelOpen: activeRailPanel === "packages" && !railCollapsed,
         runtimeStatus: cloudRuntimeStatus,

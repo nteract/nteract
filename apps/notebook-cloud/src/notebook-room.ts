@@ -24,6 +24,7 @@ import {
   LIVENESS_PONG,
   splitTypedFrame,
   type SessionControlMessage,
+  type CloudRoomPeerRosterEntry,
   type TypedFrame,
 } from "./protocol.ts";
 import { cloudLog, durationMs, errorMessage } from "./observability.ts";
@@ -314,6 +315,7 @@ export class NotebookRoom {
       email: identity.metadata.email,
       room_peer_count: this.peers.size,
       runtime_peer_count: this.runtimePeerCount(),
+      peers: this.roomPeerRoster(),
       timestamp: peer.connectedAt,
     });
 
@@ -325,8 +327,8 @@ export class NotebookRoom {
         peer_id: peer.id,
         actor_label: identity.actorLabel,
         connection_scope: identity.scope,
+        participant_key: roomPeerParticipantKey(peer),
         display_name: identity.metadata.displayName,
-        email: identity.metadata.email,
         room_peer_count: this.peers.size,
         runtime_peer_count: this.runtimePeerCount(),
         timestamp: peer.connectedAt,
@@ -1515,6 +1517,23 @@ export class NotebookRoom {
     this.sendFrameToPeer(notebookId, peer, encodeJsonFrame(FrameType.SESSION_CONTROL, message));
   }
 
+  private roomPeerRoster(): CloudRoomPeerRosterEntry[] {
+    return Array.from(this.peers.values(), (peer) => this.roomPeerRosterEntry(peer));
+  }
+
+  private roomPeerRosterEntry(peer: Peer): CloudRoomPeerRosterEntry {
+    return {
+      peer_id: peer.id,
+      actor_label: peer.identity.actorLabel,
+      connection_scope: peer.identity.scope,
+      participant_key: roomPeerParticipantKey(peer),
+      identity_provider: peer.identity.metadata.provider,
+      principal_namespace: peer.identity.metadata.principalNamespace,
+      display_name: peer.identity.metadata.displayName,
+      connected_at: peer.connectedAt,
+    };
+  }
+
   private broadcastControl(
     notebookId: string,
     message: SessionControlMessage,
@@ -1637,6 +1656,7 @@ export class NotebookRoom {
       peer_id: peer.id,
       actor_label: peer.identity.actorLabel,
       connection_scope: peer.identity.scope,
+      participant_key: roomPeerParticipantKey(peer),
       room_peer_count: this.peers.size,
       runtime_peer_count: this.runtimePeerCount(),
       timestamp: new Date().toISOString(),
@@ -1875,6 +1895,13 @@ function runtimePeerWorkstationAttachment(peer: Peer): WorkstationAttachmentStat
 function runtimePeerWorkstationId(workstation: RuntimePeerWorkstationMetadata | null): string {
   const workstationId = workstation?.workstationId?.trim();
   return workstationId && workstationId.length > 0 ? workstationId : "runtime-peer";
+}
+
+function roomPeerParticipantKey(peer: Peer): string {
+  if (isAnonymousViewer(peer.identity)) {
+    return `anonymous:${peer.id}`;
+  }
+  return peer.identity.principal;
 }
 
 export function runtimePeerWorkstationMetadataFromRequest(
