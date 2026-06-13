@@ -92,7 +92,10 @@ import {
   cloudConnectionDiagnosticBlocksNotebookBody,
   isCloudConnectionAccessDiagnostic,
 } from "./connection-diagnostics";
-import { projectCloudNotebookViewSurface } from "./notebook-view-loading";
+import {
+  projectCloudNotebookHeaderChrome,
+  projectCloudNotebookViewSurface,
+} from "./notebook-view-loading";
 import { useOfflineMergeNoticeAutoClear } from "./use-offline-merge-notice";
 import { useSustainedReconnecting } from "./use-sustained-reconnecting";
 import type { ViewerStatus } from "./notice-types";
@@ -1138,6 +1141,10 @@ export function NotebookViewer({
   const showCloudCommandToolbar = shouldShowNotebookDocumentCommandToolbar(shellCapabilities, {
     reserve: editAccessPending,
   });
+  const notebookBodyAccessBlocked = cloudConnectionDiagnosticBlocksNotebookBody(connectionError);
+  const notebookHeaderChrome = projectCloudNotebookHeaderChrome({
+    bodyAccessBlocked: notebookBodyAccessBlocked,
+  });
 
   const toolbar = (
     <NotebookDocumentToolbar
@@ -1146,7 +1153,9 @@ export function NotebookViewer({
       headerClassName="cloud-room-toolbar"
       presence={<CloudNotebookTitle />}
       utilityControls={
-        <CloudPresenceStatus connectionError={connectionError} store={presenceStore} />
+        notebookHeaderChrome.showPresenceStatus ? (
+          <CloudPresenceStatus connectionError={connectionError} store={presenceStore} />
+        ) : null
       }
       authControls={
         !showAnonymousViewerAuthNotice &&
@@ -1181,10 +1190,12 @@ export function NotebookViewer({
         // Connection/identity slot: self-identity avatar + connectivity dot
         // (the stable bridge survives transport replacement; the dot keeps
         // frozen runtime chrome interpretable while reconnecting).
-        <NotebookConnectionIdentity
-          capabilities={shellCapabilities}
-          connectionStatus$={connectionStatus$}
-        />
+        notebookHeaderChrome.showConnectionIdentity ? (
+          <NotebookConnectionIdentity
+            capabilities={shellCapabilities}
+            connectionStatus$={connectionStatus$}
+          />
+        ) : null
       }
       reserveCommandToolbar={editAccessPending}
       commandToolbar={{
@@ -1209,7 +1220,7 @@ export function NotebookViewer({
     notebookCellIds.length > 0 ||
     (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
   const notebookViewSurface = projectCloudNotebookViewSurface({
-    bodyAccessBlocked: cloudConnectionDiagnosticBlocksNotebookBody(connectionError),
+    bodyAccessBlocked: notebookBodyAccessBlocked,
     cellCount: notebookCellIds.length,
     canEditStructure: shellCapabilities.canEditStructure,
     connectionError,

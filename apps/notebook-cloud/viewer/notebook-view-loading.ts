@@ -18,6 +18,15 @@ export interface CloudNotebookViewSurfaceProjection {
   shouldRenderNotebookView: boolean;
 }
 
+export interface CloudNotebookHeaderChromeProjectionInput {
+  bodyAccessBlocked: boolean;
+}
+
+export interface CloudNotebookHeaderChromeProjection {
+  showConnectionIdentity: boolean;
+  showPresenceStatus: boolean;
+}
+
 export function projectCloudNotebookViewLoading({
   bodyAccessBlocked,
   cellCount,
@@ -44,5 +53,15 @@ export function projectCloudNotebookViewSurface(
   return {
     isLoading: projectCloudNotebookViewLoading(input),
     shouldRenderNotebookView: !input.bodyAccessBlocked,
+  };
+}
+
+export function projectCloudNotebookHeaderChrome({
+  bodyAccessBlocked,
+}: CloudNotebookHeaderChromeProjectionInput): CloudNotebookHeaderChromeProjection {
+  const showCollaborationChrome = !bodyAccessBlocked;
+  return {
+    showConnectionIdentity: showCollaborationChrome,
+    showPresenceStatus: showCollaborationChrome,
   };
 }

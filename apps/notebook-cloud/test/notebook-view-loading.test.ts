@@ -6,6 +6,7 @@ import {
   CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
 } from "../viewer/connection-diagnostics.ts";
 import {
+  projectCloudNotebookHeaderChrome,
   projectCloudNotebookViewLoading,
   projectCloudNotebookViewSurface,
 } from "../viewer/notebook-view-loading.ts";
@@ -114,6 +115,32 @@ describe("cloud notebook body loading projection", () => {
       {
         isLoading: false,
         shouldRenderNotebookView: true,
+      },
+    );
+  });
+});
+
+describe("cloud notebook header chrome projection", () => {
+  it("hides live collaboration chrome when the notebook body is access-blocked", () => {
+    assert.deepEqual(
+      projectCloudNotebookHeaderChrome({
+        bodyAccessBlocked: true,
+      }),
+      {
+        showConnectionIdentity: false,
+        showPresenceStatus: false,
+      },
+    );
+  });
+
+  it("keeps live collaboration chrome for readable notebook surfaces", () => {
+    assert.deepEqual(
+      projectCloudNotebookHeaderChrome({
+        bodyAccessBlocked: false,
+      }),
+      {
+        showConnectionIdentity: true,
+        showPresenceStatus: true,
       },
     );
   });
