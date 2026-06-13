@@ -6,7 +6,8 @@
     "wasm": "cargo xtask wasm runtimed --skip-renderer-plugins",
     "renderer-plugins": "cargo xtask renderer-plugins",
     "build:viewer": "vp build -c vite.config.ts && node scripts/copy-viewer-assets.mjs",
-    "build": "pnpm run wasm && pnpm run renderer-plugins && pnpm run build:viewer",
+    "build:artifacts": "cargo xtask artifacts ensure runtime,sift,renderer",
+    "build": "pnpm run build:artifacts && pnpm run build:viewer",
     "deploy": "pnpm run build && pnpm run deploy:renderer-assets && pnpm run deploy:main",
     "deploy:main": "node scripts/deploy-main.mjs",
     "deploy:renderer-assets": "wrangler deploy -c wrangler.renderer-assets.toml",
@@ -35,7 +36,8 @@
     "publish:demo": "node scripts/publish-demo.mjs",
     "publish:fixture": "node scripts/publish-fixture.mjs",
     "publish:live": "node --import tsx scripts/publish-live.mjs",
-    "wasm:roundtrip": "node --import tsx scripts/wasm-roundtrip.mjs"
+    "wasm:roundtrip": "node --import tsx scripts/wasm-roundtrip.mjs",
+    "dev:browser": "node scripts/dev-browser.mjs"
   },
   "dependencies": {
     "@nteract/notebook-host": "workspace:*",

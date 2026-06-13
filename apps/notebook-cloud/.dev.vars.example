@@ -1,0 +1,11 @@
+# Optional local Wrangler secrets for notebook-cloud development.
+# Copy this file to apps/notebook-cloud/.dev.vars when you need deployed-style
+# credential paths locally. The Browser loopback auth workflow does not require
+# these values.
+
+# Must be at least 32 characters when testing /api/auth/session cookies.
+NOTEBOOK_CLOUD_APP_SESSION_SECRET="local-notebook-cloud-session-secret"
+
+# Optional when testing deployed-style dev-token headers/subprotocols locally.
+# Loopback /local-auth uses a synthetic token and does not read this value.
+NOTEBOOK_CLOUD_DEV_TOKEN="local-notebook-cloud-dev-token"

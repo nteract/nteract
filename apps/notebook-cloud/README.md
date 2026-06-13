@@ -43,6 +43,45 @@ existing smoke commands. Use
 `NOTEBOOK_CLOUD_WRANGLER_INSPECTOR_PORT` only when you need an explicit local
 override.
 
+For Browser-driven UI polish, use the wrapper that prints a local auth bootstrap
+URL:
+
+```bash
+pnpm --dir apps/notebook-cloud dev:browser
+```
+
+Open the printed `Browser auth:` URL in Browser. It points at
+`/local-auth`, which is served only on loopback hosts and seeds the same
+prototype auth localStorage keys the toolbar uses. The default identity is
+`browser-editor` with owner scope so `/n` can list and create notebooks without
+an external OIDC hop. Use `--user`, `--scope`, or `--next` to shape the session:
+
+```bash
+pnpm --dir apps/notebook-cloud dev:browser --user alice --scope editor --next /n
+```
+
+If viewer assets are already present, the wrapper reuses them. If they are
+missing it runs `build`, which first ensures the generated runtime, Sift, and
+renderer artifacts used by the Worker asset bundle. To force a fresh asset
+build, pass `--rebuild`; to reuse the current assets, pass `--skip-build`:
+
+```bash
+pnpm --dir apps/notebook-cloud dev:browser --rebuild
+pnpm --dir apps/notebook-cloud dev:browser --skip-build
+```
+
+The local bootstrap token is synthetic and useful only because the Worker
+accepts dev credentials from `localhost`, `127.0.0.1`, and `::1` without an
+extra shared secret. Do not use `/local-auth` for deployed prototype
+credentials. For deployed preview smokes, keep using environment variables such
+as `NTERACT_API_KEY` and `NOTEBOOK_CLOUD_DEV_TOKEN`; those values stay out of
+URLs and browser-visible HTML.
+
+When a local test needs Worker secrets, copy
+`apps/notebook-cloud/.dev.vars.example` to `apps/notebook-cloud/.dev.vars`.
+That file is gitignored; keep real tokens and API keys there or in your shell
+environment, not in scripts or docs.
+
 The smoke script proves:
 
 - WebSocket upgrade on `/n/:notebookId/sync`.

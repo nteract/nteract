@@ -213,6 +213,34 @@ describe("dev identity", () => {
     assert.equal(identity.actorLabel, "user:dev:alice/desktop:a");
   });
 
+  it("rejects loopback client IP headers unless local dev explicitly trusts them", () => {
+    assert.throws(
+      () =>
+        authenticateRequest(
+          new Request("https://preview.runt.run/n/demo/sync?user=alice&operator=desktop:a", {
+            headers: {
+              "CF-Connecting-IP": "127.0.0.1",
+            },
+          }),
+          { DEPLOYMENT_ENV: "prototype" },
+        ),
+      (error) => error instanceof AuthError && error.status === 401,
+    );
+  });
+
+  it("allows dev credentials from trusted Wrangler local requests behind a custom-domain URL", () => {
+    const identity = authenticateRequest(
+      new Request("https://preview.runt.run/n/demo/sync?user=alice&operator=desktop:a", {
+        headers: {
+          "CF-Connecting-IP": "127.0.0.1",
+        },
+      }),
+      { DEPLOYMENT_ENV: "prototype", NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP: "true" },
+    );
+
+    assert.equal(identity.actorLabel, "user:dev:alice/desktop:a");
+  });
+
   it("selects only the non-sensitive app protocol for browser localStorage auth", () => {
     const protocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("local-dev-token")}`;
     const identity = authenticateRequest(

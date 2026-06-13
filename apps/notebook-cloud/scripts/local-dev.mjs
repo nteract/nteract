@@ -10,6 +10,8 @@ export const NOTEBOOK_CLOUD_WRANGLER_INSPECTOR_PORT_ENV = "NOTEBOOK_CLOUD_WRANGL
 export const NOTEBOOK_CLOUD_WRANGLER_HOST_ENV = "NOTEBOOK_CLOUD_WRANGLER_HOST";
 
 export const DEFAULT_WRANGLER_HOST = "127.0.0.1";
+export const DEFAULT_LOCAL_BROWSER_AUTH_SCOPE = "owner";
+export const DEFAULT_LOCAL_BROWSER_AUTH_USER = "browser-editor";
 export const WRANGLER_PORT_RANGE = 1000;
 export const WRANGLER_HTTP_PORT_BASE = 45_000;
 export const WRANGLER_INSPECTOR_PORT_BASE = 46_000;
@@ -71,6 +73,20 @@ export function notebookCloudBaseUrl({ env = process.env, ...options } = {}) {
     env[NOTEBOOK_CLOUD_URL_ENV] ||
     notebookCloudLoopbackUrl({ env, ...options })
   );
+}
+
+export function notebookCloudLocalAuthUrl({
+  env = process.env,
+  next = "/n",
+  scope = DEFAULT_LOCAL_BROWSER_AUTH_SCOPE,
+  user = DEFAULT_LOCAL_BROWSER_AUTH_USER,
+  ...options
+} = {}) {
+  const url = new URL("/local-auth", notebookCloudLoopbackUrl({ env, ...options }));
+  url.searchParams.set("user", user);
+  url.searchParams.set("scope", scope);
+  url.searchParams.set("next", next);
+  return url.toString();
 }
 
 function readPort(value, name) {

@@ -167,6 +167,22 @@ describe("cloud notebook dashboard projection", () => {
     );
   });
 
+  it("projects hosted notebook routes onto the current browser origin", () => {
+    const owned = notebook({
+      id: "owned-notebook",
+      title: "Owned notebook",
+      scope: "owner",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+    owned.viewer_url = "https://preview.runt.run/n/owned-notebook/Owned%20notebook?mode=view";
+
+    assert.equal(
+      cloudNotebookDashboardOpenUrl(owned, { browserOrigin: "http://localhost:45316" }),
+      "http://localhost:45316/n/owned-notebook/Owned%20notebook?mode=edit",
+    );
+  });
+
   it("keeps notebook identity navigable when titles are missing", () => {
     const untitled = notebook({
       id: "01KTHB58DSJWERSEWHD3EJD74P",

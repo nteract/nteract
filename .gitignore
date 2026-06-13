@@ -24,6 +24,7 @@ Untitled*.ipynb
 
 # Local environment
 .env
+apps/notebook-cloud/.dev.vars
 
 # Generated launch agent plists (built by xtask for Tauri bundling)
 crates/notebook/launch-agents/

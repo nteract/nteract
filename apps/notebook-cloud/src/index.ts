@@ -128,6 +128,16 @@ import {
   readCloudAppSession,
   type CloudAppSession,
 } from "./app-session.ts";
+import {
+  NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
+  NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
+  NOTEBOOK_CLOUD_USER_STORAGE_KEY,
+} from "./dev-auth-storage.ts";
+import {
+  isLoopbackHostname,
+  isLoopbackWorkerRequest,
+  trustsLoopbackClientIpHeader,
+} from "./loopback.ts";
 
 export { NotebookRoom };
 
@@ -199,6 +209,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: exactPath("/api/auth/session"),
     methods: ["GET", "POST", "DELETE"],
     handler: (_match, request, env) => routeAppSession(request, env),
+  },
+  {
+    match: exactPath("/local-auth", "/dev/local-auth"),
+    methods: ["GET", "HEAD"],
+    handler: (_match, request, env) => routeLocalDevAuth(request, env),
   },
   {
     match: exactPath("/", "/index.html"),
@@ -438,6 +453,120 @@ function routeFavicon(request: Request): Response {
   );
 }
 
+function routeLocalDevAuth(request: Request, env: Env): Response {
+  const url = new URL(request.url);
+  if (!isLoopbackWorkerRequest(request, url, loopbackRequestOptions(env))) {
+    return json({ error: "local dev auth is only available on loopback hosts" }, 403);
+  }
+
+  const user = localDevAuthUser(url.searchParams.get("user"));
+  const scope = localDevAuthScope(url.searchParams.get("scope"));
+  const next = localDevAuthNextPath(url.searchParams.get("next"));
+  const bootstrap = {
+    next,
+    storage: {
+      [NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY]: "local-loopback-dev-token",
+      [NOTEBOOK_CLOUD_USER_STORAGE_KEY]: user,
+      [NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY]: scope,
+    },
+  };
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>nteract cloud local auth</title>
+  <meta name="robots" content="noindex" />
+  <style>
+    body {
+      align-items: center;
+      background: #f8fafc;
+      color: #0f172a;
+      display: grid;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+      margin: 0;
+      place-items: center;
+    }
+    main {
+      display: grid;
+      gap: 0.5rem;
+      max-width: 32rem;
+      padding: 2rem;
+    }
+    h1 {
+      font-size: 1rem;
+      margin: 0;
+    }
+    p {
+      color: #475569;
+      font-size: 0.875rem;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Preparing local cloud auth</h1>
+    <p>Redirecting to the local notebook cloud workspace.</p>
+  </main>
+  <script>
+    const bootstrap = ${scriptJsonForHtml(bootstrap)};
+    for (const [key, value] of Object.entries(bootstrap.storage)) {
+      window.localStorage.setItem(key, value);
+    }
+    window.location.replace(bootstrap.next);
+  </script>
+</body>
+</html>`;
+  return responseForRequestMethod(
+    request,
+    new Response(html, {
+      headers: {
+        "Cache-Control": "no-store",
+        "Content-Security-Policy":
+          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+        "Content-Type": "text/html; charset=utf-8",
+      },
+    }),
+  );
+}
+
+function localDevAuthUser(value: string | null): string {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, 128) : "browser-editor";
+}
+
+function localDevAuthScope(value: string | null): Exclude<ConnectionScope, "runtime_peer"> {
+  if (value === "owner" || value === "editor" || value === "viewer") {
+    return value;
+  }
+  return "owner";
+}
+
+function localDevAuthNextPath(value: string | null): string {
+  if (!value?.trim()) {
+    return "/n";
+  }
+  try {
+    const parsed = new URL(value, "http://local.notebook-cloud");
+    if (parsed.origin !== "http://local.notebook-cloud") {
+      return "/n";
+    }
+    const path = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    if (
+      !path.startsWith("/") ||
+      path.startsWith("/local-auth") ||
+      path.startsWith("/dev/local-auth")
+    ) {
+      return "/n";
+    }
+    return path.slice(0, 1024);
+  } catch {
+    return "/n";
+  }
+}
+
 async function routeAsset(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
   const assetPathname = assetPathnameForRequest(url.pathname);
@@ -643,6 +772,10 @@ function rejectUntrustedMutationOrigin(request: Request, env: Env): Response | n
 
 function allowedTrustedOrigins(request: Request, env: Env): Set<string> {
   const origins = new Set<string>([new URL(request.url).origin]);
+  const loopbackOrigin = trustedLoopbackBrowserOrigin(request, env);
+  if (loopbackOrigin) {
+    origins.add(loopbackOrigin);
+  }
   const raw = env.NOTEBOOK_CLOUD_ALLOWED_ORIGINS?.trim();
   if (!raw) {
     return origins;
@@ -670,6 +803,54 @@ function normalizedOrigin(value: string | null): string | null {
 
 function hasOriginHeader(value: string | null): boolean {
   return Boolean(value?.trim());
+}
+
+function trustedLoopbackBrowserOrigin(request: Request, env?: Env): string | null {
+  if (!isLoopbackWorkerRequest(request, undefined, loopbackRequestOptions(env))) {
+    return null;
+  }
+
+  return (
+    loopbackHeaderOrigin(request.headers.get("Origin")) ??
+    loopbackHeaderOrigin(request.headers.get("Referer")) ??
+    loopbackHostOrigin(request.headers.get("Host"))
+  );
+}
+
+function loopbackRequestOptions(env?: Env): { trustClientIp?: boolean } {
+  return {
+    trustClientIp: trustsLoopbackClientIpHeader(env?.NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP),
+  };
+}
+
+function loopbackHeaderOrigin(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    if (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      isLoopbackHostname(url.hostname)
+    ) {
+      return url.origin;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function loopbackHostOrigin(value: string | null): string | null {
+  if (!value?.trim()) {
+    return null;
+  }
+  try {
+    const url = new URL(`http://${value.trim()}`);
+    return isLoopbackHostname(url.hostname) ? url.origin : null;
+  } catch {
+    return null;
+  }
 }
 
 function hasCredentialWebSocketSubprotocol(request: Request): boolean {
@@ -889,7 +1070,7 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
     counter_delta: 1,
   });
 
-  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName ?? notebookTitle);
+  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName ?? notebookTitle, env);
   const apiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   return json(
     {
@@ -945,13 +1126,14 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
   const notebooks = await listNotebooksForPrincipal(env, principal, limit);
   return json({
     ok: true,
-    notebooks: notebookListResponseRows(request, notebooks),
+    notebooks: notebookListResponseRows(request, notebooks, env),
   });
 }
 
 function notebookListResponseRows(
   request: Request,
   notebooks: ListedNotebookRow[],
+  env?: Env,
 ): Array<Record<string, unknown>> {
   return notebooks.map((notebook) => {
     const notebookPathId = encodeURIComponent(notebook.id);
@@ -964,7 +1146,7 @@ function notebookListResponseRows(
       created_at: notebook.created_at,
       updated_at: notebook.updated_at,
       latest_revision_id: notebook.latest_revision_id,
-      viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title),
+      viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title, env),
       endpoints: {
         catalog: apiBasePath,
         acl: `${apiBasePath}/acl`,
@@ -2046,8 +2228,9 @@ function viewerUrlForRequest(
   request: Request,
   notebookId: string,
   vanityName: string | null,
+  env?: Env,
 ): string {
-  const url = new URL(request.url);
+  const url = new URL(trustedLoopbackBrowserOrigin(request, env) ?? request.url);
   const vanitySegment = vanityName?.trim() || "notebook";
   url.pathname = `/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanitySegment)}`;
   url.search = "";
@@ -3131,7 +3314,7 @@ async function routeUpdateNotebookMetadata(
     notebook_id: notebook.id,
     title: notebook.title,
     updated_at: notebook.updated_at,
-    viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title),
+    viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title, env),
   });
 }
 
@@ -4221,7 +4404,7 @@ async function notebookListBootstrap(
   return {
     kind: "notebook-list",
     session: appSessionResponse(session),
-    notebooks: notebookListResponseRows(request, notebooks),
+    notebooks: notebookListResponseRows(request, notebooks, env),
     saved_at: new Date().toISOString(),
   };
 }
