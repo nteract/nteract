@@ -268,6 +268,7 @@ describe("HTML script serialization", () => {
       fakeEnv({
         NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "client-id",
         NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
+        NOTEBOOK_CLOUD_OIDC_PROVIDER_LABEL: "Anaconda",
         NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: "https://preview.runt.run/oidc",
       }),
       fakeContext(),
@@ -297,6 +298,7 @@ describe("HTML script serialization", () => {
       fakeEnv({
         NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "client-id",
         NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
+        NOTEBOOK_CLOUD_OIDC_PROVIDER_LABEL: "Anaconda",
         NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: "https://preview.runt.run/oidc",
       }),
       fakeContext(),
@@ -306,6 +308,7 @@ describe("HTML script serialization", () => {
     assert.equal(response.status, 200);
     assert.match(html, /"issuer":"https:\/\/auth\.stage\.anaconda\.com\/api\/auth"/);
     assert.match(html, /"clientId":"client-id"/);
+    assert.match(html, /"providerLabel":"Anaconda"/);
     assert.match(html, /"redirectUri":"https:\/\/preview\.runt\.run\/oidc"/);
     assert.match(
       response.headers.get("Content-Security-Policy") ?? "",

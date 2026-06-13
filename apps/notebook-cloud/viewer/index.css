@@ -520,6 +520,109 @@ body {
   padding: clamp(0.75rem, 3vw, 1.5rem) clamp(1rem, 4vw, 2rem) 2rem;
 }
 
+.cloud-notebook-signed-out {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: clamp(1.5rem, 5vw, 4rem);
+  width: min(100%, 70rem);
+  justify-self: center;
+  border-top: 1px solid color-mix(in srgb, var(--foreground) 18%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+  padding-block: clamp(2rem, 8vw, 5rem);
+}
+
+.cloud-notebook-signed-out-copy {
+  display: grid;
+  gap: 0.875rem;
+  max-width: 42rem;
+}
+
+.cloud-notebook-signed-out-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: fit-content;
+  color: color-mix(in srgb, #0f766e 78%, var(--foreground));
+  font-size: 0.75rem;
+  font-weight: 760;
+  letter-spacing: 0;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.cloud-notebook-signed-out-kicker svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.cloud-notebook-signed-out h2,
+.cloud-notebook-signed-out p {
+  margin: 0;
+}
+
+.cloud-notebook-signed-out h2 {
+  max-width: 14ch;
+  font-size: clamp(2.25rem, 8vw, 5rem);
+  font-weight: 780;
+  letter-spacing: 0;
+  line-height: 0.95;
+}
+
+.cloud-notebook-signed-out p {
+  max-width: 34rem;
+  color: color-mix(in srgb, var(--foreground) 66%, transparent);
+  font-size: clamp(1rem, 2.2vw, 1.25rem);
+  line-height: 1.45;
+}
+
+.cloud-notebook-signed-out-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.625rem;
+  min-width: min(100%, 20rem);
+}
+
+.cloud-notebook-signed-out-actions .cloud-sign-in-button,
+.cloud-notebook-signed-out-actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  border: 1px solid color-mix(in srgb, var(--foreground) 18%, transparent);
+  border-radius: 6px;
+  padding-inline: 1rem;
+  font-size: 0.9375rem;
+  font-weight: 680;
+  text-decoration: none;
+}
+
+.cloud-notebook-signed-out-actions .cloud-sign-in-button {
+  color: var(--background);
+  background: var(--foreground);
+}
+
+.cloud-notebook-signed-out-actions .cloud-sign-in-button:hover {
+  background: color-mix(in srgb, var(--foreground) 88%, var(--background));
+}
+
+.cloud-notebook-signed-out-actions a {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--background) 94%, var(--foreground) 6%);
+}
+
+.cloud-notebook-signed-out-actions a:hover {
+  background: color-mix(in srgb, var(--background) 86%, var(--foreground) 10%);
+}
+
+.cloud-notebook-signed-out-actions svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
 .cloud-dashboard {
   display: grid;
   gap: 1.125rem;
@@ -1006,6 +1109,25 @@ body {
     justify-content: flex-start;
   }
 
+  .cloud-notebook-signed-out {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    padding-block: 2rem;
+  }
+
+  .cloud-notebook-signed-out h2 {
+    max-width: 12ch;
+  }
+
+  .cloud-notebook-signed-out-actions {
+    justify-content: stretch;
+  }
+
+  .cloud-notebook-signed-out-actions .cloud-sign-in-button,
+  .cloud-notebook-signed-out-actions a {
+    width: 100%;
+  }
+
   .cloud-new-notebook-form {
     grid-template-columns: minmax(0, 1fr) auto auto;
   }
@@ -1379,6 +1501,24 @@ main.flex > .cloud-report-toolbar {
 .cloud-sign-in-button[data-state="error"] {
   border-color: color-mix(in srgb, #dc2626 48%, transparent);
   color: #dc2626;
+}
+
+.cloud-notebook-signed-out-actions .cloud-sign-in-button {
+  width: auto;
+  max-width: none;
+  height: auto;
+  padding-inline: 1rem;
+}
+
+.cloud-notebook-signed-out-actions .cloud-sign-in-button span {
+  display: inline;
+}
+
+@media (max-width: 780px) {
+  .cloud-notebook-signed-out-actions .cloud-sign-in-button {
+    width: 100%;
+    max-width: none;
+  }
 }
 
 .cloud-share-panel {
