@@ -58,6 +58,30 @@ describe("NotebookEditModeButton", () => {
     expect(onModeChange).toHaveBeenCalledWith("edit");
   });
 
+  it("can render host-specific segmented edit copy", () => {
+    const onModeChange = vi.fn();
+
+    render(
+      <NotebookEditModeButton
+        mode="view"
+        state="viewing"
+        variant="segmented"
+        editLabel="Request edit"
+        editTitle="Request edit access"
+        onModeChange={onModeChange}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Request edit" })).toHaveAttribute(
+      "title",
+      "Request edit access",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Request edit" }));
+
+    expect(onModeChange).toHaveBeenCalledWith("edit");
+  });
+
   it("does not reapply the already selected segmented mode", () => {
     const onModeChange = vi.fn();
 

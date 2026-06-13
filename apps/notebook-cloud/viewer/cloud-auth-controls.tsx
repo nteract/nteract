@@ -44,15 +44,20 @@ export function CloudNotebookEditModeButton({
   ) {
     return null;
   }
+  const canSwitchToEdit = accessLevel === "editor" || accessLevel === "owner";
+  const editLabel = canSwitchToEdit ? "Editing" : "Request edit";
+  const editTitle = canSwitchToEdit ? "Switch to edit mode" : "Request edit access";
 
   return (
     <NotebookEditModeButton
+      editLabel={editLabel}
+      editTitle={editTitle}
       mode={accessPending ? "view" : interaction.selectedMode}
       state={accessPending ? "viewing" : interaction.state}
       variant="segmented"
       disabled={accessPending}
       onModeChange={(mode) => {
-        if (mode === "edit" && accessLevel !== "editor" && accessLevel !== "owner") {
+        if (mode === "edit" && !canSwitchToEdit) {
           onRequestEditAccess();
           return;
         }
