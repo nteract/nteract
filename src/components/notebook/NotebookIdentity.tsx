@@ -142,12 +142,14 @@ export function NotebookIdentityGroup({
 
 export function NotebookActorAvatar({
   actor,
+  className,
   icon,
   size = "default",
   showStatus = true,
   statusClassName,
 }: {
   actor: NotebookActorIdentity;
+  className?: string;
   icon?: LucideIcon;
   size?: "sm" | "default";
   showStatus?: boolean;
@@ -158,7 +160,11 @@ export function NotebookActorAvatar({
   return (
     <Avatar
       size={size}
-      className={cn("border border-border bg-muted text-muted-foreground", actorTone(actor.kind))}
+      className={cn(
+        "border border-border bg-muted text-muted-foreground",
+        actorTone(actor.kind),
+        className,
+      )}
       data-slot="notebook-actor-avatar"
       data-actor-kind={actor.kind}
     >

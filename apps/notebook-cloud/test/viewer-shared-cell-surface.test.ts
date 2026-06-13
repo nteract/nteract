@@ -328,6 +328,21 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
     /<NotebookEditModeButton[\s\S]*state=\{accessPending \? "viewing" : interaction\.state\}/,
   );
   assert.match(authControlsSourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
+  assert.match(authControlsSourceText, /authConfig\.localDev\?\.label\?\.trim\(\)/);
+  assert.match(authControlsSourceText, /return "Use local auth"/);
+  assert.match(authControlsSourceText, /window\.location\.assign\(localDevAuth\.authUrl\)/);
+  assert.match(
+    authControlsSourceText,
+    /const providerLabel = authConfig\.oidc\?\.providerLabel\?\.trim\(\)/,
+  );
+  assert.match(
+    authControlsSourceText,
+    /<NotebookEditModeButton[\s\S]*requestedEditLabel=\{reconnecting \? "Offline" : "Request sent"\}/,
+  );
+  assert.match(
+    authControlsSourceText,
+    /<NotebookEditModeButton[\s\S]*requestedEditTitle=\{[\s\S]*reconnecting \? "Offline while the room reconnects" : "Edit access requested"/,
+  );
   assert.match(authControlsSourceText, /onModeChange=\{\(mode\) => \{/);
   assert.match(sourceText, /accessLevel=\{shellCapabilities\.access\.level\}/);
   assert.doesNotMatch(sourceText, /projectCloudNotebookEditAccess/);
@@ -339,6 +354,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(shellHookSourceText, /editAccessRequestPending/);
   assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
+  assert.match(sourceText, /reconnecting=\{sustainedReconnecting\}/);
   assert.match(
     shellHookSourceText,
     /const editAccessPending =[\s\S]*roomEditAccess\.editAccessPending \|\| editReadiness\.selectedEditModeWaitingForRoom/,
@@ -422,16 +438,26 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   assert.match(sourceText, /noticesClassName="cloud-notebook-notices"/);
   assert.match(sourceText, /cloud-notebook-shell--command-toolbar/);
   assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*position: relative;/);
-  assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*--cloud-notice-top: 3\.75rem;/);
+  assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*--cloud-notice-height: 3rem;/);
   assert.match(
     cssText,
-    /\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-top: calc\(3\.75rem \+ 2\.5rem\);/,
+    /\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-height: 3rem;/,
   );
-  assert.match(cssText, /\.cloud-notebook-notices \{[\s\S]*position: absolute;/);
-  assert.match(cssText, /\.cloud-notebook-notices \{[\s\S]*top: var\(--cloud-notice-top\);/);
+  const noticesCss = cssText.match(/\.cloud-notebook-notices \{(?<body>[\s\S]*?)\n\}/)?.groups
+    ?.body;
+  assert.ok(noticesCss);
+  assert.match(noticesCss, /flex: 0 0 var\(--cloud-notice-height\);/);
+  assert.match(noticesCss, /height: var\(--cloud-notice-height\);/);
+  assert.match(noticesCss, /overflow-y: auto;/);
+  assert.match(noticesCss, /animation: cloud-notice-enter/);
+  assert.doesNotMatch(noticesCss, /position: absolute;/);
   assert.match(
     cssText,
-    /@media \(max-width: 900px\) \{[\s\S]*\.cloud-notebook-shell \{[\s\S]*--cloud-notice-top: 3\.75rem;[\s\S]*\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-top: calc\(3\.75rem \+ 2\.5rem\);/,
+    /\.cloud-notebook-notices \[data-slot="notebook-notice"\] \{[\s\S]*min-height: var\(--cloud-notice-height\);/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 900px\) \{[\s\S]*\.cloud-notebook-shell \{[\s\S]*--cloud-notice-height: 3rem;[\s\S]*\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-height: 3rem;/,
   );
   assert.match(
     cssText,

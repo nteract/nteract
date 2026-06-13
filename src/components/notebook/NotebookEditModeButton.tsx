@@ -12,6 +12,8 @@ export interface NotebookEditModeButtonProps {
   disabled?: boolean;
   editLabel?: string;
   editTitle?: string;
+  requestedEditLabel?: string;
+  requestedEditTitle?: string;
   variant?: "button" | "segmented";
   className?: string;
 }
@@ -23,6 +25,8 @@ export function NotebookEditModeButton({
   editTitle = "Switch to edit mode",
   mode,
   onModeChange,
+  requestedEditLabel = "Request sent",
+  requestedEditTitle = "Edit access requested",
   state,
   variant = "button",
 }: NotebookEditModeButtonProps) {
@@ -31,7 +35,7 @@ export function NotebookEditModeButton({
   const nextMode: NotebookEditMode = requestingEdit ? "view" : "edit";
   const editLabel = editLabelProp ?? "Editing";
   const label = requestingEdit ? "View" : "Edit";
-  const editSegmentLabel = requestedEdit ? "Request sent" : editLabel;
+  const editSegmentLabel = requestedEdit ? requestedEditLabel : editLabel;
   const title = requestingEdit
     ? state === "editing"
       ? "Return to read-only viewing"
@@ -87,7 +91,7 @@ export function NotebookEditModeButton({
             state === "editing"
               ? "Editing notebook"
               : requestedEdit
-                ? "Edit access requested"
+                ? requestedEditTitle
                 : editTitle
           }
           onClick={() => {

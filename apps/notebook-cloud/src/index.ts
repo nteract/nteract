@@ -4452,14 +4452,22 @@ function preconnectResourceHints(urls: Array<string | null | undefined>): string
   return hints;
 }
 
-function authConfigForRequest(request: Request, env: Env): { oidc: Record<string, string> | null } {
+function authConfigForRequest(
+  request: Request,
+  env: Env,
+): { oidc: Record<string, string> | null; localDev: Record<string, string> | null } {
+  const localDev = localDevAuthConfigForRequest(request, env);
+  if (localDev) {
+    return { oidc: null, localDev };
+  }
   const issuer = env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim();
   const clientId = env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim();
   const providerLabel = env.NOTEBOOK_CLOUD_OIDC_PROVIDER_LABEL?.trim();
   if (!issuer || !clientId) {
-    return { oidc: null };
+    return { oidc: null, localDev: null };
   }
   return {
+    localDev: null,
     oidc: {
       issuer,
       clientId,
@@ -4467,6 +4475,19 @@ function authConfigForRequest(request: Request, env: Env): { oidc: Record<string
         env.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI?.trim() || new URL("/oidc", request.url).href,
       ...(providerLabel ? { providerLabel } : {}),
     },
+  };
+}
+
+function localDevAuthConfigForRequest(request: Request, env: Env): Record<string, string> | null {
+  const url = new URL(request.url);
+  if (!isLoopbackWorkerRequest(request, url, loopbackRequestOptions(env))) {
+    return null;
+  }
+  const authUrl = new URL("/local-auth", url.origin);
+  authUrl.searchParams.set("next", `${url.pathname}${url.search}${url.hash}`);
+  return {
+    authUrl: `${authUrl.pathname}${authUrl.search}`,
+    label: "Use local auth",
   };
 }
 

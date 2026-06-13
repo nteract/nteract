@@ -192,7 +192,7 @@ describe("NotebookConnectionIdentity", () => {
       expect(dot.classList.contains(tone)).toBe(true);
       expect(dot.classList.contains("animate-pulse")).toBe(pulses);
       // State expresses as opacity/dot color, never copy: non-online dims.
-      expect(slot.classList.contains("opacity-60")).toBe(status !== "online");
+      expect(slot.classList.contains("opacity-70")).toBe(status !== "online");
       // Detail lives in sr-only copy and the title tooltip only.
       expect(slot.title).toContain(label);
       const srOnly = slot.querySelector(".sr-only");
@@ -274,13 +274,17 @@ describe("NotebookConnectionIdentity", () => {
     source.next("offline");
   });
 
-  it("uses the flat quiet treatment, never a raised bubble — across the whole subtree", () => {
+  it("uses a borderless quiet treatment, never a raised bubble — across the whole subtree", () => {
     const { container } = renderSlot(cloudCapabilities());
     const slot = slotElement(container);
+    const avatar = container.querySelector<HTMLElement>('[data-slot="notebook-actor-avatar"]');
 
     expect(slot.classList.contains("rounded-md")).toBe(true);
-    expect(slot.classList.contains("border-border/70")).toBe(true);
-    expect(slot.classList.contains("bg-muted/35")).toBe(true);
+    expect(slot.classList.contains("border")).toBe(false);
+    expect(slot.classList.contains("border-border/70")).toBe(false);
+    expect(slot.classList.contains("bg-muted/35")).toBe(false);
+    expect(slot.classList.contains("hover:bg-muted/60")).toBe(true);
+    expect(avatar?.classList.contains("border-0")).toBe(true);
     // The pulled designs' raised-bubble look must never come back. The
     // wrapper must not be a pill (Avatar internals are legitimately
     // rounded-full), and NOTHING in the subtree may carry a shadow.
