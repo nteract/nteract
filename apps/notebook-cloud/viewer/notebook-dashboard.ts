@@ -375,7 +375,7 @@ function cloudNotebookWorkSections(
   if (namedWork.length > 0) {
     sections.push({
       action: null,
-      detail: bucketDetail(namedWork.length, "ready to reopen"),
+      detail: remainingNotebookDetail(namedWork.length),
       id: "named",
       notebooks: namedWork,
       overflowAction: null,
@@ -697,6 +697,10 @@ function activityBuckets(notebooks: readonly CloudNotebookListItem[]): {
 
 function bucketDetail(count: number, label: string): string {
   return `${count} notebook${count === 1 ? "" : "s"} ${label}`;
+}
+
+function remainingNotebookDetail(count: number): string {
+  return `${count} more notebook${count === 1 ? "" : "s"} to reopen`;
 }
 
 function startOfUtcDay(time: number): number {

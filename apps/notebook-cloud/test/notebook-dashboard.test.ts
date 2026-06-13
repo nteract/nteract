@@ -421,12 +421,18 @@ describe("cloud notebook dashboard projection", () => {
       view.sections.map((section) => [
         section.id,
         section.title,
+        section.detail,
         section.notebooks.map((item) => item.notebook_id),
       ]),
       [
-        ["named", "Recent work", ["workstation-notes"]],
-        ["generated", "Generated runs", ["toolbar-smoke"]],
-        ["untitled", "Needs title", ["untitled-new"]],
+        ["named", "Recent work", "1 more notebook to reopen", ["workstation-notes"]],
+        ["generated", "Generated runs", "1 notebook from smoke and debug work", ["toolbar-smoke"]],
+        [
+          "untitled",
+          "Needs title",
+          "Rename notebooks worth keeping so they stay easy to find.",
+          ["untitled-new"],
+        ],
       ],
     );
     assert.deepEqual(
