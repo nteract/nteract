@@ -333,12 +333,16 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.doesNotMatch(sourceText, /projectCloudNotebookEditAccess/);
   assert.doesNotMatch(sourceText, /cloudNotebookShellCapabilities/);
   assert.match(shellHookSourceText, /projectCloudNotebookEditAccess/);
+  assert.match(shellHookSourceText, /projectCloudNotebookDocumentEditReadiness/);
   assert.match(shellHookSourceText, /cloudNotebookShellCapabilities/);
   assert.match(shellHookSourceText, /selectedMode/);
   assert.match(shellHookSourceText, /editAccessRequestPending/);
   assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
-  assert.match(shellHookSourceText, /const editAccessPending = roomEditAccess\.editAccessPending/);
+  assert.match(
+    shellHookSourceText,
+    /const editAccessPending =[\s\S]*roomEditAccess\.editAccessPending \|\| editReadiness\.selectedEditModeWaitingForRoom/,
+  );
   assert.doesNotMatch(sourceText, /appliedGrantedEditScopeRef/);
   assert.doesNotMatch(sourceText, /requestedEditAccess/);
   assert.doesNotMatch(
@@ -595,9 +599,8 @@ test("cloud app-session live sync requests the resolved notebook-list scope", ()
 
   assert.match(sourceText, /async function resolveCloudAppSessionSyncScope/);
   assert.match(sourceText, /new URL\("api\/n\?limit=100"/);
-  assert.match(sourceText, /isCloudNotebookListItem\(candidate\)/);
-  assert.match(sourceText, /candidate\.notebook_id === notebookId/);
-  assert.match(sourceText, /return notebook\.scope/);
+  assert.match(sourceText, /cloudNotebookCatalogScopeFromList\(notebooks, notebookId\)/);
+  assert.match(sourceText, /if \(catalogScope\) \{[\s\S]*return catalogScope;/);
   assert.match(sourceText, /return selectedMode === "edit" \? "owner" : "viewer"/);
   assert.match(
     sourceText,

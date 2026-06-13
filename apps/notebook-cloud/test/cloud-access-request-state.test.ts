@@ -85,6 +85,24 @@ describe("cloud access-request state projection", () => {
     );
   });
 
+  it("ignores stale request state once the catalog already grants document edit access", () => {
+    assert.deepEqual(
+      projectCloudAccessRequestTransition({
+        accessScope: "owner",
+        authState: authState({ mode: "oidc", requestedScope: "viewer" }),
+        connectionScope: "viewer",
+        hasAppSession: true,
+        request: { status: "pending" },
+      }),
+      {
+        requestedScope: null,
+        selectedMode: null,
+        refreshPrototypeAuth: false,
+        retryLiveConnection: false,
+      },
+    );
+  });
+
   it("treats app-session auth as the access source of truth over local prototype scope", () => {
     assert.equal(cloudPrototypeAuthCarriesRequestedScope("dev", true), true);
     assert.equal(cloudPrototypeAuthCarriesRequestedScope("oidc", false), true);

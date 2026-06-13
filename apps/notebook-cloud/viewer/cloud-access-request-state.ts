@@ -11,6 +11,7 @@ export interface CloudAccessRequestTransition {
 }
 
 export interface ProjectCloudAccessRequestTransitionOptions {
+  accessScope?: string | null;
   authState: Pick<CloudPrototypeAuthState, "mode" | "requestedScope">;
   connectionScope: string | null;
   hasAppSession: boolean;
@@ -25,11 +26,16 @@ const NO_CLOUD_ACCESS_REQUEST_TRANSITION: CloudAccessRequestTransition = Object.
 });
 
 export function projectCloudAccessRequestTransition({
+  accessScope = null,
   authState,
   connectionScope,
   hasAppSession,
   request,
 }: ProjectCloudAccessRequestTransitionOptions): CloudAccessRequestTransition {
+  if (accessScope === "editor" || accessScope === "owner") {
+    return NO_CLOUD_ACCESS_REQUEST_TRANSITION;
+  }
+
   if (request?.status === "pending" || request?.status === "approved") {
     return {
       requestedScope: "editor",

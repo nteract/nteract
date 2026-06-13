@@ -8,11 +8,15 @@ import {
 
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import type { CloudViewerConfig } from "./cloud-viewer-session";
-import { projectCloudNotebookEditAccess } from "./edit-access";
+import {
+  projectCloudNotebookDocumentEditReadiness,
+  projectCloudNotebookEditAccess,
+} from "./edit-access";
 import type { ViewerStatus } from "./notice-types";
 import { cloudNotebookShellCapabilities } from "./shell-capabilities";
 
 interface UseCloudShellCapabilitiesInput {
+  accessConnectionScope?: string | null;
   authState: CloudPrototypeAuthState;
   connectionScope: string | null;
   connectionActorLabel: string | null;
@@ -44,6 +48,7 @@ export interface CloudShellCapabilities {
  * derives stable UI capabilities for the shared shell, toolbar, and rail.
  */
 export function useCloudShellCapabilities({
+  accessConnectionScope = null,
   authState,
   connectionScope,
   connectionActorLabel,
@@ -60,26 +65,49 @@ export function useCloudShellCapabilities({
   workstationAttachment,
   hostCapabilities,
 }: UseCloudShellCapabilitiesInput): CloudShellCapabilities {
-  const canAcceptCellMutations =
-    Boolean(connectionPeerId) &&
-    !connectionError &&
-    (status.kind === "ready" || status.kind === "empty");
-  const editAccessRequestPending = !connectionError && status.kind === "loading";
+  const documentAccessScope = accessConnectionScope ?? connectionScope;
+  const editReadiness = useMemo(
+    () =>
+      projectCloudNotebookDocumentEditReadiness({
+        accessScope: documentAccessScope,
+        connectionError,
+        connectionPeerId,
+        connectionScope,
+        selectedMode,
+        statusKind: status.kind,
+      }),
+    [
+      connectionError,
+      connectionPeerId,
+      connectionScope,
+      documentAccessScope,
+      selectedMode,
+      status.kind,
+    ],
+  );
   const roomEditAccess = useMemo(
     () =>
       projectCloudNotebookEditAccess({
         authState,
-        connectionScope,
+        connectionScope: documentAccessScope,
         selectedMode,
-        canAcceptCellMutations,
-        editAccessRequestPending,
+        canAcceptCellMutations: editReadiness.canAcceptCellMutations,
+        editAccessRequestPending: editReadiness.editAccessRequestPending,
       }),
-    [authState, canAcceptCellMutations, connectionScope, editAccessRequestPending, selectedMode],
+    [
+      authState,
+      documentAccessScope,
+      editReadiness.canAcceptCellMutations,
+      editReadiness.editAccessRequestPending,
+      selectedMode,
+    ],
   );
-  const editAccessPending = roomEditAccess.editAccessPending;
+  const editAccessPending =
+    roomEditAccess.editAccessPending || editReadiness.selectedEditModeWaitingForRoom;
   const shellCapabilities = useMemo(
     () =>
       cloudNotebookShellCapabilities({
+        accessConnectionScope: documentAccessScope,
         authState,
         connectionScope,
         connectionActorLabel,
@@ -87,8 +115,8 @@ export function useCloudShellCapabilities({
         hasAppSession,
         hasCodeCells: codeCellCount > 0,
         selectedMode,
-        canAcceptCellMutations,
-        editAccessRequestPending,
+        canAcceptCellMutations: editReadiness.canAcceptCellMutations,
+        editAccessRequestPending: editReadiness.editAccessRequestPending,
         runtimeAvailable: runtimePeerAvailable,
         runtimePeerCount,
         kernelStatusLabel,
@@ -98,13 +126,14 @@ export function useCloudShellCapabilities({
     [
       authState,
       hasAppSession,
-      canAcceptCellMutations,
+      documentAccessScope,
       codeCellCount,
       hostCapabilities,
       connectionActorLabel,
       connectionPeerLabel,
       connectionScope,
-      editAccessRequestPending,
+      editReadiness.canAcceptCellMutations,
+      editReadiness.editAccessRequestPending,
       kernelStatusLabel,
       runtimePeerCount,
       runtimePeerAvailable,
@@ -114,7 +143,11 @@ export function useCloudShellCapabilities({
   );
 
   return useMemo(
-    () => ({ shellCapabilities, canAcceptCellMutations, editAccessPending }),
-    [canAcceptCellMutations, editAccessPending, shellCapabilities],
+    () => ({
+      shellCapabilities,
+      canAcceptCellMutations: editReadiness.canAcceptCellMutations,
+      editAccessPending,
+    }),
+    [editAccessPending, editReadiness.canAcceptCellMutations, shellCapabilities],
   );
 }

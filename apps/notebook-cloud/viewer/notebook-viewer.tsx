@@ -98,6 +98,12 @@ import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
 import { projectCloudAccessRequestTransition } from "./cloud-access-request-state";
+import {
+  cloudNotebookAccessScopeForShell,
+  cloudNotebookCatalogScopeFromList,
+  cloudNotebookScopeCanEditDocument,
+  type CloudNotebookCatalogAccessScope,
+} from "./cloud-notebook-catalog-access";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import {
   cloudNotebookInteractionModeForAccess,
@@ -115,7 +121,6 @@ import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { CloudNotebookEditModeButton, CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { CloudNotebookTitle, cloudNotebookRouteTitle } from "./cloud-notebook-title";
 import { CloudPresenceStatus } from "./cloud-presence-status";
-import { isCloudNotebookListItem } from "./notebook-dashboard";
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
 const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 30_000;
@@ -148,11 +153,9 @@ async function resolveCloudAppSessionSyncScope(
     if (response.ok) {
       const body = (await response.json()) as { notebooks?: unknown };
       const notebooks = Array.isArray(body.notebooks) ? body.notebooks : [];
-      const notebook = notebooks.find(
-        (candidate) => isCloudNotebookListItem(candidate) && candidate.notebook_id === notebookId,
-      );
-      if (isCloudNotebookListItem(notebook) && notebook.scope !== "runtime_peer") {
-        return notebook.scope;
+      const catalogScope = cloudNotebookCatalogScopeFromList(notebooks, notebookId);
+      if (catalogScope) {
+        return catalogScope;
       }
     }
   } catch (error) {
@@ -214,6 +217,8 @@ export function NotebookViewer({
   const [latestAccessRequest, setLatestAccessRequest] = useState<CloudNotebookAccessRequest | null>(
     null,
   );
+  const [catalogAccessScope, setCatalogAccessScope] =
+    useState<CloudNotebookCatalogAccessScope | null>(null);
   const [accessRequestError, setAccessRequestError] = useState<string | null>(null);
   const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
     () => cloudNotebookModeFromSearch(window.location.search),
@@ -433,6 +438,42 @@ export function NotebookViewer({
     authState,
     hasAppSession,
   });
+  useEffect(() => {
+    if (!canUseAuthenticatedCloudApi) {
+      setCatalogAccessScope(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const endpoint = new URL("api/n?limit=100", `${window.location.origin}/`);
+        const response = await fetchWithCloudPrototypeAuth(
+          endpoint.href,
+          {
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+            signal: controller.signal,
+          },
+          browserApiAuthState,
+        );
+        if (controller.signal.aborted || !response.ok) {
+          return;
+        }
+        const body = (await response.json()) as { notebooks?: unknown };
+        if (controller.signal.aborted) {
+          return;
+        }
+        const notebooks = Array.isArray(body.notebooks) ? body.notebooks : [];
+        setCatalogAccessScope(cloudNotebookCatalogScopeFromList(notebooks, config.notebookId));
+      } catch {
+        return;
+      }
+    })();
+
+    return () => controller.abort();
+  }, [browserApiAuthState, canUseAuthenticatedCloudApi, config.notebookId]);
+  const catalogGrantsDocumentEdit = cloudNotebookScopeCanEditDocument(catalogAccessScope);
   const cloudRuntimeConnectedForStatus = workstationAttachment
     ? workstationAttachmentIsConnected(workstationAttachment)
     : runtimePeerAvailable;
@@ -452,13 +493,25 @@ export function NotebookViewer({
       ? cloudRuntimeStatus.label
       : null
     : null;
+  const connectionReadyForAccessScope =
+    !connectionError &&
+    Boolean(connectionPeerId) &&
+    (status.kind === "ready" || status.kind === "empty");
+  const accessConnectionScope = cloudNotebookAccessScopeForShell({
+    catalogScope: catalogAccessScope,
+    connectionReady: connectionReadyForAccessScope,
+    connectionScope,
+  });
+  const effectiveAccessRequest = catalogGrantsDocumentEdit ? null : latestAccessRequest;
   const selectedInteractionModeForAccess = cloudNotebookInteractionModeForAccess({
-    accessRequestStatus: latestAccessRequest?.status,
+    accessRequestStatus: effectiveAccessRequest?.status,
+    accessScope: accessConnectionScope,
     connectionScope,
     selectedMode: selectedInteractionMode,
   });
   const { shellCapabilities, canAcceptCellMutations, editAccessPending } =
     useCloudShellCapabilities({
+      accessConnectionScope,
       authState,
       codeCellCount,
       connectionActorLabel,
@@ -790,13 +843,14 @@ export function NotebookViewer({
     (request: CloudNotebookAccessRequest | null) => {
       setLatestAccessRequest(request);
       const transition = projectCloudAccessRequestTransition({
+        accessScope: catalogAccessScope,
         authState: {
           mode: authState.mode,
           requestedScope: authState.requestedScope,
         },
         connectionScope,
         hasAppSession,
-        request,
+        request: catalogGrantsDocumentEdit ? null : request,
       });
       if (transition.requestedScope) {
         storeCloudRequestedScope(window.localStorage, transition.requestedScope);
@@ -814,6 +868,8 @@ export function NotebookViewer({
     [
       authState.mode,
       authState.requestedScope,
+      catalogAccessScope,
+      catalogGrantsDocumentEdit,
       connectionScope,
       hasAppSession,
       refreshAuthState,
@@ -822,7 +878,11 @@ export function NotebookViewer({
   );
   const loadOwnAccessRequest = useCallback(
     async (options?: { signal?: AbortSignal }) => {
-      if (connectionScope !== "viewer" || !canUseAuthenticatedCloudApi) {
+      if (
+        connectionScope !== "viewer" ||
+        !canUseAuthenticatedCloudApi ||
+        catalogGrantsDocumentEdit
+      ) {
         return;
       }
 
@@ -853,12 +913,13 @@ export function NotebookViewer({
       applyLatestAccessRequest,
       browserApiAuthState,
       canUseAuthenticatedCloudApi,
+      catalogGrantsDocumentEdit,
       config.accessRequestsEndpoint,
       connectionScope,
     ],
   );
   useEffect(() => {
-    if (connectionScope !== "viewer" || !hasBrowserAppIdentity) {
+    if (connectionScope !== "viewer" || !hasBrowserAppIdentity || catalogGrantsDocumentEdit) {
       setLatestAccessRequest(null);
       return;
     }
@@ -868,12 +929,19 @@ export function NotebookViewer({
     const controller = new AbortController();
     void loadOwnAccessRequest({ signal: controller.signal });
     return () => controller.abort();
-  }, [canUseAuthenticatedCloudApi, connectionScope, hasBrowserAppIdentity, loadOwnAccessRequest]);
+  }, [
+    canUseAuthenticatedCloudApi,
+    catalogGrantsDocumentEdit,
+    connectionScope,
+    hasBrowserAppIdentity,
+    loadOwnAccessRequest,
+  ]);
   useEffect(() => {
     if (
-      latestAccessRequest?.status !== "pending" ||
+      effectiveAccessRequest?.status !== "pending" ||
       connectionScope !== "viewer" ||
-      !canUseAuthenticatedCloudApi
+      !canUseAuthenticatedCloudApi ||
+      catalogGrantsDocumentEdit
     ) {
       return;
     }
@@ -903,8 +971,9 @@ export function NotebookViewer({
     };
   }, [
     canUseAuthenticatedCloudApi,
+    catalogGrantsDocumentEdit,
     connectionScope,
-    latestAccessRequest?.status,
+    effectiveAccessRequest?.status,
     loadOwnAccessRequest,
   ]);
   const requestCloudEditAccess = useCallback(() => {
@@ -1095,7 +1164,7 @@ export function NotebookViewer({
     notebookViewIsLoading && (status.kind === "ready" || status.kind === "empty")
       ? { kind: "loading", message: "Preparing notebook view..." }
       : status;
-  const accessRequestNotice = cloudAccessRequestNotice(latestAccessRequest, accessRequestError);
+  const accessRequestNotice = cloudAccessRequestNotice(effectiveAccessRequest, accessRequestError);
   // Asset health is its own quiet surface: N identical renderer failures
   // collapse into ONE notice (the provider state is module-level shared)
   // plus per-output fallbacks. It never feeds the connection dot or

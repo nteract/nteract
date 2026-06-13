@@ -38,6 +38,24 @@ test("cloud notebook edit links stay view-only for viewers without an access req
   assert.equal(
     cloudNotebookInteractionModeForAccess({
       accessRequestStatus: null,
+      accessScope: "owner",
+      connectionScope: "viewer",
+      selectedMode: "edit",
+    }),
+    "edit",
+  );
+  assert.equal(
+    cloudNotebookInteractionModeForAccess({
+      accessRequestStatus: "pending",
+      accessScope: "editor",
+      connectionScope: "viewer",
+      selectedMode: "edit",
+    }),
+    "edit",
+  );
+  assert.equal(
+    cloudNotebookInteractionModeForAccess({
+      accessRequestStatus: null,
       connectionScope: "editor",
       selectedMode: "edit",
     }),

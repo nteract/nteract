@@ -403,6 +403,30 @@ test("cloud shell capabilities keep requested edit pending until the room grants
   assert.equal(capabilities.access.level, "viewer");
 });
 
+test("cloud shell capabilities can show catalog owner access without granting live execution", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    accessConnectionScope: "owner",
+    authState: authState("anonymous"),
+    connectionScope: null,
+    hasAppSession: true,
+    hasCodeCells: true,
+    selectedMode: "edit",
+    canAcceptCellMutations: false,
+    runtimeAvailable: true,
+    hostCapabilities: { canManageSharing: true },
+  });
+
+  assert.equal(capabilities.access.level, "owner");
+  assert.equal(capabilities.canManageSharing, true);
+  assert.equal(capabilities.canEditMarkdown, false);
+  assert.equal(capabilities.canEditCells, false);
+  assert.equal(capabilities.canEditStructure, false);
+  assert.equal(capabilities.interaction?.selectedMode, "edit");
+  assert.equal(capabilities.interaction?.activeMode, "view");
+  assert.equal(capabilities.runtime.executionAvailable, true);
+  assert.equal(capabilities.canExecute, false);
+});
+
 test("cloud shell capabilities suppress editor mode while a requested edit reconnect is pending", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),

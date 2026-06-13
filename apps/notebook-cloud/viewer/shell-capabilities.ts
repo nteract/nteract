@@ -16,6 +16,13 @@ import { projectCloudNotebookEditAccess } from "./edit-access";
 
 export interface CloudNotebookShellCapabilityInput {
   authState: CloudPrototypeAuthState;
+  /**
+   * Document access used for UI projection. During reconnect this can come
+   * from the authenticated notebook catalog so owners do not see stale
+   * request-access chrome. Actual mutation and execution authority still comes
+   * from the live room `connectionScope` below.
+   */
+  accessConnectionScope?: string | null;
   connectionScope: string | null;
   connectionActorLabel?: string | null;
   connectionPeerLabel?: string | null;
@@ -68,6 +75,7 @@ export interface CloudNotebookShellCapabilityInput {
 }
 
 export function cloudNotebookShellCapabilities({
+  accessConnectionScope,
   authState,
   connectionScope,
   connectionActorLabel = null,
@@ -83,9 +91,10 @@ export function cloudNotebookShellCapabilities({
   workstationAttachment = null,
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
+  const documentAccessScope = accessConnectionScope ?? connectionScope;
   const interaction = projectCloudNotebookEditAccess({
     authState,
-    connectionScope,
+    connectionScope: documentAccessScope,
     hasAppSession,
     selectedMode,
     canAcceptCellMutations,

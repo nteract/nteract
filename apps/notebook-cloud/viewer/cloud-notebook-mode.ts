@@ -2,14 +2,22 @@ export type CloudNotebookUrlMode = "edit" | "view";
 
 export function cloudNotebookInteractionModeForAccess({
   accessRequestStatus,
+  accessScope,
   connectionScope,
   selectedMode,
 }: {
   accessRequestStatus?: string | null;
+  accessScope?: string | null;
   connectionScope: string | null;
   selectedMode: CloudNotebookUrlMode;
 }): CloudNotebookUrlMode {
-  if (selectedMode !== "edit" || connectionScope !== "viewer") {
+  if (selectedMode !== "edit") {
+    return selectedMode;
+  }
+  if (accessScope === "editor" || accessScope === "owner") {
+    return "edit";
+  }
+  if (connectionScope !== "viewer") {
     return selectedMode;
   }
   if (accessRequestStatus === "pending" || accessRequestStatus === "approved") {
