@@ -211,7 +211,7 @@ export async function getExecutionPerformanceSnapshot(
 }
 
 export async function waitForOutputContaining(cell: Locator, text: string, timeout = 60_000) {
-  const output = cell.locator('[data-slot="ansi-stream-output"]');
+  const output = cell.locator('[data-slot="ansi-stream-output"]').filter({ hasText: text }).first();
   await expect(output).toContainText(text, { timeout });
   return output;
 }
@@ -219,9 +219,12 @@ export async function waitForOutputContaining(cell: Locator, text: string, timeo
 export async function waitForOutputMatching(cell: Locator, matcher: RegExp, timeout = 60_000) {
   const output = cell.locator('[data-slot="ansi-stream-output"]');
   await expect
-    .poll(async () => ((await output.count()) > 0 ? output.innerText() : ""), {
-      timeout,
-    })
+    .poll(
+      async () => ((await output.count()) > 0 ? (await output.allInnerTexts()).join("\n") : ""),
+      {
+        timeout,
+      },
+    )
     .toMatch(matcher);
   return output;
 }
