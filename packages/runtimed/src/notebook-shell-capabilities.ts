@@ -64,6 +64,12 @@ export interface NotebookShellRuntimeTargetProjection {
    * where compute is expected to run.
    */
   id?: string | null;
+  /**
+   * Host-owned identity for one active compute session on this target. Hidden
+   * from the default UI, but included in projection cache identity so replacing
+   * a stale session cannot reuse the old target object.
+   */
+  runtimeSessionId?: string | null;
   kind: NotebookShellRuntimeTargetKind;
   status: NotebookShellRuntimeTargetStatus;
   label: string;
@@ -262,6 +268,7 @@ export function notebookShellWorkstationAttachmentCacheKey(
     attachment.memory_bytes ?? null,
     attachment.working_directory ?? null,
     attachment.updated_at ?? null,
+    attachment.runtime_session_id ?? null,
   ]);
 }
 
@@ -280,6 +287,7 @@ export function projectNotebookRuntimeTargetFromWorkstationAttachment(
 
   return {
     id: trimToNull(attachment.workstation_id) ?? "attached-workstation",
+    runtimeSessionId: trimToNull(attachment.runtime_session_id),
     kind: options.kind ?? "cloud_workstation",
     status: statusProjection.status,
     label: trimToNull(attachment.display_name) ?? "Attached workstation",
@@ -476,6 +484,7 @@ const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   resourceLabel: (target) => target.resourceLabel ?? null,
   runtimePeerCount: (target) => target.runtimePeerCount ?? null,
   workingDirectoryLabel: (target) => target.workingDirectoryLabel ?? null,
+  runtimeSessionId: (target) => target.runtimeSessionId ?? null,
 } satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeTargetProjection>;
 const NOTEBOOK_ACTOR_PROJECTION_CACHE_FIELDS = {
   actorLabel: (actor) => actor.actorLabel,

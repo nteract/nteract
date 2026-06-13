@@ -295,6 +295,7 @@ export interface WorkstationAttachmentState {
   memory_bytes?: number | null;
   working_directory?: string | null;
   updated_at?: string | null;
+  runtime_session_id?: string | null;
 }
 
 export interface RuntimeState {
