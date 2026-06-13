@@ -30,6 +30,13 @@ export interface CloudNotebookNoticesProps {
   isPublicViewer?: boolean;
   hasReadableSnapshot?: boolean;
   /**
+   * The route has no authenticated browser identity and the live-room join is
+   * retrying without a readable public snapshot. This is different from stale
+   * or expired auth: the browser needs to start a sign-in flow before the room
+   * can become readable.
+   */
+  signInRequired?: boolean;
+  /**
    * The live-room status has been "reconnecting" past the debounce window
    * (`useSustainedReconnecting`). Renders the single quiet reconnect line;
    * transport-loss `connectionError` strings are routed here instead of
@@ -116,6 +123,7 @@ export function cloudNotebookHasNotices({
   hasAppSession = false,
   isPublicViewer = false,
   hasReadableSnapshot = false,
+  signInRequired = false,
   offlineMergeNotice = null,
   rendererAssetError = null,
   sustainedReconnecting = false,
@@ -130,6 +138,7 @@ export function cloudNotebookHasNotices({
     status.kind !== "ready" &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
     !(connectionNotice && status.kind === "loading") &&
+    !signInRequired &&
     !isStatusDerivedFromConnectionError(status, connectionError);
 
   const shouldShowAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
@@ -137,18 +146,23 @@ export function cloudNotebookHasNotices({
     hasAppSession,
     isPublicViewer,
   });
+  const shouldShowSignInRequiredNotice =
+    signInRequired && !shouldShowAnonymousViewerAuthNotice && !hasAppSession;
   const shouldShowAuthNotice =
     !shouldShowAnonymousViewerAuthNotice &&
+    !shouldShowSignInRequiredNotice &&
     !hasAppSession &&
     (authState.mode === "invalid" || authState.mode === "oidc_expired");
   const shouldShowAuthRenewalNotice =
     !shouldShowAnonymousViewerAuthNotice &&
+    !shouldShowSignInRequiredNotice &&
     !shouldShowAuthNotice &&
     !hasAppSession &&
     authRenewal.kind !== "idle";
 
   return (
     shouldShowAnonymousViewerAuthNotice ||
+    shouldShowSignInRequiredNotice ||
     shouldShowAuthNotice ||
     shouldShowAuthRenewalNotice ||
     sustainedReconnecting ||
@@ -168,6 +182,7 @@ export function CloudNotebookNotices({
   hasAppSession = false,
   isPublicViewer = false,
   hasReadableSnapshot = false,
+  signInRequired = false,
   offlineMergeNotice = null,
   rendererAssetError = null,
   sustainedReconnecting = false,
@@ -187,6 +202,7 @@ export function CloudNotebookNotices({
       hasAppSession,
       isPublicViewer,
       hasReadableSnapshot,
+      signInRequired,
       offlineMergeNotice,
       rendererAssetError,
       sustainedReconnecting,
@@ -205,18 +221,23 @@ export function CloudNotebookNotices({
     status.kind !== "ready" &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
     !(connectionNotice && status.kind === "loading") &&
+    !signInRequired &&
     !isStatusDerivedFromConnectionError(status, connectionError);
   const shouldShowAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
     authState,
     hasAppSession,
     isPublicViewer,
   });
+  const shouldShowSignInRequiredNotice =
+    signInRequired && !shouldShowAnonymousViewerAuthNotice && !hasAppSession;
   const shouldShowAuthNotice =
     !shouldShowAnonymousViewerAuthNotice &&
+    !shouldShowSignInRequiredNotice &&
     !hasAppSession &&
     (authState.mode === "invalid" || authState.mode === "oidc_expired");
   const shouldShowAuthRenewalNotice =
     !shouldShowAnonymousViewerAuthNotice &&
+    !shouldShowSignInRequiredNotice &&
     !shouldShowAuthNotice &&
     !hasAppSession &&
     authRenewal.kind !== "idle";
@@ -236,6 +257,21 @@ export function CloudNotebookNotices({
         >
           This public notebook is open read-only. Use your account to edit or access private
           features.
+        </NotebookNotice>
+      ) : null}
+
+      {shouldShowSignInRequiredNotice ? (
+        <NotebookNotice
+          tone="warning"
+          icon={<LogIn className="h-4 w-4" />}
+          title="Sign in required."
+          actions={
+            onSignInAgain ? (
+              <SignInNoticeAction onSignInAgain={onSignInAgain}>Sign in again</SignInNoticeAction>
+            ) : null
+          }
+        >
+          Sign in again to open the live notebook room.
         </NotebookNotice>
       ) : null}
 
