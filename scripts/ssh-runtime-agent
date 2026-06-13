@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  ssh-runtime-agent runtime-agent --notebook-id ID --runtime-agent-id ID --blob-root PATH --socket PATH
+
+This wrapper is spawned by the local runtimed daemon as its runtime-agent
+executable. It reverse-forwards the local daemon Unix socket over SSH, then
+execs the remote runtimed runtime-agent binary against the forwarded socket.
+
+Environment:
+  RUNTIMED_SSH_RUNTIME_HOST          SSH host, default: lab-runner1
+  RUNTIMED_SSH_RUNTIME_COMMAND       Remote runtimed binary, default: /usr/local/bin/runtimed-nightly
+  RUNTIMED_SSH_RUNTIME_REMOTE_TMP    Remote temp parent directory, default: /tmp
+  RUNTIMED_SSH_RUNTIME_REMOTE_PORT   Remote loopback TCP port for SSH -R, default: random 30000-60000
+  RUNTIMED_SSH_BIN                   SSH binary, default: ssh
+  RUNTIMED_SSH_RUNTIME_VERBOSE       Set to 1 for wrapper diagnostics
+EOF
+}
+
+die() {
+  echo "ssh-runtime-agent: $*" >&2
+  exit 64
+}
+
+shell_quote() {
+  local value=${1//\'/\'\\\'\'}
+  printf "'%s'" "$value"
+}
+
+if [[ "${1:-}" != "runtime-agent" ]]; then
+  usage
+  die "expected first argument to be runtime-agent"
+fi
+shift
+
+notebook_id=
+runtime_agent_id=
+local_blob_root=
+local_socket=
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --notebook-id)
+      [[ $# -ge 2 ]] || die "--notebook-id requires a value"
+      notebook_id=$2
+      shift 2
+      ;;
+    --runtime-agent-id)
+      [[ $# -ge 2 ]] || die "--runtime-agent-id requires a value"
+      runtime_agent_id=$2
+      shift 2
+      ;;
+    --blob-root)
+      [[ $# -ge 2 ]] || die "--blob-root requires a value"
+      local_blob_root=$2
+      shift 2
+      ;;
+    --socket)
+      [[ $# -ge 2 ]] || die "--socket requires a value"
+      local_socket=$2
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n "$notebook_id" ]] || die "missing --notebook-id"
+[[ -n "$runtime_agent_id" ]] || die "missing --runtime-agent-id"
+[[ -n "$local_blob_root" ]] || die "missing --blob-root"
+[[ -n "$local_socket" ]] || die "missing --socket"
+[[ -S "$local_socket" ]] || die "local daemon socket does not exist: $local_socket"
+
+ssh_host=${RUNTIMED_SSH_RUNTIME_HOST:-lab-runner1}
+remote_runtimed=${RUNTIMED_SSH_RUNTIME_COMMAND:-/usr/local/bin/runtimed-nightly}
+remote_tmp_parent=${RUNTIMED_SSH_RUNTIME_REMOTE_TMP:-/tmp}
+ssh_bin=${RUNTIMED_SSH_BIN:-ssh}
+requested_remote_port=${RUNTIMED_SSH_RUNTIME_REMOTE_PORT:-}
+
+[[ -n "$ssh_host" ]] || die "RUNTIMED_SSH_RUNTIME_HOST must not be empty"
+[[ -n "$remote_runtimed" ]] || die "RUNTIMED_SSH_RUNTIME_COMMAND must not be empty"
+[[ -n "$remote_tmp_parent" ]] || die "RUNTIMED_SSH_RUNTIME_REMOTE_TMP must not be empty"
+[[ -n "$ssh_bin" ]] || die "RUNTIMED_SSH_BIN must not be empty"
+command -v python3 >/dev/null || die "python3 is required but was not found in PATH"
+
+if [[ -n "$requested_remote_port" ]]; then
+  [[ "$requested_remote_port" =~ ^[0-9]+$ ]] ||
+    die "RUNTIMED_SSH_RUNTIME_REMOTE_PORT must be a number between 1024 and 65535"
+  ((requested_remote_port >= 1024 && requested_remote_port <= 65535)) ||
+    die "RUNTIMED_SSH_RUNTIME_REMOTE_PORT must be a number between 1024 and 65535"
+fi
+
+proxy_token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+local_proxy_dir=$(mktemp -d "${TMPDIR:-/tmp}/runt-ssh-runtime-agent-proxy.XXXXXX")
+local_proxy_socket="$local_proxy_dir/proxy.sock"
+local_proxy_pid=
+last_ssh_stderr=
+
+cleanup_local_proxy() {
+  if [[ -n "$local_proxy_pid" ]]; then
+    kill "$local_proxy_pid" 2>/dev/null || true
+    wait "$local_proxy_pid" 2>/dev/null || true
+  fi
+  rm -f "${last_ssh_stderr:-}"
+  rm -rf "$local_proxy_dir"
+}
+trap cleanup_local_proxy EXIT INT TERM
+
+safe_agent_id=$(printf '%s' "$runtime_agent_id" | tr -c 'A-Za-z0-9_-' '_')
+remote_session_template="$remote_tmp_parent/runt-ssh-runtime-agent-${safe_agent_id}.XXXXXX"
+local_proxy_code='
+import os
+import hmac
+import selectors
+import socket
+import sys
+import threading
+
+proxy_path = sys.argv[1]
+daemon_path = sys.argv[2]
+token = sys.stdin.readline().rstrip("\n").encode() + b"\n"
+
+try:
+    os.unlink(proxy_path)
+except FileNotFoundError:
+    pass
+
+server = socket.socket(socket.AF_UNIX)
+server.bind(proxy_path)
+os.chmod(proxy_path, 0o600)
+server.listen(8)
+
+def pipe(left, right):
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(left, selectors.EVENT_READ, right)
+        selector.register(right, selectors.EVENT_READ, left)
+        while True:
+            for key, _ in selector.select():
+                source = key.fileobj
+                target = key.data
+                data = source.recv(65536)
+                if not data:
+                    return
+                try:
+                    target.sendall(data)
+                except BrokenPipeError:
+                    return
+    finally:
+        selector.close()
+
+def read_token(client):
+    client.settimeout(10)
+    received = b""
+    while len(received) < len(token):
+        chunk = client.recv(len(token) - len(received))
+        if not chunk:
+            return False
+        received += chunk
+    client.settimeout(None)
+    return hmac.compare_digest(received, token)
+
+def handle_client(client):
+    daemon = None
+    try:
+        if not read_token(client):
+            return
+        daemon = socket.socket(socket.AF_UNIX)
+        daemon.connect(daemon_path)
+        pipe(client, daemon)
+    except OSError as exc:
+        print(f"local proxy connection error: {exc}", file=sys.stderr)
+    finally:
+        client.close()
+        if daemon is not None:
+            daemon.close()
+
+while True:
+    client, _ = server.accept()
+    thread = threading.Thread(target=handle_client, args=(client,), daemon=True)
+    thread.start()
+'
+bridge_code='
+import os
+import selectors
+import socket
+import sys
+import threading
+
+unix_path = sys.argv[1]
+tcp_port = int(sys.argv[2])
+token = sys.stdin.readline().rstrip("\n").encode() + b"\n"
+
+try:
+    os.unlink(unix_path)
+except FileNotFoundError:
+    pass
+
+server = socket.socket(socket.AF_UNIX)
+server.bind(unix_path)
+os.chmod(unix_path, 0o600)
+server.listen(8)
+
+def pipe(left, right):
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(left, selectors.EVENT_READ, right)
+        selector.register(right, selectors.EVENT_READ, left)
+        while True:
+            for key, _ in selector.select():
+                source = key.fileobj
+                target = key.data
+                data = source.recv(65536)
+                if not data:
+                    return
+                try:
+                    target.sendall(data)
+                except BrokenPipeError:
+                    return
+    finally:
+        selector.close()
+
+def handle_client(client):
+    upstream = None
+    try:
+        upstream = socket.create_connection(("127.0.0.1", tcp_port))
+        upstream.sendall(token)
+        pipe(client, upstream)
+    except OSError as exc:
+        print(f"bridge connection error: {exc}", file=sys.stderr)
+    finally:
+        client.close()
+        if upstream is not None:
+            upstream.close()
+
+while True:
+    client, _ = server.accept()
+    thread = threading.Thread(target=handle_client, args=(client,), daemon=True)
+    thread.start()
+'
+
+python3 -u -c "$local_proxy_code" "$local_proxy_socket" "$local_socket" <<<"$proxy_token" &
+local_proxy_pid=$!
+
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -S "$local_proxy_socket" ]] && break
+  sleep 0.1
+done
+[[ -S "$local_proxy_socket" ]] || die "local proxy socket did not start: $local_proxy_socket"
+
+select_remote_port() {
+  if [[ -n "$requested_remote_port" ]]; then
+    remote_port=$requested_remote_port
+  else
+    remote_port=$(python3 -c 'import secrets; print(30000 + secrets.randbelow(30001))')
+  fi
+}
+
+run_remote_agent() {
+  select_remote_port
+
+  local remote_command="
+set -e
+IFS= read -r proxy_token
+remote_session_dir=\$(mktemp -d $(shell_quote "$remote_session_template"))
+chmod 700 \"\$remote_session_dir\"
+remote_socket=\"\$remote_session_dir/runt-ra.sock\"
+remote_blob_root=\"\$remote_session_dir/blobs\"
+mkdir -p \"\$remote_blob_root\"
+printf '%s\n' \"\$proxy_token\" | python3 -u -c $(shell_quote "$bridge_code") \"\$remote_socket\" $(shell_quote "$remote_port") &
+bridge_pid=\$!
+cleanup() {
+  kill \"\$bridge_pid\" 2>/dev/null || true
+  wait \"\$bridge_pid\" 2>/dev/null || true
+  rm -rf \"\$remote_session_dir\"
+}
+trap cleanup EXIT INT TERM HUP
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -S \"\$remote_socket\" ] && break
+  sleep 0.1
+done
+[ -S \"\$remote_socket\" ]
+$(shell_quote "$remote_runtimed") runtime-agent --notebook-id $(shell_quote "$notebook_id") --runtime-agent-id $(shell_quote "$runtime_agent_id") --blob-root \"\$remote_blob_root\" --socket \"\$remote_socket\"
+"
+
+  if [[ "${RUNTIMED_SSH_RUNTIME_VERBOSE:-0}" == "1" ]]; then
+    {
+      echo "ssh-runtime-agent: host=$ssh_host"
+      echo "ssh-runtime-agent: remote_runtimed=$remote_runtimed"
+      echo "ssh-runtime-agent: remote_port=$remote_port"
+      echo "ssh-runtime-agent: remote_session_template=$remote_session_template"
+      echo "ssh-runtime-agent: local_socket=$local_socket"
+      echo "ssh-runtime-agent: local_proxy_socket=$local_proxy_socket"
+      echo "ssh-runtime-agent: local_blob_root=$local_blob_root"
+    } >&2
+  fi
+
+  last_ssh_stderr="$local_proxy_dir/ssh-stderr"
+  : > "$last_ssh_stderr"
+  local ssh_status
+  "$ssh_bin" \
+    -o BatchMode=yes \
+    -o ExitOnForwardFailure=yes \
+    -o GatewayPorts=no \
+    -R "127.0.0.1:$remote_port:$local_proxy_socket" \
+    "$ssh_host" \
+    "$remote_command" \
+    2>"$last_ssh_stderr" \
+    <<<"$proxy_token"
+  ssh_status=$?
+  cat "$last_ssh_stderr" >&2 || true
+  return "$ssh_status"
+}
+
+attempts=1
+if [[ -z "$requested_remote_port" ]]; then
+  attempts=3
+fi
+
+ssh_status=255
+for _ in $(seq 1 "$attempts"); do
+  ssh_status=0
+  run_remote_agent || ssh_status=$?
+  if [[ "$ssh_status" -ne 255 || -n "$requested_remote_port" || ! -f "$last_ssh_stderr" ]] ||
+    ! grep -qi "remote port forwarding failed" "$last_ssh_stderr"; then
+    rm -f "${last_ssh_stderr:-}"
+    exit "$ssh_status"
+  fi
+  rm -f "$last_ssh_stderr"
+done
+rm -f "${last_ssh_stderr:-}"
+exit "$ssh_status"
