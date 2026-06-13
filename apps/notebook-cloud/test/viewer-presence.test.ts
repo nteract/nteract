@@ -45,7 +45,7 @@ describe("cloud viewer presence", () => {
         runtimePeerCount: 0,
       },
     );
-    assert.equal(cloudViewerPresenceDisplay(state).label, "1 here now");
+    assert.equal(cloudViewerPresenceDisplay(state).label, "No one else here");
 
     state = reduceCloudViewerPresenceMessage(state, {
       type: "cloud_peer_joined",
@@ -57,17 +57,14 @@ describe("cloud viewer presence", () => {
       timestamp: "2026-05-23T00:00:01.000Z",
     });
     assert.equal(state.roomPeerCount, 2);
-    assert.equal(cloudViewerPresenceDisplay(state).label, "2 here now");
+    assert.equal(cloudViewerPresenceDisplay(state).label, "1 other here");
     assert.deepEqual(
       cloudViewerPresenceDisplay(state).peers.map((peer) => ({
         kind: peer.kind,
         label: peer.label,
         count: peer.count,
       })),
-      [
-        { kind: "self", label: "Alice Demo", count: undefined },
-        { kind: "anonymous", label: "Anonymous viewer", count: 1 },
-      ],
+      [{ kind: "anonymous", label: "Anonymous viewer", count: 1 }],
     );
 
     state = reduceCloudViewerPresenceMessage(state, {
@@ -80,7 +77,7 @@ describe("cloud viewer presence", () => {
       timestamp: "2026-05-23T00:00:02.000Z",
     });
     assert.equal(state.roomPeerCount, 1);
-    assert.equal(cloudViewerPresenceDisplay(state).label, "1 here now");
+    assert.equal(cloudViewerPresenceDisplay(state).label, "No one else here");
   });
 
   it("surfaces disconnected state without losing the last room count", () => {
@@ -102,7 +99,7 @@ describe("cloud viewer presence", () => {
     assert.equal(display.label, "Offline");
     assert.equal(display.title, "Room unavailable");
     assert.equal(display.connected, false);
-    assert.equal(display.peers.length, 1);
+    assert.equal(display.peers.length, 0);
     assert.equal(
       display.peers.every((peer) => peer.status === "offline"),
       true,
@@ -125,8 +122,8 @@ describe("cloud viewer presence", () => {
 
     assert.equal(state.ownPeerLabel, "Alice Demo");
     const display = cloudViewerPresenceDisplay(state);
-    assert.equal(display.label, "1 here now");
-    assert.equal(display.title, "1 participant");
+    assert.equal(display.label, "No one else here");
+    assert.equal(display.title, "No one else here");
     assert.equal(display.connected, true);
     assert.deepEqual(
       display.peers.map((peer) => ({
@@ -134,7 +131,7 @@ describe("cloud viewer presence", () => {
         label: peer.label,
         count: peer.count,
       })),
-      [{ kind: "self", label: "Alice Demo", count: undefined }],
+      [],
     );
   });
 
@@ -180,23 +177,20 @@ describe("cloud viewer presence", () => {
 
     const display = cloudViewerPresenceDisplay(state);
 
-    assert.equal(display.label, "2 here now");
+    assert.equal(display.label, "1 other here");
     assert.deepEqual(
       display.peers.map((peer) => ({
         kind: peer.kind,
         label: peer.label,
         count: peer.count,
       })),
-      [
-        { kind: "self", label: "Alice Demo", count: undefined },
-        { kind: "peer", label: "Bob Demo", count: undefined },
-      ],
+      [{ kind: "peer", label: "Bob Demo", count: undefined }],
     );
     assert.equal(cloudPresenceHasRuntimePeer(state), true);
     assert.equal(cloudPresenceRuntimePeerCount(state), 1);
   });
 
-  it("collapses multiple same-account browser peers to one human avatar", () => {
+  it("excludes same-account browser peers from the avatar stack", () => {
     const state = reduceCloudViewerPresenceMessage(initialCloudViewerPresence(), {
       type: "cloud_room_ready",
       protocol: "v4",
@@ -229,14 +223,14 @@ describe("cloud viewer presence", () => {
 
     const display = cloudViewerPresenceDisplay(state);
 
-    assert.equal(display.label, "1 here now");
+    assert.equal(display.label, "No one else here");
     assert.deepEqual(
       display.peers.map((peer) => ({
         kind: peer.kind,
         label: peer.label,
         count: peer.count,
       })),
-      [{ kind: "self", label: "Alice Demo", count: undefined }],
+      [],
     );
   });
 
@@ -279,17 +273,14 @@ describe("cloud viewer presence", () => {
 
     const display = cloudViewerPresenceDisplay(state);
 
-    assert.equal(display.label, "3 here now");
+    assert.equal(display.label, "2 others here");
     assert.deepEqual(
       display.peers.map((peer) => ({
         kind: peer.kind,
         label: peer.label,
         count: peer.count,
       })),
-      [
-        { kind: "self", label: "Alice Demo", count: undefined },
-        { kind: "anonymous", label: "2 anonymous viewers", count: 2 },
-      ],
+      [{ kind: "anonymous", label: "2 anonymous viewers", count: 2 }],
     );
   });
 
@@ -335,7 +326,6 @@ describe("cloud viewer presence", () => {
         count: peer.count,
       })),
       [
-        { kind: "self", label: "Alice Demo", count: undefined },
         { kind: "peer", label: "Bob Demo", count: undefined },
         { kind: "anonymous", label: "Anonymous viewer", count: 1 },
       ],
@@ -381,7 +371,7 @@ describe("cloud viewer presence", () => {
         kind: peer.kind,
         label: peer.label,
       })),
-      [{ kind: "self", label: "Alice Demo" }],
+      [],
     );
 
     state = reduceCloudViewerPresenceMessage(state, {

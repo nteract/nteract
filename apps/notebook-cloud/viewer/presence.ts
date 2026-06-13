@@ -229,7 +229,7 @@ export function cloudViewerPresenceDisplay(
   state: CloudViewerPresenceState,
 ): CloudViewerPresenceDisplay {
   if (state.connection === "disconnected") {
-    const displayPeers = cloudHumanPresenceDisplayPeers(state.peers);
+    const displayPeers = cloudHumanPresenceDisplayPeers(state.peers, state.ownPeerId);
     return {
       label: "Offline",
       title: "Room unavailable",
@@ -258,11 +258,16 @@ export function cloudViewerPresenceDisplay(
     };
   }
 
-  const displayPeers = cloudHumanPresenceDisplayPeers(state.peers);
+  const displayPeers = cloudHumanPresenceDisplayPeers(state.peers, state.ownPeerId);
   const count = displayPeers.count;
-  const title = count === 1 ? "1 participant" : `${count} participants`;
+  const title =
+    count === 0
+      ? "No one else here"
+      : count === 1
+        ? "1 other participant"
+        : `${count} other participants`;
   return {
-    label: count === 1 ? "1 here now" : `${count} here now`,
+    label: count === 0 ? "No one else here" : count === 1 ? "1 other here" : `${count} others here`,
     title,
     connected: true,
     peers: displayPeers.peers,
@@ -270,13 +275,17 @@ export function cloudViewerPresenceDisplay(
   };
 }
 
-function cloudHumanPresenceDisplayPeers(peers: readonly CloudViewerPresencePeer[]): {
+function cloudHumanPresenceDisplayPeers(
+  peers: readonly CloudViewerPresencePeer[],
+  ownPeerId: string | null,
+): {
   count: number;
   peers: CloudViewerPresencePeer[];
   hiddenCount: number;
 } {
-  const humanPeerGroups = cloudHumanPresenceGroups(peers);
-  const anonymousCount = peers.filter((peer) => peer.kind === "anonymous").length;
+  const otherPeers = cloudOtherPresencePeers(peers, ownPeerId);
+  const humanPeerGroups = cloudHumanPresenceGroups(otherPeers);
+  const anonymousCount = otherPeers.filter((peer) => peer.kind === "anonymous").length;
   const namedPeers = humanPeerGroups.filter((peer) => peer.kind !== "anonymous");
   const visibleNamedPeerLimit = anonymousCount > 0 ? 2 : 3;
   const visibleNamedPeers = namedPeers.slice(0, visibleNamedPeerLimit);
@@ -303,6 +312,19 @@ function cloudHumanPresenceDisplayPeers(peers: readonly CloudViewerPresencePeer[
     peers: visiblePeers,
     hiddenCount,
   };
+}
+
+function cloudOtherPresencePeers(
+  peers: readonly CloudViewerPresencePeer[],
+  ownPeerId: string | null,
+): CloudViewerPresencePeer[] {
+  const ownPeer = ownPeerId ? peers.find((peer) => peer.id === ownPeerId) : null;
+  const ownParticipantKey = ownPeer?.participantKey ?? null;
+  return peers.filter((peer) => {
+    if (ownPeerId && peer.id === ownPeerId) return false;
+    if (ownParticipantKey && peer.participantKey === ownParticipantKey) return false;
+    return true;
+  });
 }
 
 function cloudHumanPresenceGroups(
