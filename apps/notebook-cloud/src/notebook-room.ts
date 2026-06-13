@@ -1290,7 +1290,7 @@ export class NotebookRoom {
   private removeAnonymousViewerPeers(notebookId: string, closeOptions: PeerCloseOptions): number {
     let closedCount = 0;
     for (const peer of Array.from(this.peers.values())) {
-      if (!isAnonymousViewerPeer(peer)) {
+      if (!isAnonymousViewer(peer.identity)) {
         continue;
       }
       this.removePeer(notebookId, peer, closeOptions);
@@ -2201,14 +2201,6 @@ function accessRevocationControlNotebookId(pathname: string): string | undefined
     return undefined;
   }
   return decodeURIComponent(match[1]);
-}
-
-function isAnonymousViewerPeer(peer: Peer): boolean {
-  return (
-    peer.identity.scope === "viewer" &&
-    peer.identity.metadata.provider === "anonymous" &&
-    peer.identity.metadata.principalNamespace === "anonymous"
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
