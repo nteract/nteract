@@ -1323,10 +1323,14 @@ export function NotebookViewer({
     () => new URL(window.location.pathname, window.location.origin).href,
     [],
   );
+  const renderedActiveRailPanel =
+    !shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"
+      ? "outline"
+      : activeRailPanel;
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
-      activePanelId={activeRailPanel}
+      activePanelId={renderedActiveRailPanel}
       collapsed={railCollapsed}
       outlineCellIds={notebookCellIds}
       activeOutlineItemId={activeOutlineItemId}
