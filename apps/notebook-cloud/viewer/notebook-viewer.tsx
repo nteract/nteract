@@ -1309,6 +1309,14 @@ export function NotebookViewer({
   ]);
   const shouldShowPackageEnvironmentSummary =
     shellCapabilities.canExecute || shellCapabilities.canManagePackages;
+  const shouldShowCloudWorkstationsPanel =
+    shellCapabilities.access.level === "owner" &&
+    shellCapabilities.auth.canUseAuthenticatedIdentity;
+  useEffect(() => {
+    if (!shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations") {
+      setActiveRailPanel("outline");
+    }
+  }, [activeRailPanel, shouldShowCloudWorkstationsPanel]);
   const toolbarAddAfterCellId =
     focusedCellId ?? notebookCellIds[notebookCellIds.length - 1] ?? null;
   const publicNotebookLink = useMemo(
@@ -1325,17 +1333,19 @@ export function NotebookViewer({
       selectedOutlineItemId={selectedOutlineItemId}
       selectedOutlineCellId={focusedCellId}
       workstationsPanel={
-        <NotebookWorkstationsPanel
-          capabilities={shellCapabilities}
-          selection={workstationSelection}
-          statusMessage={workstationPanelStatusMessage}
-          busyWorkstationId={busyWorkstationId}
-          onAttachWorkstation={onAttachWorkstation}
-          onSetDefaultWorkstation={onSetDefaultWorkstation}
-          pairing={workstationPairing}
-          onStartPairing={onStartPairing}
-          onCancelPairing={onCancelPairing}
-        />
+        shouldShowCloudWorkstationsPanel ? (
+          <NotebookWorkstationsPanel
+            capabilities={shellCapabilities}
+            selection={workstationSelection}
+            statusMessage={workstationPanelStatusMessage}
+            busyWorkstationId={busyWorkstationId}
+            onAttachWorkstation={onAttachWorkstation}
+            onSetDefaultWorkstation={onSetDefaultWorkstation}
+            pairing={workstationPairing}
+            onStartPairing={onStartPairing}
+            onCancelPairing={onCancelPairing}
+          />
+        ) : undefined
       }
       packagesPanel={
         <NotebookPackageSummaryPanel

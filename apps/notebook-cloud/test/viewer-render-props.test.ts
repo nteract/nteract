@@ -233,7 +233,18 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /function initialCloudRailCollapsed\(\): boolean \{[\s\S]*return true;/);
   assert.doesNotMatch(sourceText, /packagesSummary=/);
   assert.doesNotMatch(sourceText, /workstationsSummary=/);
-  assert.match(sourceText, /workstationsPanel=\{[\s\S]*<NotebookWorkstationsPanel/);
+  assert.match(
+    sourceText,
+    /const shouldShowCloudWorkstationsPanel =[\s\S]*shellCapabilities\.access\.level === "owner"[\s\S]*shellCapabilities\.auth\.canUseAuthenticatedIdentity/,
+  );
+  assert.match(
+    sourceText,
+    /if \(!shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"\) \{[\s\S]*setActiveRailPanel\("outline"\)/,
+  );
+  assert.match(
+    sourceText,
+    /workstationsPanel=\{[\s\S]*shouldShowCloudWorkstationsPanel \? \([\s\S]*<NotebookWorkstationsPanel/,
+  );
   assert.match(
     sourceText,
     /const shouldShowPackageEnvironmentSummary =[\s\S]*shellCapabilities\.canExecute \|\| shellCapabilities\.canManagePackages/,
