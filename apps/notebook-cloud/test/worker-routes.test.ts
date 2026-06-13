@@ -354,11 +354,23 @@ describe("Worker artifact routes", () => {
       new Request("https://preview.runt.run/local-auth?user=alice&scope=owner", {
         headers: { Host: "localhost:45316" },
       }),
-      fakeEnv(),
+      fakeEnv({ NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS: "true" }),
       fakeContext(),
     );
 
     assert.equal(response.status, 200);
+  });
+
+  it("rejects local dev auth bootstrap when loopback Host headers are not trusted", async () => {
+    const response = await worker.fetch(
+      new Request("https://preview.runt.run/local-auth?user=alice&scope=owner", {
+        headers: { Host: "localhost:45316" },
+      }),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
   });
 
   it("accepts local dev auth bootstrap when Wrangler reports a loopback client IP", async () => {
@@ -366,7 +378,7 @@ describe("Worker artifact routes", () => {
       new Request("https://preview.runt.run/local-auth?user=alice&scope=owner", {
         headers: { "CF-Connecting-IP": "127.0.0.1" },
       }),
-      fakeEnv({ NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP: "true" }),
+      fakeEnv({ NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS: "true" }),
       fakeContext(),
     );
 
@@ -1447,7 +1459,7 @@ describe("Worker artifact routes", () => {
   });
 
   it("keeps local Browser viewer URLs on loopback when Wrangler preserves the custom-domain URL", async () => {
-    const env = fakeEnv({ NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP: "true" });
+    const env = fakeEnv({ NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS: "true" });
     const localBrowserHeaders = {
       "CF-Connecting-IP": "127.0.0.1",
       "Content-Type": "application/json",

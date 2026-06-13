@@ -6,7 +6,7 @@ import {
   isConnectionScope,
   type ConnectionScope,
 } from "./auth-shared.ts";
-import { isLoopbackWorkerRequest, trustsLoopbackClientIpHeader } from "./loopback.ts";
+import { isLoopbackWorkerRequest, trustsLoopbackRequestHeaders } from "./loopback.ts";
 
 export {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -34,7 +34,7 @@ export interface AuthenticatedConnection {
 export interface IdentityEnvironment {
   DEPLOYMENT_ENV?: string;
   NOTEBOOK_CLOUD_DEV_TOKEN?: string;
-  NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP?: string;
+  NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS?: string;
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE?: string;
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL?: string;
   NOTEBOOK_CLOUD_OIDC_AUDIENCE?: string;
@@ -833,7 +833,7 @@ function authenticateDevCredential(
 
 function isLocalDevRequest(request: Request, env: IdentityEnvironment): boolean {
   return isLoopbackWorkerRequest(request, undefined, {
-    trustClientIp: trustsLoopbackClientIpHeader(env.NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP),
+    trustHeaders: trustsLoopbackRequestHeaders(env.NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS),
   });
 }
 

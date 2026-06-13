@@ -29,8 +29,8 @@ if (!hasOption(extraArgs, "port")) {
 if (!hasOption(extraArgs, "inspector-port")) {
   args.push("--inspector-port", String(inspectorPort));
 }
-if (!hasVar(extraArgs, "NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP")) {
-  args.push("--var", "NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP:true");
+if (!hasVar(extraArgs, "NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS")) {
+  args.push("--var", "NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS:true");
 }
 
 args.push(...extraArgs);
