@@ -45,6 +45,7 @@ import {
   useCloudPrototypeAuth,
 } from "./use-cloud-auth";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
+import { preloadNotebookRoute, scheduleNotebookRoutePreload } from "./notebook-route-preload";
 
 export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
@@ -87,6 +88,12 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
   }, [resolvedTheme]);
+
+  useEffect(() => {
+    if (listState.kind === "ready" && listState.notebooks.length > 0) {
+      scheduleNotebookRoutePreload();
+    }
+  }, [listState]);
 
   useEffect(() => {
     const cachedNotebooks =
@@ -394,6 +401,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
             canRename={signedIn}
             renameState={renameState}
             renameSavingId={renameSavingId}
+            onOpenNotebookIntent={preloadNotebookRoute}
             onOpenRename={openRenameForm}
             onCancelRename={closeRenameForm}
             onRenameTitleChange={(title) =>

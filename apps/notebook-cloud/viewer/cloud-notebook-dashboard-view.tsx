@@ -34,6 +34,7 @@ export function CloudNotebookDashboard({
   canRename,
   renameState,
   renameSavingId,
+  onOpenNotebookIntent,
   onOpenRename,
   onCancelRename,
   onRenameTitleChange,
@@ -43,6 +44,7 @@ export function CloudNotebookDashboard({
   canRename: boolean;
   renameState: CloudNotebookDashboardRenameState | null;
   renameSavingId: string | null;
+  onOpenNotebookIntent?: () => void;
   onOpenRename: (notebook: CloudNotebookListItem) => void;
   onCancelRename: () => void;
   onRenameTitleChange: (title: string) => void;
@@ -76,6 +78,8 @@ export function CloudNotebookDashboard({
           <a
             className="cloud-dashboard-primary-link"
             href={cloudNotebookDashboardOpenUrl(continued.notebook)}
+            onFocus={onOpenNotebookIntent}
+            onPointerEnter={onOpenNotebookIntent}
           >
             Open notebook
             <ExternalLink aria-hidden="true" />
@@ -137,6 +141,7 @@ export function CloudNotebookDashboard({
                   canRename={canRename}
                   renameState={renameState}
                   renameSavingId={renameSavingId}
+                  onOpenNotebookIntent={onOpenNotebookIntent}
                   onOpenRename={onOpenRename}
                   onCancelRename={onCancelRename}
                   onSelectFilter={setFilterId}
@@ -162,6 +167,7 @@ function CloudNotebookDashboardSectionView({
   canRename,
   renameState,
   renameSavingId,
+  onOpenNotebookIntent,
   onOpenRename,
   onCancelRename,
   onSelectFilter,
@@ -172,6 +178,7 @@ function CloudNotebookDashboardSectionView({
   canRename: boolean;
   renameState: CloudNotebookDashboardRenameState | null;
   renameSavingId: string | null;
+  onOpenNotebookIntent?: () => void;
   onOpenRename: (notebook: CloudNotebookListItem) => void;
   onCancelRename: () => void;
   onSelectFilter: (filterId: CloudNotebookDashboardFilterId) => void;
@@ -220,6 +227,7 @@ function CloudNotebookDashboardSectionView({
                 renameState?.notebookId === row.notebook.notebook_id ? renameState.title : null
               }
               renameSaving={renameSavingId === row.notebook.notebook_id}
+              onOpenNotebookIntent={onOpenNotebookIntent}
               onOpenRename={onOpenRename}
               onCancelRename={onCancelRename}
               onRenameTitleChange={onRenameTitleChange}
@@ -252,6 +260,7 @@ function CloudNotebookDashboardRow({
   canRename,
   renameTitle,
   renameSaving,
+  onOpenNotebookIntent,
   onOpenRename,
   onCancelRename,
   onRenameTitleChange,
@@ -261,6 +270,7 @@ function CloudNotebookDashboardRow({
   canRename: boolean;
   renameTitle: string | null;
   renameSaving: boolean;
+  onOpenNotebookIntent?: () => void;
   onOpenRename: (notebook: CloudNotebookListItem) => void;
   onCancelRename: () => void;
   onRenameTitleChange: (title: string) => void;
@@ -310,7 +320,12 @@ function CloudNotebookDashboardRow({
 
   return (
     <div className="cloud-notebook-list-row">
-      <a className="cloud-notebook-list-main" href={openUrl}>
+      <a
+        className="cloud-notebook-list-main"
+        href={openUrl}
+        onFocus={onOpenNotebookIntent}
+        onPointerEnter={onOpenNotebookIntent}
+      >
         <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
         {detail ? <span className="cloud-notebook-list-detail">{detail}</span> : null}
         {row.facts.length > 0 ? (
@@ -342,6 +357,8 @@ function CloudNotebookDashboardRow({
           href={openUrl}
           title="Open notebook"
           aria-label={`Open ${cloudNotebookDisplayTitle(notebook)}`}
+          onFocus={onOpenNotebookIntent}
+          onPointerEnter={onOpenNotebookIntent}
         >
           <ExternalLink aria-hidden="true" />
         </a>

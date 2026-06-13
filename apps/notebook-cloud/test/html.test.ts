@@ -112,6 +112,77 @@ describe("HTML script serialization", () => {
     assert.doesNotMatch(html, /id="notebook"/);
   });
 
+  it("preloads the lazy notebook route assets for direct notebook pages", async () => {
+    const seenPaths: string[] = [];
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo/example"),
+      fakeEnv({
+        ASSETS: fakeViewerAssetManifests(
+          {
+            notebookRoute: {
+              modulepreload: [
+                "notebook-route.0123456789abcdef.js",
+                "MarkdownText.0123456789abcdef.js",
+                "markdown.0123456789abcdef.js",
+                "katex.min.0123456789abcdef.js",
+              ],
+              stylepreload: ["notebook-route.0123456789abcdef.css", "katex.0123456789abcdef.css"],
+            },
+          },
+          seenPaths,
+        ),
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, [
+      "/assets/runtime-wasm-assets.json",
+      "/assets/renderer-sidecar-assets.json",
+      "/assets/notebook-route-assets.json",
+    ]);
+    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-route\.0123456789abcdef\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/MarkdownText\.0123456789abcdef\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/markdown\.0123456789abcdef\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/katex\.min\.0123456789abcdef\.js"/);
+    assert.match(
+      html,
+      /rel="preload" href="\/assets\/notebook-route\.0123456789abcdef\.css" as="style"/,
+    );
+    assert.match(html, /rel="preload" href="\/assets\/katex\.0123456789abcdef\.css" as="style"/);
+    assert.ok(
+      html.indexOf('rel="modulepreload" href="/assets/notebook-cloud-viewer.js"') <
+        html.indexOf('rel="modulepreload" href="/assets/notebook-route.0123456789abcdef.js"'),
+      "viewer entry should stay ahead of lazy notebook-route hints",
+    );
+  });
+
+  it("keeps notebook route asset hints out of the dashboard shell", async () => {
+    const seenPaths: string[] = [];
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n"),
+      fakeEnv({
+        ASSETS: fakeViewerAssetManifests(
+          {
+            notebookRoute: {
+              modulepreload: ["notebook-route.0123456789abcdef.js"],
+              stylepreload: ["notebook-route.0123456789abcdef.css"],
+            },
+          },
+          seenPaths,
+        ),
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, []);
+    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-cloud-viewer\.js"/);
+    assert.doesNotMatch(html, /notebook-route\.0123456789abcdef/);
+  });
+
   it("uses content-hashed runtime WASM assets from the viewer asset manifest", async () => {
     const seenPaths: string[] = [];
     const response = await worker.fetch(
@@ -135,6 +206,7 @@ describe("HTML script serialization", () => {
     assert.deepEqual(seenPaths, [
       "/assets/runtime-wasm-assets.json",
       "/assets/renderer-sidecar-assets.json",
+      "/assets/notebook-route-assets.json",
     ]);
     assert.match(
       html,
@@ -489,6 +561,7 @@ function fakeEnv(overrides: Partial<Env> = {}): Env {
 
 function fakeViewerAssetManifests(
   manifests: {
+    notebookRoute?: { modulepreload: string[]; stylepreload: string[] } | Record<string, unknown>;
     runtimeWasm?: { module: string; wasm: string };
     rendererSidecar?: { js: string; css: string; siftWasm: string } | Record<string, unknown>;
   },
@@ -505,6 +578,11 @@ function fakeViewerAssetManifests(
       }
       if (manifests.rendererSidecar && pathname === "/assets/renderer-sidecar-assets.json") {
         return new Response(JSON.stringify(manifests.rendererSidecar), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (manifests.notebookRoute && pathname === "/assets/notebook-route-assets.json") {
+        return new Response(JSON.stringify(manifests.notebookRoute), {
           headers: { "Content-Type": "application/json" },
         });
       }

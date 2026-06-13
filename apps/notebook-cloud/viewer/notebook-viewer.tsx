@@ -140,7 +140,8 @@ import {
 } from "./use-cloud-auth";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
-import { CloudNotebookEditModeButton, CloudNotebookSignInButton } from "./cloud-auth-controls";
+import { CloudNotebookSignInButton } from "./cloud-auth-controls";
+import { CloudNotebookEditModeButton } from "./cloud-edit-mode-button";
 import { CloudNotebookTitle, cloudNotebookRouteTitle } from "./cloud-notebook-title";
 import {
   cloudNotebookCatalogResponseTitle,

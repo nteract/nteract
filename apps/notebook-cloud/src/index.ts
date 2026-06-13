@@ -147,6 +147,7 @@ export { NotebookRoom };
 const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/renderer-assets/";
 const DEFAULT_RUNTIMED_WASM_BASE_PATH = "/assets/";
 const VIEWER_RUNTIME_WASM_ASSET_MANIFEST_PATH = "/assets/runtime-wasm-assets.json";
+const VIEWER_NOTEBOOK_ROUTE_ASSET_MANIFEST_PATH = "/assets/notebook-route-assets.json";
 const VIEWER_RUNTIMED_WASM_MODULE_NAME = "runtimed_wasm.js";
 const VIEWER_RUNTIMED_WASM_NAME = "runtimed_wasm_bg.wasm";
 const VIEWER_RENDERER_SIDECAR_MANIFEST_PATH = "/assets/renderer-sidecar-assets.json";
@@ -176,6 +177,11 @@ interface MissingSnapshotBlob {
 interface RuntimeWasmAssetNames {
   module: string;
   wasm: string;
+}
+
+interface ViewerNotebookRouteAssets {
+  modulepreload: string[];
+  stylepreload: string[];
 }
 
 interface RendererSidecarAssetNames {
@@ -4182,6 +4188,7 @@ async function viewer(
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   const runtimeWasmAssets = await runtimeWasmAssetNames(env);
   const rendererSidecarAssets = await rendererSidecarAssetNames(env);
+  const notebookRouteAssets = await notebookRouteAssetNames(env);
   const session = await readCloudAppSession(env, request).catch(() => null);
   const config = {
     notebookId,
@@ -4204,6 +4211,7 @@ async function viewer(
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),
     rendererAssets: rendererSidecarAssets,
+    notebookRouteAssets,
     outputDocumentBaseUrl: outputDocumentBaseUrl(env),
     runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),
     runtimedWasmPath: runtimedWasmAssetPath(env, runtimeWasmAssets.wasm),
@@ -4215,6 +4223,7 @@ async function viewer(
 }
 
 interface ViewerShellConfig extends Record<string, unknown> {
+  notebookRouteAssets?: ViewerNotebookRouteAssets;
   outputDocumentBaseUrl?: string | null;
   rendererAssetsBasePath?: string;
   rendererAssets?: RendererSidecarAssetNames;
@@ -4423,11 +4432,26 @@ function viewerResourceHints(config: ViewerShellConfig | null): string {
       config.runtimedWasmModulePath,
     ]),
     viewerEntryHint,
+    ...notebookRouteResourceHints(config.notebookRouteAssets),
     `<link rel="modulepreload" href="${escapeHtml(config.runtimedWasmModulePath)}" crossorigin />`,
     `<link rel="prefetch" href="${escapeHtml(
       config.runtimedWasmPath,
     )}" as="fetch" type="application/wasm" crossorigin />`,
   ].join("\n  ");
+}
+
+function notebookRouteResourceHints(assets: ViewerNotebookRouteAssets | undefined): string[] {
+  if (!assets) {
+    return [];
+  }
+  return [
+    ...assets.modulepreload.map(
+      (name) => `<link rel="modulepreload" href="/assets/${escapeHtml(name)}" />`,
+    ),
+    ...assets.stylepreload.map(
+      (name) => `<link rel="preload" href="/assets/${escapeHtml(name)}" as="style" />`,
+    ),
+  ];
 }
 
 function preconnectResourceHints(urls: Array<string | null | undefined>): string[] {
@@ -4509,6 +4533,57 @@ function outputDocumentBaseUrl(env: Env): string | null {
 
 function runtimedWasmAssetPath(env: Env, name: string): string {
   return `${runtimedWasmBasePath(env)}${name}`;
+}
+
+async function notebookRouteAssetNames(env: Env): Promise<ViewerNotebookRouteAssets> {
+  if (!env.ASSETS) {
+    return defaultNotebookRouteAssetNames();
+  }
+
+  try {
+    const manifestRequest = new Request(
+      `https://notebook-cloud.local${VIEWER_NOTEBOOK_ROUTE_ASSET_MANIFEST_PATH}`,
+    );
+    const response = await env.ASSETS.fetch(manifestRequest);
+    if (!response.ok) {
+      return defaultNotebookRouteAssetNames();
+    }
+    const manifest = await response.json();
+    if (isNotebookRouteAssetManifest(manifest)) {
+      return manifest;
+    }
+    cloudLog("warn", "viewer.notebook_route_manifest.invalid", {
+      manifest_path: VIEWER_NOTEBOOK_ROUTE_ASSET_MANIFEST_PATH,
+    });
+  } catch (error) {
+    cloudLog("warn", "viewer.notebook_route_manifest.failed", {
+      manifest_path: VIEWER_NOTEBOOK_ROUTE_ASSET_MANIFEST_PATH,
+      error: errorMessage(error),
+    });
+  }
+
+  return defaultNotebookRouteAssetNames();
+}
+
+function defaultNotebookRouteAssetNames(): ViewerNotebookRouteAssets {
+  return { modulepreload: [], stylepreload: [] };
+}
+
+function isNotebookRouteAssetManifest(value: unknown): value is ViewerNotebookRouteAssets {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const manifest = value as Record<string, unknown>;
+  return (
+    Array.isArray(manifest.modulepreload) &&
+    Array.isArray(manifest.stylepreload) &&
+    manifest.modulepreload.every((entry) => isViewerAssetName(entry, "js")) &&
+    manifest.stylepreload.every((entry) => isViewerAssetName(entry, "css"))
+  );
+}
+
+function isViewerAssetName(value: unknown, extension: "css" | "js"): value is string {
+  return typeof value === "string" && new RegExp(`^[A-Za-z0-9_.-]+\\.${extension}$`).test(value);
 }
 
 async function runtimeWasmAssetNames(env: Env): Promise<RuntimeWasmAssetNames> {
