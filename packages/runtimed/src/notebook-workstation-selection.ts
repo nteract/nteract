@@ -507,7 +507,7 @@ function providerLabel(provider: string | null | undefined): string | null {
   const normalized = trimToNull(provider);
   if (!normalized) return null;
   if (normalized === "local_daemon") return "Local daemon";
-  if (normalized === "runtime_peer") return "Runtime peer";
+  if (normalized === "runtime_peer") return "Workstation";
   return normalized
     .split(/[-_\s]+/g)
     .filter(Boolean)

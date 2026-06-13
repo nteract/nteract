@@ -4,9 +4,12 @@ import { readFileSync } from "node:fs";
 import {
   CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC,
   CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
+  CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
+  cloudConnectionDiagnosticBlocksNotebookBody,
   cloudConnectionErrorWithAccessDiagnostic,
   diagnoseCloudConnectionAccess,
+  isCloudConnectionAccessDiagnostic,
 } from "../viewer/connection-diagnostics.ts";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth.ts";
 
@@ -153,6 +156,34 @@ describe("late access diagnostics never displace a terminal WASM-failure notice"
     );
   });
 
+  it("identifies access diagnostics that should survive reconnect noise", () => {
+    assert.equal(isCloudConnectionAccessDiagnostic(CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC), true);
+    assert.equal(isCloudConnectionAccessDiagnostic(CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC), true);
+    assert.equal(isCloudConnectionAccessDiagnostic("cloud sync socket failed"), false);
+    assert.equal(isCloudConnectionAccessDiagnostic(null), false);
+  });
+
+  it("identifies diagnostics that should block notebook body rendering", () => {
+    assert.equal(
+      cloudConnectionDiagnosticBlocksNotebookBody(CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC),
+      true,
+    );
+    assert.equal(
+      cloudConnectionDiagnosticBlocksNotebookBody(CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC),
+      true,
+    );
+    assert.equal(
+      cloudConnectionDiagnosticBlocksNotebookBody(CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC),
+      false,
+    );
+    assert.equal(
+      cloudConnectionDiagnosticBlocksNotebookBody(CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC),
+      false,
+    );
+    assert.equal(cloudConnectionDiagnosticBlocksNotebookBody("cloud sync socket failed"), false);
+    assert.equal(cloudConnectionDiagnosticBlocksNotebookBody(null), false);
+  });
+
   // Session wiring pins (the hook cannot run under node): the kick-time
   // guard on the connect-failure path, and BOTH late-resolution sites
   // merging through the resolution-time guard.
@@ -170,6 +201,26 @@ describe("late access diagnostics never displace a terminal WASM-failure notice"
       ).length,
       2,
       "both diagnostic resolution sites must merge through the resolution-time guard",
+    );
+    assert.match(
+      sessionSource,
+      /isCloudConnectionAccessDiagnostic\(current\) \? current : reason\.message/,
+      "transport retry noise must not overwrite an already-actionable access diagnostic",
+    );
+    assert.match(
+      sessionSource,
+      /const stopPendingTransportForAccessDiagnostic = \(diagnostic: string\) => \{/,
+      "pre-ready access diagnostics must stop the pending transport retry loop",
+    );
+    assert.equal(
+      (sessionSource.match(/stopPendingTransportForAccessDiagnostic\(diagnostic\);/g) ?? []).length,
+      2,
+      "both diagnostic resolution sites must stop the pre-ready retry loop",
+    );
+    assert.match(
+      sessionSource,
+      /connectionStatusBridge\.noteLiveRoomDisabled\(\);[\s\S]{0,120}?presenceStore\.reduceConnection\("disconnected"\);/,
+      "catalog-resolved no-access routes must render the connection slot as offline, not connecting",
     );
   });
 });

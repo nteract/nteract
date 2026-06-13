@@ -57,7 +57,7 @@ describe("notebook workstation selection projection", () => {
     expect(first.defaultWorkstation).toMatchObject({
       id: "ws-lab2",
       displayName: "Lab2 workstation",
-      providerLabel: "Runtime peer",
+      providerLabel: "Workstation",
       isDefault: true,
       cpuCount: 8,
       memoryBytes: 32 * 1024 ** 3,

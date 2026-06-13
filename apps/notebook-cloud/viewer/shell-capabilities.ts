@@ -13,9 +13,17 @@ import {
 } from "runtimed";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import { projectCloudNotebookEditAccess } from "./edit-access";
+import { cloudFriendlyPeerLabel, cloudVisiblePeerLabel } from "./presence";
 
 export interface CloudNotebookShellCapabilityInput {
   authState: CloudPrototypeAuthState;
+  /**
+   * Document access used for UI projection. During reconnect this can come
+   * from the authenticated notebook catalog so owners do not see stale
+   * request-access chrome. Actual mutation and execution authority still comes
+   * from the live room `connectionScope` below.
+   */
+  accessConnectionScope?: string | null;
   connectionScope: string | null;
   connectionActorLabel?: string | null;
   connectionPeerLabel?: string | null;
@@ -68,6 +76,7 @@ export interface CloudNotebookShellCapabilityInput {
 }
 
 export function cloudNotebookShellCapabilities({
+  accessConnectionScope,
   authState,
   connectionScope,
   connectionActorLabel = null,
@@ -83,9 +92,10 @@ export function cloudNotebookShellCapabilities({
   workstationAttachment = null,
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
+  const documentAccessScope = accessConnectionScope ?? connectionScope;
   const interaction = projectCloudNotebookEditAccess({
     authState,
-    connectionScope,
+    connectionScope: documentAccessScope,
     hasAppSession,
     selectedMode,
     canAcceptCellMutations,
@@ -96,7 +106,9 @@ export function cloudNotebookShellCapabilities({
   const authenticated = hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
   const authNeedsAttention =
     !hasAppSession && (authState.mode === "invalid" || authState.mode === "oidc_expired");
-  const identityLabel = connectionPeerLabel?.trim() || cloudIdentityDisplayLabel(authState);
+  const identityLabel = connectionPeerLabel?.trim()
+    ? cloudVisiblePeerLabel(connectionPeerLabel, connectionActorLabel)
+    : cloudIdentityDisplayLabel(authState, connectionActorLabel);
   const identityImageUrl = cloudIdentityImageUrl(authState);
   const attachmentConnected = workstationAttachmentIsConnected(workstationAttachment);
   const attachmentExecutionAvailable = workstationAttachmentCanExecute(workstationAttachment);
@@ -236,27 +248,29 @@ function cloudRuntimeTarget({
   };
 }
 
-function cloudIdentityDisplayLabel(authState: CloudPrototypeAuthState): string | null {
+function cloudIdentityDisplayLabel(
+  authState: CloudPrototypeAuthState,
+  actorLabel?: string | null,
+): string | null {
   const claimName = authState.oidcClaims?.name?.trim();
   if (claimName) {
     return claimName;
   }
-  const claimEmail = identityEmailLabel(authState.oidcClaims?.email);
+  const claimEmail = authState.oidcClaims?.email?.trim();
   if (claimEmail) {
-    return claimEmail;
+    return cloudFriendlyPeerLabel({ actorLabel, email: claimEmail });
   }
   const user = authState.user?.trim();
-  return identityEmailLabel(user) ?? user ?? null;
+  if (!user) {
+    return null;
+  }
+  return looksLikeEmailAddress(user) ? cloudFriendlyPeerLabel({ actorLabel, email: user }) : user;
 }
 
 function cloudIdentityImageUrl(authState: CloudPrototypeAuthState): string | null {
   return authState.oidcClaims?.picture?.trim() || null;
 }
 
-function identityEmailLabel(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return null;
-  }
-  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(trimmed) ? trimmed : null;
+function looksLikeEmailAddress(value: string): boolean {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
 }

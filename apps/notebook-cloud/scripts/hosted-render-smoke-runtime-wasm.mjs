@@ -13,9 +13,9 @@ export function checkRuntimeWasmHints(hints, options = {}) {
       relIncludes(hint.rel, "modulepreload") &&
       matchesRuntimeWasmFilename(hint.href, RUNTIMED_WASM_MODULE_FILENAME),
   );
-  const wasmPreload = hints.find(
+  const wasmPrefetch = hints.find(
     (hint) =>
-      relIncludes(hint.rel, "preload") &&
+      relIncludes(hint.rel, "prefetch") &&
       matchesRuntimeWasmFilename(hint.href, RUNTIMED_WASM_BINARY_FILENAME),
   );
 
@@ -25,10 +25,10 @@ export function checkRuntimeWasmHints(hints, options = {}) {
       text: `Missing ${RUNTIMED_WASM_MODULE_NAME} modulepreload hint`,
     });
   }
-  if (requireHints && !wasmPreload) {
+  if (requireHints && !wasmPrefetch) {
     failures.push({
       kind: "runtimed-wasm-hint",
-      text: `Missing ${RUNTIMED_WASM_BINARY_NAME} preload hint`,
+      text: `Missing ${RUNTIMED_WASM_BINARY_NAME} prefetch hint`,
     });
   }
 
@@ -41,32 +41,32 @@ export function checkRuntimeWasmHints(hints, options = {}) {
       `${RUNTIMED_WASM_MODULE_NAME} modulepreload`,
     );
   }
-  if (wasmPreload) {
-    if (wasmPreload.as !== "fetch") {
+  if (wasmPrefetch) {
+    if (wasmPrefetch.as !== "fetch") {
       failures.push({
         kind: "runtimed-wasm-hint",
-        text: `${RUNTIMED_WASM_BINARY_NAME} preload used as=${JSON.stringify(wasmPreload.as)}`,
+        text: `${RUNTIMED_WASM_BINARY_NAME} prefetch used as=${JSON.stringify(wasmPrefetch.as)}`,
       });
     }
-    if (wasmPreload.type !== "application/wasm") {
+    if (wasmPrefetch.type !== "application/wasm") {
       failures.push({
         kind: "runtimed-wasm-hint",
-        text: `${RUNTIMED_WASM_BINARY_NAME} preload used type=${JSON.stringify(wasmPreload.type)}`,
+        text: `${RUNTIMED_WASM_BINARY_NAME} prefetch used type=${JSON.stringify(wasmPrefetch.type)}`,
       });
     }
-    assertCrossOrigin(wasmPreload, failures, `${RUNTIMED_WASM_BINARY_NAME} preload`);
+    assertCrossOrigin(wasmPrefetch, failures, `${RUNTIMED_WASM_BINARY_NAME} prefetch`);
     assertExpectedOrigin(
-      wasmPreload,
+      wasmPrefetch,
       expectedRuntimeWasmOrigin,
       failures,
-      `${RUNTIMED_WASM_BINARY_NAME} preload`,
+      `${RUNTIMED_WASM_BINARY_NAME} prefetch`,
     );
   }
 
   return {
     ok: failures.length === 0,
     modulepreload: modulepreload ?? null,
-    wasmPreload: wasmPreload ?? null,
+    wasmPrefetch: wasmPrefetch ?? null,
     runtimedWasmHints: hints.filter((hint) => isRuntimeWasmAssetHref(hint.href)),
     failures,
   };

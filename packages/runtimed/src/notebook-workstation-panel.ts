@@ -52,6 +52,9 @@ export function projectNotebookWorkstationPanel(
 ): NotebookWorkstationPanelProjection {
   const target = resolveNotebookShellRuntimeTarget(capabilities.runtime);
   const cacheKey = stableCacheKey([
+    capabilities.access.level,
+    capabilities.access.source,
+    capabilities.auth.canUseAuthenticatedIdentity,
     capabilities.canExecute,
     capabilities.runtime.canWriteRuntimeState,
     capabilities.runtime.connected,
@@ -103,7 +106,7 @@ export function projectNotebookWorkstationPanel(
     facts.push(workstationFact("resource", "Resources", target.resourceLabel));
   }
   if (typeof target.runtimePeerCount === "number" && target.runtimePeerCount > 0) {
-    facts.push(workstationFact("runtime_peers", "Runtime peers", `${target.runtimePeerCount}`));
+    facts.push(workstationFact("runtime_peers", "Compute sessions", `${target.runtimePeerCount}`));
   }
   if (target.workingDirectoryLabel) {
     facts.push(workstationFact("working_directory", "Working dir", target.workingDirectoryLabel));
@@ -179,6 +182,16 @@ function workstationStatus(
     (capabilities.runtime.source === "local"
       ? "The local daemon is not exposing an executable runtime."
       : "No runtime peer is attached to this room.");
+  const previousAttachmentDetail = isPreviousCloudAttachment
+    ? previousCloudAttachmentDetail({
+        canManageCompute:
+          capabilities.access.source === "cloud" &&
+          capabilities.access.level === "owner" &&
+          capabilities.auth.canUseAuthenticatedIdentity,
+        detail,
+        targetLabel: target.label,
+      })
+    : detail;
 
   return {
     title: isPreviousCloudAttachment
@@ -186,7 +199,7 @@ function workstationStatus(
       : capabilities.runtime.source === "local"
         ? `${target.label} unavailable`
         : target.label,
-    detail: isPreviousCloudAttachment ? `${target.label}: ${detail}` : detail,
+    detail: previousAttachmentDetail,
     statusLabel: target.statusLabel ?? "Offline",
     tone: "offline",
   };
@@ -201,6 +214,33 @@ function previousCloudAttachmentTarget(
     target.id !== undefined &&
     target.id !== "workstation:none" &&
     (target.status === "attention" || target.status === "offline")
+  );
+}
+
+function previousCloudAttachmentDetail({
+  canManageCompute,
+  detail,
+  targetLabel,
+}: {
+  canManageCompute: boolean;
+  detail: string;
+  targetLabel: string;
+}): string {
+  if (!isRuntimePeerDisconnectDetail(detail)) {
+    return `${targetLabel}: ${detail}`;
+  }
+
+  const action = canManageCompute
+    ? "Start compute again from an available workstation."
+    : "The owner can start compute again from an available workstation.";
+  return `Compute from ${targetLabel} is no longer connected to this notebook. ${action}`;
+}
+
+function isRuntimePeerDisconnectDetail(detail: string): boolean {
+  const normalized = detail.trim().toLowerCase();
+  return (
+    normalized.startsWith("runtime peer disconnected") ||
+    normalized.includes("runtime peer left the room")
   );
 }
 

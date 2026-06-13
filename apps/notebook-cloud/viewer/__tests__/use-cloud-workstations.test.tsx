@@ -36,6 +36,19 @@ const ownerCloudCapabilities: NotebookShellCapabilities = {
   },
 };
 
+const viewerCloudCapabilities: NotebookShellCapabilities = {
+  ...readOnlyNotebookShellCapabilities,
+  access: {
+    ...readOnlyNotebookShellCapabilities.access,
+    level: "viewer",
+    source: "cloud",
+  },
+  auth: {
+    ...readOnlyNotebookShellCapabilities.auth,
+    canUseAuthenticatedIdentity: true,
+  },
+};
+
 const devAuth: CloudPrototypeAuthState = {
   mode: "dev",
   token: "dev-secret",
@@ -51,15 +64,21 @@ const config = {
   workstationAttachEndpoint: "/api/n/nb-1/workstation-attachments",
 };
 
-function renderManager() {
+function renderManager(
+  options: {
+    canLoadCloudWorkstations?: boolean;
+    capabilities?: NotebookShellCapabilities;
+    panelIsOpen?: boolean;
+  } = {},
+) {
   return renderHook(() =>
     useCloudWorkstationManager({
       config,
       authState: devAuth,
-      capabilities: ownerCloudCapabilities,
-      canLoadCloudWorkstations: true,
+      capabilities: options.capabilities ?? ownerCloudCapabilities,
+      canLoadCloudWorkstations: options.canLoadCloudWorkstations ?? true,
       workstationAttachment: null,
-      panelIsOpen: false,
+      panelIsOpen: options.panelIsOpen ?? false,
       onOpenWorkstationsRail: vi.fn(),
     }),
   );
@@ -100,6 +119,16 @@ describe("useCloudWorkstationManager pairing", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("does not load the workstation registry for authenticated viewers", async () => {
+    renderManager({ capabilities: viewerCloudCapabilities });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(clientMocks.fetchCloudWorkstations).not.toHaveBeenCalled();
   });
 
   it("starts a pending pairing with the connect command built from the origin", async () => {

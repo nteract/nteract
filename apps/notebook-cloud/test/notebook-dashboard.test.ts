@@ -123,7 +123,7 @@ describe("cloud notebook dashboard projection", () => {
     );
   });
 
-  it("opens owned notebooks in edit mode while preserving shared notebooks in view mode", () => {
+  it("opens editable notebooks in edit mode while preserving viewer notebooks in view mode", () => {
     const owned = notebook({
       id: "owned-notebook",
       title: "Owned notebook",
@@ -147,7 +147,7 @@ describe("cloud notebook dashboard projection", () => {
     });
 
     assert.equal(cloudNotebookDashboardOpenUrl(owned), "/n/owned-notebook/notebook?mode=edit");
-    assert.equal(cloudNotebookDashboardOpenUrl(editor), "/n/editor-notebook/notebook?mode=view");
+    assert.equal(cloudNotebookDashboardOpenUrl(editor), "/n/editor-notebook/notebook?mode=edit");
     assert.equal(cloudNotebookDashboardOpenUrl(viewer), "/n/viewer-notebook/notebook?mode=view");
   });
 
@@ -299,8 +299,8 @@ describe("cloud notebook dashboard projection", () => {
         ]),
       ),
       [
-        ["renderer-regression", "Shared edit access", [["access", "editor"]], null],
-        ["archive", "Shared view access", [["access", "viewer"]], null],
+        ["renderer-regression", "Shared notebook", [["access", "editor"]], null],
+        ["archive", "Shared notebook", [["access", "viewer"]], null],
       ],
     );
   });
@@ -421,12 +421,18 @@ describe("cloud notebook dashboard projection", () => {
       view.sections.map((section) => [
         section.id,
         section.title,
+        section.detail,
         section.notebooks.map((item) => item.notebook_id),
       ]),
       [
-        ["named", "Recent work", ["workstation-notes"]],
-        ["generated", "Generated runs", ["toolbar-smoke"]],
-        ["untitled", "Needs title", ["untitled-new"]],
+        ["named", "Recent work", "1 more notebook to reopen", ["workstation-notes"]],
+        ["generated", "Generated runs", "1 notebook from smoke and debug work", ["toolbar-smoke"]],
+        [
+          "untitled",
+          "Needs title",
+          "Rename notebooks worth keeping so they stay easy to find.",
+          ["untitled-new"],
+        ],
       ],
     );
     assert.deepEqual(

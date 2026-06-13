@@ -178,7 +178,7 @@ export function cloudNotebookShortId(notebookId: string): string {
 }
 
 function cloudNotebookDefaultOpenMode(notebook: CloudNotebookListItem): CloudNotebookUrlMode {
-  return notebook.scope === "owner" ? "edit" : "view";
+  return notebook.scope === "owner" || notebook.scope === "editor" ? "edit" : "view";
 }
 
 export function isCloudNotebookListItem(value: unknown): value is CloudNotebookListItem {
@@ -375,7 +375,7 @@ function cloudNotebookWorkSections(
   if (namedWork.length > 0) {
     sections.push({
       action: null,
-      detail: bucketDetail(namedWork.length, "ready to reopen"),
+      detail: remainingNotebookDetail(namedWork.length),
       id: "named",
       notebooks: namedWork,
       overflowAction: null,
@@ -521,9 +521,9 @@ function cloudNotebookDashboardRowContextLabel(notebook: CloudNotebookListItem):
   }
   switch (notebook.scope) {
     case "editor":
-      return "Shared edit access";
+      return "Shared notebook";
     case "viewer":
-      return "Shared view access";
+      return "Shared notebook";
     case "runtime_peer":
       return "Runtime peer access";
     case "owner":
@@ -697,6 +697,10 @@ function activityBuckets(notebooks: readonly CloudNotebookListItem[]): {
 
 function bucketDetail(count: number, label: string): string {
   return `${count} notebook${count === 1 ? "" : "s"} ${label}`;
+}
+
+function remainingNotebookDetail(count: number): string {
+  return `${count} more notebook${count === 1 ? "" : "s"} to reopen`;
 }
 
 function startOfUtcDay(time: number): number {

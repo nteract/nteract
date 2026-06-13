@@ -10,6 +10,24 @@ export const CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC =
 export const CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC =
   "Edit access was approved. Reconnect to open the live notebook room with editor access.";
 
+const ACCESS_DIAGNOSTICS = new Set<string>([
+  CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
+  CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+  CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
+  CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC,
+]);
+
+export function isCloudConnectionAccessDiagnostic(message: string | null): boolean {
+  return Boolean(message && ACCESS_DIAGNOSTICS.has(message));
+}
+
+export function cloudConnectionDiagnosticBlocksNotebookBody(message: string | null): boolean {
+  return (
+    message === CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC ||
+    message === CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC
+  );
+}
+
 /**
  * Whether an access diagnostic may replace the current connection error.
  *

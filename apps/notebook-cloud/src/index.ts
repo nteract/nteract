@@ -71,6 +71,7 @@ import {
   workstationPairingStatus,
 } from "./workstation-credentials.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
+import { notebookRouteSegmentTitle } from "./notebook-route-title.ts";
 import {
   createNotebookCloudBlobResolver,
   notebookCloudBlobBasePath,
@@ -142,6 +143,11 @@ const VIEWER_RENDERER_SIDECAR_MANIFEST_PATH = "/assets/renderer-sidecar-assets.j
 const VIEWER_ISOLATED_RENDERER_JS_NAME = "isolated-renderer.js";
 const VIEWER_ISOLATED_RENDERER_CSS_NAME = "isolated-renderer.css";
 const VIEWER_SIFT_WASM_NAME = "sift_wasm.wasm";
+const NOTEBOOK_CLOUD_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#111827"/>
+  <path d="M9 9.5h14v13H9z" fill="none" stroke="#f9fafb" stroke-width="2"/>
+  <path d="M13 14h6M13 18h4" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>
+</svg>`;
 const SNAPSHOT_BLOB_HEAD_CONCURRENCY = 16;
 // One R2 HEAD is issued per referenced blob during snapshot-pair validation.
 // Cap the total so a single publish cannot fan out unbounded billable R2
@@ -185,6 +191,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     handler: routeHealth,
   },
   {
+    match: exactPath("/favicon.ico", "/favicon.svg"),
+    methods: ["GET", "HEAD"],
+    handler: (_match, request) => routeFavicon(request),
+  },
+  {
     match: exactPath("/api/auth/session"),
     methods: ["GET", "POST", "DELETE"],
     handler: (_match, request, env) => routeAppSession(request, env),
@@ -221,7 +232,8 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: routePath("/n/:notebookId/:vanityName", { trailingSlash: "optional" }),
     methods: ["GET", "HEAD"],
-    handler: ({ params }, request, env) => viewer(params.notebookId, request, env),
+    handler: ({ params }, request, env) =>
+      viewer(params.notebookId, request, env, undefined, params.vanityName),
   },
   {
     match: exactPath("/api/n"),
@@ -410,6 +422,20 @@ function normalizedBuildSha(value: string | undefined): string | null {
     return null;
   }
   return trimmed.toLowerCase();
+}
+
+function routeFavicon(request: Request): Response {
+  return responseForRequestMethod(
+    request,
+    withCors(
+      new Response(NOTEBOOK_CLOUD_FAVICON_SVG, {
+        headers: {
+          "Cache-Control": "public, max-age=86400",
+          "Content-Type": "image/svg+xml; charset=utf-8",
+        },
+      }),
+    ),
+  );
 }
 
 async function routeAsset(request: Request, env: Env): Promise<Response | null> {
@@ -3961,8 +3987,14 @@ async function viewer(
   request: Request,
   env: Env,
   headsHash?: string,
+  routeTitleSegment?: string,
 ): Promise<Response> {
-  const shellMetadata = await publicViewerShellMetadata(env, notebookId, headsHash);
+  const shellMetadata = await publicViewerShellMetadata(
+    env,
+    notebookId,
+    headsHash,
+    routeTitleSegment,
+  );
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   const runtimeWasmAssets = await runtimeWasmAssetNames(env);
   const rendererSidecarAssets = await rendererSidecarAssetNames(env);
@@ -4063,8 +4095,9 @@ async function publicViewerShellMetadata(
   env: Env,
   notebookId: string,
   headsHash?: string,
+  routeTitleSegment?: string,
 ): Promise<ViewerShellMetadata> {
-  const generic = genericNotebookShellMetadata(notebookId, headsHash);
+  const generic = genericNotebookShellMetadata(notebookId, headsHash, routeTitleSegment);
   if (!env.DB) {
     return generic;
   }
@@ -4084,7 +4117,19 @@ async function publicViewerShellMetadata(
   };
 }
 
-function genericNotebookShellMetadata(notebookId: string, headsHash?: string): ViewerShellMetadata {
+function genericNotebookShellMetadata(
+  notebookId: string,
+  headsHash?: string,
+  routeTitleSegment?: string,
+): ViewerShellMetadata {
+  const routeTitle = notebookRouteSegmentTitle(routeTitleSegment);
+  if (routeTitle) {
+    return {
+      title: `nteract notebook: ${routeTitle}`,
+      description:
+        "A hosted nteract notebook. Private notebook metadata is shown after access is verified.",
+    };
+  }
   const suffix = headsHash ? ` @ ${headsHash}` : "";
   return {
     title: `nteract cloud notebook ${notebookId}${suffix}`,
@@ -4117,6 +4162,7 @@ function viewerShell(
   <meta property="og:description" content="${description}" />
   <meta property="og:type" content="article" />
   <meta name="twitter:card" content="summary" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style id="nteract-cloud-viewer-theme-surface">${viewerThemeFirstPaintStyle()}</style>
   <script>${viewerThemeBootstrapScript()}</script>
   ${viewerResourceHints(config)}
@@ -4194,7 +4240,7 @@ function viewerResourceHints(config: ViewerShellConfig | null): string {
     ]),
     viewerEntryHint,
     `<link rel="modulepreload" href="${escapeHtml(config.runtimedWasmModulePath)}" crossorigin />`,
-    `<link rel="preload" href="${escapeHtml(
+    `<link rel="prefetch" href="${escapeHtml(
       config.runtimedWasmPath,
     )}" as="fetch" type="application/wasm" crossorigin />`,
   ].join("\n  ");

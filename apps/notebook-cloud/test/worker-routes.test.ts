@@ -214,9 +214,23 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     const html = await response.text();
-    assert.match(html, /nteract cloud notebook notebook-123/);
+    assert.match(html, /<title>nteract notebook: Topic Viz<\/title>/);
     assert.match(html, /"notebookId":"notebook-123"/);
     assert.doesNotMatch(html, /topic-viz.*render/);
+  });
+
+  it("preserves acronym-looking words in route-derived viewer titles", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/notebook-123/Quill%20HF%20workstation%20smoke"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<title>nteract notebook: Quill HF Workstation Smoke<\/title>/);
   });
 
   it("uses catalog-safe metadata for public published notebook viewers", async () => {
@@ -265,7 +279,7 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     const html = await response.text();
-    assert.match(html, /<title>nteract cloud notebook private-meta-demo<\/title>/);
+    assert.match(html, /<title>nteract notebook: Secret Plan<\/title>/);
     assert.match(html, /Private notebook metadata is shown after access is verified\./);
     assert.doesNotMatch(html, /Secret Research Plan|revision-private-metadata/);
   });
@@ -864,6 +878,31 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(seenPaths, ["/assets/runtimed_wasm.js"]);
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
     assert.equal(response.headers.get("Content-Type"), "application/javascript");
+  });
+
+  it("serves favicon requests without falling through to the JSON 404", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(
+      new Request("http://localhost/favicon.ico"),
+      env,
+      fakeContext(),
+    );
+    const body = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), "image/svg+xml; charset=utf-8");
+    assert.equal(response.headers.get("Cache-Control"), "public, max-age=86400");
+    assert.match(body, /<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+
+    const headResponse = await worker.fetch(
+      new Request("http://localhost/favicon.svg", { method: "HEAD" }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(headResponse.status, 200);
+    assert.equal(headResponse.headers.get("Content-Type"), "image/svg+xml; charset=utf-8");
+    assert.equal(await headResponse.text(), "");
   });
 
   it("adds CORS when plugin assets are routed through the Worker", async () => {

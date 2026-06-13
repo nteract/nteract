@@ -333,12 +333,16 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.doesNotMatch(sourceText, /projectCloudNotebookEditAccess/);
   assert.doesNotMatch(sourceText, /cloudNotebookShellCapabilities/);
   assert.match(shellHookSourceText, /projectCloudNotebookEditAccess/);
+  assert.match(shellHookSourceText, /projectCloudNotebookDocumentEditReadiness/);
   assert.match(shellHookSourceText, /cloudNotebookShellCapabilities/);
   assert.match(shellHookSourceText, /selectedMode/);
   assert.match(shellHookSourceText, /editAccessRequestPending/);
   assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
-  assert.match(shellHookSourceText, /const editAccessPending = roomEditAccess\.editAccessPending/);
+  assert.match(
+    shellHookSourceText,
+    /const editAccessPending =[\s\S]*roomEditAccess\.editAccessPending \|\| editReadiness\.selectedEditModeWaitingForRoom/,
+  );
   assert.doesNotMatch(sourceText, /appliedGrantedEditScopeRef/);
   assert.doesNotMatch(sourceText, /requestedEditAccess/);
   assert.doesNotMatch(
@@ -371,7 +375,11 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
   assert.doesNotMatch(cssText, /cloud-command-toolbar-placeholder/);
   assert.match(authControlsSourceText, /if \(mode === "edit" && !canSwitchToEdit\) \{/);
-  assert.match(sourceText, /storeCloudRequestedScope\(window\.localStorage, "editor"\)/);
+  assert.match(sourceText, /projectCloudAccessRequestTransition\(\{/);
+  assert.match(
+    sourceText,
+    /if \(transition\.requestedScope\) \{[\s\S]*storeCloudRequestedScope\(window\.localStorage, transition\.requestedScope\);/,
+  );
   assert.doesNotMatch(sourceText, /mode === "edit" \? "editor" : NOTEBOOK_CLOUD_DEFAULT_SCOPE/);
   assert.doesNotMatch(sourceText, /className="cloud-scope-toggle-button"/);
   assert.doesNotMatch(cssText, /cloud-scope-toggle-button/);
@@ -399,8 +407,16 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   assert.match(sourceText, /const noticeStatus: ViewerStatus =/);
   assert.match(
     sourceText,
-    /notebookViewIsLoading && \(status\.kind === "ready" \|\| status\.kind === "empty"\)[\s\S]*Preparing notebook view/,
+    /const notebookBodyAccessBlocked = cloudConnectionDiagnosticBlocksNotebookBody\(connectionError\)/,
   );
+  assert.match(sourceText, /const notebookHeaderChrome = projectCloudNotebookHeaderChrome\(\{/);
+  assert.match(sourceText, /projectCloudNotebookViewSurface\(\{/);
+  assert.match(sourceText, /bodyAccessBlocked: notebookBodyAccessBlocked/);
+  assert.match(
+    sourceText,
+    /hasAccessDiagnostic: isCloudConnectionAccessDiagnostic\(connectionError\)/,
+  );
+  assert.match(sourceText, /Preparing notebook view/);
   assert.match(sourceText, /const notices = hasNotices \? \(/);
   assert.match(sourceText, /notices=\{notices\}/);
   assert.match(sourceText, /noticesClassName="cloud-notebook-notices"/);
@@ -464,14 +480,19 @@ test("cloud outline keeps iframe heading hashes at parent cell anchors", () => {
 
 test("cloud live materialization skips empty room handles before resolving outputs", () => {
   const sourceText = viewerCorpus;
+  const loadingProjectionSourcePath = new URL(
+    "../viewer/notebook-view-loading.ts",
+    import.meta.url,
+  );
+  const loadingProjectionSourceText = readFileSync(loadingProjectionSourcePath, "utf8");
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
   assert.match(sourceText, /const CLOUD_EMPTY_ROOM_GRACE_MS = 900;/);
   assert.match(sourceText, /const \[emptyRoomGraceElapsed, setEmptyRoomGraceElapsed\]/);
   assert.match(
-    sourceText,
-    /status\.kind === "empty" && notebookCellIds\.length === 0 && !emptyRoomGraceElapsed/,
+    loadingProjectionSourceText,
+    /status\.kind === "empty" && cellCount === 0 && !emptyRoomGraceElapsed/,
   );
   assert.match(sessionSourceText, /const rawCellCount = liveRuntime\.handle\.cell_count\(\);/);
   // The zero-cell guard routes through the displacement policy: a painted
@@ -591,13 +612,14 @@ test("cloud app-session live sync requests the resolved notebook-list scope", ()
 
   assert.match(sourceText, /async function resolveCloudAppSessionSyncScope/);
   assert.match(sourceText, /new URL\("api\/n\?limit=100"/);
-  assert.match(sourceText, /isCloudNotebookListItem\(candidate\)/);
-  assert.match(sourceText, /candidate\.notebook_id === notebookId/);
-  assert.match(sourceText, /return notebook\.scope/);
-  assert.match(sourceText, /return selectedMode === "edit" \? "owner" : "viewer"/);
+  assert.match(sourceText, /createCloudNotebookCatalogAccessLoader\(\{/);
+  assert.match(sourceText, /catalogAccessLoader\.load/);
+  assert.match(sourceText, /cloudNotebookSyncScopeForCatalogAccess\(\{/);
+  assert.match(sourceText, /catalogResolved: false/);
+  assert.match(sourceText, /\.\.\.\(await loadCatalogAccess\(\)\)/);
   assert.match(
     sourceText,
-    /const requestedScope = await resolveCloudAppSessionSyncScope\([\s\S]*config\.notebookId,[\s\S]*selectedInteractionMode,[\s\S]*\)/,
+    /const requestedScope = await resolveCloudAppSessionSyncScope\([\s\S]*catalogAccessLoader\.load,[\s\S]*selectedInteractionMode,[\s\S]*\)/,
   );
   assert.doesNotMatch(
     sourceText,
@@ -613,6 +635,25 @@ test("cloud sync keeps routine frame logs out of the browser console", () => {
   assert.match(sourceText, /const consoleSyncLogger = \{[\s\S]*debug: \(\) => \{\}/);
   assert.match(sourceText, /const consoleSyncLogger = \{[\s\S]*info: \(\) => \{\}/);
   assert.match(sourceText, /warn: \(message: string, \.\.\.args: unknown\[\]\) => console\.warn/);
+});
+
+test("cloud command client keeps routine command logs out of the browser console", () => {
+  const sourceText = viewerFileContaining("const createCloudNotebookClient = useCallback");
+
+  assert.match(sourceText, /const cloudNotebookClientLogger: SyncEngineLogger = \{/);
+  assert.match(
+    sourceText,
+    /const cloudNotebookClientLogger: SyncEngineLogger = \{[\s\S]*debug: \(\) => \{\}/,
+  );
+  assert.match(
+    sourceText,
+    /const cloudNotebookClientLogger: SyncEngineLogger = \{[\s\S]*info: \(\) => \{\}/,
+  );
+  assert.match(
+    sourceText,
+    /logger: cloudNotebookClientLogger,[\s\S]*getRequiredHeads: \(\) => liveRuntime\.handle\.get_heads_hex\(\)/,
+  );
+  assert.doesNotMatch(sourceText, /logger: console/);
 });
 
 test("cloud installs a host logger sink for shared notebook components", () => {

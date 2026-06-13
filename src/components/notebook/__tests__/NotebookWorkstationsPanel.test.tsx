@@ -341,7 +341,7 @@ describe("NotebookWorkstationsPanel", () => {
           status: "ready",
           label: "Lab2",
           statusLabel: "Ready",
-          providerLabel: "Runtime peer",
+          providerLabel: "Workstation",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
           cpuCount: 8,
@@ -398,7 +398,7 @@ describe("NotebookWorkstationsPanel", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Lab2" })).toBeVisible();
-    expect(screen.getAllByText("Runtime peer")).toHaveLength(1);
+    expect(screen.getAllByText("Workstation")).toHaveLength(1);
     expect(screen.getAllByText("Current Python")).toHaveLength(1);
     expect(screen.getByText("id ws-lab2")).toBeVisible();
     expect(screen.getAllByTestId("registered-workstation")).toHaveLength(1);
@@ -416,6 +416,10 @@ describe("NotebookWorkstationsPanel", () => {
         level: "owner",
         source: "cloud",
       },
+      auth: {
+        ...readOnlyNotebookShellCapabilities.auth,
+        canUseAuthenticatedIdentity: true,
+      },
       runtime: {
         ...readOnlyNotebookShellCapabilities.runtime,
         source: "cloud",
@@ -427,7 +431,7 @@ describe("NotebookWorkstationsPanel", () => {
           statusLabel: "Needs attention",
           detail:
             "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
-          providerLabel: "Runtime peer",
+          providerLabel: "Workstation",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
           workingDirectoryLabel: "/home/ubuntu/project",
@@ -475,7 +479,12 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByRole("heading", { name: "Previous attachment" })).toBeVisible();
     expect(screen.getAllByRole("heading", { name: "Lab2" })).toHaveLength(1);
     expect(screen.getByText("Needs attention")).toBeVisible();
-    expect(screen.getByText(/Lab2: runtime peer disconnected/)).toBeVisible();
+    expect(
+      screen.getByText(
+        "Compute from Lab2 is no longer connected to this notebook. Start compute again from an available workstation.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/runtime peer disconnected/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Runtime peer")).not.toBeInTheDocument();
     expect(screen.getAllByText("Current Python")).toHaveLength(1);
     expect(screen.getAllByText("/home/ubuntu/project")).toHaveLength(1);
@@ -488,6 +497,45 @@ describe("NotebookWorkstationsPanel", () => {
     expect(attachButton).toBeEnabled();
     fireEvent.click(attachButton);
     expect(attached).toEqual(["ws-lab2"]);
+  });
+
+  it("explains stale cloud attachments to viewers without implementation terms", () => {
+    const capabilities: NotebookShellCapabilities = {
+      ...readOnlyNotebookShellCapabilities,
+      access: {
+        ...readOnlyNotebookShellCapabilities.access,
+        level: "viewer",
+        source: "cloud",
+      },
+      runtime: {
+        ...readOnlyNotebookShellCapabilities.runtime,
+        source: "cloud",
+        target: {
+          id: "ws-lab2",
+          kind: "cloud_workstation",
+          status: "attention",
+          label: "Lab2",
+          statusLabel: "Needs attention",
+          detail:
+            "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
+          providerLabel: "Workstation",
+          defaultEnvironmentLabel: "Current Python",
+          environmentLabel: "Current Python",
+          workingDirectoryLabel: "/home/ubuntu/project",
+        },
+      },
+    };
+
+    render(<NotebookWorkstationsPanel capabilities={capabilities} />);
+
+    expect(screen.getByRole("heading", { name: "Previous attachment" })).toBeVisible();
+    expect(
+      screen.getByText(
+        "Compute from Lab2 is no longer connected to this notebook. The owner can start compute again from an available workstation.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/runtime peer disconnected/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/grace window/i)).not.toBeInTheDocument();
   });
 
   it("keeps legacy resource labels when structured resources are absent", () => {
@@ -518,7 +566,8 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByText("Current Python")).toBeVisible();
     expect(screen.getByText("Resources")).toBeVisible();
     expect(screen.getByText("4 CPU / 16 GB RAM")).toBeVisible();
-    expect(screen.getByText("Runtime peers")).toBeVisible();
+    expect(screen.getByText("Compute sessions")).toBeVisible();
+    expect(screen.queryByText("Runtime peers")).not.toBeInTheDocument();
     expect(screen.getByText("1")).toBeVisible();
     expect(screen.queryByText("CPUs")).not.toBeInTheDocument();
     expect(screen.queryByText("RAM")).not.toBeInTheDocument();

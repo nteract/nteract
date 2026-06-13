@@ -11,6 +11,7 @@ import {
   CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
   CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
+  isCloudConnectionAccessDiagnostic,
 } from "./connection-diagnostics";
 import { isRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
@@ -128,6 +129,7 @@ export function cloudNotebookHasNotices({
   const shouldShowStatusNotice =
     status.kind !== "ready" &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
+    !(connectionNotice && status.kind === "loading") &&
     !isStatusDerivedFromConnectionError(status, connectionError);
 
   const shouldShowAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
@@ -202,6 +204,7 @@ export function CloudNotebookNotices({
   const shouldShowStatusNotice =
     status.kind !== "ready" &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
+    !(connectionNotice && status.kind === "loading") &&
     !isStatusDerivedFromConnectionError(status, connectionError);
   const shouldShowAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
     authState,
@@ -478,10 +481,12 @@ function isStatusDerivedFromConnectionError(
   status: ViewerStatus,
   connectionError: string | null,
 ): boolean {
+  if (status.kind !== "error" || !connectionError) {
+    return false;
+  }
   return (
-    status.kind === "error" &&
-    Boolean(connectionError) &&
-    status.message.startsWith("Unable to load live notebook room:")
+    status.message.startsWith("Unable to load live notebook room:") ||
+    (status.message === connectionError && isCloudConnectionAccessDiagnostic(connectionError))
   );
 }
 

@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { checkRuntimeWasmHints } from "../scripts/hosted-render-smoke-runtime-wasm.mjs";
 
 describe("hosted smoke runtime WASM hints", () => {
-  it("accepts the viewer shell modulepreload and fetch preload pair", () => {
+  it("accepts the viewer shell modulepreload and fetch prefetch pair", () => {
     const check = checkRuntimeWasmHints(
       [
         {
@@ -16,7 +16,7 @@ describe("hosted smoke runtime WASM hints", () => {
           crossOrigin: "",
         },
         {
-          rel: "preload",
+          rel: "prefetch",
           href: "https://preview.runt.run/assets/runtimed_wasm_bg.fedcba9876543210.wasm",
           as: "fetch",
           type: "application/wasm",
@@ -32,14 +32,14 @@ describe("hosted smoke runtime WASM hints", () => {
     assert.equal(check.ok, true);
     assert.deepEqual(check.failures, []);
     assert.match(check.modulepreload.href, /runtimed_wasm\.[a-f0-9]{16}\.js$/);
-    assert.match(check.wasmPreload.href, /runtimed_wasm_bg\.[a-f0-9]{16}\.wasm$/);
+    assert.match(check.wasmPrefetch.href, /runtimed_wasm_bg\.[a-f0-9]{16}\.wasm$/);
   });
 
-  it("reports missing or malformed runtime WASM preload hints", () => {
+  it("reports missing or malformed runtime WASM prefetch hints", () => {
     const check = checkRuntimeWasmHints(
       [
         {
-          rel: "preload",
+          rel: "prefetch",
           href: "https://preview.runt.run/assets/runtimed_wasm_bg.wasm",
           as: "script",
           type: "application/octet-stream",
@@ -60,7 +60,7 @@ describe("hosted smoke runtime WASM hints", () => {
     assert.match(check.failures[3].text, /did not declare crossorigin/);
     assert.match(
       check.failures[4].text,
-      /runtimed_wasm_bg\.wasm preload did not point at https:\/\/nteract-notebook-cloud-assets\.rgbkrk\.workers\.dev/,
+      /runtimed_wasm_bg\.wasm prefetch did not point at https:\/\/nteract-notebook-cloud-assets\.rgbkrk\.workers\.dev/,
     );
   });
 

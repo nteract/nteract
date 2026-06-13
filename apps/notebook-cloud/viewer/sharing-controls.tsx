@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Check, Globe2, Link2, Mail, Share2, Trash2, UserRound, X } from "lucide-react";
+import { Check, Globe2, Link2, Mail, ServerCog, Share2, Trash2, UserRound, X } from "lucide-react";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 import { appendEndpointPathSegment, cloudResponseError } from "./cloud-response";
 import {
-  buildCloudShareAccessRows,
-  cloudShareAccessSummary,
+  buildCloudShareAccessProjection,
   hasPublicViewerAccess,
   normalizeShareInviteEmail,
   type CloudNotebookAccessRequest,
@@ -47,11 +46,10 @@ export function CloudSharingControls({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<CloudSharingCopyState>("idle");
   const inviteSubmitLockRef = useRef(false);
-  const accessRows = useMemo(
-    () => buildCloudShareAccessRows({ acl, invites, accessRequests }),
+  const accessProjection = useMemo(
+    () => buildCloudShareAccessProjection({ acl, invites, accessRequests }),
     [accessRequests, acl, invites],
   );
-  const accessSummary = useMemo(() => cloudShareAccessSummary(accessRows), [accessRows]);
   const publicEnabled = useMemo(() => hasPublicViewerAccess(acl), [acl]);
   const inviteReady = normalizeShareInviteEmail(inviteEmail) !== null;
 
@@ -330,7 +328,7 @@ export function CloudSharingControls({
         <header>
           <div>
             <h2>Share notebook</h2>
-            <p>Public link, collaborators, pending invites, and edit requests.</p>
+            <p>Invite people, review requests, and manage link access.</p>
           </div>
           <button type="button" aria-label={copyLinkLabel} onClick={() => void copyPublicLink()}>
             <Link2 aria-hidden="true" />
@@ -347,7 +345,7 @@ export function CloudSharingControls({
               <span>
                 {publicEnabled
                   ? "Can view this notebook without signing in"
-                  : "Only invited people can open this notebook"}
+                  : "Link access is off. Only listed people can open this notebook"}
               </span>
             </div>
           </div>
@@ -361,9 +359,11 @@ export function CloudSharingControls({
         </section>
 
         <form className="cloud-share-invite" onSubmit={submitInvite}>
-          <label>
+          <label htmlFor="cloud-share-invite-email">
             <span>Invite by email</span>
             <input
+              id="cloud-share-invite-email"
+              name="invite-email"
               type="email"
               value={inviteEmail}
               placeholder="name@example.com"
@@ -374,9 +374,11 @@ export function CloudSharingControls({
               }}
             />
           </label>
-          <label>
+          <label htmlFor="cloud-share-invite-scope">
             <span>Access</span>
             <select
+              id="cloud-share-invite-scope"
+              name="invite-scope"
               value={inviteScope}
               onChange={(event) => setInviteScope(event.target.value as CloudShareInviteScope)}
             >
@@ -398,15 +400,17 @@ export function CloudSharingControls({
         <section className="cloud-share-current" aria-label="Current notebook access">
           <div className="cloud-share-current-heading">
             <h3>Current access</h3>
-            {accessSummary ? <span>{accessSummary}</span> : null}
+            {accessProjection.notebookAccessSummary ? (
+              <span>{accessProjection.notebookAccessSummary}</span>
+            ) : null}
           </div>
-          {loadState === "loading" && accessRows.length === 0 ? (
+          {loadState === "loading" && accessProjection.allRows.length === 0 ? (
             <div className="cloud-share-empty">Loading access...</div>
-          ) : accessRows.length === 0 ? (
+          ) : accessProjection.notebookAccessRows.length === 0 ? (
             <div className="cloud-share-empty">Only the owner can access this notebook.</div>
           ) : (
             <ul>
-              {accessRows.map((row) => (
+              {accessProjection.notebookAccessRows.map((row) => (
                 <li key={row.id} title={row.title}>
                   <CloudShareRowIcon row={row} />
                   <div>
@@ -469,6 +473,31 @@ export function CloudSharingControls({
           )}
         </section>
 
+        {accessProjection.runtimeAccessRows.length > 0 ? (
+          <section className="cloud-share-current cloud-share-runtime" aria-label="Compute access">
+            <div className="cloud-share-current-heading">
+              <h3>Compute access</h3>
+              {accessProjection.runtimeAccessSummary ? (
+                <span>{accessProjection.runtimeAccessSummary}</span>
+              ) : null}
+            </div>
+            <ul>
+              {accessProjection.runtimeAccessRows.map((row) => (
+                <li key={row.id} title={row.title}>
+                  <CloudShareRowIcon row={row} />
+                  <div>
+                    <strong>{row.label}</strong>
+                    <span>{row.detail}</span>
+                  </div>
+                  <div className="cloud-share-row-actions">
+                    <span className="cloud-share-badge">{row.badge}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
         {message ? (
           <div className="cloud-share-message" data-kind={messageKind}>
             {message}
@@ -485,6 +514,9 @@ function CloudShareRowIcon({ row }: { row: CloudShareAccessRow }) {
   }
   if (row.kind === "access_request") {
     return <UserRound aria-hidden="true" />;
+  }
+  if (row.kind === "acl" && row.scope === "runtime_peer") {
+    return <ServerCog aria-hidden="true" />;
   }
   if (row.acl.subject_kind === "public") {
     return <Globe2 aria-hidden="true" />;

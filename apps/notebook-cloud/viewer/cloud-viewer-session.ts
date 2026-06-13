@@ -15,6 +15,7 @@ import {
   cloudConnectionErrorAcceptsAccessDiagnostic,
   cloudConnectionErrorWithAccessDiagnostic,
   diagnoseCloudConnectionAccess,
+  isCloudConnectionAccessDiagnostic,
 } from "./connection-diagnostics";
 import {
   applyExecutionViewChangeset,
@@ -93,6 +94,11 @@ import { cloudWidgetUpdateManager } from "./widget-runtime";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
 import type { CloudAppSession } from "./app-session";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
+
+const quietSyncHealLogger = {
+  debug: () => {},
+  warn: (message: string, ...args: unknown[]) => console.warn(message, ...args),
+};
 
 /**
  * Renderer sidecar filenames from the deploy manifest. Content-hashed
@@ -180,6 +186,7 @@ interface UseCloudViewerSessionOptions {
   config: CloudViewerConfig;
   hasAppSession?: boolean;
   loadingPolicy: CloudViewerLoadingPolicy;
+  liveRoomDisabledStatus?: Extract<ViewerStatus, { kind: "error" | "loading" }> | null;
   preloadSiftWasm: (cells: readonly ResolvedCell[]) => void;
   resolveSyncAuth?: (sessionId: string) => Promise<CloudSyncAuth>;
   widgetStore: WidgetStore;
@@ -203,6 +210,7 @@ export function useCloudViewerSession({
   config,
   hasAppSession = false,
   loadingPolicy,
+  liveRoomDisabledStatus = null,
   preloadSiftWasm,
   resolveSyncAuth,
   widgetStore,
@@ -327,6 +335,28 @@ export function useCloudViewerSession({
       setConnectAttempt((attempt) => attempt + 1);
     }
   }, [authRenewalKind, loadingPolicy.shouldConnectLiveRoom]);
+
+  useEffect(() => {
+    if (
+      authRenewalKind === "refreshing" ||
+      loadingPolicy.shouldConnectLiveRoom ||
+      liveRoomDisabledStatus === null
+    ) {
+      return;
+    }
+    connectionStatusBridge.noteLiveRoomDisabled();
+    presenceStore.reduceConnection("disconnected");
+    setConnectionError(
+      liveRoomDisabledStatus.kind === "error" ? liveRoomDisabledStatus.message : null,
+    );
+    setStatus(liveRoomDisabledStatus);
+  }, [
+    authRenewalKind,
+    connectionStatusBridge,
+    liveRoomDisabledStatus,
+    loadingPolicy.shouldConnectLiveRoom,
+    presenceStore,
+  ]);
 
   // Identity of the notebook whose cells are currently painted into the
   // view stores — the flicker gate's "previous" side (see effect cleanup).
@@ -594,7 +624,7 @@ export function useCloudViewerSession({
         // the persistence single heal.
         attemptPersistenceRearm();
       },
-      logger: console,
+      logger: quietSyncHealLogger,
     });
     // Persistence single heal: one re-arm after a self-disable, consumed
     // on the next online transition or heal-loop recovery.
@@ -617,6 +647,11 @@ export function useCloudViewerSession({
       }
     });
     let ranConnectionDiagnostics = false;
+    const stopPendingTransportForAccessDiagnostic = (diagnostic: string) => {
+      if (!isCloudConnectionAccessDiagnostic(diagnostic) || liveRuntimeRef.current) return;
+      pendingTransport?.disconnect();
+      pendingTransport = null;
+    };
     // One full-materialization kick per runtime when the syncing doc first
     // catches up to the room's advertised heads (see the notebookSyncApplied$
     // subscription) — the only path that displaces painted cells when the
@@ -796,7 +831,9 @@ export function useCloudViewerSession({
       if (disposed) return;
       console.warn("[notebook-cloud] live room connection lost; transport is reconnecting", reason);
       presenceStore.reduceConnection("disconnected");
-      setConnectionError(reason.message);
+      setConnectionError((current) =>
+        isCloudConnectionAccessDiagnostic(current) ? current : reason.message,
+      );
       if (!liveRuntimeRef.current && !ranConnectionDiagnostics) {
         // First pre-ready failure: surface an actionable access diagnosis
         // while the retry loop keeps running in the background.
@@ -814,6 +851,7 @@ export function useCloudViewerSession({
             setConnectionError((current) =>
               cloudConnectionErrorWithAccessDiagnostic(current, diagnostic),
             );
+            stopPendingTransportForAccessDiagnostic(diagnostic);
           })
           .catch(() => undefined);
       }
@@ -1415,6 +1453,7 @@ export function useCloudViewerSession({
               setConnectionError((current) =>
                 cloudConnectionErrorWithAccessDiagnostic(current, diagnostic),
               );
+              stopPendingTransportForAccessDiagnostic(diagnostic);
             })
             .catch(() => undefined);
         }

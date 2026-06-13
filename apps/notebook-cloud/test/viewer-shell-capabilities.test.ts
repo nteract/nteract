@@ -64,8 +64,8 @@ test("cloud shell capabilities grant editors full cell and structure editing wit
   assert.equal(capabilities.interaction?.activeMode, "edit");
   assert.equal(capabilities.interaction?.state, "editing");
   assert.equal(capabilities.access.level, "editor");
-  assert.equal(capabilities.access.identityLabel, "user@example.test");
-  assert.equal(capabilities.access.actor?.principal.label, "user@example.test");
+  assert.equal(capabilities.access.identityLabel, "User");
+  assert.equal(capabilities.access.actor?.principal.label, "User");
   assert.equal(capabilities.access.actor?.principal.source?.provider, "oidc");
   assert.equal(capabilities.access.actor?.operator.kind, "browser");
   assert.equal(capabilities.auth.canUseAuthenticatedIdentity, true);
@@ -403,6 +403,30 @@ test("cloud shell capabilities keep requested edit pending until the room grants
   assert.equal(capabilities.access.level, "viewer");
 });
 
+test("cloud shell capabilities can show catalog owner access without granting live execution", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    accessConnectionScope: "owner",
+    authState: authState("anonymous"),
+    connectionScope: null,
+    hasAppSession: true,
+    hasCodeCells: true,
+    selectedMode: "edit",
+    canAcceptCellMutations: false,
+    runtimeAvailable: true,
+    hostCapabilities: { canManageSharing: true },
+  });
+
+  assert.equal(capabilities.access.level, "owner");
+  assert.equal(capabilities.canManageSharing, true);
+  assert.equal(capabilities.canEditMarkdown, false);
+  assert.equal(capabilities.canEditCells, false);
+  assert.equal(capabilities.canEditStructure, false);
+  assert.equal(capabilities.interaction?.selectedMode, "edit");
+  assert.equal(capabilities.interaction?.activeMode, "view");
+  assert.equal(capabilities.runtime.executionAvailable, true);
+  assert.equal(capabilities.canExecute, false);
+});
+
 test("cloud shell capabilities suppress editor mode while a requested edit reconnect is pending", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
@@ -582,9 +606,9 @@ test("cloud shell capabilities preserve room actor labels for shared access UI",
 
   assert.equal(capabilities.access.level, "owner");
   assert.equal(capabilities.access.actorLabel, "user:anaconda:alice/browser:tab");
-  assert.equal(capabilities.access.identityLabel, "user@example.test");
+  assert.equal(capabilities.access.identityLabel, "Alice");
   assert.equal(capabilities.access.actor?.actorLabel, "user:anaconda:alice/browser:tab");
-  assert.equal(capabilities.access.actor?.principal.label, "user@example.test");
+  assert.equal(capabilities.access.actor?.principal.label, "Alice");
 });
 
 test("cloud shell capabilities prefer the room-ready peer label over local auth fallbacks", () => {
@@ -684,13 +708,13 @@ test("cloud shell capabilities keep runtime peer authority separate from documen
   assert.equal(capabilities.runtime.connected, true);
   assert.equal(capabilities.runtime.source, "cloud");
   assert.equal(capabilities.runtime.actorLabel, "user:anaconda:alice/runtime:jupyterhub");
-  assert.equal(capabilities.runtime.identityLabel, "user@example.test");
+  assert.equal(capabilities.runtime.identityLabel, "JupyterHub for Alice");
   assert.equal(capabilities.runtime.actor?.scope, "runtime_peer");
   assert.equal(capabilities.runtime.target?.id, "runtime-peer");
   assert.equal(capabilities.runtime.target?.kind, "runtime_peer");
   assert.equal(capabilities.runtime.target?.status, "attached");
   assert.equal(capabilities.runtime.target?.label, "Runtime peer");
-  assert.equal(capabilities.runtime.actor?.principal.label, "user@example.test");
+  assert.equal(capabilities.runtime.actor?.principal.label, "JupyterHub for Alice");
   assert.equal(capabilities.runtime.actor?.operator.kind, "runtime");
   assert.equal(capabilities.runtime.actor?.operator.label, "JupyterHub");
 });
