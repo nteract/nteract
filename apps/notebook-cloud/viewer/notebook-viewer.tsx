@@ -110,6 +110,7 @@ import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
 import {
   projectCloudAccessRequestNotice,
   projectCloudAccessRequestTransition,
+  shouldFallbackCloudEditUrlToView,
   shouldLoadOwnCloudAccessRequest,
   type CloudAccessRequestNoticeProjection,
 } from "./cloud-access-request-state";
@@ -263,6 +264,7 @@ export function NotebookViewer({
   const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
     () => cloudNotebookModeFromSearch(window.location.search),
   );
+  const [editAccessRequestedByUser, setEditAccessRequestedByUser] = useState(false);
   // Scope resolution reads the latest selected mode at connect time, but
   // access-mode correction itself must not rebuild the live-room callback:
   // viewer-owned `?mode=edit` links are corrected to view mode after access is
@@ -524,6 +526,11 @@ export function NotebookViewer({
   useEffect(() => {
     replaceCloudNotebookModeInCurrentUrl(selectedInteractionMode);
   }, [selectedInteractionMode]);
+  useEffect(() => {
+    if (selectedInteractionMode !== "edit") {
+      setEditAccessRequestedByUser(false);
+    }
+  }, [selectedInteractionMode]);
 
   const getOutlineStatusLabel = useOutlineStatusLabel();
   const notebookViewModel = useNotebookViewModel({
@@ -617,6 +624,23 @@ export function NotebookViewer({
     };
   }, [canUseAuthenticatedCloudApi, catalogAccessLoader]);
   const catalogGrantsDocumentEdit = cloudNotebookScopeCanEditDocument(catalogAccessScope);
+  useEffect(() => {
+    if (
+      shouldFallbackCloudEditUrlToView({
+        catalogGrantsDocumentEdit,
+        catalogResolved: catalogAccessResolved,
+        editAccessRequested: editAccessRequestedByUser,
+        selectedMode: selectedInteractionMode,
+      })
+    ) {
+      setSelectedInteractionMode("view");
+    }
+  }, [
+    catalogAccessResolved,
+    catalogGrantsDocumentEdit,
+    editAccessRequestedByUser,
+    selectedInteractionMode,
+  ]);
   const saveCloudNotebookTitle = useCallback(
     async (nextTitle: string): Promise<boolean> => {
       if (!canUseAuthenticatedCloudApi || !catalogGrantsDocumentEdit || notebookTitleSaving) {
@@ -705,6 +729,7 @@ export function NotebookViewer({
     canUseAuthenticatedCloudApi,
     catalogGrantsDocumentEdit,
     connectionScope,
+    editAccessRequested: editAccessRequestedByUser,
     hasBrowserAppIdentity,
     selectedMode: selectedInteractionMode,
   });
@@ -1168,6 +1193,7 @@ export function NotebookViewer({
   }, [effectiveAccessRequest?.status, loadOwnAccessRequest, shouldLoadOwnEditAccessRequest]);
   const requestCloudEditAccess = useCallback(() => {
     void (async () => {
+      setEditAccessRequestedByUser(true);
       setAccessRequestError(null);
       try {
         const response = await fetchWithCloudPrototypeAuth(

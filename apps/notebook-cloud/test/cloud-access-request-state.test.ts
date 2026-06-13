@@ -4,6 +4,7 @@ import {
   cloudPrototypeAuthCarriesRequestedScope,
   projectCloudAccessRequestNotice,
   projectCloudAccessRequestTransition,
+  shouldFallbackCloudEditUrlToView,
   shouldLoadOwnCloudAccessRequest,
 } from "../viewer/cloud-access-request-state";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
@@ -189,6 +190,7 @@ describe("cloud access-request state projection", () => {
         canUseAuthenticatedCloudApi: true,
         catalogGrantsDocumentEdit: false,
         connectionScope: "viewer",
+        editAccessRequested: true,
         hasBrowserAppIdentity: true,
         selectedMode: "edit",
       }),
@@ -199,6 +201,18 @@ describe("cloud access-request state projection", () => {
         canUseAuthenticatedCloudApi: true,
         catalogGrantsDocumentEdit: false,
         connectionScope: "viewer",
+        editAccessRequested: false,
+        hasBrowserAppIdentity: true,
+        selectedMode: "edit",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldLoadOwnCloudAccessRequest({
+        canUseAuthenticatedCloudApi: true,
+        catalogGrantsDocumentEdit: false,
+        connectionScope: "viewer",
+        editAccessRequested: true,
         hasBrowserAppIdentity: true,
         selectedMode: "view",
       }),
@@ -209,6 +223,7 @@ describe("cloud access-request state projection", () => {
         canUseAuthenticatedCloudApi: true,
         catalogGrantsDocumentEdit: true,
         connectionScope: "viewer",
+        editAccessRequested: true,
         hasBrowserAppIdentity: true,
         selectedMode: "edit",
       }),
@@ -219,8 +234,57 @@ describe("cloud access-request state projection", () => {
         canUseAuthenticatedCloudApi: true,
         catalogGrantsDocumentEdit: false,
         connectionScope: "editor",
+        editAccessRequested: true,
         hasBrowserAppIdentity: true,
         selectedMode: "edit",
+      }),
+      false,
+    );
+  });
+
+  it("falls owner-style edit URLs back to view mode for view-only access", () => {
+    assert.equal(
+      shouldFallbackCloudEditUrlToView({
+        catalogGrantsDocumentEdit: false,
+        catalogResolved: true,
+        editAccessRequested: false,
+        selectedMode: "edit",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldFallbackCloudEditUrlToView({
+        catalogGrantsDocumentEdit: false,
+        catalogResolved: true,
+        editAccessRequested: true,
+        selectedMode: "edit",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldFallbackCloudEditUrlToView({
+        catalogGrantsDocumentEdit: true,
+        catalogResolved: true,
+        editAccessRequested: false,
+        selectedMode: "edit",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldFallbackCloudEditUrlToView({
+        catalogGrantsDocumentEdit: false,
+        catalogResolved: false,
+        editAccessRequested: false,
+        selectedMode: "edit",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldFallbackCloudEditUrlToView({
+        catalogGrantsDocumentEdit: false,
+        catalogResolved: true,
+        editAccessRequested: false,
+        selectedMode: "view",
       }),
       false,
     );
