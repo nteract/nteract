@@ -537,6 +537,32 @@ describe("MarkdownCell theme sync", () => {
     expect(onFocus).toHaveBeenCalled();
   });
 
+  it("focuses the cell before entering edit mode from the gutter action", async () => {
+    mockIsFocused = false;
+
+    let rerenderCell: ReturnType<typeof render>["rerender"] | undefined;
+    const cell = makeTaskCell();
+    const onFocus = vi.fn(() => {
+      mockIsFocused = true;
+      rerenderCell?.(<MarkdownCell cell={cell} onFocus={onFocus} onDelete={() => {}} />);
+    });
+
+    const { getByLabelText, getByTitle, rerender } = render(
+      <MarkdownCell cell={cell} onFocus={onFocus} onDelete={() => {}} />,
+    );
+    rerenderCell = rerender;
+
+    const preview = getByLabelText("Markdown cell content");
+    expect(preview.className).not.toContain("hidden");
+
+    fireEvent.click(getByTitle("Edit"));
+
+    expect(onFocus).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(preview.className).toContain("hidden");
+    });
+  });
+
   it("Ctrl+Enter exits edit mode for markdown cells", async () => {
     const cell = { ...makeCell(), source: "" };
 

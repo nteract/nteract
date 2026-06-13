@@ -350,7 +350,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     };
   }, [headingAnchors, markdownProjection]);
 
-  const handleDoubleClick = useCallback(() => {
+  const enterEditing = useCallback(() => {
     if (readOnly) return;
     onFocus();
     setPreviewFrameInteractionActive(false);
@@ -626,11 +626,11 @@ export const MarkdownCell = memo(function MarkdownCell({
           return;
         }
         // Enter: enter edit mode
-        setEditing(true);
+        enterEditing();
         e.preventDefault();
       }
     },
-    [onFocusNext, onFocusPrevious, readOnly],
+    [enterEditing, onFocusNext, onFocusPrevious, readOnly],
   );
 
   // Handle focus next, creating a new cell if at the end
@@ -808,7 +808,7 @@ export const MarkdownCell = memo(function MarkdownCell({
             <button
               type="button"
               tabIndex={-1}
-              onClick={() => setEditing(true)}
+              onClick={enterEditing}
               className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
               title="Edit"
             >
@@ -852,7 +852,7 @@ export const MarkdownCell = memo(function MarkdownCell({
             tabIndex={0}
             className={cn("py-2 cursor-text outline-none", editing && "hidden")}
             onFocus={activatePreviewFrameInteraction}
-            onDoubleClick={handleDoubleClick}
+            onDoubleClick={enterEditing}
             onPointerDown={handlePreviewWrapperPointerDown}
             onKeyDown={handleViewKeyDown}
           >
@@ -888,7 +888,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                   onLinkClick={handleLinkClick}
                   onMouseDown={activatePreviewFrameInteraction}
                   onMouseUp={handlePreviewFrameMouseUp}
-                  onDoubleClick={handleDoubleClick}
+                  onDoubleClick={enterEditing}
                   onError={handleIframeError}
                   onDiagnostic={logNotebookIsolatedDiagnostic}
                   className="w-full"
