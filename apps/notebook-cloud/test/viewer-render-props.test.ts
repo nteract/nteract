@@ -136,6 +136,10 @@ test("cloud notebook startup loading uses route-shaped shell chrome", () => {
   assert.match(cssText, /\.cloud-startup-shell/);
   assert.match(cssText, /\.cloud-startup-toolbar/);
   assert.match(cssText, /\.cloud-startup-line/);
+  assert.match(
+    cssText,
+    /@media \(max-width: 599\.98px\) \{[\s\S]*\.cloud-startup-rail,[\s\S]*\.cloud-notebook-rail\[data-collapsed="true"\]\s*\{[\s\S]*display: none;/,
+  );
 });
 
 test("cloud viewer keeps pending access-request polling quiet", () => {

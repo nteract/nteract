@@ -578,6 +578,49 @@ body {
 }
 
 @media (max-width: 599.98px) {
+  .cloud-mobile-rail-toggle {
+    display: inline-flex;
+  }
+
+  .cloud-startup-rail,
+  .cloud-notebook-rail[data-collapsed="true"] {
+    display: none;
+  }
+
+  .cloud-notebook-title-edit-button,
+  .cloud-notebook-title-form button,
+  .cloud-notebook-shell [data-slot="cell-action-overlay"] button {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .cloud-notebook-shell [data-slot="notebook-edit-mode-button"] {
+    height: 2.5rem;
+  }
+
+  .cloud-notebook-shell [data-slot="notebook-edit-mode-button"] button {
+    min-width: 2rem;
+    min-height: 2rem;
+  }
+
+  .cloud-notebook-shell [data-slot="notebook-command-toolbar"] {
+    height: 2.75rem;
+  }
+
+  .cloud-notebook-shell [data-slot="notebook-command-toolbar"] button {
+    min-width: 2rem;
+    min-height: 2rem;
+  }
+
+  .cloud-notebook-shell [data-slot="cell-adder-primary-hit-target"] {
+    min-width: 2.75rem;
+    min-height: 2.25rem;
+  }
+
+  .cloud-notebook-shell [data-slot="cell-adder-action-palette"] button {
+    min-height: 2rem;
+  }
+
   .cloud-notebook-rail[data-collapsed="false"] {
     width: 100%;
     max-width: 100%;

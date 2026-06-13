@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { NotebookHostProvider } from "@nteract/notebook-host";
-import { AlertCircle, Check, Loader2, X } from "lucide-react";
+import { AlertCircle, Check, Loader2, PanelLeftOpen, X } from "lucide-react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import {
   useHasIsolatedOutputs,
@@ -587,6 +587,9 @@ export function NotebookViewer({
     setRailCollapsed(false);
     setActiveRailPanel("packages");
   }, [activeRailPanel, railCollapsed]);
+  const handleOpenMobileRail = useCallback(() => {
+    setRailCollapsed(false);
+  }, []);
   const handleOpenWorkstationsRail = useCallback(() => {
     setRailCollapsed(false);
     setActiveRailPanel("workstations");
@@ -1447,6 +1450,17 @@ export function NotebookViewer({
       }
       reserveCommandToolbar={editAccessPending}
       commandToolbar={{
+        leadingControls: (
+          <button
+            type="button"
+            className="cloud-mobile-rail-toggle hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Open notebook panels"
+            title="Notebook panels"
+            onClick={handleOpenMobileRail}
+          >
+            <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
+          </button>
+        ),
         runtime: toolbarRuntime,
         runtimeTarget: shellCapabilities.runtime.target ?? null,
         environmentManager: toolbarEnvironmentManager,
