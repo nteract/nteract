@@ -1542,41 +1542,40 @@ mod tests {
     /// workstation auth kind. The credential never appears in argv.
     #[test]
     fn spawn_plan_matches_mjs_contract() {
-        let plan = build_attach_job_spawn_plan(&job("Job 123", "nb-1"), &options()).unwrap();
+        let opts = options();
+        let plan = build_attach_job_spawn_plan(&job("Job 123", "nb-1"), &opts).unwrap();
+        let expected_run_root = opts.agent_root.join("job-123");
+        let expected_blob_root = expected_run_root.join("blobs");
+        let expected_log_path = expected_run_root.join("runtime-peer.log");
+        let expected_pid_path = expected_run_root.join("runtime-peer.pid");
 
-        assert_eq!(plan.cwd, PathBuf::from("/home/ubuntu/project"));
-        assert_eq!(plan.run_root, PathBuf::from("/tmp/agent/job-123"));
-        assert_eq!(plan.blob_root, PathBuf::from("/tmp/agent/job-123/blobs"));
-        assert_eq!(
-            plan.log_path,
-            PathBuf::from("/tmp/agent/job-123/runtime-peer.log")
-        );
-        assert_eq!(
-            plan.pid_path,
-            PathBuf::from("/tmp/agent/job-123/runtime-peer.pid")
-        );
+        assert_eq!(plan.cwd, opts.working_dir);
+        assert_eq!(plan.run_root, expected_run_root);
+        assert_eq!(plan.blob_root, expected_blob_root);
+        assert_eq!(plan.log_path, expected_log_path);
+        assert_eq!(plan.pid_path, expected_pid_path);
         assert_eq!(
             plan.args,
             vec![
-                "cloud-runtime-agent",
-                "--auth-kind",
-                "workstation",
-                "--cloud-url",
-                "https://preview.runt.run",
-                "--notebook-id",
-                "nb-1",
-                "--scope",
-                "runtime_peer",
-                "--python-path",
-                "/opt/k/bin/python",
-                "--blob-root",
-                "/tmp/agent/job-123/blobs",
-                "--working-dir",
-                "/home/ubuntu/project",
-                "--workstation-id",
-                "ws-lab2",
-                "--workstation-display-name",
-                "lab2 workstation",
+                "cloud-runtime-agent".to_string(),
+                "--auth-kind".to_string(),
+                "workstation".to_string(),
+                "--cloud-url".to_string(),
+                "https://preview.runt.run".to_string(),
+                "--notebook-id".to_string(),
+                "nb-1".to_string(),
+                "--scope".to_string(),
+                "runtime_peer".to_string(),
+                "--python-path".to_string(),
+                opts.python_path.to_string_lossy().into_owned(),
+                "--blob-root".to_string(),
+                plan.blob_root.to_string_lossy().into_owned(),
+                "--working-dir".to_string(),
+                plan.cwd.to_string_lossy().into_owned(),
+                "--workstation-id".to_string(),
+                "ws-lab2".to_string(),
+                "--workstation-display-name".to_string(),
+                "lab2 workstation".to_string(),
             ]
         );
     }
