@@ -4215,7 +4215,7 @@ function viewerResourceHints(config: ViewerShellConfig | null): string {
     ]),
     viewerEntryHint,
     `<link rel="modulepreload" href="${escapeHtml(config.runtimedWasmModulePath)}" crossorigin />`,
-    `<link rel="preload" href="${escapeHtml(
+    `<link rel="prefetch" href="${escapeHtml(
       config.runtimedWasmPath,
     )}" as="fetch" type="application/wasm" crossorigin />`,
   ].join("\n  ");

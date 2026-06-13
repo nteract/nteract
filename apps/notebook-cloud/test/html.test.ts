@@ -63,7 +63,7 @@ describe("HTML script serialization", () => {
     assert.match(html, /rel="modulepreload" href="\/assets\/runtimed_wasm\.js" crossorigin/);
     assert.match(
       html,
-      /rel="preload" href="\/assets\/runtimed_wasm_bg\.wasm" as="fetch" type="application\/wasm" crossorigin/,
+      /rel="prefetch" href="\/assets\/runtimed_wasm_bg\.wasm" as="fetch" type="application\/wasm" crossorigin/,
     );
     assert.ok(
       html.indexOf(viewerThemeFirstPaintStyle()) < html.indexOf(viewerThemeBootstrapScript()),
@@ -141,7 +141,7 @@ describe("HTML script serialization", () => {
     );
     assert.match(
       html,
-      /rel="preload" href="\/assets\/runtimed_wasm_bg\.fedcba9876543210\.wasm" as="fetch" type="application\/wasm" crossorigin/,
+      /rel="prefetch" href="\/assets\/runtimed_wasm_bg\.fedcba9876543210\.wasm" as="fetch" type="application\/wasm" crossorigin/,
     );
     assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.0123456789abcdef\.js"/);
     assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.fedcba9876543210\.wasm"/);
@@ -380,7 +380,7 @@ describe("HTML script serialization", () => {
     );
     assert.match(
       html,
-      /rel="preload" href="https:\/\/wasm\.example\/runtime\/runtimed_wasm_bg\.wasm" as="fetch" type="application\/wasm" crossorigin/,
+      /rel="prefetch" href="https:\/\/wasm\.example\/runtime\/runtimed_wasm_bg\.wasm" as="fetch" type="application\/wasm" crossorigin/,
     );
     assert.match(
       response.headers.get("Content-Security-Policy") ?? "",
