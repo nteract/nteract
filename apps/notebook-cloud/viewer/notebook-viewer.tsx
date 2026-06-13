@@ -59,6 +59,7 @@ import {
   storeCloudRequestedScope,
   shouldShowCloudHeaderSignIn,
 } from "./collaborator-auth";
+import type { ConnectionScope } from "../src/auth-shared";
 
 import { useCloudViewerSession } from "./cloud-viewer-session";
 import {
@@ -94,6 +95,7 @@ import { cloudSourceLanguage } from "./source-language";
 import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import {
+  cloudNotebookInteractionModeForAccess,
   cloudNotebookModeFromSearch,
   replaceCloudNotebookModeInCurrentUrl,
 } from "./cloud-notebook-mode";
@@ -108,6 +110,7 @@ import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { CloudNotebookEditModeButton, CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { CloudNotebookTitle } from "./cloud-notebook-title";
 import { CloudPresenceStatus } from "./cloud-presence-status";
+import { isCloudNotebookListItem } from "./notebook-dashboard";
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
 const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 10_000;
@@ -120,6 +123,33 @@ function decodeHashAnchorId(hash: string): string {
   } catch {
     return raw;
   }
+}
+
+async function resolveCloudAppSessionSyncScope(
+  notebookId: string,
+  selectedMode: NotebookInteractionMode,
+): Promise<Exclude<ConnectionScope, "runtime_peer">> {
+  try {
+    const endpoint = new URL("api/n?limit=100", `${window.location.origin}/`);
+    const response = await fetch(endpoint.href, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+    if (response.ok) {
+      const body = (await response.json()) as { notebooks?: unknown };
+      const notebooks = Array.isArray(body.notebooks) ? body.notebooks : [];
+      const notebook = notebooks.find(
+        (candidate) => isCloudNotebookListItem(candidate) && candidate.notebook_id === notebookId,
+      );
+      if (isCloudNotebookListItem(notebook) && notebook.scope !== "runtime_peer") {
+        return notebook.scope;
+      }
+    }
+  } catch (error) {
+    console.warn("[notebook-cloud] unable to resolve notebook access scope before sync", error);
+  }
+  return selectedMode === "edit" ? "owner" : "viewer";
 }
 
 export function NotebookViewer({
@@ -199,14 +229,24 @@ export function NotebookViewer({
           ? ((await readCloudAppSessionStatus().catch(() => null))?.session ?? null)
           : null);
       if (appSession) {
+        const requestedScope = await resolveCloudAppSessionSyncScope(
+          config.notebookId,
+          selectedInteractionMode,
+        );
         return cloudSyncAuthFromAppSessionCookie({
-          requestedScope: "owner",
+          requestedScope,
           sessionId,
         });
       }
       return cloudSyncAuthFromPrototypeAuthState(authState);
     },
-    [appSessionStatus.session, appSessionStatus.status, authState],
+    [
+      appSessionStatus.session,
+      appSessionStatus.status,
+      authState,
+      config.notebookId,
+      selectedInteractionMode,
+    ],
   );
   const {
     connectionActorLabel,
@@ -377,6 +417,11 @@ export function NotebookViewer({
       ? cloudRuntimeStatus.label
       : null
     : null;
+  const selectedInteractionModeForAccess = cloudNotebookInteractionModeForAccess({
+    accessRequestStatus: latestAccessRequest?.status,
+    connectionScope,
+    selectedMode: selectedInteractionMode,
+  });
   const { shellCapabilities, canAcceptCellMutations, editAccessPending } =
     useCloudShellCapabilities({
       authState,
@@ -391,7 +436,7 @@ export function NotebookViewer({
       kernelStatusLabel: cloudKernelStatusLabel,
       runtimePeerAvailable,
       runtimePeerCount,
-      selectedMode: selectedInteractionMode,
+      selectedMode: selectedInteractionModeForAccess,
       status,
       workstationAttachment,
     });

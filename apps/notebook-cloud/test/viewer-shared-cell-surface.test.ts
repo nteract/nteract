@@ -336,6 +336,12 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(authControlsSourceText, /state=\{accessPending \? "viewing" : interaction\.state\}/);
   assert.match(authControlsSourceText, /disabled=\{accessPending\}/);
   assert.match(
+    authControlsSourceText,
+    /const canSwitchToEdit = accessLevel === "editor" \|\| accessLevel === "owner"/,
+  );
+  assert.match(authControlsSourceText, /editLabel=\{editLabel\}/);
+  assert.match(authControlsSourceText, /editTitle=\{editTitle\}/);
+  assert.match(
     sourceText,
     /const showCloudCommandToolbar = shouldShowNotebookDocumentCommandToolbar\(shellCapabilities, \{[\s\S]*reserve: editAccessPending,[\s\S]*\}\)/,
   );
@@ -351,10 +357,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.doesNotMatch(sourceText, /CloudNotebookCommandToolbarPlaceholder/);
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
   assert.doesNotMatch(cssText, /cloud-command-toolbar-placeholder/);
-  assert.match(
-    authControlsSourceText,
-    /if \(mode === "edit" && accessLevel !== "editor" && accessLevel !== "owner"\) \{/,
-  );
+  assert.match(authControlsSourceText, /if \(mode === "edit" && !canSwitchToEdit\) \{/);
   assert.match(sourceText, /storeCloudRequestedScope\(window\.localStorage, "editor"\)/);
   assert.doesNotMatch(sourceText, /mode === "edit" \? "editor" : NOTEBOOK_CLOUD_DEFAULT_SCOPE/);
   assert.doesNotMatch(sourceText, /className="cloud-scope-toggle-button"/);
@@ -570,14 +573,24 @@ test("cloud notebook list waits for app-session cookies before catalog fetches",
   );
 });
 
-test("cloud app-session live sync requests owner and lets the backend downgrade", () => {
+test("cloud app-session live sync requests the resolved notebook-list scope", () => {
   const sourceText = viewerCorpus;
 
-  assert.match(sourceText, /cloudSyncAuthFromAppSessionCookie\(\{[\s\S]*requestedScope: "owner"/);
+  assert.match(sourceText, /async function resolveCloudAppSessionSyncScope/);
+  assert.match(sourceText, /new URL\("api\/n\?limit=100"/);
+  assert.match(sourceText, /isCloudNotebookListItem\(candidate\)/);
+  assert.match(sourceText, /candidate\.notebook_id === notebookId/);
+  assert.match(sourceText, /return notebook\.scope/);
+  assert.match(sourceText, /return selectedMode === "edit" \? "owner" : "viewer"/);
+  assert.match(
+    sourceText,
+    /const requestedScope = await resolveCloudAppSessionSyncScope\([\s\S]*config\.notebookId,[\s\S]*selectedInteractionMode,[\s\S]*\)/,
+  );
   assert.doesNotMatch(
     sourceText,
-    /cloudSyncAuthFromAppSessionCookie\(\{[\s\S]*requestedScope: authState\.requestedScope/,
+    /cloudSyncAuthFromAppSessionCookie\(\{[\s\S]*requestedScope: "owner"/,
   );
+  assert.doesNotMatch(sourceText, /setSelectedInteractionMode\(selectedInteractionModeForAccess\)/);
 });
 
 test("cloud sync keeps routine frame logs out of the browser console", () => {
