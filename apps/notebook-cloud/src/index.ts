@@ -71,6 +71,7 @@ import {
   workstationPairingStatus,
 } from "./workstation-credentials.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
+import { notebookRouteSegmentTitle } from "./notebook-route-title.ts";
 import {
   createNotebookCloudBlobResolver,
   notebookCloudBlobBasePath,
@@ -4111,36 +4112,6 @@ function genericNotebookShellMetadata(
     description:
       "A hosted nteract notebook. Private notebook metadata is shown after access is verified.",
   };
-}
-
-function notebookRouteSegmentTitle(value: string | null | undefined): string | null {
-  const decoded = safeDecodeRouteSegment(value);
-  if (!decoded) {
-    return null;
-  }
-  return decoded
-    .replace(/[-_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(" ")
-    .map((word) => {
-      if (!word) {
-        return word;
-      }
-      return `${word[0]?.toUpperCase() ?? ""}${word.slice(1).toLowerCase()}`;
-    })
-    .join(" ");
-}
-
-function safeDecodeRouteSegment(value: string | null | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  try {
-    return decodeURIComponent(value).trim() || null;
-  } catch {
-    return value.trim() || null;
-  }
 }
 
 function shortNotebookId(value: string): string {

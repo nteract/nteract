@@ -1,4 +1,5 @@
 import { House } from "lucide-react";
+import { notebookRouteSegmentTitle } from "../src/notebook-route-title";
 
 export function CloudNotebookTitle() {
   const title = cloudNotebookRouteTitle();
@@ -28,14 +29,13 @@ export function cloudNotebookRouteTitle(): {
 } {
   const pathParts = window.location.pathname.split("/").filter(Boolean);
   const routeSlug = pathParts[0] === "n" ? pathParts[2] : null;
-  const decodedSlug = safeDecodeRouteSegment(routeSlug);
+  const routeTitle = notebookRouteSegmentTitle(routeSlug);
 
-  if (decodedSlug) {
-    const label = humanizeCloudRouteTitle(decodedSlug);
+  if (routeTitle) {
     return {
-      label,
+      label: routeTitle,
       detail: null,
-      title: label,
+      title: routeTitle,
     };
   }
 
@@ -44,26 +44,4 @@ export function cloudNotebookRouteTitle(): {
     detail: null,
     title: "Cloud Notebook",
   };
-}
-
-function humanizeCloudRouteTitle(value: string): string {
-  return value
-    .replace(/[-_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(" ")
-    .map((word) => {
-      if (!word) return word;
-      return `${word[0]?.toUpperCase() ?? ""}${word.slice(1).toLowerCase()}`;
-    })
-    .join(" ");
-}
-
-function safeDecodeRouteSegment(value: string | null | undefined): string | null {
-  if (!value) return null;
-  try {
-    return decodeURIComponent(value).trim() || null;
-  } catch {
-    return value.trim() || null;
-  }
 }

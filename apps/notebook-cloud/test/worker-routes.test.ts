@@ -219,6 +219,20 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /topic-viz.*render/);
   });
 
+  it("preserves acronym-looking words in route-derived viewer titles", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/notebook-123/Quill%20HF%20workstation%20smoke"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<title>nteract notebook: Quill HF Workstation Smoke<\/title>/);
+  });
+
   it("uses catalog-safe metadata for public published notebook viewers", async () => {
     const env = fakeEnv();
     seedNotebook(env, "public-meta-demo");
