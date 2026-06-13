@@ -314,8 +314,10 @@ describe("useCloudWorkstationManager pairing", () => {
     await act(async () => {
       await Promise.resolve();
     });
+    expect(result.current.canStartSelectedWorkstation).toBe(true);
     await act(async () => {
-      await result.current.onStartSelectedWorkstation?.();
+      const started = await result.current.onStartSelectedWorkstation?.();
+      expect(started).toBe(true);
     });
 
     expect(clientMocks.requestCloudWorkstationAttachment).toHaveBeenCalledWith(
@@ -350,5 +352,24 @@ describe("useCloudWorkstationManager pairing", () => {
       "ws-lab2",
       { replaceExisting: true },
     );
+  });
+
+  it("does not report a startable workstation without a launch candidate", async () => {
+    clientMocks.fetchCloudWorkstations.mockResolvedValue({
+      defaultWorkstationId: null,
+      workstations: [],
+    });
+    const { result } = renderManager();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.canStartSelectedWorkstation).toBe(false);
+    await act(async () => {
+      const started = await result.current.onStartSelectedWorkstation?.();
+      expect(started).toBe(false);
+    });
+    expect(clientMocks.requestCloudWorkstationAttachment).not.toHaveBeenCalled();
   });
 });

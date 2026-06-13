@@ -11,6 +11,14 @@ test("cloud notebook body renders through the desktop NotebookView surface", () 
   assert.match(sourceText, /<NotebookView[\s\S]*cellIds=\{notebookCellIds\}/);
   assert.match(sourceText, /<NotebookView[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(sourceText, /<NotebookView[\s\S]*canAcceptCellMutations=\{canAcceptCellMutations\}/);
+  assert.match(
+    sourceText,
+    /<NotebookView[\s\S]*onRequestExecuteCell=\{[\s\S]*canRequestCloudCellExecution \? handleCloudRequestExecuteCell : undefined[\s\S]*\}/,
+  );
+  assert.match(
+    sourceText,
+    /const canRequestCloudCellExecution =[\s\S]*canStartSelectedWorkstation && shellCapabilities\.canEditCells && canAcceptCellMutations/,
+  );
   assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/components\/NotebookView/);
   assert.doesNotMatch(sourceText, /canAcceptCellMutations=\{false\}/);
   assert.doesNotMatch(sourceText, /readOnly=\{!canEditMarkdown\}/);
@@ -70,6 +78,10 @@ test("cloud viewer imports desktop notebook code only through public surfaces", 
       const importPath = match[1] ?? "";
       if (
         importPath.includes("/wasm/") ||
+        // Entry-only host shims install cloud-safe logger and external-link
+        // behavior for shared notebook components.
+        (fileName === "index.tsx" &&
+          (importPath.endsWith("/lib/logger") || importPath.endsWith("/lib/open-url"))) ||
         importPath.endsWith("/notebook-surface") ||
         // Headless store surface: same public symbols, no component/CSS
         // imports, so node-run tests can exercise the bridge directly.
@@ -212,7 +224,7 @@ test("cloud passes shared NotebookView source and output visibility handlers", (
 });
 
 test("cloud wires shared presence and cleans projected store entries", () => {
-  const sourceText = viewerCorpus;
+  const sourceText = viewerFileContaining("export function NotebookViewer");
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
   const bridgeSourcePath = new URL("../viewer/notebook-view-store-bridge.ts", import.meta.url);
@@ -277,6 +289,7 @@ test("cloud workstation registry state lives in the workstation manager hook", (
   );
   assert.match(sourceText, /selection=\{workstationSelection\}/);
   assert.match(sourceText, /busyWorkstationId=\{busyWorkstationId\}/);
+  assert.match(sourceText, /canStartSelectedWorkstation/);
   assert.match(sourceText, /onAttachWorkstation=\{onAttachWorkstation\}/);
   assert.match(sourceText, /onSetDefaultWorkstation=\{onSetDefaultWorkstation\}/);
   assert.doesNotMatch(sourceText, /fetchCloudWorkstations/);
@@ -331,6 +344,8 @@ test("cloud presence chrome renders as an isolated host avatar stack", () => {
 
 test("cloud edit mode chrome renders through the shared shell component", () => {
   const sourceText = viewerFileContaining("export function NotebookViewer");
+  const editModeButtonSourcePath = new URL("../viewer/cloud-edit-mode-button.tsx", import.meta.url);
+  const editModeButtonSourceText = readFileSync(editModeButtonSourcePath, "utf8");
   const authControlsSourcePath = new URL("../viewer/cloud-auth-controls.tsx", import.meta.url);
   const authControlsSourceText = readFileSync(authControlsSourcePath, "utf8");
   const shellHookSourcePath = new URL("../viewer/use-cloud-shell-capabilities.ts", import.meta.url);
@@ -339,16 +354,16 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   const cssText = readFileSync(cssPath, "utf8");
 
   assert.match(sourceText, /useCloudShellCapabilities/);
-  assert.match(authControlsSourceText, /NotebookEditModeButton/);
+  assert.match(editModeButtonSourceText, /NotebookEditModeButton/);
   assert.match(
-    authControlsSourceText,
+    editModeButtonSourceText,
     /<NotebookEditModeButton[\s\S]*mode=\{accessPending \? "view" : interaction\.selectedMode\}/,
   );
   assert.match(
-    authControlsSourceText,
+    editModeButtonSourceText,
     /<NotebookEditModeButton[\s\S]*state=\{accessPending \? "viewing" : interaction\.state\}/,
   );
-  assert.match(authControlsSourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
+  assert.match(editModeButtonSourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
   assert.match(authControlsSourceText, /authConfig\.localDev\?\.label\?\.trim\(\)/);
   assert.match(authControlsSourceText, /return "Use local auth"/);
   assert.match(authControlsSourceText, /window\.location\.assign\(localDevAuth\.authUrl\)/);
@@ -357,14 +372,14 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
     /const providerLabel = authConfig\.oidc\?\.providerLabel\?\.trim\(\)/,
   );
   assert.match(
-    authControlsSourceText,
+    editModeButtonSourceText,
     /<NotebookEditModeButton[\s\S]*requestedEditLabel=\{reconnecting \? "Offline" : "Request sent"\}/,
   );
   assert.match(
-    authControlsSourceText,
+    editModeButtonSourceText,
     /<NotebookEditModeButton[\s\S]*requestedEditTitle=\{[\s\S]*reconnecting \? "Offline while the room reconnects" : "Edit access requested"/,
   );
-  assert.match(authControlsSourceText, /onModeChange=\{\(mode\) => \{/);
+  assert.match(editModeButtonSourceText, /onModeChange=\{\(mode\) => \{/);
   assert.match(sourceText, /accessLevel=\{shellCapabilities\.access\.level\}/);
   assert.doesNotMatch(sourceText, /projectCloudNotebookEditAccess/);
   assert.doesNotMatch(sourceText, /cloudNotebookShellCapabilities/);
@@ -387,14 +402,17 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
     /setSelectedInteractionMode\("edit"\);[\s\S]*\[canAcceptCellMutations, connectionPeerId, connectionScope/,
   );
   assert.match(sourceText, /accessPending=\{editAccessPending\}/);
-  assert.match(authControlsSourceText, /state=\{accessPending \? "viewing" : interaction\.state\}/);
-  assert.match(authControlsSourceText, /disabled=\{accessPending\}/);
   assert.match(
-    authControlsSourceText,
+    editModeButtonSourceText,
+    /state=\{accessPending \? "viewing" : interaction\.state\}/,
+  );
+  assert.match(editModeButtonSourceText, /disabled=\{accessPending\}/);
+  assert.match(
+    editModeButtonSourceText,
     /const canSwitchToEdit = accessLevel === "editor" \|\| accessLevel === "owner"/,
   );
-  assert.match(authControlsSourceText, /editLabel=\{editLabel\}/);
-  assert.match(authControlsSourceText, /editTitle=\{editTitle\}/);
+  assert.match(editModeButtonSourceText, /editLabel=\{editLabel\}/);
+  assert.match(editModeButtonSourceText, /editTitle=\{editTitle\}/);
   assert.match(
     sourceText,
     /const showCloudCommandToolbar = shouldShowNotebookDocumentCommandToolbar\(shellCapabilities, \{[\s\S]*reserve: editAccessPending,[\s\S]*\}\)/,
@@ -411,7 +429,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.doesNotMatch(sourceText, /CloudNotebookCommandToolbarPlaceholder/);
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
   assert.doesNotMatch(cssText, /cloud-command-toolbar-placeholder/);
-  assert.match(authControlsSourceText, /if \(mode === "edit" && !canSwitchToEdit\) \{/);
+  assert.match(editModeButtonSourceText, /if \(mode === "edit" && !canSwitchToEdit\) \{/);
   assert.match(sourceText, /projectCloudAccessRequestTransition\(\{/);
   assert.match(
     sourceText,

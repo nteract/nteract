@@ -469,6 +469,7 @@ export function NotebookViewer({
     resolveSyncAuth,
     widgetStore,
   });
+  const cloudExecutionStartPromiseRef = useRef<Promise<boolean> | null>(null);
   const cloudNotebookHost = useMemo(
     () =>
       createCloudNotebookHost({
@@ -773,6 +774,7 @@ export function NotebookViewer({
   });
   const {
     busyWorkstationId,
+    canStartSelectedWorkstation,
     onAttachWorkstation,
     onSetDefaultWorkstation,
     onStartSelectedWorkstation,
@@ -935,6 +937,55 @@ export function NotebookViewer({
       });
     },
     [createCloudNotebookClient],
+  );
+  const canRequestCloudCellExecution =
+    canStartSelectedWorkstation && shellCapabilities.canEditCells && canAcceptCellMutations;
+  const startCloudExecutionWorkstation = useCallback(async () => {
+    if (!onStartSelectedWorkstation) {
+      return false;
+    }
+    if (!cloudExecutionStartPromiseRef.current) {
+      cloudExecutionStartPromiseRef.current = onStartSelectedWorkstation({
+        message: "Starting compute. Run is queued for the selected workstation.",
+      }).finally(() => {
+        cloudExecutionStartPromiseRef.current = null;
+      });
+    }
+    return cloudExecutionStartPromiseRef.current;
+  }, [onStartSelectedWorkstation]);
+  const handleCloudRequestExecuteCell = useCallback(
+    (cellId: string) => {
+      if (!canRequestCloudCellExecution || !onStartSelectedWorkstation) {
+        return;
+      }
+      const runtimeClient = createCloudNotebookClient("start compute and execute cell");
+      if (!runtimeClient) return;
+
+      void (async () => {
+        const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
+        if (!delivered) {
+          console.warn(
+            "[notebook-cloud] start compute and execute request skipped; notebook sync failed",
+          );
+          return;
+        }
+
+        const started = await startCloudExecutionWorkstation();
+        if (!started) {
+          return;
+        }
+
+        await runtimeClient.client.executeCell(cellId);
+      })().catch((error: unknown) => {
+        console.warn("[notebook-cloud] start compute and execute request failed", error);
+      });
+    },
+    [
+      canRequestCloudCellExecution,
+      createCloudNotebookClient,
+      onStartSelectedWorkstation,
+      startCloudExecutionWorkstation,
+    ],
   );
   const handleCloudRunAllCells = useCallback(() => {
     const runtimeClient = createCloudNotebookClient("run all cells");
@@ -1510,6 +1561,9 @@ export function NotebookViewer({
                 sessionRuntimeState={connectionError ? "error" : "ready"}
                 onFocusCell={handleNotebookViewFocus}
                 onExecuteCell={handleCloudExecuteCell}
+                onRequestExecuteCell={
+                  canRequestCloudCellExecution ? handleCloudRequestExecuteCell : undefined
+                }
                 onInterruptKernel={() => {}}
                 onDeleteCell={handleCloudDeleteCell}
                 onAddCell={handleCloudAddCell}
