@@ -875,7 +875,7 @@ function workstationAttachmentProviderLabel(provider: string): string {
     case "local_daemon":
       return "Local daemon";
     case "runtime_peer":
-      return "Runtime peer";
+      return "Workstation";
     case "cloud_room":
       return "Cloud room";
     case "cloud_workstation":

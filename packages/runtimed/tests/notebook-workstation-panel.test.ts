@@ -220,7 +220,7 @@ describe("projectNotebookWorkstationPanel", () => {
       statusLabel: "Needs attention",
       detail:
         "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
-      providerLabel: "Runtime peer",
+      providerLabel: "Workstation",
       defaultEnvironmentLabel: "Current Python",
     };
     const ownerProjection = projectNotebookWorkstationPanel(

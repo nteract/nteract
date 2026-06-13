@@ -341,7 +341,7 @@ describe("NotebookWorkstationsPanel", () => {
           status: "ready",
           label: "Lab2",
           statusLabel: "Ready",
-          providerLabel: "Runtime peer",
+          providerLabel: "Workstation",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
           cpuCount: 8,
@@ -398,7 +398,7 @@ describe("NotebookWorkstationsPanel", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Lab2" })).toBeVisible();
-    expect(screen.getAllByText("Runtime peer")).toHaveLength(1);
+    expect(screen.getAllByText("Workstation")).toHaveLength(1);
     expect(screen.getAllByText("Current Python")).toHaveLength(1);
     expect(screen.getByText("id ws-lab2")).toBeVisible();
     expect(screen.getAllByTestId("registered-workstation")).toHaveLength(1);
@@ -431,7 +431,7 @@ describe("NotebookWorkstationsPanel", () => {
           statusLabel: "Needs attention",
           detail:
             "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
-          providerLabel: "Runtime peer",
+          providerLabel: "Workstation",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
           workingDirectoryLabel: "/home/ubuntu/project",
@@ -518,7 +518,7 @@ describe("NotebookWorkstationsPanel", () => {
           statusLabel: "Needs attention",
           detail:
             "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
-          providerLabel: "Runtime peer",
+          providerLabel: "Workstation",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
           workingDirectoryLabel: "/home/ubuntu/project",
