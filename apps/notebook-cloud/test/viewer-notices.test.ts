@@ -216,6 +216,34 @@ test("cloud notebook notices let access diagnostics own private-route loading", 
   assert.doesNotMatch(html, /Connecting to live notebook room/);
 });
 
+test("cloud notebook notices do not duplicate no-access diagnostics as a generic load error", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+      hasAppSession: true,
+      status: { kind: "error", message: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC },
+    }),
+    true,
+  );
+
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+      hasAppSession: true,
+      status: { kind: "error", message: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /Notebook access needed/);
+  assert.equal(html.match(/does not have access to this notebook/g)?.length, 1);
+  assert.doesNotMatch(html, /Unable to load notebook/);
+});
+
 test("cloud notebook notices aggregate renderer-asset failures into one quiet line with retry", () => {
   assert.equal(
     cloudNotebookHasNotices({
