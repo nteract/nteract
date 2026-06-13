@@ -600,8 +600,9 @@ test("cloud app-session live sync requests the resolved notebook-list scope", ()
   assert.match(sourceText, /async function resolveCloudAppSessionSyncScope/);
   assert.match(sourceText, /new URL\("api\/n\?limit=100"/);
   assert.match(sourceText, /cloudNotebookCatalogScopeFromList\(notebooks, notebookId\)/);
-  assert.match(sourceText, /if \(catalogScope\) \{[\s\S]*return catalogScope;/);
-  assert.match(sourceText, /return selectedMode === "edit" \? "owner" : "viewer"/);
+  assert.match(sourceText, /cloudNotebookSyncScopeForCatalogAccess\(\{/);
+  assert.match(sourceText, /catalogResolved: true/);
+  assert.match(sourceText, /catalogResolved: false/);
   assert.match(
     sourceText,
     /const requestedScope = await resolveCloudAppSessionSyncScope\([\s\S]*config\.notebookId,[\s\S]*selectedInteractionMode,[\s\S]*\)/,

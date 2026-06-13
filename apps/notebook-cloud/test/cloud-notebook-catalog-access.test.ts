@@ -4,6 +4,7 @@ import {
   cloudNotebookAccessScopeForShell,
   cloudNotebookCatalogScopeFromList,
   cloudNotebookScopeCanEditDocument,
+  cloudNotebookSyncScopeForCatalogAccess,
 } from "../viewer/cloud-notebook-catalog-access";
 import type { CloudNotebookListItem } from "../viewer/notebook-dashboard";
 
@@ -50,6 +51,39 @@ describe("cloud notebook catalog access projection", () => {
     assert.equal(cloudNotebookScopeCanEditDocument("viewer"), false);
     assert.equal(cloudNotebookScopeCanEditDocument("runtime_peer"), false);
     assert.equal(cloudNotebookScopeCanEditDocument(null), false);
+  });
+
+  it("requests the catalog scope for app-session room sync when available", () => {
+    assert.equal(
+      cloudNotebookSyncScopeForCatalogAccess({
+        catalogResolved: true,
+        catalogScope: "editor",
+        selectedMode: "view",
+      }),
+      "editor",
+    );
+  });
+
+  it("does not escalate edit-mode URLs when the authenticated catalog excludes the notebook", () => {
+    assert.equal(
+      cloudNotebookSyncScopeForCatalogAccess({
+        catalogResolved: true,
+        catalogScope: null,
+        selectedMode: "edit",
+      }),
+      "viewer",
+    );
+  });
+
+  it("keeps the existing edit-mode fallback when the catalog could not be resolved", () => {
+    assert.equal(
+      cloudNotebookSyncScopeForCatalogAccess({
+        catalogResolved: false,
+        catalogScope: null,
+        selectedMode: "edit",
+      }),
+      "owner",
+    );
   });
 });
 

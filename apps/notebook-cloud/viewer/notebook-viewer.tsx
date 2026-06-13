@@ -102,6 +102,7 @@ import {
   cloudNotebookAccessScopeForShell,
   cloudNotebookCatalogScopeFromList,
   cloudNotebookScopeCanEditDocument,
+  cloudNotebookSyncScopeForCatalogAccess,
   type CloudNotebookCatalogAccessScope,
 } from "./cloud-notebook-catalog-access";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
@@ -153,15 +154,19 @@ async function resolveCloudAppSessionSyncScope(
     if (response.ok) {
       const body = (await response.json()) as { notebooks?: unknown };
       const notebooks = Array.isArray(body.notebooks) ? body.notebooks : [];
-      const catalogScope = cloudNotebookCatalogScopeFromList(notebooks, notebookId);
-      if (catalogScope) {
-        return catalogScope;
-      }
+      return cloudNotebookSyncScopeForCatalogAccess({
+        catalogResolved: true,
+        catalogScope: cloudNotebookCatalogScopeFromList(notebooks, notebookId),
+        selectedMode,
+      });
     }
   } catch (error) {
     console.warn("[notebook-cloud] unable to resolve notebook access scope before sync", error);
   }
-  return selectedMode === "edit" ? "owner" : "viewer";
+  return cloudNotebookSyncScopeForCatalogAccess({
+    catalogResolved: false,
+    selectedMode,
+  });
 }
 
 export function NotebookViewer({
