@@ -209,6 +209,22 @@ export function retryCooldownMs({
   return Math.min(maxDelay, Math.ceil(baseDelay + jitter));
 }
 
+export function runtimePeerExitMessage(code, signal) {
+  const exitCode = Number.isInteger(code) ? code : null;
+  const exitSignal = typeof signal === "string" && signal.length > 0 ? signal : null;
+
+  if (exitCode != null && exitSignal != null) {
+    return `Runtime peer exited with code=${exitCode}, signal=${exitSignal}`;
+  }
+  if (exitCode != null) {
+    return `Runtime peer exited with code=${exitCode}`;
+  }
+  if (exitSignal != null) {
+    return `Runtime peer exited with signal=${exitSignal}`;
+  }
+  return "Runtime peer exited";
+}
+
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);

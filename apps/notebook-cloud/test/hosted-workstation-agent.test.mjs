@@ -11,6 +11,7 @@ import {
   parsePositiveInteger,
   retryAfterMs,
   retryCooldownMs,
+  runtimePeerExitMessage,
   stableWorkstationId,
 } from "../scripts/hosted-workstation-agent-core.mjs";
 
@@ -242,5 +243,18 @@ describe("hosted workstation agent launch contract", () => {
       }),
       11_000,
     );
+  });
+
+  it("formats runtime peer exit messages without empty signal details", () => {
+    assert.equal(runtimePeerExitMessage(1, null), "Runtime peer exited with code=1");
+    assert.equal(
+      runtimePeerExitMessage(null, "SIGTERM"),
+      "Runtime peer exited with signal=SIGTERM",
+    );
+    assert.equal(
+      runtimePeerExitMessage(1, "SIGTERM"),
+      "Runtime peer exited with code=1, signal=SIGTERM",
+    );
+    assert.equal(runtimePeerExitMessage(null, null), "Runtime peer exited");
   });
 });

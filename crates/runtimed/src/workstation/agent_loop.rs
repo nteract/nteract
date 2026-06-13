@@ -1273,24 +1273,26 @@ fn poll_job_once(job_id: &str, job: &mut ActiveJob) -> JobTick {
     JobTick::None
 }
 
-/// Port of the `.mjs` exit message:
-/// `Runtime peer exited with code=<code>, signal=<signal>`.
 fn exit_status_message(status: &std::process::ExitStatus) -> String {
-    let code = status
-        .code()
-        .map(|code| code.to_string())
-        .unwrap_or_default();
     #[cfg(unix)]
     let signal = {
         use std::os::unix::process::ExitStatusExt;
-        status
-            .signal()
-            .map(|signal| signal.to_string())
-            .unwrap_or_default()
+        status.signal()
     };
     #[cfg(not(unix))]
-    let signal = String::new();
-    format!("Runtime peer exited with code={code}, signal={signal}")
+    let signal = None;
+    format_runtime_peer_exit_message(status.code(), signal)
+}
+
+fn format_runtime_peer_exit_message(code: Option<i32>, signal: Option<i32>) -> String {
+    match (code, signal) {
+        (Some(code), Some(signal)) => {
+            format!("Runtime peer exited with code={code}, signal={signal}")
+        }
+        (Some(code), None) => format!("Runtime peer exited with code={code}"),
+        (None, Some(signal)) => format!("Runtime peer exited with signal={signal}"),
+        (None, None) => "Runtime peer exited".to_string(),
+    }
 }
 
 fn spawn_runtime_peer(
@@ -1456,6 +1458,26 @@ mod tests {
         assert_eq!(
             workstation_agent_lock_path(&agent_root, "ws-lab2"),
             tmp.path().join("workstation-ws-lab2.lock")
+        );
+    }
+
+    #[test]
+    fn runtime_peer_exit_messages_omit_empty_details() {
+        assert_eq!(
+            format_runtime_peer_exit_message(Some(1), None),
+            "Runtime peer exited with code=1"
+        );
+        assert_eq!(
+            format_runtime_peer_exit_message(None, Some(15)),
+            "Runtime peer exited with signal=15"
+        );
+        assert_eq!(
+            format_runtime_peer_exit_message(Some(1), Some(15)),
+            "Runtime peer exited with code=1, signal=15"
+        );
+        assert_eq!(
+            format_runtime_peer_exit_message(None, None),
+            "Runtime peer exited"
         );
     }
 
