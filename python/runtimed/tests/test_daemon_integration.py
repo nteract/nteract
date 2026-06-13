@@ -206,6 +206,32 @@ async def async_start_kernel_with_retry(session, *, retries=15, delay=1.0, **kwa
     raise last_err
 
 
+async def async_create_notebook_with_retry(
+    client,
+    *,
+    runtime="python",
+    retries=5,
+    delay=1.0,
+    **kwargs,
+):
+    """Async retry wrapper for create_notebook.
+
+    Deno notebook creation waits for the auto-launched kernel before returning.
+    CI can occasionally lose that first runtime-agent connection while the Deno
+    kernel is bootstrapping, so retry the whole fresh-room creation path rather
+    than failing the fixture setup on one transient connection reset.
+    """
+    last_err: Exception = Exception("max retries exceeded")
+    for attempt in range(retries):
+        try:
+            return await client.create_notebook(runtime=runtime, **kwargs)
+        except runtimed.RuntimedError as e:
+            last_err = e
+            if attempt < retries - 1:
+                await asyncio.sleep(delay)
+    raise last_err
+
+
 def runtime_kernel_is_running(session):
     """Return whether RuntimeStateDoc says the kernel is ready to execute."""
     state = session.get_runtime_state_sync()
@@ -1553,7 +1579,7 @@ class TestDenoKernel:
     @pytest.fixture
     async def deno_session(self, client):
         """Create a Deno notebook — auto-launches with a Deno kernel."""
-        sess = await client.create_notebook(runtime="deno")
+        sess = await async_create_notebook_with_retry(client, runtime="deno")
         yield sess
         try:
             if await sess.kernel_started():
