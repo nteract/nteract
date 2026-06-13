@@ -1,7 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Check, House, Loader2, PencilLine, X } from "lucide-react";
-import { notebookRouteSegmentTitle } from "../src/notebook-route-title";
-import type { CloudNotebookTitleDisplay } from "./cloud-notebook-title-state";
+import {
+  cloudNotebookRouteTitleFromPathname,
+  type CloudNotebookTitleDisplay,
+} from "./cloud-notebook-title-state";
 
 export function CloudNotebookTitle({
   canRename = false,
@@ -125,21 +127,5 @@ export function CloudNotebookTitle({
 }
 
 export function cloudNotebookRouteTitle(): CloudNotebookTitleDisplay {
-  const pathParts = window.location.pathname.split("/").filter(Boolean);
-  const routeSlug = pathParts[0] === "n" ? pathParts[2] : null;
-  const routeTitle = notebookRouteSegmentTitle(routeSlug);
-
-  if (routeTitle) {
-    return {
-      label: routeTitle,
-      detail: null,
-      title: routeTitle,
-    };
-  }
-
-  return {
-    label: "Cloud Notebook",
-    detail: null,
-    title: "Cloud Notebook",
-  };
+  return cloudNotebookRouteTitleFromPathname(window.location.pathname);
 }

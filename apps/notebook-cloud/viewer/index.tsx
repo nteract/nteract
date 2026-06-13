@@ -13,6 +13,7 @@ import {
   requireElement,
 } from "./cloud-viewer-config";
 import type { CloudViewerAuthConfig, ViewerRuntimeState } from "./cloud-viewer-types";
+import { cloudNotebookRouteTitleFromPathname } from "./cloud-notebook-title-state";
 import { CloudHomeView } from "./home-view";
 import { CloudNotebookListView } from "./notebook-list-view";
 import { loadNotebookRouteModule } from "./notebook-route-preload";
@@ -69,7 +70,13 @@ function App() {
   }
 
   return (
-    <Suspense fallback={<ViewerStartupLoading />}>
+    <Suspense
+      fallback={
+        <ViewerStartupLoading
+          title={cloudNotebookRouteTitleFromPathname(window.location.pathname).title}
+        />
+      }
+    >
       <NotebookRoute runtime={runtimeState.runtime} authConfig={authConfig} />
     </Suspense>
   );
@@ -88,11 +95,11 @@ function ViewerStartupError({ message }: { message: string }) {
   );
 }
 
-function ViewerStartupLoading() {
+function ViewerStartupLoading({ title }: { title: string }) {
   return (
     <main className="flex min-h-screen w-full flex-col px-8 py-4 pr-4">
       <header className="mb-4">
-        <h1 className="text-2xl font-semibold tracking-normal">nteract cloud notebook</h1>
+        <h1 className="text-2xl font-semibold tracking-normal">{title}</h1>
       </header>
       <div className="cloud-state" role="status">
         Loading notebook.
