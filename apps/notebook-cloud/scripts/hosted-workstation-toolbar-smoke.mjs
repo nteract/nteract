@@ -851,13 +851,16 @@ async function ensureCodeCell(page, timeout) {
 async function ensureCodeCellCount(page, count, timeout) {
   return smokePhase(`ensure ${count} code cells`, async () => {
     const cells = page.locator('[data-cell-type="code"]');
-    while ((await cells.count()) < count) {
+    let currentCount = await cells.count();
+    while (currentCount < count) {
+      const expectedCount = currentCount + 1;
       await page.getByTestId("add-code-cell-button").click({ timeout });
       await page.waitForFunction(
         (expected) => document.querySelectorAll('[data-cell-type="code"]').length >= expected,
-        count,
+        expectedCount,
         { timeout },
       );
+      currentCount = await cells.count();
     }
     return cells;
   });
@@ -1109,24 +1112,36 @@ async function fetchJson({
   authKind,
   credential,
 }) {
-  const requestInit = {
-    headers: {
-      ...buildWorkstationAuthHeaders(authKind, credential),
-      "Content-Type": "application/json",
-      "X-Scope": "owner",
-    },
-    method,
-  };
-  if (body) {
-    requestInit.body = JSON.stringify(body);
-  }
+  return smokePhase(`api ${label}`, async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(new Error(`${label} timed out after 15000ms`)),
+      15_000,
+    );
+    try {
+      const requestInit = {
+        headers: {
+          ...buildWorkstationAuthHeaders(authKind, credential),
+          "Content-Type": "application/json",
+          "X-Scope": "owner",
+        },
+        method,
+        signal: controller.signal,
+      };
+      if (body) {
+        requestInit.body = JSON.stringify(body);
+      }
 
-  const response = await fetch(new URL(pathname, baseUrl), requestInit);
-  const payload = await parseHttpResponseBody(response);
-  if (!expectedStatuses.includes(response.status)) {
-    throw new Error(`${label} failed: ${response.status} ${JSON.stringify(payload)}`);
-  }
-  return payload;
+      const response = await fetch(new URL(pathname, baseUrl), requestInit);
+      const payload = await parseHttpResponseBody(response);
+      if (!expectedStatuses.includes(response.status)) {
+        throw new Error(`${label} failed: ${response.status} ${JSON.stringify(payload)}`);
+      }
+      return payload;
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
 }
 
 async function loadOptionalEnvFile() {

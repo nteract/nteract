@@ -301,6 +301,35 @@ fn cloud_frame_rejection_error(payload: &[u8]) -> Option<std::io::Error> {
     ))
 }
 
+fn terminal_cloud_close_error(code: Option<u16>, reason: &str) -> Option<std::io::Error> {
+    let reason = reason.trim();
+    let terminal_by_reason = matches!(
+        reason,
+        "too many rejected frames"
+            | "replaced by newer runtime peer"
+            | "workstation attachment replaced"
+            | "workstation restart requested"
+            | "workstation mismatch"
+    );
+    if !terminal_by_reason {
+        return None;
+    }
+
+    Some(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        format!(
+            "cloud room closed runtime peer: code={} reason={}",
+            code.map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            if reason.is_empty() {
+                "(no reason given)"
+            } else {
+                reason
+            }
+        ),
+    ))
+}
+
 /// Read frames from `source` until the room reaches a terminal ready state,
 /// returning the authenticated principal from `cloud_room_ready`.
 ///
@@ -393,8 +422,25 @@ impl FrameSource for CloudWsSource {
                     // Empty / unknown frame: skip, keep reading.
                     None => continue,
                 },
-                Some(Ok(msg)) if msg.is_close() => {
-                    info!("[cloud-transport] room closed the connection");
+                Some(Ok(WsMessage::Close(frame))) => {
+                    let (code, reason) = match frame {
+                        Some(frame) => (Some(u16::from(frame.code)), frame.reason.to_string()),
+                        None => (None, String::new()),
+                    };
+                    if let Some(error) = terminal_cloud_close_error(code, &reason) {
+                        warn!("[cloud-transport] {error}");
+                        return Some(Err(error));
+                    }
+                    info!(
+                        "[cloud-transport] room closed the connection code={} reason={}",
+                        code.map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        if reason.is_empty() {
+                            "(no reason given)"
+                        } else {
+                            reason.as_str()
+                        }
+                    );
                     return None;
                 }
                 // Ping/pong/text/frame: ignore and keep reading.
@@ -856,6 +902,33 @@ mod tests {
         assert!(error
             .to_string()
             .contains("frame_type=runtime_state_sync reason=rejected"));
+    }
+
+    #[test]
+    fn terminal_cloud_close_error_marks_policy_and_replacement_closes_terminal() {
+        let policy = terminal_cloud_close_error(Some(1008), "too many rejected frames")
+            .expect("policy close should be terminal");
+        assert_eq!(policy.kind(), std::io::ErrorKind::PermissionDenied);
+
+        assert!(terminal_cloud_close_error(Some(1008), "runtime state repair").is_none());
+
+        let replacement = terminal_cloud_close_error(Some(1000), "replaced by newer runtime peer")
+            .expect("replacement reason should be terminal even on normal close code");
+        assert_eq!(replacement.kind(), std::io::ErrorKind::PermissionDenied);
+
+        let restart = terminal_cloud_close_error(Some(1012), "workstation restart requested")
+            .expect("workstation restart close should be terminal for the old peer");
+        assert!(restart
+            .to_string()
+            .contains("workstation restart requested"));
+    }
+
+    #[test]
+    fn terminal_cloud_close_error_keeps_ordinary_clean_closes_recoverable() {
+        assert!(terminal_cloud_close_error(Some(1000), "").is_none());
+        assert!(terminal_cloud_close_error(Some(1001), "going away").is_none());
+        assert!(terminal_cloud_close_error(None, "").is_none());
+        assert!(terminal_cloud_close_error(Some(1012), "server restart").is_none());
     }
 
     #[test]

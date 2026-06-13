@@ -63,6 +63,10 @@ import type { ConnectionScope } from "../src/auth-shared";
 
 import { useCloudViewerSession } from "./cloud-viewer-session";
 import {
+  cloudBlobAuthStateForBrowserFetch,
+  cloudSyncAuthConnectionKey,
+} from "./session-auth-stability";
+import {
   CrdtBridgeProvider,
   createNotebookCellId,
   createNotebookController,
@@ -169,6 +173,14 @@ export function NotebookViewer({
     appSessionLoading: appSessionStatus.status === "loading",
     appSession: appSessionStatus.session,
   });
+  const authStateRef = useRef(authState);
+  useEffect(() => {
+    authStateRef.current = authState;
+  }, [authState]);
+  const appSessionStatusRef = useRef(appSessionStatus);
+  useEffect(() => {
+    appSessionStatusRef.current = appSessionStatus;
+  }, [appSessionStatus]);
   useCloudAppSessionBridge(
     authState,
     appSessionStatus.session,
@@ -199,16 +211,34 @@ export function NotebookViewer({
   const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
     () => cloudNotebookModeFromSearch(window.location.search),
   );
+  // Scope resolution reads the latest selected mode at connect time, but
+  // access-mode correction itself must not rebuild the live-room callback:
+  // viewer-owned `?mode=edit` links are corrected to view mode after access is
+  // known, and making that correction a dependency tears the room down.
+  const selectedInteractionModeRef = useRef(selectedInteractionMode);
+  useEffect(() => {
+    selectedInteractionModeRef.current = selectedInteractionMode;
+  }, [selectedInteractionMode]);
   const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
+  const blobAuthState = useMemo(
+    () => cloudBlobAuthStateForBrowserFetch(authState),
+    [
+      authState.mode,
+      authState.mode === "dev" ? authState.token : null,
+      authState.mode === "dev" ? authState.user : null,
+      authState.mode === "dev" ? authState.requestedScope : null,
+      authState.mode === "dev" ? authState.problem : null,
+    ],
+  );
   const blobResolver = useMemo(
     () =>
       createNotebookCloudBlobResolver({
         baseUrl: location.href,
         blobBasePath: config.blobBasePath,
-        fetchImpl: (input, init) => fetchWithCloudPrototypeAuth(input, init, authState),
+        fetchImpl: (input, init) => fetchWithCloudPrototypeAuth(input, init, blobAuthState),
         authenticatedBinaryDisplayUrls: true,
       }),
-    [authState, config.blobBasePath],
+    [blobAuthState, config.blobBasePath],
   );
   const preloadSiftWasm = useCallback(
     (nextCells: readonly ResolvedCell[]) => {
@@ -221,32 +251,30 @@ export function NotebookViewer({
     },
     [config.blobBasePath, config.rendererAssetsBasePath, config.rendererAssets.siftWasm],
   );
+  const syncAuthConnectionKey = cloudSyncAuthConnectionKey(authState, {
+    hasAppSession: Boolean(appSessionStatus.session),
+  });
   const resolveSyncAuth = useCallback(
     async (sessionId: string) => {
+      const currentAppSessionStatus = appSessionStatusRef.current;
       const appSession =
-        appSessionStatus.session ??
-        (appSessionStatus.status === "loading"
+        currentAppSessionStatus.session ??
+        (currentAppSessionStatus.status === "loading"
           ? ((await readCloudAppSessionStatus().catch(() => null))?.session ?? null)
           : null);
       if (appSession) {
         const requestedScope = await resolveCloudAppSessionSyncScope(
           config.notebookId,
-          selectedInteractionMode,
+          selectedInteractionModeRef.current,
         );
         return cloudSyncAuthFromAppSessionCookie({
           requestedScope,
           sessionId,
         });
       }
-      return cloudSyncAuthFromPrototypeAuthState(authState);
+      return cloudSyncAuthFromPrototypeAuthState(authStateRef.current);
     },
-    [
-      appSessionStatus.session,
-      appSessionStatus.status,
-      authState,
-      config.notebookId,
-      selectedInteractionMode,
-    ],
+    [config.notebookId, syncAuthConnectionKey],
   );
   const {
     connectionActorLabel,
