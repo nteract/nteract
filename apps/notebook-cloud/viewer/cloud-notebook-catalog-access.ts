@@ -13,6 +13,16 @@ export interface CloudNotebookAccessScopeProjectionInput {
   connectionScope: string | null;
 }
 
+export interface CloudNotebookCatalogAccessLoadResult {
+  catalogResolved: boolean;
+  catalogScope: CloudNotebookCatalogAccessScope | null;
+}
+
+export interface CloudNotebookCatalogAccessLoaderOptions {
+  loadNotebooks: () => Promise<readonly unknown[]>;
+  notebookId: string;
+}
+
 export interface CloudNotebookSyncScopeProjectionInput {
   catalogResolved: boolean;
   catalogScope?: CloudNotebookCatalogAccessScope | null;
@@ -30,6 +40,35 @@ export function cloudNotebookCatalogScopeFromList(
     return null;
   }
   return notebook.scope;
+}
+
+export function cloudNotebookCatalogAccessFromList(
+  notebooks: readonly unknown[],
+  notebookId: string,
+): CloudNotebookCatalogAccessLoadResult {
+  return {
+    catalogResolved: true,
+    catalogScope: cloudNotebookCatalogScopeFromList(notebooks, notebookId),
+  };
+}
+
+export function createCloudNotebookCatalogAccessLoader({
+  loadNotebooks,
+  notebookId,
+}: CloudNotebookCatalogAccessLoaderOptions): {
+  load: () => Promise<CloudNotebookCatalogAccessLoadResult>;
+} {
+  let inFlight: Promise<CloudNotebookCatalogAccessLoadResult> | null = null;
+  const load = () => {
+    inFlight ??= loadNotebooks()
+      .then((notebooks) => cloudNotebookCatalogAccessFromList(notebooks, notebookId))
+      .catch((error: unknown) => {
+        inFlight = null;
+        throw error;
+      });
+    return inFlight;
+  };
+  return { load };
 }
 
 export function cloudNotebookAccessScopeForShell({

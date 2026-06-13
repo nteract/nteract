@@ -100,9 +100,10 @@ import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
 import { projectCloudAccessRequestTransition } from "./cloud-access-request-state";
 import {
   cloudNotebookAccessScopeForShell,
-  cloudNotebookCatalogScopeFromList,
   cloudNotebookScopeCanEditDocument,
   cloudNotebookSyncScopeForCatalogAccess,
+  createCloudNotebookCatalogAccessLoader,
+  type CloudNotebookCatalogAccessLoadResult,
   type CloudNotebookCatalogAccessScope,
 } from "./cloud-notebook-catalog-access";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
@@ -141,25 +142,14 @@ function shouldPollPendingCloudAccessRequest(): boolean {
 }
 
 async function resolveCloudAppSessionSyncScope(
-  notebookId: string,
+  loadCatalogAccess: () => Promise<CloudNotebookCatalogAccessLoadResult>,
   selectedMode: NotebookInteractionMode,
 ): Promise<Exclude<ConnectionScope, "runtime_peer">> {
   try {
-    const endpoint = new URL("api/n?limit=100", `${window.location.origin}/`);
-    const response = await fetch(endpoint.href, {
-      cache: "no-store",
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
+    return cloudNotebookSyncScopeForCatalogAccess({
+      ...(await loadCatalogAccess()),
+      selectedMode,
     });
-    if (response.ok) {
-      const body = (await response.json()) as { notebooks?: unknown };
-      const notebooks = Array.isArray(body.notebooks) ? body.notebooks : [];
-      return cloudNotebookSyncScopeForCatalogAccess({
-        catalogResolved: true,
-        catalogScope: cloudNotebookCatalogScopeFromList(notebooks, notebookId),
-        selectedMode,
-      });
-    }
   } catch (error) {
     console.warn("[notebook-cloud] unable to resolve notebook access scope before sync", error);
   }
@@ -247,6 +237,29 @@ export function NotebookViewer({
       authState.mode === "dev" ? authState.problem : null,
     ],
   );
+  const catalogAccessLoader = useMemo(
+    () =>
+      createCloudNotebookCatalogAccessLoader({
+        notebookId: config.notebookId,
+        loadNotebooks: async () => {
+          const endpoint = new URL("api/n?limit=100", `${window.location.origin}/`);
+          const response = await fetchWithCloudPrototypeAuth(
+            endpoint.href,
+            {
+              cache: "no-store",
+              headers: { Accept: "application/json" },
+            },
+            browserApiAuthState,
+          );
+          if (!response.ok) {
+            throw new Error(`Unable to load notebook catalog: ${response.status}`);
+          }
+          const body = (await response.json()) as { notebooks?: unknown };
+          return Array.isArray(body.notebooks) ? body.notebooks : [];
+        },
+      }),
+    [browserApiAuthState, config.notebookId],
+  );
   const blobResolver = useMemo(
     () =>
       createNotebookCloudBlobResolver({
@@ -281,7 +294,7 @@ export function NotebookViewer({
           : null);
       if (appSession) {
         const requestedScope = await resolveCloudAppSessionSyncScope(
-          config.notebookId,
+          catalogAccessLoader.load,
           selectedInteractionModeRef.current,
         );
         return cloudSyncAuthFromAppSessionCookie({
@@ -291,7 +304,7 @@ export function NotebookViewer({
       }
       return cloudSyncAuthFromPrototypeAuthState(authStateRef.current);
     },
-    [config.notebookId, syncAuthConnectionKey],
+    [catalogAccessLoader, config.notebookId, syncAuthConnectionKey],
   );
   const {
     connectionActorLabel,
@@ -449,35 +462,22 @@ export function NotebookViewer({
       return;
     }
 
-    const controller = new AbortController();
+    let cancelled = false;
     void (async () => {
       try {
-        const endpoint = new URL("api/n?limit=100", `${window.location.origin}/`);
-        const response = await fetchWithCloudPrototypeAuth(
-          endpoint.href,
-          {
-            cache: "no-store",
-            headers: { Accept: "application/json" },
-            signal: controller.signal,
-          },
-          browserApiAuthState,
-        );
-        if (controller.signal.aborted || !response.ok) {
-          return;
+        const access = await catalogAccessLoader.load();
+        if (!cancelled) {
+          setCatalogAccessScope(access.catalogScope);
         }
-        const body = (await response.json()) as { notebooks?: unknown };
-        if (controller.signal.aborted) {
-          return;
-        }
-        const notebooks = Array.isArray(body.notebooks) ? body.notebooks : [];
-        setCatalogAccessScope(cloudNotebookCatalogScopeFromList(notebooks, config.notebookId));
       } catch {
         return;
       }
     })();
 
-    return () => controller.abort();
-  }, [browserApiAuthState, canUseAuthenticatedCloudApi, config.notebookId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [canUseAuthenticatedCloudApi, catalogAccessLoader]);
   const catalogGrantsDocumentEdit = cloudNotebookScopeCanEditDocument(catalogAccessScope);
   const cloudRuntimeConnectedForStatus = workstationAttachment
     ? workstationAttachmentIsConnected(workstationAttachment)

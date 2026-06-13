@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   cloudNotebookAccessScopeForShell,
+  cloudNotebookCatalogAccessFromList,
   cloudNotebookCatalogScopeFromList,
   cloudNotebookScopeCanEditDocument,
   cloudNotebookSyncScopeForCatalogAccess,
+  createCloudNotebookCatalogAccessLoader,
 } from "../viewer/cloud-notebook-catalog-access";
 import type { CloudNotebookListItem } from "../viewer/notebook-dashboard";
 
@@ -24,6 +26,64 @@ describe("cloud notebook catalog access projection", () => {
       cloudNotebookCatalogScopeFromList([notebook({ id: "room", scope: "runtime_peer" })], "room"),
       null,
     );
+  });
+
+  it("projects resolved catalog access from the authenticated notebook list", () => {
+    assert.deepEqual(
+      cloudNotebookCatalogAccessFromList(
+        [notebook({ id: "room", scope: "editor" }), notebook({ id: "other", scope: "owner" })],
+        "room",
+      ),
+      {
+        catalogResolved: true,
+        catalogScope: "editor",
+      },
+    );
+  });
+
+  it("coalesces concurrent catalog access loads for one notebook open", async () => {
+    let loadCount = 0;
+    let releaseLoad!: () => void;
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    const loader = createCloudNotebookCatalogAccessLoader({
+      notebookId: "room",
+      loadNotebooks: async () => {
+        loadCount += 1;
+        await loadGate;
+        return [notebook({ id: "room", scope: "owner" })];
+      },
+    });
+
+    const first = loader.load();
+    const second = loader.load();
+    assert.equal(loadCount, 1);
+    releaseLoad();
+
+    assert.deepEqual(await Promise.all([first, second]), [
+      { catalogResolved: true, catalogScope: "owner" },
+      { catalogResolved: true, catalogScope: "owner" },
+    ]);
+    assert.equal(loadCount, 1);
+  });
+
+  it("retries catalog access loads after a failed request", async () => {
+    let loadCount = 0;
+    const loader = createCloudNotebookCatalogAccessLoader({
+      notebookId: "room",
+      loadNotebooks: async () => {
+        loadCount += 1;
+        if (loadCount === 1) {
+          throw new Error("temporary catalog failure");
+        }
+        return [notebook({ id: "room", scope: "viewer" })];
+      },
+    });
+
+    await assert.rejects(loader.load(), /temporary catalog failure/);
+    assert.deepEqual(await loader.load(), { catalogResolved: true, catalogScope: "viewer" });
+    assert.equal(loadCount, 2);
   });
 
   it("uses catalog scope only while the live room scope is not ready", () => {
