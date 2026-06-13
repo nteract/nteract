@@ -554,6 +554,7 @@ struct ActiveJob {
     child: Option<tokio::process::Child>,
     pid: Option<u32>,
     log_path: PathBuf,
+    pid_path: PathBuf,
     ready: bool,
     status: &'static str,
     started_at: Instant,
@@ -879,6 +880,7 @@ async fn start_attach_job(
                     child: Some(child),
                     pid,
                     log_path: plan.log_path,
+                    pid_path: plan.pid_path,
                     ready: false,
                     status: "accepted",
                     started_at: now,
@@ -941,6 +943,7 @@ async fn reconcile_active_attach_job(
                 child: None,
                 pid: Some(pid),
                 log_path: plan.log_path,
+                pid_path: plan.pid_path,
                 ready,
                 status: if ready { "running" } else { "accepted" },
                 started_at: backdated,
@@ -1081,7 +1084,9 @@ async fn tick_active_jobs(
                 success,
                 error_message,
             } => {
-                active.remove(&job_id);
+                if let Some(job) = active.remove(&job_id) {
+                    remove_stale_pid_file(&job.pid_path);
+                }
                 info!(
                     "[workstation-agent] attach job exited job_id={job_id} success={success} error={:?}",
                     error_message
@@ -1125,6 +1130,7 @@ async fn drop_terminal_attach_job(
     }
     let job = active.remove(job_id);
     if let Some(job) = job {
+        remove_stale_pid_file(&job.pid_path);
         terminate_active_job(job).await;
     }
     info!(
@@ -1414,6 +1420,7 @@ mod tests {
             child: None,
             pid: None,
             log_path: PathBuf::from("/tmp/runtime-peer.log"),
+            pid_path: PathBuf::from("/tmp/runtime-peer.pid"),
             ready: true,
             status: "running",
             started_at: Instant::now(),
@@ -1523,6 +1530,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_attach_job_patch_removes_local_pid_file() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let pid_path = tmp.path().join("runtime-peer.pid");
+        std::fs::write(&pid_path, "123\n")?;
+        let mut job = active_job();
+        job.pid_path = pid_path.clone();
+        let mut active = HashMap::from([("job-1".to_string(), job)]);
+        let error = http_error(
+            409,
+            json!({ "error": "workstation attach job is no longer active" }),
+        );
+
+        assert!(drop_terminal_attach_job(&mut active, "job-1", "heartbeat", &error).await);
+        assert!(!pid_path.exists());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn non_terminal_attach_job_patch_keeps_local_active_job() {
         let mut active = HashMap::from([("job-1".to_string(), active_job())]);
         let error = http_error(503, json!({ "error": "temporarily unavailable" }));
@@ -1576,6 +1601,7 @@ mod tests {
             child: Some(child),
             pid: None,
             log_path: tmp.path().join("runtime-peer.log"),
+            pid_path: tmp.path().join("runtime-peer.pid"),
             ready: true,
             status: "running",
             started_at: Instant::now(),
