@@ -21,6 +21,22 @@
       "anthropic/alwaysLoad": true
     },
     "annotations": {
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "List active notebook sessions.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "ListNotebooksParams",
+      "type": "object"
+    },
+    "name": "list_notebooks"
+  },
+  {
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    },
+    "annotations": {
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": true

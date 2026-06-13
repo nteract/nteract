@@ -25,6 +25,7 @@ use runtimed_client::daemon_connection::{DaemonConnection, DaemonEvent};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
 
+use crate::cloud::{self, NotebookTarget};
 use crate::session::{NotebookSession, SessionDropInfo, SessionDropReason};
 use std::collections::HashMap;
 
@@ -131,6 +132,40 @@ fn classify(
     }
 }
 
+/// Clear daemon-disconnect state when a tool-established session made it stale.
+///
+/// Hosted sessions do not depend on the local daemon, so local daemon disconnects
+/// should not stay latched while a hosted session survives. Local sessions still
+/// preserve `was_disconnected` when it came from a lagged event with no saved
+/// target; that path intentionally triggers a continuity rejoin.
+fn clear_stale_disconnect_state_for_active_session(
+    has_session: bool,
+    has_local_session: bool,
+    was_disconnected: &mut bool,
+    disconnect_target: &mut Option<String>,
+) -> bool {
+    if !has_session {
+        return false;
+    }
+
+    let mut cleared = false;
+
+    if disconnect_target.is_some() {
+        *disconnect_target = None;
+        cleared = true;
+        if *was_disconnected {
+            *was_disconnected = false;
+        }
+    }
+
+    if !has_local_session && *was_disconnected {
+        *was_disconnected = false;
+        cleared = true;
+    }
+
+    cleared
+}
+
 /// Run the watch loop to completion. Returns the exit code the caller
 /// should use; 0 means the event stream closed cleanly.
 pub async fn watch(
@@ -172,7 +207,13 @@ pub async fn watch(
             Err(broadcast::error::RecvError::Closed) => return 0,
         };
 
-        let has_session = session.read().await.is_some();
+        let (has_session, has_local_session) = {
+            let guard = session.read().await;
+            (
+                guard.is_some(),
+                guard.as_ref().is_some_and(|session| !session.is_hosted()),
+            )
+        };
 
         // Once a tool call (connect_notebook / create_notebook) has
         // established a live session, the proxy's initial handoff target
@@ -184,19 +225,23 @@ pub async fn watch(
             initial_target = None;
         }
 
-        // If a tool call re-established the session after a disconnect
-        // (e.g. the agent called connect_notebook), clear the stale
-        // disconnect_target so it doesn't override the new session on
-        // the next event.
-        if has_session && disconnect_target.is_some() {
-            info!("Clearing stale disconnect target (session re-established by tool call)");
-            disconnect_target = None;
+        // If a tool call re-established a session after a disconnect, or
+        // a hosted session survived a local daemon disconnect, clear the
+        // stale daemon disconnect state so it cannot trigger a later
+        // continuity rejoin against a healthy tool-selected session.
+        if clear_stale_disconnect_state_for_active_session(
+            has_session,
+            has_local_session,
+            &mut was_disconnected,
+            &mut disconnect_target,
+        ) {
+            info!("Clearing stale daemon disconnect state (session already active)");
         }
 
         match classify(
             &event,
             &initial_target,
-            has_session,
+            has_local_session,
             was_disconnected,
             &disconnect_target,
         ) {
@@ -253,9 +298,13 @@ pub async fn watch(
                 // when the daemon reconnects.
                 let old_session = {
                     let guard = session.read().await;
-                    guard
-                        .as_ref()
-                        .map(|s| (s.notebook_id.clone(), s.notebook_path.clone()))
+                    guard.as_ref().and_then(|s| {
+                        if s.is_hosted() {
+                            None
+                        } else {
+                            Some((s.notebook_id.clone(), s.notebook_path.clone()))
+                        }
+                    })
                 };
                 if let Some((notebook_id, notebook_path)) = old_session {
                     info!(
@@ -269,22 +318,23 @@ pub async fn watch(
                     *last_session_drop.write().await = Some(SessionDropInfo {
                         reason: SessionDropReason::Disconnected,
                         notebook_id,
-                        notebook_path,
+                        notebook_path: notebook_path.clone(),
+                        rejoin_target: disconnect_target.clone(),
                     });
                     *session.write().await = None;
                 }
-                // Also clear parked sessions — their DocHandles are dead
-                // too. Without this, tool calls that try to resume a parked
-                // session after daemon reconnect would hang on the stale
-                // handle.
+                // Also clear parked local sessions — their DocHandles are dead
+                // too. Hosted parked sessions do not depend on this daemon.
                 {
-                    let parked = std::mem::take(&mut *parked_sessions.write().await);
-                    if !parked.is_empty() {
+                    let mut parked = parked_sessions.write().await;
+                    let before = parked.len();
+                    parked.retain(|_, session| session.is_hosted());
+                    let removed = before.saturating_sub(parked.len());
+                    if removed > 0 {
                         info!(
-                            "Clearing {} parked session(s) on daemon disconnect",
-                            parked.len()
+                            "Clearing {} parked local session(s) on daemon disconnect",
+                            removed
                         );
-                        drop(parked);
                     }
                 }
             }
@@ -328,6 +378,32 @@ async fn rejoin(
     last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
     override_target: Option<String>,
 ) -> bool {
+    if let Some(target) = override_target.as_deref() {
+        match cloud::parse_connect_target(Some(target), None, None, None) {
+            Ok(NotebookTarget::Hosted {
+                domain,
+                notebook_id,
+                ..
+            }) => {
+                return rejoin_hosted(session, peer_label, last_session_drop, domain, notebook_id)
+                    .await;
+            }
+            Ok(NotebookTarget::LocalPath(_)) | Ok(NotebookTarget::LocalNotebookId(_)) => {}
+            Err(e) if target.starts_with("http://") || target.starts_with("https://") => {
+                warn!("Hosted rejoin target is invalid: {e}");
+                *last_session_drop.write().await = Some(SessionDropInfo {
+                    reason: SessionDropReason::Disconnected,
+                    notebook_id: target.to_string(),
+                    notebook_path: None,
+                    rejoin_target: Some(target.to_string()),
+                });
+                *session.write().await = None;
+                return false;
+            }
+            Err(_) => {}
+        }
+    }
+
     let (notebook_id, notebook_path) = match override_target {
         Some(target) if looks_like_uuid(&target) => (target, None),
         Some(target) => {
@@ -365,6 +441,9 @@ async fn rejoin(
                         reason: SessionDropReason::Evicted,
                         notebook_id: notebook_id.clone(),
                         notebook_path: notebook_path.clone(),
+                        rejoin_target: Some(
+                            notebook_path.clone().unwrap_or_else(|| notebook_id.clone()),
+                        ),
                     });
                     *session.write().await = None;
                     return true; // Session cleared intentionally
@@ -457,12 +536,12 @@ async fn rejoin(
                     }
                 }
 
-                let new_session = NotebookSession {
+                let new_session = NotebookSession::local(
                     handle,
                     broadcast_rx,
-                    notebook_id: new_notebook_id,
-                    notebook_path: notebook_path.clone(),
-                };
+                    new_notebook_id,
+                    notebook_path.clone(),
+                );
                 *session.write().await = Some(new_session);
                 info!("Rejoined notebook session ({new_cell_count} cells)");
                 return true;
@@ -483,6 +562,9 @@ async fn rejoin(
                         reason: SessionDropReason::Disconnected,
                         notebook_id: notebook_id.clone(),
                         notebook_path: notebook_path.clone(),
+                        rejoin_target: Some(
+                            notebook_path.clone().unwrap_or_else(|| notebook_id.clone()),
+                        ),
                     });
                     *session.write().await = None;
                 }
@@ -491,6 +573,94 @@ async fn rejoin(
     }
 
     false // All retries exhausted
+}
+
+async fn rejoin_hosted(
+    session: &Arc<RwLock<Option<NotebookSession>>>,
+    peer_label: &Arc<RwLock<String>>,
+    last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
+    domain: String,
+    notebook_id: String,
+) -> bool {
+    let target = cloud::hosted_notebook_url(&domain, &notebook_id);
+    let registry = match cloud::CloudRegistry::load_default() {
+        Ok(Some(registry)) => registry,
+        Ok(None) => {
+            warn!(
+                "Cannot rejoin hosted notebook: no cloud registry at {}",
+                cloud::registry_path().display()
+            );
+            return false;
+        }
+        Err(e) => {
+            warn!("Cannot rejoin hosted notebook: {e}");
+            return false;
+        }
+    };
+    let domain_config = match registry.domain(&domain) {
+        Ok(Some(domain_config)) => domain_config,
+        Ok(None) => {
+            warn!("Cannot rejoin hosted notebook: domain {domain} is not configured");
+            return false;
+        }
+        Err(e) => {
+            warn!("Cannot rejoin hosted notebook: {e}");
+            return false;
+        }
+    };
+
+    for attempt in 0..=REJOIN_MAX_RETRIES {
+        match cloud::connect_hosted_notebook(&domain_config, &notebook_id).await {
+            Ok(result) => {
+                let label = peer_label.read().await.clone();
+                crate::presence::announce(&result.handle, &label).await;
+
+                {
+                    let guard = session.read().await;
+                    if let Some(existing) = guard.as_ref() {
+                        if existing.session_key() != target {
+                            info!(
+                                "Hosted rejoin target {target} superseded by active session {}; \
+                                 dropping rejoined connection",
+                                existing.session_key()
+                            );
+                            return true;
+                        }
+                    }
+                }
+
+                *session.write().await = Some(NotebookSession::hosted(
+                    result.handle,
+                    result.broadcast_rx,
+                    notebook_id.clone(),
+                    domain_config.base_url.clone(),
+                ));
+                info!("Rejoined hosted notebook session {target}");
+                return true;
+            }
+            Err(e) => {
+                if attempt < REJOIN_MAX_RETRIES {
+                    warn!(
+                        "Hosted rejoin attempt {} failed (retrying in {}s): {e}",
+                        attempt + 1,
+                        REJOIN_RETRY_DELAY.as_secs()
+                    );
+                    tokio::time::sleep(REJOIN_RETRY_DELAY).await;
+                } else {
+                    warn!("Hosted rejoin exhausted retries: {e}");
+                    *last_session_drop.write().await = Some(SessionDropInfo {
+                        reason: SessionDropReason::Disconnected,
+                        notebook_id: notebook_id.clone(),
+                        notebook_path: None,
+                        rejoin_target: Some(target.clone()),
+                    });
+                    *session.write().await = None;
+                }
+            }
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -853,6 +1023,69 @@ mod tests {
             classify(&connected, &initial, true, false, &disconnect),
             WatchDecision::NoOp,
             "cleared disconnect target must not trigger rejoin"
+        );
+    }
+
+    #[test]
+    fn hosted_session_clears_stale_daemon_disconnect_state() {
+        let connected = DaemonEvent::Connected {
+            info: info_with("1.0.0", 100),
+        };
+        let initial = None;
+        let mut was_disconnected = true;
+        let mut disconnect_target = Some("550e8400-e29b-41d4-a716-446655440000".to_string());
+
+        assert!(clear_stale_disconnect_state_for_active_session(
+            true,
+            false,
+            &mut was_disconnected,
+            &mut disconnect_target,
+        ));
+        assert!(!was_disconnected);
+        assert_eq!(disconnect_target, None);
+
+        // If the user later opens a local notebook, the old daemon
+        // disconnect must not force a continuity rejoin that replaces the
+        // healthy tool-selected local peer.
+        assert_eq!(
+            classify(
+                &connected,
+                &initial,
+                true,
+                was_disconnected,
+                &disconnect_target
+            ),
+            WatchDecision::NoOp
+        );
+    }
+
+    #[test]
+    fn local_session_with_disconnect_target_clears_rejoin_latch() {
+        let connected = DaemonEvent::Connected {
+            info: info_with("1.0.0", 100),
+        };
+        let initial = None;
+        let mut was_disconnected = true;
+        let mut disconnect_target = Some("/tmp/previous.ipynb".to_string());
+
+        assert!(clear_stale_disconnect_state_for_active_session(
+            true,
+            true,
+            &mut was_disconnected,
+            &mut disconnect_target,
+        ));
+        assert!(!was_disconnected);
+        assert_eq!(disconnect_target, None);
+
+        assert_eq!(
+            classify(
+                &connected,
+                &initial,
+                true,
+                was_disconnected,
+                &disconnect_target
+            ),
+            WatchDecision::NoOp
         );
     }
 }

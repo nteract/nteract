@@ -27,7 +27,7 @@ use log::{debug, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use notebook_protocol::connection::{self, NotebookFrameType};
+use notebook_protocol::connection::{self, FrameSink, FrameSource, NotebookFrameType};
 use notebook_protocol::protocol::{
     NotebookBroadcast, NotebookRequest, NotebookRequestEnvelope, NotebookResponse,
     NotebookResponseEnvelope, SessionControlMessage, SessionSyncStatusWire,
@@ -117,6 +117,16 @@ pub struct SyncTaskConfig {
 
     /// Broadcast sender for kernel/execution events from the daemon.
     pub broadcast_tx: broadcast::Sender<NotebookBroadcast>,
+}
+
+struct LengthPrefixedFrameSource {
+    reader: connection::FramedReader,
+}
+
+impl FrameSource for LengthPrefixedFrameSource {
+    async fn recv_frame(&mut self) -> Option<std::io::Result<connection::TypedNotebookFrame>> {
+        self.reader.recv().await
+    }
 }
 
 struct PendingRequest {
@@ -215,7 +225,7 @@ impl SyncReactor {
 pub async fn run<R, W>(config: SyncTaskConfig, reader: R, writer: W)
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send,
 {
     // Hand the read half to a dedicated FramedReader actor so the
     // busy `select!` stays cancel-safe. `recv_typed_frame`'s internal
@@ -223,9 +233,25 @@ where
     // the exact failure mode that desyncs the wire under stream-output
     // pressure.
     let buffered = tokio::io::BufReader::new(reader);
-    let mut framed_reader = connection::FramedReader::spawn(buffered, 64);
-    let mut writer = tokio::io::BufWriter::new(writer);
+    let frame_source = LengthPrefixedFrameSource {
+        reader: connection::FramedReader::spawn(buffered, 64),
+    };
+    let frame_sink = connection::WriterFrameSink::new(tokio::io::BufWriter::new(writer));
 
+    run_with_frame_io(config, frame_source, frame_sink).await;
+}
+
+/// Run the sync task over already-established typed-frame source/sink halves.
+///
+/// Local daemon connections call [`run`], which wraps an `AsyncRead` /
+/// `AsyncWrite` pair in length-prefixed frame adapters. Hosted cloud
+/// connections use this entry point directly because their WebSocket transport
+/// already yields raw typed-frame halves.
+pub async fn run_with_frame_io<S, W>(config: SyncTaskConfig, mut frame_source: S, mut frame_sink: W)
+where
+    S: FrameSource,
+    W: FrameSink,
+{
     let SyncTaskConfig {
         doc,
         mut changed_rx,
@@ -263,7 +289,7 @@ where
             _ = heartbeat.tick() => SelectResult::Heartbeat,
 
             // Incoming frame from daemon (cancel-safe: actor owns read_exact)
-            frame = framed_reader.recv() => SelectResult::Frame(frame),
+            frame = frame_source.recv_frame() => SelectResult::Frame(frame),
 
             // Local document was mutated by a handle
             result = changed_rx.recv() => SelectResult::Changed(result),
@@ -278,7 +304,7 @@ where
             // ─── Incoming frame from daemon ────────────────────────────────
             SelectResult::Frame(frame_result) => match frame_result {
                 Some(Ok(frame)) => {
-                    if let Err(e) = reactor.on_frame(&frame, &mut writer).await {
+                    if let Err(e) = reactor.on_frame(&frame, &mut frame_sink).await {
                         warn!(
                             "[notebook-sync] Failed to continue confirm_sync for {}: {}",
                             reactor.io.notebook_id, e
@@ -307,7 +333,7 @@ where
                 // Drain any additional notifications (coalesce multiple mutations)
                 while changed_rx.try_recv().is_ok() {}
 
-                if let Err(e) = reactor.on_changed(&mut writer).await {
+                if let Err(e) = reactor.on_changed(&mut frame_sink).await {
                     warn!(
                         "[notebook-sync] Failed to send sync message for {}: {}",
                         reactor.io.notebook_id, e
@@ -335,11 +361,11 @@ where
                     break;
                 };
 
-                reactor.on_command(cmd, &mut writer).await;
+                reactor.on_command(cmd, &mut frame_sink).await;
             }
 
             SelectResult::Maintenance => {
-                if let Err(e) = reactor.on_maintenance(&mut writer).await {
+                if let Err(e) = reactor.on_maintenance(&mut frame_sink).await {
                     warn!(
                         "[notebook-sync] Failed to retry confirm_sync for {}: {}",
                         reactor.io.notebook_id, e
@@ -349,7 +375,7 @@ where
             }
 
             SelectResult::Heartbeat => {
-                if let Err(e) = send_client_heartbeat(&mut writer).await {
+                if let Err(e) = send_client_heartbeat(&mut frame_sink).await {
                     warn!(
                         "[notebook-sync] Failed to send heartbeat for {}: {}",
                         reactor.io.notebook_id, e
@@ -369,10 +395,11 @@ where
     );
 }
 
-async fn send_client_heartbeat<W: AsyncWrite + Unpin>(writer: &mut W) -> Result<(), SyncError> {
+async fn send_client_heartbeat<W: FrameSink>(writer: &mut W) -> Result<(), SyncError> {
     let payload = notebook_doc::presence::encode_heartbeat("local")
         .map_err(|e| SyncError::Protocol(format!("encode heartbeat: {e}")))?;
-    connection::send_typed_frame(writer, NotebookFrameType::Presence, &payload)
+    writer
+        .send_frame(NotebookFrameType::Presence, &payload)
         .await
         .map_err(SyncError::Io)
 }
@@ -382,7 +409,7 @@ async fn send_client_heartbeat<W: AsyncWrite + Unpin>(writer: &mut W) -> Result<
 // =========================================================================
 
 impl SyncReactor {
-    async fn on_frame<W: AsyncWrite + Unpin>(
+    async fn on_frame<W: FrameSink>(
         &mut self,
         frame: &connection::TypedNotebookFrame,
         writer: &mut W,
@@ -398,7 +425,7 @@ impl SyncReactor {
         Ok(())
     }
 
-    async fn on_changed<W: AsyncWrite + Unpin>(&mut self, writer: &mut W) -> Result<(), SyncError> {
+    async fn on_changed<W: FrameSink>(&mut self, writer: &mut W) -> Result<(), SyncError> {
         if let Some(generation) = self.send_doc_sync_round(writer).await? {
             mark_unsent_confirm_waiters(&mut self.state.confirm_waiters, generation);
         }
@@ -406,7 +433,7 @@ impl SyncReactor {
         Ok(())
     }
 
-    async fn on_command<W: AsyncWrite + Unpin>(&mut self, cmd: SyncCommand, writer: &mut W) {
+    async fn on_command<W: FrameSink>(&mut self, cmd: SyncCommand, writer: &mut W) {
         match cmd {
             SyncCommand::SendRequest {
                 request,
@@ -459,19 +486,16 @@ impl SyncReactor {
             }
 
             SyncCommand::SendPresence { data, reply } => {
-                let result =
-                    connection::send_typed_frame(writer, NotebookFrameType::Presence, &data)
-                        .await
-                        .map_err(SyncError::Io);
+                let result = writer
+                    .send_frame(NotebookFrameType::Presence, &data)
+                    .await
+                    .map_err(SyncError::Io);
                 let _ = reply.send(result);
             }
         }
     }
 
-    async fn on_maintenance<W: AsyncWrite + Unpin>(
-        &mut self,
-        writer: &mut W,
-    ) -> Result<(), SyncError> {
+    async fn on_maintenance<W: FrameSink>(&mut self, writer: &mut W) -> Result<(), SyncError> {
         self.resolve_confirm_waiters();
         if !self.state.confirm_waiters.is_empty()
             && Instant::now() >= self.state.next_confirm_sync_attempt
@@ -483,7 +507,7 @@ impl SyncReactor {
         Ok(())
     }
 
-    async fn send_doc_sync_round<W: AsyncWrite + Unpin>(
+    async fn send_doc_sync_round<W: FrameSink>(
         &mut self,
         writer: &mut W,
     ) -> Result<Option<u64>, SyncError> {
@@ -496,7 +520,7 @@ impl SyncReactor {
     }
 
     /// Handle an incoming typed frame from the daemon.
-    async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
+    async fn handle_incoming_frame<W: FrameSink>(
         &mut self,
         frame: &connection::TypedNotebookFrame,
         writer: &mut W,
@@ -563,12 +587,9 @@ impl SyncReactor {
 
                 // Send ack if needed (outside the lock — never hold across I/O)
                 if let Some(bytes) = ack_bytes {
-                    if let Err(e) = connection::send_typed_frame(
-                        writer,
-                        NotebookFrameType::AutomergeSync,
-                        &bytes,
-                    )
-                    .await
+                    if let Err(e) = writer
+                        .send_frame(NotebookFrameType::AutomergeSync, &bytes)
+                        .await
                     {
                         warn!(
                             "[notebook-sync] Failed to send sync ack for {}: {}",
@@ -742,12 +763,9 @@ impl SyncReactor {
                 let _ = self.io.runtime_state_tx.send(runtime_state);
 
                 if let Some(bytes) = reply_bytes {
-                    if let Err(e) = connection::send_typed_frame(
-                        writer,
-                        NotebookFrameType::RuntimeStateSync,
-                        &bytes,
-                    )
-                    .await
+                    if let Err(e) = writer
+                        .send_frame(NotebookFrameType::RuntimeStateSync, &bytes)
+                        .await
                     {
                         warn!(
                             "[notebook-sync] Failed to send RuntimeStateSync reply for {}: {}",
@@ -813,12 +831,9 @@ impl SyncReactor {
                 };
 
                 if let Some(bytes) = reply_bytes {
-                    if let Err(e) = connection::send_typed_frame(
-                        writer,
-                        NotebookFrameType::CommsDocSync,
-                        &bytes,
-                    )
-                    .await
+                    if let Err(e) = writer
+                        .send_frame(NotebookFrameType::CommsDocSync, &bytes)
+                        .await
                     {
                         warn!(
                             "[notebook-sync] Failed to send CommsDocSync reply for {}: {}",
@@ -869,7 +884,7 @@ impl SyncReactor {
         }
     }
 
-    async fn register_request<W: AsyncWrite + Unpin>(
+    async fn register_request<W: FrameSink>(
         &mut self,
         writer: &mut W,
         request: NotebookRequest,
@@ -904,8 +919,9 @@ impl SyncReactor {
             },
         );
 
-        if let Err(e) =
-            connection::send_typed_frame(writer, NotebookFrameType::Request, &payload).await
+        if let Err(e) = writer
+            .send_frame(NotebookFrameType::Request, &payload)
+            .await
         {
             if let Some(entry) = self.state.pending_requests.remove(&id) {
                 let _ = entry.reply.send(Err(SyncError::Io(e)));
@@ -913,7 +929,7 @@ impl SyncReactor {
         }
     }
 
-    async fn handle_task_frame<W: AsyncWrite + Unpin>(
+    async fn handle_task_frame<W: FrameSink>(
         &mut self,
         frame: &connection::TypedNotebookFrame,
         writer: &mut W,
@@ -1012,7 +1028,7 @@ impl SyncReactor {
         self.state.confirm_waiters = pending;
     }
 
-    async fn drive_confirm_sync_round<W: AsyncWrite + Unpin>(
+    async fn drive_confirm_sync_round<W: FrameSink>(
         &mut self,
         writer: &mut W,
     ) -> Result<(), SyncError> {
@@ -1093,7 +1109,7 @@ impl SyncReactor {
     }
 }
 
-async fn send_doc_sync_message<W: AsyncWrite + Unpin>(
+async fn send_doc_sync_message<W: FrameSink>(
     doc: &Arc<Mutex<SharedDocState>>,
     writer: &mut W,
 ) -> Result<bool, SyncError> {
@@ -1106,7 +1122,8 @@ async fn send_doc_sync_message<W: AsyncWrite + Unpin>(
     };
 
     if let Some(bytes) = msg_bytes {
-        connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &bytes)
+        writer
+            .send_frame(NotebookFrameType::AutomergeSync, &bytes)
             .await
             .map_err(SyncError::Io)?;
         return Ok(true);
@@ -1123,7 +1140,7 @@ fn mark_unsent_confirm_waiters(waiters: &mut [ConfirmWaiter], generation: u64) {
     }
 }
 
-async fn send_state_sync_message<W: AsyncWrite + Unpin>(
+async fn send_state_sync_message<W: FrameSink>(
     doc: &Arc<Mutex<SharedDocState>>,
     writer: &mut W,
 ) -> Result<(), SyncError> {
@@ -1136,7 +1153,8 @@ async fn send_state_sync_message<W: AsyncWrite + Unpin>(
     };
 
     if let Some(bytes) = msg_bytes {
-        connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &bytes)
+        writer
+            .send_frame(NotebookFrameType::RuntimeStateSync, &bytes)
             .await
             .map_err(SyncError::Io)?;
     }
@@ -1144,7 +1162,7 @@ async fn send_state_sync_message<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-async fn send_comms_sync_message<W: AsyncWrite + Unpin>(
+async fn send_comms_sync_message<W: FrameSink>(
     doc: &Arc<Mutex<SharedDocState>>,
     writer: &mut W,
 ) -> Result<(), SyncError> {
@@ -1157,7 +1175,8 @@ async fn send_comms_sync_message<W: AsyncWrite + Unpin>(
     };
 
     if let Some(bytes) = msg_bytes {
-        connection::send_typed_frame(writer, NotebookFrameType::CommsDocSync, &bytes)
+        writer
+            .send_frame(NotebookFrameType::CommsDocSync, &bytes)
             .await
             .map_err(SyncError::Io)?;
     }
@@ -1338,7 +1357,7 @@ mod tests {
             .expect("select loop exists")..];
         let biased = select.find("biased;").expect("select loop stays biased");
         let frame = select
-            .find("frame = framed_reader.recv()")
+            .find("frame = frame_source.recv_frame()")
             .expect("frame arm exists");
         let changed = select
             .find("result = changed_rx.recv()")
@@ -1527,7 +1546,7 @@ mod tests {
             .generate_sync_message()
             .expect("daemon should generate notebook sync message");
         let (client_reply_writer, daemon_reply_reader) = tokio::io::duplex(4096);
-        let mut writer = client_reply_writer;
+        let mut writer = connection::WriterFrameSink::new(client_reply_writer);
         let mut reply_reader =
             connection::FramedReader::spawn(BufReader::new(daemon_reply_reader), 16);
         let frame = connection::TypedNotebookFrame {
@@ -1571,7 +1590,7 @@ mod tests {
             .create_execution_with_source("exec-1", "x = 1", 1)
             .expect("daemon creates queued execution");
         let (client_reply_writer, daemon_reply_reader) = tokio::io::duplex(4096);
-        let mut writer = client_reply_writer;
+        let mut writer = connection::WriterFrameSink::new(client_reply_writer);
         let mut reply_reader =
             connection::FramedReader::spawn(BufReader::new(daemon_reply_reader), 16);
 
