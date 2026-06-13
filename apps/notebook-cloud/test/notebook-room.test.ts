@@ -1090,6 +1090,67 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.equal(await state.getAlarm(), null, "intentional replacement does not arm stale repair");
   });
 
+  it("disconnects anonymous viewers when public link access is revoked", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const harness = roomHarness(room);
+    const anonymousSocket = new FakeSocket();
+    const signedInViewerSocket = new FakeSocket();
+    const ownerSocket = new FakeSocket();
+    const anonymousPeer = {
+      id: "anonymous-viewer",
+      socket: anonymousSocket.asCloudflareWebSocket(),
+      identity: authenticateAnonymousViewer(
+        new Request("https://cloud.test/n/demo/sync?viewer_session=anon-a"),
+      ),
+      connectedAt: "2026-06-07T00:00:00.000Z",
+    };
+    const signedInViewerPeer = {
+      id: "signed-in-viewer",
+      socket: signedInViewerSocket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=bob&operator=browser:b&scope=viewer"),
+      ),
+      connectedAt: "2026-06-07T00:00:01.000Z",
+    };
+    const ownerPeer = {
+      id: "owner",
+      socket: ownerSocket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+      ),
+      connectedAt: "2026-06-07T00:00:02.000Z",
+    };
+    harness.peers.set(anonymousPeer.id, anonymousPeer);
+    harness.peers.set(signedInViewerPeer.id, signedInViewerPeer);
+    harness.peers.set(ownerPeer.id, ownerPeer);
+    harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+
+    const response = await room.fetch(
+      new Request("https://room.internal/internal/n/demo/access-revocation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          close_anonymous_viewers: true,
+          close_reason: "public link access revoked",
+        }),
+      }),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      closed_anonymous_viewers: 1,
+    });
+    assert.equal(anonymousSocket.closed, true);
+    assert.equal(anonymousSocket.closeCode, 1008);
+    assert.equal(anonymousSocket.closeReason, "public link access revoked");
+    assert.equal(signedInViewerSocket.closed, false);
+    assert.equal(ownerSocket.closed, false);
+    assert.equal(harness.peers.has(anonymousPeer.id), false);
+    assert.equal(harness.peers.has(signedInViewerPeer.id), true);
+    assert.equal(harness.peers.has(ownerPeer.id), true);
+  });
+
   it("keeps runtime peers when replacement workstation attachment publish fails", async () => {
     const state = alarmCapableState();
     const room = new NotebookRoom(state.state, {} as Env);

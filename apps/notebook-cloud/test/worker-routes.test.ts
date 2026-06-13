@@ -3407,6 +3407,57 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("closes anonymous live viewers when public link access is revoked", async () => {
+    const roomRequests: Request[] = [];
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            roomRequests.push(request.clone());
+            return Response.json({ ok: true, closed_anonymous_viewers: 1 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "public-revoke-demo");
+    seedAcl(env, {
+      notebookId: "public-revoke-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "public-revoke-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+
+    const response = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "public",
+        subject: "anonymous",
+        scope: "viewer",
+      },
+      "public-revoke-demo",
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(roomRequests.length, 1);
+    const roomRequest = roomRequests[0];
+    assert.ok(roomRequest);
+    assert.equal(
+      new URL(roomRequest.url).pathname,
+      "/internal/n/public-revoke-demo/access-revocation",
+    );
+    assert.deepEqual(await roomRequest.json(), {
+      close_anonymous_viewers: true,
+      close_reason: "public link access revoked",
+    });
+  });
+
   it("keeps ACL management owner-only and public grants viewer-only", async () => {
     const env = fakeEnv();
     seedNotebook(env, "acl-private-demo");
