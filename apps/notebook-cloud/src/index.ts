@@ -136,7 +136,7 @@ import {
 import {
   isLoopbackHostname,
   isLoopbackWorkerRequest,
-  trustsLoopbackClientIpHeader,
+  trustsLoopbackRequestHeaders,
 } from "./loopback.ts";
 
 export { NotebookRoom };
@@ -817,9 +817,9 @@ function trustedLoopbackBrowserOrigin(request: Request, env?: Env): string | nul
   );
 }
 
-function loopbackRequestOptions(env?: Env): { trustClientIp?: boolean } {
+function loopbackRequestOptions(env?: Env): { trustHeaders?: boolean } {
   return {
-    trustClientIp: trustsLoopbackClientIpHeader(env?.NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP),
+    trustHeaders: trustsLoopbackRequestHeaders(env?.NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS),
   };
 }
 

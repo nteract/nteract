@@ -213,7 +213,7 @@ describe("dev identity", () => {
     assert.equal(identity.actorLabel, "user:dev:alice/desktop:a");
   });
 
-  it("rejects loopback client IP headers unless local dev explicitly trusts them", () => {
+  it("rejects loopback request headers unless local dev explicitly trusts them", () => {
     assert.throws(
       () =>
         authenticateRequest(
@@ -235,7 +235,7 @@ describe("dev identity", () => {
           "CF-Connecting-IP": "127.0.0.1",
         },
       }),
-      { DEPLOYMENT_ENV: "prototype", NOTEBOOK_CLOUD_TRUST_LOOPBACK_CLIENT_IP: "true" },
+      { DEPLOYMENT_ENV: "prototype", NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS: "true" },
     );
 
     assert.equal(identity.actorLabel, "user:dev:alice/desktop:a");
