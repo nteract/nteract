@@ -81,6 +81,7 @@ import { collectBlobRefs } from "./blob-refs.ts";
 import { cloudLog, durationMs } from "./observability.ts";
 import {
   createPendingNotebookInvite,
+  getPrincipalProfile,
   getPrincipalProfiles,
   listNotebookInvites,
   resolveNotebookInvitesForLogin,
@@ -716,6 +717,7 @@ async function appSessionIdentityFromWebSocketRequest(
     return json({ error: error instanceof Error ? error.message : String(error) }, 400);
   }
 
+  await syncStoredAppSessionProfile(env, session);
   const identity = appSessionConnectionIdentity(session, operator, requestedScope);
   const webSocketProtocol = applicationWebSocketProtocolFromHeader(
     request.headers.get("Sec-WebSocket-Protocol"),
@@ -1116,6 +1118,7 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
   }
 
   let principal: string | null = null;
+  let appSession: CloudAppSession | null = null;
   const identity = await authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
@@ -1123,10 +1126,14 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
   if (!isAnonymousViewer(identity)) {
     principal = identity.principal;
   } else {
-    principal = (await readCloudAppSession(env, request))?.principal ?? null;
+    appSession = await readCloudAppSession(env, request);
+    principal = appSession?.principal ?? null;
   }
   if (!principal) {
     return json({ error: "sign in to list notebooks" }, 401);
+  }
+  if (appSession) {
+    await syncStoredAppSessionProfile(env, appSession);
   }
 
   const notebooks = await listNotebooksForPrincipal(env, principal, limit);
@@ -4029,16 +4036,11 @@ async function syncAuthenticatedProfile(
           ? Boolean(identity.metadata.email)
           : identity.metadata.emailVerified === true,
     });
-    if (resolution.acceptedInvites.length === 0 && resolution.aclGrants.length === 0) {
-      return;
-    }
-    cloudLog("info", "invites.resolution.completed", {
+    logInviteResolutionCompleted({
       principal: identity.principal,
       provider: identity.metadata.provider,
-      accepted_invite_count: resolution.acceptedInvites.length,
-      acl_grant_count: resolution.aclGrants.length,
-      counter: "invite_resolutions",
-      counter_delta: resolution.acceptedInvites.length,
+      acceptedInviteCount: resolution.acceptedInvites.length,
+      aclGrantCount: resolution.aclGrants.length,
     });
   } catch (error) {
     cloudLog("warn", "profile.sync.failed", {
@@ -4049,6 +4051,72 @@ async function syncAuthenticatedProfile(
       counter_delta: 1,
     });
   }
+}
+
+async function syncStoredAppSessionProfile(env: Env, session: CloudAppSession): Promise<void> {
+  if (!env.DB) {
+    return;
+  }
+
+  try {
+    const profile = await getPrincipalProfile(env, session.principal);
+    if (
+      !profile ||
+      profile.provider !== session.provider ||
+      profile.email_verified !== 1 ||
+      !profile.email_normalized
+    ) {
+      return;
+    }
+
+    const resolution = await resolveNotebookInvitesForLogin(env, {
+      principal: session.principal,
+      provider: profile.provider,
+      principalNamespace: session.principalNamespace,
+      email: profile.email_normalized,
+      emailVerified: true,
+      displayName: session.displayName ?? profile.display_name,
+    });
+    logInviteResolutionCompleted({
+      principal: session.principal,
+      provider: profile.provider,
+      acceptedInviteCount: resolution.acceptedInvites.length,
+      aclGrantCount: resolution.aclGrants.length,
+    });
+  } catch (error) {
+    cloudLog("warn", "profile.sync.failed", {
+      principal: session.principal,
+      provider: session.provider,
+      reason: error instanceof Error ? error.message : String(error),
+      counter: "profile_sync_failures",
+      counter_delta: 1,
+    });
+  }
+}
+
+function logInviteResolutionCompleted({
+  principal,
+  provider,
+  acceptedInviteCount,
+  aclGrantCount,
+}: {
+  principal: string;
+  provider: string;
+  acceptedInviteCount: number;
+  aclGrantCount: number;
+}): void {
+  if (acceptedInviteCount === 0 && aclGrantCount === 0) {
+    return;
+  }
+
+  cloudLog("info", "invites.resolution.completed", {
+    principal,
+    provider,
+    accepted_invite_count: acceptedInviteCount,
+    acl_grant_count: aclGrantCount,
+    counter: "invite_resolutions",
+    counter_delta: acceptedInviteCount,
+  });
 }
 
 async function authenticateRequestOrAppSessionOrResponse(
@@ -4065,6 +4133,7 @@ async function authenticateRequestOrAppSessionOrResponse(
   if (!session) {
     return identity;
   }
+  await syncStoredAppSessionProfile(env, session);
   return appSessionConnectionIdentity(session, "browser:http", appSessionScope);
 }
 
@@ -4468,6 +4537,7 @@ async function notebookListBootstrap(
   if (!session) {
     return null;
   }
+  await syncStoredAppSessionProfile(env, session);
   const notebooks = await listNotebooksForPrincipal(
     env,
     session.principal,
