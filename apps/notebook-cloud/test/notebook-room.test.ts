@@ -1574,6 +1574,91 @@ describe("NotebookRoom materialized sync routing", () => {
     );
   });
 
+  it("forwards runtime-agent command REQUEST frames only to the selected runtime session", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const ownerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const selectedRuntimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:selected&scope=runtime_peer",
+      ),
+    );
+    const staleRuntimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:stale&scope=runtime_peer",
+      ),
+    );
+    const ownerSocket = new FakeSocket();
+    const selectedRuntimeSocket = new FakeSocket();
+    const staleRuntimeSocket = new FakeSocket();
+    const ownerPeer = {
+      id: "owner",
+      socket: ownerSocket.asCloudflareWebSocket(),
+      identity: ownerIdentity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const selectedRuntimePeer = {
+      id: "runtime-selected",
+      socket: selectedRuntimeSocket.asCloudflareWebSocket(),
+      identity: selectedRuntimeIdentity,
+      connectedAt: "2026-05-22T00:00:01.000Z",
+      workstation: { workstationId: "ws-lab2", runtimeSessionId: "job-selected" },
+      consecutiveRejectedFrames: 0,
+    };
+    const staleRuntimePeer = {
+      id: "runtime-stale",
+      socket: staleRuntimeSocket.asCloudflareWebSocket(),
+      identity: staleRuntimeIdentity,
+      connectedAt: "2026-05-22T00:00:02.000Z",
+      workstation: { workstationId: "ws-lab2", runtimeSessionId: "job-stale" },
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(ownerPeer.id, ownerPeer);
+    harness.peers.set(selectedRuntimePeer.id, selectedRuntimePeer);
+    harness.peers.set(staleRuntimePeer.id, staleRuntimePeer);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab2",
+        display_name: "Lab2 workstation",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "ready",
+        status_message: null,
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: "/home/ubuntu/codex/nteract",
+        runtime_session_id: "job-selected",
+        updated_at: "2026-06-07T00:00:00.000Z",
+      }),
+    });
+    const requestPayload = new TextEncoder().encode(
+      JSON.stringify({ id: "request-1", action: "interrupt_execution" }),
+    );
+
+    await harness.handleMessage(
+      "demo",
+      ownerPeer,
+      encodeTypedFrame(FrameType.REQUEST, requestPayload),
+    );
+
+    assert.equal(staleRuntimeSocket.sent.length, 0);
+    assert.equal(selectedRuntimeSocket.sent.length, 1);
+    assert.deepEqual(
+      [...selectedRuntimeSocket.sent[0]],
+      [FrameType.REQUEST, ...Array.from(requestPayload)],
+    );
+    assert.equal(ownerSocket.sent.length, 1);
+    const accepted = decodeJsonPayload<Record<string, unknown>>(ownerSocket.sent[0].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
   it("replaces duplicate runtime peers for the same workstation only", () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const sameWorkstationIdentity = authenticateDevRequest(

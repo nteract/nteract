@@ -68,6 +68,11 @@ interface RuntimePeerWorkstationMetadata {
   workingDirectory?: string;
 }
 
+interface SelectedRuntimePeerSession {
+  workstationId: string;
+  runtimeSessionId: string | null;
+}
+
 interface RejectFrameOptions {
   countsTowardStreak?: boolean;
 }
@@ -875,7 +880,7 @@ export class NotebookRoom {
       requestMetadata?.action ?? null,
     );
     if (forwardedRequestAction) {
-      const forwardedRuntimePeerId = this.forwardRequestToActiveRuntimePeer(
+      const forwardedRuntimePeerId = await this.forwardRequestToActiveRuntimePeer(
         notebookId,
         normalizedFrame,
         peer.id,
@@ -938,7 +943,7 @@ export class NotebookRoom {
         return;
       }
 
-      const forwardedRuntimePeerId = this.forwardQueryToActiveRuntimePeer(
+      const forwardedRuntimePeerId = await this.forwardQueryToActiveRuntimePeer(
         notebookId,
         normalizedFrame,
         peer.id,
@@ -1289,26 +1294,26 @@ export class NotebookRoom {
     }
   }
 
-  private forwardRequestToActiveRuntimePeer(
+  private async forwardRequestToActiveRuntimePeer(
     notebookId: string,
     frame: TypedFrame,
     sourcePeerId: string,
-  ): string | null {
-    const runtimePeer = this.activeRuntimePeer(sourcePeerId);
+  ): Promise<string | null> {
+    const runtimePeer = await this.activeRuntimePeer(notebookId, sourcePeerId);
     if (!runtimePeer) {
       return null;
     }
     return this.forwardFrameToRuntimePeer(notebookId, runtimePeer, frame) ? runtimePeer.id : null;
   }
 
-  private forwardQueryToActiveRuntimePeer(
+  private async forwardQueryToActiveRuntimePeer(
     notebookId: string,
     frame: TypedFrame,
     sourcePeerId: string,
     requestId: string,
     action: RuntimePeerQueryRequestAction,
-  ): string | null {
-    const runtimePeer = this.activeRuntimePeer(sourcePeerId);
+  ): Promise<string | null> {
+    const runtimePeer = await this.activeRuntimePeer(notebookId, sourcePeerId);
     if (!runtimePeer) {
       return null;
     }
@@ -1344,10 +1349,17 @@ export class NotebookRoom {
     return runtimePeer.id;
   }
 
-  private activeRuntimePeer(sourcePeerId: string): Peer | undefined {
+  private async activeRuntimePeer(
+    notebookId: string,
+    sourcePeerId: string,
+  ): Promise<Peer | undefined> {
+    const selectedRuntimeSession = await this.selectedRuntimePeerSession(notebookId);
     let selected: Peer | undefined;
     for (const peer of this.peers.values()) {
       if (peer.id === sourcePeerId || peer.identity.scope !== "runtime_peer") {
+        continue;
+      }
+      if (!runtimePeerMatchesSelectedSession(peer, selectedRuntimeSession)) {
         continue;
       }
       if (!selected || peer.connectedAt >= selected.connectedAt) {
@@ -1355,6 +1367,29 @@ export class NotebookRoom {
       }
     }
     return selected;
+  }
+
+  private async selectedRuntimePeerSession(
+    notebookId: string,
+  ): Promise<SelectedRuntimePeerSession | null> {
+    const materializer = this.materializerFor(notebookId);
+    if (typeof materializer.getWorkstationAttachment !== "function") {
+      return null;
+    }
+    const attachment = await materializer.getWorkstationAttachment();
+    if (!attachment) {
+      return null;
+    }
+
+    const workstationId = attachment.workstation_id.trim();
+    if (!workstationId || workstationId === "runtime-peer") {
+      return null;
+    }
+
+    return {
+      workstationId,
+      runtimeSessionId: attachment.runtime_session_id?.trim() || null,
+    };
   }
 
   private forwardFrameToRuntimePeer(
@@ -1940,6 +1975,22 @@ function runtimePeerRuntimeSessionId(
 ): string | null {
   const runtimeSessionId = workstation?.runtimeSessionId?.trim();
   return runtimeSessionId && runtimeSessionId.length > 0 ? runtimeSessionId : null;
+}
+
+function runtimePeerMatchesSelectedSession(
+  peer: Peer,
+  selected: SelectedRuntimePeerSession | null,
+): boolean {
+  if (!selected) {
+    return true;
+  }
+  if (runtimePeerWorkstationId(peer.workstation) !== selected.workstationId) {
+    return false;
+  }
+  if (!selected.runtimeSessionId) {
+    return true;
+  }
+  return runtimePeerRuntimeSessionId(peer.workstation) === selected.runtimeSessionId;
 }
 
 function roomPeerParticipantKey(peer: Peer): string {
