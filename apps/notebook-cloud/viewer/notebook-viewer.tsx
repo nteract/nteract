@@ -127,6 +127,7 @@ import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import {
   cloudNotebookInteractionModeForAccess,
   cloudNotebookModeFromSearch,
+  cloudNotebookSelectedModeCorrectionForAccess,
   replaceCloudNotebookModeInCurrentUrl,
 } from "./cloud-notebook-mode";
 import type {
@@ -743,6 +744,15 @@ export function NotebookViewer({
     connectionScope,
     selectedMode: selectedInteractionMode,
   });
+  useEffect(() => {
+    const correctedMode = cloudNotebookSelectedModeCorrectionForAccess({
+      accessMode: selectedInteractionModeForAccess,
+      selectedMode: selectedInteractionMode,
+    });
+    if (correctedMode) {
+      setSelectedInteractionMode(correctedMode);
+    }
+  }, [selectedInteractionMode, selectedInteractionModeForAccess]);
   const { shellCapabilities, canAcceptCellMutations, editAccessPending } =
     useCloudShellCapabilities({
       accessConnectionScope,

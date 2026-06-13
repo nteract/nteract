@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cloudNotebookInteractionModeForAccess } from "../viewer/cloud-notebook-mode";
+import {
+  cloudNotebookInteractionModeForAccess,
+  cloudNotebookSelectedModeCorrectionForAccess,
+} from "../viewer/cloud-notebook-mode";
 
 test("cloud notebook edit links stay view-only for viewers without an access request", () => {
   assert.equal(
@@ -113,5 +116,29 @@ test("cloud notebook edit links stay view-only for viewers without an access req
       selectedMode: "edit",
     }),
     "edit",
+  );
+});
+
+test("cloud notebook mode correction normalizes owner edit links for view-only access", () => {
+  assert.equal(
+    cloudNotebookSelectedModeCorrectionForAccess({
+      accessMode: "view",
+      selectedMode: "edit",
+    }),
+    "view",
+  );
+  assert.equal(
+    cloudNotebookSelectedModeCorrectionForAccess({
+      accessMode: "edit",
+      selectedMode: "edit",
+    }),
+    null,
+  );
+  assert.equal(
+    cloudNotebookSelectedModeCorrectionForAccess({
+      accessMode: "view",
+      selectedMode: "view",
+    }),
+    null,
   );
 });

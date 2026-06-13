@@ -31,6 +31,19 @@ export function cloudNotebookInteractionModeForAccess({
   return "view";
 }
 
+export function cloudNotebookSelectedModeCorrectionForAccess({
+  accessMode,
+  selectedMode,
+}: {
+  accessMode: CloudNotebookUrlMode;
+  selectedMode: CloudNotebookUrlMode;
+}): CloudNotebookUrlMode | null {
+  if (selectedMode === "edit" && accessMode === "view") {
+    return "view";
+  }
+  return null;
+}
+
 export function cloudNotebookModeFromSearch(search: string): CloudNotebookUrlMode {
   const params = new URLSearchParams(search);
   return normalizeCloudNotebookMode(params.get("mode"));
