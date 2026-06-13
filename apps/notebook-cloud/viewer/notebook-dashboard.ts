@@ -143,7 +143,7 @@ export function projectCloudNotebookDashboardView(
   const filtered = searched.filter((notebook) => cloudNotebookMatchesFilter(notebook, filterId));
 
   return {
-    emptyMessage: cloudNotebookDashboardEmptyMessage(filterId, query),
+    emptyMessage: cloudNotebookDashboardEmptyMessage(filterId, query, filtered.length),
     filterId,
     filterGroups: cloudNotebookDashboardFilterGroups(filters),
     filters,
@@ -633,13 +633,14 @@ function cloudNotebookMatchesSearch(notebook: CloudNotebookListItem, query: stri
 function cloudNotebookDashboardEmptyMessage(
   filterId: CloudNotebookDashboardFilterId,
   query: string,
+  resultCount: number,
 ): string {
   if (query) {
     return "No notebooks match that search.";
   }
   switch (filterId) {
     case "all":
-      return "No notebooks yet.";
+      return resultCount > 0 ? "No other notebooks yet." : "No notebooks yet.";
     case "owned":
       return "No owned notebooks yet.";
     case "shared":
