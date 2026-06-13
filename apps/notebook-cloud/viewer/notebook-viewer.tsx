@@ -902,7 +902,10 @@ export function NotebookViewer({
     }
   }, [authConfig.oidc, resetPrototypeAuth]);
   const applyLatestAccessRequest = useCallback(
-    (request: CloudNotebookAccessRequest | null) => {
+    (
+      request: CloudNotebookAccessRequest | null,
+      options?: { selectedMode?: NotebookInteractionMode },
+    ) => {
       setLatestAccessRequest(request);
       const transition = projectCloudAccessRequestTransition({
         accessScope: catalogAccessScope,
@@ -913,6 +916,7 @@ export function NotebookViewer({
         connectionScope,
         hasAppSession,
         request: catalogGrantsDocumentEdit ? null : request,
+        selectedMode: options?.selectedMode ?? selectedInteractionMode,
       });
       if (transition.requestedScope) {
         storeCloudRequestedScope(window.localStorage, transition.requestedScope);
@@ -936,6 +940,7 @@ export function NotebookViewer({
       hasAppSession,
       refreshAuthState,
       retryLiveConnection,
+      selectedInteractionMode,
     ],
   );
   const loadOwnAccessRequest = useCallback(
@@ -1062,21 +1067,24 @@ export function NotebookViewer({
           access_status?: string;
         };
         if (body.access_status === "granted") {
-          applyLatestAccessRequest({
-            id: "already-granted",
-            notebook_id: config.notebookId,
-            requester_principal: "",
-            scope: "editor",
-            status: "approved",
-            requested_by_actor_label: "",
-            resolved_by_actor_label: null,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            resolved_at: new Date().toISOString(),
-          });
+          applyLatestAccessRequest(
+            {
+              id: "already-granted",
+              notebook_id: config.notebookId,
+              requester_principal: "",
+              scope: "editor",
+              status: "approved",
+              requested_by_actor_label: "",
+              resolved_by_actor_label: null,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              resolved_at: new Date().toISOString(),
+            },
+            { selectedMode: "edit" },
+          );
           return;
         }
-        applyLatestAccessRequest(body.access_request ?? null);
+        applyLatestAccessRequest(body.access_request ?? null, { selectedMode: "edit" });
       } catch (error) {
         setAccessRequestError(error instanceof Error ? error.message : String(error));
       }

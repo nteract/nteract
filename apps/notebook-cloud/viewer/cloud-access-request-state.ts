@@ -16,6 +16,7 @@ export interface ProjectCloudAccessRequestTransitionOptions {
   connectionScope: string | null;
   hasAppSession: boolean;
   request: Pick<CloudNotebookAccessRequest, "status"> | null;
+  selectedMode: CloudNotebookUrlMode;
 }
 
 const NO_CLOUD_ACCESS_REQUEST_TRANSITION: CloudAccessRequestTransition = Object.freeze({
@@ -31,12 +32,16 @@ export function projectCloudAccessRequestTransition({
   connectionScope,
   hasAppSession,
   request,
+  selectedMode,
 }: ProjectCloudAccessRequestTransitionOptions): CloudAccessRequestTransition {
   if (accessScope === "editor" || accessScope === "owner") {
     return NO_CLOUD_ACCESS_REQUEST_TRANSITION;
   }
 
   if (request?.status === "pending" || request?.status === "approved") {
+    if (selectedMode !== "edit") {
+      return NO_CLOUD_ACCESS_REQUEST_TRANSITION;
+    }
     return {
       requestedScope: "editor",
       selectedMode: "edit",

@@ -24,6 +24,7 @@ describe("cloud access-request state projection", () => {
         connectionScope: "viewer",
         hasAppSession: true,
         request: { status: "pending" },
+        selectedMode: "edit",
       }),
       {
         requestedScope: "editor",
@@ -41,6 +42,7 @@ describe("cloud access-request state projection", () => {
         connectionScope: "viewer",
         hasAppSession: false,
         request: { status: "pending" },
+        selectedMode: "edit",
       }),
       {
         requestedScope: "editor",
@@ -58,6 +60,7 @@ describe("cloud access-request state projection", () => {
         connectionScope: "viewer",
         hasAppSession: false,
         request: { status: "approved" },
+        selectedMode: "edit",
       }),
       {
         requestedScope: "editor",
@@ -75,6 +78,7 @@ describe("cloud access-request state projection", () => {
         connectionScope: "viewer",
         hasAppSession: false,
         request: null,
+        selectedMode: "edit",
       }),
       {
         requestedScope: "viewer",
@@ -93,6 +97,7 @@ describe("cloud access-request state projection", () => {
         connectionScope: "viewer",
         hasAppSession: true,
         request: { status: "pending" },
+        selectedMode: "edit",
       }),
       {
         requestedScope: null,
@@ -108,5 +113,23 @@ describe("cloud access-request state projection", () => {
     assert.equal(cloudPrototypeAuthCarriesRequestedScope("oidc", false), true);
     assert.equal(cloudPrototypeAuthCarriesRequestedScope("oidc", true), false);
     assert.equal(cloudPrototypeAuthCarriesRequestedScope("anonymous", true), false);
+  });
+
+  it("does not let a stored edit request override explicit view mode", () => {
+    assert.deepEqual(
+      projectCloudAccessRequestTransition({
+        authState: authState({ mode: "anonymous", requestedScope: null }),
+        connectionScope: "viewer",
+        hasAppSession: true,
+        request: { status: "pending" },
+        selectedMode: "view",
+      }),
+      {
+        requestedScope: null,
+        selectedMode: null,
+        refreshPrototypeAuth: false,
+        retryLiveConnection: false,
+      },
+    );
   });
 });
