@@ -714,6 +714,72 @@ describe("NotebookRoom peer lifecycle", () => {
     );
   });
 
+  it("collapses duplicate hibernated runtime peers for the same workstation", async () => {
+    const oldIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:old&scope=runtime_peer",
+      ),
+    );
+    const otherIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:other&scope=runtime_peer",
+      ),
+    );
+    const newIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:new&scope=runtime_peer",
+      ),
+    );
+    const oldSocket = new FakeSocket();
+    const otherSocket = new FakeSocket();
+    const newSocket = new FakeSocket();
+    oldSocket.serializeAttachment({
+      notebookId: "demo",
+      peerId: "runtime-old",
+      identity: oldIdentity,
+      connectedAt: "2026-06-06T00:00:00.000Z",
+      workstation: { workstationId: "ws-lab2" },
+    });
+    otherSocket.serializeAttachment({
+      notebookId: "demo",
+      peerId: "runtime-other",
+      identity: otherIdentity,
+      connectedAt: "2026-06-06T00:00:00.000Z",
+      workstation: { workstationId: "ws-other" },
+    });
+    newSocket.serializeAttachment({
+      notebookId: "demo",
+      peerId: "runtime-new",
+      identity: newIdentity,
+      connectedAt: "2026-06-06T00:00:01.000Z",
+      workstation: { workstationId: "ws-lab2" },
+    });
+    const state = hibernatedState([
+      oldSocket.asCloudflareWebSocket(),
+      otherSocket.asCloudflareWebSocket(),
+      newSocket.asCloudflareWebSocket(),
+    ]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+
+    await state.drain();
+
+    assert.equal(oldSocket.closed, true);
+    assert.equal(oldSocket.closeCode, 1000);
+    assert.equal(oldSocket.closeReason, "replaced by newer runtime peer");
+    assert.equal(harness.peerForSocket(oldSocket.asCloudflareWebSocket()), undefined);
+    assert.equal(
+      harness.peerForSocket(newSocket.asCloudflareWebSocket())?.id,
+      "runtime-new",
+      "newer runtime peer for the same workstation survives restore",
+    );
+    assert.equal(
+      harness.peerForSocket(otherSocket.asCloudflareWebSocket())?.id,
+      "runtime-other",
+      "different workstation runtime peer survives restore",
+    );
+  });
+
   it("publishes a sanitized runtime-peer workstation attachment", async () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);
@@ -1428,6 +1494,65 @@ describe("NotebookRoom materialized sync routing", () => {
       [...newRuntimeSocket.sent[0]],
       [FrameType.REQUEST, ...Array.from(requestPayload)],
     );
+  });
+
+  it("replaces duplicate runtime peers for the same workstation only", () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const sameWorkstationIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:old&scope=runtime_peer",
+      ),
+    );
+    const otherWorkstationIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:other&scope=runtime_peer",
+      ),
+    );
+    const incomingIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:new&scope=runtime_peer",
+      ),
+    );
+    const sameWorkstationSocket = new FakeSocket();
+    const otherWorkstationSocket = new FakeSocket();
+    const incomingSocket = new FakeSocket();
+    const sameWorkstationPeer = {
+      id: "runtime-old",
+      socket: sameWorkstationSocket.asCloudflareWebSocket(),
+      identity: sameWorkstationIdentity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      workstation: { workstationId: "ws-lab2" },
+      consecutiveRejectedFrames: 0,
+    };
+    const otherWorkstationPeer = {
+      id: "runtime-other",
+      socket: otherWorkstationSocket.asCloudflareWebSocket(),
+      identity: otherWorkstationIdentity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      workstation: { workstationId: "ws-other" },
+      consecutiveRejectedFrames: 0,
+    };
+    const incomingPeer = {
+      id: "runtime-new",
+      socket: incomingSocket.asCloudflareWebSocket(),
+      identity: incomingIdentity,
+      connectedAt: "2026-05-22T00:00:01.000Z",
+      workstation: { workstationId: "ws-lab2" },
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(sameWorkstationPeer.id, sameWorkstationPeer);
+    harness.peers.set(otherWorkstationPeer.id, otherWorkstationPeer);
+    harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+
+    harness.removeDuplicateRuntimePeers?.("demo", incomingPeer);
+
+    assert.equal(harness.peers.has(sameWorkstationPeer.id), false);
+    assert.equal(sameWorkstationSocket.closed, true);
+    assert.equal(sameWorkstationSocket.closeCode, 1000);
+    assert.equal(sameWorkstationSocket.closeReason, "replaced by newer runtime peer");
+    assert.equal(harness.peers.has(otherWorkstationPeer.id), true);
+    assert.equal(otherWorkstationSocket.closed, false);
   });
 
   it("breaks equal runtime-peer timestamps in favor of the later connection", async () => {
@@ -2172,6 +2297,7 @@ interface RoomHarness {
     notebookId: string,
     workstation: PeerForTest["workstation"],
   ): Promise<string | null>;
+  removeDuplicateRuntimePeers?(notebookId: string, incomingPeer: PeerForTest): void;
   publishRuntimePeerAttachment(notebookId: string, peer: PeerForTest): Promise<void>;
   syncPeerFromRoomHost(notebookId: string, peer: PeerForTest): Promise<void>;
   handleMessage(

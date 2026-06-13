@@ -24,6 +24,9 @@
 //! agent — no shared mutexes, so nothing can hold a lock across an await.
 
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -626,6 +629,7 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
             opts.agent_root.display()
         )
     })?;
+    let _agent_lock = WorkstationAgentLock::try_acquire(&opts.agent_root, &opts.workstation_id)?;
 
     info!(
         "[workstation-agent] starting cloud_url={} workstation_id={} display_name={:?} working_dir={} python_path={} poll_ms={} heartbeat_ms={} agent_root={}",
@@ -681,6 +685,104 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
             tokio::time::sleep(Duration::from_millis(CHILD_TICK_MS).min(deadline - now)).await;
         }
     }
+}
+
+struct WorkstationAgentLock {
+    _lock_file: File,
+    lock_path: PathBuf,
+}
+
+impl WorkstationAgentLock {
+    fn try_acquire(agent_root: &Path, workstation_id: &str) -> Result<Self> {
+        let lock_dir = workstation_agent_lock_dir(agent_root);
+        std::fs::create_dir_all(lock_dir)
+            .with_context(|| format!("create workstation agent lock dir {}", lock_dir.display()))?;
+        let lock_path = workstation_agent_lock_path(agent_root, workstation_id);
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("open workstation agent lock {}", lock_path.display()))?;
+
+        #[cfg(unix)]
+        {
+            let result =
+                unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            anyhow::ensure!(
+                result == 0,
+                "another workstation agent is already running for {workstation_id} (lock {})",
+                lock_path.display()
+            );
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::HANDLE;
+            use windows_sys::Win32::Storage::FileSystem::{
+                LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+            };
+
+            let handle = lock_file.as_raw_handle() as HANDLE;
+            let mut overlapped = unsafe { std::mem::zeroed() };
+            let result = unsafe {
+                LockFileEx(
+                    handle,
+                    LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                    0,
+                    1,
+                    0,
+                    &mut overlapped,
+                )
+            };
+            anyhow::ensure!(
+                result != 0,
+                "another workstation agent is already running for {workstation_id} (lock {})",
+                lock_path.display()
+            );
+        }
+
+        info!(
+            "[workstation-agent] acquired local singleton lock path={}",
+            lock_path.display()
+        );
+        Ok(Self {
+            _lock_file: lock_file,
+            lock_path,
+        })
+    }
+}
+
+impl Drop for WorkstationAgentLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            let _ = libc::flock(self._lock_file.as_raw_fd(), libc::LOCK_UN);
+        }
+        info!(
+            "[workstation-agent] released local singleton lock path={}",
+            self.lock_path.display()
+        );
+    }
+}
+
+fn workstation_agent_lock_path(agent_root: &Path, workstation_id: &str) -> PathBuf {
+    workstation_agent_lock_dir(agent_root).join(format!(
+        "workstation-{}.lock",
+        runt_workspace::safe_path_part(workstation_id)
+    ))
+}
+
+fn workstation_agent_lock_dir(agent_root: &Path) -> &Path {
+    if agent_root
+        .file_name()
+        .is_some_and(|name| name == "workstation-agent")
+    {
+        return agent_root.parent().unwrap_or(agent_root);
+    }
+    agent_root
 }
 
 async fn heartbeat(api: &CloudApi, opts: &WorkstationAgentOptions) -> Result<(), AgentHttpError> {
@@ -1016,17 +1118,31 @@ fn attach_job_patch_no_longer_active(error: &AgentHttpError) -> bool {
 
 async fn terminate_active_job(mut job: ActiveJob) {
     if let Some(child) = job.child.as_mut() {
-        if let Err(error) = child.start_kill() {
-            warn!("[workstation-agent] failed to terminate inactive child job: {error}");
-            return;
+        if let Err(error) = request_child_shutdown(child) {
+            warn!("[workstation-agent] failed to request inactive child shutdown: {error}");
         }
-        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+        match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
             Ok(Ok(_status)) => {}
             Ok(Err(error)) => {
                 warn!("[workstation-agent] failed to reap inactive child job: {error}");
             }
             Err(_) => {
-                warn!("[workstation-agent] timed out reaping inactive child job");
+                warn!("[workstation-agent] timed out waiting for inactive child shutdown; killing");
+                if let Err(error) = child.start_kill() {
+                    warn!("[workstation-agent] failed to kill inactive child job: {error}");
+                    return;
+                }
+                match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                    Ok(Ok(_status)) => {}
+                    Ok(Err(error)) => {
+                        warn!(
+                            "[workstation-agent] failed to reap killed inactive child job: {error}"
+                        );
+                    }
+                    Err(_) => {
+                        warn!("[workstation-agent] timed out reaping killed inactive child job");
+                    }
+                }
             }
         }
         return;
@@ -1034,6 +1150,24 @@ async fn terminate_active_job(mut job: ActiveJob) {
     if let Some(pid) = job.pid {
         terminate_pid(pid);
     }
+}
+
+#[cfg(unix)]
+fn request_child_shutdown(child: &mut tokio::process::Child) -> std::result::Result<(), String> {
+    let Some(pid) = child.id() else {
+        return Ok(());
+    };
+    let pid = i32::try_from(pid).map_err(|error| format!("invalid child pid {pid}: {error}"))?;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        Some(nix::sys::signal::Signal::SIGTERM),
+    )
+    .map_err(|error| format!("SIGTERM pid={pid}: {error}"))
+}
+
+#[cfg(not(unix))]
+fn request_child_shutdown(child: &mut tokio::process::Child) -> std::result::Result<(), String> {
+    child.start_kill().map_err(|error| error.to_string())
 }
 
 #[cfg(unix)]
@@ -1252,6 +1386,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn workstation_agent_lock_prevents_duplicate_runner() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let root = tmp.path();
+        let first = WorkstationAgentLock::try_acquire(root, "ws-lab2")?;
+
+        let Err(error) = WorkstationAgentLock::try_acquire(root, "ws-lab2") else {
+            anyhow::bail!("second workstation agent lock should fail while first is held");
+        };
+        assert!(error
+            .to_string()
+            .contains("another workstation agent is already running"));
+
+        drop(first);
+        let _second = WorkstationAgentLock::try_acquire(root, "ws-lab2")?;
+        Ok(())
+    }
+
+    #[test]
+    fn workstation_agent_lock_uses_daemon_base_dir_for_standard_agent_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agent_root = tmp.path().join("workstation-agent");
+
+        assert_eq!(
+            workstation_agent_lock_path(&agent_root, "ws-lab2"),
+            tmp.path().join("workstation-ws-lab2.lock")
+        );
+    }
+
     /// (c) Heartbeat payload field set matches the `.mjs` agent exactly.
     #[test]
     fn registration_payload_matches_mjs_field_set() {
@@ -1331,6 +1494,48 @@ mod tests {
 
         assert!(!drop_terminal_attach_job(&mut active, "job-1", "heartbeat", &error).await);
         assert!(active.contains_key("job-1"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inactive_child_job_gets_graceful_shutdown_before_kill() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let marker_path = tmp.path().join("sigterm-marker");
+        let ready_path = tmp.path().join("ready-marker");
+        let child = tokio::process::Command::new("sh")
+            .env("SIGTERM_MARKER", &marker_path)
+            .env("READY_MARKER", &ready_path)
+            .arg("-c")
+            .arg(
+                "trap 'printf term > \"$SIGTERM_MARKER\"; exit 0' TERM; \
+                 printf ready > \"$READY_MARKER\"; \
+                 while :; do sleep 1; done",
+            )
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+
+        let ready_deadline = Instant::now() + Duration::from_secs(2);
+        while !ready_path.exists() {
+            if Instant::now() >= ready_deadline {
+                anyhow::bail!("child did not install SIGTERM trap before test timeout");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        terminate_active_job(ActiveJob {
+            child: Some(child),
+            pid: None,
+            log_path: tmp.path().join("runtime-peer.log"),
+            ready: true,
+            status: "running",
+            started_at: Instant::now(),
+            last_status_patch_at: Instant::now(),
+        })
+        .await;
+
+        assert_eq!(std::fs::read_to_string(marker_path)?, "term");
+        Ok(())
     }
 
     /// (d) Attach-job → spawn argv mapping mirrors the `.mjs` plan, with the

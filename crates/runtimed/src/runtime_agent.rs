@@ -88,6 +88,52 @@ fn reconnect_floor_delay(
     }
 }
 
+fn install_runtime_agent_shutdown_signal_handlers(
+    shutdown_tx: mpsc::UnboundedSender<&'static str>,
+) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                let tx = shutdown_tx.clone();
+                tokio::spawn(async move {
+                    if sigterm.recv().await.is_some() {
+                        let _ = tx.send("SIGTERM");
+                    }
+                });
+            }
+            Err(error) => {
+                warn!("[runtime-agent] Failed to install SIGTERM handler: {error}");
+            }
+        }
+
+        match signal(SignalKind::interrupt()) {
+            Ok(mut sigint) => {
+                let tx = shutdown_tx;
+                tokio::spawn(async move {
+                    if sigint.recv().await.is_some() {
+                        let _ = tx.send("SIGINT");
+                    }
+                });
+            }
+            Err(error) => {
+                warn!("[runtime-agent] Failed to install SIGINT handler: {error}");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                let _ = shutdown_tx.send("ctrl-c");
+            }
+        });
+    }
+}
+
 /// Shared context for the runtime agent (no kernel -- kernel is owned locally).
 struct RuntimeAgentContext {
     state: RuntimeStateHandle,
@@ -460,6 +506,8 @@ where
     let mut runtime_state_doc_seen = false;
     let mut runtime_state_doc_seen_at: Option<std::time::Instant> = None;
     let mut orphan_comm_candidates: HashSet<String> = HashSet::new();
+    let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<&'static str>();
+    install_runtime_agent_shutdown_signal_handlers(shutdown_tx);
 
     // -- 3b. Launch-on-attach gate (cloud only) -----------------------------
     //
@@ -1157,6 +1205,14 @@ where
                         }
                     }
                 }
+            }
+
+            // Process-level shutdown from the workstation agent or host. This
+            // must exit through the normal cleanup section below so the kernel
+            // receives a Jupyter shutdown request instead of being orphaned.
+            Some(signal_name) = shutdown_rx.recv() => {
+                info!("[runtime-agent] Received shutdown signal {signal_name}");
+                break;
             }
 
             // Process lifecycle commands from kernel tasks. These are
