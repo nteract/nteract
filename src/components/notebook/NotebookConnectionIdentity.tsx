@@ -37,8 +37,8 @@ export interface NotebookConnectionStatusSource {
  * designs — hard constraints, not preferences):
  * - renders NOTHING for a purely local desktop session
  *   (`isRemoteNotebookContext`); local identity is noise, not chrome;
- * - flat `rounded-md border-border/70 bg-muted/35`, never
- *   rounded-full + shadow;
+ * - borderless wrapper: the avatar and connectivity dot carry the signal,
+ *   never a bordered status bubble or shadow;
  * - icon/avatar-first and icon-only at every width: no visible text pill —
  *   the label and status live in `sr-only` copy and the title tooltip;
  * - state expresses as dot color / opacity, never copy; status CHANGES are
@@ -95,8 +95,8 @@ export function NotebookConnectionIdentity({
   return (
     <div
       className={cn(
-        "inline-flex shrink-0 items-center rounded-md border border-border/70 bg-muted/35 px-1.5 py-0.5",
-        status !== "online" && "opacity-60",
+        "inline-flex h-8 shrink-0 items-center justify-center rounded-md px-0.5 text-foreground transition-colors hover:bg-muted/60",
+        status !== "online" && "opacity-70",
         className,
       )}
       data-slot="notebook-connection-identity"
@@ -107,7 +107,12 @@ export function NotebookConnectionIdentity({
       {/* The visual layer is hidden from the a11y tree (avatar initials
           would otherwise leak ahead of the sr-only copy). */}
       <span aria-hidden="true">
-        <NotebookActorAvatar actor={actor} size="sm" statusClassName={connectionDotTone(status)} />
+        <NotebookActorAvatar
+          actor={actor}
+          className="border-0"
+          size="sm"
+          statusClassName={connectionDotTone(status)}
+        />
       </span>
       <span className="sr-only">{detail}</span>
       {/* Announces status CHANGES only — empty on initial render so a mount

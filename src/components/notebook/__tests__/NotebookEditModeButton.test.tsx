@@ -126,4 +126,24 @@ describe("NotebookEditModeButton", () => {
 
     expect(onModeChange).toHaveBeenCalledWith("view");
   });
+
+  it("accepts host-specific pending edit copy", () => {
+    const onModeChange = vi.fn();
+
+    render(
+      <NotebookEditModeButton
+        mode="edit"
+        state="requested"
+        variant="segmented"
+        requestedEditLabel="Offline"
+        requestedEditTitle="Offline while the room reconnects"
+        onModeChange={onModeChange}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Offline" })).toHaveAttribute(
+      "title",
+      "Offline while the room reconnects",
+    );
+  });
 });

@@ -5,6 +5,7 @@ import { normalizeOidcAuthConfig, type CloudOidcAuthConfig } from "./oidc-auth";
 import type {
   CloudNotebookListBootstrap,
   CloudViewerAuthConfig,
+  CloudViewerLocalDevAuthConfig,
   ViewerRuntimeState,
 } from "./cloud-viewer-types";
 
@@ -108,15 +109,41 @@ export function loadViewerRuntime(): ViewerRuntimeState {
 export function loadAuthConfig(): CloudViewerAuthConfig {
   const element = document.querySelector<HTMLScriptElement>("#nteract-cloud-auth-config");
   if (!element) {
-    return { oidc: null };
+    return { oidc: null, localDev: null };
   }
   try {
     const parsed = JSON.parse(element.textContent ?? "{}") as {
+      localDev?: Partial<CloudViewerLocalDevAuthConfig> | null;
       oidc?: Partial<CloudOidcAuthConfig> | null;
     };
-    return { oidc: normalizeOidcAuthConfig(parsed.oidc) };
+    return {
+      oidc: normalizeOidcAuthConfig(parsed.oidc),
+      localDev: normalizeLocalDevAuthConfig(parsed.localDev),
+    };
   } catch {
-    return { oidc: null };
+    return { oidc: null, localDev: null };
+  }
+}
+
+function normalizeLocalDevAuthConfig(
+  input: Partial<CloudViewerLocalDevAuthConfig> | null | undefined,
+): CloudViewerLocalDevAuthConfig | null {
+  const rawAuthUrl = input?.authUrl?.trim();
+  if (!rawAuthUrl) {
+    return null;
+  }
+  try {
+    const authUrl = new URL(rawAuthUrl, window.location.origin);
+    if (authUrl.origin !== window.location.origin) {
+      return null;
+    }
+    const label = input?.label?.trim();
+    return {
+      authUrl: `${authUrl.pathname}${authUrl.search}${authUrl.hash}`,
+      ...(label ? { label } : {}),
+    };
+  } catch {
+    return null;
   }
 }
 

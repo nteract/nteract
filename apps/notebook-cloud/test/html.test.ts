@@ -317,6 +317,30 @@ describe("HTML script serialization", () => {
     );
   });
 
+  it("injects local auth config instead of OIDC provider chrome on loopback", async () => {
+    const response = await worker.fetch(
+      new Request("http://localhost:45316/n/demo/example?mode=view"),
+      fakeEnv({
+        NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "client-id",
+        NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
+        NOTEBOOK_CLOUD_OIDC_PROVIDER_LABEL: "Anaconda",
+        NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: "https://preview.runt.run/oidc",
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(html, /"oidc":null/);
+    assert.match(
+      html,
+      /"localDev":\{"authUrl":"\/local-auth\?next=%2Fn%2Fdemo%2Fexample%3Fmode%3Dview"/,
+    );
+    assert.match(html, /"label":"Use local auth"/);
+    assert.doesNotMatch(html, /"providerLabel":"Anaconda"/);
+    assert.doesNotMatch(html, /"issuer":"https:\/\/auth\.stage\.anaconda\.com\/api\/auth"/);
+  });
+
   it("serves the OIDC callback shell without a notebook runtime config", async () => {
     const response = await worker.fetch(
       new Request("https://preview.runt.run/oidc?code=abc&state=def"),

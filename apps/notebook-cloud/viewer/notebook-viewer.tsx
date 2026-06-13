@@ -900,7 +900,12 @@ export function NotebookViewer({
     setSelectedInteractionMode("view");
     refreshAuthState();
   }, [refreshAuthState]);
-  const beginNotebookOidcAuth = useCallback(async () => {
+  const beginNotebookAuth = useCallback(async () => {
+    const localDevAuth = authConfig.localDev;
+    if (localDevAuth) {
+      window.location.assign(localDevAuth.authUrl);
+      return;
+    }
     if (!authConfig.oidc) {
       resetPrototypeAuth();
       return;
@@ -913,9 +918,9 @@ export function NotebookViewer({
       });
       window.location.assign(url.href);
     } catch (error) {
-      console.warn("[notebook-cloud] OIDC sign-in start failed", error);
+      console.warn("[notebook-cloud] sign-in start failed", error);
     }
-  }, [authConfig.oidc, resetPrototypeAuth]);
+  }, [authConfig.localDev, authConfig.oidc, resetPrototypeAuth]);
   const applyLatestAccessRequest = useCallback(
     (
       request: CloudNotebookAccessRequest | null,
@@ -1182,6 +1187,7 @@ export function NotebookViewer({
           interaction={shellCapabilities.interaction ?? null}
           accessLevel={shellCapabilities.access.level}
           accessPending={editAccessPending}
+          reconnecting={sustainedReconnecting}
           onModeChange={setSelectedInteractionMode}
           onRequestEditAccess={requestCloudEditAccess}
         />
@@ -1285,7 +1291,7 @@ export function NotebookViewer({
       onResetAuth={resetPrototypeAuth}
       onRetryConnection={retryLiveConnection}
       onRetryRendererAssets={isolatedRenderer.retry}
-      onSignInAgain={authConfig.oidc ? beginNotebookOidcAuth : undefined}
+      onSignInAgain={authConfig.localDev || authConfig.oidc ? beginNotebookAuth : undefined}
     />
   ) : null;
 

@@ -5,6 +5,12 @@ import type { CloudOidcAuthConfig } from "./oidc-auth";
 
 export interface CloudViewerAuthConfig {
   oidc: CloudOidcAuthConfig | null;
+  localDev: CloudViewerLocalDevAuthConfig | null;
+}
+
+export interface CloudViewerLocalDevAuthConfig {
+  authUrl: string;
+  label?: string;
 }
 
 export interface ViewerRuntime {
