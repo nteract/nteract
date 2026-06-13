@@ -33,6 +33,27 @@ test("cloud notebook dashboard search input has stable form metadata", () => {
   assert.match(dashboardSourceText, /aria-label="Search notebooks"/);
 });
 
+test("cloud notebook list uses local auth copy in local mode", () => {
+  const listSourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
+  const listSourceText = readFileSync(listSourcePath, "utf8");
+
+  assert.match(listSourceText, /const localMode = Boolean\(authConfig\.localDev\)/);
+  assert.match(listSourceText, /localMode \? "LOCAL MODE" : "NTERACT"/);
+  assert.match(
+    listSourceText,
+    /localMode \? "Open local notebooks\." : "Bring computation to life\."/,
+  );
+  assert.match(
+    listSourceText,
+    /Use local auth to create notebooks and test the live room on this machine\./,
+  );
+  assert.match(listSourceText, /return authConfig\.localDev \? "Local auth" : "Cloud preview"/);
+  assert.match(
+    listSourceText,
+    /return authState\.user \? `Local: \$\{authState\.user\}` : "Local auth"/,
+  );
+});
+
 test("cloud viewer imports desktop notebook code only through public surfaces", () => {
   const viewerDir = new URL("../viewer", import.meta.url);
   const offenders: string[] = [];

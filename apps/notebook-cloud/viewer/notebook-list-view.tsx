@@ -290,7 +290,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
     refreshAuthState();
   };
 
-  const headerDetail = cloudNotebookListHeaderDetail(authState, hasAppSession);
+  const headerDetail = cloudNotebookListHeaderDetail(authState, hasAppSession, authConfig);
 
   return (
     <main className="cloud-notebook-list-page">
@@ -419,15 +419,22 @@ function CloudNotebookSignedOutPanel({
   authConfig: CloudViewerAuthConfig;
   authState: CloudPrototypeAuthState;
 }) {
+  const localMode = Boolean(authConfig.localDev);
   return (
     <div className="cloud-notebook-signed-out" aria-labelledby="cloud-notebook-signed-out-title">
       <div className="cloud-notebook-signed-out-copy">
         <div className="cloud-notebook-signed-out-kicker">
           <Sparkles aria-hidden="true" />
-          NTERACT
+          {localMode ? "LOCAL MODE" : "NTERACT"}
         </div>
-        <h2 id="cloud-notebook-signed-out-title">Bring computation to life.</h2>
-        <p>Sign in to create live notebooks, share work with colleagues, and attach compute.</p>
+        <h2 id="cloud-notebook-signed-out-title">
+          {localMode ? "Open local notebooks." : "Bring computation to life."}
+        </h2>
+        <p>
+          {localMode
+            ? "Use local auth to create notebooks and test the live room on this machine."
+            : "Sign in to create live notebooks, share work with colleagues, and attach compute."}
+        </p>
       </div>
       <div className="cloud-notebook-signed-out-actions">
         <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
@@ -443,12 +450,16 @@ function CloudNotebookSignedOutPanel({
 function cloudNotebookListHeaderDetail(
   authState: CloudPrototypeAuthState,
   hasAppSession: boolean,
+  authConfig: CloudViewerAuthConfig,
 ): string {
   if (authState.mode === "oidc_expired" && !hasAppSession) {
     return "Session expired";
   }
   if (authState.mode === "anonymous" && !hasAppSession) {
-    return "Cloud preview";
+    return authConfig.localDev ? "Local auth" : "Cloud preview";
+  }
+  if (authState.mode === "dev") {
+    return authState.user ? `Local: ${authState.user}` : "Local auth";
   }
   const firstName = cloudNotebookListFirstName(authState);
   return firstName ? `by ${firstName}` : "Signed in";
