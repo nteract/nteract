@@ -79,7 +79,22 @@ output focus, reconnect) before merge.
    does not enable real cross-host sharing, and it adds more lines than it
    deletes. Low priority; do it only if it demonstrably simplifies both hosts.
 
-4. **Cloud connection facts (`connectionScope`/`PeerId`/`ActorLabel`/`Error`).**
+4. **Cloud access/share projections → cloud-local projection store.** The live
+   audits around view-only edit links, edit-request state, public-link revoke,
+   and share panel summaries exposed a cloud-local second-source-of-truth smell:
+   `notebook-viewer.tsx`, `use-cloud-shell-capabilities.ts`,
+   `sharing-controls.tsx`, and diagnostics helpers each reconcile overlapping
+   access facts. The next extraction should centralize derived hosted facts such
+   as catalog access resolution, selected vs effective interaction mode, own
+   edit-request status, public-link status, and share ledger summaries behind a
+   small projection store with React selectors. Keep D1/ACL/OIDC fetching,
+   mutation, and URL normalization in the cloud host; the store owns the
+   projection of those facts, not the authority. Do not move this policy into
+   `runtimed-wasm`: WASM should receive already-negotiated room/document facts,
+   not know what an OIDC invite, public ACL row, or copied `?mode=edit` URL
+   means.
+
+5. **Cloud connection facts (`connectionScope`/`PeerId`/`ActorLabel`/`Error`).**
    Keep in the session hook. Only promote to a shared store if a *shared* component
    (not just the cloud-local capabilities deriver) needs to subscribe.
 
@@ -90,9 +105,11 @@ output focus, reconnect) before merge.
 - Environment/pool/trust (`useDependencies`, `usePoolState`, `useTrust`,
   `runtime-state.ts` Pool/RuntimeStateDoc) — Desktop has direct filesystem and
   package-manager access; Cloud delegates to remote workstations.
-- OIDC/app-session/room-sync (`collaborator-auth`, `use-cloud-auth`,
-  `cloud-viewer-session` connect/sync) — host transport boundary. Project only
-  their *results* (scope, actor, peer id) into shared stores when a shared
+- OIDC/app-session/room-sync and hosted sharing source facts
+  (`collaborator-auth`, `use-cloud-auth`, `cloud-viewer-session` connect/sync,
+  D1 ACL rows, public-link rows, invites, and access requests) — host transport
+  and product-policy boundary. Project only their *results* (scope, actor, peer
+  id, effective access/share state) into stores when a shared or cloud-local
   consumer needs them.
 - Presence — Cloud room peers/cursors vs Desktop Automerge presence, already
   bridged through the shared `PresenceContext`. Keep the implementations split.
