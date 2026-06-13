@@ -58,6 +58,7 @@ describe("HTML script serialization", () => {
     assert.match(html, /"oidc":null/);
     assert.match(html, /id="nteract-cloud-viewer-config" type="application\/json"/);
     assert.match(html, /href="\/assets\/notebook-cloud-viewer\.css"/);
+    assert.match(html, /rel="icon" href="\/favicon\.svg" type="image\/svg\+xml"/);
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/notebook-cloud-viewer\.js"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/runtimed_wasm\.js" crossorigin/);

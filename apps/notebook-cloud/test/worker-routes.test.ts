@@ -880,6 +880,31 @@ describe("Worker artifact routes", () => {
     assert.equal(response.headers.get("Content-Type"), "application/javascript");
   });
 
+  it("serves favicon requests without falling through to the JSON 404", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(
+      new Request("http://localhost/favicon.ico"),
+      env,
+      fakeContext(),
+    );
+    const body = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), "image/svg+xml; charset=utf-8");
+    assert.equal(response.headers.get("Cache-Control"), "public, max-age=86400");
+    assert.match(body, /<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+
+    const headResponse = await worker.fetch(
+      new Request("http://localhost/favicon.svg", { method: "HEAD" }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(headResponse.status, 200);
+    assert.equal(headResponse.headers.get("Content-Type"), "image/svg+xml; charset=utf-8");
+    assert.equal(await headResponse.text(), "");
+  });
+
   it("adds CORS when plugin assets are routed through the Worker", async () => {
     const seenPaths: string[] = [];
     const env = fakeEnv({
