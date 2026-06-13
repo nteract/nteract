@@ -128,4 +128,80 @@ describe("notebook cloud blob resolver", () => {
       },
     ]);
   });
+
+  it("coalesces concurrent protected binary display URL requests", async () => {
+    const originalFileReader = globalThis.FileReader;
+    class TestFileReader {
+      result: string | ArrayBuffer | null = null;
+      error: Error | null = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      readAsDataURL(blob: Blob) {
+        blob
+          .arrayBuffer()
+          .then((buffer) => {
+            this.result = `data:${blob.type};base64,${Buffer.from(buffer).toString("base64")}`;
+            this.onload?.();
+          })
+          .catch((error) => {
+            this.error = error instanceof Error ? error : new Error(String(error));
+            this.onerror?.();
+          });
+      }
+    }
+    globalThis.FileReader = TestFileReader as typeof FileReader;
+    let resolveFetch!: (response: Response) => void;
+    const fetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    const resolver = createNotebookCloudBlobResolver({
+      baseUrl: "https://viewer.example.test/n/notebook-1",
+      blobBasePath: "/api/n/notebook-1/blobs/",
+      authenticatedBinaryDisplayUrls: true,
+      fetchImpl: async (input, init) => {
+        fetchCalls.push({ input, init });
+        return new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        });
+      },
+    });
+
+    try {
+      const first = resolver.displayUrl?.({
+        blob: "sha256:image",
+        media_type: "image/png",
+        size: 4,
+      });
+      const second = resolver.displayUrl?.({
+        blob: "sha256:image",
+        media_type: "image/png",
+        size: 4,
+      });
+
+      assert.equal(fetchCalls.length, 1);
+      resolveFetch(
+        new Response(new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" })),
+      );
+      assert.deepEqual(await Promise.all([first, second]), [
+        "data:image/png;base64,iVBORw==",
+        "data:image/png;base64,iVBORw==",
+      ]);
+      assert.equal(
+        await resolver.displayUrl?.({
+          blob: "sha256:image",
+          media_type: "image/png",
+          size: 4,
+        }),
+        "data:image/png;base64,iVBORw==",
+      );
+    } finally {
+      globalThis.FileReader = originalFileReader;
+    }
+
+    assert.deepEqual(fetchCalls, [
+      {
+        input: "https://viewer.example.test/api/n/notebook-1/blobs/sha256%3Aimage",
+        init: { cache: "no-store" },
+      },
+    ]);
+  });
 });
