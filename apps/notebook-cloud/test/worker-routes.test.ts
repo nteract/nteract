@@ -570,7 +570,7 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /bootstrap@example\.test|bootstrap-user|Bootstrap User/);
   });
 
-  it("preloads notebook route assets when the bootstrapped notebook home has rows", async () => {
+  it("warms notebook route assets when the bootstrapped notebook home has rows", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({
       subject: "home-preload-user",
       email: "home-preload@example.test",
@@ -607,9 +607,13 @@ describe("Worker artifact routes", () => {
     assert.match(html, /rel="modulepreload" href="\/assets\/markdown\.0123456789abcdef\.js"/);
     assert.match(
       html,
+      /rel="prefetch" href="\/assets\/notebook-route\.0123456789abcdef\.css" as="style"/,
+    );
+    assert.match(html, /rel="prefetch" href="\/assets\/katex\.0123456789abcdef\.css" as="style"/);
+    assert.doesNotMatch(
+      html,
       /rel="preload" href="\/assets\/notebook-route\.0123456789abcdef\.css" as="style"/,
     );
-    assert.match(html, /rel="preload" href="\/assets\/katex\.0123456789abcdef\.css" as="style"/);
     assert.doesNotMatch(html, /id="nteract-cloud-viewer-config"/);
     assert.doesNotMatch(html, /runtimed_wasm\.0123456789abcdef/);
   });
