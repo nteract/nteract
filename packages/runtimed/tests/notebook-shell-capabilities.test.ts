@@ -385,6 +385,7 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
       memory_bytes: 32 * 1024 ** 3,
       working_directory: "/home/ubuntu/notebooks",
       updated_at: "2026-06-07T21:00:00Z",
+      runtime_session_id: "job-123",
       ...overrides,
     };
   }
@@ -403,11 +404,25 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
       providerLabel: "Local daemon",
       defaultEnvironmentLabel: "Current Python",
       environmentLabel: "Current Python",
+      runtimeSessionId: "job-123",
       cpuCount: 8,
       memoryBytes: 32 * 1024 ** 3,
       runtimePeerCount: 1,
       workingDirectoryLabel: "/home/ubuntu/notebooks",
     });
+  });
+
+  it("uses runtime session id in target projection identity", () => {
+    const first = projectNotebookRuntimeTargetFromWorkstationAttachment(
+      attachment({ runtime_session_id: "job-123" }),
+    );
+    const second = projectNotebookRuntimeTargetFromWorkstationAttachment(
+      attachment({ runtime_session_id: "job-456" }),
+    );
+
+    expect(first).not.toBe(second);
+    expect(first?.runtimeSessionId).toBe("job-123");
+    expect(second?.runtimeSessionId).toBe("job-456");
   });
 
   it("keeps connecting attachments connected but not executable", () => {

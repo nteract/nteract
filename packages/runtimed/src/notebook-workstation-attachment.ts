@@ -10,6 +10,7 @@ export type NotebookWorkstationAttachmentClaimStatus =
 
 export interface NotebookWorkstationAttachmentClaim {
   errorMessage?: string | null;
+  runtimeSessionId?: string | null;
   status: NotebookWorkstationAttachmentClaimStatus;
   updatedAt?: string | null;
 }
@@ -46,6 +47,7 @@ export function projectNotebookWorkstationAttachmentFromClaim({
     memory_bytes: workstation.memoryBytes ?? null,
     working_directory: workstation.workingDirectory ?? null,
     updated_at: claim.updatedAt ?? null,
+    runtime_session_id: claim.runtimeSessionId ?? null,
   };
 }
 

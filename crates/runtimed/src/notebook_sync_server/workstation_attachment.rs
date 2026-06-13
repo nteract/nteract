@@ -57,6 +57,7 @@ fn local_workstation_attachment(working_directory: Option<String>) -> Workstatio
         // Deliberately unset: local daemon attachment should not create head
         // churn merely because a constructor/bind path republished it.
         updated_at: None,
+        runtime_session_id: None,
     }
 }
 
