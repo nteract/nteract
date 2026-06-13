@@ -75,6 +75,7 @@ export interface NotebookViewProps {
   sessionRuntimeState?: string | null;
   onFocusCell: (cellId: string) => void;
   onExecuteCell: (cellId: string) => void;
+  onRequestExecuteCell?: (cellId: string) => void;
   onInterruptKernel: () => void;
   onDeleteCell: (cellId: string) => void;
   onUpdateCellSource?: (cellId: string, source: string) => void;
@@ -350,6 +351,7 @@ function NotebookViewContent({
   sessionRuntimeState = null,
   onFocusCell,
   onExecuteCell,
+  onRequestExecuteCell,
   onInterruptKernel,
   onDeleteCell,
   onUpdateCellSource,
@@ -877,10 +879,28 @@ function NotebookViewContent({
             onExecuteCell(cell.id);
           }
         };
+        const requestExecuteCellOrHiddenGroup = onRequestExecuteCell
+          ? () => {
+              const latestHiddenGroup = hiddenGroupsRef.current.get(cell.id);
+              if (latestHiddenGroup && latestHiddenGroup.count > 1) {
+                for (const hiddenCellId of latestHiddenGroup.groupCellIds) {
+                  onRequestExecuteCell(hiddenCellId);
+                }
+              } else {
+                onRequestExecuteCell(cell.id);
+              }
+            }
+          : undefined;
         const executeCellInPlaceOrHiddenGroup = () => {
           suppressTailFollowForInPlaceExecution();
           executeCellOrHiddenGroup();
         };
+        const requestExecuteCellInPlaceOrHiddenGroup = requestExecuteCellOrHiddenGroup
+          ? () => {
+              suppressTailFollowForInPlaceExecution();
+              requestExecuteCellOrHiddenGroup();
+            }
+          : undefined;
 
         return (
           <CodeCell
@@ -900,6 +920,8 @@ function NotebookViewContent({
             onOutputFocusChange={(focused) => handleOutputFocusChange(cell.id, focused)}
             onExecute={executeCellOrHiddenGroup}
             onExecuteInPlace={executeCellInPlaceOrHiddenGroup}
+            onRequestExecute={requestExecuteCellOrHiddenGroup}
+            onRequestExecuteInPlace={requestExecuteCellInPlaceOrHiddenGroup}
             onInterrupt={onInterruptKernel}
             onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
             onFocusPrevious={onFocusPrevious}

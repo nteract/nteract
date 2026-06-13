@@ -2163,7 +2163,12 @@ describe("Worker artifact routes", () => {
     );
     assert.ok(runtimeStateRequest);
     const payload = (await runtimeStateRequest.json()) as {
-      attachment?: { status?: string; status_message?: string | null; workstation_id?: string };
+      attachment?: {
+        status?: string;
+        status_message?: string | null;
+        workstation_id?: string;
+        runtime_session_id?: string | null;
+      };
       close_runtime_peers?: boolean;
       close_reason?: string;
     };
@@ -2178,6 +2183,7 @@ describe("Worker artifact routes", () => {
       runtime_session_id: body.job.job_id,
       status: "connecting",
       status_message: "Waiting for Lab2 to accept the compute request.",
+      runtime_session_id: body.job.job_id,
       cpu_count: 8,
       memory_bytes: 16_000_000_000,
       working_directory: "/home/ubuntu/project",
@@ -2328,7 +2334,12 @@ describe("Worker artifact routes", () => {
       "/internal/n/nb-1/workstation-attachment",
     );
     const runtimeStatePayload = (await runtimeStateRequest.json()) as {
-      attachment?: { workstation_id?: string; display_name?: string; status?: string };
+      attachment?: {
+        workstation_id?: string;
+        display_name?: string;
+        status?: string;
+        runtime_session_id?: string | null;
+      };
     };
     assert.deepEqual(runtimeStatePayload.attachment, {
       workstation_id: "ws-lab2",
@@ -2339,6 +2350,7 @@ describe("Worker artifact routes", () => {
       runtime_session_id: "job-1",
       status: "ready",
       status_message: null,
+      runtime_session_id: "job-1",
       cpu_count: 8,
       memory_bytes: 16_000_000_000,
       working_directory: "/home/ubuntu/project",

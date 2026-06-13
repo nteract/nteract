@@ -76,6 +76,10 @@ interface CodeCellProps {
   onToggleOutputsHidden?: (hidden: boolean) => void;
   /** Executes without moving focus to another cell or following the notebook tail. */
   onExecuteInPlace?: () => void;
+  /** Requests execution when execution controls are not active yet, e.g. by starting compute. */
+  onRequestExecute?: () => void;
+  /** Requests in-place execution when execution controls are not active yet. */
+  onRequestExecuteInPlace?: () => void;
   /** Number of consecutive fully-hidden cells in this group (including this one) */
   hiddenGroupCount?: number;
   /** Callback to expand all cells in a hidden group */
@@ -332,6 +336,8 @@ export const CodeCell = memo(function CodeCell({
   onToggleSourceHidden,
   onToggleOutputsHidden,
   onExecuteInPlace,
+  onRequestExecute,
+  onRequestExecuteInPlace,
   hiddenGroupCount,
   onExpandHiddenGroup,
   hiddenGroupCellIds,
@@ -488,18 +494,20 @@ export const CodeCell = memo(function CodeCell({
   );
 
   const handleExecute = useCallback(() => {
-    if (!canExecute) {
-      return;
+    if (canExecute) {
+      onExecute();
+    } else {
+      onRequestExecute?.();
     }
-    onExecute();
-  }, [canExecute, onExecute]);
+  }, [canExecute, onExecute, onRequestExecute]);
 
   const handleExecuteInPlace = useCallback(() => {
-    if (!canExecute) {
-      return;
+    if (canExecute) {
+      (onExecuteInPlace ?? onExecute)();
+    } else {
+      (onRequestExecuteInPlace ?? onRequestExecute)?.();
     }
-    (onExecuteInPlace ?? onExecute)();
-  }, [canExecute, onExecute, onExecuteInPlace]);
+  }, [canExecute, onExecute, onExecuteInPlace, onRequestExecute, onRequestExecuteInPlace]);
 
   const handleHiddenDisclosureKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
@@ -524,19 +532,21 @@ export const CodeCell = memo(function CodeCell({
   );
 
   // Get keyboard navigation bindings
+  const canRequestExecute = !readOnly && Boolean(onRequestExecute);
+  const canRunExecutionShortcut = canExecute || canRequestExecute;
   const navigationKeyMap = useCellKeyboardNavigation({
     onFocusPrevious: onFocusPrevious ?? (() => {}),
     onFocusNext: handleFocusNextOrCreate,
-    onExecute: canExecute ? handleExecute : undefined,
-    onExecuteInPlace: canExecute ? handleExecuteInPlace : undefined,
+    onExecute: canRunExecutionShortcut ? handleExecute : undefined,
+    onExecuteInPlace: canRunExecutionShortcut ? handleExecuteInPlace : undefined,
     onExecuteAndInsert:
-      canExecute && onInsertCellAfter
+      canRunExecutionShortcut && onInsertCellAfter
         ? () => {
             handleExecute();
             onInsertCellAfter();
           }
         : undefined,
-    consumeExecutionShortcuts: !readOnly || canExecute,
+    consumeExecutionShortcuts: !readOnly || canExecute || canRequestExecute,
     onDelete,
     cellId: cell.id,
   });

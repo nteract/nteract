@@ -152,7 +152,7 @@ export function useCloudWorkstationManager({
   const handleAttachWorkstation = useCallback(
     async (workstationId: string, options: AttachWorkstationOptions = {}) => {
       if (!config.workstationAttachEndpoint) {
-        return;
+        return false;
       }
       setWorkstationMutation({
         kind: "attach",
@@ -172,10 +172,12 @@ export function useCloudWorkstationManager({
         );
         setWorkstationsError(null);
         await refreshCloudWorkstations();
+        return true;
       } catch (error) {
         setWorkstationsError(error instanceof Error ? error.message : String(error));
         setWorkstationMutation({ kind: "idle", message: null, workstationId: null });
         await refreshCloudWorkstations();
+        return false;
       }
     },
     [authState, config.workstationAttachEndpoint, onOpenWorkstationsRail, refreshCloudWorkstations],
@@ -436,16 +438,21 @@ export function useCloudWorkstationManager({
       const workstationId = workstationLaunchReadiness.workstationId;
       if (!workstationId) {
         onOpenWorkstationsRail();
-        return;
+        return false;
       }
-      await handleAttachWorkstation(workstationId, options);
+      return handleAttachWorkstation(workstationId, options);
     },
     [handleAttachWorkstation, onOpenWorkstationsRail, workstationLaunchReadiness.workstationId],
   );
+  const canStartSelectedWorkstation =
+    canChooseHostedWorkstation &&
+    workstationMutation.kind !== "attach" &&
+    Boolean(workstationLaunchReadiness.workstationId);
 
   return useMemo(
     () => ({
       busyWorkstationId: workstationMutation.workstationId,
+      canStartSelectedWorkstation,
       onStartSelectedWorkstation: canChooseHostedWorkstation ? startSelectedWorkstation : undefined,
       onAttachWorkstation: canChooseHostedWorkstation
         ? (workstationId: string) => handleAttachWorkstation(workstationId, { revealPanel: true })
@@ -459,6 +466,7 @@ export function useCloudWorkstationManager({
       workstationSelection,
     }),
     [
+      canStartSelectedWorkstation,
       canChooseHostedWorkstation,
       handleAttachWorkstation,
       handleCancelPairing,

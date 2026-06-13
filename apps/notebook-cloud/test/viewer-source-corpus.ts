@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 
 const VIEWER_MODULE_FILES = [
   "index.tsx",
+  "notebook-route.tsx",
   "notebook-viewer.tsx",
   "home-view.tsx",
   "notebook-list-view.tsx",

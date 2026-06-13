@@ -21,6 +21,8 @@ describe("NotebookView shell capabilities", () => {
     );
     expect(sourceText).toMatch(/capabilities\?\.canExecute \?\? !readOnly/);
     expect(sourceText).toMatch(/<CodeCell[\s\S]*canExecute=\{canExecuteCells\}/);
+    expect(sourceText).toMatch(/onRequestExecuteCell\?: \(cellId: string\) => void;/);
+    expect(sourceText).toMatch(/onRequestExecute=\{requestExecuteCellOrHiddenGroup\}/);
     expect(sourceText).toMatch(/<MarkdownCell[\s\S]*readOnly=\{!canEditMarkdownSources\}/);
     expect(sourceText).toMatch(
       /onDelete=\{canMutateCells \? \(\) => onDeleteCell\(cell\.id\) : undefined\}/,
@@ -86,10 +88,21 @@ describe("NotebookView shell capabilities", () => {
     );
 
     expect(sourceText).toMatch(/canExecute\?: boolean;/);
-    expect(sourceText).toMatch(/onExecute: canExecute \? handleExecute : undefined/);
-    expect(sourceText).toMatch(/onExecuteInPlace: canExecute \? handleExecuteInPlace : undefined/);
-    expect(sourceText).toMatch(/onExecuteAndInsert:\s+canExecute && onInsertCellAfter/);
-    expect(sourceText).toMatch(/consumeExecutionShortcuts: !readOnly \|\| canExecute/);
+    expect(sourceText).toMatch(/onRequestExecute\?: \(\) => void;/);
+    expect(sourceText).toMatch(
+      /const canRequestExecute = !readOnly && Boolean\(onRequestExecute\)/,
+    );
+    expect(sourceText).toMatch(/const canRunExecutionShortcut = canExecute \|\| canRequestExecute/);
+    expect(sourceText).toMatch(/onExecute: canRunExecutionShortcut \? handleExecute : undefined/);
+    expect(sourceText).toMatch(
+      /onExecuteInPlace: canRunExecutionShortcut \? handleExecuteInPlace : undefined/,
+    );
+    expect(sourceText).toMatch(
+      /onExecuteAndInsert:\s+canRunExecutionShortcut && onInsertCellAfter/,
+    );
+    expect(sourceText).toMatch(
+      /consumeExecutionShortcuts: !readOnly \|\| canExecute \|\| canRequestExecute/,
+    );
     expect(sourceText).toMatch(/canExecute=\{canExecute\}/);
     expect(sourceText).toMatch(/showReadoutWhenDisabled=\{!readOnly\}/);
   });
