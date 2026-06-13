@@ -536,6 +536,7 @@ export const CodeCell = memo(function CodeCell({
             onInsertCellAfter();
           }
         : undefined,
+    consumeExecutionShortcuts: !readOnly || canExecute,
     onDelete,
     cellId: cell.id,
   });

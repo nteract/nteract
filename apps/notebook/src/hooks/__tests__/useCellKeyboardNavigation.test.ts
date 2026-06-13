@@ -67,4 +67,23 @@ describe("useCellKeyboardNavigation", () => {
 
     expect(onExecute).toHaveBeenCalledTimes(2);
   });
+
+  it("consumes execution shortcuts without executing or moving focus when requested", () => {
+    const onFocusNext = vi.fn();
+
+    const { result } = renderHook(() =>
+      useCellKeyboardNavigation({
+        onFocusPrevious: vi.fn(),
+        onFocusNext,
+        consumeExecutionShortcuts: true,
+      }),
+    );
+
+    expect(bindingFor(result.current, "Shift-Enter").run({} as EditorView)).toBe(true);
+    expect(bindingFor(result.current, "Ctrl-Enter").run({} as EditorView)).toBe(true);
+    expect(bindingFor(result.current, "Mod-Enter").run({} as EditorView)).toBe(true);
+    expect(bindingFor(result.current, "Alt-Enter").run({} as EditorView)).toBe(true);
+
+    expect(onFocusNext).not.toHaveBeenCalled();
+  });
 });

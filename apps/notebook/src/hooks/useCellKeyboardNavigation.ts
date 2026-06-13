@@ -8,6 +8,7 @@ interface UseCellKeyboardNavigationOptions {
   onExecute?: () => void;
   onExecuteInPlace?: () => void;
   onExecuteAndInsert?: () => void;
+  consumeExecutionShortcuts?: boolean;
   onDelete?: () => void;
   /** Cell ID for debug logging */
   cellId?: string;
@@ -27,6 +28,7 @@ export function useCellKeyboardNavigation({
   onExecute,
   onExecuteInPlace,
   onExecuteAndInsert,
+  consumeExecutionShortcuts = false,
   onDelete,
   cellId,
 }: UseCellKeyboardNavigationOptions): KeyBinding[] {
@@ -98,13 +100,15 @@ export function useCellKeyboardNavigation({
             },
           ]
         : []),
-      ...(onExecute
+      ...(onExecute || consumeExecutionShortcuts
         ? [
             {
               key: "Shift-Enter",
               run: () => {
-                onExecuteRef.current?.();
-                onFocusNextRef.current("start");
+                if (onExecuteRef.current) {
+                  onExecuteRef.current();
+                  onFocusNextRef.current("start");
+                }
                 return true;
               },
             },
@@ -124,7 +128,7 @@ export function useCellKeyboardNavigation({
             },
           ]
         : []),
-      ...(onExecuteAndInsert
+      ...(onExecuteAndInsert || consumeExecutionShortcuts
         ? [
             {
               key: "Alt-Enter",
@@ -137,6 +141,6 @@ export function useCellKeyboardNavigation({
         : []),
     ],
     // Only recreate if the presence of optional callbacks changes
-    [!!onExecute, !!onExecuteInPlace, !!onExecuteAndInsert, !!onDelete],
+    [!!onExecute, !!onExecuteInPlace, !!onExecuteAndInsert, consumeExecutionShortcuts, !!onDelete],
   );
 }
