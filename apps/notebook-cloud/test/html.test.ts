@@ -158,6 +158,59 @@ describe("HTML script serialization", () => {
     );
   });
 
+  it("caches immutable viewer asset manifests across warm shell renders", async () => {
+    const seenPaths: string[] = [];
+    const env = fakeEnv({
+      ASSETS: fakeViewerAssetManifests(
+        {
+          notebookRoute: {
+            modulepreload: ["notebook-route.0123456789abcdef.js"],
+            stylepreload: ["notebook-route.0123456789abcdef.css"],
+          },
+          runtimeWasm: {
+            module: "runtimed_wasm.0123456789abcdef.js",
+            wasm: "runtimed_wasm_bg.fedcba9876543210.wasm",
+          },
+          rendererSidecar: {
+            js: "isolated-renderer.0123456789abcdef.js",
+            css: "isolated-renderer.0123456789abcdef.css",
+            siftWasm: "sift_wasm.0123456789abcdef.wasm",
+          },
+        },
+        seenPaths,
+      ),
+    });
+
+    const firstResponse = await worker.fetch(
+      new Request("https://cloud.test/n/demo/example"),
+      env,
+      fakeContext(),
+    );
+    const secondResponse = await worker.fetch(
+      new Request("https://cloud.test/n/demo/example"),
+      env,
+      fakeContext(),
+    );
+    const secondHtml = await secondResponse.text();
+
+    assert.equal(firstResponse.status, 200);
+    assert.equal(secondResponse.status, 200);
+    assert.deepEqual(seenPaths, [
+      "/assets/runtime-wasm-assets.json",
+      "/assets/renderer-sidecar-assets.json",
+      "/assets/notebook-route-assets.json",
+    ]);
+    assert.match(
+      secondHtml,
+      /rel="modulepreload" href="\/assets\/runtimed_wasm\.0123456789abcdef\.js" crossorigin/,
+    );
+    assert.match(
+      secondHtml,
+      /rel="modulepreload" href="\/assets\/notebook-route\.0123456789abcdef\.js"/,
+    );
+    assert.match(secondHtml, /isolated-renderer\.0123456789abcdef\.js/);
+  });
+
   it("keeps notebook route asset hints out of the dashboard shell", async () => {
     const seenPaths: string[] = [];
     const response = await worker.fetch(
