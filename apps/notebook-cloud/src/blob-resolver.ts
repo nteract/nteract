@@ -17,6 +17,7 @@ export function createNotebookCloudBlobResolver(input: {
   const blobBaseUrl = new URL(withTrailingSlash(input.blobBasePath), input.baseUrl);
   const fetchImpl = input.fetchImpl ?? fetch;
   const displayUrls = new Map<string, string>();
+  const displayUrlRequests = new Map<string, Promise<string>>();
   const url = (ref: BlobRef) => new URL(encodeURIComponent(ref.blob), blobBaseUrl).href;
   const fetchWithBlobRetries: typeof fetch = (request, init) =>
     fetchBlobWithRetries(fetchImpl, request, init);
@@ -32,30 +33,59 @@ export function createNotebookCloudBlobResolver(input: {
             const cacheKey = displayUrlCacheKey(ref, mediaType);
             const cached = displayUrls.get(cacheKey);
             if (cached) return cached;
+            const inFlight = displayUrlRequests.get(cacheKey);
+            if (inFlight) return inFlight;
 
-            const response = await fetchBlobWithRetries(fetchImpl, url(ref), { cache: "no-store" });
-            if (!response.ok) {
-              throw new Error(`Failed to fetch blob ${ref.blob}: ${response.status}`);
-            }
-            const responseBlob = await response.blob();
-            const resolvedMediaType = mediaType ?? ref.media_type ?? responseBlob.type;
-            const typedBlob =
-              responseBlob.type || !resolvedMediaType
-                ? responseBlob
-                : new Blob([responseBlob], { type: resolvedMediaType });
-            const displayUrl =
-              typeof FileReader === "function"
-                ? await blobToDataUrl(typedBlob)
-                : typeof URL.createObjectURL === "function"
-                  ? URL.createObjectURL(typedBlob)
-                  : url(ref);
-            displayUrls.set(cacheKey, displayUrl);
-            return displayUrl;
+            const request = resolveAuthenticatedDisplayUrl({
+              fetchImpl,
+              mediaType,
+              ref,
+              url: url(ref),
+            })
+              .then((displayUrl) => {
+                displayUrls.set(cacheKey, displayUrl);
+                return displayUrl;
+              })
+              .finally(() => {
+                if (displayUrlRequests.get(cacheKey) === request) {
+                  displayUrlRequests.delete(cacheKey);
+                }
+              });
+            displayUrlRequests.set(cacheKey, request);
+            return request;
           },
           resolvesBinaryUrlsSynchronously: false,
         }
       : {}),
   });
+}
+
+async function resolveAuthenticatedDisplayUrl({
+  fetchImpl,
+  mediaType,
+  ref,
+  url,
+}: {
+  fetchImpl: typeof fetch;
+  mediaType?: string;
+  ref: BlobRef;
+  url: string;
+}): Promise<string> {
+  const response = await fetchBlobWithRetries(fetchImpl, url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch blob ${ref.blob}: ${response.status}`);
+  }
+  const responseBlob = await response.blob();
+  const resolvedMediaType = mediaType ?? ref.media_type ?? responseBlob.type;
+  const typedBlob =
+    responseBlob.type || !resolvedMediaType
+      ? responseBlob
+      : new Blob([responseBlob], { type: resolvedMediaType });
+  return typeof FileReader === "function"
+    ? await blobToDataUrl(typedBlob)
+    : typeof URL.createObjectURL === "function"
+      ? URL.createObjectURL(typedBlob)
+      : url;
 }
 
 export function withTrailingSlash(value: string): string {
