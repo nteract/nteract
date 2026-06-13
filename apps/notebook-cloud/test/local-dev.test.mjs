@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  DEFAULT_LOCAL_BROWSER_AUTH_SCOPE,
+  DEFAULT_LOCAL_BROWSER_AUTH_USER,
   WRANGLER_HTTP_PORT_BASE,
   WRANGLER_INSPECTOR_PORT_BASE,
   WRANGLER_PORT_RANGE,
   notebookCloudBaseUrl,
   notebookCloudDevPorts,
+  notebookCloudLocalAuthUrl,
   notebookCloudLoopbackUrl,
 } from "../scripts/local-dev.mjs";
 
@@ -61,6 +64,24 @@ test("keeps NOTEBOOK_CLOUD_URL as a deployed host alias", () => {
   });
 
   assert.equal(baseUrl, "https://preview.runt.run");
+});
+
+test("builds a loopback Browser auth bootstrap URL", () => {
+  const url = new URL(
+    notebookCloudLocalAuthUrl({
+      env: {
+        NOTEBOOK_CLOUD_WRANGLER_HOST: "localhost",
+        NOTEBOOK_CLOUD_WRANGLER_PORT: "45124",
+      },
+      workspaceRoot: "/tmp/nteract/worktrees/cloud-browser/desktop",
+    }),
+  );
+
+  assert.equal(url.origin, "http://localhost:45124");
+  assert.equal(url.pathname, "/local-auth");
+  assert.equal(url.searchParams.get("user"), DEFAULT_LOCAL_BROWSER_AUTH_USER);
+  assert.equal(url.searchParams.get("scope"), DEFAULT_LOCAL_BROWSER_AUTH_SCOPE);
+  assert.equal(url.searchParams.get("next"), "/n");
 });
 
 test("rejects invalid port overrides", () => {

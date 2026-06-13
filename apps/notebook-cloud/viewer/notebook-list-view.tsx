@@ -28,7 +28,11 @@ import type {
   CloudNotebookUpdateResponse,
   CloudViewerAuthConfig,
 } from "./cloud-viewer-types";
-import { projectCloudNotebookDashboard, type CloudNotebookListItem } from "./notebook-dashboard";
+import {
+  cloudNotebookViewerUrlOnBrowserOrigin,
+  projectCloudNotebookDashboard,
+  type CloudNotebookListItem,
+} from "./notebook-dashboard";
 import {
   clearCachedCloudNotebookList,
   readCachedCloudNotebookList,
@@ -190,7 +194,9 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
       if (body.ok !== true || typeof body.viewer_url !== "string") {
         throw new Error("Unable to create notebook: response shape was invalid");
       }
-      window.location.assign(body.viewer_url);
+      window.location.assign(
+        cloudNotebookViewerUrlOnBrowserOrigin(body.viewer_url, window.location.origin),
+      );
     } catch (error) {
       setCreateState("idle");
       setCreateError(error instanceof Error ? error.message : String(error));

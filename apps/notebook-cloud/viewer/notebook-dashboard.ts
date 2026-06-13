@@ -165,8 +165,35 @@ export function cloudNotebookDisplayTitle(notebook: CloudNotebookListItem): stri
   return notebook.title?.trim() || "Untitled notebook";
 }
 
-export function cloudNotebookDashboardOpenUrl(notebook: CloudNotebookListItem): string {
-  return cloudNotebookUrlWithMode(notebook.viewer_url, cloudNotebookDefaultOpenMode(notebook));
+export function cloudNotebookDashboardOpenUrl(
+  notebook: CloudNotebookListItem,
+  options: { browserOrigin?: string | null } = {},
+): string {
+  return cloudNotebookViewerUrlOnBrowserOrigin(
+    cloudNotebookUrlWithMode(notebook.viewer_url, cloudNotebookDefaultOpenMode(notebook)),
+    options.browserOrigin ?? currentBrowserOrigin(),
+  );
+}
+
+export function cloudNotebookViewerUrlOnBrowserOrigin(
+  viewerUrl: string,
+  browserOrigin: string | null | undefined,
+): string {
+  if (!browserOrigin) {
+    return viewerUrl;
+  }
+  try {
+    const origin = new URL(browserOrigin);
+    const url = new URL(viewerUrl, origin);
+    if (!url.pathname.startsWith("/n/")) {
+      return viewerUrl;
+    }
+    url.protocol = origin.protocol;
+    url.host = origin.host;
+    return url.href;
+  } catch {
+    return viewerUrl;
+  }
 }
 
 export function cloudNotebookShortId(notebookId: string): string {
@@ -179,6 +206,10 @@ export function cloudNotebookShortId(notebookId: string): string {
 
 function cloudNotebookDefaultOpenMode(notebook: CloudNotebookListItem): CloudNotebookUrlMode {
   return notebook.scope === "owner" || notebook.scope === "editor" ? "edit" : "view";
+}
+
+function currentBrowserOrigin(): string | null {
+  return typeof window === "undefined" ? null : window.location.origin;
 }
 
 export function isCloudNotebookListItem(value: unknown): value is CloudNotebookListItem {

@@ -213,6 +213,19 @@ describe("dev identity", () => {
     assert.equal(identity.actorLabel, "user:dev:alice/desktop:a");
   });
 
+  it("allows dev credentials from Wrangler local requests behind a custom-domain URL", () => {
+    const identity = authenticateRequest(
+      new Request("https://preview.runt.run/n/demo/sync?user=alice&operator=desktop:a", {
+        headers: {
+          "CF-Connecting-IP": "127.0.0.1",
+        },
+      }),
+      { DEPLOYMENT_ENV: "prototype" },
+    );
+
+    assert.equal(identity.actorLabel, "user:dev:alice/desktop:a");
+  });
+
   it("selects only the non-sensitive app protocol for browser localStorage auth", () => {
     const protocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("local-dev-token")}`;
     const identity = authenticateRequest(

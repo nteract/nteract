@@ -7,6 +7,12 @@ import {
   type ConnectionScope,
 } from "../src/auth-shared";
 import {
+  NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+  NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
+  NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
+  NOTEBOOK_CLOUD_USER_STORAGE_KEY,
+} from "../src/dev-auth-storage";
+import {
   NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY,
   NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
   clearCloudOidcAuth,
@@ -15,11 +21,13 @@ import {
   type CloudOidcClaims,
 } from "./oidc-auth";
 
-export const NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY = "nteract:notebook-cloud:dev-token";
-export const NOTEBOOK_CLOUD_USER_STORAGE_KEY = "nteract:notebook-cloud:user";
-export const NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY = "nteract:notebook-cloud:scope";
-export const NOTEBOOK_CLOUD_DEFAULT_SCOPE: ConnectionScope = "viewer";
 export { NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY, NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY };
+export {
+  NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+  NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
+  NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
+  NOTEBOOK_CLOUD_USER_STORAGE_KEY,
+};
 
 const NOTEBOOK_CLOUD_AUTH_STORAGE_KEYS = new Set<string>([
   NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,

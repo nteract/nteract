@@ -11,6 +11,11 @@ import {
   TRUSTED_WEBSOCKET_PROTOCOL_HEADER,
   authenticateDevRequest,
 } from "../src/identity.ts";
+import {
+  NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
+  NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
+  NOTEBOOK_CLOUD_USER_STORAGE_KEY,
+} from "../src/dev-auth-storage.ts";
 import type {
   D1Database,
   D1PreparedStatement,
@@ -311,6 +316,85 @@ describe("Worker artifact routes", () => {
       assert.match(response.headers.get("Content-Type") ?? "", /text\/html/, pathname);
       assert.equal(await response.text(), "", pathname);
     }
+  });
+
+  it("serves loopback local dev auth bootstrap without exposing external credentials", async () => {
+    const response = await worker.fetch(
+      new Request("http://127.0.0.1/local-auth?user=alice&scope=owner&next=/n"),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("Cache-Control") ?? "", /no-store/);
+    const html = await response.text();
+    assert.match(html, /Preparing local cloud auth/);
+    assert.match(html, new RegExp(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY));
+    assert.match(html, new RegExp(NOTEBOOK_CLOUD_USER_STORAGE_KEY));
+    assert.match(html, new RegExp(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY));
+    assert.match(html, /"local-loopback-dev-token"/);
+    assert.match(html, /"alice"/);
+    assert.match(html, /"owner"/);
+    assert.match(html, /"next":"\/n"/);
+    assert.doesNotMatch(html, /NOTEBOOK_CLOUD_DEV_TOKEN|NTERACT_API_KEY|Authorization/);
+  });
+
+  it("rejects local dev auth bootstrap on non-loopback hosts", async () => {
+    const response = await worker.fetch(
+      new Request("https://preview.runt.run/local-auth?user=alice&scope=owner"),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+  });
+
+  it("accepts local dev auth bootstrap when Wrangler preserves a loopback Host header", async () => {
+    const response = await worker.fetch(
+      new Request("https://preview.runt.run/local-auth?user=alice&scope=owner", {
+        headers: { Host: "localhost:45316" },
+      }),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+  });
+
+  it("accepts local dev auth bootstrap when Wrangler reports a loopback client IP", async () => {
+    const response = await worker.fetch(
+      new Request("https://preview.runt.run/local-auth?user=alice&scope=owner", {
+        headers: { "CF-Connecting-IP": "127.0.0.1" },
+      }),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+  });
+
+  it("normalizes unsafe local dev auth bootstrap inputs", async () => {
+    const response = await worker.fetch(
+      new Request("http://localhost/local-auth?user=&scope=runtime_peer&next=https://evil.test"),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /"browser-editor"/);
+    assert.match(html, /"owner"/);
+    assert.match(html, /"next":"\/n"/);
+  });
+
+  it("keeps the old loopback local dev auth path available as an alias", async () => {
+    const response = await worker.fetch(
+      new Request("http://localhost/dev/local-auth?user=alice&scope=owner"),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
   });
 
   it("exchanges OIDC bearer auth for a secure app session cookie", async () => {
@@ -1348,6 +1432,58 @@ describe("Worker artifact routes", () => {
     assert.equal(body.vanity_name, null);
     assert.equal(env.DB.notebooks.get(body.notebook_id)?.title, "Exploration Notes");
     assert.equal(body.viewer_url, `http://localhost/n/${body.notebook_id}/Exploration%20Notes`);
+  });
+
+  it("keeps local Browser viewer URLs on loopback when Wrangler preserves the custom-domain URL", async () => {
+    const env = fakeEnv();
+    const localBrowserHeaders = {
+      "CF-Connecting-IP": "127.0.0.1",
+      "Content-Type": "application/json",
+      Origin: "http://localhost:45316",
+      "X-Operator": "browser:tab",
+      "X-Scope": "owner",
+      "X-User": "alice",
+    };
+
+    const response = await worker.fetch(
+      new Request("https://preview.runt.run/api/n", {
+        method: "POST",
+        headers: localBrowserHeaders,
+        body: JSON.stringify({ title: "Local Dev Notes" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 201);
+    const body = (await response.json()) as {
+      notebook_id: string;
+      viewer_url: string;
+    };
+    assert.equal(
+      body.viewer_url,
+      `http://localhost:45316/n/${body.notebook_id}/Local%20Dev%20Notes`,
+    );
+
+    const list = await worker.fetch(
+      new Request("https://preview.runt.run/api/n?limit=1", {
+        headers: {
+          "CF-Connecting-IP": "127.0.0.1",
+          Origin: "http://localhost:45316",
+          "X-Operator": "browser:tab",
+          "X-Scope": "viewer",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(list.status, 200);
+    const listBody = (await list.json()) as {
+      notebooks: Array<{ viewer_url: string }>;
+    };
+    assert.equal(listBody.notebooks[0]?.viewer_url, body.viewer_url);
   });
 
   it("renames notebook titles for editors", async () => {

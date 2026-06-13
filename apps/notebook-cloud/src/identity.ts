@@ -6,6 +6,7 @@ import {
   isConnectionScope,
   type ConnectionScope,
 } from "./auth-shared.ts";
+import { isLoopbackWorkerRequest } from "./loopback.ts";
 
 export {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -830,8 +831,7 @@ function authenticateDevCredential(
 }
 
 function isLocalDevRequest(request: Request): boolean {
-  const hostname = new URL(request.url).hostname;
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  return isLoopbackWorkerRequest(request);
 }
 
 function validDevTokenCredential(
