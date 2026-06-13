@@ -106,7 +106,7 @@ const RUNTIME_PEER_GONE_GRACE_MS = 30_000;
 const MAX_CONSECUTIVE_REJECTED_FRAMES = 8;
 const REJECTED_FRAME_POLICY_CLOSE_CODE = 1008;
 const REJECTED_FRAME_POLICY_CLOSE_REASON = "too many rejected frames";
-const DUPLICATE_RUNTIME_PEER_CLOSE_CODE = 1000;
+const DUPLICATE_RUNTIME_PEER_CLOSE_CODE = 1008;
 const DUPLICATE_RUNTIME_PEER_CLOSE_REASON = "replaced by newer runtime peer";
 
 /// Storage key holding the notebook id whose `runtime_peer` departure armed the

@@ -765,7 +765,7 @@ describe("NotebookRoom peer lifecycle", () => {
     await state.drain();
 
     assert.equal(oldSocket.closed, true);
-    assert.equal(oldSocket.closeCode, 1000);
+    assert.equal(oldSocket.closeCode, 1008);
     assert.equal(oldSocket.closeReason, "replaced by newer runtime peer");
     assert.equal(harness.peerForSocket(oldSocket.asCloudflareWebSocket()), undefined);
     assert.equal(
@@ -1549,7 +1549,7 @@ describe("NotebookRoom materialized sync routing", () => {
 
     assert.equal(harness.peers.has(sameWorkstationPeer.id), false);
     assert.equal(sameWorkstationSocket.closed, true);
-    assert.equal(sameWorkstationSocket.closeCode, 1000);
+    assert.equal(sameWorkstationSocket.closeCode, 1008);
     assert.equal(sameWorkstationSocket.closeReason, "replaced by newer runtime peer");
     assert.equal(harness.peers.has(otherWorkstationPeer.id), true);
     assert.equal(otherWorkstationSocket.closed, false);
