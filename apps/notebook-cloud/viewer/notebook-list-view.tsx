@@ -96,12 +96,11 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   }, [listState]);
 
   useEffect(() => {
-    const cachedNotebooks =
-      readCachedCloudNotebookListFromWindow(authState) ?? bootstrap?.notebooks ?? null;
+    const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache(authState, bootstrap);
     if (!canFetchNotebookList) {
       if (waitingForAppSession) {
         setListState(
-          cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" },
+          seededNotebooks ? { kind: "ready", notebooks: seededNotebooks } : { kind: "loading" },
         );
         return;
       }
@@ -110,9 +109,15 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
       return;
     }
 
+    if (refreshIndex === 0 && bootstrap) {
+      writeCachedCloudNotebookListToWindow(authState, bootstrap.notebooks);
+      setListState({ kind: "ready", notebooks: bootstrap.notebooks });
+      return;
+    }
+
     const controller = new AbortController();
     setListState(
-      cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" },
+      seededNotebooks ? { kind: "ready", notebooks: seededNotebooks } : { kind: "loading" },
     );
     void (async () => {
       try {
@@ -512,8 +517,8 @@ function initialCloudNotebookListState(
   authState: CloudPrototypeAuthState,
   bootstrap: CloudNotebookListBootstrap | null,
 ): CloudNotebookListState {
-  const cachedNotebooks = readCachedCloudNotebookListFromWindow(authState) ?? bootstrap?.notebooks;
-  return cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" };
+  const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache(authState, bootstrap);
+  return seededNotebooks ? { kind: "ready", notebooks: seededNotebooks } : { kind: "loading" };
 }
 
 function fetchCloudNotebookList(
@@ -532,6 +537,13 @@ function fetchCloudNotebookList(
     headers: { Accept: "application/json" },
     signal,
   });
+}
+
+function cloudNotebookListSeedFromBootstrapOrCache(
+  authState: CloudPrototypeAuthState,
+  bootstrap: CloudNotebookListBootstrap | null,
+): CloudNotebookListItem[] | null {
+  return bootstrap?.notebooks ?? readCachedCloudNotebookListFromWindow(authState);
 }
 
 function readCachedCloudNotebookListFromWindow(
