@@ -157,13 +157,19 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /<NotebookDocumentToolbar[\s\S]*frameClassName="z-20"[\s\S]*headerClassName="cloud-room-toolbar"[\s\S]*commandToolbar=\{\{[\s\S]*addAfterCellId: toolbarAddAfterCellId/,
   );
   assert.match(sourceText, /<NotebookDocumentToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
-  assert.match(sourceText, /presence=\{<CloudNotebookTitle \/>/);
+  assert.match(
+    sourceText,
+    /presence=\{[\s\S]*<CloudNotebookTitle[\s\S]*title=\{notebookTitle\}[\s\S]*canRename=\{catalogAccessResolved && catalogGrantsDocumentEdit\}[\s\S]*onRename=\{saveCloudNotebookTitle\}/,
+  );
   assert.match(
     sourceText,
     /import \{ CloudNotebookTitle, cloudNotebookRouteTitle \} from "\.\/cloud-notebook-title";/,
   );
+  assert.match(sourceText, /cloudNotebookTitleDisplay,/);
+  assert.match(sourceText, /cloudNotebookUrlAfterRename,/);
   assert.match(titleSourceText, /className="cloud-notebook-home-link"/);
   assert.match(titleSourceText, /<House aria-hidden="true" \/>/);
+  assert.match(titleSourceText, /<PencilLine aria-hidden="true" \/>/);
   assert.doesNotMatch(titleSourceText, /cloud-notebook-logo/);
   assert.doesNotMatch(sourceText, /function shouldShowCloudNotebookCommandToolbar/);
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
