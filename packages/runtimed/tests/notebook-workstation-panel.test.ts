@@ -5,6 +5,7 @@ import {
   projectNotebookShellCapabilities,
   projectNotebookWorkstationPanel,
   type NotebookShellAccessCapabilities,
+  type NotebookShellAuthCapabilities,
   type NotebookShellRuntimeCapabilities,
 } from "../src";
 import { clearNotebookShellCapabilitiesCachesForTests } from "../src/notebook-shell-capabilities";
@@ -54,11 +55,24 @@ function runtime(
   };
 }
 
+function auth(
+  overrides: Partial<NotebookShellAuthCapabilities> = {},
+): NotebookShellAuthCapabilities {
+  return {
+    canSignIn: false,
+    canUseAuthenticatedIdentity: false,
+    needsAttention: false,
+    ...overrides,
+  };
+}
+
 function capabilities({
   accessOverrides,
+  authOverrides,
   runtimeOverrides,
 }: {
   accessOverrides?: Partial<NotebookShellAccessCapabilities>;
+  authOverrides?: Partial<NotebookShellAuthCapabilities>;
   runtimeOverrides?: Partial<NotebookShellRuntimeCapabilities>;
 } = {}) {
   return projectNotebookShellCapabilities({
@@ -70,6 +84,7 @@ function capabilities({
       canRequestEdit: false,
     }),
     access: access(accessOverrides),
+    auth: auth(authOverrides),
     runtime: runtime(runtimeOverrides),
     execution: {
       available: runtimeOverrides?.executionAvailable ?? true,
@@ -194,5 +209,54 @@ describe("projectNotebookWorkstationPanel", () => {
       ["runtime_peers", "Runtime peers", "2"],
       ["execution_state", "State", "Can run"],
     ]);
+  });
+
+  it("projects stale cloud attachments with access-sensitive user copy", () => {
+    const target = {
+      id: "ws-lab2",
+      kind: "cloud_workstation" as const,
+      status: "attention" as const,
+      label: "Lab2",
+      statusLabel: "Needs attention",
+      detail:
+        "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
+      providerLabel: "Runtime peer",
+      defaultEnvironmentLabel: "Current Python",
+    };
+    const ownerProjection = projectNotebookWorkstationPanel(
+      capabilities({
+        accessOverrides: { level: "owner", source: "cloud" },
+        authOverrides: { canUseAuthenticatedIdentity: true },
+        runtimeOverrides: {
+          canWriteRuntimeState: false,
+          connected: false,
+          executionAvailable: false,
+          source: "cloud",
+          target,
+        },
+      }),
+    );
+    const viewerProjection = projectNotebookWorkstationPanel(
+      capabilities({
+        accessOverrides: { level: "viewer", source: "cloud" },
+        runtimeOverrides: {
+          canWriteRuntimeState: false,
+          connected: false,
+          executionAvailable: false,
+          source: "cloud",
+          target,
+        },
+      }),
+    );
+
+    expect(ownerProjection.detail).toBe(
+      "Compute from Lab2 is no longer connected to this notebook. Start compute again from an available workstation.",
+    );
+    expect(viewerProjection.detail).toBe(
+      "Compute from Lab2 is no longer connected to this notebook. The owner can start compute again from an available workstation.",
+    );
+    expect(ownerProjection.detail).not.toContain("runtime peer");
+    expect(viewerProjection.detail).not.toContain("grace window");
+    expect(ownerProjection).not.toBe(viewerProjection);
   });
 });
