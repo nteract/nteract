@@ -13,6 +13,9 @@ const CONNECTION_SCOPES = [
   "runtime_peer",
   "owner",
 ] as const satisfies readonly ConnectionScope[];
+type MissingConnectionScope = Exclude<ConnectionScope, (typeof CONNECTION_SCOPES)[number]>;
+const CONNECTION_SCOPES_EXHAUSTIVE: MissingConnectionScope extends never ? true : never = true;
+void CONNECTION_SCOPES_EXHAUSTIVE;
 
 export function isConnectionScope(value: string | null | undefined): value is ConnectionScope {
   return typeof value === "string" && CONNECTION_SCOPES.includes(value as ConnectionScope);
