@@ -190,6 +190,38 @@ test("cloud notebook notices distinguish sign-in and access diagnostics from soc
   assert.doesNotMatch(noAccessHtml, /Live room unavailable/);
 });
 
+test("cloud notebook notices replace signed-out local room retries with sign-in required", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: "cloud sync socket failed",
+      signInRequired: true,
+      status: { kind: "loading", message: "Connecting to live notebook room..." },
+    }),
+    true,
+  );
+
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: "cloud sync socket failed",
+      signInRequired: true,
+      status: { kind: "loading", message: "Connecting to live notebook room..." },
+      onResetAuth: () => {},
+      onSignInAgain: () => {},
+    }),
+  );
+
+  assert.match(html, /Sign in required/);
+  assert.match(html, /Sign in again to open the live notebook room/);
+  assert.match(html, /Sign in again/);
+  assert.doesNotMatch(html, /Loading notebook/);
+  assert.doesNotMatch(html, /Connecting to live notebook room/);
+  assert.doesNotMatch(html, /cloud sync socket failed/);
+});
+
 test("cloud notebook notices let access diagnostics own private-route loading", () => {
   assert.equal(
     cloudNotebookHasNotices({

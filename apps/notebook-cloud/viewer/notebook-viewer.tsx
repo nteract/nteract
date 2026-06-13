@@ -86,6 +86,7 @@ import type { ResolvedCell } from "./render-resolution";
 import {
   CloudNotebookNotices,
   cloudNotebookHasNotices,
+  isTransportReconnectError,
   shouldShowCloudAnonymousViewerAuthNotice,
 } from "./notices";
 import {
@@ -1226,6 +1227,15 @@ export function NotebookViewer({
   const notebookHasReadableSnapshot =
     notebookCellIds.length > 0 ||
     (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
+  const signedOutNotebookSignInRequired =
+    Boolean(authConfig.localDev || authConfig.oidc) &&
+    appSessionStatus.status !== "loading" &&
+    !hasAppSession &&
+    authState.mode === "anonymous" &&
+    !isPublicViewer &&
+    !notebookHasReadableSnapshot &&
+    status.kind === "loading" &&
+    Boolean(connectionError && isTransportReconnectError(connectionError));
   const notebookViewSurface = projectCloudNotebookViewSurface({
     bodyAccessBlocked: notebookBodyAccessBlocked,
     cellCount: notebookCellIds.length,
@@ -1268,6 +1278,7 @@ export function NotebookViewer({
     hasAppSession,
     isPublicViewer,
     hasReadableSnapshot: notebookHasReadableSnapshot,
+    signInRequired: signedOutNotebookSignInRequired,
     offlineMergeNotice,
     rendererAssetError,
     sustainedReconnecting,
@@ -1283,6 +1294,7 @@ export function NotebookViewer({
       hasAppSession={hasAppSession}
       isPublicViewer={isPublicViewer}
       hasReadableSnapshot={notebookHasReadableSnapshot}
+      signInRequired={signedOutNotebookSignInRequired}
       offlineMergeNotice={offlineMergeNotice}
       rendererAssetError={rendererAssetError}
       sustainedReconnecting={sustainedReconnecting}

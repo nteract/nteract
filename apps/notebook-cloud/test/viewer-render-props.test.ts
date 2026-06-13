@@ -333,9 +333,17 @@ test("cloud viewer presents live-room failures as one host notice", () => {
     sourceText,
     /notebookCellIds\.length > 0 \|\|[\s\S]*!\s*connectionError && snapshotResolvedRef\.current && status\.kind === "ready"/,
   );
+  assert.match(sourceText, /const signedOutNotebookSignInRequired =/);
+  assert.match(
+    sourceText,
+    /Boolean\(authConfig\.localDev \|\| authConfig\.oidc\)[\s\S]*authState\.mode === "anonymous"[\s\S]*!isPublicViewer[\s\S]*!notebookHasReadableSnapshot[\s\S]*isTransportReconnectError\(connectionError\)/,
+  );
+  assert.match(sourceText, /signInRequired: signedOutNotebookSignInRequired/);
+  assert.match(sourceText, /signInRequired=\{signedOutNotebookSignInRequired\}/);
   assert.match(noticesText, /const connectionNotice = connectionError/);
   assert.match(noticesText, /cloudConnectionNoticeDisplay\(connectionError, hasReadableSnapshot\)/);
   assert.match(noticesText, /const shouldShowStatusNotice =/);
+  assert.match(noticesText, /!signInRequired &&/);
   assert.match(noticesText, /isStatusDerivedFromConnectionError\(status, connectionError\)/);
   assert.match(noticesText, /function isStatusDerivedFromConnectionError/);
   assert.match(noticesText, /function cloudConnectionNoticeDisplay/);
