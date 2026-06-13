@@ -359,6 +359,28 @@ describe("cloud notebook dashboard projection", () => {
     );
   });
 
+  it("distinguishes a continue-only dashboard from a truly empty notebook list", () => {
+    const continued = notebook({
+      id: "solo-notebook",
+      title: "Solo Notebook",
+      scope: "owner",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+
+    const soloModel = projectCloudNotebookDashboard([continued]);
+    const soloView = projectCloudNotebookDashboardView(soloModel);
+    const emptyModel = projectCloudNotebookDashboard([]);
+    const emptyView = projectCloudNotebookDashboardView(emptyModel);
+
+    assert.equal(soloModel.continueNotebook?.notebook_id, "solo-notebook");
+    assert.equal(soloView.resultCount, 1);
+    assert.deepEqual(soloView.sections, []);
+    assert.equal(soloView.emptyMessage, "No other notebooks yet.");
+    assert.equal(emptyView.resultCount, 0);
+    assert.equal(emptyView.emptyMessage, "No notebooks yet.");
+  });
+
   it("surfaces shared notebooks as their own default dashboard section", () => {
     const owned = notebook({
       id: "owned-notes",
