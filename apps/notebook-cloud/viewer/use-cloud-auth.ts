@@ -196,12 +196,16 @@ export function useCloudAppSessionStatus(
   }, [initialSession]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    if (!state.session) {
-      setState((current) =>
-        current.status === "loading" ? current : { ...current, status: "loading", error: null },
-      );
+    if (refreshIndex === 0 && cloudAppSessionIsFresh(initialSession)) {
+      return;
     }
+
+    const controller = new AbortController();
+    setState((current) =>
+      current.session || current.status === "loading"
+        ? current
+        : { ...current, status: "loading", error: null },
+    );
     void readCloudAppSessionStatus({ signal: controller.signal })
       .then((status) => {
         if (controller.signal.aborted) return;
@@ -219,7 +223,7 @@ export function useCloudAppSessionStatus(
     return () => {
       controller.abort();
     };
-  }, [refreshIndex]);
+  }, [initialSession, refreshIndex]);
 
   const clearAppSessionStatus = useCallback(() => {
     setState({ status: "ready", session: null, error: null });
