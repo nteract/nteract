@@ -2159,6 +2159,7 @@ function workstationAttachmentStateForJob(
     claim: {
       status: job.status,
       errorMessage: job.error_message,
+      runtimeSessionId: job.id,
       updatedAt: job.updated_at,
     },
   });

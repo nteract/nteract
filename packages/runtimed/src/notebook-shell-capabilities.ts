@@ -64,6 +64,12 @@ export interface NotebookShellRuntimeTargetProjection {
    * where compute is expected to run.
    */
   id?: string | null;
+  /**
+   * Host-owned identity for one active compute session on this target. Hidden
+   * from the default UI, but included in projection cache identity so replacing
+   * a stale session cannot reuse the old target object.
+   */
+  runtimeSessionId?: string | null;
   kind: NotebookShellRuntimeTargetKind;
   status: NotebookShellRuntimeTargetStatus;
   label: string;
@@ -198,11 +204,11 @@ const CLOUD_NO_WORKSTATION_TARGET: NotebookShellRuntimeTargetProjection = Object
   id: "workstation:none",
   kind: "cloud_workstation",
   status: "offline",
-  label: "No workstation attached",
+  label: "No compute session",
   statusLabel: "Offline",
   providerLabel: "Cloud room",
-  defaultEnvironmentLabel: "Not attached",
-  environmentLabel: "Not attached",
+  defaultEnvironmentLabel: "Not running",
+  environmentLabel: "Not running",
 });
 
 const FIXTURE_RUNTIME_TARGET: NotebookShellRuntimeTargetProjection = Object.freeze({
@@ -223,8 +229,8 @@ const UNKNOWN_RUNTIME_TARGET: NotebookShellRuntimeTargetProjection = Object.free
   label: "No runtime target",
   statusLabel: "Offline",
   providerLabel: "Unknown",
-  defaultEnvironmentLabel: "Not attached",
-  environmentLabel: "Not attached",
+  defaultEnvironmentLabel: "Not running",
+  environmentLabel: "Not running",
 });
 
 export function resolveNotebookShellRuntimeTarget(
@@ -262,6 +268,7 @@ export function notebookShellWorkstationAttachmentCacheKey(
     attachment.memory_bytes ?? null,
     attachment.working_directory ?? null,
     attachment.updated_at ?? null,
+    attachment.runtime_session_id ?? null,
   ]);
 }
 
@@ -280,6 +287,7 @@ export function projectNotebookRuntimeTargetFromWorkstationAttachment(
 
   return {
     id: trimToNull(attachment.workstation_id) ?? "attached-workstation",
+    runtimeSessionId: trimToNull(attachment.runtime_session_id),
     kind: options.kind ?? "cloud_workstation",
     status: statusProjection.status,
     label: trimToNull(attachment.display_name) ?? "Attached workstation",
@@ -476,6 +484,7 @@ const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   resourceLabel: (target) => target.resourceLabel ?? null,
   runtimePeerCount: (target) => target.runtimePeerCount ?? null,
   workingDirectoryLabel: (target) => target.workingDirectoryLabel ?? null,
+  runtimeSessionId: (target) => target.runtimeSessionId ?? null,
 } satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeTargetProjection>;
 const NOTEBOOK_ACTOR_PROJECTION_CACHE_FIELDS = {
   actorLabel: (actor) => actor.actorLabel,
@@ -851,19 +860,19 @@ function workstationAttachmentStatusProjection(status: string): {
       return {
         status: "connecting",
         statusLabel: "Connecting",
-        detail: "The selected workstation is attaching to this room.",
+        detail: "The selected workstation is starting compute for this notebook.",
       };
     case "error":
       return {
         status: "attention",
         statusLabel: "Needs attention",
-        detail: "The selected workstation could not attach to this room.",
+        detail: "The selected workstation could not start compute for this notebook.",
       };
     case "disconnected":
       return {
         status: "offline",
         statusLabel: "Offline",
-        detail: "The selected workstation is not connected to this room.",
+        detail: "The selected workstation is not connected to this notebook.",
       };
     default:
       return { status: "attached", statusLabel: "Attached", detail: null };

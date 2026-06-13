@@ -399,7 +399,7 @@ function RegisteredWorkstationRow({
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
             <h4 className="truncate text-sm font-medium">{workstation.displayName}</h4>
             {workstation.isAttached ? (
-              <span className="text-xs font-medium text-primary">Attached</span>
+              <span className="text-xs font-medium text-primary">Running</span>
             ) : null}
             {workstation.isDefault ? (
               <span className="text-xs font-medium text-muted-foreground">Default</span>
@@ -443,7 +443,7 @@ function RegisteredWorkstationRow({
             disabled={busy || workstation.isAttached || !workstation.canAttach}
             onClick={() => onAttachWorkstation(workstation.id)}
           >
-            {workstation.isAttached ? "Attached" : busy ? "Attaching" : "Attach"}
+            {workstation.isAttached ? "Running" : busy ? "Starting" : "Start"}
           </Button>
         ) : null}
       </div>

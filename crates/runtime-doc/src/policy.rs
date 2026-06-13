@@ -1100,6 +1100,7 @@ mod tests {
             memory_bytes: None,
             working_directory: None,
             updated_at: Some("2026-06-07T21:00:00Z".to_string()),
+            runtime_session_id: Some("job-runtime".to_string()),
         }
     }
 }

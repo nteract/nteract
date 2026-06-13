@@ -61,10 +61,16 @@ interface PeerAttachment {
 
 interface RuntimePeerWorkstationMetadata {
   workstationId?: string;
+  runtimeSessionId?: string;
   displayName?: string;
   defaultEnvironmentLabel?: string;
   environmentPolicy?: string;
   workingDirectory?: string;
+}
+
+interface SelectedRuntimePeerSession {
+  workstationId: string;
+  runtimeSessionId: string | null;
 }
 
 interface RejectFrameOptions {
@@ -198,6 +204,10 @@ export class NotebookRoom {
   >();
   private broadcastDepth = 0;
   private readonly materializers = new Map<string, RoomMaterializer>();
+  private readonly selectedRuntimePeerSessions = new Map<
+    string,
+    SelectedRuntimePeerSession | null
+  >();
   private readonly restoredPeersReady: Promise<void>;
   private readonly pendingRuntimePeerResponses = new Map<string, PendingRuntimePeerResponse>();
   // In-memory only by design: persisting on the frame hot path would cost more
@@ -376,6 +386,7 @@ export class NotebookRoom {
     try {
       const materializer = this.materializerFor(notebookId);
       const result = await materializer.setWorkstationAttachment(attachment);
+      this.cacheSelectedRuntimePeerSession(notebookId, attachment);
       if (closeRuntimePeers) {
         this.removeRuntimePeers(notebookId, {
           code: 1012,
@@ -458,6 +469,7 @@ export class NotebookRoom {
     try {
       const materializer = this.materializerFor(notebookId);
       const result = await materializer.reconcileRuntimePeerGone(reason);
+      this.invalidateSelectedRuntimePeerSession(notebookId);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
       }
@@ -560,12 +572,13 @@ export class NotebookRoom {
             principal: peer.identity.principal,
             reason: authorityError,
             workstation_id: runtimePeerWorkstationId(peer.workstation),
+            runtime_session_id: runtimePeerRuntimeSessionId(peer.workstation),
             counter: "runtime_peers_rejected_on_restore",
             counter_delta: 1,
           });
           this.removePeer(notebookId, peer, {
             code: 1008,
-            reason: "workstation mismatch",
+            reason: "stale runtime session",
           });
           continue;
         }
@@ -734,6 +747,29 @@ export class NotebookRoom {
       incomingByteLength,
     );
 
+    if (peer.identity.scope === "runtime_peer") {
+      const authorityError = await this.runtimePeerAuthorityError(notebookId, peer.workstation);
+      if (authorityError) {
+        cloudLog("warn", "room.runtime_peer.stale_frame_closed", {
+          notebook_id: notebookId,
+          peer_id: peer.id,
+          principal: peer.identity.principal,
+          reason: authorityError,
+          workstation_id: runtimePeerWorkstationId(peer.workstation),
+          runtime_session_id: runtimePeerRuntimeSessionId(peer.workstation),
+          frame_type: frameTypeName(frame.type),
+          counter: "runtime_peer_stale_frames_closed",
+          counter_delta: 1,
+        });
+        this.removePeer(notebookId, peer, {
+          code: 1008,
+          reason: "stale runtime session",
+          suppressRuntimePeerWatch: true,
+        });
+        return;
+      }
+    }
+
     const sizeLimits = frameSizeLimits(frame.type);
     if (frame.payload.byteLength > sizeLimits.cap) {
       this.rejectFrame(
@@ -850,7 +886,7 @@ export class NotebookRoom {
       requestMetadata?.action ?? null,
     );
     if (forwardedRequestAction) {
-      const forwardedRuntimePeerId = this.forwardRequestToActiveRuntimePeer(
+      const forwardedRuntimePeerId = await this.forwardRequestToActiveRuntimePeer(
         notebookId,
         normalizedFrame,
         peer.id,
@@ -913,7 +949,7 @@ export class NotebookRoom {
         return;
       }
 
-      const forwardedRuntimePeerId = this.forwardQueryToActiveRuntimePeer(
+      const forwardedRuntimePeerId = await this.forwardQueryToActiveRuntimePeer(
         notebookId,
         normalizedFrame,
         peer.id,
@@ -1142,9 +1178,9 @@ export class NotebookRoom {
     const startedAt = Date.now();
     try {
       const materializer = this.materializerFor(notebookId);
-      const result = await materializer.setWorkstationAttachment(
-        runtimePeerWorkstationAttachment(peer),
-      );
+      const attachment = runtimePeerWorkstationAttachment(peer);
+      const result = await materializer.setWorkstationAttachment(attachment);
+      this.cacheSelectedRuntimePeerSession(notebookId, attachment);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
         await this.checkpointRoomHost(notebookId, materializer, "runtime_peer_attachment");
@@ -1176,22 +1212,24 @@ export class NotebookRoom {
     notebookId: string,
     workstation: RuntimePeerWorkstationMetadata | null,
   ): Promise<string | null> {
-    const attachment = await this.materializerFor(notebookId).getWorkstationAttachment();
-    if (!attachment) {
-      return null;
-    }
-
-    const selectedWorkstationId = attachment.workstation_id.trim();
-    if (!selectedWorkstationId || selectedWorkstationId === "runtime-peer") {
+    const selected = await this.selectedRuntimePeerSession(notebookId);
+    if (!selected) {
       return null;
     }
 
     const presentedWorkstationId = runtimePeerWorkstationId(workstation);
-    if (presentedWorkstationId === selectedWorkstationId) {
-      return null;
+    if (presentedWorkstationId === selected.workstationId) {
+      if (!selected.runtimeSessionId) {
+        return null;
+      }
+      const presentedSessionId = runtimePeerRuntimeSessionId(workstation);
+      if (presentedSessionId === selected.runtimeSessionId) {
+        return null;
+      }
+      return `runtime peer session ${presentedSessionId ?? "unknown"} does not match selected runtime session ${selected.runtimeSessionId}`;
     }
 
-    return `runtime peer workstation ${presentedWorkstationId} does not match selected workstation ${selectedWorkstationId}`;
+    return `runtime peer workstation ${presentedWorkstationId} does not match selected workstation ${selected.workstationId}`;
   }
 
   private removeRuntimePeers(notebookId: string, closeOptions: PeerCloseOptions): void {
@@ -1252,26 +1290,26 @@ export class NotebookRoom {
     }
   }
 
-  private forwardRequestToActiveRuntimePeer(
+  private async forwardRequestToActiveRuntimePeer(
     notebookId: string,
     frame: TypedFrame,
     sourcePeerId: string,
-  ): string | null {
-    const runtimePeer = this.activeRuntimePeer(sourcePeerId);
+  ): Promise<string | null> {
+    const runtimePeer = await this.activeRuntimePeer(notebookId, sourcePeerId);
     if (!runtimePeer) {
       return null;
     }
     return this.forwardFrameToRuntimePeer(notebookId, runtimePeer, frame) ? runtimePeer.id : null;
   }
 
-  private forwardQueryToActiveRuntimePeer(
+  private async forwardQueryToActiveRuntimePeer(
     notebookId: string,
     frame: TypedFrame,
     sourcePeerId: string,
     requestId: string,
     action: RuntimePeerQueryRequestAction,
-  ): string | null {
-    const runtimePeer = this.activeRuntimePeer(sourcePeerId);
+  ): Promise<string | null> {
+    const runtimePeer = await this.activeRuntimePeer(notebookId, sourcePeerId);
     if (!runtimePeer) {
       return null;
     }
@@ -1307,10 +1345,17 @@ export class NotebookRoom {
     return runtimePeer.id;
   }
 
-  private activeRuntimePeer(sourcePeerId: string): Peer | undefined {
+  private async activeRuntimePeer(
+    notebookId: string,
+    sourcePeerId: string,
+  ): Promise<Peer | undefined> {
+    const selectedRuntimeSession = await this.selectedRuntimePeerSession(notebookId);
     let selected: Peer | undefined;
     for (const peer of this.peers.values()) {
       if (peer.id === sourcePeerId || peer.identity.scope !== "runtime_peer") {
+        continue;
+      }
+      if (!runtimePeerMatchesSelectedSession(peer, selectedRuntimeSession)) {
         continue;
       }
       if (!selected || peer.connectedAt >= selected.connectedAt) {
@@ -1320,6 +1365,36 @@ export class NotebookRoom {
     return selected;
   }
 
+  private async selectedRuntimePeerSession(
+    notebookId: string,
+  ): Promise<SelectedRuntimePeerSession | null> {
+    if (this.selectedRuntimePeerSessions.has(notebookId)) {
+      return this.selectedRuntimePeerSessions.get(notebookId) ?? null;
+    }
+    const materializer = this.materializerFor(notebookId);
+    if (typeof materializer.getWorkstationAttachment !== "function") {
+      return null;
+    }
+    const attachment = await materializer.getWorkstationAttachment();
+    const selected = selectedRuntimePeerSessionFromAttachment(attachment);
+    this.selectedRuntimePeerSessions.set(notebookId, selected);
+    return selected;
+  }
+
+  private cacheSelectedRuntimePeerSession(
+    notebookId: string,
+    attachment: WorkstationAttachmentState | null,
+  ): void {
+    this.selectedRuntimePeerSessions.set(
+      notebookId,
+      selectedRuntimePeerSessionFromAttachment(attachment),
+    );
+  }
+
+  private invalidateSelectedRuntimePeerSession(notebookId: string): void {
+    this.selectedRuntimePeerSessions.delete(notebookId);
+  }
+
   private forwardFrameToRuntimePeer(
     notebookId: string,
     runtimePeer: Peer,
@@ -1327,9 +1402,9 @@ export class NotebookRoom {
   ): boolean {
     const encoded = encodeTypedFrame(frame.type, frame.payload);
 
-    // Overlapping runtime peers can happen during reconnect races. Command
-    // requests target the latest peer, matching the workstation attachment's
-    // `updated_at` projection until runtime generations become explicit.
+    // Overlapping runtime peers can happen during reconnect races. Stale
+    // sessions are rejected on connect/restore/frame ingress; within the
+    // accepted session, command requests target the latest peer.
     this.broadcastDepth += 1;
     let delivered = false;
     try {
@@ -1793,6 +1868,7 @@ export class NotebookRoom {
       const result = await this.materializerFor(notebookId).reconcileRuntimePeerGone(
         "runtime peer left the room and did not return within the grace window",
       );
+      this.invalidateSelectedRuntimePeerSession(notebookId);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
         this.scheduleRoomHostCheckpoint(
@@ -1889,12 +1965,52 @@ function runtimePeerWorkstationAttachment(peer: Peer): WorkstationAttachmentStat
     memory_bytes: null,
     working_directory: workstation?.workingDirectory ?? null,
     updated_at: peer.connectedAt,
+    runtime_session_id: workstation?.runtimeSessionId ?? null,
   };
 }
 
 function runtimePeerWorkstationId(workstation: RuntimePeerWorkstationMetadata | null): string {
   const workstationId = workstation?.workstationId?.trim();
   return workstationId && workstationId.length > 0 ? workstationId : "runtime-peer";
+}
+
+function runtimePeerRuntimeSessionId(
+  workstation: RuntimePeerWorkstationMetadata | null,
+): string | null {
+  const runtimeSessionId = workstation?.runtimeSessionId?.trim();
+  return runtimeSessionId && runtimeSessionId.length > 0 ? runtimeSessionId : null;
+}
+
+function selectedRuntimePeerSessionFromAttachment(
+  attachment: WorkstationAttachmentState | null,
+): SelectedRuntimePeerSession | null {
+  if (!attachment) {
+    return null;
+  }
+  const workstationId = attachment.workstation_id.trim();
+  if (!workstationId || workstationId === "runtime-peer") {
+    return null;
+  }
+  return {
+    workstationId,
+    runtimeSessionId: attachment.runtime_session_id?.trim() || null,
+  };
+}
+
+function runtimePeerMatchesSelectedSession(
+  peer: Peer,
+  selected: SelectedRuntimePeerSession | null,
+): boolean {
+  if (!selected) {
+    return true;
+  }
+  if (runtimePeerWorkstationId(peer.workstation) !== selected.workstationId) {
+    return false;
+  }
+  if (!selected.runtimeSessionId) {
+    return true;
+  }
+  return runtimePeerRuntimeSessionId(peer.workstation) === selected.runtimeSessionId;
 }
 
 function roomPeerParticipantKey(peer: Peer): string {
@@ -1913,6 +2029,7 @@ export function runtimePeerWorkstationMetadataFromRequest(
   }
   return normalizeRuntimePeerWorkstationMetadata({
     workstationId: boundedHeader(request, "x-nteract-workstation-id", 128),
+    runtimeSessionId: boundedHeader(request, "x-nteract-runtime-session-id", 128),
     displayName: boundedHeader(request, "x-nteract-workstation-display-name", 160),
     defaultEnvironmentLabel: boundedHeader(
       request,
@@ -1934,6 +2051,7 @@ function normalizeRuntimePeerWorkstationMetadata(
   const candidate = value as Partial<RuntimePeerWorkstationMetadata>;
   const metadata: RuntimePeerWorkstationMetadata = {};
   setBoundedMetadataField(metadata, "workstationId", candidate.workstationId, 128);
+  setBoundedMetadataField(metadata, "runtimeSessionId", candidate.runtimeSessionId, 128);
   setBoundedMetadataField(metadata, "displayName", candidate.displayName, 160);
   setBoundedMetadataField(
     metadata,
@@ -1963,6 +2081,9 @@ function setBoundedMetadataField(
   switch (key) {
     case "workstationId":
       metadata.workstationId = bounded;
+      break;
+    case "runtimeSessionId":
+      metadata.runtimeSessionId = bounded;
       break;
     case "displayName":
       metadata.displayName = bounded;

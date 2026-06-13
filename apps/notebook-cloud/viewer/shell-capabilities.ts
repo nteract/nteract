@@ -225,9 +225,9 @@ function cloudRuntimeTarget({
       id: "attached-workstation",
       kind: "cloud_workstation",
       status: "ready",
-      label: "Attached workstation",
+      label: "Connected workstation",
       statusLabel: "Ready",
-      detail: "A runtime peer is attached to this room.",
+      detail: "A compute session is connected to this notebook.",
       providerLabel: "Cloud room",
       defaultEnvironmentLabel: "Current Python",
       environmentLabel: "Current Python",
@@ -239,12 +239,12 @@ function cloudRuntimeTarget({
     id: "workstation:none",
     kind: "cloud_workstation",
     status: "offline",
-    label: "No workstation attached",
+    label: "No compute session",
     statusLabel: "Offline",
-    detail: "Attach a user-owned workstation to run cells in this room.",
+    detail: "Start compute from a user-owned workstation to run cells in this notebook.",
     providerLabel: "Cloud room",
-    defaultEnvironmentLabel: "Not attached",
-    environmentLabel: "Not attached",
+    defaultEnvironmentLabel: "Not running",
+    environmentLabel: "Not running",
   };
 }
 

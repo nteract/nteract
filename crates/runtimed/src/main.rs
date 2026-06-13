@@ -186,6 +186,10 @@ enum Commands {
         /// Non-secret.
         #[arg(long)]
         workstation_display_name: Option<String>,
+        /// Runtime session id to present to the hosted room. Workstation attach
+        /// jobs pass their job id here so the room can fence stale peers.
+        #[arg(long)]
+        runtime_session_id: Option<String>,
     },
 
     /// Serve this machine as a workstation for a hosted nteract cloud:
@@ -550,6 +554,7 @@ async fn main() -> anyhow::Result<()> {
             working_dir,
             workstation_id,
             workstation_display_name,
+            runtime_session_id,
         }) => {
             let cli_args = runtimed::workstation::CloudAgentArgs {
                 cloud_url,
@@ -568,10 +573,12 @@ async fn main() -> anyhow::Result<()> {
             if python_path.is_none()
                 && (workstation_id.is_some()
                     || workstation_display_name.is_some()
+                    || runtime_session_id.is_some()
                     || resolved_working_dir.is_some())
             {
                 config.workstation = Some(notebook_cloud_transport::CloudWorkstationMetadata {
                     workstation_id: workstation_id.clone(),
+                    runtime_session_id: runtime_session_id.clone(),
                     display_name: workstation_display_name.clone(),
                     default_environment_label: None,
                     environment_policy: None,
@@ -593,6 +600,7 @@ async fn main() -> anyhow::Result<()> {
                             launch_working_dir.as_deref(),
                         );
                     workstation_metadata.workstation_id = workstation_id;
+                    workstation_metadata.runtime_session_id = runtime_session_id;
                     workstation_metadata.display_name = workstation_display_name;
                     let target = runtimed::workstation::RoomTarget {
                         cloud_url: config.cloud_url.clone(),

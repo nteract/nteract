@@ -41,7 +41,7 @@ const cloudUnavailableCapabilities: LaunchCapabilities = {
     target: {
       id: "workstation:none",
       kind: "cloud_workstation",
-      label: "No workstation attached",
+      label: "No compute session",
       status: "offline",
       statusLabel: "Offline",
     },

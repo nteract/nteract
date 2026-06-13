@@ -359,6 +359,7 @@ workstation_environment_policy
 workstation_cpu_count
 workstation_memory_bytes
 workstation_working_directory
+runtime_session_id
 workstation_status = disconnected | connecting | ready | busy | error
 workstation_capabilities
 ```
@@ -388,6 +389,21 @@ attachment display. Because target readiness affects execution dispatch and
 late joiners, the v1 default is room-host-owned runtime state. That keeps the
 design aligned with the current policy: `env` and other deployment facts are
 room-host/daemon-owned fields, not fields a `runtime_peer` may mutate directly.
+
+Hosted workstation compute also needs a room-owned runtime session identity.
+For the current implementation, the D1 `workstation_attach_jobs.id` is reused
+as the `RuntimeStateDoc.workstation.runtime_session_id`. The workstation
+connector passes that id to `runtimed cloud-runtime-agent`, and the runtime
+peer presents it to the room WebSocket as
+`X-Nteract-Runtime-Session-Id`. The room host uses the id to fence stale
+runtime peers: once a notebook selects a newer runtime session, frames from a
+peer for an older session are closed before they can author room state. Legacy
+or local attachments that omit `runtime_session_id` are still allowed by
+workstation id until they adopt explicit sessions.
+
+`workstation_attachment` remains the internal field/API name for the selected
+target snapshot. User-facing copy should prefer "compute session" or "runtime
+session" where "attachment" would be confused with notebook attachments.
 
 ## Decision 8: Content discovery and runtime attachment stay separate
 
@@ -702,7 +718,7 @@ change, not a drop-in. The runtime_peer ACL requirement holds either way: an
 explicit `runtime_peer` ACL row via `POST /api/n/:id/acl` (owner alone is 403;
 `aclRowsCoverScope` special-cases the scope).
 
-## Implementation status (2026-06-10): the system as built
+## Implementation status (2026-06-13): the system as built
 
 The end-to-end path is live. What exists, mapped to the implementation
 sequence:
@@ -721,6 +737,13 @@ sequence:
   (`use-cloud-workstations.ts`) drives `/api/n/:id/workstation-attachments`;
   attach jobs command the connector, which attaches as `runtime_peer` over
   `CloudWsFrameTransport`.
+- **Runtime session fencing.** Hosted attach jobs are now explicit runtime
+  sessions. The room host mirrors the attach-job id into
+  `RuntimeStateDoc.workstation.runtime_session_id`, runtime peers present the
+  same id in their WebSocket metadata, and the room closes runtime-peer frames
+  whose workstation or runtime session no longer matches the room-owned target.
+  This prevents a late peer from a previous compute start from writing stale
+  runtime state after the user selects or restarts compute.
 - **Execution (steps 10–11).** The room host queues executions from owner
   REQUESTs (#3399); viewer requests resolve via `cloud_frame_accepted` /
   `cloud_frame_rejected` acks. Launch-on-attach starts a `current_python`
@@ -733,8 +756,9 @@ sequence:
   not persist as room history and do not produce `RESPONSE` envelopes; visible
   results must arrive through RuntimeStateDoc/CommsDoc convergence, matching the
   local runtime-agent command model. During reconnect overlap, command routing
-  targets the newest connected runtime peer, matching the attachment
-  `updated_at` projection until runtime generations become explicit.
+  targets the newest connected runtime peer for the selected session. The
+  runtime session id fences older peers; within one accepted session, newest
+  peer still wins during reconnect overlap.
   `send_comm` is especially easy to misread: the socket ack only means the room
   forwarded the comm message to the selected runtime peer. The widget-visible
   result is still the later CommsDoc/RuntimeStateDoc change; cloud must not
@@ -767,9 +791,10 @@ Runtime request subtleties to keep visible:
 - Response-bearing requests need per-action contracts. A narrow query bridge is
   acceptable for `complete`; lifecycle requests such as restart need room-owned
   state transitions, stale-runtime deadlines, and late-response suppression.
-- The newest-runtime-peer rule is a temporary routing policy. Runtime
-  generations should eventually make "which runtime handled this request"
-  explicit enough to ignore late frames from a replaced peer.
+- The runtime session id prevents stale peers from authoring state after a
+  replacement, but per-request lifecycle semantics still need explicit
+  contracts. Restart must say whether a late old peer is ignored, whether the
+  room starts a fresh session, and what deadline makes the old session invalid.
 - Unsupported requests should fail loudly and cheaply. Accepting a delivered
   frame that the room cannot observe or reconcile creates false UI readiness.
 
@@ -780,10 +805,10 @@ Still open: response-bearing kernel lifecycle over cloud
 product-shaped history contract), the attachment-ticket contract (step 6; dev
 path today is API key / dev token plus an explicit `runtime_peer` ACL row),
 catalog projection (step 5), and the provider-specific Outerbounds/JupyterHub
-smokes (step 12). Restart also needs a bounded stale-runtime policy: if the
-selected runtime does not confirm restart in time, the room should assume that
-runtime generation is gone, start a new attachment, and ignore late frames from
-the old runtime. Tracked in
+smokes (step 12). Restart also needs a bounded runtime-session lifecycle
+policy: if the selected runtime does not confirm restart in time, the room
+should assume that session is gone, start a new session, and ignore late frames
+from the old session. Tracked in
 [#3381](https://github.com/nteract/nteract/issues/3381).
 
 ## Open questions

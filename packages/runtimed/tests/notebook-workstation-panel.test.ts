@@ -142,11 +142,11 @@ describe("projectNotebookWorkstationPanel", () => {
             id: "workstation:none",
             kind: "cloud_workstation",
             status: "offline",
-            label: "No workstation attached",
+            label: "No compute session",
             statusLabel: "Offline",
-            detail: "Attach a user-owned workstation to run cells in this room.",
+            detail: "Start compute from a user-owned workstation to run cells in this notebook.",
             providerLabel: "Cloud room",
-            defaultEnvironmentLabel: "Not attached",
+            defaultEnvironmentLabel: "Not running",
           },
         },
       }),
@@ -154,16 +154,16 @@ describe("projectNotebookWorkstationPanel", () => {
 
     expect(projection).toMatchObject({
       targetId: "workstation:none",
-      title: "No workstation attached",
+      title: "No compute session",
       statusLabel: "Offline",
       tone: "offline",
-      detail: "Attach a user-owned workstation to run cells in this room.",
+      detail: "Start compute from a user-owned workstation to run cells in this notebook.",
       providerLabel: "Cloud room",
-      defaultEnvironmentLabel: "Not attached",
+      defaultEnvironmentLabel: "Not running",
     });
     expect(projection.facts.map((fact) => fact.value)).toEqual([
       "Cloud room",
-      "Not attached",
+      "Not running",
       "Not runnable",
     ]);
     expect(projection.facts.find((fact) => fact.kind === "execution_state")?.tone).toBe(
@@ -185,9 +185,9 @@ describe("projectNotebookWorkstationPanel", () => {
             id: "attached-workstation",
             kind: "cloud_workstation",
             status: "ready",
-            label: "Attached workstation",
+            label: "Connected workstation",
             statusLabel: "Ready",
-            detail: "A runtime peer is attached to this room.",
+            detail: "A compute session is connected to this notebook.",
             providerLabel: "Cloud room",
             defaultEnvironmentLabel: "Current Python",
             runtimePeerCount: 2,
@@ -198,10 +198,10 @@ describe("projectNotebookWorkstationPanel", () => {
 
     expect(projection).toMatchObject({
       targetId: "attached-workstation",
-      title: "Attached workstation",
+      title: "Connected workstation",
       statusLabel: "Ready",
       tone: "ready",
-      summary: "Attached workstation",
+      summary: "Connected workstation",
     });
     expect(projection.facts.map((fact) => [fact.kind, fact.label, fact.value])).toEqual([
       ["provider", "Provider", "Cloud room"],

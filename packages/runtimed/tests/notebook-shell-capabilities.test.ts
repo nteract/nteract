@@ -257,8 +257,8 @@ describe("projectNotebookShellCapabilities", () => {
       id: "workstation:none",
       kind: "cloud_workstation",
       status: "offline",
-      label: "No workstation attached",
-      defaultEnvironmentLabel: "Not attached",
+      label: "No compute session",
+      defaultEnvironmentLabel: "Not running",
     });
     expect(resolveNotebookShellRuntimeTarget(first.runtime)).toBe(first.runtime.target);
 
@@ -288,9 +288,9 @@ describe("projectNotebookShellCapabilities", () => {
           id: "attached-workstation",
           kind: "cloud_workstation",
           status: "ready",
-          label: "Attached workstation",
+          label: "Connected workstation",
           statusLabel: "Ready",
-          detail: "A runtime peer is attached to this room.",
+          detail: "A compute session is connected to this notebook.",
           providerLabel: "Cloud room",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
@@ -322,9 +322,9 @@ describe("projectNotebookShellCapabilities", () => {
           id: "attached-workstation",
           kind: "cloud_workstation",
           status: "ready",
-          label: "Attached workstation",
+          label: "Connected workstation",
           statusLabel: "Ready",
-          detail: "A runtime peer is attached to this room.",
+          detail: "A compute session is connected to this notebook.",
           providerLabel: "Cloud room",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
@@ -385,6 +385,7 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
       memory_bytes: 32 * 1024 ** 3,
       working_directory: "/home/ubuntu/notebooks",
       updated_at: "2026-06-07T21:00:00Z",
+      runtime_session_id: "job-123",
       ...overrides,
     };
   }
@@ -403,11 +404,25 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
       providerLabel: "Local daemon",
       defaultEnvironmentLabel: "Current Python",
       environmentLabel: "Current Python",
+      runtimeSessionId: "job-123",
       cpuCount: 8,
       memoryBytes: 32 * 1024 ** 3,
       runtimePeerCount: 1,
       workingDirectoryLabel: "/home/ubuntu/notebooks",
     });
+  });
+
+  it("uses runtime session id in target projection identity", () => {
+    const first = projectNotebookRuntimeTargetFromWorkstationAttachment(
+      attachment({ runtime_session_id: "job-123" }),
+    );
+    const second = projectNotebookRuntimeTargetFromWorkstationAttachment(
+      attachment({ runtime_session_id: "job-456" }),
+    );
+
+    expect(first).not.toBe(second);
+    expect(first?.runtimeSessionId).toBe("job-123");
+    expect(second?.runtimeSessionId).toBe("job-456");
   });
 
   it("keeps connecting attachments connected but not executable", () => {

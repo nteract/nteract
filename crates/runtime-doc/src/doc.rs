@@ -69,6 +69,7 @@
 //!     memory_bytes: Uint|null
 //!     working_directory: Str|null
 //!     updated_at: Str|null
+//!     runtime_session_id: Str|null
 //!   display_index/          Map (keyed by display_id)
 //!     {display_id}/         Map
 //!       {execution_id\0output_id}: Bool
@@ -358,6 +359,11 @@ pub struct WorkstationAttachmentState {
     pub working_directory: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
+    /// Room-host-owned identity for one compute session attached to this
+    /// notebook. Hosted workstations use the attach-job id; local and legacy
+    /// RuntimeStateDocs omit it.
+    #[serde(default)]
+    pub runtime_session_id: Option<String>,
 }
 
 /// Full runtime state snapshot.
@@ -2433,6 +2439,7 @@ impl RuntimeStateDoc {
             memory_bytes: self.read_opt_u64(&workstation, "memory_bytes"),
             working_directory: self.read_opt_str(&workstation, "working_directory"),
             updated_at: self.read_opt_str(&workstation, "updated_at"),
+            runtime_session_id: self.read_opt_str(&workstation, "runtime_session_id"),
         })
     }
 
@@ -2490,6 +2497,11 @@ impl RuntimeStateDoc {
             state.working_directory.as_deref(),
         )?;
         self.put_optional_str_at(&workstation, "updated_at", state.updated_at.as_deref())?;
+        self.put_optional_str_at(
+            &workstation,
+            "runtime_session_id",
+            state.runtime_session_id.as_deref(),
+        )?;
         Ok(())
     }
 
@@ -3895,6 +3907,7 @@ mod tests {
             memory_bytes: Some(32 * 1024 * 1024 * 1024),
             working_directory: Some("/home/ubuntu/notebooks".to_string()),
             updated_at: Some("2026-06-07T21:00:00Z".to_string()),
+            runtime_session_id: Some("job-123".to_string()),
         }
     }
 
