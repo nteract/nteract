@@ -103,7 +103,11 @@ import { cloudResponseError } from "./cloud-response";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
-import { projectCloudAccessRequestTransition } from "./cloud-access-request-state";
+import {
+  projectCloudAccessRequestNotice,
+  projectCloudAccessRequestTransition,
+  type CloudAccessRequestNoticeProjection,
+} from "./cloud-access-request-state";
 import {
   cloudNotebookAccessScopeForShell,
   cloudNotebookLiveRoomConnectionPolicy,
@@ -1239,7 +1243,13 @@ export function NotebookViewer({
     notebookViewIsLoading && (status.kind === "ready" || status.kind === "empty")
       ? { kind: "loading", message: "Preparing notebook view..." }
       : status;
-  const accessRequestNotice = cloudAccessRequestNotice(effectiveAccessRequest, accessRequestError);
+  const accessRequestNotice = cloudAccessRequestNotice(
+    projectCloudAccessRequestNotice({
+      error: accessRequestError,
+      request: effectiveAccessRequest,
+      selectedMode: selectedInteractionMode,
+    }),
+  );
   // Asset health is its own quiet surface: N identical renderer failures
   // collapse into ONE notice (the provider state is module-level shared)
   // plus per-output fallbacks. It never feeds the connection dot or
@@ -1354,64 +1364,67 @@ function cloudNotebookEnvironmentManager(
 }
 
 function cloudAccessRequestNotice(
-  request: CloudNotebookAccessRequest | null,
-  error: string | null,
+  projection: CloudAccessRequestNoticeProjection | null,
 ): ReactNode {
-  if (error) {
-    return (
-      <NotebookNotice
-        tone="error"
-        icon={<AlertCircle className="h-4 w-4" />}
-        title="Edit request failed."
-      >
-        {error}
-      </NotebookNotice>
-    );
-  }
-
-  if (!request) {
+  if (!projection) {
     return null;
   }
 
-  if (request.status === "pending") {
+  if (projection.kind === "error") {
     return (
       <NotebookNotice
-        tone="info"
+        tone={projection.tone}
+        icon={<AlertCircle className="h-4 w-4" />}
+        title={projection.title}
+      >
+        {projection.message}
+      </NotebookNotice>
+    );
+  }
+
+  if (projection.kind === "pending") {
+    return (
+      <NotebookNotice
+        tone={projection.tone}
         icon={<Loader2 className="h-4 w-4 animate-spin" />}
-        title="Edit access requested."
+        title={projection.title}
       >
-        The owner can review this request from the sharing panel.
+        {projection.message}
       </NotebookNotice>
     );
   }
 
-  if (request.status === "approved") {
+  if (projection.kind === "approved") {
     return (
       <NotebookNotice
-        tone="success"
+        tone={projection.tone}
         icon={<Check className="h-4 w-4" />}
-        title="Edit access approved."
+        title={projection.title}
       >
-        Reconnecting with editor access.
+        {projection.message}
       </NotebookNotice>
     );
   }
 
-  if (request.status === "denied") {
+  if (projection.kind === "denied") {
     return (
-      <NotebookNotice tone="warning" icon={<X className="h-4 w-4" />} title="Edit request denied.">
-        The notebook stays in view mode.
+      <NotebookNotice
+        tone={projection.tone}
+        icon={<X className="h-4 w-4" />}
+        title={projection.title}
+      >
+        {projection.message}
       </NotebookNotice>
     );
   }
 
   return (
     <NotebookNotice
-      tone="info"
+      tone={projection.tone}
       icon={<AlertCircle className="h-4 w-4" />}
-      title="Edit request dismissed."
+      title={projection.title}
     >
-      The owner dismissed the request.
+      {projection.message}
     </NotebookNotice>
   );
 }

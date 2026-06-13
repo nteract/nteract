@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   cloudPrototypeAuthCarriesRequestedScope,
+  projectCloudAccessRequestNotice,
   projectCloudAccessRequestTransition,
 } from "../viewer/cloud-access-request-state";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
@@ -129,6 +130,54 @@ describe("cloud access-request state projection", () => {
         selectedMode: null,
         refreshPrototypeAuth: false,
         retryLiveConnection: false,
+      },
+    );
+  });
+
+  it("keeps stored edit-request notices passive in explicit view mode", () => {
+    assert.equal(
+      projectCloudAccessRequestNotice({
+        error: null,
+        request: { status: "pending" },
+        selectedMode: "view",
+      }),
+      null,
+    );
+    assert.equal(
+      projectCloudAccessRequestNotice({
+        error: null,
+        request: { status: "denied" },
+        selectedMode: "view",
+      }),
+      null,
+    );
+  });
+
+  it("projects user-facing edit-request notices for explicit edit mode", () => {
+    assert.deepEqual(
+      projectCloudAccessRequestNotice({
+        error: null,
+        request: { status: "pending" },
+        selectedMode: "edit",
+      }),
+      {
+        kind: "pending",
+        tone: "info",
+        title: "Edit access requested.",
+        message: "The owner can review this request from the sharing panel.",
+      },
+    );
+    assert.deepEqual(
+      projectCloudAccessRequestNotice({
+        error: "network failed",
+        request: null,
+        selectedMode: "view",
+      }),
+      {
+        kind: "error",
+        tone: "error",
+        title: "Edit request failed.",
+        message: "network failed",
       },
     );
   });
