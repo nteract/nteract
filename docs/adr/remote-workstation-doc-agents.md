@@ -401,6 +401,10 @@ peer for an older session are closed before they can author room state. Legacy
 or local attachments that omit `runtime_session_id` are still allowed by
 workstation id until they adopt explicit sessions.
 
+`workstation_attachment` remains the internal field/API name for the selected
+target snapshot. User-facing copy should prefer "compute session" or "runtime
+session" where "attachment" would be confused with notebook attachments.
+
 ## Decision 8: Content discovery and runtime attachment stay separate
 
 PR #3380's shared Content rail is relevant to workstations, but it should not

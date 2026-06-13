@@ -81,7 +81,7 @@ describe("notebook workstation selection projection", () => {
     const attached = projectNotebookWorkstationSelection({
       activeAttachment: {
         workstation_id: "ws-attached",
-        display_name: "Attached workstation",
+        display_name: "Connected workstation",
         provider: "runtime_peer",
         default_environment_label: "Current Python",
         environment_policy: "current_python",
@@ -96,7 +96,7 @@ describe("notebook workstation selection projection", () => {
     expect(attached.activeWorkstationId).toBe("ws-attached");
     expect(attached.activeTarget).toMatchObject({
       id: "ws-attached",
-      label: "Attached workstation",
+      label: "Connected workstation",
       status: "ready",
     });
     expect(attached.selectedWorkstation?.id).toBe("ws-lab2");

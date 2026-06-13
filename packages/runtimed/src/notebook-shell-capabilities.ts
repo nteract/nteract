@@ -204,11 +204,11 @@ const CLOUD_NO_WORKSTATION_TARGET: NotebookShellRuntimeTargetProjection = Object
   id: "workstation:none",
   kind: "cloud_workstation",
   status: "offline",
-  label: "No workstation attached",
+  label: "No compute session",
   statusLabel: "Offline",
   providerLabel: "Cloud room",
-  defaultEnvironmentLabel: "Not attached",
-  environmentLabel: "Not attached",
+  defaultEnvironmentLabel: "Not running",
+  environmentLabel: "Not running",
 });
 
 const FIXTURE_RUNTIME_TARGET: NotebookShellRuntimeTargetProjection = Object.freeze({
@@ -229,8 +229,8 @@ const UNKNOWN_RUNTIME_TARGET: NotebookShellRuntimeTargetProjection = Object.free
   label: "No runtime target",
   statusLabel: "Offline",
   providerLabel: "Unknown",
-  defaultEnvironmentLabel: "Not attached",
-  environmentLabel: "Not attached",
+  defaultEnvironmentLabel: "Not running",
+  environmentLabel: "Not running",
 });
 
 export function resolveNotebookShellRuntimeTarget(
@@ -860,19 +860,19 @@ function workstationAttachmentStatusProjection(status: string): {
       return {
         status: "connecting",
         statusLabel: "Connecting",
-        detail: "The selected workstation is attaching to this room.",
+        detail: "The selected workstation is starting compute for this notebook.",
       };
     case "error":
       return {
         status: "attention",
         statusLabel: "Needs attention",
-        detail: "The selected workstation could not attach to this room.",
+        detail: "The selected workstation could not start compute for this notebook.",
       };
     case "disconnected":
       return {
         status: "offline",
         statusLabel: "Offline",
-        detail: "The selected workstation is not connected to this room.",
+        detail: "The selected workstation is not connected to this notebook.",
       };
     default:
       return { status: "attached", statusLabel: "Attached", detail: null };

@@ -244,7 +244,7 @@ function projectAttachmentTargetWithRegisteredWorkstationStatus({
     statusLabel: workstationStatusLabel(registeredStatus),
     detail:
       trimToNull(registeredWorkstation?.statusMessage) ??
-      `The ${target.label} attachment is stale because the workstation is ${registeredStatus}.`,
+      `The compute session from ${target.label} is stale because the workstation is ${registeredStatus}.`,
   });
 }
 

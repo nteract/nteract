@@ -110,7 +110,8 @@ export function projectNotebookWorkstationLaunchReadiness({
   } else if (activeTarget?.status === "connecting") {
     projection = launchProjection({
       canRun: false,
-      detail: activeTarget.detail ?? "The selected workstation is attaching to this notebook.",
+      detail:
+        activeTarget.detail ?? "The selected workstation is starting compute for this notebook.",
       primaryAction: launchAction("open_workstations", "Review compute", "Open workstations panel"),
       state: "attaching",
       statusLabel: activeTarget.statusLabel ?? "Attaching",

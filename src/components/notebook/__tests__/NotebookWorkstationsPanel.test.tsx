@@ -108,12 +108,12 @@ describe("NotebookWorkstationsPanel", () => {
           id: "workstation:none",
           kind: "cloud_workstation",
           status: "offline",
-          label: "No workstation attached",
+          label: "No compute session",
           statusLabel: "Offline",
-          detail: "Attach a user-owned workstation to run cells in this room.",
+          detail: "Start compute from a user-owned workstation to run cells in this notebook.",
           providerLabel: "Cloud room",
-          defaultEnvironmentLabel: "Not attached",
-          environmentLabel: "Not attached",
+          defaultEnvironmentLabel: "Not running",
+          environmentLabel: "Not running",
         },
       },
     };
@@ -121,14 +121,16 @@ describe("NotebookWorkstationsPanel", () => {
     render(<NotebookWorkstationsPanel capabilities={capabilities} />);
 
     expect(screen.queryByText("workstation:none")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "No workstation attached" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "No compute session" })).toBeVisible();
     expect(screen.getByText("Offline")).toBeVisible();
     expect(
-      screen.getByText("Attach a user-owned workstation to run cells in this room."),
+      screen.getByText(
+        "Start compute from a user-owned workstation to run cells in this notebook.",
+      ),
     ).toBeVisible();
     expect(screen.getByText("Cloud room")).toBeVisible();
     expect(screen.queryByText("Kyle")).not.toBeInTheDocument();
-    expect(screen.getByText("Not attached")).toBeVisible();
+    expect(screen.getByText("Not running")).toBeVisible();
     expect(screen.queryByText("Principal")).not.toBeInTheDocument();
     expect(screen.queryByText("Operator")).not.toBeInTheDocument();
     expect(screen.getByText("Not runnable")).toBeVisible();
@@ -155,12 +157,12 @@ describe("NotebookWorkstationsPanel", () => {
           id: "workstation:none",
           kind: "cloud_workstation",
           status: "offline",
-          label: "No workstation attached",
+          label: "No compute session",
           statusLabel: "Offline",
-          detail: "Attach a user-owned workstation to run cells in this room.",
+          detail: "Start compute from a user-owned workstation to run cells in this notebook.",
           providerLabel: "Cloud room",
-          defaultEnvironmentLabel: "Not attached",
-          environmentLabel: "Not attached",
+          defaultEnvironmentLabel: "Not running",
+          environmentLabel: "Not running",
         },
       },
     };
@@ -238,7 +240,7 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByText("Default")).toBeVisible();
     expect(screen.getByText("Env")).toBeVisible();
     expect(screen.getByText("/home/ubuntu/project")).toBeVisible();
-    const attachButtons = screen.getAllByRole("button", { name: "Attach" });
+    const attachButtons = screen.getAllByRole("button", { name: "Start" });
     fireEvent.click(attachButtons[0]!);
     expect(attached).toEqual(["ws-lab2"]);
 
@@ -270,12 +272,12 @@ describe("NotebookWorkstationsPanel", () => {
           id: "workstation:none",
           kind: "cloud_workstation",
           status: "offline",
-          label: "No workstation attached",
+          label: "No compute session",
           statusLabel: "Offline",
-          detail: "Attach a user-owned workstation to run cells in this room.",
+          detail: "Start compute from a user-owned workstation to run cells in this notebook.",
           providerLabel: "Cloud room",
-          defaultEnvironmentLabel: "Not attached",
-          environmentLabel: "Not attached",
+          defaultEnvironmentLabel: "Not running",
+          environmentLabel: "Not running",
         },
       },
     };
@@ -308,9 +310,11 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "No workstation attached" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "No compute session" })).toBeVisible();
     expect(
-      screen.getByText("Attach a user-owned workstation to run cells in this room."),
+      screen.getByText(
+        "Start compute from a user-owned workstation to run cells in this notebook.",
+      ),
     ).toBeVisible();
     expect(screen.queryByText("Cloud room")).not.toBeInTheDocument();
     expect(screen.queryByText("Not runnable")).not.toBeInTheDocument();
@@ -476,7 +480,7 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Previous attachment" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Previous compute session" })).toBeVisible();
     expect(screen.getAllByRole("heading", { name: "Lab2" })).toHaveLength(1);
     expect(screen.getByText("Needs attention")).toBeVisible();
     expect(
@@ -492,8 +496,8 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByTestId("registered-workstation")).toBeVisible();
     expect(screen.getByText("Online")).toBeVisible();
     expect(screen.getByText("Default")).toBeVisible();
-    expect(screen.queryByText("Attached")).not.toBeInTheDocument();
-    const attachButton = screen.getByRole("button", { name: "Attach" });
+    expect(screen.queryByText("Running")).not.toBeInTheDocument();
+    const attachButton = screen.getByRole("button", { name: "Start" });
     expect(attachButton).toBeEnabled();
     fireEvent.click(attachButton);
     expect(attached).toEqual(["ws-lab2"]);
@@ -528,7 +532,7 @@ describe("NotebookWorkstationsPanel", () => {
 
     render(<NotebookWorkstationsPanel capabilities={capabilities} />);
 
-    expect(screen.getByRole("heading", { name: "Previous attachment" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Previous compute session" })).toBeVisible();
     expect(
       screen.getByText(
         "Compute from Lab2 is no longer connected to this notebook. The owner can start compute again from an available workstation.",

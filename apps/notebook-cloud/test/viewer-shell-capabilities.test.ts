@@ -100,9 +100,9 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(withoutRuntime.runtime.executionAvailable, false);
   assert.equal(withoutRuntime.runtime.connected, false);
   assert.equal(withoutRuntime.runtime.target?.id, "workstation:none");
-  assert.equal(withoutRuntime.runtime.target?.label, "No workstation attached");
+  assert.equal(withoutRuntime.runtime.target?.label, "No compute session");
   assert.equal(withoutRuntime.runtime.target?.status, "offline");
-  assert.equal(withoutRuntime.runtime.target?.defaultEnvironmentLabel, "Not attached");
+  assert.equal(withoutRuntime.runtime.target?.defaultEnvironmentLabel, "Not running");
   assert.equal(withoutRuntime.canExecute, false);
 
   const withRuntime = cloudNotebookShellCapabilities({
@@ -116,7 +116,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(withRuntime.runtime.executionAvailable, true);
   assert.equal(withRuntime.runtime.connected, true);
   assert.equal(withRuntime.runtime.target?.id, "attached-workstation");
-  assert.equal(withRuntime.runtime.target?.label, "Attached workstation");
+  assert.equal(withRuntime.runtime.target?.label, "Connected workstation");
   assert.equal(withRuntime.runtime.target?.status, "ready");
   assert.equal(withRuntime.runtime.target?.defaultEnvironmentLabel, "Current Python");
   assert.equal(withRuntime.runtime.target?.runtimePeerCount, 2);
@@ -132,7 +132,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(viewerWithRuntime.runtime.executionAvailable, true);
   assert.equal(viewerWithRuntime.runtime.connected, true);
   assert.equal(viewerWithRuntime.runtime.target?.id, "attached-workstation");
-  assert.equal(viewerWithRuntime.runtime.target?.label, "Attached workstation");
+  assert.equal(viewerWithRuntime.runtime.target?.label, "Connected workstation");
   assert.equal(viewerWithRuntime.runtime.target?.runtimePeerCount, 1);
   assert.equal(viewerWithRuntime.canExecute, false);
 
@@ -148,7 +148,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(editorWithRuntime.runtime.executionAvailable, true);
   assert.equal(editorWithRuntime.runtime.connected, true);
   assert.equal(editorWithRuntime.runtime.target?.id, "attached-workstation");
-  assert.equal(editorWithRuntime.runtime.target?.label, "Attached workstation");
+  assert.equal(editorWithRuntime.runtime.target?.label, "Connected workstation");
   assert.equal(editorWithRuntime.runtime.target?.runtimePeerCount, 1);
   assert.equal(editorWithRuntime.canExecute, false);
 

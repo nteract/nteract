@@ -182,7 +182,7 @@ function workstationStatus(
     target.detail ??
     (capabilities.runtime.source === "local"
       ? "The local daemon is not exposing an executable runtime."
-      : "No runtime peer is attached to this room.");
+      : "No compute session is connected to this notebook.");
   const previousAttachmentDetail = isPreviousCloudAttachment
     ? previousCloudAttachmentDetail({
         canManageCompute:
@@ -196,7 +196,7 @@ function workstationStatus(
 
   return {
     title: isPreviousCloudAttachment
-      ? "Previous attachment"
+      ? "Previous compute session"
       : capabilities.runtime.source === "local"
         ? `${target.label} unavailable`
         : target.label,
@@ -258,7 +258,7 @@ function runtimeResourceLabel(
   if (capabilities.runtime.executionAvailable) {
     return "Current Python";
   }
-  return "Not attached";
+  return "Not running";
 }
 
 function runtimeCapability(capabilities: NotebookShellCapabilities): {
