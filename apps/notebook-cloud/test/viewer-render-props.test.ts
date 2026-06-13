@@ -119,6 +119,25 @@ test("cloud callback keeps sign-in handoff in the entry surface language", () =>
   assert.doesNotMatch(callbackSource, /className="flex min-h-screen/);
 });
 
+test("cloud notebook startup loading uses route-shaped shell chrome", () => {
+  const cssPath = new URL("../viewer/index.css", import.meta.url);
+  const cssText = readFileSync(cssPath, "utf8");
+  const loadingSource = viewerFunctionSource("ViewerStartupLoading");
+
+  assert.match(loadingSource, /className="cloud-startup-shell"/);
+  assert.match(loadingSource, /className="cloud-startup-toolbar"/);
+  assert.match(loadingSource, /className="cloud-startup-workspace"/);
+  assert.match(loadingSource, /className="cloud-startup-rail"/);
+  assert.match(loadingSource, /className="cloud-startup-stage"/);
+  assert.match(viewerCorpus, /cloudNotebookRouteTitleFromPathname\(window\.location\.pathname\)/);
+  assert.match(loadingSource, /Opening notebook/);
+  assert.doesNotMatch(loadingSource, /className="flex min-h-screen/);
+  assert.doesNotMatch(loadingSource, /Loading notebook\./);
+  assert.match(cssText, /\.cloud-startup-shell/);
+  assert.match(cssText, /\.cloud-startup-toolbar/);
+  assert.match(cssText, /\.cloud-startup-line/);
+});
+
 test("cloud viewer keeps pending access-request polling quiet", () => {
   const sourceText = viewerFileContaining("CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS");
 
@@ -331,7 +350,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     cssText,
     /@media \(max-width: 640px\) \{[\s\S]*cloud-share-copy-label-full[\s\S]*display: none;[\s\S]*cloud-share-copy-label-compact[\s\S]*display: inline;/,
   );
-  assert.match(cssText, /0 8px 20px color-mix\(in srgb, #000 8%, transparent\)/);
+  assert.match(cssText, /0 10px 24px color-mix\(in srgb, #000 9%, transparent\)/);
   assert.doesNotMatch(cssText, /0 12px 36px/);
   assert.doesNotMatch(sourceText, /runtimeStatus=\{cloudNotebookRuntimeStatus/);
   assert.doesNotMatch(sourceText, /label: "live"/);
@@ -424,7 +443,7 @@ test("cloud notebook shell keeps the rail and toolbar outside the cell scroller"
     /\.cloud-notebook-shell\s*\{[\s\S]*height: 100%;[\s\S]*overflow: hidden;/,
   );
   assert.match(sourceText, /\.cloud-notebook-rail\s*\{[\s\S]*height: 100%;/);
-  assert.match(sourceText, /\.cloud-report-toolbar\s*\{[\s\S]*top: 0;[\s\S]*border-bottom:/);
+  assert.doesNotMatch(sourceText, /\.cloud-report-toolbar/);
   assert.match(sourceText, /@import "\.\.\/\.\.\/notebook\/src\/index\.css";/);
   assert.doesNotMatch(
     sourceText.match(/\.cloud-notebook-shell\s*\{[^}]*\}/)?.[0] ?? "",
