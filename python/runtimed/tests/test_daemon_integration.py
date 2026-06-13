@@ -206,6 +206,28 @@ async def async_start_kernel_with_retry(session, *, retries=15, delay=1.0, **kwa
     raise last_err
 
 
+def runtime_kernel_is_running(session):
+    """Return whether RuntimeStateDoc says the kernel is ready to execute."""
+    state = session.get_runtime_state_sync()
+    lifecycle = state.kernel.lifecycle
+    activity = state.kernel.activity
+    return lifecycle == "Running" and activity in {"Idle", "Busy", "Unknown", ""}
+
+
+async def async_wait_for_runtime_kernel(session, *, timeout=15.0, description="kernel running"):
+    """Wait for RuntimeStateDoc to report a usable kernel.
+
+    This observes the live runtime projection instead of the session's cached
+    `kernel_started()` flag. That avoids racing create-notebook auto-launch with
+    an unnecessary manual LaunchKernel request.
+    """
+
+    async def _check():
+        return runtime_kernel_is_running(session)
+
+    await async_wait_for_sync(_check, timeout=timeout, interval=0.25, description=description)
+
+
 async def async_wait_for_conda_env_yml_missing(
     session,
     expected_env_name,
@@ -408,10 +430,9 @@ async def daemon_health_check(daemon_process):
         # create_notebook() auto-launches a prewarmed kernel. Prefer waiting for
         # that path instead of racing it with a manual LaunchKernel request.
         try:
-            await async_wait_for_sync(
-                session.kernel_started,
+            await async_wait_for_runtime_kernel(
+                session,
                 timeout=15.0,
-                interval=0.25,
                 description="health-check auto-launched kernel",
             )
         except AssertionError:
@@ -2065,8 +2086,12 @@ class TestMultiClientSync:
 
         s1, s2 = two_sessions
 
-        await async_start_kernel_with_retry(s1)
-        await async_start_kernel_with_retry(s2)  # No-op in daemon
+        await async_wait_for_runtime_kernel(
+            s1, description="auto-launched shared kernel visible to session 1"
+        )
+        await async_wait_for_runtime_kernel(
+            s2, description="auto-launched shared kernel visible to session 2"
+        )
 
         cell1 = await async_create_cell_and_wait_for_sync(s1, "async_shared = 'from async s1'")
         r1 = await s1.execute_cell(cell1)
