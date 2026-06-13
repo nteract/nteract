@@ -11,6 +11,7 @@ describe("NotebookEditModeButton", () => {
     const button = screen.getByRole("button", { name: "Edit" });
     expect(button).toHaveAttribute("data-slot", "notebook-edit-mode-button");
     expect(button).toHaveAttribute("data-state", "viewing");
+    expect(button).toHaveAttribute("title", "Switch to edit mode");
 
     fireEvent.click(button);
 
@@ -47,6 +48,10 @@ describe("NotebookEditModeButton", () => {
     expect(group).toHaveAttribute("data-slot", "notebook-edit-mode-button");
     expect(group).toHaveAttribute("data-variant", "segmented");
     expect(screen.getByRole("button", { name: "Viewing" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Editing" })).toHaveAttribute(
+      "title",
+      "Switch to edit mode",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Editing" }));
 

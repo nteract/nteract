@@ -31,7 +31,7 @@ export function NotebookEditModeButton({
     ? state === "editing"
       ? "Return to read-only viewing"
       : "Stop requesting edit access"
-    : "Request edit access";
+    : "Switch to edit mode";
 
   if (variant === "segmented") {
     return (
@@ -83,7 +83,7 @@ export function NotebookEditModeButton({
               ? "Editing notebook"
               : requestedEdit
                 ? "Edit access requested"
-                : "Request edit access"
+                : "Switch to edit mode"
           }
           onClick={() => {
             if (mode !== "edit") {
