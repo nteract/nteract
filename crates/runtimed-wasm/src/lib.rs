@@ -1640,6 +1640,7 @@ fn runtime_peer_gone_workstation_attachment(
         memory_bytes: None,
         working_directory: None,
         updated_at: None,
+        runtime_session_id: None,
     });
     attachment.status = "error".to_string();
     attachment.status_message = Some(format!("runtime peer disconnected: {reason}"));
@@ -4572,6 +4573,7 @@ mod tests {
             memory_bytes: None,
             working_directory: None,
             updated_at: Some("2026-06-07T00:00:00.000Z".to_string()),
+            runtime_session_id: Some("job-runtime".to_string()),
         }
     }
 

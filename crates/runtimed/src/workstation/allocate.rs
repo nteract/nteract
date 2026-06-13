@@ -131,6 +131,7 @@ pub async fn allocate_current_python_runtime(
 pub fn current_python_workstation_metadata(working_dir: Option<&Path>) -> CloudWorkstationMetadata {
     CloudWorkstationMetadata {
         workstation_id: None,
+        runtime_session_id: None,
         display_name: None,
         default_environment_label: Some("Current Python".to_string()),
         environment_policy: Some("current_python".to_string()),

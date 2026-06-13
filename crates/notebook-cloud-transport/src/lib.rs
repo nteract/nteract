@@ -100,6 +100,7 @@ pub enum CloudAuth {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CloudWorkstationMetadata {
     pub workstation_id: Option<String>,
+    pub runtime_session_id: Option<String>,
     pub display_name: Option<String>,
     pub default_environment_label: Option<String>,
     pub environment_policy: Option<String>,
@@ -626,6 +627,12 @@ impl CloudWsFrameTransport {
         );
         insert_workstation_header(
             h,
+            "x-nteract-runtime-session-id",
+            workstation.runtime_session_id.as_deref(),
+            128,
+        );
+        insert_workstation_header(
+            h,
             "x-nteract-workstation-display-name",
             workstation.display_name.as_deref(),
             160,
@@ -1073,6 +1080,7 @@ mod tests {
             },
             workstation: Some(CloudWorkstationMetadata {
                 workstation_id: Some("ws-lab2".into()),
+                runtime_session_id: Some("job-123".into()),
                 display_name: Some("Lab2 workstation".into()),
                 default_environment_label: Some("Current Python".into()),
                 environment_policy: Some("current_python".into()),
@@ -1095,6 +1103,12 @@ mod tests {
                 .get("x-nteract-workstation-id")
                 .and_then(|value| value.to_str().ok()),
             Some("ws-lab2")
+        );
+        assert_eq!(
+            headers
+                .get("x-nteract-runtime-session-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("job-123")
         );
         assert_eq!(
             headers

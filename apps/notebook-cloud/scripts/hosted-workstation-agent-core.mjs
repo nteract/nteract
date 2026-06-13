@@ -72,6 +72,8 @@ export function buildAttachJobSpawnPlan({
     launchDirectory,
     "--workstation-id",
     workstationId,
+    "--runtime-session-id",
+    job.job_id,
     "--workstation-display-name",
     displayName,
   ];

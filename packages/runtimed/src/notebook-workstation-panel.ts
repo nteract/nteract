@@ -75,6 +75,7 @@ export function projectNotebookWorkstationPanel(
     target.resourceLabel ?? null,
     target.runtimePeerCount ?? null,
     target.workingDirectoryLabel ?? null,
+    target.runtimeSessionId ?? null,
   ]);
   const cached = getBoundedCacheValue(WORKSTATION_PANEL_CACHE, cacheKey);
   if (cached) return cached;

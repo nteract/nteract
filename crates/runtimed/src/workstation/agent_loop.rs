@@ -258,6 +258,8 @@ pub fn build_attach_job_spawn_plan(
         cwd.to_string_lossy().into_owned(),
         "--workstation-id".to_string(),
         opts.workstation_id.clone(),
+        "--runtime-session-id".to_string(),
+        job.job_id.clone(),
         "--workstation-display-name".to_string(),
         opts.display_name.clone(),
     ];
@@ -1649,6 +1651,8 @@ mod tests {
                 plan.cwd.to_string_lossy().into_owned(),
                 "--workstation-id".to_string(),
                 "ws-lab2".to_string(),
+                "--runtime-session-id".to_string(),
+                "Job 123".to_string(),
                 "--workstation-display-name".to_string(),
                 "lab2 workstation".to_string(),
             ]

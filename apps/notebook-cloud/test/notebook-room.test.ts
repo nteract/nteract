@@ -351,6 +351,7 @@ describe("NotebookRoom peer lifecycle", () => {
         "x-nteract-workstation-display-name": "Lab2 workstation",
         "x-nteract-workstation-default-environment": "Current Python",
         "x-nteract-workstation-environment-policy": "current_python",
+        "x-nteract-runtime-session-id": "job-123",
         "x-nteract-workstation-working-directory": `${"/srv/".repeat(200)}project`,
       },
     });
@@ -367,6 +368,7 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.equal(metadata?.displayName, "Lab2 workstation");
     assert.equal(metadata?.defaultEnvironmentLabel, "Current Python");
     assert.equal(metadata?.environmentPolicy, "current_python");
+    assert.equal(metadata?.runtimeSessionId, "job-123");
     assert.equal(metadata?.workingDirectory?.length, 512);
     assert.equal(runtimePeerWorkstationMetadataFromRequest(request, viewerIdentity), null);
   });
@@ -903,6 +905,7 @@ describe("NotebookRoom peer lifecycle", () => {
       cpu_count: null,
       memory_bytes: null,
       working_directory: null,
+      runtime_session_id: null,
       updated_at: runtimePeer.connectedAt,
     });
     assert.equal(checkpointed, 1, "changed attachments are checkpointed");
@@ -1160,6 +1163,7 @@ describe("NotebookRoom peer lifecycle", () => {
         displayName: "Lab2 workstation",
         defaultEnvironmentLabel: "Current Python",
         environmentPolicy: "current_python",
+        runtimeSessionId: "job-123",
         workingDirectory: "/home/ubuntu/codex/nteract",
       },
     };
@@ -1187,6 +1191,7 @@ describe("NotebookRoom peer lifecycle", () => {
       cpu_count: null,
       memory_bytes: null,
       working_directory: "/home/ubuntu/codex/nteract",
+      runtime_session_id: "job-123",
       updated_at: runtimePeer.connectedAt,
     });
   });
@@ -1209,6 +1214,7 @@ describe("NotebookRoom peer lifecycle", () => {
         cpu_count: null,
         memory_bytes: null,
         working_directory: "/home/ubuntu/codex/nteract",
+        runtime_session_id: "job-123",
         updated_at: "2026-06-07T00:00:00.000Z",
       }),
       setWorkstationAttachment: async () => noopMaterializedResult(),
@@ -1216,13 +1222,24 @@ describe("NotebookRoom peer lifecycle", () => {
 
     const matching = await harness.runtimePeerAuthorityError?.("demo", {
       workstationId: "lab2",
+      runtimeSessionId: "job-123",
+    });
+    const staleSession = await harness.runtimePeerAuthorityError?.("demo", {
+      workstationId: "lab2",
+      runtimeSessionId: "job-456",
+    });
+    const missingSession = await harness.runtimePeerAuthorityError?.("demo", {
+      workstationId: "lab2",
     });
     const mismatched = await harness.runtimePeerAuthorityError?.("demo", {
       workstationId: "other-box",
+      runtimeSessionId: "job-123",
     });
     const missing = await harness.runtimePeerAuthorityError?.("demo", null);
 
     assert.equal(matching, null);
+    assert.match(String(staleSession), /does not match selected runtime session job-123/);
+    assert.match(String(missingSession), /does not match selected runtime session job-123/);
     assert.match(String(mismatched), /does not match selected workstation lab2/);
     assert.match(String(missing), /runtime-peer does not match selected workstation lab2/);
   });
@@ -2075,6 +2092,64 @@ describe("NotebookRoom materialized sync routing", () => {
       "cloud_frame_accepted",
     );
   });
+
+  it("closes stale runtime sessions before they can author room frames", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const harness = roomHarness(room);
+    const socket = new FakeSocket();
+    const runtimePeer = {
+      id: "runtime",
+      socket: socket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+        ),
+      ),
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      workstation: {
+        workstationId: "lab2",
+        runtimeSessionId: "old-job",
+      },
+    };
+    harness.peers.set(runtimePeer.id, runtimePeer);
+
+    let materialized = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "lab2",
+        display_name: "Lab2 workstation",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "ready",
+        status_message: null,
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: "/home/ubuntu/codex/nteract",
+        runtime_session_id: "new-job",
+        updated_at: "2026-06-07T00:00:00.000Z",
+      }),
+    } as never);
+
+    await harness.handleMessage(
+      "demo",
+      runtimePeer,
+      encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, new Uint8Array([1])),
+    );
+
+    assert.equal(materialized, 0, "stale runtime frame reached room host");
+    assert.equal(socket.sent.length, 0, "stale runtime frame was not echoed");
+    assert.equal(socket.closed, true);
+    assert.equal(socket.closeCode, 1008);
+    assert.equal(socket.closeReason, "stale runtime session");
+    assert.equal(harness.peerForSocket(socket.asCloudflareWebSocket()), undefined);
+  });
 });
 
 describe("NotebookRoom runtime_peer-gone watchdog", () => {
@@ -2336,6 +2411,7 @@ type PeerForTest = {
     displayName?: string;
     defaultEnvironmentLabel?: string;
     environmentPolicy?: string;
+    runtimeSessionId?: string;
     workingDirectory?: string;
   } | null;
 };

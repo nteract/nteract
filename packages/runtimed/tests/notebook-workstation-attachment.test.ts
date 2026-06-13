@@ -20,6 +20,7 @@ describe("projectNotebookWorkstationAttachmentFromClaim", () => {
     const attachment = projectNotebookWorkstationAttachmentFromClaim({
       workstation: lab2Workstation,
       claim: {
+        runtimeSessionId: "job-123",
         status: "accepted",
         updatedAt: "2026-06-09T16:20:00.000Z",
       },
@@ -37,6 +38,7 @@ describe("projectNotebookWorkstationAttachmentFromClaim", () => {
       memory_bytes: 16_000_000_000,
       working_directory: "/home/ubuntu/project",
       updated_at: "2026-06-09T16:20:00.000Z",
+      runtime_session_id: "job-123",
     });
   });
 

@@ -50,6 +50,8 @@ describe("hosted workstation agent launch contract", () => {
       "/home/ubuntu/project",
       "--workstation-id",
       "ws-lab2",
+      "--runtime-session-id",
+      "Job 123",
       "--workstation-display-name",
       "lab2 workstation",
     ]);
