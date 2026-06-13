@@ -3209,6 +3209,9 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
       counter: "acl_revocations",
       counter_delta: 1,
     });
+    if (revoked && isPublicViewerAclInput(aclInput)) {
+      await closeRevokedPublicViewers(env, notebookId);
+    }
     return json({
       ok: true,
       notebook_id: notebookId,
@@ -3241,6 +3244,44 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
     },
     201,
   );
+}
+
+async function closeRevokedPublicViewers(env: Env, notebookId: string): Promise<void> {
+  const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
+  const room = env.NOTEBOOK_ROOMS.get(id);
+  try {
+    const response = await room.fetch(
+      new Request(
+        `https://notebook-room.internal/internal/n/${encodeURIComponent(
+          notebookId,
+        )}/access-revocation`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            close_anonymous_viewers: true,
+            close_reason: "public link access revoked",
+          }),
+        },
+      ),
+    );
+    if (response.ok) {
+      return;
+    }
+    cloudLog("warn", "acl.revoke.close_public_viewers_failed", {
+      notebook_id: notebookId,
+      response_status: response.status,
+      counter: "acl_revoke_close_public_viewers_failures",
+      counter_delta: 1,
+    });
+  } catch (error) {
+    cloudLog("warn", "acl.revoke.close_public_viewers_failed", {
+      notebook_id: notebookId,
+      error: errorMessage(error),
+      counter: "acl_revoke_close_public_viewers_failures",
+      counter_delta: 1,
+    });
+  }
 }
 
 async function routeCatalog(request: Request, env: Env, notebookId: string): Promise<Response> {
@@ -3881,6 +3922,10 @@ function optionalPositiveIntegerField(value: unknown, fieldName: string): number
 
 function isOwnerAclInput(row: ParsedNotebookAclInput): boolean {
   return row.subject_kind === "principal" && row.scope === "owner";
+}
+
+function isPublicViewerAclInput(row: ParsedNotebookAclInput): boolean {
+  return row.subject_kind === "public" && row.subject === "anonymous" && row.scope === "viewer";
 }
 
 function aclContainsInput(rows: NotebookAclRow[], row: ParsedNotebookAclInput): boolean {

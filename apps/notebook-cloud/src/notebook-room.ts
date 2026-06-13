@@ -251,6 +251,10 @@ export class NotebookRoom {
     if (runtimeStateRepairNotebookId) {
       return this.handleRuntimeStateRepairControl(runtimeStateRepairNotebookId, request);
     }
+    const accessControlNotebookId = accessRevocationControlNotebookId(url.pathname);
+    if (accessControlNotebookId) {
+      return this.handleAccessRevocationControl(accessControlNotebookId, request);
+    }
 
     const notebookId = notebookIdFromPath(url.pathname);
 
@@ -508,6 +512,49 @@ export class NotebookRoom {
       });
       return json({ error: "runtime state repair failed" }, 500);
     }
+  }
+
+  private async handleAccessRevocationControl(
+    notebookId: string,
+    request: Request,
+  ): Promise<Response> {
+    // Worker-internal control path only. External traffic reaches this Durable
+    // Object through the Worker's strict `/n/:notebookId/sync` WebSocket route,
+    // so `/internal/*` is not publicly routable unless that router changes.
+    if (request.method !== "POST") {
+      return json({ error: "method not allowed" }, 405);
+    }
+
+    let payload: unknown;
+    try {
+      payload = await request.json();
+    } catch {
+      return json({ error: "access revocation control body must be JSON" }, 400);
+    }
+    if (!isRecord(payload)) {
+      return json({ error: "access revocation control body must be an object" }, 400);
+    }
+
+    const closeAnonymousViewers =
+      payload.close_anonymous_viewers === true || payload.closeAnonymousViewers === true;
+    const closeReason =
+      typeof payload.close_reason === "string" && payload.close_reason.trim().length > 0
+        ? payload.close_reason.trim().slice(0, 120)
+        : "public link access revoked";
+    const closedAnonymousViewers = closeAnonymousViewers
+      ? this.removeAnonymousViewerPeers(notebookId, {
+          code: 1008,
+          reason: closeReason,
+        })
+      : 0;
+
+    cloudLog("info", "room.access_revocation.control_completed", {
+      notebook_id: notebookId,
+      closed_anonymous_viewers: closedAnonymousViewers,
+      counter: "access_revocation_controls_completed",
+      counter_delta: 1,
+    });
+    return json({ ok: true, closed_anonymous_viewers: closedAnonymousViewers }, 200);
   }
 
   async webSocketMessage(
@@ -1238,6 +1285,18 @@ export class NotebookRoom {
         this.removePeer(notebookId, peer, closeOptions);
       }
     }
+  }
+
+  private removeAnonymousViewerPeers(notebookId: string, closeOptions: PeerCloseOptions): number {
+    let closedCount = 0;
+    for (const peer of Array.from(this.peers.values())) {
+      if (!isAnonymousViewerPeer(peer)) {
+        continue;
+      }
+      this.removePeer(notebookId, peer, closeOptions);
+      closedCount += 1;
+    }
+    return closedCount;
   }
 
   private removeDuplicateRuntimePeers(notebookId: string, incomingPeer: Peer): void {
@@ -2134,6 +2193,22 @@ function runtimeStateRepairControlNotebookId(pathname: string): string | undefin
     return undefined;
   }
   return decodeURIComponent(match[1]);
+}
+
+function accessRevocationControlNotebookId(pathname: string): string | undefined {
+  const match = pathname.match(/^\/internal\/n\/([^/]+)\/access-revocation\/?$/);
+  if (!match) {
+    return undefined;
+  }
+  return decodeURIComponent(match[1]);
+}
+
+function isAnonymousViewerPeer(peer: Peer): boolean {
+  return (
+    peer.identity.scope === "viewer" &&
+    peer.identity.metadata.provider === "anonymous" &&
+    peer.identity.metadata.principalNamespace === "anonymous"
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
