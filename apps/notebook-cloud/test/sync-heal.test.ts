@@ -324,6 +324,24 @@ describe("cloud session sync-heal wiring", () => {
     );
   });
 
+  it("keeps routine heal re-kicks out of the production console", () => {
+    assert.match(
+      sessionSource,
+      /const quietSyncHealLogger = \{[\s\S]{0,120}?debug: \(\) => \{\},[\s\S]{0,160}?warn: \(message: string, \.\.\.args: unknown\[\]\) => console\.warn\(message, \.\.\.args\),[\s\S]{0,80}?\};/,
+      "quiet logger drops routine retry debug lines but preserves terminal warnings",
+    );
+    assert.match(
+      sessionSource,
+      /logger: quietSyncHealLogger/,
+      "the hosted viewer should not wire sync-heal directly to console",
+    );
+    assert.doesNotMatch(
+      sessionSource,
+      /logger: console,\s*\}\);[\s\S]{0,120}?const persistenceRearmGate/,
+      "routine sync-heal retries must not leak to the browser console",
+    );
+  });
+
   it("disposes the scheduler and clears the stall surface on cleanup", () => {
     assert.match(sessionSource, /syncHeal\.dispose\(\);/);
     assert.match(sessionSource, /setSyncHealStalled\(false\);/);

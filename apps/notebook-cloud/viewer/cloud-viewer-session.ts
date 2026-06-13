@@ -95,6 +95,11 @@ import { projectCloudWidgetComms } from "./widget-comm-projection";
 import type { CloudAppSession } from "./app-session";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 
+const quietSyncHealLogger = {
+  debug: () => {},
+  warn: (message: string, ...args: unknown[]) => console.warn(message, ...args),
+};
+
 /**
  * Renderer sidecar filenames from the deploy manifest. Content-hashed
  * names ride immutable caching on the renderer-assets origin; the stable
@@ -619,7 +624,7 @@ export function useCloudViewerSession({
         // the persistence single heal.
         attemptPersistenceRearm();
       },
-      logger: console,
+      logger: quietSyncHealLogger,
     });
     // Persistence single heal: one re-arm after a self-disable, consumed
     // on the next online transition or heal-loop recovery.
