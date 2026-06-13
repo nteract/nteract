@@ -20,6 +20,7 @@ export interface CloudNotebookViewSurfaceProjection {
 
 export interface CloudNotebookHeaderChromeProjectionInput {
   bodyAccessBlocked: boolean;
+  liveRoomAccessPending: boolean;
 }
 
 export interface CloudNotebookHeaderChromeProjection {
@@ -58,8 +59,9 @@ export function projectCloudNotebookViewSurface(
 
 export function projectCloudNotebookHeaderChrome({
   bodyAccessBlocked,
+  liveRoomAccessPending,
 }: CloudNotebookHeaderChromeProjectionInput): CloudNotebookHeaderChromeProjection {
-  const showCollaborationChrome = !bodyAccessBlocked;
+  const showCollaborationChrome = !bodyAccessBlocked && !liveRoomAccessPending;
   return {
     showConnectionIdentity: showCollaborationChrome,
     showPresenceStatus: showCollaborationChrome,

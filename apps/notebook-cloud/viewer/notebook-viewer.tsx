@@ -408,6 +408,9 @@ export function NotebookViewer({
   const syncAuthConnectionKey = cloudSyncAuthConnectionKey(authState, {
     hasAppSession,
   });
+  const liveRoomDisabledStatus = loadingPolicy.shouldConnectLiveRoom
+    ? catalogLiveRoomPolicy.disabledStatus
+    : null;
   const resolveSyncAuth = useCallback(
     async (sessionId: string) => {
       const currentAppSessionStatus = appSessionStatusRef.current;
@@ -458,9 +461,7 @@ export function NotebookViewer({
     config,
     hasAppSession,
     loadingPolicy: effectiveLoadingPolicy,
-    liveRoomDisabledStatus: loadingPolicy.shouldConnectLiveRoom
-      ? catalogLiveRoomPolicy.disabledStatus
-      : null,
+    liveRoomDisabledStatus,
     preloadSiftWasm,
     resolveSyncAuth,
     widgetStore,
@@ -1278,6 +1279,7 @@ export function NotebookViewer({
   const notebookBodyAccessBlocked = cloudConnectionDiagnosticBlocksNotebookBody(connectionError);
   const notebookHeaderChrome = projectCloudNotebookHeaderChrome({
     bodyAccessBlocked: notebookBodyAccessBlocked,
+    liveRoomAccessPending: liveRoomDisabledStatus?.kind === "loading",
   });
 
   const toolbar = (
