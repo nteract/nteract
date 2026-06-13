@@ -700,6 +700,7 @@ impl WorkstationAgentLock {
         let lock_path = workstation_agent_lock_path(agent_root, workstation_id);
         let lock_file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&lock_path)
@@ -1117,17 +1118,31 @@ fn attach_job_patch_no_longer_active(error: &AgentHttpError) -> bool {
 
 async fn terminate_active_job(mut job: ActiveJob) {
     if let Some(child) = job.child.as_mut() {
-        if let Err(error) = child.start_kill() {
-            warn!("[workstation-agent] failed to terminate inactive child job: {error}");
-            return;
+        if let Err(error) = request_child_shutdown(child) {
+            warn!("[workstation-agent] failed to request inactive child shutdown: {error}");
         }
-        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+        match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
             Ok(Ok(_status)) => {}
             Ok(Err(error)) => {
                 warn!("[workstation-agent] failed to reap inactive child job: {error}");
             }
             Err(_) => {
-                warn!("[workstation-agent] timed out reaping inactive child job");
+                warn!("[workstation-agent] timed out waiting for inactive child shutdown; killing");
+                if let Err(error) = child.start_kill() {
+                    warn!("[workstation-agent] failed to kill inactive child job: {error}");
+                    return;
+                }
+                match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                    Ok(Ok(_status)) => {}
+                    Ok(Err(error)) => {
+                        warn!(
+                            "[workstation-agent] failed to reap killed inactive child job: {error}"
+                        );
+                    }
+                    Err(_) => {
+                        warn!("[workstation-agent] timed out reaping killed inactive child job");
+                    }
+                }
             }
         }
         return;
@@ -1135,6 +1150,24 @@ async fn terminate_active_job(mut job: ActiveJob) {
     if let Some(pid) = job.pid {
         terminate_pid(pid);
     }
+}
+
+#[cfg(unix)]
+fn request_child_shutdown(child: &mut tokio::process::Child) -> std::result::Result<(), String> {
+    let Some(pid) = child.id() else {
+        return Ok(());
+    };
+    let pid = i32::try_from(pid).map_err(|error| format!("invalid child pid {pid}: {error}"))?;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        Some(nix::sys::signal::Signal::SIGTERM),
+    )
+    .map_err(|error| format!("SIGTERM pid={pid}: {error}"))
+}
+
+#[cfg(not(unix))]
+fn request_child_shutdown(child: &mut tokio::process::Child) -> std::result::Result<(), String> {
+    child.start_kill().map_err(|error| error.to_string())
 }
 
 #[cfg(unix)]
@@ -1461,6 +1494,48 @@ mod tests {
 
         assert!(!drop_terminal_attach_job(&mut active, "job-1", "heartbeat", &error).await);
         assert!(active.contains_key("job-1"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inactive_child_job_gets_graceful_shutdown_before_kill() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let marker_path = tmp.path().join("sigterm-marker");
+        let ready_path = tmp.path().join("ready-marker");
+        let child = tokio::process::Command::new("sh")
+            .env("SIGTERM_MARKER", &marker_path)
+            .env("READY_MARKER", &ready_path)
+            .arg("-c")
+            .arg(
+                "trap 'printf term > \"$SIGTERM_MARKER\"; exit 0' TERM; \
+                 printf ready > \"$READY_MARKER\"; \
+                 while :; do sleep 1; done",
+            )
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+
+        let ready_deadline = Instant::now() + Duration::from_secs(2);
+        while !ready_path.exists() {
+            if Instant::now() >= ready_deadline {
+                anyhow::bail!("child did not install SIGTERM trap before test timeout");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        terminate_active_job(ActiveJob {
+            child: Some(child),
+            pid: None,
+            log_path: tmp.path().join("runtime-peer.log"),
+            ready: true,
+            status: "running",
+            started_at: Instant::now(),
+            last_status_patch_at: Instant::now(),
+        })
+        .await;
+
+        assert_eq!(std::fs::read_to_string(marker_path)?, "term");
+        Ok(())
     }
 
     /// (d) Attach-job → spawn argv mapping mirrors the `.mjs` plan, with the
