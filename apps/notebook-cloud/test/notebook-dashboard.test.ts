@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   cloudNotebookDashboardOpenUrl,
   cloudNotebookDisplayTitle,
+  cloudNotebookOpenUrlWithMode,
   cloudNotebookShortId,
   projectCloudNotebookDashboard,
   projectCloudNotebookDashboardView,
@@ -164,6 +165,17 @@ describe("cloud notebook dashboard projection", () => {
     assert.equal(
       cloudNotebookDashboardOpenUrl(owned),
       "http://localhost/n/owned-notebook/Owned%20notebook?mode=edit#section-a",
+    );
+  });
+
+  it("opens newly created notebooks in edit mode on the current browser origin", () => {
+    assert.equal(
+      cloudNotebookOpenUrlWithMode(
+        "https://preview.runt.run/n/new-notebook/Exploration%20Notes",
+        "edit",
+        { browserOrigin: "http://localhost:45320" },
+      ),
+      "http://localhost:45320/n/new-notebook/Exploration%20Notes?mode=edit",
     );
   });
 

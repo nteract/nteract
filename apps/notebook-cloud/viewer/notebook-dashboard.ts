@@ -169,8 +169,18 @@ export function cloudNotebookDashboardOpenUrl(
   notebook: CloudNotebookListItem,
   options: { browserOrigin?: string | null } = {},
 ): string {
+  return cloudNotebookOpenUrlWithMode(notebook.viewer_url, cloudNotebookDefaultOpenMode(notebook), {
+    browserOrigin: options.browserOrigin,
+  });
+}
+
+export function cloudNotebookOpenUrlWithMode(
+  viewerUrl: string,
+  mode: CloudNotebookUrlMode,
+  options: { browserOrigin?: string | null } = {},
+): string {
   return cloudNotebookViewerUrlOnBrowserOrigin(
-    cloudNotebookUrlWithMode(notebook.viewer_url, cloudNotebookDefaultOpenMode(notebook)),
+    cloudNotebookUrlWithMode(viewerUrl, mode),
     options.browserOrigin ?? currentBrowserOrigin(),
   );
 }

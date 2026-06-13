@@ -29,7 +29,7 @@ import type {
   CloudViewerAuthConfig,
 } from "./cloud-viewer-types";
 import {
-  cloudNotebookViewerUrlOnBrowserOrigin,
+  cloudNotebookOpenUrlWithMode,
   projectCloudNotebookDashboard,
   type CloudNotebookListItem,
 } from "./notebook-dashboard";
@@ -202,7 +202,9 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
         throw new Error("Unable to create notebook: response shape was invalid");
       }
       window.location.assign(
-        cloudNotebookViewerUrlOnBrowserOrigin(body.viewer_url, window.location.origin),
+        cloudNotebookOpenUrlWithMode(body.viewer_url, "edit", {
+          browserOrigin: window.location.origin,
+        }),
       );
     } catch (error) {
       setCreateState("idle");
