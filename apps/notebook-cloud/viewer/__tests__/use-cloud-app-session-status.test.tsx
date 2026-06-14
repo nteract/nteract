@@ -2,13 +2,13 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vite-plus/test";
 import type { CloudAppSession } from "../app-session";
 
-// The mount-time /api/auth/session fetch usually CONFIRMS the session the
-// page was rendered with. The hook must reduce that through
-// nextCloudAppSessionReadyState so the session object identity is kept —
-// the session feeds effect dependency chains (resolveSyncAuth → the live
-// room effect), and a fresh-but-content-identical object tears down and
-// reconnects the live room once per page load. These tests render the real
-// hook, pinning the setState updater wiring that pure-reducer tests cannot.
+// The page shell can already contain a verified app-session from the Worker.
+// A fresh initial session must avoid an immediate /api/auth/session round trip.
+// Explicit refreshes and stale/missing bootstrap sessions still read the
+// endpoint, and content-equal responses keep object identity stable so effect
+// dependency chains (resolveSyncAuth → live-room effect) do not reconnect.
+// These tests render the real hook, pinning setState updater wiring that
+// pure-reducer tests cannot.
 
 const mocks = vi.hoisted(() => ({
   readCloudAppSessionStatus: vi.fn<() => Promise<{ ok: true; session: CloudAppSession | null }>>(),
@@ -28,13 +28,39 @@ describe("useCloudAppSessionStatus", () => {
 
   const session = (overrides: Partial<CloudAppSession> = {}): CloudAppSession => ({
     provider: "oidc",
-    expires_at: 1_750_000_000,
+    expires_at: 4_000_000_000,
     ...overrides,
   });
 
-  it("keeps the session object reference across content-equal confirming fetches", async () => {
+  it("trusts a fresh initial session until an explicit refresh asks the endpoint", async () => {
     const initial = session();
     mocks.readCloudAppSessionStatus.mockResolvedValue({ ok: true, session: session() });
+
+    const { result } = renderHook(() => useCloudAppSessionStatus(initial));
+    expect(result.current.session).toBe(initial);
+
+    await act(async () => {});
+    expect(mocks.readCloudAppSessionStatus).not.toHaveBeenCalled();
+    expect(result.current.status).toBe("ready");
+    expect(result.current.session).toBe(initial);
+
+    // A manual refresh that confirms again keeps it too.
+    act(() => {
+      result.current.refreshAppSessionStatus();
+    });
+    await waitFor(() => expect(mocks.readCloudAppSessionStatus).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+
+    expect(result.current.status).toBe("ready");
+    expect(result.current.session).toBe(initial);
+  });
+
+  it("keeps stale initial session identity across content-equal confirming fetches", async () => {
+    const initial = session({ expires_at: 1 });
+    mocks.readCloudAppSessionStatus.mockResolvedValue({
+      ok: true,
+      session: session({ expires_at: 1 }),
+    });
 
     const { result } = renderHook(() => useCloudAppSessionStatus(initial));
     expect(result.current.session).toBe(initial);
@@ -46,19 +72,11 @@ describe("useCloudAppSessionStatus", () => {
     // The wiring pin: the fetch returned a fresh-but-content-identical
     // object, and the hook must keep the ORIGINAL reference.
     expect(result.current.session).toBe(initial);
-
-    // A manual refresh that confirms again keeps it too.
-    act(() => {
-      result.current.refreshAppSessionStatus();
-    });
-    await waitFor(() => expect(mocks.readCloudAppSessionStatus).toHaveBeenCalledTimes(2));
-    await act(async () => {});
-    expect(result.current.session).toBe(initial);
   });
 
   it("adopts a genuinely renewed session", async () => {
-    const initial = session();
-    const renewed = session({ expires_at: 1_750_009_999 });
+    const initial = session({ expires_at: 1 });
+    const renewed = session({ expires_at: 4_000_009_999 });
     mocks.readCloudAppSessionStatus.mockResolvedValue({ ok: true, session: renewed });
 
     const { result } = renderHook(() => useCloudAppSessionStatus(initial));
@@ -81,7 +99,7 @@ describe("useCloudAppSessionStatus", () => {
   });
 
   it("reports fetch failures without dropping the session it already has", async () => {
-    const initial = session();
+    const initial = session({ expires_at: 1 });
     mocks.readCloudAppSessionStatus.mockRejectedValue(new Error("session endpoint down"));
 
     const { result } = renderHook(() => useCloudAppSessionStatus(initial));
