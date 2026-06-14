@@ -1251,10 +1251,12 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
       listWorkstationsForPrincipal(env, ownerPrincipal),
       getDefaultWorkstationId(env, ownerPrincipal),
     ]);
+    const now = Date.now();
     const presenceByWorkstationId = await workstationEventPresenceById(
       env,
       ownerPrincipal,
       workstations,
+      now,
     );
     return json({
       ok: true,
@@ -1262,7 +1264,7 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
       workstations: workstations.map((workstation) =>
         workstationResponseRow(workstation, {
           defaultWorkstationId,
-          now: Date.now(),
+          now,
           eventPresence: presenceByWorkstationId.get(workstation.workstation_id) ?? null,
         }),
       ),
@@ -1870,12 +1872,19 @@ async function workstationEventPresenceById(
   env: Env,
   ownerPrincipal: string,
   workstations: readonly WorkstationRow[],
+  now: number,
 ): Promise<Map<string, WorkstationEventPresence | null>> {
   if (!env.WORKSTATION_EVENTS || workstations.length === 0) {
     return new Map();
   }
+  const staleWorkstations = workstations.filter((workstation) =>
+    workstationListNeedsEventPresence(workstation, now),
+  );
+  if (staleWorkstations.length === 0) {
+    return new Map();
+  }
   const entries = await Promise.all(
-    workstations.map(async (workstation) => {
+    staleWorkstations.map(async (workstation) => {
       const presence = await workstationEventPresence(
         env,
         ownerPrincipal,
@@ -1885,6 +1894,14 @@ async function workstationEventPresenceById(
     }),
   );
   return new Map(entries);
+}
+
+function workstationListNeedsEventPresence(workstation: WorkstationRow, now: number): boolean {
+  if (workstation.status !== "online" || !workstation.last_seen_at) {
+    return false;
+  }
+  const lastSeen = Date.parse(workstation.last_seen_at);
+  return Number.isFinite(lastSeen) && now - lastSeen > WORKSTATION_HEARTBEAT_STALE_MS;
 }
 
 async function workstationEventPresence(

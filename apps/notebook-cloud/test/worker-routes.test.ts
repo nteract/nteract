@@ -1966,6 +1966,78 @@ describe("Worker artifact routes", () => {
     assert.equal(statusRequest?.objectName, objectName);
   });
 
+  it("does not fan out event-stream status checks for fresh workstation rows", async () => {
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as {
+      workstations: Array<{
+        workstation_id: string;
+        status: string;
+        status_message: string | null;
+      }>;
+    };
+    assert.equal(body.workstations[0]?.workstation_id, "ws-lab2");
+    assert.equal(body.workstations[0]?.status, "online");
+    assert.equal(body.workstations[0]?.status_message, null);
+    assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
+  });
+
+  it("does not fan out event-stream status checks for explicitly offline rows", async () => {
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      status: "offline",
+      lastSeenAt: "2026-05-22T00:00:00.000Z",
+    });
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as {
+      workstations: Array<{
+        workstation_id: string;
+        status: string;
+        status_message: string | null;
+      }>;
+    };
+    assert.equal(body.workstations[0]?.workstation_id, "ws-lab2");
+    assert.equal(body.workstations[0]?.status, "offline");
+    assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
+  });
+
   it("keeps an existing default workstation when another host heartbeats", async () => {
     const env = fakeEnv();
     seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-default" });
