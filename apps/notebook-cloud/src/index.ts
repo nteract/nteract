@@ -1214,6 +1214,11 @@ function parseNotebookListLimit(request: Request): number | Response {
 const WORKSTATION_HEARTBEAT_STALE_MS = 3 * 60_000;
 const MAX_WORKSTATION_ATTACH_JOBS_LIMIT = 25;
 
+interface WorkstationEventPresence {
+  connected: boolean;
+  connections: number;
+}
+
 async function routeWorkstations(request: Request, env: Env): Promise<Response> {
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
@@ -1246,6 +1251,11 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
       listWorkstationsForPrincipal(env, ownerPrincipal),
       getDefaultWorkstationId(env, ownerPrincipal),
     ]);
+    const presenceByWorkstationId = await workstationEventPresenceById(
+      env,
+      ownerPrincipal,
+      workstations,
+    );
     return json({
       ok: true,
       default_workstation_id: defaultWorkstationId,
@@ -1253,6 +1263,7 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
         workstationResponseRow(workstation, {
           defaultWorkstationId,
           now: Date.now(),
+          eventPresence: presenceByWorkstationId.get(workstation.workstation_id) ?? null,
         }),
       ),
     });
@@ -1299,6 +1310,7 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
       workstation: workstationResponseRow(workstation, {
         defaultWorkstationId,
         now: Date.now(),
+        eventPresence: null,
       }),
     },
     201,
@@ -1600,7 +1612,8 @@ async function routeNotebookWorkstationAttachment(
     return json({ error: "workstation not found" }, 404);
   }
 
-  const projectedStatus = workstationStatusForResponse(workstation, Date.now());
+  const eventPresence = await workstationEventPresence(env, ownerPrincipal, workstationId);
+  const projectedStatus = workstationStatusForResponse(workstation, Date.now(), eventPresence);
   if (projectedStatus !== "online") {
     return json(
       {
@@ -1608,6 +1621,7 @@ async function routeNotebookWorkstationAttachment(
         workstation: workstationResponseRow(workstation, {
           defaultWorkstationId: workstationId,
           now: Date.now(),
+          eventPresence,
         }),
       },
       409,
@@ -1653,6 +1667,7 @@ async function routeNotebookWorkstationAttachment(
       workstation: workstationResponseRow(workstation, {
         defaultWorkstationId: workstationId,
         now: Date.now(),
+        eventPresence,
       }),
     },
     202,
@@ -1849,6 +1864,69 @@ function workstationEventsStub(
     workstationEventsObjectName(ownerPrincipal, workstationId),
   );
   return env.WORKSTATION_EVENTS!.get(id);
+}
+
+async function workstationEventPresenceById(
+  env: Env,
+  ownerPrincipal: string,
+  workstations: readonly WorkstationRow[],
+): Promise<Map<string, WorkstationEventPresence | null>> {
+  if (!env.WORKSTATION_EVENTS || workstations.length === 0) {
+    return new Map();
+  }
+  const entries = await Promise.all(
+    workstations.map(async (workstation) => {
+      const presence = await workstationEventPresence(
+        env,
+        ownerPrincipal,
+        workstation.workstation_id,
+      );
+      return [workstation.workstation_id, presence] as const;
+    }),
+  );
+  return new Map(entries);
+}
+
+async function workstationEventPresence(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+): Promise<WorkstationEventPresence | null> {
+  if (!env.WORKSTATION_EVENTS) {
+    return null;
+  }
+  try {
+    const response = await workstationEventsStub(env, ownerPrincipal, workstationId).fetch(
+      new Request("https://workstation-events.internal/status"),
+    );
+    if (!response.ok) {
+      cloudLog("warn", "workstation.events.status_failed", {
+        principal: ownerPrincipal,
+        workstation_id: workstationId,
+        response_status: response.status,
+        counter: "workstation_events_status_failed",
+        counter_delta: 1,
+      });
+      return null;
+    }
+    const body = await response.json().catch(() => null);
+    if (!isRecord(body)) {
+      return null;
+    }
+    return {
+      connected: body.connected === true,
+      connections: typeof body.connections === "number" ? body.connections : 0,
+    };
+  } catch (error) {
+    cloudLog("warn", "workstation.events.status_failed", {
+      principal: ownerPrincipal,
+      workstation_id: workstationId,
+      error: error instanceof Error ? error.message : String(error),
+      counter: "workstation_events_status_failed",
+      counter_delta: 1,
+    });
+    return null;
+  }
 }
 
 async function routeWorkstationAttachJob(
@@ -2148,9 +2226,13 @@ function normalizeWorkstationEnvironmentsJson(value: unknown): string | null | R
 
 function workstationResponseRow(
   workstation: WorkstationRow,
-  options: { defaultWorkstationId: string | null; now: number },
+  options: {
+    defaultWorkstationId: string | null;
+    now: number;
+    eventPresence?: WorkstationEventPresence | null;
+  },
 ): Record<string, unknown> {
-  const status = workstationStatusForResponse(workstation, options.now);
+  const status = workstationStatusForResponse(workstation, options.now, options.eventPresence);
   return {
     workstation_id: workstation.workstation_id,
     display_name: workstation.display_name,
@@ -2158,9 +2240,13 @@ function workstationResponseRow(
     provider_label: workstation.provider_label,
     status,
     status_message:
-      status === "offline" && workstation.status === "online"
-        ? "No heartbeat from this workstation recently."
-        : workstation.status_message,
+      status === "offline" && options.eventPresence?.connected === false
+        ? "Workstation event stream is not connected."
+        : status === "online" && options.eventPresence?.connected === true
+          ? workstation.status_message
+          : status === "offline" && workstation.status === "online"
+            ? "No heartbeat from this workstation recently."
+            : workstation.status_message,
     default_environment_label: workstation.default_environment_label,
     environment_policy: workstation.environment_policy,
     working_directory: workstation.working_directory,
@@ -2174,7 +2260,17 @@ function workstationResponseRow(
   };
 }
 
-function workstationStatusForResponse(workstation: WorkstationRow, now: number): WorkstationStatus {
+function workstationStatusForResponse(
+  workstation: WorkstationRow,
+  now: number,
+  eventPresence: WorkstationEventPresence | null | undefined = null,
+): WorkstationStatus {
+  if (
+    eventPresence?.connected === true &&
+    (workstation.status === "online" || workstation.status === "offline")
+  ) {
+    return "online";
+  }
   if (workstation.status === "online" && workstation.last_seen_at) {
     const lastSeen = Date.parse(workstation.last_seen_at);
     if (Number.isFinite(lastSeen) && now - lastSeen > WORKSTATION_HEARTBEAT_STALE_MS) {

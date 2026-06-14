@@ -1927,6 +1927,45 @@ describe("Worker artifact routes", () => {
     assert.equal(body.workstations[0]?.is_default, true);
   });
 
+  it("projects a stale workstation as online when its event stream is connected", async () => {
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt: "2026-05-22T00:00:00.000Z",
+    });
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as {
+      workstations: Array<{
+        workstation_id: string;
+        status: string;
+        status_message: string | null;
+      }>;
+    };
+    assert.equal(body.workstations[0]?.workstation_id, "ws-lab2");
+    assert.equal(body.workstations[0]?.status, "online");
+    assert.equal(body.workstations[0]?.status_message, null);
+    const statusRequest = events.requests.find(
+      (entry) => new URL(entry.url).pathname === "/status",
+    );
+    assert.equal(statusRequest?.objectName, objectName);
+  });
+
   it("keeps an existing default workstation when another host heartbeats", async () => {
     const env = fakeEnv();
     seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-default" });
@@ -2200,6 +2239,49 @@ describe("Worker artifact routes", () => {
       ),
       false,
     );
+  });
+
+  it("allows attach requests for stale workstations with a connected event stream", async () => {
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    seedNotebook(env, "attach-stream-presence-demo");
+    seedAcl(env, {
+      notebookId: "attach-stream-presence-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt: "2026-05-22T00:00:00.000Z",
+    });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-stream-presence-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 202);
+    const body = (await attach.json()) as {
+      workstation: { status: string; status_message: string | null };
+      job: { job_id: string };
+    };
+    assert.equal(body.workstation.status, "online");
+    assert.equal(body.workstation.status_message, null);
+    assert.equal(env.DB.workstationAttachJobs.get(body.job.job_id)?.workstation_id, "ws-lab2");
+    assert.ok(events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
+    assert.ok(events.requests.some((entry) => new URL(entry.url).pathname === "/notify"));
   });
 
   it("reuses the active workstation attach job for repeated owner requests", async () => {
@@ -5708,6 +5790,7 @@ function seedWorkstation(
     ownerPrincipal: string;
     workstationId: string;
     status?: WorkstationRow["status"];
+    lastSeenAt?: string;
   },
 ): void {
   env.DB.workstations.set(workstationKey(input.ownerPrincipal, input.workstationId), {
@@ -5726,7 +5809,7 @@ function seedWorkstation(
     environments_json: null,
     created_at: "2026-05-22T00:00:00.000Z",
     updated_at: "2026-05-22T00:00:00.000Z",
-    last_seen_at: new Date().toISOString(),
+    last_seen_at: input.lastSeenAt ?? new Date().toISOString(),
   });
 }
 
@@ -6134,6 +6217,15 @@ interface FakeWorkstationEventsRequest {
 
 class FakeWorkstationEventsNamespace implements DurableObjectNamespace {
   readonly requests: FakeWorkstationEventsRequest[] = [];
+  readonly connectedObjectNames: Set<string>;
+
+  constructor({
+    connectedObjectNames = [],
+  }: {
+    connectedObjectNames?: readonly string[];
+  } = {}) {
+    this.connectedObjectNames = new Set(connectedObjectNames);
+  }
 
   idFromName(name: string): { toString(): string } {
     return { toString: () => name };
@@ -6162,6 +6254,14 @@ class FakeWorkstationEventsNamespace implements DurableObjectNamespace {
         }
         if (pathname === "/notify") {
           return Response.json({ ok: true, delivered: 1 });
+        }
+        if (pathname === "/status") {
+          const connected = this.connectedObjectNames.has(objectName);
+          return Response.json({
+            ok: true,
+            connected,
+            connections: connected ? 1 : 0,
+          });
         }
         return Response.json({ error: "not found" }, { status: 404 });
       },

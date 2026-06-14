@@ -48,8 +48,9 @@ pub const READINESS_LINE: &str = "Infrastructure ready, entering main loop";
 /// Default attach-job fallback poll interval. The fast path is the workstation
 /// event stream; polling is recovery for missed events or older servers.
 pub const DEFAULT_POLL_MS: u64 = 60_000;
-/// Default registration-heartbeat interval. Active job status patches share
-/// this interval, so it must stay below the hosted attach-job stale window.
+/// Default active-job heartbeat interval. The workstation registration is sent
+/// on startup and while active jobs exist; idle online presence comes from the
+/// hosted workstation event stream rather than repeated D1 writes.
 pub const DEFAULT_HEARTBEAT_MS: u64 = 60_000;
 
 /// Cooldown applied to 429/503 responses without a usable `Retry-After`.
@@ -801,7 +802,7 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
     );
 
     let mut active: HashMap<String, ActiveJob> = HashMap::new();
-    let mut last_heartbeat: Option<Instant> = None;
+    let mut last_registration: Option<Instant> = None;
     let mut last_poll: Option<Instant> = None;
     let mut poll_requested = true;
     let mut event_stream_closed = false;
@@ -819,11 +820,14 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
             continue;
         }
 
-        // Registration heartbeat.
-        if last_heartbeat.is_none_or(|at| at.elapsed() >= opts.heartbeat_interval) {
+        // Register on startup and refresh workstation metadata while active
+        // jobs exist. Idle connected presence is carried by the SSE stream; a
+        // no-workstation heartbeat loop would burn one Worker/D1 write per
+        // workstation per interval.
+        if should_register_workstation(last_registration, active.len(), opts.heartbeat_interval) {
             let result = heartbeat(&api, &opts).await;
             if result.is_ok() {
-                last_heartbeat = Some(Instant::now());
+                last_registration = Some(Instant::now());
             }
             tracker.record("heartbeat", result.map(|()| true));
         }
@@ -855,9 +859,11 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
         // readiness and exits land promptly (the `.mjs` agent's 250ms
         // readyPoll), but sleep cheaply while idle.
         let next_poll_at = last_poll.map_or_else(Instant::now, |at| at + opts.poll_interval);
-        let next_heartbeat_at =
-            last_heartbeat.map_or_else(Instant::now, |at| at + opts.heartbeat_interval);
-        let deadline = next_poll_at.min(next_heartbeat_at);
+        let deadline =
+            next_registration_deadline(last_registration, active.len(), opts.heartbeat_interval)
+                .map_or(next_poll_at, |next_registration_at| {
+                    next_poll_at.min(next_registration_at)
+                });
         loop {
             tick_active_jobs(&api, &opts, &mut active).await;
             let now = Instant::now();
@@ -995,6 +1001,29 @@ async fn heartbeat(api: &CloudApi, opts: &WorkstationAgentOptions) -> Result<(),
         total_memory_bytes(),
     );
     api.register_workstation(&payload).await
+}
+
+fn should_register_workstation(
+    last_registration: Option<Instant>,
+    active_job_count: usize,
+    heartbeat_interval: Duration,
+) -> bool {
+    if last_registration.is_none() {
+        return true;
+    }
+    active_job_count > 0 && last_registration.is_some_and(|at| at.elapsed() >= heartbeat_interval)
+}
+
+fn next_registration_deadline(
+    last_registration: Option<Instant>,
+    active_job_count: usize,
+    heartbeat_interval: Duration,
+) -> Option<Instant> {
+    match last_registration {
+        None => Some(Instant::now()),
+        Some(at) if active_job_count > 0 => Some(at + heartbeat_interval),
+        Some(_) => None,
+    }
 }
 
 async fn poll_attach_jobs(
@@ -1716,6 +1745,47 @@ mod tests {
         let payload = registration_payload("ws", "ws", "/w", "/usr/bin/python3", None, None);
         assert!(payload.get("cpu_count").is_none());
         assert!(payload.get("memory_bytes").is_none());
+    }
+
+    #[test]
+    fn workstation_registration_is_startup_and_active_job_only() {
+        let heartbeat_interval = Duration::from_secs(60);
+        let stale_registration = Instant::now() - Duration::from_secs(120);
+        let fresh_registration = Instant::now();
+
+        assert!(should_register_workstation(None, 0, heartbeat_interval));
+        assert!(should_register_workstation(None, 1, heartbeat_interval));
+        assert!(!should_register_workstation(
+            Some(stale_registration),
+            0,
+            heartbeat_interval
+        ));
+        assert!(!should_register_workstation(
+            Some(fresh_registration),
+            1,
+            heartbeat_interval
+        ));
+        assert!(should_register_workstation(
+            Some(stale_registration),
+            1,
+            heartbeat_interval
+        ));
+    }
+
+    #[test]
+    fn idle_workstation_registration_has_no_wakeup_deadline() {
+        let heartbeat_interval = Duration::from_secs(60);
+        let registered = Instant::now();
+
+        assert!(next_registration_deadline(None, 0, heartbeat_interval).is_some());
+        assert_eq!(
+            next_registration_deadline(Some(registered), 0, heartbeat_interval),
+            None
+        );
+        assert_eq!(
+            next_registration_deadline(Some(registered), 1, heartbeat_interval),
+            Some(registered + heartbeat_interval)
+        );
     }
 
     #[test]
