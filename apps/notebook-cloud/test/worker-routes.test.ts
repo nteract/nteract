@@ -47,6 +47,7 @@ import type {
   WorkstationCredentialRow,
   WorkstationPairingCodeRow,
 } from "../src/workstation-credentials.ts";
+import { workstationEventsObjectName } from "../src/workstation-events.ts";
 import { oidcTokenFixture } from "./oidc-jwt-fixture.ts";
 
 const wasmBytes = await readFile(
@@ -5281,6 +5282,69 @@ describe("Workstation pairing", () => {
     );
   });
 
+  it("lets a paired workstation credential open the workstation event stream", async () => {
+    const events = new FakeWorkstationEventsNamespace();
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+    const register = await registerWorkstationWithToken(env, token, "ws-paired");
+    assert.equal(register.status, 201);
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-paired/events", {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), "text/event-stream; charset=utf-8");
+    assert.equal(events.requests.length, 1);
+    assert.equal(
+      events.requests[0]?.objectName,
+      workstationEventsObjectName("user:dev:alice", "ws-paired"),
+    );
+    assert.equal(new URL(events.requests[0]!.url).pathname, "/stream");
+  });
+
+  it("notifies the paired workstation event stream when an owner creates an attach job", async () => {
+    const events = new FakeWorkstationEventsNamespace();
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    seedNotebook(env, "pairing-events-demo");
+    seedAcl(env, { notebookId: "pairing-events-demo", subject: "user:dev:alice", scope: "owner" });
+
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+    const register = await registerWorkstationWithToken(env, token, "ws-paired");
+    assert.equal(register.status, 201);
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/pairing-events-demo/workstation-attachments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...OWNER_HEADERS },
+        body: JSON.stringify({ workstation_id: "ws-paired" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 202);
+    const attachBody = (await attach.json()) as { job: { job_id: string } };
+    const notify = events.requests.find((entry) => new URL(entry.url).pathname === "/notify");
+    assert.ok(notify);
+    assert.equal(notify.objectName, workstationEventsObjectName("user:dev:alice", "ws-paired"));
+    assert.deepEqual(notify.body, {
+      event: "attach_jobs",
+      workstation_id: "ws-paired",
+      job_id: attachBody.job.job_id,
+      notebook_id: "pairing-events-demo",
+      status: "pending",
+      requested_at: env.DB.workstationAttachJobs.get(attachBody.job.job_id)?.requested_at,
+      updated_at: env.DB.workstationAttachJobs.get(attachBody.job.job_id)?.updated_at,
+    });
+  });
+
   it("lets a paired workstation credential upload runtime output blobs", async () => {
     const env = fakeEnv();
     seedNotebook(env, "pairing-blob-demo");
@@ -6058,6 +6122,50 @@ class FakeD1 implements D1Database {
       results.push(await statement.run<T>());
     }
     return results;
+  }
+}
+
+interface FakeWorkstationEventsRequest {
+  objectName: string;
+  url: string;
+  method: string;
+  body: unknown;
+}
+
+class FakeWorkstationEventsNamespace implements DurableObjectNamespace {
+  readonly requests: FakeWorkstationEventsRequest[] = [];
+
+  idFromName(name: string): { toString(): string } {
+    return { toString: () => name };
+  }
+
+  get(id: { toString(): string }) {
+    const requests = this.requests;
+    const objectName = id.toString();
+    return {
+      fetch: async (request: Request) => {
+        let body: unknown = null;
+        if (request.method !== "GET") {
+          body = await request.json().catch(() => null);
+        }
+        requests.push({
+          objectName,
+          url: request.url,
+          method: request.method,
+          body,
+        });
+        const pathname = new URL(request.url).pathname;
+        if (pathname === "/stream") {
+          return new Response('event: ready\ndata: {"ok":true}\n\n', {
+            headers: { "Content-Type": "text/event-stream; charset=utf-8" },
+          });
+        }
+        if (pathname === "/notify") {
+          return Response.json({ ok: true, delivered: 1 });
+        }
+        return Response.json({ error: "not found" }, { status: 404 });
+      },
+    };
   }
 }
 

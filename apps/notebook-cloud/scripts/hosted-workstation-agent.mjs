@@ -42,12 +42,12 @@ const workingDirectory = path.resolve(process.env.NOTEBOOK_CLOUD_WORKSTATION_CWD
 const pollIntervalMs = parsePositiveInteger(
   process.env.NOTEBOOK_CLOUD_WORKSTATION_POLL_MS,
   "NOTEBOOK_CLOUD_WORKSTATION_POLL_MS",
-  2_000,
+  60_000,
 );
 const heartbeatIntervalMs = parsePositiveInteger(
   process.env.NOTEBOOK_CLOUD_WORKSTATION_HEARTBEAT_MS,
   "NOTEBOOK_CLOUD_WORKSTATION_HEARTBEAT_MS",
-  20_000,
+  60_000,
 );
 const runtimedBin = path.resolve(
   workspaceRoot,

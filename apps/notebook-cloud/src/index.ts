@@ -1,4 +1,10 @@
-import type { Env, ExecutionContext, ExportedHandler, WorkerAssets } from "./cloudflare-types.ts";
+import type {
+  DurableObjectStub,
+  Env,
+  ExecutionContext,
+  ExportedHandler,
+  WorkerAssets,
+} from "./cloudflare-types.ts";
 import { projectNotebookWorkstationAttachmentFromClaim, type BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
@@ -70,6 +76,11 @@ import {
   workstationCredentialTokenFromRequest,
   workstationPairingStatus,
 } from "./workstation-credentials.ts";
+import {
+  WorkstationEvents,
+  workstationEventsObjectName,
+  type WorkstationAttachJobNotification,
+} from "./workstation-events.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
 import { notebookRouteSegmentTitle } from "./notebook-route-title.ts";
 import {
@@ -140,7 +151,7 @@ import {
   trustsLoopbackRequestHeaders,
 } from "./loopback.ts";
 
-export { NotebookRoom };
+export { NotebookRoom, WorkstationEvents };
 
 // `/plugins/*` is a raw static asset path in deployed Workers. Use a
 // Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
@@ -317,6 +328,14 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     methods: ["POST"],
     handler: ({ params }, request, env) =>
       routeWorkstationCredentialRevoke(request, env, params.credentialId),
+  },
+  {
+    match: routePath("/api/workstations/:workstationId/events", {
+      trailingSlash: "optional",
+    }),
+    methods: ["GET"],
+    handler: ({ params }, request, env) =>
+      routeWorkstationEvents(request, env, params.workstationId),
   },
   {
     match: routePath("/api/workstations/:workstationId/attach-jobs/:jobId", {
@@ -1192,7 +1211,7 @@ function parseNotebookListLimit(request: Request): number | Response {
   return Math.min(limit, MAX_NOTEBOOK_LIST_LIMIT);
 }
 
-const WORKSTATION_HEARTBEAT_STALE_MS = 90_000;
+const WORKSTATION_HEARTBEAT_STALE_MS = 3 * 60_000;
 const MAX_WORKSTATION_ATTACH_JOBS_LIMIT = 25;
 
 async function routeWorkstations(request: Request, env: Env): Promise<Response> {
@@ -1616,6 +1635,7 @@ async function routeNotebookWorkstationAttachment(
     closeRuntimePeers: replaceExisting,
     closeReason: replaceExisting ? "workstation restart requested" : undefined,
   });
+  await notifyWorkstationAttachJob(env, ownerPrincipal, job);
 
   cloudLog("info", "workstation.attach.requested", {
     notebook_id: notebookId,
@@ -1699,6 +1719,39 @@ async function routeNotebookRuntimeStateRepair(
   return json(body, response.status);
 }
 
+async function routeWorkstationEvents(
+  request: Request,
+  env: Env,
+  workstationId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+  if (!env.WORKSTATION_EVENTS) {
+    return json({ error: "workstation event stream is not configured" }, 503);
+  }
+
+  const identity = await authenticateRequestOrResponse(request, env, {
+    allowWorkstationCredential: true,
+  });
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to stream workstation events" }, 401);
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
+  if (!workstation) {
+    return json({ error: "workstation not found" }, 404);
+  }
+
+  const stub = workstationEventsStub(env, ownerPrincipal, workstationId);
+  const response = await stub.fetch(new Request("https://workstation-events.internal/stream"));
+  return withCors(response);
+}
+
 async function routeWorkstationAttachJobs(
   request: Request,
   env: Env,
@@ -1737,6 +1790,65 @@ async function routeWorkstationAttachJobs(
     }),
     jobs: jobs.map((job) => workstationAttachJobResponseRow(request, job)),
   });
+}
+
+async function notifyWorkstationAttachJob(
+  env: Env,
+  ownerPrincipal: string,
+  job: WorkstationAttachJobRow,
+): Promise<void> {
+  if (!env.WORKSTATION_EVENTS) {
+    return;
+  }
+  const notification: WorkstationAttachJobNotification = {
+    event: "attach_jobs",
+    workstation_id: job.workstation_id,
+    job_id: job.id,
+    notebook_id: job.notebook_id,
+    status: job.status,
+    requested_at: job.requested_at,
+    updated_at: job.updated_at,
+  };
+  try {
+    const response = await workstationEventsStub(env, ownerPrincipal, job.workstation_id).fetch(
+      new Request("https://workstation-events.internal/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(notification),
+      }),
+    );
+    if (response.ok) {
+      return;
+    }
+    cloudLog("warn", "workstation.events.notify_failed", {
+      principal: ownerPrincipal,
+      workstation_id: job.workstation_id,
+      job_id: job.id,
+      response_status: response.status,
+      counter: "workstation_events_notify_failed",
+      counter_delta: 1,
+    });
+  } catch (error) {
+    cloudLog("warn", "workstation.events.notify_failed", {
+      principal: ownerPrincipal,
+      workstation_id: job.workstation_id,
+      job_id: job.id,
+      error: error instanceof Error ? error.message : String(error),
+      counter: "workstation_events_notify_failed",
+      counter_delta: 1,
+    });
+  }
+}
+
+function workstationEventsStub(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+): DurableObjectStub {
+  const id = env.WORKSTATION_EVENTS!.idFromName(
+    workstationEventsObjectName(ownerPrincipal, workstationId),
+  );
+  return env.WORKSTATION_EVENTS!.get(id);
 }
 
 async function routeWorkstationAttachJob(

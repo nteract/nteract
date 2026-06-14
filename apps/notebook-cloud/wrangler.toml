@@ -13,9 +13,17 @@ port = 8787
 name = "NOTEBOOK_ROOMS"
 class_name = "NotebookRoom"
 
+[[durable_objects.bindings]]
+name = "WORKSTATION_EVENTS"
+class_name = "WorkstationEvents"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["NotebookRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["WorkstationEvents"]
 
 [[d1_databases]]
 binding = "DB"
