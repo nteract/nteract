@@ -1,4 +1,4 @@
-import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.ts";
+import type { Env, ExecutionContext, ExportedHandler, WorkerAssets } from "./cloudflare-types.ts";
 import { projectNotebookWorkstationAttachmentFromClaim, type BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
@@ -189,6 +189,16 @@ interface RendererSidecarAssetNames {
   css: string;
   siftWasm: string;
 }
+
+const notebookRouteAssetNamesCache = new WeakMap<
+  WorkerAssets,
+  Promise<ViewerNotebookRouteAssets>
+>();
+const runtimeWasmAssetNamesCache = new WeakMap<WorkerAssets, Promise<RuntimeWasmAssetNames>>();
+const rendererSidecarAssetNamesCache = new WeakMap<
+  WorkerAssets,
+  Promise<RendererSidecarAssetNames>
+>();
 
 type SnapshotPairValidationResult =
   | {
@@ -4620,15 +4630,27 @@ function runtimedWasmAssetPath(env: Env, name: string): string {
 }
 
 async function notebookRouteAssetNames(env: Env): Promise<ViewerNotebookRouteAssets> {
-  if (!env.ASSETS) {
+  const assets = env.ASSETS;
+  if (!assets) {
     return defaultNotebookRouteAssetNames();
   }
 
+  let cached = notebookRouteAssetNamesCache.get(assets);
+  if (!cached) {
+    cached = readNotebookRouteAssetNames(assets);
+    notebookRouteAssetNamesCache.set(assets, cached);
+  }
+  return cached;
+}
+
+async function readNotebookRouteAssetNames(
+  assets: WorkerAssets,
+): Promise<ViewerNotebookRouteAssets> {
   try {
     const manifestRequest = new Request(
       `https://notebook-cloud.local${VIEWER_NOTEBOOK_ROUTE_ASSET_MANIFEST_PATH}`,
     );
-    const response = await env.ASSETS.fetch(manifestRequest);
+    const response = await assets.fetch(manifestRequest);
     if (!response.ok) {
       return defaultNotebookRouteAssetNames();
     }
@@ -4671,15 +4693,25 @@ function isViewerAssetName(value: unknown, extension: "css" | "js"): value is st
 }
 
 async function runtimeWasmAssetNames(env: Env): Promise<RuntimeWasmAssetNames> {
-  if (!env.ASSETS) {
+  const assets = env.ASSETS;
+  if (!assets) {
     return defaultRuntimeWasmAssetNames();
   }
 
+  let cached = runtimeWasmAssetNamesCache.get(assets);
+  if (!cached) {
+    cached = readRuntimeWasmAssetNames(assets);
+    runtimeWasmAssetNamesCache.set(assets, cached);
+  }
+  return cached;
+}
+
+async function readRuntimeWasmAssetNames(assets: WorkerAssets): Promise<RuntimeWasmAssetNames> {
   try {
     const manifestRequest = new Request(
       `https://notebook-cloud.local${VIEWER_RUNTIME_WASM_ASSET_MANIFEST_PATH}`,
     );
-    const response = await env.ASSETS.fetch(manifestRequest);
+    const response = await assets.fetch(manifestRequest);
     if (!response.ok) {
       return defaultRuntimeWasmAssetNames();
     }
@@ -4730,15 +4762,27 @@ function isRuntimeWasmBinaryName(value: unknown): value is string {
  * deployed alongside the hashed copies.
  */
 async function rendererSidecarAssetNames(env: Env): Promise<RendererSidecarAssetNames> {
-  if (!env.ASSETS) {
+  const assets = env.ASSETS;
+  if (!assets) {
     return defaultRendererSidecarAssetNames();
   }
 
+  let cached = rendererSidecarAssetNamesCache.get(assets);
+  if (!cached) {
+    cached = readRendererSidecarAssetNames(assets);
+    rendererSidecarAssetNamesCache.set(assets, cached);
+  }
+  return cached;
+}
+
+async function readRendererSidecarAssetNames(
+  assets: WorkerAssets,
+): Promise<RendererSidecarAssetNames> {
   try {
     const manifestRequest = new Request(
       `https://notebook-cloud.local${VIEWER_RENDERER_SIDECAR_MANIFEST_PATH}`,
     );
-    const response = await env.ASSETS.fetch(manifestRequest);
+    const response = await assets.fetch(manifestRequest);
     if (!response.ok) {
       return defaultRendererSidecarAssetNames();
     }
