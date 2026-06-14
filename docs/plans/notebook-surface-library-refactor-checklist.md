@@ -89,5 +89,6 @@ concerns.
   through the shared projection-lifecycle helper.
 - 2026-06-14: Reconnected `NotebookViewModel` outline projection to the shared
   execution/output stores so raster outputs emitted through RuntimeStateDoc
-  appear as outline waypoints; legacy `cell.outputs` still acts as the fallback
-  when no execution pointer exists.
+  appear as outline waypoints. Code-cell view-model outputs are now store-only:
+  materialized `cell.outputs` source snapshots must be projected into
+  execution/output stores before they can render or appear in the outline.

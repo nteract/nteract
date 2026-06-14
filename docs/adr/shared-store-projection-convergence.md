@@ -81,10 +81,11 @@ the flush strands the update (marked dirty, never emitted).
 - **Outline raster waypoints → shared execution/output stores.**
   `NotebookViewModel` resolves each code cell's current execution pointer
   through `execution-store.ts` and reads its output manifests from
-  `output-store.ts`, so raster image outputs that no longer live on
-  `cell.outputs` still project into the shared outline. The output structure
-  subscription now advances for raster-preview payload updates under an
-  existing output id; legacy `cell.outputs` remains the no-execution fallback.
+  `output-store.ts`, so raster image outputs project into the shared outline
+  after the output-store split. The output structure subscription now advances
+  for raster-preview payload updates under an existing output id. There is no
+  rendered-view fallback to materialized `cell.outputs`; hosts and import paths
+  must seed execution/output stores for output-bearing code cells.
 
 ## Remaining work (ranked)
 

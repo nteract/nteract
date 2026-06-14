@@ -122,13 +122,14 @@ describe("createNotebookViewModelFromNotebookCells", () => {
     });
   });
 
-  it("falls back to legacy cell outputs when no execution pointer exists", () => {
+  it("does not project cell outputs without an execution pointer", () => {
     replaceNotebookCells([
+      markdownCell("intro", "# Results"),
       {
-        ...codeCell("legacy-plot", "plot()", 1),
+        ...codeCell("stale-plot", "plot()", 1),
         outputs: [
           {
-            output_id: "legacy-output",
+            output_id: "stale-output",
             output_type: "display_data",
             data: { "image/png": "iVBORw0KGgo=" },
             metadata: {},
@@ -139,11 +140,7 @@ describe("createNotebookViewModelFromNotebookCells", () => {
 
     const outline = createNotebookViewModelFromNotebookCells().outlineItems;
 
-    expect(outline[0]).toMatchObject({
-      id: "legacy-plot:output:legacy-output",
-      kind: "output",
-      imagePreview: { mimeType: "image/png" },
-    });
+    expect(outline.map((item) => [item.id, item.kind])).toEqual([["intro:heading:0", "heading"]]);
   });
 });
 

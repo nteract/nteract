@@ -57,8 +57,7 @@ export function createNotebookViewModelFromNotebookCells(
 export function notebookCellToViewCell(cell: NotebookStoreCell): NotebookViewCell {
   const executionId = cell.cell_type === "code" ? getCellExecutionId(cell.id) : null;
   const execution = executionId ? getExecutionById(executionId) : undefined;
-  const outputs =
-    cell.cell_type === "code" ? (executionId ? getCellOutputsSnapshot(cell.id) : cell.outputs) : [];
+  const outputs = cell.cell_type === "code" ? getCellOutputsSnapshot(cell.id) : [];
 
   return {
     id: cell.id,
