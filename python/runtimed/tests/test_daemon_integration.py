@@ -254,6 +254,28 @@ async def async_wait_for_runtime_kernel(session, *, timeout=15.0, description="k
     await async_wait_for_sync(_check, timeout=timeout, interval=0.25, description=description)
 
 
+async def async_use_auto_kernel_or_start(
+    session,
+    *,
+    timeout=15.0,
+    description="auto-launched kernel",
+):
+    """Use create_notebook()'s auto-launched kernel, falling back to LaunchKernel.
+
+    Tests that only need a ready kernel should not race the daemon's
+    create-notebook auto-launch with an immediate manual LaunchKernel request.
+    """
+
+    try:
+        await async_wait_for_runtime_kernel(
+            session,
+            timeout=timeout,
+            description=description,
+        )
+    except AssertionError:
+        await async_start_kernel_with_retry(session)
+
+
 async def async_wait_for_conda_env_yml_missing(
     session,
     expected_env_name,
@@ -2649,7 +2671,10 @@ class TestAppendSource:
 
     async def test_append_source_basic(self, session):
         """append_source() adds text to end of cell source."""
-        await async_start_kernel_with_retry(session)
+        await async_use_auto_kernel_or_start(
+            session,
+            description="append-source auto-launched kernel",
+        )
 
         cell_id = await session.create_cell("x = 1")
 
@@ -2670,7 +2695,10 @@ class TestAppendSource:
 
     async def test_append_source_streaming_tokens(self, session):
         """append_source() can append tokens incrementally (LLM streaming)."""
-        await async_start_kernel_with_retry(session)
+        await async_use_auto_kernel_or_start(
+            session,
+            description="append-source streaming auto-launched kernel",
+        )
 
         cell_id = await session.create_cell("")
 
