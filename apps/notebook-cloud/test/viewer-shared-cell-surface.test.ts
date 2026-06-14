@@ -448,6 +448,36 @@ test("cloud rail binds through the shared document rail adapter", () => {
   assert.doesNotMatch(sourceText, /<NotebookRail[\s>]/);
 });
 
+test("cloud mobile shell gives the collapsed rail a toolbar entrypoint", () => {
+  const sourceText = viewerFileContaining("export function NotebookViewer");
+  const cssPath = new URL("../viewer/index.css", import.meta.url);
+  const cssText = readFileSync(cssPath, "utf8");
+
+  assert.match(sourceText, /PanelLeftOpen/);
+  assert.match(sourceText, /const handleOpenMobileRail = useCallback\(\(\) => \{/);
+  assert.match(sourceText, /setRailCollapsed\(false\);/);
+  assert.match(
+    sourceText,
+    /leadingControls: \(\s*<button[\s\S]*className="cloud-mobile-rail-toggle hidden h-8 w-8[\s\S]*aria-label="Open notebook panels"[\s\S]*onClick=\{handleOpenMobileRail\}/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 599\.98px\) \{[\s\S]*\.cloud-mobile-rail-toggle\s*\{[\s\S]*display: inline-flex;/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 599\.98px\) \{[\s\S]*\.cloud-notebook-rail\[data-collapsed="true"\]\s*\{[\s\S]*display: none;/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 599\.98px\) \{[\s\S]*\.cloud-notebook-shell \[data-slot="notebook-command-toolbar"\] button\s*\{[\s\S]*min-width: 2rem;[\s\S]*min-height: 2rem;/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 599\.98px\) \{[\s\S]*\.cloud-notebook-rail\[data-collapsed="false"\]\s*\{[\s\S]*width: 100%;/,
+  );
+});
+
 test("cloud host notices sit in the shared shell above the rail and notebook stage", () => {
   const sourceText = viewerCorpus;
   const cssPath = new URL("../viewer/index.css", import.meta.url);
