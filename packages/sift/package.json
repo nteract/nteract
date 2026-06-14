@@ -34,7 +34,7 @@
     "generate": "npx tsx src/generate-data.ts",
     "dev": "vp dev",
     "build": "tsc && vp build",
-    "build:lib": "tsc && vp build --config vite.lib.config.ts && npx @tailwindcss/cli -i src/style.css -o lib/style.css --minify && cp src/handoff.css lib/handoff.css",
+    "build:lib": "tsc && vp build --config vite.lib.config.ts && node scripts/build-lib-css.mjs && cp src/handoff.css lib/handoff.css",
     "preview": "vp preview",
     "test": "vp test run",
     "test:watch": "vp test",
@@ -72,6 +72,7 @@
   },
   "dependencies": {
     "@chenglou/pretext": ">=0.0.6",
+    "@nteract/odometer": "workspace:*",
     "@radix-ui/react-context-menu": "^2.2.16",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-popover": "^1.1.15",

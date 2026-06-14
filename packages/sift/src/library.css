@@ -1043,38 +1043,6 @@
   }
 }
 
-/* --- Odometer FPS counter --- */
-
-.sift-odometer {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0;
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum";
-}
-
-.sift-odo-slot {
-  display: inline-block;
-  height: 1.2em;
-  overflow: hidden;
-  vertical-align: baseline;
-  line-height: 1.2;
-  white-space: pre; /* preserve space characters */
-  contain: layout style paint;
-}
-
-.sift-odo-strip {
-  display: flex;
-  flex-direction: column;
-  transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.sift-odo-num {
-  display: block;
-  height: 1.2em;
-  line-height: 1.2;
-}
-
 /* --- Status indicator --- */
 
 .sift-status-indicator {

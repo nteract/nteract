@@ -1,4 +1,5 @@
 import { layout, type PreparedText, prepare } from "@chenglou/pretext";
+import { createOdometer } from "@nteract/odometer";
 import {
   animationFrameScheduler,
   distinctUntilChanged,
@@ -954,131 +955,6 @@ export function createTable(
   debugGroup.style.display = "none";
   const statDom = makeStatSpan("sift-stat-dom");
   const statFrame = makeStatSpan("sift-stat-frame");
-
-  // Reusable odometer — rolling digit strips for any numeric display
-  type OdometerSlot = {
-    el: HTMLSpanElement;
-    strip: HTMLSpanElement | null;
-    current: string;
-    pos: number;
-  };
-
-  function createOdometer(host: HTMLElement): {
-    update: (text: string) => void;
-  } {
-    host.classList.add("sift-odometer");
-    const slots: OdometerSlot[] = [];
-    // Track the previous numeric value to determine roll direction
-    let prevNumericValue = 0;
-
-    // Strip layout: 9-0-1-2-3-4-5-6-7-8-9-0 (12 positions)
-    // Canonical positions 1-10 map to digits 0-9
-    // Position 0 = extra 9 (for wrapping down past 0)
-    // Position 11 = extra 0 (for wrapping up past 9)
-    const STRIP_DIGITS = [9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
-
-    function createDigitStrip(): HTMLSpanElement {
-      const strip = document.createElement("span");
-      strip.className = "sift-odo-strip";
-      for (const d of STRIP_DIGITS) {
-        const digit = document.createElement("span");
-        digit.className = "sift-odo-num";
-        digit.textContent = String(d);
-        strip.appendChild(digit);
-      }
-      return strip;
-    }
-
-    // Canonical position for a digit (1-10)
-    function canonicalPos(d: number): number {
-      return d + 1;
-    }
-
-    function update(text: string) {
-      // Extract numeric value from text to determine direction
-      const numStr = text.replace(/[^0-9]/g, "");
-      const numericValue = numStr ? parseInt(numStr) : 0;
-      const increasing = numericValue >= prevNumericValue;
-      prevNumericValue = numericValue;
-
-      while (slots.length < text.length) {
-        const el = document.createElement("span");
-        el.className = "sift-odo-slot";
-        host.appendChild(el);
-        slots.push({ el, strip: null, current: "", pos: -1 });
-      }
-      while (slots.length > text.length) {
-        const removed = slots.pop()!;
-        host.removeChild(removed.el);
-      }
-
-      for (let i = 0; i < text.length; i++) {
-        const ch = text[i];
-        const slot = slots[i];
-
-        if (ch === slot.current) continue;
-
-        const isDigit = ch >= "0" && ch <= "9";
-
-        if (isDigit) {
-          if (!slot.strip) {
-            slot.el.textContent = "";
-            slot.strip = createDigitStrip();
-            slot.el.appendChild(slot.strip);
-            slot.pos = -1;
-          }
-          const target = parseInt(ch);
-          const prev = slot.current >= "0" && slot.current <= "9" ? parseInt(slot.current) : -1;
-
-          let targetPos: number;
-          if (prev === -1 || slot.pos === -1) {
-            // First time — go directly to canonical position
-            targetPos = canonicalPos(target);
-          } else if (increasing && prev === 9 && target === 0) {
-            // Wrapping up: 9→0, roll to position 11 (extra 0 at bottom)
-            targetPos = 11;
-          } else if (!increasing && prev === 0 && target === 9) {
-            // Wrapping down: 0→9, roll to position 0 (extra 9 at top)
-            targetPos = 0;
-          } else {
-            targetPos = canonicalPos(target);
-          }
-
-          slot.strip.style.transform = `translateY(${-targetPos * 1.2}em)`;
-          slot.pos = targetPos;
-
-          // After wrap transitions, snap back to canonical position
-          if (targetPos === 0 || targetPos === 11) {
-            const canonical = canonicalPos(target);
-            const strip = slot.strip;
-            const onEnd = () => {
-              strip.removeEventListener("transitionend", onEnd);
-              // Disable transition, snap, re-enable
-              strip.style.transition = "none";
-              strip.style.transform = `translateY(${-canonical * 1.2}em)`;
-              slot.pos = canonical;
-              // Force reflow then restore transition
-              void strip.offsetHeight;
-              strip.style.transition = "";
-            };
-            slot.strip.addEventListener("transitionend", onEnd);
-          }
-        } else {
-          if (slot.strip) {
-            slot.el.removeChild(slot.strip);
-            slot.strip = null;
-            slot.pos = -1;
-          }
-          slot.el.textContent = ch;
-        }
-        slot.current = ch;
-      }
-      // Expose visible text for testing (textContent includes hidden strip digits)
-      host.dataset.value = text;
-    }
-
-    return { update };
-  }
 
   const rowsOdometer = createOdometer(statRows);
 
@@ -2425,6 +2301,8 @@ export function createTable(
       scheduledRaf = null;
     }
     fpsSub.unsubscribe();
+    rowsOdometer.destroy();
+    fpsOdometer.destroy();
     if (summaryDebounceTimer !== null) clearTimeout(summaryDebounceTimer);
 
     // Remove event listeners and observers
