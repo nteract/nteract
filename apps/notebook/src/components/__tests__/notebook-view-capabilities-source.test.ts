@@ -104,6 +104,6 @@ describe("NotebookView shell capabilities", () => {
       /consumeExecutionShortcuts: !readOnly \|\| canExecute \|\| canRequestExecute/,
     );
     expect(sourceText).toMatch(/canExecute=\{canExecute\}/);
-    expect(sourceText).toMatch(/showReadoutWhenDisabled=\{!readOnly\}/);
+    expect(sourceText).not.toContain("showReadoutWhenDisabled");
   });
 });

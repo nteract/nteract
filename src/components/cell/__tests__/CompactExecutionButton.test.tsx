@@ -38,12 +38,15 @@ describe("CompactExecutionButton", () => {
     expect(screen.queryByTestId("execution-readout")).toBeNull();
   });
 
-  it("can render disabled execution history as a status readout", () => {
-    render(<CompactExecutionButton count={7} canExecute={false} showReadoutWhenDisabled />);
+  it("still renders unavailable live execution state as a status readout", () => {
+    render(<CompactExecutionButton count={null} canExecute={false} isExecuting />);
 
     expect(screen.queryByRole("button")).toBeNull();
-    expect(screen.getByRole("status", { name: "Last execution 7" })).toBeTruthy();
-    expect(screen.getByTestId("execution-readout")).toHaveAttribute("data-execution-state", "ran");
+    expect(screen.getByRole("status", { name: "Execution running" })).toBeTruthy();
+    expect(screen.getByTestId("execution-readout")).toHaveAttribute(
+      "data-execution-state",
+      "running",
+    );
   });
 
   it("renders cancelled executions as neutral, not failed", () => {

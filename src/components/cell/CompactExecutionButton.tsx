@@ -22,8 +22,6 @@ interface CompactExecutionButtonProps {
   isCellFocused?: boolean;
   /** Whether execution controls are available in this shell */
   canExecute?: boolean;
-  /** Whether disabled historical execution state should still render as status */
-  showReadoutWhenDisabled?: boolean;
   /** Called when user clicks to execute */
   onExecute?: () => void;
   /** Called when user clicks to interrupt */
@@ -56,7 +54,6 @@ export function CompactExecutionButton({
   submittedByActorLabel = null,
   isCellFocused = false,
   canExecute = true,
-  showReadoutWhenDisabled = false,
   onExecute,
   onInterrupt,
   className,
@@ -135,11 +132,7 @@ export function CompactExecutionButton({
   const disabledHistoricalState =
     !canExecute && (state === "ran" || state === "error" || state === "cancelled");
   const content =
-    disabledHistoricalState && showReadoutWhenDisabled && displayCount !== null ? (
-      <span className="text-[10px] font-medium tabular-nums" aria-hidden="true">
-        {displayCount}
-      </span>
-    ) : state === "running" ? (
+    state === "running" ? (
       <Square className="size-2.5 fill-current animate-exec-squish" aria-hidden="true" />
     ) : state === "queued" ? (
       <span
@@ -151,7 +144,7 @@ export function CompactExecutionButton({
     );
 
   if (!canExecute) {
-    if (disabledHistoricalState && !showReadoutWhenDisabled) {
+    if (disabledHistoricalState) {
       return null;
     }
 
