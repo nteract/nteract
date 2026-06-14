@@ -2,8 +2,9 @@
 //!
 //! Rust port of `apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`:
 //! registers/heartbeats this machine against the hosted workstation surface
-//! (`POST /api/workstations`), polls the attach-job queue
-//! (`GET /api/workstations/{id}/attach-jobs`), and serves each pending job by
+//! (`POST /api/workstations`), keeps a server-sent event wakeup stream open,
+//! and falls back to polling the attach-job queue
+//! (`GET /api/workstations/{id}/attach-jobs`). It serves each pending job by
 //! spawning a `runtimed cloud-runtime-agent` runtime peer (the agent *is*
 //! `runtimed`, so it spawns `std::env::current_exe()`).
 //!
@@ -33,6 +34,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 pub use super::cloud_agent_cli::CLOUD_TOKEN_ENV;
@@ -43,10 +45,12 @@ pub use super::cloud_agent_cli::CLOUD_TOKEN_ENV;
 /// `.mjs` agent keys on the same string).
 pub const READINESS_LINE: &str = "Infrastructure ready, entering main loop";
 
-/// Default attach-job poll interval (mirrors the `.mjs` agent).
-pub const DEFAULT_POLL_MS: u64 = 2_000;
-/// Default registration-heartbeat interval (mirrors the `.mjs` agent).
-pub const DEFAULT_HEARTBEAT_MS: u64 = 20_000;
+/// Default attach-job fallback poll interval. The fast path is the workstation
+/// event stream; polling is recovery for missed events or older servers.
+pub const DEFAULT_POLL_MS: u64 = 60_000;
+/// Default registration-heartbeat interval. Active job status patches share
+/// this interval, so it must stay below the hosted attach-job stale window.
+pub const DEFAULT_HEARTBEAT_MS: u64 = 60_000;
 
 /// Cooldown applied to 429/503 responses without a usable `Retry-After`.
 const DEFAULT_RETRY_AFTER_MS: u64 = 60_000;
@@ -55,6 +59,10 @@ const MAX_RETRY_AFTER_MS: u64 = 15 * 60_000;
 /// How often active children are checked for exit/readiness between polls
 /// (the `.mjs` agent's `readyPoll` interval).
 const CHILD_TICK_MS: u64 = 250;
+/// Server keepalives are 25s today. Recycle half-open SSE streams that stop
+/// delivering bytes so the agent falls back/reconnects instead of waiting
+/// forever on a dead TCP connection.
+const WORKSTATION_EVENTS_IDLE_TIMEOUT_MS: u64 = 60_000;
 
 /// Configuration for [`run_workstation_agent`]. All fields are non-secret;
 /// the credential travels separately.
@@ -333,6 +341,39 @@ pub fn normalize_jobs(body: &Value) -> Vec<AttachJob> {
         .collect()
 }
 
+fn drain_sse_event_names(buffer: &mut String, chunk: &[u8]) -> Vec<String> {
+    buffer.push_str(&String::from_utf8_lossy(chunk));
+    let mut events = Vec::new();
+    while let Some((boundary, boundary_len)) = find_sse_event_boundary(buffer) {
+        let block = buffer[..boundary].to_string();
+        buffer.drain(..boundary + boundary_len);
+        if let Some(event_name) = parse_sse_event_name(&block) {
+            events.push(event_name);
+        }
+    }
+    events
+}
+
+fn find_sse_event_boundary(buffer: &str) -> Option<(usize, usize)> {
+    match (buffer.find("\n\n"), buffer.find("\r\n\r\n")) {
+        (Some(lf), Some(crlf)) if lf < crlf => Some((lf, 2)),
+        (Some(_lf), Some(crlf)) => Some((crlf, 4)),
+        (Some(lf), None) => Some((lf, 2)),
+        (None, Some(crlf)) => Some((crlf, 4)),
+        (None, None) => None,
+    }
+}
+
+fn parse_sse_event_name(block: &str) -> Option<String> {
+    for line in block.lines() {
+        let line = line.trim_end_matches('\r');
+        if let Some(event_name) = line.strip_prefix("event:") {
+            return Some(event_name.trim().to_string());
+        }
+    }
+    None
+}
+
 /// Cooldown hint from a response: nonzero only for 429/503. `Retry-After`
 /// may be delta-seconds or an HTTP date; absent/unparseable falls back to
 /// [`DEFAULT_RETRY_AFTER_MS`]. Mirrors `retryAfterMs` in the `.mjs` agent.
@@ -442,6 +483,7 @@ impl std::error::Error for AgentHttpError {}
 
 /// Thin client for the three workstation-surface endpoints. All calls carry
 /// `Authorization: Bearer <workstation credential>`.
+#[derive(Clone)]
 struct CloudApi {
     client: reqwest::Client,
     base: String,
@@ -451,7 +493,7 @@ struct CloudApi {
 impl CloudApi {
     fn new(cloud_url: &str, token: String) -> Result<Self> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(30))
             .build()
             .context("build HTTP client")?;
         Ok(Self {
@@ -487,6 +529,68 @@ impl CloudApi {
         Ok(normalize_jobs(&body))
     }
 
+    async fn stream_workstation_events(
+        &self,
+        workstation_id: &str,
+        tx: mpsc::Sender<WorkstationControlEvent>,
+    ) -> Result<(), AgentHttpError> {
+        let url = format!(
+            "{}/api/workstations/{}/events",
+            self.base,
+            encode_path_segment(workstation_id)
+        );
+        let mut response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.token)
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .map_err(|e| AgentHttpError::local(format!("stream workstation events failed: {e}")))?;
+        let status = response.status().as_u16();
+        let retry_after_header = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        if status != 200 {
+            let text = response.text().await.unwrap_or_default();
+            let body = parse_response_body(&text);
+            let snippet: String = serde_json::to_string(&body)
+                .unwrap_or_default()
+                .chars()
+                .take(500)
+                .collect();
+            return Err(AgentHttpError {
+                message: format!("stream workstation events failed: HTTP {status} {snippet}"),
+                retry_after_ms: retry_after_ms(status, retry_after_header.as_deref()),
+                status: Some(status),
+                body,
+            });
+        }
+
+        let mut buffer = String::new();
+        loop {
+            let chunk = tokio::time::timeout(
+                Duration::from_millis(WORKSTATION_EVENTS_IDLE_TIMEOUT_MS),
+                response.chunk(),
+            )
+            .await
+            .map_err(|_| AgentHttpError::local("workstation event stream idle timeout".into()))?
+            .map_err(|e| AgentHttpError::local(format!("read workstation event stream: {e}")))?;
+            let Some(chunk) = chunk else {
+                return Ok(());
+            };
+            for event_name in drain_sse_event_names(&mut buffer, &chunk) {
+                if event_name == "attach_jobs"
+                    && tx.send(WorkstationControlEvent::AttachJobs).await.is_err()
+                {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     async fn patch_attach_job(
         &self,
         workstation_id: &str,
@@ -520,6 +624,7 @@ impl CloudApi {
         expected_statuses: &[u16],
     ) -> Result<Value, AgentHttpError> {
         let response = request
+            .timeout(Duration::from_secs(30))
             .bearer_auth(&self.token)
             .send()
             .await
@@ -547,6 +652,55 @@ impl CloudApi {
             body,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkstationControlEvent {
+    AttachJobs,
+}
+
+async fn run_workstation_event_listener(
+    api: CloudApi,
+    workstation_id: String,
+    tx: mpsc::Sender<WorkstationControlEvent>,
+) {
+    let mut reconnect_delay = Duration::from_secs(1);
+    loop {
+        if tx.is_closed() {
+            return;
+        }
+        match api
+            .stream_workstation_events(&workstation_id, tx.clone())
+            .await
+        {
+            Ok(()) => {
+                warn!("[workstation-agent] workstation event stream closed; reconnecting");
+                reconnect_delay = Duration::from_secs(1);
+            }
+            Err(error) => {
+                if error.status == Some(404) || error.status == Some(503) {
+                    warn!(
+                        "[workstation-agent] workstation event stream unavailable; using fallback polling: {}",
+                        error.message
+                    );
+                } else {
+                    warn!(
+                        "[workstation-agent] workstation event stream failed; reconnecting: {}",
+                        error.message
+                    );
+                }
+                reconnect_delay = retry_event_stream_delay(reconnect_delay, error.retry_after_ms);
+            }
+        }
+        tokio::time::sleep(reconnect_delay).await;
+    }
+}
+
+fn retry_event_stream_delay(previous: Duration, retry_after_ms: u64) -> Duration {
+    if retry_after_ms > 0 {
+        return Duration::from_millis(retry_after_ms).min(Duration::from_secs(60));
+    }
+    previous.saturating_mul(2).min(Duration::from_secs(60))
 }
 
 /// One job this agent is responsible for. `child` is `Some` for peers this
@@ -648,7 +802,16 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
 
     let mut active: HashMap<String, ActiveJob> = HashMap::new();
     let mut last_heartbeat: Option<Instant> = None;
+    let mut last_poll: Option<Instant> = None;
+    let mut poll_requested = true;
+    let mut event_stream_closed = false;
     let mut tracker = StepTracker::default();
+    let (event_tx, mut event_rx) = mpsc::channel(16);
+    let _event_listener = tokio::spawn(run_workstation_event_listener(
+        api.clone(),
+        opts.workstation_id.clone(),
+        event_tx,
+    ));
 
     loop {
         if let Some(remaining) = tracker.cooldown_remaining() {
@@ -668,24 +831,58 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
             continue;
         }
 
-        // Accept/adopt attach jobs.
-        let result = poll_attach_jobs(&api, &opts, &token, &mut active).await;
-        tracker.record("poll_attach_jobs", result);
+        if !event_stream_closed {
+            while let Ok(WorkstationControlEvent::AttachJobs) = event_rx.try_recv() {
+                poll_requested = true;
+            }
+        }
+
+        // Accept/adopt attach jobs. SSE is the fast wakeup path; this fallback
+        // poll catches missed events, server versions without /events, and
+        // jobs that existed before this agent started.
+        if poll_requested || last_poll.is_none_or(|at| at.elapsed() >= opts.poll_interval) {
+            let result = poll_attach_jobs(&api, &opts, &token, &mut active).await;
+            last_poll = Some(Instant::now());
+            poll_requested = false;
+            tracker.record("poll_attach_jobs", result);
+        }
 
         // Periodic status re-patch so the cloud sees active jobs as live.
         let result = heartbeat_active_jobs(&api, &opts, &mut active).await;
         tracker.record("heartbeat_active_jobs", result);
 
-        // Watch children at a finer tick than the poll interval so readiness
-        // and exits land promptly (the `.mjs` agent's 250ms readyPoll).
-        let deadline = Instant::now() + opts.poll_interval;
+        // Watch children at a finer tick than the fallback poll interval so
+        // readiness and exits land promptly (the `.mjs` agent's 250ms
+        // readyPoll), but sleep cheaply while idle.
+        let next_poll_at = last_poll.map_or_else(Instant::now, |at| at + opts.poll_interval);
+        let next_heartbeat_at =
+            last_heartbeat.map_or_else(Instant::now, |at| at + opts.heartbeat_interval);
+        let deadline = next_poll_at.min(next_heartbeat_at);
         loop {
             tick_active_jobs(&api, &opts, &mut active).await;
             let now = Instant::now();
             if now >= deadline {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(CHILD_TICK_MS).min(deadline - now)).await;
+            let sleep_for = if active.is_empty() {
+                deadline - now
+            } else {
+                Duration::from_millis(CHILD_TICK_MS).min(deadline - now)
+            };
+            tokio::select! {
+                event = event_rx.recv(), if !event_stream_closed => {
+                    match event {
+                        Some(WorkstationControlEvent::AttachJobs) => {
+                            poll_requested = true;
+                            break;
+                        }
+                        None => {
+                            event_stream_closed = true;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(sleep_for) => {}
+            }
         }
     }
 }
@@ -1519,6 +1716,41 @@ mod tests {
         let payload = registration_payload("ws", "ws", "/w", "/usr/bin/python3", None, None);
         assert!(payload.get("cpu_count").is_none());
         assert!(payload.get("memory_bytes").is_none());
+    }
+
+    #[test]
+    fn sse_parser_drains_complete_event_names() {
+        let mut buffer = String::new();
+        let events = drain_sse_event_names(
+            &mut buffer,
+            b"event: ready\ndata: {}\n\nevent: attach_jobs\ndata: {\"job_id\":\"j\"}\n\n",
+        );
+
+        assert_eq!(events, vec!["ready", "attach_jobs"]);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn sse_parser_keeps_partial_event_until_boundary() {
+        let mut buffer = String::new();
+        assert!(drain_sse_event_names(&mut buffer, b"event: attach_").is_empty());
+        assert_eq!(
+            drain_sse_event_names(&mut buffer, b"jobs\r\ndata: {}\r\n\r\n"),
+            vec!["attach_jobs"]
+        );
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn event_stream_retry_delay_uses_retry_after_and_caps_backoff() {
+        assert_eq!(
+            retry_event_stream_delay(Duration::from_secs(1), 42_000),
+            Duration::from_secs(42)
+        );
+        assert_eq!(
+            retry_event_stream_delay(Duration::from_secs(45), 0),
+            Duration::from_secs(60)
+        );
     }
 
     #[test]

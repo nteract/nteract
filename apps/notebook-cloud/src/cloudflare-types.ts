@@ -1,5 +1,6 @@
 export interface Env {
   NOTEBOOK_ROOMS: DurableObjectNamespace;
+  WORKSTATION_EVENTS?: DurableObjectNamespace;
   DB?: D1Database;
   NOTEBOOK_SNAPSHOTS?: R2Bucket;
   ASSETS?: WorkerAssets;
