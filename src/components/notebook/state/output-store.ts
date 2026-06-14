@@ -41,10 +41,11 @@ const _subscribers = new Map<string, Set<() => void>>();
 let _outputsVersion = 0;
 const _outputsVersionSubscribers = new Set<() => void>();
 
-// Narrower version for derived views that only care whether output
-// membership or output kinds changed. Stream appends and display payload
-// updates still notify the exact output subscriber and `_outputsVersion`,
-// but they do not need to recompute hidden-cell grouping / error counts.
+// Narrower version for derived views that only care whether output membership,
+// output kinds, or raster-preview payloads changed. Stream appends and most
+// display payload updates still notify the exact output subscriber and
+// `_outputsVersion`, but they do not need to recompute hidden-cell grouping /
+// error counts.
 let _outputStructureVersion = 0;
 const _outputStructureVersionSubscribers = new Set<() => void>();
 
@@ -172,6 +173,25 @@ function getOutputSnapshot(output_id: string): () => JupyterOutput | undefined {
   return () => _outputMap.get(output_id);
 }
 
+function outputStructureKey(output: JupyterOutput): string {
+  if (output.output_type !== "display_data" && output.output_type !== "execute_result") {
+    return output.output_type;
+  }
+  return `${output.output_type}:${Object.keys(output.data).sort().join("\u0000")}`;
+}
+
+function hasRasterImagePreview(output: JupyterOutput | undefined): boolean {
+  if (
+    !output ||
+    (output.output_type !== "display_data" && output.output_type !== "execute_result")
+  ) {
+    return false;
+  }
+  return Object.keys(output.data).some(
+    (mimeType) => mimeType.startsWith("image/") && mimeType !== "image/svg+xml",
+  );
+}
+
 // ── Write operations ────────────────────────────────────────────────────
 
 /**
@@ -183,7 +203,11 @@ function getOutputSnapshot(output_id: string): () => JupyterOutput | undefined {
 export function setOutput(output_id: string, output: JupyterOutput): void {
   const prev = _outputMap.get(output_id);
   if (prev === output) return;
-  const structureChanged = prev === undefined || prev.output_type !== output.output_type;
+  const structureChanged =
+    prev === undefined ||
+    outputStructureKey(prev) !== outputStructureKey(output) ||
+    hasRasterImagePreview(prev) ||
+    hasRasterImagePreview(output);
   _outputMap.set(output_id, output);
   emitOutputChange(output_id);
   if (structureChanged) emitOutputStructureChange();
@@ -234,10 +258,11 @@ export function useOutputsVersion(): number {
 /**
  * Subscribe to output membership / kind changes only.
  *
- * A stream append or `update_display_data` payload replacement keeps the
+ * A stream append or most `update_display_data` payload replacements keep the
  * same output_id and output_type, so cross-cell structural views should not
- * recompute. New outputs, removals, and output_type transitions do advance
- * this counter.
+ * recompute. New outputs, removals, output_type transitions, MIME-key changes,
+ * and raster-image payload updates advance this counter because the outline can
+ * surface image previews as document waypoints.
  */
 export function useOutputStructureVersion(): number {
   return useSyncExternalStore(subscribeOutputStructureVersion, getOutputStructureVersionSnapshot);

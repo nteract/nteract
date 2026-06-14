@@ -281,7 +281,7 @@ describe("cloud viewer render resolution", () => {
     }
   });
 
-  it("keeps synthetic output ids unique when cached raw outputs omit output_id", async () => {
+  it("reports missing output ids instead of synthesizing render identities", async () => {
     const cache = createOutputResolutionCache();
     const output = {
       output_type: "stream",
@@ -294,19 +294,27 @@ describe("cloud viewer render resolution", () => {
       resolveOutputs([output], rejectingBlobResolver(), "cell-b", cache),
     ]);
 
-    assert.equal(first[0].output_id, "cloud-output:cell-a:0");
-    assert.equal(second[0].output_id, "cloud-output:cell-b:0");
+    assert.equal(first[0].output_type, "error");
+    assert.equal(second[0].output_type, "error");
+    assert.equal(first[0].output_id, "resolution-error:missing-output-id:cell-a:0");
+    assert.equal(second[0].output_id, "resolution-error:missing-output-id:cell-b:0");
+    if (first[0].output_type === "error" && second[0].output_type === "error") {
+      assert.match(first[0].evalue, /without output_id/);
+      assert.match(second[0].evalue, /without output_id/);
+    }
   });
 
-  it("skips cache collisions for non-serializable raw outputs", async () => {
+  it("skips cache collisions for non-serializable identified outputs", async () => {
     const cache = createOutputResolutionCache();
     const firstOutput = {
+      output_id: "first-non-serializable",
       output_type: "stream",
       name: "stdout",
       text: "first\n",
       value: 1n,
     };
     const secondOutput = {
+      output_id: "second-non-serializable",
       output_type: "stream",
       name: "stdout",
       text: "second\n",
@@ -432,7 +440,7 @@ describe("cloud viewer render resolution", () => {
     assert.equal(cell.executionId, "exec-runtime-count");
   });
 
-  it("stamps direct outputs without output_id before isolated rendering", async () => {
+  it("reports direct outputs without output_id before isolated rendering", async () => {
     const cell = await resolveCell(
       {
         id: "raw-output-cell",
@@ -451,7 +459,32 @@ describe("cloud viewer render resolution", () => {
     );
 
     assert.equal(cell.outputs.length, 1);
-    assert.equal(cell.outputs[0].output_id, "cloud-output:raw-output-cell:0");
+    assert.equal(cell.outputs[0].output_type, "error");
+    assert.equal(cell.outputs[0].output_id, "resolution-error:missing-output-id:raw-output-cell:0");
+    if (cell.outputs[0].output_type === "error") {
+      assert.match(cell.outputs[0].evalue, /without output_id/);
+    }
+  });
+
+  it("reports JSON string outputs without output_id instead of swallowing the invariant error", async () => {
+    const outputs = await resolveOutputs(
+      [
+        JSON.stringify({
+          output_type: "stream",
+          name: "stdout",
+          text: "legacy json\n",
+        }),
+      ],
+      rejectingBlobResolver(),
+      "legacy-json-cell",
+    );
+
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0].output_type, "error");
+    assert.equal(outputs[0].output_id, "resolution-error:missing-output-id:legacy-json-cell:0");
+    if (outputs[0].output_type === "error") {
+      assert.match(outputs[0].evalue, /without output_id/);
+    }
   });
 
   it("reports manifest-shaped outputs without output_id instead of rendering ContentRefs", async () => {
@@ -471,7 +504,7 @@ describe("cloud viewer render resolution", () => {
 
     assert.equal(outputs.length, 1);
     assert.equal(outputs[0].output_type, "error");
-    assert.equal(outputs[0].output_id, "resolution-error:cloud-output:legacy-manifest-cell:0");
+    assert.equal(outputs[0].output_id, "resolution-error:missing-output-id:legacy-manifest-cell:0");
     if (outputs[0].output_type === "error") {
       assert.match(outputs[0].evalue, /without output_id/);
     }
@@ -481,6 +514,7 @@ describe("cloud viewer render resolution", () => {
     const outputs = await resolveOutputs(
       [
         {
+          output_id: "json-url-output",
           output_type: "display_data",
           data: {
             "application/json": { url: "https://example.test/value" },
@@ -493,7 +527,7 @@ describe("cloud viewer render resolution", () => {
     );
 
     assert.equal(outputs.length, 1);
-    assert.equal(outputs[0].output_id, "cloud-output:json-url-cell:0");
+    assert.equal(outputs[0].output_id, "json-url-output");
     assert.equal(outputs[0].output_type, "display_data");
     if (outputs[0].output_type === "display_data") {
       assert.deepEqual(outputs[0].data["application/json"], {

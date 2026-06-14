@@ -90,14 +90,18 @@ function looksLikeBinaryMime(mime: string): boolean {
   return URL_BACKED_BINARY_MIME_TYPES.has(mime);
 }
 
-function isContentRef(value: unknown): value is ContentRef {
+function isContentRef(value: unknown, mimeType?: string): value is ContentRef {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
   return (
     ("inline" in obj && typeof obj.inline === "string") ||
-    ("url" in obj && typeof obj.url === "string") ||
+    ("url" in obj && typeof obj.url === "string" && !isJsonMimeType(mimeType)) ||
     ("blob" in obj && typeof obj.blob === "string")
   );
+}
+
+function isJsonMimeType(mimeType: string | undefined): boolean {
+  return mimeType === "application/json" || mimeType?.endsWith("+json") === true;
 }
 
 export function isOutputManifest(value: unknown): value is OutputManifest {
@@ -114,8 +118,8 @@ export function isOutputManifest(value: unknown): value is OutputManifest {
     case "display_data":
     case "execute_result": {
       if (typeof obj.data !== "object" || obj.data === null) return false;
-      const entries = Object.values(obj.data as Record<string, unknown>);
-      return entries.length > 0 && entries.every(isContentRef);
+      const entries = Object.entries(obj.data as Record<string, unknown>);
+      return entries.length > 0 && entries.every(([mimeType, ref]) => isContentRef(ref, mimeType));
     }
     default:
       return false;

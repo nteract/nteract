@@ -25,6 +25,7 @@ import {
   setOutput,
   useCellOutputs,
 } from "../notebook-outputs";
+import { useNotebookViewModel } from "../notebook-view-model";
 
 // ---------------------------------------------------------------------------
 // Phase C-lite acceptance: decoupling cell subscriptions from outputs.
@@ -51,6 +52,15 @@ function errorOutput(ename: string): JupyterOutput {
     ename,
     evalue: "boom",
     traceback: [],
+  };
+}
+
+function imageOutput(payload = "iVBORw0KGgo="): JupyterOutput {
+  return {
+    output_id: "plot-output",
+    output_type: "display_data",
+    data: { "image/png": payload },
+    metadata: {},
   };
 }
 
@@ -177,6 +187,38 @@ describe("Phase C-lite: cell subscription / outputs decoupling", () => {
 
     expect(result.current.cell).toBe(initialCell);
     expect(result.current.outputs).toHaveLength(2);
+  });
+
+  it("refreshes notebook view model outline items when a raster output payload lands", () => {
+    act(() => {
+      replaceNotebookCells([codeCell("plot")]);
+      setOutput("plot-output", imageOutput(""));
+      setExecution("exec-plot", {
+        execution_count: 1,
+        status: "running",
+        success: null,
+        output_ids: ["plot-output"],
+      });
+      setCellExecutionPointer("plot", "exec-plot");
+    });
+
+    const { result } = renderHook(() => useNotebookViewModel());
+
+    expect(result.current.outlineItems.some((item) => item.kind === "output")).toBe(false);
+
+    act(() => {
+      setOutput("plot-output", imageOutput());
+    });
+
+    expect(result.current.outlineItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "plot:output:plot-output",
+          kind: "output",
+          imagePreview: expect.objectContaining({ mimeType: "image/png" }),
+        }),
+      ]),
+    );
   });
 
   it("does not re-render cell A when only cell B's outputs change", () => {

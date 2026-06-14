@@ -5,6 +5,12 @@ import {
   updateCellById,
   updateCellSourceById,
 } from "../notebook-cells";
+import {
+  resetNotebookExecutions,
+  setCellExecutionPointer,
+  setExecution,
+} from "../notebook-executions";
+import { resetNotebookOutputs, setOutput } from "../notebook-outputs";
 import { createNotebookViewModelFromNotebookCells } from "../notebook-view-model";
 import { setMarkdownProjectionProjector } from "../markdown-projection";
 import type { NotebookCell } from "../../types";
@@ -32,6 +38,8 @@ afterEach(() => {
   restoreMarkdownProjectionProjector?.();
   restoreMarkdownProjectionProjector = undefined;
   resetNotebookCells();
+  resetNotebookOutputs();
+  resetNotebookExecutions();
 });
 
 describe("createNotebookViewModelFromNotebookCells", () => {
@@ -82,6 +90,57 @@ describe("createNotebookViewModelFromNotebookCells", () => {
     );
 
     expect(createNotebookViewModelFromNotebookCells().outlineItems[0].statusLabel).toBe("run 7");
+  });
+
+  it("projects raster output waypoints from the execution and output stores", () => {
+    replaceNotebookCells([markdownCell("intro", "# Results"), codeCell("plot", "plot()", 2)]);
+
+    setOutput("plot-output", {
+      output_id: "plot-output",
+      output_type: "display_data",
+      data: { "image/png": "iVBORw0KGgo=" },
+      metadata: {},
+    });
+    setExecution("exec-plot", {
+      execution_count: 2,
+      status: "done",
+      success: true,
+      output_ids: ["plot-output"],
+    });
+    setCellExecutionPointer("plot", "exec-plot");
+
+    const outline = createNotebookViewModelFromNotebookCells().outlineItems;
+
+    expect(outline.map((item) => [item.id, item.kind, item.title])).toEqual([
+      ["intro:heading:0", "heading", "Results"],
+      ["plot:output:plot-output", "output", "Image output"],
+    ]);
+    expect(outline[1]).toMatchObject({
+      href: "#notebook-cell-plot-output-plot-output",
+      imagePreview: { mimeType: "image/png" },
+      outputId: "plot-output",
+    });
+  });
+
+  it("does not project cell outputs without an execution pointer", () => {
+    replaceNotebookCells([
+      markdownCell("intro", "# Results"),
+      {
+        ...codeCell("stale-plot", "plot()", 1),
+        outputs: [
+          {
+            output_id: "stale-output",
+            output_type: "display_data",
+            data: { "image/png": "iVBORw0KGgo=" },
+            metadata: {},
+          },
+        ],
+      },
+    ]);
+
+    const outline = createNotebookViewModelFromNotebookCells().outlineItems;
+
+    expect(outline.map((item) => [item.id, item.kind])).toEqual([["intro:heading:0", "heading"]]);
   });
 });
 

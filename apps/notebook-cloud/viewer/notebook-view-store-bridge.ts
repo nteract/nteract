@@ -1,10 +1,7 @@
+import { shouldPreserveCurrentNotebookProjection } from "@/components/notebook/state/projection-lifecycle";
 import { createNotebookViewStoreProjector } from "@/components/notebook/state/view-store-projection";
-import {
-  getCellIdsSnapshot,
-  resetRuntimeState,
-  resetRuntimeStoresProjection,
-  shouldPreserveBootstrapProjection,
-} from "../../notebook/src/notebook-surface-stores";
+import { resetRuntimeState } from "@/components/notebook/state/runtime-state";
+import { resetRuntimeStoresProjection } from "../../notebook/src/notebook-surface-stores";
 import type { ResolvedCell } from "./render-resolution";
 
 const cloudViewStoreProjector = createNotebookViewStoreProjector();
@@ -42,10 +39,9 @@ export function resetCloudProjectionUnlessPreserved(options: {
   /** `id:`-prefixed identity of the notebook this session targets. */
   nextNotebookIdentity: string;
 }): boolean {
-  const preserve = shouldPreserveBootstrapProjection({
+  const preserve = shouldPreserveCurrentNotebookProjection({
     previousIdentity: options.paintedNotebookIdentity,
     nextIdentity: options.nextNotebookIdentity,
-    visibleCellCount: getCellIdsSnapshot().length,
   });
   if (!preserve) {
     resetCloudViewStoreProjection();

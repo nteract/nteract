@@ -11,6 +11,7 @@ import {
   setNotebookQueueProjection,
   useCellExecutionId,
   useExecution,
+  useExecutionStructureVersion,
   useNotebookQueueProjection,
   type ExecutionSnapshot,
 } from "../notebook-executions";
@@ -119,6 +120,7 @@ describe("notebook-executions store", () => {
     // Compile-time guard; React hook testing lives in the component suites.
     expect(typeof useExecution).toBe("function");
     expect(typeof useCellExecutionId).toBe("function");
+    expect(typeof useExecutionStructureVersion).toBe("function");
     expect(typeof useNotebookQueueProjection).toBe("function");
   });
 

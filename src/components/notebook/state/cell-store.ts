@@ -90,8 +90,8 @@ const _cellSubscribers = new Map<string, Set<() => void>>();
 
 // Cell chrome version — bumps when ops change the ordered cell list or cell
 // chrome (source / metadata / type / execution count), but not when they only
-// refresh legacy `cell.outputs`. Used by components that derive cross-cell
-// state (e.g., hiddenGroups, NotebookViewModel/outline).
+// refresh the materialized output snapshot on a code cell. Rendered views read
+// live outputs through the execution/output stores.
 let _materializeVersion = 0;
 const _materializeSubscribers = new Set<() => void>();
 

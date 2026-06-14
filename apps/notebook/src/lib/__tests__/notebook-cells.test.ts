@@ -429,7 +429,7 @@ describe("cell chrome version", () => {
     expect(result.current).toBe(initialVersion + 1);
   });
 
-  it("does not bump when updateCellById changes only legacy outputs", () => {
+  it("does not bump when updateCellById changes only the materialized output snapshot", () => {
     replaceNotebookCells([codeCell("a", "print('hello')")]);
 
     const { result } = renderHook(() => useMaterializeVersion());

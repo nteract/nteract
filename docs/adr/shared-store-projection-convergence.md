@@ -43,9 +43,10 @@ the flush strands the update (marked dirty, never emitted).
   `queueState$`, `envSyncState$`, `workstation$`, `statusKey$`,
   `throttledStatusKey$`). The busy-flash throttle that lived as an imperative
   `setTimeout` effect in `useDaemonKernel` is now the shared, virtual-time-
-  testable `throttleBusyStatus` pipeline. Desktop's
-  `apps/notebook/src/lib/runtime-state.ts` is a thin React adapter
-  (`useRuntimeProjection`) over the package store; item 2 below rode this.
+  testable `throttleBusyStatus` pipeline. The React adapter now lives in
+  `src/components/notebook/state/runtime-state.ts` (`useRuntimeProjection`) over
+  the package store; Desktop keeps `apps/notebook/src/lib/runtime-state.ts` as a
+  compatibility re-export. Item 2 below rode this.
 - **Cloud access/share facts first pass.**
   `apps/notebook-cloud/viewer/cloud-access-facts.ts` now names the hosted source
   facts for catalog access, live-room connection scope, selected mode, and the
@@ -77,6 +78,14 @@ the flush strands the update (marked dirty, never emitted).
   local: desktop still collapses the packages rail on a second toolbar toggle,
   and cloud still falls back to outline when the owner-only workstations panel
   is unavailable.
+- **Outline raster waypoints → shared execution/output stores.**
+  `NotebookViewModel` resolves each code cell's current execution pointer
+  through `execution-store.ts` and reads its output manifests from
+  `output-store.ts`, so raster image outputs project into the shared outline
+  after the output-store split. The output structure subscription now advances
+  for raster-preview payload updates under an existing output id. There is no
+  rendered-view fallback to materialized `cell.outputs`; hosts and import paths
+  must seed execution/output stores for output-bearing code cells.
 
 ## Remaining work (ranked)
 

@@ -217,11 +217,9 @@ export async function materializeChangeset(
   for (const projection of projectionPlan.cells) {
     const cellId = projection.cell_id;
     // Phase C-lite: outputs live in the per-output / per-execution stores
-    // (see notebook-outputs.ts, notebook-executions.ts). The cell store
-    // still carries an `outputs: JupyterOutput[]` field for legacy readers
-    // on full materialization, but the frame pipeline no longer touches
-    // that field on incremental updates — the outputs store is the source
-    // of truth for <OutputArea>.
+    // (see notebook-outputs.ts, notebook-executions.ts). Full materialization
+    // can still carry an `outputs: JupyterOutput[]` source snapshot, but
+    // rendered views derive from the execution/output stores.
     if (!projection.touches_chrome) {
       // Output-only change — the outputs store already has the new data
       // from `applyOutputChangeset`. Still warm the plugin cache for any

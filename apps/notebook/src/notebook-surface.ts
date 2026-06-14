@@ -25,7 +25,7 @@ export {
   getNotebookCellsSnapshot,
   type NotebookCell,
 } from "./lib/notebook-cells";
-export { shouldPreserveBootstrapProjection } from "./lib/bootstrap-preservation";
+export { shouldPreserveBootstrapProjection } from "@/components/notebook/state/bootstrap-preservation";
 export type { JupyterOutput } from "./types";
 export { resetPoolState, setPoolState } from "./lib/pool-state";
 export {
@@ -37,7 +37,7 @@ export {
   useRuntimeStateLoaded,
   useThrottledStatusKey,
   useWorkstationAttachment,
-} from "./lib/runtime-state";
+} from "@/components/notebook/state/runtime-state";
 export { startCursorDispatch } from "./lib/cursor-registry";
 export { setLoggerHost } from "./lib/logger";
 export { setOpenUrlHost } from "./lib/open-url";

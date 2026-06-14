@@ -79,10 +79,12 @@ import {
   NotebookView,
   PresenceValueProvider,
   getCellById,
-  useRuntimeState,
-  useWorkstationAttachment,
   type PresenceContextValue,
 } from "../../notebook/src/notebook-surface";
+import {
+  useRuntimeState,
+  useWorkstationAttachment,
+} from "@/components/notebook/state/runtime-state";
 import { beginOidcLogin } from "./oidc-auth";
 import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
