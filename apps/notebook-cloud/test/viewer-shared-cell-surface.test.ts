@@ -82,10 +82,7 @@ test("cloud viewer imports desktop notebook code only through public surfaces", 
         // behavior for shared notebook components.
         (fileName === "index.tsx" &&
           (importPath.endsWith("/lib/logger") || importPath.endsWith("/lib/open-url"))) ||
-        importPath.endsWith("/notebook-surface") ||
-        // Headless store surface: same public symbols, no component/CSS
-        // imports, so node-run tests can exercise the bridge directly.
-        importPath.endsWith("/notebook-surface-stores")
+        importPath.endsWith("/notebook-surface")
       ) {
         continue;
       }
@@ -144,6 +141,37 @@ test("cloud live changesets gate stale post-await status writes", () => {
     sessionSourceText,
     /const materializeLiveChangeset = async[\s\S]*const sequence = materializeSequence;[\s\S]*await materializeChangeset[\s\S]*if \(disposed \|\| sequence !== materializeSequence\) return;[\s\S]*applyExecutionViewChangeset/,
   );
+});
+
+test("cloud runtime store projection comes from the shared store module", () => {
+  const bridgeSourcePath = new URL("../viewer/notebook-view-store-bridge.ts", import.meta.url);
+  const bridgeSourceText = readFileSync(bridgeSourcePath, "utf8");
+  const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
+  const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
+
+  assert.match(
+    bridgeSourceText,
+    /from ["']@\/components\/notebook\/state\/runtime-store-projection["']/,
+  );
+  assert.match(
+    sessionSourceText,
+    /from ["']@\/components\/notebook\/state\/runtime-store-projection["']/,
+  );
+  assert.doesNotMatch(bridgeSourceText, /notebook-surface-stores/);
+  assert.doesNotMatch(sessionSourceText, /notebook-surface-stores/);
+
+  const notebookSurfaceImports = [
+    ...sessionSourceText.matchAll(
+      /import\s+{([^}]*)}\s+from\s+["']\.\.\/\.\.\/notebook\/src\/notebook-surface["']/g,
+    ),
+  ];
+  for (const importMatch of notebookSurfaceImports) {
+    const importList = importMatch[1] ?? "";
+    assert.doesNotMatch(
+      importList,
+      /\b(applyExecutionViewChangeset|applyOutputChangeset|resetRuntimeStoresProjection)\b/,
+    );
+  }
 });
 
 test("cloud notebook mutations route through the shared notebook controller", () => {
