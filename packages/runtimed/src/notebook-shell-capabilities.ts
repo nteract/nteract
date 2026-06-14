@@ -764,6 +764,7 @@ function stableNotebookShellRuntimeTarget(
 
   const stableTarget = Object.freeze({
     id: target.id ?? null,
+    runtimeSessionId: target.runtimeSessionId ?? null,
     kind: target.kind,
     status: target.status,
     label: target.label,

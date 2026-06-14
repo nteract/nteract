@@ -367,6 +367,50 @@ describe("projectNotebookShellCapabilities", () => {
     expect(Object.isFrozen(first.runtime)).toBe(true);
     expect(Object.isFrozen(first.runtime.target)).toBe(true);
   });
+
+  it("preserves runtime session replacements in stabilized runtime targets", () => {
+    const interaction = projectNotebookRoomEditAccess({
+      accessLevel: "owner",
+      requestedScope: "editor",
+      selectedMode: "edit",
+      canAcceptDocumentMutations: true,
+      canRequestEdit: true,
+    });
+    const first = projectNotebookShellCapabilities({
+      interaction,
+      access: access({ level: "owner", source: "cloud" }),
+      runtime: runtime({
+        connected: true,
+        executionAvailable: true,
+        target: {
+          id: "attached-workstation",
+          runtimeSessionId: "job-123",
+          kind: "cloud_workstation",
+          status: "ready",
+          label: "Connected workstation",
+        },
+      }),
+    });
+    const second = projectNotebookShellCapabilities({
+      interaction,
+      access: access({ level: "owner", source: "cloud" }),
+      runtime: runtime({
+        connected: true,
+        executionAvailable: true,
+        target: {
+          id: "attached-workstation",
+          runtimeSessionId: "job-456",
+          kind: "cloud_workstation",
+          status: "ready",
+          label: "Connected workstation",
+        },
+      }),
+    });
+
+    expect(first.runtime.target).not.toBe(second.runtime.target);
+    expect(first.runtime.target?.runtimeSessionId).toBe("job-123");
+    expect(second.runtime.target?.runtimeSessionId).toBe("job-456");
+  });
 });
 
 describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
