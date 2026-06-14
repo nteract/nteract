@@ -80,10 +80,17 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
   assert.match(homeSource, /aria-label="nteract notebook entry"/);
   assert.match(homeSource, /aria-label="Notebook sign-in"/);
   assert.match(homeSource, /className="cloud-home-copy"/);
-  assert.match(homeSource, /<h1>nteract<\/h1>/);
-  assert.match(homeSource, /realtime notebooks/);
+  assert.match(homeSource, /className="cloud-home-kicker"/);
+  assert.match(homeSource, /NTERACT/);
+  assert.match(homeSource, /<h1>Bring computation to life\.<\/h1>/);
+  assert.match(
+    homeSource,
+    /Sign in to create live notebooks, share work with colleagues, and attach compute\./,
+  );
   assert.match(homeSource, /View notebooks/);
   assert.match(homeSource, /href="\/n"/);
+  assert.match(homeSource, /Visit nteract\.io/);
+  assert.match(homeSource, /href="https:\/\/nteract\.io\/"/);
   assert.match(homeSource, /const localDevAuth = authConfig\.localDev/);
   assert.match(
     homeSource,
@@ -97,6 +104,7 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
   assert.doesNotMatch(homeSource, /cloud-report-toolbar/);
   assert.doesNotMatch(homeSource, /requesting viewer/);
   assert.match(cssText, /\.cloud-home-layout/);
+  assert.match(cssText, /\.cloud-home-kicker/);
   assert.doesNotMatch(cssText, /\.cloud-home-scope/);
   assert.doesNotMatch(homePanelCss, /box-shadow/);
   assert.doesNotMatch(homePanelCss, /border-radius/);
