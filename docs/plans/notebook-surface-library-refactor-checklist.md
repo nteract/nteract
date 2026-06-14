@@ -32,6 +32,9 @@ concerns.
       behavior. Cloud may keep the intentional component bridge through
       `notebook-surface` while shared component packaging is still app-owned,
       but headless store/projection helpers should live in shared modules.
+      Runtime-state reads/writes now import from
+      `src/components/notebook/state/runtime-state.ts`; remaining blockers are
+      the heavier runtime store projection reset.
 - [x] Make output identity strict for modern cloud/runtime paths: missing
       `output_id` values now render as invariant errors instead of receiving
       `cloud-output:*` positional IDs in the cloud resolver.
@@ -73,3 +76,11 @@ concerns.
 - 2026-06-14: Cloud render resolution no longer stamps missing output IDs with
   `cloud-output:*`; missing IDs are visible invariant errors with diagnostic
   `resolution-error:missing-output-id:*` identities.
+- 2026-06-14: Promoted the runtime-state React adapter from the desktop app to
+  `src/components/notebook/state/runtime-state.ts`; Desktop re-exports it for
+  compatibility and Cloud imports runtime reset/set/hooks from the shared state
+  module directly.
+- 2026-06-14: Promoted bootstrap-preservation helpers to
+  `src/components/notebook/state/bootstrap-preservation.ts`; Desktop re-exports
+  the old path for compatibility and Cloud imports the preservation predicate
+  through the shared projection-lifecycle helper.

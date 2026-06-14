@@ -43,9 +43,10 @@ the flush strands the update (marked dirty, never emitted).
   `queueState$`, `envSyncState$`, `workstation$`, `statusKey$`,
   `throttledStatusKey$`). The busy-flash throttle that lived as an imperative
   `setTimeout` effect in `useDaemonKernel` is now the shared, virtual-time-
-  testable `throttleBusyStatus` pipeline. Desktop's
-  `apps/notebook/src/lib/runtime-state.ts` is a thin React adapter
-  (`useRuntimeProjection`) over the package store; item 2 below rode this.
+  testable `throttleBusyStatus` pipeline. The React adapter now lives in
+  `src/components/notebook/state/runtime-state.ts` (`useRuntimeProjection`) over
+  the package store; Desktop keeps `apps/notebook/src/lib/runtime-state.ts` as a
+  compatibility re-export. Item 2 below rode this.
 - **Cloud access/share facts first pass.**
   `apps/notebook-cloud/viewer/cloud-access-facts.ts` now names the hosted source
   facts for catalog access, live-room connection scope, selected mode, and the

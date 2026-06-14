@@ -25,14 +25,13 @@ import {
   getCellIdsSnapshot,
   materializeChangeset,
   resetPoolState,
-  resetRuntimeState,
   resetRuntimeStoresProjection,
   startCursorDispatch,
   setPoolState,
-  setRuntimeState,
   type CellChangeset,
   type JupyterOutput as NotebookStoreJupyterOutput,
 } from "../../notebook/src/notebook-surface";
+import { resetRuntimeState, setRuntimeState } from "@/components/notebook/state/runtime-state";
 import {
   cloudSyncAuthFromPrototypeAuthState,
   withCloudPrototypeAuthHeaders,
