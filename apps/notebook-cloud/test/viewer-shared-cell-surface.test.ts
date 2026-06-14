@@ -702,6 +702,26 @@ test("cloud notebook list waits for app-session cookies before catalog fetches",
   );
 });
 
+test("cloud notebook list trusts server bootstrap on initial app-session paint", () => {
+  const sourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(
+    sourceText,
+    /const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache\(authState, bootstrap\);/,
+  );
+  assert.match(
+    sourceText,
+    /if \(refreshIndex === 0 && bootstrap\) \{[\s\S]*writeCachedCloudNotebookListToWindow\(authState, bootstrap\.notebooks\);[\s\S]*setListState\(\{ kind: "ready", notebooks: bootstrap\.notebooks \}\);[\s\S]*return;/,
+    "fresh notebook-home bootstrap should satisfy the initial render without an immediate duplicate /api/n fetch",
+  );
+  assert.match(
+    sourceText,
+    /return bootstrap\?\.notebooks \?\? readCachedCloudNotebookListFromWindow\(authState\);/,
+    "server bootstrap should beat stale sessionStorage cache when both are present",
+  );
+});
+
 test("cloud app-session live sync requests the resolved notebook-list scope", () => {
   const sourceText = viewerCorpus;
 
