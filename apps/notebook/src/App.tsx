@@ -80,6 +80,12 @@ import { startAttributionDispatch } from "./lib/attribution-registry";
 import { getBlobResolver, useBlobPort } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
 import { useNotebookCellUIStateBridge } from "@/components/notebook/state/cell-ui-state";
+import {
+  openNotebookRailPanel,
+  setNotebookRailCollapsed,
+  toggleNotebookRailPanel,
+  useNotebookRailUiState,
+} from "@/components/notebook/state/rail-ui-state";
 import { startCursorDispatch } from "./lib/cursor-registry";
 import { desktopNotebookShellCapabilities } from "./lib/desktop-shell-capabilities";
 import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kernel-status";
@@ -306,8 +312,7 @@ function AppContent() {
   // Global find (Cmd+F)
   const globalFind = useGlobalFind(cellIds);
 
-  const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
-  const [railCollapsed, setRailCollapsed] = useState(true);
+  const { activePanelId: activeRailPanel, collapsed: railCollapsed } = useNotebookRailUiState();
   const stageHadFocusBeforeRailTakeoverRef = useRef(false);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
@@ -805,8 +810,7 @@ function AppContent() {
   const packagesRailOpen = !railCollapsed && activeRailPanel === "packages";
 
   const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
-    setActiveRailPanel(panelId);
-    setRailCollapsed(false);
+    openNotebookRailPanel(panelId);
   }, []);
 
   const handleTogglePackagesRail = useCallback(() => {
@@ -814,13 +818,8 @@ function AppContent() {
       logger.debug("[App] handleTogglePackagesRail: package view capability unavailable, skipping");
       return;
     }
-    if (activeRailPanel === "packages" && !railCollapsed) {
-      setRailCollapsed(true);
-      return;
-    }
-    setActiveRailPanel("packages");
-    setRailCollapsed(false);
-  }, [activeRailPanel, railCollapsed, shellCapabilities.canViewPackages]);
+    toggleNotebookRailPanel("packages");
+  }, [shellCapabilities.canViewPackages]);
 
   const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
     return navigateNotebookOutlineItem(item, href, { headingHashTarget: "cell" });
@@ -1446,7 +1445,7 @@ function AppContent() {
               selectedOutlineItemId={selectedOutlineItemId}
               selectedOutlineCellId={focusedCellId}
               onActivePanelChange={handleRailPanelChange}
-              onCollapsedChange={setRailCollapsed}
+              onCollapsedChange={setNotebookRailCollapsed}
               onSelectOutlineItem={handleSelectOutlineItem}
               onNavigateOutlineItem={handleNavigateOutlineItem}
               packagesPanel={

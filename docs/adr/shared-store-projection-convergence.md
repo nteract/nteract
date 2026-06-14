@@ -60,6 +60,23 @@ the flush strands the update (marked dirty, never emitted).
   `sharing-controls.tsx` consume the store projections instead of recomputing
   the same policy at each render site. The authoritative facts still come from
   hosted APIs/session state and the room host.
+- **Materialized NotebookView projection → shared projector.**
+  `src/components/notebook/state/view-store-projection.ts` owns the common
+  mechanics for projecting materialized cells into the shared cell, execution,
+  and output stores: markdown projection attachment, synthetic output IDs,
+  synthetic display executions, output cache-key reuse, and cleanup of
+  projector-owned execution/output entries. Cloud now keeps only a thin
+  `notebook-view-store-bridge.ts` adapter that names hosted synthetic ID
+  prefixes and applies the bootstrap-preservation policy. RuntimeStateDoc-owned
+  queue/execution snapshots still win over snapshot placeholders.
+- **Rail/outline chrome → shared `rail-ui-state` store.**
+  `src/components/notebook/state/rail-ui-state.ts` now owns
+  `activePanelId`, `collapsed`, and `selectedOutlineItemId` through
+  `useSyncExternalStore`. Desktop (`App.tsx`) and Cloud
+  (`notebook-viewer.tsx`) consume the same store while keeping host policy
+  local: desktop still collapses the packages rail on a second toolbar toggle,
+  and cloud still falls back to outline when the owner-only workstations panel
+  is unavailable.
 
 ## Remaining work (ranked)
 
@@ -86,12 +103,11 @@ output focus, reconnect) before merge.
    projection emits null through the same pipeline. Both hosts consume
    `useWorkstationAttachment()` from the shared runtime-state module.
 
-3. **Rail/outline chrome (`activeRailPanel`, `railCollapsed`,
-   `selectedOutlineItemId`) → shared `rail-ui-state` store.** Declared identically
-   in `App.tsx` and `notebook-viewer.tsx`. This is a DRY/single-definition win,
-   not a behavioral one: the hosts never share a process, so a module-global store
-   does not enable real cross-host sharing, and it adds more lines than it
-   deletes. Low priority; do it only if it demonstrably simplifies both hosts.
+3. ~~**Rail/outline chrome (`activeRailPanel`, `railCollapsed`,
+   `selectedOutlineItemId`) → shared `rail-ui-state` store.**~~ **Done** in
+   the rail-ui-state pass. The store removes the duplicated host `useState`
+   declarations and keeps the shared outline selection/focus coupling in
+   `useOutlineSelection`, now backed by the same external store.
 
 4. **Finish cloud access/share projection extraction.** The first access/share
    facts pass centralizes catalog access, selected vs effective interaction

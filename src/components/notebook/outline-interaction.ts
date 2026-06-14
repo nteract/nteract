@@ -4,6 +4,7 @@ import {
   resolveNotebookOutlineSelection,
   type NotebookOutlineItem,
 } from "runtimed";
+import { setSelectedNotebookOutlineItemId, useNotebookRailUiState } from "./state/rail-ui-state";
 
 /**
  * Tracks the active outline item based on scroll position and visibility.
@@ -149,7 +150,7 @@ export function useOutlineSelection(options: {
   handleSelectOutlineItem: (item: NotebookOutlineItem) => void;
 } {
   const { outlineItems, focusedCellId, setFocusedCellId } = options;
-  const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
+  const { selectedOutlineItemId } = useNotebookRailUiState();
 
   // Clear selection when focus moves to a different cell
   useEffect(() => {
@@ -159,13 +160,13 @@ export function useOutlineSelection(options: {
       !selectedOutlineItem ||
       (focusedCellId !== null && focusedCellId !== selectedOutlineItem.cellId)
     ) {
-      setSelectedOutlineItemId(null);
+      setSelectedNotebookOutlineItemId(null);
     }
   }, [focusedCellId, outlineItems, selectedOutlineItemId]);
 
   const handleSelectOutlineItem = useCallback(
     (item: NotebookOutlineItem) => {
-      setSelectedOutlineItemId(item.id);
+      setSelectedNotebookOutlineItemId(item.id);
       setFocusedCellId?.(item.cellId);
     },
     [setFocusedCellId],

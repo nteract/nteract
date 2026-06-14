@@ -274,10 +274,29 @@ export {
   useOutputsVersion,
 } from "./state/output-store";
 export {
+  closeNotebookRail,
+  getNotebookRailUiState,
+  openNotebookRailPanel,
+  resetNotebookRailUiState,
+  setActiveNotebookRailPanel,
+  setNotebookRailCollapsed,
+  setSelectedNotebookOutlineItemId,
+  toggleNotebookRailPanel,
+  useNotebookRailUiState,
+  type NotebookRailUiState,
+} from "./state/rail-ui-state";
+export {
   createNotebookViewModelFromNotebookCells,
   notebookCellToViewCell,
   useNotebookViewModel,
 } from "./state/view-model-store";
+export {
+  createNotebookViewStoreProjector,
+  NotebookViewStoreProjector,
+  type NotebookViewStoreProjectionCell,
+  type NotebookViewStoreProjectorOptions,
+  type ResetNotebookViewStoreProjectionOptions,
+} from "./state/view-store-projection";
 export {
   createNotebookViewModel,
   notebookViewCellsToOutlineItems,

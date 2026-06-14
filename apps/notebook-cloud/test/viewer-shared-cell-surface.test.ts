@@ -244,14 +244,20 @@ test("cloud wires shared presence and cleans projected store entries", () => {
   );
   assert.match(sourceText, /sendInteractionPresence\(target\)/);
   assert.match(sessionSourceText, /resetCloudViewStoreProjection/);
-  assert.match(bridgeSourceText, /@\/components\/notebook\/state\/cell-store/);
-  assert.match(bridgeSourceText, /@\/components\/notebook\/state\/execution-store/);
-  assert.match(bridgeSourceText, /@\/components\/notebook\/state\/output-store/);
+  assert.match(bridgeSourceText, /@\/components\/notebook\/state\/view-store-projection/);
+  assert.match(bridgeSourceText, /createNotebookViewStoreProjector/);
+  assert.match(
+    bridgeSourceText,
+    /syntheticExecutionId: \(cellId\) => `cloud-execution:\$\{cellId\}`/,
+  );
+  assert.doesNotMatch(bridgeSourceText, /@\/components\/notebook\/state\/cell-store/);
+  assert.doesNotMatch(bridgeSourceText, /@\/components\/notebook\/state\/execution-store/);
+  assert.doesNotMatch(bridgeSourceText, /@\/components\/notebook\/state\/output-store/);
   assert.doesNotMatch(bridgeSourceText, /\.\.\/\.\.\/notebook\/src\/lib\/notebook-cells/);
   assert.doesNotMatch(bridgeSourceText, /\.\.\/\.\.\/notebook\/src\/lib\/notebook-executions/);
   assert.doesNotMatch(bridgeSourceText, /\.\.\/\.\.\/notebook\/src\/lib\/notebook-outputs/);
-  assert.match(bridgeSourceText, /deleteOutputs\(difference\(cloudOwnedOutputIds/);
-  assert.match(bridgeSourceText, /deleteExecutions\(difference\(cloudOwnedExecutionIds/);
+  assert.doesNotMatch(bridgeSourceText, /deleteOutputs\(difference/);
+  assert.doesNotMatch(bridgeSourceText, /deleteExecutions\(difference/);
 });
 
 test("cloud package rail renders package metadata through the shared shell panel", () => {
@@ -455,7 +461,7 @@ test("cloud mobile shell gives the collapsed rail a toolbar entrypoint", () => {
 
   assert.match(sourceText, /PanelLeftOpen/);
   assert.match(sourceText, /const handleOpenMobileRail = useCallback\(\(\) => \{/);
-  assert.match(sourceText, /setRailCollapsed\(false\);/);
+  assert.match(sourceText, /setNotebookRailCollapsed\(false\);/);
   assert.match(
     sourceText,
     /leadingControls: \(\s*<button[\s\S]*className="cloud-mobile-rail-toggle hidden h-8 w-8[\s\S]*aria-label="Open notebook panels"[\s\S]*onClick=\{handleOpenMobileRail\}/,

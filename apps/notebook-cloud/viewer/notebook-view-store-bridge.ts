@@ -1,19 +1,4 @@
-import type { JupyterOutput as SharedJupyterOutput } from "@/components/cell/jupyter-output";
-import {
-  replaceNotebookCells,
-  type NotebookStoreCell,
-  type NotebookStoreOutput,
-} from "@/components/notebook/state/cell-store";
-import { projectMarkdownPlan } from "@/lib/markdown-projection";
-import {
-  deleteExecutions,
-  getCellExecutionId,
-  getExecutionById,
-  setCellExecutionPointer,
-  setExecution,
-  setNotebookQueueProjection,
-} from "@/components/notebook/state/execution-store";
-import { deleteOutputs, getOutputById, setOutput } from "@/components/notebook/state/output-store";
+import { createNotebookViewStoreProjector } from "@/components/notebook/state/view-store-projection";
 import {
   getCellIdsSnapshot,
   resetRuntimeState,
@@ -22,127 +7,22 @@ import {
 } from "../../notebook/src/notebook-surface-stores";
 import type { ResolvedCell } from "./render-resolution";
 
-let cloudOwnedExecutionIds = new Set<string>();
-let cloudOwnedOutputIds = new Set<string>();
-
-const RUNT_OUTPUT_CACHE_KEY = "_runt_output_cache_key";
-const outputCacheKeys = new WeakMap<NotebookStoreOutput, string>();
+const cloudViewStoreProjector = createNotebookViewStoreProjector({
+  syntheticExecutionId: (cellId) => `cloud-execution:${cellId}`,
+  syntheticOutputId: (cellId, outputIndex) => `cloud-output:${cellId}:${outputIndex}`,
+  syntheticOutputPrefix: (cellId) => `cloud-output:${cellId}:`,
+});
 
 export function projectCloudCellsIntoNotebookViewStores(cells: readonly ResolvedCell[]): void {
-  const projectedCells = cells.map((cell) => {
-    const outputs =
-      cell.cellType === "code"
-        ? cell.outputs.map((output, index) =>
-            normalizeOutputForNotebookView(output, cell.id, index),
-          )
-        : [];
-    return { cell, notebookCell: resolvedCellToNotebookCell(cell, outputs), outputs };
-  });
-
-  replaceNotebookCells(projectedCells.map(({ notebookCell }) => notebookCell));
-
-  const nextCloudOwnedExecutionIds = new Set<string>();
-  const nextCloudOwnedOutputIds = new Set<string>();
-
-  for (const { cell, outputs } of projectedCells) {
-    if (cell.cellType !== "code") {
-      setCellExecutionPointer(cell.id, null);
-      continue;
-    }
-
-    for (const output of outputs) {
-      if (output.output_id) {
-        nextCloudOwnedOutputIds.add(output.output_id);
-        setOutput(output.output_id, output);
-      }
-    }
-
-    const outputIds = outputs
-      .map((output) => output.output_id)
-      .filter((outputId): outputId is string => typeof outputId === "string");
-    const syntheticExecutionId = outputIds.length > 0 ? `cloud-execution:${cell.id}` : null;
-    const executionId = cell.executionId ?? syntheticExecutionId;
-    setCellExecutionPointer(cell.id, executionId);
-    if (executionId && !getExecutionById(executionId)) {
-      if (executionId === syntheticExecutionId) {
-        nextCloudOwnedExecutionIds.add(executionId);
-      }
-      // Snapshot/live cell materialization can seed a display placeholder, but
-      // it must never downgrade a real RuntimeStateDoc execution snapshot.
-      setExecution(executionId, {
-        execution_count: cell.executionCount,
-        status: "done",
-        success: null,
-        output_ids: outputIds,
-      });
-    }
-  }
-
-  deleteOutputs(difference(cloudOwnedOutputIds, nextCloudOwnedOutputIds));
-  deleteExecutions(difference(cloudOwnedExecutionIds, nextCloudOwnedExecutionIds));
-  cloudOwnedOutputIds = nextCloudOwnedOutputIds;
-  cloudOwnedExecutionIds = nextCloudOwnedExecutionIds;
+  cloudViewStoreProjector.projectCells(cells);
 }
 
 export function cleanupCloudProjectionForRemovedCells(removedCellIds: readonly string[]): void {
-  const outputIdsToDelete = new Set<string>();
-  const executionIdsToDelete = new Set<string>();
-
-  for (const cellId of removedCellIds) {
-    const syntheticExecutionId = `cloud-execution:${cellId}`;
-    const executionId =
-      getCellExecutionId(cellId) ??
-      (getExecutionById(syntheticExecutionId) ? syntheticExecutionId : null);
-
-    if (executionId) {
-      const execution = getExecutionById(executionId);
-      if (execution) {
-        for (const outputId of execution.output_ids) {
-          if (cloudOwnedOutputIds.has(outputId)) {
-            outputIdsToDelete.add(outputId);
-          }
-        }
-      }
-      if (cloudOwnedExecutionIds.has(executionId)) {
-        executionIdsToDelete.add(executionId);
-      }
-    }
-
-    const syntheticOutputPrefix = `cloud-output:${cellId}:`;
-    for (const outputId of cloudOwnedOutputIds) {
-      if (outputId.startsWith(syntheticOutputPrefix)) {
-        outputIdsToDelete.add(outputId);
-      }
-    }
-
-    setCellExecutionPointer(cellId, null);
-  }
-
-  if (outputIdsToDelete.size > 0) {
-    deleteOutputs(outputIdsToDelete);
-    for (const outputId of outputIdsToDelete) {
-      cloudOwnedOutputIds.delete(outputId);
-    }
-  }
-
-  if (executionIdsToDelete.size > 0) {
-    deleteExecutions(executionIdsToDelete);
-    for (const executionId of executionIdsToDelete) {
-      cloudOwnedExecutionIds.delete(executionId);
-    }
-  }
+  cloudViewStoreProjector.cleanupRemovedCells(removedCellIds);
 }
 
 export function resetCloudViewStoreProjection(): void {
-  replaceNotebookCells([]);
-  setNotebookQueueProjection({
-    executing_cell_id: null,
-    queued_cell_ids: [],
-  });
-  deleteOutputs([...cloudOwnedOutputIds]);
-  deleteExecutions([...cloudOwnedExecutionIds]);
-  cloudOwnedOutputIds = new Set<string>();
-  cloudOwnedExecutionIds = new Set<string>();
+  cloudViewStoreProjector.reset({ resetQueue: true });
 }
 
 /**
@@ -178,132 +58,4 @@ export function resetCloudProjectionUnlessPreserved(options: {
     resetRuntimeStoresProjection();
   }
   return preserve;
-}
-
-function resolvedCellToNotebookCell(
-  cell: ResolvedCell,
-  outputs: readonly NotebookStoreOutput[],
-): NotebookStoreCell {
-  const metadata = cell.metadata ?? {};
-  if (cell.cellType === "code") {
-    return {
-      cell_type: "code",
-      id: cell.id,
-      source: cell.source,
-      execution_count: cell.executionCount,
-      outputs: [...outputs],
-      metadata,
-    };
-  }
-
-  if (cell.cellType === "markdown") {
-    return {
-      cell_type: "markdown",
-      id: cell.id,
-      source: cell.source,
-      metadata,
-      markdownProjection: projectMarkdownPlan(cell.source) ?? undefined,
-    };
-  }
-
-  return {
-    cell_type: "raw",
-    id: cell.id,
-    source: cell.source,
-    metadata,
-  };
-}
-
-function normalizeOutputForNotebookView(
-  output: SharedJupyterOutput,
-  cellId: string,
-  index: number,
-): NotebookStoreOutput {
-  const output_id = output.output_id ?? `cloud-output:${cellId}:${index}`;
-  const previous = getOutputById(output_id);
-  let normalized: NotebookStoreOutput;
-
-  if (output.output_type === "stream") {
-    const text = Array.isArray(output.text) ? output.text.join("") : output.text;
-    normalized =
-      output.output_id === output_id && output.text === text
-        ? (output as NotebookStoreOutput)
-        : {
-            ...output,
-            output_id,
-            text,
-          };
-    return finalizeOutputForNotebookView(reusePreviousOutputIfEqual(previous, normalized));
-  }
-
-  normalized =
-    output.output_id === output_id
-      ? (output as NotebookStoreOutput)
-      : ({
-          ...output,
-          output_id,
-        } as NotebookStoreOutput);
-  return finalizeOutputForNotebookView(reusePreviousOutputIfEqual(previous, normalized));
-}
-
-function reusePreviousOutputIfEqual(
-  previous: NotebookStoreOutput | undefined,
-  next: NotebookStoreOutput,
-): NotebookStoreOutput {
-  if (!previous || previous === next) return next;
-  const previousCacheKey = outputCacheKeyForEquality(previous);
-  const nextCacheKey = outputCacheKeyForEquality(next);
-  if (previousCacheKey !== null && nextCacheKey !== null) {
-    return previousCacheKey === nextCacheKey ? previous : next;
-  }
-  const previousSerialized = serializedOutput(previous);
-  return previousSerialized !== null && previousSerialized === serializedOutput(next)
-    ? previous
-    : next;
-}
-
-function finalizeOutputForNotebookView(output: NotebookStoreOutput): NotebookStoreOutput {
-  const cacheKey = outputCacheKeyForEquality(output);
-  const stripped = stripOutputCacheKey(output);
-  if (cacheKey !== null) {
-    outputCacheKeys.set(stripped, cacheKey);
-  }
-  return stripped;
-}
-
-function outputCacheKeyForEquality(output: NotebookStoreOutput): string | null {
-  return stampedOutputCacheKey(output) ?? outputCacheKeys.get(output) ?? null;
-}
-
-function stampedOutputCacheKey(output: unknown): string | null {
-  if (typeof output !== "object" || output === null) return null;
-  const key = (output as Record<string, unknown>)[RUNT_OUTPUT_CACHE_KEY];
-  return typeof key === "string" ? key : null;
-}
-
-function stripOutputCacheKey(output: NotebookStoreOutput): NotebookStoreOutput {
-  if (!Object.prototype.hasOwnProperty.call(output, RUNT_OUTPUT_CACHE_KEY)) {
-    return output;
-  }
-  const { [RUNT_OUTPUT_CACHE_KEY]: _cacheKey, ...stripped } = output as NotebookStoreOutput &
-    Record<string, unknown>;
-  return stripped as NotebookStoreOutput;
-}
-
-function serializedOutput(output: NotebookStoreOutput): string | null {
-  try {
-    return JSON.stringify(output);
-  } catch {
-    return null;
-  }
-}
-
-function difference(previous: ReadonlySet<string>, next: ReadonlySet<string>): string[] {
-  const removed: string[] = [];
-  for (const id of previous) {
-    if (!next.has(id)) {
-      removed.push(id);
-    }
-  }
-  return removed;
 }
