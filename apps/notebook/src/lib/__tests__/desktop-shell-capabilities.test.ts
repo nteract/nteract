@@ -220,6 +220,27 @@ describe("desktopNotebookShellCapabilities", () => {
     });
   });
 
+  it("treats local file permissions as desktop access facts", () => {
+    const readWriteFile = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "local:kyle/desktop:window",
+      connectionScope: null,
+    });
+    const readOnlyFile = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: false,
+      sessionReady: true,
+      localActor: "local:kyle/desktop:window",
+      connectionScope: "viewer",
+    });
+
+    expect(readWriteFile.access).toMatchObject({ level: "owner", source: "local" });
+    expect(readWriteFile.canEditStructure).toBe(true);
+    expect(readOnlyFile.access).toMatchObject({ level: "viewer", source: "local" });
+    expect(readOnlyFile.canEditStructure).toBe(false);
+    expect(readOnlyFile.canRequestEdit).toBe(false);
+  });
+
   it("maps unknown non-null connection scopes to no document access", () => {
     const capabilities = desktopNotebookShellCapabilities({
       canAcceptCellMutations: true,

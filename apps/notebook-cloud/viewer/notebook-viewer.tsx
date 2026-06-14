@@ -108,16 +108,10 @@ import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
 import {
-  projectCloudAccessRequestNotice,
   projectCloudAccessRequestTransition,
-  shouldFallbackCloudEditUrlToView,
-  shouldLoadOwnCloudAccessRequest,
   type CloudAccessRequestNoticeProjection,
 } from "./cloud-access-request-state";
 import {
-  cloudNotebookAccessScopeForShell,
-  cloudNotebookLiveRoomConnectionPolicy,
-  cloudNotebookScopeCanEditDocument,
   cloudNotebookSyncScopeForCatalogAccess,
   createCloudNotebookCatalogAccessLoader,
   type CloudNotebookCatalogAccessLoadResult,
@@ -125,11 +119,17 @@ import {
 } from "./cloud-notebook-catalog-access";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import {
-  cloudNotebookInteractionModeForAccess,
   cloudNotebookModeFromSearch,
-  cloudNotebookSelectedModeCorrectionForAccess,
   replaceCloudNotebookModeInCurrentUrl,
 } from "./cloud-notebook-mode";
+import {
+  CloudAccessFactsStore,
+  cloudCatalogAccessFacts,
+  projectCloudAccessLiveRoomPolicy,
+  type CloudAccessFactsProjection,
+  type CloudAccessSourceFacts,
+} from "./cloud-access-facts";
+import { useCloudFactsProjection } from "./cloud-facts-react";
 import type {
   CloudNotebookUpdateResponse,
   CloudViewerAuthConfig,
@@ -176,6 +176,10 @@ function decodeHashAnchorId(hash: string): string {
 
 function shouldPollPendingCloudAccessRequest(): boolean {
   return typeof document === "undefined" || document.visibilityState !== "hidden";
+}
+
+function useCloudAccessFactsProjection(source: CloudAccessSourceFacts): CloudAccessFactsProjection {
+  return useCloudFactsProjection(source, (initial) => new CloudAccessFactsStore(initial));
 }
 
 async function resolveCloudAppSessionSyncScope(
@@ -313,6 +317,21 @@ export function NotebookViewer({
       }),
     [browserApiAuthState, config.notebookId],
   );
+  const catalogAccessFacts = useMemo(
+    () =>
+      cloudCatalogAccessFacts({
+        canUseAuthenticatedCloudApi,
+        loadFailed: catalogAccessLoadFailed,
+        resolved: catalogAccessResolved,
+        scope: catalogAccessScope,
+      }),
+    [
+      canUseAuthenticatedCloudApi,
+      catalogAccessLoadFailed,
+      catalogAccessResolved,
+      catalogAccessScope,
+    ],
+  );
   useEffect(() => {
     if (!canUseAuthenticatedCloudApi) {
       setCatalogNotebookTitle(undefined);
@@ -365,18 +384,11 @@ export function NotebookViewer({
   }, [browserApiAuthState, canUseAuthenticatedCloudApi, config.catalogEndpoint, config.notebookId]);
   const catalogLiveRoomPolicy = useMemo(
     () =>
-      cloudNotebookLiveRoomConnectionPolicy({
+      projectCloudAccessLiveRoomPolicy({
         canUseAuthenticatedCloudApi,
-        catalogLoadFailed: catalogAccessLoadFailed,
-        catalogResolved: catalogAccessResolved,
-        catalogScope: catalogAccessScope,
+        catalog: catalogAccessFacts,
       }),
-    [
-      canUseAuthenticatedCloudApi,
-      catalogAccessLoadFailed,
-      catalogAccessResolved,
-      catalogAccessScope,
-    ],
+    [canUseAuthenticatedCloudApi, catalogAccessFacts],
   );
   const effectiveLoadingPolicy = useMemo(
     () => ({
@@ -630,24 +642,51 @@ export function NotebookViewer({
       cancelled = true;
     };
   }, [canUseAuthenticatedCloudApi, catalogAccessLoader]);
-  const catalogGrantsDocumentEdit = cloudNotebookScopeCanEditDocument(catalogAccessScope);
+  const cloudAccessSourceFacts = useMemo<CloudAccessSourceFacts>(
+    () => ({
+      canUseAuthenticatedCloudApi,
+      catalog: catalogAccessFacts,
+      connection: {
+        error: connectionError,
+        peerId: connectionPeerId,
+        scope: connectionScope,
+        statusKind: status.kind,
+      },
+      hasBrowserAppIdentity,
+      request: {
+        error: accessRequestError,
+        latest: latestAccessRequest,
+        requestedByUser: editAccessRequestedByUser,
+      },
+      selectedMode: selectedInteractionMode,
+    }),
+    [
+      accessRequestError,
+      canUseAuthenticatedCloudApi,
+      catalogAccessFacts,
+      connectionError,
+      connectionPeerId,
+      connectionScope,
+      editAccessRequestedByUser,
+      hasBrowserAppIdentity,
+      latestAccessRequest,
+      selectedInteractionMode,
+      status.kind,
+    ],
+  );
+  const cloudAccessFacts = useCloudAccessFactsProjection(cloudAccessSourceFacts);
+  const {
+    accessConnectionScope,
+    catalogGrantsDocumentEdit,
+    effectiveAccessRequest,
+    selectedInteractionModeForAccess,
+    shouldLoadOwnEditAccessRequest,
+  } = cloudAccessFacts;
   useEffect(() => {
-    if (
-      shouldFallbackCloudEditUrlToView({
-        catalogGrantsDocumentEdit,
-        catalogResolved: catalogAccessResolved,
-        editAccessRequested: editAccessRequestedByUser,
-        selectedMode: selectedInteractionMode,
-      })
-    ) {
+    if (cloudAccessFacts.shouldFallbackEditUrlToView) {
       setSelectedInteractionMode("view");
     }
-  }, [
-    catalogAccessResolved,
-    catalogGrantsDocumentEdit,
-    editAccessRequestedByUser,
-    selectedInteractionMode,
-  ]);
+  }, [cloudAccessFacts.shouldFallbackEditUrlToView]);
   const saveCloudNotebookTitle = useCallback(
     async (nextTitle: string): Promise<boolean> => {
       if (!canUseAuthenticatedCloudApi || !catalogGrantsDocumentEdit || notebookTitleSaving) {
@@ -722,40 +761,11 @@ export function NotebookViewer({
       ? cloudRuntimeStatus.label
       : null
     : null;
-  const connectionReadyForAccessScope =
-    !connectionError &&
-    Boolean(connectionPeerId) &&
-    (status.kind === "ready" || status.kind === "empty");
-  const accessConnectionScope = cloudNotebookAccessScopeForShell({
-    catalogScope: catalogAccessScope,
-    connectionReady: connectionReadyForAccessScope,
-    connectionScope,
-  });
-  const effectiveAccessRequest = catalogGrantsDocumentEdit ? null : latestAccessRequest;
-  const shouldLoadOwnEditAccessRequest = shouldLoadOwnCloudAccessRequest({
-    canUseAuthenticatedCloudApi,
-    catalogGrantsDocumentEdit,
-    connectionScope,
-    editAccessRequested: editAccessRequestedByUser,
-    hasBrowserAppIdentity,
-    selectedMode: selectedInteractionMode,
-  });
-  const selectedInteractionModeForAccess = cloudNotebookInteractionModeForAccess({
-    accessRequestStatus: effectiveAccessRequest?.status,
-    accessScope: accessConnectionScope,
-    catalogResolved: catalogAccessResolved,
-    connectionScope,
-    selectedMode: selectedInteractionMode,
-  });
   useEffect(() => {
-    const correctedMode = cloudNotebookSelectedModeCorrectionForAccess({
-      accessMode: selectedInteractionModeForAccess,
-      selectedMode: selectedInteractionMode,
-    });
-    if (correctedMode) {
-      setSelectedInteractionMode(correctedMode);
+    if (cloudAccessFacts.selectedModeCorrection) {
+      setSelectedInteractionMode(cloudAccessFacts.selectedModeCorrection);
     }
-  }, [selectedInteractionMode, selectedInteractionModeForAccess]);
+  }, [cloudAccessFacts.selectedModeCorrection]);
   const { shellCapabilities, canAcceptCellMutations, editAccessPending } =
     useCloudShellCapabilities({
       accessConnectionScope,
@@ -1508,13 +1518,7 @@ export function NotebookViewer({
     notebookViewIsLoading && (status.kind === "ready" || status.kind === "empty")
       ? { kind: "loading", message: "Preparing notebook view..." }
       : status;
-  const accessRequestNotice = cloudAccessRequestNotice(
-    projectCloudAccessRequestNotice({
-      error: accessRequestError,
-      request: effectiveAccessRequest,
-      selectedMode: selectedInteractionMode,
-    }),
-  );
+  const accessRequestNotice = cloudAccessRequestNotice(cloudAccessFacts.accessRequestNotice);
   // Asset health is its own quiet surface: N identical renderer failures
   // collapse into ONE notice (the provider state is module-level shared)
   // plus per-output fallbacks. It never feeds the connection dot or

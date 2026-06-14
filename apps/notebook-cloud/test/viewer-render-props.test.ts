@@ -305,12 +305,47 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.doesNotMatch(sourceText, /useState\(initialCloudViewerPresence\)/);
   assert.doesNotMatch(sourceText, /setPresence\(/);
   assert.doesNotMatch(sourceText, /label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/);
+  assert.match(sourceText, /CloudAccessFactsStore/);
+  assert.match(sourceText, /function useCloudAccessFactsProjection/);
+  assert.match(
+    sourceText,
+    /const cloudAccessSourceFacts = useMemo<CloudAccessSourceFacts>\(\s*\(\) => \(\{[\s\S]*canUseAuthenticatedCloudApi,[\s\S]*catalog: catalogAccessFacts,[\s\S]*connection: \{[\s\S]*statusKind: status\.kind,/,
+  );
+  assert.match(
+    sourceText,
+    /const cloudAccessFacts = useCloudAccessFactsProjection\(cloudAccessSourceFacts\)/,
+  );
+  assert.doesNotMatch(sourceText, /projectCloudAccessFacts\(/);
   assert.match(sharingSourceText, /export function CloudSharingControls/);
   assert.match(sharingSourceText, /Invite people, review requests, and manage link access\./);
+  assert.match(sharingSourceText, /CloudSharingFactsStore/);
   assert.match(
     sharingSourceText,
-    /const accessProjection = useMemo\(\s*\(\) => buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,
+    /const sharingSourceFacts = useMemo<CloudSharingSourceFacts>\(\s*\(\) => \(\{[\s\S]*accessRequests,[\s\S]*acl,[\s\S]*copyState,[\s\S]*inviteEmail,[\s\S]*invites,[\s\S]*loadState,/,
   );
+  assert.match(
+    sharingSourceText,
+    /const sharingFacts = useCloudSharingFactsProjection\(sharingSourceFacts\)/,
+  );
+  assert.match(sharingSourceText, /const accessProjection = sharingFacts\.access/);
+  assert.doesNotMatch(sharingSourceText, /projectCloudSharingFacts\(/);
+  assert.doesNotMatch(
+    sharingSourceText,
+    /buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,
+  );
+  const cloudFactsReactSourcePath = new URL("../viewer/cloud-facts-react.ts", import.meta.url);
+  const cloudFactsReactSource = readFileSync(cloudFactsReactSourcePath, "utf8");
+  const silentSetIndex = cloudFactsReactSource.indexOf("store.set(source, { notify: false });");
+  const snapshotSubscribeIndex = cloudFactsReactSource.indexOf(
+    "const projection = useSyncExternalStore",
+  );
+  const flushIndex = cloudFactsReactSource.indexOf("store.flush();");
+  assert.ok(silentSetIndex >= 0);
+  assert.ok(snapshotSubscribeIndex >= 0);
+  assert.ok(flushIndex >= 0);
+  assert.ok(silentSetIndex < snapshotSubscribeIndex);
+  assert.ok(snapshotSubscribeIndex < flushIndex);
+  assert.doesNotMatch(cloudFactsReactSource, /useLayoutEffect\(\(\) => \{\s*store\.set\(source\)/);
   assert.match(sharingSourceText, /<div className="cloud-share-current-heading">/);
   assert.match(sharingSourceText, /aria-label="Edit access requests"/);
   assert.match(sharingSourceText, /<h3>Edit requests<\/h3>/);
@@ -325,12 +360,8 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(sharingSourceText, /Can view this notebook without signing in/);
   assert.match(sharingSourceText, /Link access is off\. Only listed people can open this notebook/);
-  assert.match(sharingSourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
-  assert.match(sharingSourceText, /const compactCopyLinkLabel =[\s\S]*"Copy"/);
-  assert.match(
-    sharingSourceText,
-    /buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,
-  );
+  assert.match(sharingSourceText, /aria-label=\{sharingFacts\.copyLinkLabel\}/);
+  assert.match(sharingSourceText, /sharingFacts\.compactCopyLinkLabel/);
   assert.match(
     sharingSourceText,
     /accessProjection\.notebookAccessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong>\{row\.label\}<\/strong>[\s\S]*<span>\{row\.detail\}<\/span>/,
