@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import { KeyRound, LogIn, LogOut, RotateCcw, UserRound } from "lucide-react";
+import {
+  ArrowUpRight,
+  KeyRound,
+  LogIn,
+  LogOut,
+  RotateCcw,
+  Sparkles,
+  UserRound,
+} from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import { clearCloudAppSession } from "./app-session";
 import { cloudNotebookSignInLabel } from "./cloud-auth-controls";
@@ -103,8 +111,12 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
     <main className="cloud-home">
       <section className="cloud-home-layout" aria-label="nteract notebook entry">
         <div className="cloud-home-copy">
-          <h1>nteract</h1>
-          <span>realtime notebooks</span>
+          <div className="cloud-home-kicker">
+            <Sparkles aria-hidden="true" />
+            NTERACT
+          </div>
+          <h1>Bring computation to life.</h1>
+          <p>Sign in to create live notebooks, share work with colleagues, and attach compute.</p>
         </div>
 
         <section
@@ -137,6 +149,10 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
 
           <div className="cloud-home-actions">
             <a href="/n">View notebooks</a>
+            <a href="https://nteract.io/" target="_blank" rel="noreferrer">
+              Visit nteract.io
+              <ArrowUpRight aria-hidden="true" />
+            </a>
             {signedIn ? (
               <button
                 type="button"
