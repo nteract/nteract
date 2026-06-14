@@ -107,6 +107,8 @@ export type CloudShareAccessRow =
     };
 
 export interface CloudShareAccessProjection {
+  accessRequestRows: readonly Extract<CloudShareAccessRow, { kind: "access_request" }>[];
+  accessRequestSummary: string | null;
   allRows: CloudShareAccessRow[];
   notebookAccessRows: CloudShareAccessRow[];
   runtimeAccessRows: CloudShareAccessRow[];
@@ -176,13 +178,21 @@ export function buildCloudShareAccessProjection(input: {
   const cached = getBoundedCacheValue(SHARE_ACCESS_PROJECTION_CACHE, projectionKey);
   if (cached) return cached;
 
+  const accessRequestRows = Object.freeze(allRows.filter(isCloudShareAccessRequestRow)) as Extract<
+    CloudShareAccessRow,
+    { kind: "access_request" }
+  >[];
   const notebookAccessRows = Object.freeze(
-    allRows.filter((row) => !isCloudShareRuntimeAccessRow(row)),
+    allRows.filter(
+      (row) => !isCloudShareRuntimeAccessRow(row) && !isCloudShareAccessRequestRow(row),
+    ),
   ) as CloudShareAccessRow[];
   const runtimeAccessRows = Object.freeze(
     allRows.filter(isCloudShareRuntimeAccessRow),
   ) as CloudShareAccessRow[];
   const projection = Object.freeze({
+    accessRequestRows,
+    accessRequestSummary: cloudShareAccessRequestSummary(accessRequestRows),
     allRows,
     notebookAccessRows,
     runtimeAccessRows,
@@ -354,10 +364,22 @@ export function cloudShareRuntimeAccessSummary(rows: CloudShareAccessRow[]): str
   return runtimePeers > 0 ? pluralize(runtimePeers, "runtime peer", "runtime peers") : null;
 }
 
+export function cloudShareAccessRequestSummary(
+  rows: readonly Extract<CloudShareAccessRow, { kind: "access_request" }>[],
+): string | null {
+  return rows.length > 0 ? pluralize(rows.length, "request", "requests") : null;
+}
+
 export function isCloudShareRuntimeAccessRow(
   row: CloudShareAccessRow,
 ): row is Extract<CloudShareAccessRow, { kind: "acl" }> {
   return row.kind === "acl" && row.acl.subject_kind === "principal" && row.scope === "runtime_peer";
+}
+
+export function isCloudShareAccessRequestRow(
+  row: CloudShareAccessRow,
+): row is Extract<CloudShareAccessRow, { kind: "access_request" }> {
+  return row.kind === "access_request";
 }
 
 export function hasPublicViewerAccess(acl: CloudNotebookAclRow[]): boolean {

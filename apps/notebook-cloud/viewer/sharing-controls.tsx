@@ -397,6 +397,67 @@ export function CloudSharingControls({
           ) : null}
         </form>
 
+        {accessProjection.accessRequestRows.length > 0 ? (
+          <section
+            className="cloud-share-current cloud-share-requests"
+            aria-label="Edit access requests"
+          >
+            <div className="cloud-share-current-heading">
+              <div>
+                <h3>Edit requests</h3>
+                <p>Approve collaborators you recognize, or dismiss stale requests.</p>
+              </div>
+              {accessProjection.accessRequestSummary ? (
+                <span>{accessProjection.accessRequestSummary}</span>
+              ) : null}
+            </div>
+            <ul>
+              {accessProjection.accessRequestRows.map((row) => (
+                <li key={row.id} title={row.title}>
+                  <CloudShareRowIcon row={row} />
+                  <div>
+                    <strong>{row.label}</strong>
+                    <span>{row.detail}</span>
+                  </div>
+                  <div className="cloud-share-row-actions">
+                    <span className="cloud-share-badge">{row.badge}</span>
+                    <span className="cloud-share-state" data-tone={row.stateTone ?? undefined}>
+                      {row.stateLabel}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`Approve ${row.label}`}
+                      title={`Approve ${row.label}`}
+                      disabled={busyAction === `${row.id}:approve`}
+                      onClick={() => void resolveAccessRequest(row, "approve")}
+                    >
+                      <Check aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Deny ${row.label}`}
+                      title={`Deny ${row.label}`}
+                      disabled={busyAction === `${row.id}:deny`}
+                      onClick={() => void resolveAccessRequest(row, "deny")}
+                    >
+                      <X aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Dismiss ${row.label}`}
+                      title={`Dismiss ${row.label}`}
+                      disabled={busyAction === `${row.id}:dismiss`}
+                      onClick={() => void resolveAccessRequest(row, "dismiss")}
+                    >
+                      <Trash2 aria-hidden="true" />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
         <section className="cloud-share-current" aria-label="Current notebook access">
           <div className="cloud-share-current-heading">
             <h3>Current access</h3>
@@ -423,37 +484,6 @@ export function CloudSharingControls({
                       <span className="cloud-share-state" data-tone={row.stateTone ?? undefined}>
                         {row.stateLabel}
                       </span>
-                    ) : null}
-                    {row.kind === "access_request" ? (
-                      <>
-                        <button
-                          type="button"
-                          aria-label={`Approve ${row.label}`}
-                          title={`Approve ${row.label}`}
-                          disabled={busyAction === `${row.id}:approve`}
-                          onClick={() => void resolveAccessRequest(row, "approve")}
-                        >
-                          <Check aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={`Deny ${row.label}`}
-                          title={`Deny ${row.label}`}
-                          disabled={busyAction === `${row.id}:deny`}
-                          onClick={() => void resolveAccessRequest(row, "deny")}
-                        >
-                          <X aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={`Dismiss ${row.label}`}
-                          title={`Dismiss ${row.label}`}
-                          disabled={busyAction === `${row.id}:dismiss`}
-                          onClick={() => void resolveAccessRequest(row, "dismiss")}
-                        >
-                          <Trash2 aria-hidden="true" />
-                        </button>
-                      </>
                     ) : null}
                     {row.removable ? (
                       <button
