@@ -97,7 +97,7 @@
           src = filteredSrc;
           fetcherVersion = 2;
           # Update with: nix build .#pnpmDeps 2>&1 | grep 'got:'
-          hash = "sha256-go4sdKs4x+gVK6RJSh0ySO4Fy3pDsT/HdQmL3tyzqjQ=";
+          hash = "sha256-OkBT+npmCFr3TmlbMzeVGtz6Hp0UuOafJ+XTmjwcH2k=";
         };
 
         jsBuild = pkgs.stdenv.mkDerivation {
