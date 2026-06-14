@@ -309,7 +309,12 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sharingSourceText, /Invite people, review requests, and manage link access\./);
   assert.match(
     sharingSourceText,
-    /const accessProjection = useMemo\(\s*\(\) => buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,
+    /const sharingFacts = useMemo\(\s*\(\) =>[\s\S]*projectCloudSharingFacts\(\{[\s\S]*accessRequests,[\s\S]*acl,[\s\S]*copyState,[\s\S]*inviteEmail,[\s\S]*invites,[\s\S]*loadState,/,
+  );
+  assert.match(sharingSourceText, /const accessProjection = sharingFacts\.access/);
+  assert.doesNotMatch(
+    sharingSourceText,
+    /buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,
   );
   assert.match(sharingSourceText, /<div className="cloud-share-current-heading">/);
   assert.match(sharingSourceText, /aria-label="Edit access requests"/);
@@ -325,12 +330,8 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(sharingSourceText, /Can view this notebook without signing in/);
   assert.match(sharingSourceText, /Link access is off\. Only listed people can open this notebook/);
-  assert.match(sharingSourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
-  assert.match(sharingSourceText, /const compactCopyLinkLabel =[\s\S]*"Copy"/);
-  assert.match(
-    sharingSourceText,
-    /buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,
-  );
+  assert.match(sharingSourceText, /aria-label=\{sharingFacts\.copyLinkLabel\}/);
+  assert.match(sharingSourceText, /sharingFacts\.compactCopyLinkLabel/);
   assert.match(
     sharingSourceText,
     /accessProjection\.notebookAccessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong>\{row\.label\}<\/strong>[\s\S]*<span>\{row\.detail\}<\/span>/,

@@ -3,8 +3,11 @@ import { Check, Globe2, Link2, Mail, ServerCog, Share2, Trash2, UserRound, X } f
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 import { appendEndpointPathSegment, cloudResponseError } from "./cloud-response";
 import {
-  buildCloudShareAccessProjection,
-  hasPublicViewerAccess,
+  projectCloudSharingFacts,
+  type CloudSharingCopyState,
+  type CloudSharingLoadState,
+} from "./cloud-sharing-facts";
+import {
   normalizeShareInviteEmail,
   type CloudNotebookAccessRequest,
   type CloudNotebookAclRow,
@@ -21,9 +24,7 @@ interface CloudSharingControlsProps {
   publicLink: string;
 }
 
-type CloudSharingLoadState = "idle" | "loading" | "ready" | "error";
 type CloudSharingMessageKind = "info" | "error";
-type CloudSharingCopyState = "idle" | "copied" | "failed";
 type CloudSharingAccessRequestAction = "approve" | "deny" | "dismiss";
 
 export function CloudSharingControls({
@@ -46,12 +47,21 @@ export function CloudSharingControls({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<CloudSharingCopyState>("idle");
   const inviteSubmitLockRef = useRef(false);
-  const accessProjection = useMemo(
-    () => buildCloudShareAccessProjection({ acl, invites, accessRequests }),
-    [accessRequests, acl, invites],
+  const sharingFacts = useMemo(
+    () =>
+      projectCloudSharingFacts({
+        accessRequests,
+        acl,
+        copyState,
+        inviteEmail,
+        invites,
+        loadState,
+      }),
+    [accessRequests, acl, copyState, inviteEmail, invites, loadState],
   );
-  const publicEnabled = useMemo(() => hasPublicViewerAccess(acl), [acl]);
-  const inviteReady = normalizeShareInviteEmail(inviteEmail) !== null;
+  const accessProjection = sharingFacts.access;
+  const publicEnabled = sharingFacts.publicEnabled;
+  const inviteReady = sharingFacts.inviteReady;
 
   const loadSharingState = useCallback(
     async (options?: { preserveMessage?: boolean; signal?: AbortSignal }) => {
@@ -309,11 +319,6 @@ export function CloudSharingControls({
     }
   };
 
-  const copyLinkLabel =
-    copyState === "copied" ? "Copied link" : copyState === "failed" ? "Copy failed" : "Copy link";
-  const compactCopyLinkLabel =
-    copyState === "copied" ? "Copied" : copyState === "failed" ? "Failed" : "Copy";
-
   return (
     <details
       className="cloud-share-menu"
@@ -330,10 +335,16 @@ export function CloudSharingControls({
             <h2>Share notebook</h2>
             <p>Invite people, review requests, and manage link access.</p>
           </div>
-          <button type="button" aria-label={copyLinkLabel} onClick={() => void copyPublicLink()}>
+          <button
+            type="button"
+            aria-label={sharingFacts.copyLinkLabel}
+            onClick={() => void copyPublicLink()}
+          >
             <Link2 aria-hidden="true" />
-            <span className="cloud-share-copy-label-full">{copyLinkLabel}</span>
-            <span className="cloud-share-copy-label-compact">{compactCopyLinkLabel}</span>
+            <span className="cloud-share-copy-label-full">{sharingFacts.copyLinkLabel}</span>
+            <span className="cloud-share-copy-label-compact">
+              {sharingFacts.compactCopyLinkLabel}
+            </span>
           </button>
         </header>
 
@@ -465,7 +476,7 @@ export function CloudSharingControls({
               <span>{accessProjection.notebookAccessSummary}</span>
             ) : null}
           </div>
-          {loadState === "loading" && accessProjection.allRows.length === 0 ? (
+          {sharingFacts.showInitialAccessLoading ? (
             <div className="cloud-share-empty">Loading access...</div>
           ) : accessProjection.notebookAccessRows.length === 0 ? (
             <div className="cloud-share-empty">Only the owner can access this notebook.</div>

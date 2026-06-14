@@ -46,14 +46,19 @@ the flush strands the update (marked dirty, never emitted).
   testable `throttleBusyStatus` pipeline. Desktop's
   `apps/notebook/src/lib/runtime-state.ts` is a thin React adapter
   (`useRuntimeProjection`) over the package store; item 2 below rode this.
-- **Cloud access facts first pass.** `apps/notebook-cloud/viewer/cloud-access-facts.ts`
-  now names the hosted source facts for catalog access, live-room connection
-  scope, selected mode, and the viewer's own edit request. It projects the
-  effective shell access scope, edit-request notice, request-loading predicate,
-  edit-link fallback, and live-room connect policy through one tested projection
-  and a small RxJS store. `notebook-viewer.tsx` consumes that projection instead
-  of recomputing the same access policy at each call site. The authoritative
-  facts still come from hosted APIs/session state and the room host.
+- **Cloud access/share facts first pass.**
+  `apps/notebook-cloud/viewer/cloud-access-facts.ts` now names the hosted source
+  facts for catalog access, live-room connection scope, selected mode, and the
+  viewer's own edit request. It projects the effective shell access scope,
+  edit-request notice, request-loading predicate, edit-link fallback, and
+  live-room connect policy through one tested projection and a small RxJS store.
+  `apps/notebook-cloud/viewer/cloud-sharing-facts.ts` likewise projects
+  owner-facing share panel facts: access ledgers, public-link state, copy labels,
+  invite readiness, and initial loading state, with the same facts-store/select
+  contract for future React adoption. `notebook-viewer.tsx` and
+  `sharing-controls.tsx` consume those projections instead of recomputing the
+  same policy at each render site. The authoritative facts still come from
+  hosted APIs/session state and the room host.
 
 ## Remaining work (ranked)
 
@@ -87,12 +92,13 @@ output focus, reconnect) before merge.
    does not enable real cross-host sharing, and it adds more lines than it
    deletes. Low priority; do it only if it demonstrably simplifies both hosts.
 
-4. **Finish cloud access/share projection extraction.** The first access facts
-   pass centralizes catalog access, selected vs effective interaction mode,
-   own edit-request status, edit-link fallback, and live-room connect policy.
-   Remaining cloud-local second sources of truth are share/public-link ledger
-   summaries, owner mutation refresh state, diagnostics fetch helpers, and
-   fuller React selector adoption. Keep D1/ACL/OIDC fetching, mutation, and URL
+4. **Finish cloud access/share projection extraction.** The first access/share
+   facts pass centralizes catalog access, selected vs effective interaction
+   mode, own edit-request status, edit-link fallback, live-room connect policy,
+   share ledger rows, public-link state, and panel loading/copy/invite readiness.
+   Remaining cloud-local second sources of truth are owner mutation refresh
+   state, diagnostics fetch helpers, and fuller React selector adoption from the
+   access/share stores. Keep D1/ACL/OIDC fetching, mutation, and URL
    normalization in the cloud host; stores own the projection of those facts, not
    the authority. Do not move this policy into `runtimed-wasm`: WASM should
    receive already-negotiated room/document facts, not know what an OIDC invite,
