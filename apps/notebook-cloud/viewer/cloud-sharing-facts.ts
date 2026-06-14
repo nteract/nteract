@@ -75,16 +75,17 @@ export function projectCloudSharingFacts({
  * owner-panel affordances from those facts; it is not an ACL authority.
  */
 export class CloudSharingFactsStore {
-  private readonly source$: BehaviorSubject<CloudSharingSourceFacts>;
+  private sourceFacts: CloudSharingSourceFacts;
+  private currentProjection: CloudSharingFactsProjection;
+  private readonly projectionSubject: BehaviorSubject<CloudSharingFactsProjection>;
 
   readonly projection$: Observable<CloudSharingFactsProjection>;
 
   constructor(initial: CloudSharingSourceFacts) {
-    this.source$ = new BehaviorSubject(initial);
-    this.projection$ = this.source$.pipe(
-      map(projectCloudSharingFacts),
-      distinctUntilChanged(cloudSharingFactsProjectionEquals),
-    );
+    this.sourceFacts = initial;
+    this.currentProjection = projectCloudSharingFacts(initial);
+    this.projectionSubject = new BehaviorSubject(this.currentProjection);
+    this.projection$ = this.projectionSubject.asObservable();
   }
 
   select<T>(
@@ -95,15 +96,21 @@ export class CloudSharingFactsStore {
   }
 
   get source(): CloudSharingSourceFacts {
-    return this.source$.getValue();
+    return this.sourceFacts;
   }
 
   get snapshot(): CloudSharingFactsProjection {
-    return projectCloudSharingFacts(this.source);
+    return this.currentProjection;
   }
 
   set(next: CloudSharingSourceFacts): void {
-    this.source$.next(next);
+    this.sourceFacts = next;
+    const nextProjection = projectCloudSharingFacts(next);
+    if (cloudSharingFactsProjectionEquals(this.currentProjection, nextProjection)) {
+      return;
+    }
+    this.currentProjection = nextProjection;
+    this.projectionSubject.next(nextProjection);
   }
 
   update(project: (current: CloudSharingSourceFacts) => CloudSharingSourceFacts): void {

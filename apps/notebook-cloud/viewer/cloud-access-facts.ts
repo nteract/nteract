@@ -173,16 +173,17 @@ export function projectCloudAccessFacts(
  * projects stable UI facts from those sources; it is not an ACL authority.
  */
 export class CloudAccessFactsStore {
-  private readonly source$: BehaviorSubject<CloudAccessSourceFacts>;
+  private sourceFacts: CloudAccessSourceFacts;
+  private currentProjection: CloudAccessFactsProjection;
+  private readonly projectionSubject: BehaviorSubject<CloudAccessFactsProjection>;
 
   readonly projection$: Observable<CloudAccessFactsProjection>;
 
   constructor(initial: CloudAccessSourceFacts) {
-    this.source$ = new BehaviorSubject(initial);
-    this.projection$ = this.source$.pipe(
-      map(projectCloudAccessFacts),
-      distinctUntilChanged(cloudAccessFactsProjectionEquals),
-    );
+    this.sourceFacts = initial;
+    this.currentProjection = projectCloudAccessFacts(initial);
+    this.projectionSubject = new BehaviorSubject(this.currentProjection);
+    this.projection$ = this.projectionSubject.asObservable();
   }
 
   select<T>(
@@ -193,15 +194,21 @@ export class CloudAccessFactsStore {
   }
 
   get source(): CloudAccessSourceFacts {
-    return this.source$.getValue();
+    return this.sourceFacts;
   }
 
   get snapshot(): CloudAccessFactsProjection {
-    return projectCloudAccessFacts(this.source);
+    return this.currentProjection;
   }
 
   set(next: CloudAccessSourceFacts): void {
-    this.source$.next(next);
+    this.sourceFacts = next;
+    const nextProjection = projectCloudAccessFacts(next);
+    if (cloudAccessFactsProjectionEquals(this.currentProjection, nextProjection)) {
+      return;
+    }
+    this.currentProjection = nextProjection;
+    this.projectionSubject.next(nextProjection);
   }
 
   update(project: (current: CloudAccessSourceFacts) => CloudAccessSourceFacts): void {

@@ -123,10 +123,13 @@ import {
   replaceCloudNotebookModeInCurrentUrl,
 } from "./cloud-notebook-mode";
 import {
+  CloudAccessFactsStore,
   cloudCatalogAccessFacts,
-  projectCloudAccessFacts,
   projectCloudAccessLiveRoomPolicy,
+  type CloudAccessFactsProjection,
+  type CloudAccessSourceFacts,
 } from "./cloud-access-facts";
+import { useCloudFactsProjection } from "./cloud-facts-react";
 import type {
   CloudNotebookUpdateResponse,
   CloudViewerAuthConfig,
@@ -173,6 +176,10 @@ function decodeHashAnchorId(hash: string): string {
 
 function shouldPollPendingCloudAccessRequest(): boolean {
   return typeof document === "undefined" || document.visibilityState !== "hidden";
+}
+
+function useCloudAccessFactsProjection(source: CloudAccessSourceFacts): CloudAccessFactsProjection {
+  return useCloudFactsProjection(source, (initial) => new CloudAccessFactsStore(initial));
 }
 
 async function resolveCloudAppSessionSyncScope(
@@ -635,25 +642,24 @@ export function NotebookViewer({
       cancelled = true;
     };
   }, [canUseAuthenticatedCloudApi, catalogAccessLoader]);
-  const cloudAccessFacts = useMemo(
-    () =>
-      projectCloudAccessFacts({
-        canUseAuthenticatedCloudApi,
-        catalog: catalogAccessFacts,
-        connection: {
-          error: connectionError,
-          peerId: connectionPeerId,
-          scope: connectionScope,
-          statusKind: status.kind,
-        },
-        hasBrowserAppIdentity,
-        request: {
-          error: accessRequestError,
-          latest: latestAccessRequest,
-          requestedByUser: editAccessRequestedByUser,
-        },
-        selectedMode: selectedInteractionMode,
-      }),
+  const cloudAccessSourceFacts = useMemo<CloudAccessSourceFacts>(
+    () => ({
+      canUseAuthenticatedCloudApi,
+      catalog: catalogAccessFacts,
+      connection: {
+        error: connectionError,
+        peerId: connectionPeerId,
+        scope: connectionScope,
+        statusKind: status.kind,
+      },
+      hasBrowserAppIdentity,
+      request: {
+        error: accessRequestError,
+        latest: latestAccessRequest,
+        requestedByUser: editAccessRequestedByUser,
+      },
+      selectedMode: selectedInteractionMode,
+    }),
     [
       accessRequestError,
       canUseAuthenticatedCloudApi,
@@ -668,6 +674,7 @@ export function NotebookViewer({
       status.kind,
     ],
   );
+  const cloudAccessFacts = useCloudAccessFactsProjection(cloudAccessSourceFacts);
   const {
     accessConnectionScope,
     catalogGrantsDocumentEdit,

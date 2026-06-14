@@ -305,13 +305,30 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.doesNotMatch(sourceText, /useState\(initialCloudViewerPresence\)/);
   assert.doesNotMatch(sourceText, /setPresence\(/);
   assert.doesNotMatch(sourceText, /label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/);
+  assert.match(sourceText, /CloudAccessFactsStore/);
+  assert.match(sourceText, /function useCloudAccessFactsProjection/);
+  assert.match(
+    sourceText,
+    /const cloudAccessSourceFacts = useMemo<CloudAccessSourceFacts>\(\s*\(\) => \(\{[\s\S]*canUseAuthenticatedCloudApi,[\s\S]*catalog: catalogAccessFacts,[\s\S]*connection: \{[\s\S]*statusKind: status\.kind,/,
+  );
+  assert.match(
+    sourceText,
+    /const cloudAccessFacts = useCloudAccessFactsProjection\(cloudAccessSourceFacts\)/,
+  );
+  assert.doesNotMatch(sourceText, /projectCloudAccessFacts\(/);
   assert.match(sharingSourceText, /export function CloudSharingControls/);
   assert.match(sharingSourceText, /Invite people, review requests, and manage link access\./);
+  assert.match(sharingSourceText, /CloudSharingFactsStore/);
   assert.match(
     sharingSourceText,
-    /const sharingFacts = useMemo\(\s*\(\) =>[\s\S]*projectCloudSharingFacts\(\{[\s\S]*accessRequests,[\s\S]*acl,[\s\S]*copyState,[\s\S]*inviteEmail,[\s\S]*invites,[\s\S]*loadState,/,
+    /const sharingSourceFacts = useMemo<CloudSharingSourceFacts>\(\s*\(\) => \(\{[\s\S]*accessRequests,[\s\S]*acl,[\s\S]*copyState,[\s\S]*inviteEmail,[\s\S]*invites,[\s\S]*loadState,/,
+  );
+  assert.match(
+    sharingSourceText,
+    /const sharingFacts = useCloudSharingFactsProjection\(sharingSourceFacts\)/,
   );
   assert.match(sharingSourceText, /const accessProjection = sharingFacts\.access/);
+  assert.doesNotMatch(sharingSourceText, /projectCloudSharingFacts\(/);
   assert.doesNotMatch(
     sharingSourceText,
     /buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,

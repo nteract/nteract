@@ -168,6 +168,11 @@ describe("cloud access facts projection", () => {
 
   it("deduplicates equivalent realtime source updates through RxJS selectors", () => {
     const store = new CloudAccessFactsStore(sourceFacts());
+    const initialSnapshot = store.snapshot;
+    assert.equal(store.snapshot, initialSnapshot);
+    store.set({ ...sourceFacts(), connection: { ...sourceFacts().connection } });
+    assert.equal(store.snapshot, initialSnapshot);
+
     const projectedModes: string[] = [];
     const fullProjectionKeys: string[] = [];
     const sub = store
@@ -183,7 +188,6 @@ describe("cloud access facts projection", () => {
       );
     });
 
-    store.set({ ...sourceFacts(), connection: { ...sourceFacts().connection } });
     store.update((current) => ({
       ...current,
       request: {

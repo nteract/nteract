@@ -55,9 +55,10 @@ the flush strands the update (marked dirty, never emitted).
   `apps/notebook-cloud/viewer/cloud-sharing-facts.ts` likewise projects
   owner-facing share panel facts: access ledgers, public-link state, copy labels,
   invite readiness, and initial loading state, with the same facts-store/select
-  contract for future React adoption. `notebook-viewer.tsx` and
-  `sharing-controls.tsx` consume those projections instead of recomputing the
-  same policy at each render site. The authoritative facts still come from
+  contract. `apps/notebook-cloud/viewer/cloud-facts-react.ts` adapts those
+  stores to `useSyncExternalStore`, and `notebook-viewer.tsx` plus
+  `sharing-controls.tsx` consume the store projections instead of recomputing
+  the same policy at each render site. The authoritative facts still come from
   hosted APIs/session state and the room host.
 
 ## Remaining work (ranked)
@@ -97,10 +98,9 @@ output focus, reconnect) before merge.
    mode, own edit-request status, edit-link fallback, live-room connect policy,
    share ledger rows, public-link state, and panel loading/copy/invite readiness.
    Remaining cloud-local second sources of truth are owner mutation refresh
-   state, diagnostics fetch helpers, and fuller React selector adoption from the
-   access/share stores. Keep D1/ACL/OIDC fetching, mutation, and URL
-   normalization in the cloud host; stores own the projection of those facts, not
-   the authority. Do not move this policy into `runtimed-wasm`: WASM should
+   state and diagnostics fetch helpers. Keep D1/ACL/OIDC fetching, mutation, and
+   URL normalization in the cloud host; stores own the projection of those facts,
+   not the authority. Do not move this policy into `runtimed-wasm`: WASM should
    receive already-negotiated room/document facts, not know what an OIDC invite,
    public ACL row, or copied `?mode=edit` URL means.
 

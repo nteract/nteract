@@ -118,6 +118,14 @@ describe("cloud sharing facts projection", () => {
 
   it("deduplicates equivalent share source updates through RxJS selectors", () => {
     const store = new CloudSharingFactsStore(sourceFacts());
+    const initialSnapshot = store.snapshot;
+    assert.equal(store.snapshot, initialSnapshot);
+    store.set({
+      ...sourceFacts(),
+      acl: [aclRow({ subject: "user:anaconda:owner", scope: "owner" })],
+    });
+    assert.equal(store.snapshot, initialSnapshot);
+
     const copyLabels: string[] = [];
     const projectionKeys: string[] = [];
     const copySub = store
@@ -135,10 +143,6 @@ describe("cloud sharing facts projection", () => {
       );
     });
 
-    store.set({
-      ...sourceFacts(),
-      acl: [aclRow({ subject: "user:anaconda:owner", scope: "owner" })],
-    });
     store.update((current) => ({
       ...current,
       copyState: "copied",

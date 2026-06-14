@@ -3,10 +3,13 @@ import { Check, Globe2, Link2, Mail, ServerCog, Share2, Trash2, UserRound, X } f
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 import { appendEndpointPathSegment, cloudResponseError } from "./cloud-response";
 import {
-  projectCloudSharingFacts,
+  CloudSharingFactsStore,
   type CloudSharingCopyState,
+  type CloudSharingFactsProjection,
   type CloudSharingLoadState,
+  type CloudSharingSourceFacts,
 } from "./cloud-sharing-facts";
+import { useCloudFactsProjection } from "./cloud-facts-react";
 import {
   normalizeShareInviteEmail,
   type CloudNotebookAccessRequest,
@@ -26,6 +29,12 @@ interface CloudSharingControlsProps {
 
 type CloudSharingMessageKind = "info" | "error";
 type CloudSharingAccessRequestAction = "approve" | "deny" | "dismiss";
+
+function useCloudSharingFactsProjection(
+  source: CloudSharingSourceFacts,
+): CloudSharingFactsProjection {
+  return useCloudFactsProjection(source, (initial) => new CloudSharingFactsStore(initial));
+}
 
 export function CloudSharingControls({
   accessRequestsEndpoint,
@@ -47,18 +56,18 @@ export function CloudSharingControls({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<CloudSharingCopyState>("idle");
   const inviteSubmitLockRef = useRef(false);
-  const sharingFacts = useMemo(
-    () =>
-      projectCloudSharingFacts({
-        accessRequests,
-        acl,
-        copyState,
-        inviteEmail,
-        invites,
-        loadState,
-      }),
+  const sharingSourceFacts = useMemo<CloudSharingSourceFacts>(
+    () => ({
+      accessRequests,
+      acl,
+      copyState,
+      inviteEmail,
+      invites,
+      loadState,
+    }),
     [accessRequests, acl, copyState, inviteEmail, invites, loadState],
   );
+  const sharingFacts = useCloudSharingFactsProjection(sharingSourceFacts);
   const accessProjection = sharingFacts.access;
   const publicEnabled = sharingFacts.publicEnabled;
   const inviteReady = sharingFacts.inviteReady;
