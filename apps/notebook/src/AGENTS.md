@@ -72,9 +72,9 @@ Host-platform side effects (Tauri IPC, plugin calls, window chrome) flow through
 | `host.log` | `debug/info/warn/error` |
 
 Module-level helpers (no hooks) — called once from `main.tsx` after `createTauriHost()`:
-- `setLoggerHost(host)` — `logger.ts`
+- `setLoggerHost(host)` — `src/lib/logger.ts`
 - `setBlobPortHost(host)` — `blob-port.ts`
-- `setOpenUrlHost(host)` — `open-url.ts`
+- `setOpenUrlHost(host)` — `src/lib/open-url.ts`
 - `setMetadataTransport(host.transport)` — `notebook-metadata.ts`
 
 **Canonical surface**: `packages/notebook-host/src/types.ts`.

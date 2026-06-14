@@ -319,8 +319,8 @@ export interface HostUpdaterState {
 }
 
 /**
- * Structured-log pipe shared across the frontend. Replaces the direct
- * `@tauri-apps/plugin-log` coupling in `apps/notebook/src/lib/logger.ts`.
+ * Structured-log pipe shared across the frontend. Keeps shared UI code from
+ * coupling directly to host-specific sinks such as `@tauri-apps/plugin-log`.
  *
  * Messages arrive pre-formatted (single string); callers serialize their
  * arguments in a way that matters to them. The Tauri impl forwards each

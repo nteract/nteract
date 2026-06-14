@@ -72,6 +72,9 @@ importers:
       '@lezer/lr':
         specifier: ^1.4.8
         version: 1.4.8
+      '@nteract/notebook-host':
+        specifier: workspace:*
+        version: link:packages/notebook-host
       '@nteract/sift':
         specifier: workspace:*
         version: link:packages/sift

@@ -33,6 +33,7 @@ import {
   type NotebookInteractionMode,
   type NotebookPackageSection,
   flushCellUIState,
+  getCellById,
   setFocusedCellId,
   useFocusedCellId,
   useNotebookViewModel,
@@ -78,7 +79,6 @@ import {
   createNotebookController,
   NotebookView,
   PresenceValueProvider,
-  getCellById,
   type PresenceContextValue,
 } from "../../notebook/src/notebook-surface";
 import {

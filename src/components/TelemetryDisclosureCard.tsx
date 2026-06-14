@@ -27,7 +27,7 @@ const LEARN_MORE_URL = "https://nteract.io/telemetry";
  * disclosure; clicking through is how the user gets the full picture.
  *
  * Consumers supply `onOpenLearnMore` to route the click through the
- * host's URL opener (e.g. `openUrl` from apps/notebook/src/lib/open-url).
+ * host's URL opener (e.g. `openUrl` from `@/lib/open-url`).
  * The default behavior falls back to the `href` so unit tests and any
  * non-Tauri host still work.
  */

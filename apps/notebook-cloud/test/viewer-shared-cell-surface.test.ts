@@ -76,14 +76,7 @@ test("cloud viewer imports desktop notebook code only through public surfaces", 
 
     for (const match of imports) {
       const importPath = match[1] ?? "";
-      if (
-        importPath.includes("/wasm/") ||
-        // Entry-only host shims install cloud-safe logger and external-link
-        // behavior for shared notebook components.
-        (fileName === "index.tsx" &&
-          (importPath.endsWith("/lib/logger") || importPath.endsWith("/lib/open-url"))) ||
-        importPath.endsWith("/notebook-surface")
-      ) {
+      if (importPath.includes("/wasm/") || importPath.endsWith("/notebook-surface")) {
         continue;
       }
       offenders.push(`${fileName}: ${importPath}`);
@@ -169,7 +162,7 @@ test("cloud runtime store projection comes from the shared store module", () => 
     const importList = importMatch[1] ?? "";
     assert.doesNotMatch(
       importList,
-      /\b(applyExecutionViewChangeset|applyOutputChangeset|resetRuntimeStoresProjection)\b/,
+      /\b(applyExecutionViewChangeset|applyOutputChangeset|resetRuntimeStoresProjection|getCellById|getCellIdsSnapshot|CellChangeset|JupyterOutput)\b/,
     );
   }
 });
@@ -806,6 +799,10 @@ test("cloud command client keeps routine command logs out of the browser console
 test("cloud installs a host logger sink for shared notebook components", () => {
   const sourceText = viewerCorpus;
 
+  assert.match(sourceText, /from ["']@\/lib\/logger["']/);
+  assert.match(sourceText, /from ["']@\/lib\/open-url["']/);
+  assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/lib\/logger/);
+  assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/lib\/open-url/);
   assert.match(sourceText, /setLoggerHost/);
   assert.match(sourceText, /debug: \(\) => \{\}/);
   assert.match(sourceText, /info: \(\) => \{\}/);

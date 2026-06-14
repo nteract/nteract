@@ -2,8 +2,8 @@ import { lazy, Suspense, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BookOpen, House, Loader2 } from "lucide-react";
 import { ErrorBoundary } from "@/lib/error-boundary";
-import { setLoggerHost } from "../../notebook/src/lib/logger";
-import { setOpenUrlHost } from "../../notebook/src/lib/open-url";
+import { setLoggerHost } from "@/lib/logger";
+import { setOpenUrlHost } from "@/lib/open-url";
 import { installDocumentThemeSync } from "./theme";
 import {
   isHomePath,
