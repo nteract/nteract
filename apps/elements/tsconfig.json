@@ -34,6 +34,8 @@
       "@/lib/error-boundary": ["../../src/lib/error-boundary"],
       "@/lib/highlight-text": ["../../src/lib/highlight-text"],
       "@/lib/katex-options": ["../../src/lib/katex-options"],
+      "@/lib/logger": ["../../src/lib/logger"],
+      "@/lib/open-url": ["../../src/lib/open-url"],
       "@/lib/output-error-fallback": ["../../src/lib/output-error-fallback"],
       "@/lib/renderer-registry": ["../../src/lib/renderer-registry"],
       "@/lib/utils": ["../../src/lib/utils"],

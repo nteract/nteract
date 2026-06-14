@@ -78,6 +78,12 @@ concerns.
 
 ## Completed Slices
 
+- 2026-06-14: Moved the frontend logger and external URL opener into
+  `src/lib`. Desktop keeps compatibility re-exports, while Cloud installs its
+  logger and external-link host shims directly through shared modules. Also
+  drained public cell-store/change-set imports from `notebook-surface`, so the
+  desktop surface barrel is smaller and restricted to the remaining
+  component/controller seam.
 - 2026-06-14: Promoted runtime/output store projection to
   `src/components/notebook/state/runtime-store-projection.ts`. Desktop keeps a
   thin wrapper for blob resolver discovery, logging, and execution performance

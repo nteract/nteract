@@ -8,8 +8,8 @@
  *
  * The transport is passed in rather than constructed here because the
  * `TauriTransport` class currently lives in `apps/notebook/src/lib/` and
- * hooks into the app's logger. A later PR will move it into this package
- * and tighten the import direction.
+ * uses the shared frontend logger. A later PR will move the transport into
+ * this package and tighten the import direction.
  */
 
 import { invoke } from "@tauri-apps/api/core";

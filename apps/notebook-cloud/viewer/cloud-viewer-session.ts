@@ -3,8 +3,13 @@ import {
   IndexedDbStorageAdapter,
   clearPersistedNotebookDoc,
   type BlobResolver,
+  type CellChangeset,
   type CommChanges,
 } from "runtimed";
+import {
+  getCellIdsSnapshot,
+  type NotebookStoreOutput as NotebookStoreJupyterOutput,
+} from "@/components/notebook";
 import {
   applyWidgetCommBroadcastToStore,
   applyWidgetCommChangesToStore,
@@ -25,13 +30,10 @@ import {
 import {
   emitBroadcast,
   emitPresence,
-  getCellIdsSnapshot,
   materializeChangeset,
   resetPoolState,
   startCursorDispatch,
   setPoolState,
-  type CellChangeset,
-  type JupyterOutput as NotebookStoreJupyterOutput,
 } from "../../notebook/src/notebook-surface";
 import { resetRuntimeState, setRuntimeState } from "@/components/notebook/state/runtime-state";
 import {

@@ -167,7 +167,7 @@ slider = widgets.IntSlider(value=50, min=0, max=100)
 display(slider)
 ```
 
-In dev builds `apps/notebook/src/lib/logger.ts` calls `attachConsole()` so frontend logs appear in browser devtools. For comm-level tracing:
+The shared frontend logger in `src/lib/logger.ts` routes through the active host log sink. For comm-level tracing:
 
 ```bash
 runt daemon logs -f | grep -i comm
