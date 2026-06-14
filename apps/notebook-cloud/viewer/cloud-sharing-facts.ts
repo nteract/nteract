@@ -31,6 +31,10 @@ export interface CloudSharingFactsProjection {
   showInitialAccessLoading: boolean;
 }
 
+interface CloudSharingFactsSetOptions {
+  notify?: boolean;
+}
+
 /**
  * Projection for the owner-facing sharing panel.
  *
@@ -77,6 +81,8 @@ export function projectCloudSharingFacts({
 export class CloudSharingFactsStore {
   private sourceFacts: CloudSharingSourceFacts;
   private currentProjection: CloudSharingFactsProjection;
+  private publishedProjection: CloudSharingFactsProjection;
+  private pendingProjectionNotification = false;
   private readonly projectionSubject: BehaviorSubject<CloudSharingFactsProjection>;
 
   readonly projection$: Observable<CloudSharingFactsProjection>;
@@ -84,6 +90,7 @@ export class CloudSharingFactsStore {
   constructor(initial: CloudSharingSourceFacts) {
     this.sourceFacts = initial;
     this.currentProjection = projectCloudSharingFacts(initial);
+    this.publishedProjection = this.currentProjection;
     this.projectionSubject = new BehaviorSubject(this.currentProjection);
     this.projection$ = this.projectionSubject.asObservable();
   }
@@ -103,18 +110,43 @@ export class CloudSharingFactsStore {
     return this.currentProjection;
   }
 
-  set(next: CloudSharingSourceFacts): void {
+  set(next: CloudSharingSourceFacts, options: CloudSharingFactsSetOptions = {}): void {
     this.sourceFacts = next;
     const nextProjection = projectCloudSharingFacts(next);
     if (cloudSharingFactsProjectionEquals(this.currentProjection, nextProjection)) {
+      if (options.notify !== false) {
+        this.flush();
+      }
       return;
     }
     this.currentProjection = nextProjection;
-    this.projectionSubject.next(nextProjection);
+    this.pendingProjectionNotification = !cloudSharingFactsProjectionEquals(
+      this.publishedProjection,
+      this.currentProjection,
+    );
+    if (options.notify === false) {
+      return;
+    }
+    this.flush();
   }
 
-  update(project: (current: CloudSharingSourceFacts) => CloudSharingSourceFacts): void {
-    this.set(project(this.source));
+  update(
+    project: (current: CloudSharingSourceFacts) => CloudSharingSourceFacts,
+    options?: CloudSharingFactsSetOptions,
+  ): void {
+    this.set(project(this.source), options);
+  }
+
+  flush(): void {
+    if (!this.pendingProjectionNotification) {
+      return;
+    }
+    this.pendingProjectionNotification = false;
+    if (cloudSharingFactsProjectionEquals(this.publishedProjection, this.currentProjection)) {
+      return;
+    }
+    this.publishedProjection = this.currentProjection;
+    this.projectionSubject.next(this.currentProjection);
   }
 }
 

@@ -333,6 +333,19 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     sharingSourceText,
     /buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,
   );
+  const cloudFactsReactSourcePath = new URL("../viewer/cloud-facts-react.ts", import.meta.url);
+  const cloudFactsReactSource = readFileSync(cloudFactsReactSourcePath, "utf8");
+  const silentSetIndex = cloudFactsReactSource.indexOf("store.set(source, { notify: false });");
+  const snapshotSubscribeIndex = cloudFactsReactSource.indexOf(
+    "const projection = useSyncExternalStore",
+  );
+  const flushIndex = cloudFactsReactSource.indexOf("store.flush();");
+  assert.ok(silentSetIndex >= 0);
+  assert.ok(snapshotSubscribeIndex >= 0);
+  assert.ok(flushIndex >= 0);
+  assert.ok(silentSetIndex < snapshotSubscribeIndex);
+  assert.ok(snapshotSubscribeIndex < flushIndex);
+  assert.doesNotMatch(cloudFactsReactSource, /useLayoutEffect\(\(\) => \{\s*store\.set\(source\)/);
   assert.match(sharingSourceText, /<div className="cloud-share-current-heading">/);
   assert.match(sharingSourceText, /aria-label="Edit access requests"/);
   assert.match(sharingSourceText, /<h3>Edit requests<\/h3>/);

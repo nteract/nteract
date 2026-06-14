@@ -4,7 +4,8 @@ import type { Observable } from "rxjs";
 export interface CloudFactsProjectionStore<TSource, TProjection> {
   readonly projection$: Observable<TProjection>;
   readonly snapshot: TProjection;
-  set(next: TSource): void;
+  set(next: TSource, options?: { notify?: boolean }): void;
+  flush(): void;
 }
 
 /**
@@ -23,9 +24,7 @@ export function useCloudFactsProjection<TSource, TProjection>(
   }
   const store = storeRef.current;
 
-  useLayoutEffect(() => {
-    store.set(source);
-  }, [store, source]);
+  store.set(source, { notify: false });
 
   const subscribe = useCallback(
     (callback: () => void) => {
@@ -36,5 +35,11 @@ export function useCloudFactsProjection<TSource, TProjection>(
   );
   const getSnapshot = useCallback(() => store.snapshot, [store]);
 
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const projection = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+
+  useLayoutEffect(() => {
+    store.flush();
+  });
+
+  return projection;
 }

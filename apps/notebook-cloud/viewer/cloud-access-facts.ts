@@ -63,6 +63,10 @@ export interface CloudAccessFactsProjection {
   shouldLoadOwnEditAccessRequest: boolean;
 }
 
+interface CloudAccessFactsSetOptions {
+  notify?: boolean;
+}
+
 export function cloudCatalogAccessFacts({
   canUseAuthenticatedCloudApi,
   loadFailed,
@@ -175,6 +179,8 @@ export function projectCloudAccessFacts(
 export class CloudAccessFactsStore {
   private sourceFacts: CloudAccessSourceFacts;
   private currentProjection: CloudAccessFactsProjection;
+  private publishedProjection: CloudAccessFactsProjection;
+  private pendingProjectionNotification = false;
   private readonly projectionSubject: BehaviorSubject<CloudAccessFactsProjection>;
 
   readonly projection$: Observable<CloudAccessFactsProjection>;
@@ -182,6 +188,7 @@ export class CloudAccessFactsStore {
   constructor(initial: CloudAccessSourceFacts) {
     this.sourceFacts = initial;
     this.currentProjection = projectCloudAccessFacts(initial);
+    this.publishedProjection = this.currentProjection;
     this.projectionSubject = new BehaviorSubject(this.currentProjection);
     this.projection$ = this.projectionSubject.asObservable();
   }
@@ -201,18 +208,43 @@ export class CloudAccessFactsStore {
     return this.currentProjection;
   }
 
-  set(next: CloudAccessSourceFacts): void {
+  set(next: CloudAccessSourceFacts, options: CloudAccessFactsSetOptions = {}): void {
     this.sourceFacts = next;
     const nextProjection = projectCloudAccessFacts(next);
     if (cloudAccessFactsProjectionEquals(this.currentProjection, nextProjection)) {
+      if (options.notify !== false) {
+        this.flush();
+      }
       return;
     }
     this.currentProjection = nextProjection;
-    this.projectionSubject.next(nextProjection);
+    this.pendingProjectionNotification = !cloudAccessFactsProjectionEquals(
+      this.publishedProjection,
+      this.currentProjection,
+    );
+    if (options.notify === false) {
+      return;
+    }
+    this.flush();
   }
 
-  update(project: (current: CloudAccessSourceFacts) => CloudAccessSourceFacts): void {
-    this.set(project(this.source));
+  update(
+    project: (current: CloudAccessSourceFacts) => CloudAccessSourceFacts,
+    options?: CloudAccessFactsSetOptions,
+  ): void {
+    this.set(project(this.source), options);
+  }
+
+  flush(): void {
+    if (!this.pendingProjectionNotification) {
+      return;
+    }
+    this.pendingProjectionNotification = false;
+    if (cloudAccessFactsProjectionEquals(this.publishedProjection, this.currentProjection)) {
+      return;
+    }
+    this.publishedProjection = this.currentProjection;
+    this.projectionSubject.next(this.currentProjection);
   }
 }
 

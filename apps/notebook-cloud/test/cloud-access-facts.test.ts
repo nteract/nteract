@@ -215,6 +215,36 @@ describe("cloud access facts projection", () => {
       "editor:false:edit",
     ]);
   });
+
+  it("updates snapshots before flushing render-phase subscriber notifications", () => {
+    const store = new CloudAccessFactsStore(sourceFacts());
+    const projectedModes: string[] = [];
+    const sub = store
+      .select((projection) => projection.selectedInteractionModeForAccess)
+      .subscribe((mode) => projectedModes.push(mode));
+
+    store.set(
+      {
+        ...sourceFacts(),
+        request: {
+          error: null,
+          latest: accessRequest({ status: "pending" }),
+          requestedByUser: true,
+        },
+        selectedMode: "edit",
+      },
+      { notify: false },
+    );
+
+    assert.equal(store.snapshot.selectedInteractionModeForAccess, "edit");
+    assert.deepEqual(projectedModes, ["view"]);
+
+    store.flush();
+    store.flush();
+    sub.unsubscribe();
+
+    assert.deepEqual(projectedModes, ["view", "edit"]);
+  });
 });
 
 function sourceFacts(): CloudAccessSourceFacts {

@@ -166,6 +166,25 @@ describe("cloud sharing facts projection", () => {
       "Copied link:private:invite-ready:1 person:1 request",
     ]);
   });
+
+  it("updates snapshots before flushing render-phase subscriber notifications", () => {
+    const store = new CloudSharingFactsStore(sourceFacts());
+    const copyLabels: string[] = [];
+    const sub = store
+      .select((projection) => projection.copyLinkLabel)
+      .subscribe((label) => copyLabels.push(label));
+
+    store.set({ ...sourceFacts(), copyState: "copied" }, { notify: false });
+
+    assert.equal(store.snapshot.copyLinkLabel, "Copied link");
+    assert.deepEqual(copyLabels, ["Copy link"]);
+
+    store.flush();
+    store.flush();
+    sub.unsubscribe();
+
+    assert.deepEqual(copyLabels, ["Copy link", "Copied link"]);
+  });
 });
 
 function sourceFacts(): CloudSharingSourceFacts {
