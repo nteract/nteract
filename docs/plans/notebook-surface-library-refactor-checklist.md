@@ -28,13 +28,14 @@ concerns.
 
 ## Active Checklist
 
-- [ ] Remove cloud-to-desktop app imports for headless projection/store/reset
+- [x] Remove cloud-to-desktop app imports for headless projection/store/reset
       behavior. Cloud may keep the intentional component bridge through
       `notebook-surface` while shared component packaging is still app-owned,
       but headless store/projection helpers should live in shared modules.
       Runtime-state reads/writes now import from
-      `src/components/notebook/state/runtime-state.ts`; remaining blockers are
-      the heavier runtime store projection reset.
+      `src/components/notebook/state/runtime-state.ts`; runtime/output store
+      projection and reset now import from
+      `src/components/notebook/state/runtime-store-projection.ts`.
 - [x] Make output identity strict for modern cloud/runtime paths: missing
       `output_id` values now render as invariant errors instead of receiving
       `cloud-output:*` positional IDs in the cloud resolver.
@@ -54,9 +55,10 @@ concerns.
 - [ ] Extract reusable RxJS projection-store patterns only after concrete
       duplicated stores prove the shape. Avoid generic factories that hide
       simple store logic without reducing real coupling.
-- [ ] Add import guard tests so Cloud cannot depend on Desktop app internals
-      for shared headless behavior. The current guard still allows
-      `notebook-surface-stores` as a temporary exception.
+- [x] Add import guard tests so Cloud cannot depend on Desktop app internals
+      for shared headless behavior. The guard no longer allows
+      `notebook-surface-stores` and asserts runtime/output projection helpers
+      come from shared state rather than the desktop surface import.
 - [ ] Keep durable docs updated as boundaries become real decisions. Amend this
       checklist for execution status; amend ADRs only when the boundary becomes
       durable architecture.
@@ -76,6 +78,13 @@ concerns.
 
 ## Completed Slices
 
+- 2026-06-14: Promoted runtime/output store projection to
+  `src/components/notebook/state/runtime-store-projection.ts`. Desktop keeps a
+  thin wrapper for blob resolver discovery, logging, and execution performance
+  marks; Cloud imports execution changesets, output changesets, and runtime
+  store reset directly from the shared module. Reset now invalidates in-flight
+  async output projection retries so stale blob resolutions cannot repaint a
+  switched or unmounted notebook.
 - 2026-06-14: Cloud render resolution no longer stamps missing output IDs with
   `cloud-output:*`; missing IDs are visible invariant errors with diagnostic
   `resolution-error:missing-output-id:*` identities.

@@ -43,7 +43,7 @@ import {
   useOutputFocusedCellId,
 } from "@/components/notebook/state/output-focus-store";
 import { logger } from "../lib/logger";
-import { useOutputProjectionFailures } from "../lib/project-runtime-stores";
+import { useOutputProjectionFailures } from "@/components/notebook/state/runtime-store-projection";
 import { computeCanMutateCells } from "@/components/notebook/mutation-gate";
 import {
   getCellById,

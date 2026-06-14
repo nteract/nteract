@@ -12,20 +12,22 @@ import {
 import { setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import type { WidgetStore } from "@/components/widgets/widget-store";
 import {
+  applyExecutionViewChangeset,
+  applyOutputChangeset,
+  resetRuntimeStoresProjection,
+} from "@/components/notebook/state/runtime-store-projection";
+import {
   cloudConnectionErrorAcceptsAccessDiagnostic,
   cloudConnectionErrorWithAccessDiagnostic,
   diagnoseCloudConnectionAccess,
   isCloudConnectionAccessDiagnostic,
 } from "./connection-diagnostics";
 import {
-  applyExecutionViewChangeset,
-  applyOutputChangeset,
   emitBroadcast,
   emitPresence,
   getCellIdsSnapshot,
   materializeChangeset,
   resetPoolState,
-  resetRuntimeStoresProjection,
   startCursorDispatch,
   setPoolState,
   type CellChangeset,

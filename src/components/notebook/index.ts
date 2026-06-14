@@ -78,6 +78,17 @@ export {
   type ProjectNotebookWorkstationLaunchReadinessOptions,
   type ProjectNotebookWorkstationSelectionOptions,
 } from "./capabilities";
+export {
+  applyExecutionViewChangeset,
+  applyOutputChangeset,
+  getOutputProjectionFailures,
+  resetRuntimeStoresProjection,
+  resolveOutputProjectionSync,
+  subscribeOutputProjectionFailures,
+  useOutputProjectionFailures,
+  type ApplyExecutionViewChangesetOptions,
+  type ApplyOutputChangesetOptions,
+} from "./state/runtime-store-projection";
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
 export {

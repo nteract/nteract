@@ -1,7 +1,7 @@
 import { shouldPreserveCurrentNotebookProjection } from "@/components/notebook/state/projection-lifecycle";
 import { createNotebookViewStoreProjector } from "@/components/notebook/state/view-store-projection";
 import { resetRuntimeState } from "@/components/notebook/state/runtime-state";
-import { resetRuntimeStoresProjection } from "../../notebook/src/notebook-surface-stores";
+import { resetRuntimeStoresProjection } from "@/components/notebook/state/runtime-store-projection";
 import type { ResolvedCell } from "./render-resolution";
 
 const cloudViewStoreProjector = createNotebookViewStoreProjector();

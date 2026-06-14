@@ -86,6 +86,14 @@ the flush strands the update (marked dirty, never emitted).
   for raster-preview payload updates under an existing output id. There is no
   rendered-view fallback to materialized `cell.outputs`; hosts and import paths
   must seed execution/output stores for output-bearing code cells.
+- **Runtime/output changeset projection → shared store projection.**
+  `src/components/notebook/state/runtime-store-projection.ts` now owns
+  RuntimeStateDoc execution changeset application, output changeset application,
+  projection-failure subscriptions, and runtime/output store reset. Hosts inject
+  blob resolution, logging, and observability callbacks; the shared reset
+  invalidates suspended output retries so stale async blob resolutions cannot
+  repaint after notebook teardown or switch. Cloud imports these headless
+  helpers directly instead of reaching through a desktop-only store facade.
 
 ## Remaining work (ranked)
 
