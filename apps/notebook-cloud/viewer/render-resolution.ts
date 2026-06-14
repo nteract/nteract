@@ -108,11 +108,11 @@ export async function resolveOutputs(
 ): Promise<JupyterOutput[]> {
   const resolved = await Promise.all(
     outputs.map(async (output, index) => {
-      const syntheticOutputId = `cloud-output:${cellId}:${index}`;
+      const fallbackErrorId = missingOutputIdFallback(cellId, index);
       try {
-        return await resolveOutput(output, blobResolver, syntheticOutputId, cache);
+        return await resolveOutput(output, blobResolver, cache);
       } catch (error) {
-        return outputResolutionError(error, output, syntheticOutputId);
+        return outputResolutionError(error, output, fallbackErrorId);
       }
     }),
   );
@@ -127,12 +127,12 @@ export function resolveOutputsSync(
 ): JupyterOutput[] {
   return outputs
     .map((output, index) => {
-      const syntheticOutputId = `cloud-output:${cellId}:${index}`;
+      const fallbackErrorId = missingOutputIdFallback(cellId, index);
       try {
-        const resolved = resolveOutputSync(output, blobResolver, syntheticOutputId, cache);
+        const resolved = resolveOutputSync(output, blobResolver, cache);
         return resolved === ASYNC_OUTPUT_REQUIRED ? null : resolved;
-      } catch {
-        return null;
+      } catch (error) {
+        return outputResolutionError(error, output, fallbackErrorId);
       }
     })
     .filter((output): output is JupyterOutput => output !== null);
@@ -141,21 +141,20 @@ export function resolveOutputsSync(
 async function resolveOutput(
   output: unknown,
   blobResolver: BlobResolver,
-  syntheticOutputId: string,
   cache?: OutputResolutionCache,
 ): Promise<JupyterOutput | null> {
-  const cacheKey = cache ? outputResolutionCacheKey(output, syntheticOutputId) : null;
+  const cacheKey = cache ? outputResolutionCacheKey(output) : null;
   const cached = cache && cacheKey ? cache.get(cacheKey) : undefined;
   if (cached) {
     return isPromiseLike(cached) ? await cached : cached;
   }
 
-  const syncResolved = resolveOutputSync(output, blobResolver, syntheticOutputId, cache);
+  const syncResolved = resolveOutputSync(output, blobResolver, cache);
   if (syncResolved !== ASYNC_OUTPUT_REQUIRED) {
     return syncResolved;
   }
 
-  const resolution = resolveOutputAsyncUncached(output, blobResolver, syntheticOutputId)
+  const resolution = resolveOutputAsyncUncached(output, blobResolver)
     .then((resolved) => {
       if (cacheKey) {
         if (resolved) {
@@ -177,26 +176,22 @@ async function resolveOutput(
 function resolveOutputSync(
   output: unknown,
   blobResolver: BlobResolver,
-  syntheticOutputId: string,
   cache?: OutputResolutionCache,
 ): SyncOutputResolution {
-  const cacheKey = cache ? outputResolutionCacheKey(output, syntheticOutputId) : null;
+  const cacheKey = cache ? outputResolutionCacheKey(output) : null;
   const cached = cache && cacheKey ? cache.get(cacheKey) : undefined;
   if (cached) {
     return isPromiseLike(cached) ? ASYNC_OUTPUT_REQUIRED : cached;
   }
 
   if (typeof output === "string") {
+    let parsed: unknown;
     try {
-      return resolveOutputSync(
-        JSON.parse(output) as unknown,
-        blobResolver,
-        syntheticOutputId,
-        cache,
-      );
+      parsed = JSON.parse(output) as unknown;
     } catch {
       return null;
     }
+    return resolveOutputSync(parsed, blobResolver, cache);
   }
 
   if (isOutputManifest(output)) {
@@ -206,15 +201,11 @@ function resolveOutputSync(
     return resolved;
   }
 
-  if (isManifestWithMissingOutputId(output)) {
-    throw new Error("Cannot resolve output manifest without output_id");
-  }
-
   if (isJupyterOutput(output)) {
+    assertIdentifiedJupyterOutput(output);
     if (jupyterOutputNeedsAsyncResolution(output)) return ASYNC_OUTPUT_REQUIRED;
-    const resolved = identifyJupyterOutput(output, syntheticOutputId);
-    if (cacheKey) setOutputResolutionCacheEntry(cache, cacheKey, resolved);
-    return resolved;
+    if (cacheKey) setOutputResolutionCacheEntry(cache, cacheKey, output);
+    return output;
   }
 
   return null;
@@ -223,18 +214,15 @@ function resolveOutputSync(
 async function resolveOutputAsyncUncached(
   output: unknown,
   blobResolver: BlobResolver,
-  syntheticOutputId: string,
 ): Promise<JupyterOutput | null> {
   if (typeof output === "string") {
+    let parsed: unknown;
     try {
-      return resolveOutputAsyncUncached(
-        JSON.parse(output) as unknown,
-        blobResolver,
-        syntheticOutputId,
-      );
+      parsed = JSON.parse(output) as unknown;
     } catch {
       return null;
     }
+    return resolveOutputAsyncUncached(parsed, blobResolver);
   }
 
   if (isOutputManifest(output)) {
@@ -245,12 +233,8 @@ async function resolveOutputAsyncUncached(
     return resolved;
   }
 
-  if (isManifestWithMissingOutputId(output)) {
-    throw new Error("Cannot resolve output manifest without output_id");
-  }
-
   if (isJupyterOutput(output)) {
-    return resolveJupyterOutput(output, blobResolver, syntheticOutputId);
+    return resolveJupyterOutput(output, blobResolver);
   }
 
   return null;
@@ -259,9 +243,9 @@ async function resolveOutputAsyncUncached(
 async function resolveJupyterOutput(
   output: JupyterOutput,
   blobResolver: BlobResolver,
-  outputId: string,
 ): Promise<JupyterOutput> {
-  const identified = identifyJupyterOutput(output, outputId);
+  assertIdentifiedJupyterOutput(output);
+  const identified = output;
 
   if (identified.output_type === "display_data" || identified.output_type === "execute_result") {
     const data = { ...identified.data };
@@ -296,15 +280,11 @@ function jupyterOutputNeedsAsyncResolution(output: JupyterOutput): boolean {
   return false;
 }
 
-function outputResolutionCacheKey(output: unknown, syntheticOutputId: string): string | null {
+function outputResolutionCacheKey(output: unknown): string | null {
   const cacheSubject = outputCacheKeySubject(output);
   const serialized = serializedOutputCacheKey(output, cacheSubject.value);
   if (serialized === null) return null;
-  const needsSyntheticOutputId =
-    cacheSubject.parsedString || typeof output !== "string"
-      ? outputNeedsSyntheticOutputId(cacheSubject.value)
-      : false;
-  return needsSyntheticOutputId ? `${syntheticOutputId}:${serialized}` : serialized;
+  return outputMissingOutputId(cacheSubject.value) ? null : serialized;
 }
 
 function serializedOutputCacheKey(output: unknown, cacheSubject: unknown = output): string | null {
@@ -333,10 +313,10 @@ function stampedOutputCacheKey(output: unknown): string | null {
   return typeof key === "string" ? key : null;
 }
 
-function outputNeedsSyntheticOutputId(output: unknown): boolean {
+function outputMissingOutputId(output: unknown): boolean {
   if (typeof output === "string") {
     try {
-      return outputNeedsSyntheticOutputId(JSON.parse(output) as unknown);
+      return outputMissingOutputId(JSON.parse(output) as unknown);
     } catch {
       return false;
     }
@@ -344,7 +324,7 @@ function outputNeedsSyntheticOutputId(output: unknown): boolean {
   if (!isJupyterOutput(output)) {
     return false;
   }
-  return typeof output.output_id !== "string" || output.output_id.length === 0;
+  return !hasOutputId(output);
 }
 
 function isPromiseLike(value: OutputResolutionCacheEntry): value is Promise<JupyterOutput | null> {
@@ -366,19 +346,22 @@ function setOutputResolutionCacheEntry(
   cache.set(key, value);
 }
 
-function identifyJupyterOutput(output: JupyterOutput, outputId: string): JupyterOutput {
-  if (output.output_id) return output;
-  return { ...output, output_id: outputId };
+function assertIdentifiedJupyterOutput(output: JupyterOutput): asserts output is JupyterOutput & {
+  output_id: string;
+} {
+  if (!hasOutputId(output)) {
+    throw new Error("Cannot render output without output_id");
+  }
 }
 
 function outputResolutionError(
   error: unknown,
   output: unknown,
-  syntheticOutputId: string,
+  fallbackOutputId: string,
 ): JupyterOutput {
   const message = error instanceof Error ? error.message : String(error);
   return {
-    output_id: resolutionErrorOutputId(output, syntheticOutputId),
+    output_id: resolutionErrorOutputId(output, fallbackOutputId),
     output_type: "error",
     ename: "OutputResolutionError",
     evalue: `Unable to resolve output: ${message}`,
@@ -386,46 +369,26 @@ function outputResolutionError(
   };
 }
 
-function resolutionErrorOutputId(output: unknown, syntheticOutputId: string): string {
+function resolutionErrorOutputId(output: unknown, fallbackOutputId: string): string {
   if (typeof output === "object" && output !== null) {
     const outputId = (output as { output_id?: unknown }).output_id;
     if (typeof outputId === "string" && outputId.length > 0) {
       return `resolution-error:${outputId}`;
     }
   }
-  return `resolution-error:${syntheticOutputId}`;
+  return `resolution-error:${fallbackOutputId}`;
 }
 
 function isJupyterOutput(value: unknown): value is JupyterOutput {
   return typeof value === "object" && value !== null && "output_type" in value;
 }
 
-function isManifestWithMissingOutputId(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const output = value as Record<string, unknown>;
-  if (typeof output.output_id === "string" && output.output_id.length > 0) return false;
-
-  if (output.output_type === "stream") {
-    return isContentRefLike(output.text);
-  }
-
-  if (output.output_type === "display_data" || output.output_type === "execute_result") {
-    const dataEntries = Object.entries(asRecord(output.data));
-    return (
-      dataEntries.length > 0 &&
-      dataEntries.every(([mimeType, ref]) => isContentRefLike(ref, mimeType))
-    );
-  }
-
-  if (output.output_type === "error") {
-    return isContentRefLike(output.traceback) || isContentRefLike(output.rich);
-  }
-
-  return false;
+function hasOutputId(output: JupyterOutput): output is JupyterOutput & { output_id: string } {
+  return typeof output.output_id === "string" && output.output_id.length > 0;
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+function missingOutputIdFallback(cellId: string, index: number): string {
+  return `missing-output-id:${cellId}:${index}`;
 }
 
 function isContentRefLike(value: unknown, mimeType?: string): value is ContentRef {
