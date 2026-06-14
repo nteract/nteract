@@ -10,6 +10,7 @@ import {
   deleteExecutions,
   getCellExecutionId,
   getExecutionById,
+  isExecutionRuntimeOwned,
   setCellExecutionPointer,
   setExecution,
   setNotebookQueueProjection,
@@ -101,7 +102,9 @@ export class NotebookViewStoreProjector {
       const executionId = cell.executionId ?? syntheticExecutionId;
       const existingExecution = executionId ? getExecutionById(executionId) : undefined;
       const projectorOwnsExecution =
-        executionId !== null && (this.ownedExecutionIds.has(executionId) || !existingExecution);
+        executionId !== null &&
+        !isExecutionRuntimeOwned(executionId) &&
+        (this.ownedExecutionIds.has(executionId) || !existingExecution);
       setCellExecutionPointer(cell.id, executionId);
       if (executionId && projectorOwnsExecution) {
         nextOwnedExecutionIds.add(executionId);
@@ -119,7 +122,7 @@ export class NotebookViewStoreProjector {
     }
 
     deleteOutputs(difference(this.ownedOutputIds, nextOwnedOutputIds));
-    deleteExecutions(difference(this.ownedExecutionIds, nextOwnedExecutionIds));
+    this.deleteProjectorOwnedExecutions(difference(this.ownedExecutionIds, nextOwnedExecutionIds));
     this.ownedOutputIds = nextOwnedOutputIds;
     this.ownedExecutionIds = nextOwnedExecutionIds;
   }
@@ -143,9 +146,10 @@ export class NotebookViewStoreProjector {
             }
           }
         }
-        if (this.ownedExecutionIds.has(executionId)) {
+        if (this.ownedExecutionIds.has(executionId) && !isExecutionRuntimeOwned(executionId)) {
           executionIdsToDelete.add(executionId);
         }
+        this.ownedExecutionIds.delete(executionId);
       }
 
       const syntheticOutputPrefix = this.syntheticOutputPrefix(cellId);
@@ -169,9 +173,6 @@ export class NotebookViewStoreProjector {
 
     if (executionIdsToDelete.size > 0) {
       deleteExecutions(executionIdsToDelete);
-      for (const executionId of executionIdsToDelete) {
-        this.ownedExecutionIds.delete(executionId);
-      }
     }
   }
 
@@ -184,9 +185,21 @@ export class NotebookViewStoreProjector {
       });
     }
     deleteOutputs([...this.ownedOutputIds]);
-    deleteExecutions([...this.ownedExecutionIds]);
+    this.deleteProjectorOwnedExecutions(this.ownedExecutionIds);
     this.ownedOutputIds = new Set<string>();
     this.ownedExecutionIds = new Set<string>();
+  }
+
+  private deleteProjectorOwnedExecutions(executionIds: Iterable<string>): void {
+    const executionIdsToDelete: string[] = [];
+    for (const executionId of executionIds) {
+      if (!isExecutionRuntimeOwned(executionId)) {
+        executionIdsToDelete.push(executionId);
+      }
+    }
+    if (executionIdsToDelete.length > 0) {
+      deleteExecutions(executionIdsToDelete);
+    }
   }
 
   private resolvedCellToNotebookCell(

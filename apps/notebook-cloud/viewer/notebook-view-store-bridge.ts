@@ -7,11 +7,7 @@ import {
 } from "../../notebook/src/notebook-surface-stores";
 import type { ResolvedCell } from "./render-resolution";
 
-const cloudViewStoreProjector = createNotebookViewStoreProjector({
-  syntheticExecutionId: (cellId) => `cloud-execution:${cellId}`,
-  syntheticOutputId: (cellId, outputIndex) => `cloud-output:${cellId}:${outputIndex}`,
-  syntheticOutputPrefix: (cellId) => `cloud-output:${cellId}:`,
-});
+const cloudViewStoreProjector = createNotebookViewStoreProjector();
 
 export function projectCloudCellsIntoNotebookViewStores(cells: readonly ResolvedCell[]): void {
   cloudViewStoreProjector.projectCells(cells);
@@ -36,8 +32,7 @@ export function resetCloudViewStoreProjection(): void {
  *
  * Stale-data safety on preserve: the next materialization replaces cells
  * wholesale and `projectCloudCellsIntoNotebookViewStores` sweeps stale
- * cloud-owned output/execution ids via the `cloudOwned*` difference sets,
- * which this function leaves intact.
+ * projector-owned output/execution ids, which this function leaves intact.
  *
  * Returns true when the painted projection was preserved.
  */

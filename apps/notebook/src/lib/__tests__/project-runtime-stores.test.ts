@@ -3,6 +3,7 @@ import {
   getCellExecutionId,
   getExecutionById,
   getNotebookQueueProjection,
+  isExecutionRuntimeOwned,
   setCellExecutionPointer,
 } from "../notebook-executions";
 import { getOutputById } from "../notebook-outputs";
@@ -41,6 +42,7 @@ describe("applyExecutionViewChangeset", () => {
       success: null,
       output_ids: ["out-1"],
     });
+    expect(isExecutionRuntimeOwned("exec-1")).toBe(true);
   });
 
   it("applies cell execution pointer changes from NotebookDoc", () => {
@@ -77,6 +79,7 @@ describe("applyExecutionViewChangeset", () => {
     });
     expect(getExecutionById("exec-1")).toBeUndefined();
     expect(getCellExecutionId("cell-1")).toBeNull();
+    expect(isExecutionRuntimeOwned("exec-1")).toBe(false);
   });
 
   it("applies notebook queue projection when WASM provides the adapter join", () => {

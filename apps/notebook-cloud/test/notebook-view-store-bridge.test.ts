@@ -223,27 +223,27 @@ describe("cloud NotebookView store bridge", () => {
     }
   });
 
-  it("cleans cloud-owned execution and output entries for removed cells only", () => {
+  it("cleans projector-owned execution and output entries for removed cells only", () => {
     projectCloudCellsIntoNotebookViewStores([
       codeCellWithSyntheticOutput("removed-cell", "gone"),
       codeCellWithSyntheticOutput("kept-cell", "still here"),
     ]);
 
-    assert.equal(getCellExecutionId("removed-cell"), "cloud-execution:removed-cell");
-    assert.ok(getExecutionById("cloud-execution:removed-cell"));
-    assert.ok(getOutputById("cloud-output:removed-cell:0"));
-    assert.equal(getCellExecutionId("kept-cell"), "cloud-execution:kept-cell");
-    assert.ok(getExecutionById("cloud-execution:kept-cell"));
-    assert.ok(getOutputById("cloud-output:kept-cell:0"));
+    assert.equal(getCellExecutionId("removed-cell"), "notebook-view-execution:removed-cell");
+    assert.ok(getExecutionById("notebook-view-execution:removed-cell"));
+    assert.ok(getOutputById("notebook-view-output:removed-cell:0"));
+    assert.equal(getCellExecutionId("kept-cell"), "notebook-view-execution:kept-cell");
+    assert.ok(getExecutionById("notebook-view-execution:kept-cell"));
+    assert.ok(getOutputById("notebook-view-output:kept-cell:0"));
 
     cleanupCloudProjectionForRemovedCells(["removed-cell"]);
 
     assert.equal(getCellExecutionId("removed-cell"), null);
-    assert.equal(getExecutionById("cloud-execution:removed-cell"), undefined);
-    assert.equal(getOutputById("cloud-output:removed-cell:0"), undefined);
-    assert.equal(getCellExecutionId("kept-cell"), "cloud-execution:kept-cell");
-    assert.ok(getExecutionById("cloud-execution:kept-cell"));
-    assert.ok(getOutputById("cloud-output:kept-cell:0"));
+    assert.equal(getExecutionById("notebook-view-execution:removed-cell"), undefined);
+    assert.equal(getOutputById("notebook-view-output:removed-cell:0"), undefined);
+    assert.equal(getCellExecutionId("kept-cell"), "notebook-view-execution:kept-cell");
+    assert.ok(getExecutionById("notebook-view-execution:kept-cell"));
+    assert.ok(getOutputById("notebook-view-output:kept-cell:0"));
   });
 });
 

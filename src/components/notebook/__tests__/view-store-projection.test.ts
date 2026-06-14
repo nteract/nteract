@@ -9,6 +9,7 @@ import {
   getCellExecutionId,
   getExecutionById,
   getNotebookQueueProjection,
+  markExecutionsRuntimeOwned,
   resetNotebookExecutions,
   setExecution,
   setNotebookQueueProjection,
@@ -180,6 +181,66 @@ describe("NotebookViewStoreProjector", () => {
     expect(getCellExecutionId("cell-1")).toBe(null);
     expect(getExecutionById("exec-from-notebook-doc")).toBeUndefined();
     expect(getOutputById("out-from-notebook-doc")).toBeUndefined();
+  });
+
+  it("releases ownership when RuntimeStateDoc authors a seeded execution id", () => {
+    const projector = createNotebookViewStoreProjector();
+
+    projector.projectCells([
+      {
+        id: "cell-1",
+        cellType: "code",
+        source: "print('snapshot')",
+        executionId: "exec-runtime-late",
+        executionCount: 3,
+        outputs: [
+          {
+            output_id: "out-placeholder",
+            output_type: "stream",
+            name: "stdout",
+            text: "snapshot\n",
+          },
+        ],
+        metadata: {},
+      },
+    ]);
+
+    markExecutionsRuntimeOwned(["exec-runtime-late"]);
+    setExecution("exec-runtime-late", {
+      execution_count: 4,
+      status: "running",
+      success: null,
+      output_ids: ["out-runtime"],
+    });
+
+    projector.projectCells([
+      {
+        id: "cell-1",
+        cellType: "code",
+        source: "print('live')",
+        executionId: "exec-runtime-late",
+        executionCount: 4,
+        outputs: [
+          {
+            output_id: "out-runtime",
+            output_type: "stream",
+            name: "stdout",
+            text: "live\n",
+          },
+        ],
+        metadata: {},
+      },
+    ]);
+    projector.cleanupRemovedCells(["cell-1"]);
+
+    expect(getCellExecutionId("cell-1")).toBe(null);
+    expect(getExecutionById("exec-runtime-late")).toEqual({
+      execution_count: 4,
+      status: "running",
+      success: null,
+      output_ids: ["out-runtime"],
+    });
+    expect(getOutputById("out-placeholder")).toBeUndefined();
   });
 
   it("reuses stamped output references without serializing them", () => {

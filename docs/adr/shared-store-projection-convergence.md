@@ -66,9 +66,9 @@ the flush strands the update (marked dirty, never emitted).
   and output stores: markdown projection attachment, synthetic output IDs,
   synthetic display executions, output cache-key reuse, and cleanup of
   projector-owned execution/output entries. Cloud now keeps only a thin
-  `notebook-view-store-bridge.ts` adapter that names hosted synthetic ID
-  prefixes and applies the bootstrap-preservation policy. RuntimeStateDoc-owned
-  queue/execution snapshots still win over snapshot placeholders.
+  `notebook-view-store-bridge.ts` adapter that applies the
+  bootstrap-preservation policy. RuntimeStateDoc-owned queue/execution
+  snapshots still win over snapshot placeholders.
 - **Rail/outline chrome → shared `rail-ui-state` store.**
   `src/components/notebook/state/rail-ui-state.ts` now owns
   `activePanelId`, `collapsed`, and `selectedOutlineItemId` through
@@ -142,8 +142,10 @@ output focus, reconnect) before merge.
 - Shell-capabilities *input derivation* — `desktop-shell-capabilities.ts` vs
   `use-cloud-shell-capabilities.ts`. The shared convergence point is the
   `NotebookShellCapabilities` type they both produce; the derivation must differ.
-- Cloud synthetic execution IDs (`cloud-execution:<cellId>`) vs Desktop daemon
-  changeset projection — two correct host paths into the same shared stores.
+- NotebookView display placeholders (`notebook-view-execution:<cellId>`) vs
+  RuntimeStateDoc changeset projection — the placeholder path is shared, but
+  runtime-authored snapshots stay authoritative and release placeholder
+  ownership when they arrive.
 
 Rejected over-converge: interaction **target** (which cell) and interaction
 **mode** (view vs edit) are different concepts; do not merge Cloud's

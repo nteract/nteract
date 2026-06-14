@@ -28,6 +28,7 @@ import { isOutputManifest } from "./materialize-cells";
 import {
   deleteExecutions,
   getExecutionById,
+  markExecutionsRuntimeOwned,
   resetNotebookExecutions,
   setCellExecutionPointer,
   setExecution,
@@ -161,6 +162,7 @@ export function applyExecutionViewChangeset(
   if (!changeset) return;
 
   for (const [execution_id, snapshot] of changeset.execution_upserts ?? []) {
+    markExecutionsRuntimeOwned([execution_id]);
     setExecution(execution_id, snapshot);
     markExecutionPerformance(`runtime.execution.snapshot.${snapshot.status}`, {
       executionId: execution_id,

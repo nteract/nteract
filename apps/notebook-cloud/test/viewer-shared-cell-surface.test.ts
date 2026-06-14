@@ -245,11 +245,9 @@ test("cloud wires shared presence and cleans projected store entries", () => {
   assert.match(sourceText, /sendInteractionPresence\(target\)/);
   assert.match(sessionSourceText, /resetCloudViewStoreProjection/);
   assert.match(bridgeSourceText, /@\/components\/notebook\/state\/view-store-projection/);
-  assert.match(bridgeSourceText, /createNotebookViewStoreProjector/);
-  assert.match(
-    bridgeSourceText,
-    /syntheticExecutionId: \(cellId\) => `cloud-execution:\$\{cellId\}`/,
-  );
+  assert.match(bridgeSourceText, /createNotebookViewStoreProjector\(\)/);
+  assert.doesNotMatch(bridgeSourceText, /syntheticExecutionId/);
+  assert.doesNotMatch(bridgeSourceText, /syntheticOutputId/);
   assert.doesNotMatch(bridgeSourceText, /@\/components\/notebook\/state\/cell-store/);
   assert.doesNotMatch(bridgeSourceText, /@\/components\/notebook\/state\/execution-store/);
   assert.doesNotMatch(bridgeSourceText, /@\/components\/notebook\/state\/output-store/);
