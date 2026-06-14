@@ -766,6 +766,154 @@ describe("Worker artifact routes", () => {
     assert.equal(explicitBadBearer.status, 401);
   });
 
+  it("resolves post-login pending invites for app-session notebook list APIs", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "cookie-invite-list-user",
+      email: "cookie-invite-list@example.test",
+      extraPayload: { email_verified: true },
+      name: "Cookie Invite List User",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+    seedNotebook(env, "cookie-list-invited");
+    seedPendingInvite(env, {
+      id: "invite-cookie-list",
+      notebookId: "cookie-list-invited",
+      email: "cookie-invite-list@example.test",
+      providerHint: null,
+      scope: "editor",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/n", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      notebooks: Array<{ notebook_id: string; scope: NotebookAclRow["scope"] }>;
+    };
+    assert.deepEqual(
+      body.notebooks.map((notebook) => [notebook.notebook_id, notebook.scope]),
+      [["cookie-list-invited", "editor"]],
+    );
+    const accountPrincipal = await canonicalAccountPrincipalForProfile({
+      provider: "oidc",
+      principalNamespace: "user:anaconda",
+      email: "cookie-invite-list@example.test",
+      emailVerified: true,
+    });
+    assert.ok(accountPrincipal);
+    assert.equal(env.DB.invites.get("invite-cookie-list")?.status, "accepted");
+    assert.ok(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "cookie-list-invited" &&
+          row.subject_kind === "principal" &&
+          row.subject === accountPrincipal &&
+          row.scope === "editor",
+      ),
+    );
+  });
+
+  it("resolves post-login pending invites for app-session notebook home bootstrap", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "cookie-invite-bootstrap-user",
+      email: "cookie-invite-bootstrap@example.test",
+      extraPayload: { email_verified: true },
+      name: "Cookie Invite Bootstrap User",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+    seedNotebook(env, "cookie-bootstrap-invited");
+    const notebook = env.DB.notebooks.get("cookie-bootstrap-invited");
+    assert.ok(notebook);
+    notebook.title = "Cookie Bootstrap Invited";
+    seedPendingInvite(env, {
+      id: "invite-cookie-bootstrap",
+      notebookId: "cookie-bootstrap-invited",
+      email: "cookie-invite-bootstrap@example.test",
+      providerHint: null,
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    const bootstrap = notebookHomeBootstrap(html);
+    assert.deepEqual(
+      bootstrap.notebooks.map((notebook) => [notebook.notebook_id, notebook.title]),
+      [["cookie-bootstrap-invited", "Cookie Bootstrap Invited"]],
+    );
+    assert.equal(env.DB.invites.get("invite-cookie-bootstrap")?.status, "accepted");
+  });
+
+  it("resolves post-login pending invites before app-session WebSocket authorization", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "cookie-invite-ws-user",
+      email: "cookie-invite-ws@example.test",
+      extraPayload: { email_verified: true },
+      name: "Cookie Invite WebSocket User",
+    });
+    let forwardedRequest: Request | undefined;
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedRequest = request;
+            return new Response("room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+    seedNotebook(env, "cookie-ws-invited");
+    seedPendingInvite(env, {
+      id: "invite-cookie-ws",
+      notebookId: "cookie-ws-invited",
+      email: "cookie-invite-ws@example.test",
+      providerHint: null,
+      scope: "editor",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/cookie-ws-invited/sync?scope=editor", {
+        headers: {
+          Cookie: cookie,
+          Origin: "https://cloud.test",
+          "Sec-WebSocket-Protocol": NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.ok(forwardedRequest);
+    assert.equal(forwardedRequest.headers.get(TRUSTED_SCOPE_HEADER), "editor");
+    assert.equal(env.DB.invites.get("invite-cookie-ws")?.status, "accepted");
+  });
+
   it("uses app-session cookies as same-origin room WebSocket credentials", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-ws-user" });
     let forwardedRequest: Request | undefined;
