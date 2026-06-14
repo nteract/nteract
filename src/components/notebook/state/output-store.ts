@@ -172,6 +172,25 @@ function getOutputSnapshot(output_id: string): () => JupyterOutput | undefined {
   return () => _outputMap.get(output_id);
 }
 
+function outputStructureKey(output: JupyterOutput): string {
+  if (output.output_type !== "display_data" && output.output_type !== "execute_result") {
+    return output.output_type;
+  }
+  return `${output.output_type}:${Object.keys(output.data).sort().join("\u0000")}`;
+}
+
+function hasRasterImagePreview(output: JupyterOutput | undefined): boolean {
+  if (
+    !output ||
+    (output.output_type !== "display_data" && output.output_type !== "execute_result")
+  ) {
+    return false;
+  }
+  return Object.keys(output.data).some(
+    (mimeType) => mimeType.startsWith("image/") && mimeType !== "image/svg+xml",
+  );
+}
+
 // ── Write operations ────────────────────────────────────────────────────
 
 /**
@@ -183,7 +202,11 @@ function getOutputSnapshot(output_id: string): () => JupyterOutput | undefined {
 export function setOutput(output_id: string, output: JupyterOutput): void {
   const prev = _outputMap.get(output_id);
   if (prev === output) return;
-  const structureChanged = prev === undefined || prev.output_type !== output.output_type;
+  const structureChanged =
+    prev === undefined ||
+    outputStructureKey(prev) !== outputStructureKey(output) ||
+    hasRasterImagePreview(prev) ||
+    hasRasterImagePreview(output);
   _outputMap.set(output_id, output);
   emitOutputChange(output_id);
   if (structureChanged) emitOutputStructureChange();

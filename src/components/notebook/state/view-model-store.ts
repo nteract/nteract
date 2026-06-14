@@ -6,6 +6,12 @@ import {
   type NotebookViewModel,
 } from "../view-model";
 import {
+  getCellExecutionId,
+  getExecutionById,
+  useExecutionStructureVersion,
+} from "./execution-store";
+import { getCellOutputsSnapshot, useOutputStructureVersion } from "./output-store";
+import {
   getNotebookCellsSnapshot,
   useCellIds,
   useMaterializeVersion,
@@ -17,17 +23,29 @@ export function useNotebookViewModel<TCell extends NotebookViewCell = NotebookVi
 ): NotebookViewModel<TCell> {
   const cellIds = useCellIds();
   const materializeVersion = useMaterializeVersion();
+  const executionStructureVersion = useExecutionStructureVersion();
+  const outputStructureVersion = useOutputStructureVersion();
   const { getOutlineStatusLabel, metadata, resolveLanguage } = options;
 
   return useMemo(() => {
     void cellIds;
     void materializeVersion;
+    void executionStructureVersion;
+    void outputStructureVersion;
     return createNotebookViewModelFromNotebookCells({
       getOutlineStatusLabel,
       metadata,
       resolveLanguage,
     }) as NotebookViewModel<TCell>;
-  }, [cellIds, getOutlineStatusLabel, materializeVersion, metadata, resolveLanguage]);
+  }, [
+    cellIds,
+    executionStructureVersion,
+    getOutlineStatusLabel,
+    materializeVersion,
+    metadata,
+    outputStructureVersion,
+    resolveLanguage,
+  ]);
 }
 
 export function createNotebookViewModelFromNotebookCells(
@@ -37,14 +55,19 @@ export function createNotebookViewModelFromNotebookCells(
 }
 
 export function notebookCellToViewCell(cell: NotebookStoreCell): NotebookViewCell {
+  const executionId = cell.cell_type === "code" ? getCellExecutionId(cell.id) : null;
+  const execution = executionId ? getExecutionById(executionId) : undefined;
+  const outputs =
+    cell.cell_type === "code" ? (executionId ? getCellOutputsSnapshot(cell.id) : cell.outputs) : [];
   return {
     id: cell.id,
     cellType: cell.cell_type,
     source: cell.source,
     language: cell.cell_type === "code" ? notebookCellLanguage(cell.metadata) : null,
-    executionId: null,
-    executionCount: cell.cell_type === "code" ? cell.execution_count : null,
-    outputs: cell.cell_type === "code" ? cell.outputs : [],
+    executionId,
+    executionCount:
+      cell.cell_type === "code" ? (execution?.execution_count ?? cell.execution_count) : null,
+    outputs,
     metadata: cell.metadata,
     markdownProjection: cell.cell_type === "markdown" ? cell.markdownProjection : undefined,
   };

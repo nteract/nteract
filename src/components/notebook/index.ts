@@ -258,6 +258,7 @@ export {
   setNotebookQueueProjection,
   useCellExecutionId,
   useExecution,
+  useExecutionStructureVersion,
   useNotebookQueueProjection,
   type ExecutionSnapshot,
   type NotebookQueueProjectionSnapshot,
