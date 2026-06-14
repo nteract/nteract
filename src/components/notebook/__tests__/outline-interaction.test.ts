@@ -1,7 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useActiveOutlineItemId, useOutlineSelection } from "../outline-interaction";
+import { resetNotebookRailUiState } from "../state/rail-ui-state";
 import type { NotebookOutlineItem } from "runtimed";
+
+afterEach(() => {
+  resetNotebookRailUiState();
+});
 
 describe("useActiveOutlineItemId", () => {
   it("returns null when disabled", () => {

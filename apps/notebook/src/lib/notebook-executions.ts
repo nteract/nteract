@@ -4,6 +4,8 @@ export {
   getCellIdForExecutionId,
   getExecutionById,
   getNotebookQueueProjection,
+  isExecutionRuntimeOwned,
+  markExecutionsRuntimeOwned,
   resetNotebookExecutions,
   setCellExecutionPointer,
   setExecution,

@@ -259,9 +259,13 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     sessionSourceText,
     /connectionStatusBridge\.noteTeardownRetry\(\);[\s\S]{0,600}?const teardownFlush = disposeCurrentRuntime\(\);/,
   );
-  assert.match(sourceText, /useState\(initialCloudRailCollapsed\)/);
-  assert.match(sourceText, /function initialCloudRailCollapsed/);
-  assert.match(sourceText, /function initialCloudRailCollapsed\(\): boolean \{[\s\S]*return true;/);
+  assert.match(sourceText, /useNotebookRailUiState/);
+  assert.match(
+    sourceText,
+    /const \{ activePanelId: activeRailPanel, collapsed: railCollapsed \} = useNotebookRailUiState\(\)/,
+  );
+  assert.doesNotMatch(sourceText, /useState\(initialCloudRailCollapsed\)/);
+  assert.doesNotMatch(sourceText, /function initialCloudRailCollapsed/);
   assert.doesNotMatch(sourceText, /packagesSummary=/);
   assert.doesNotMatch(sourceText, /workstationsSummary=/);
   assert.match(
@@ -270,7 +274,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(
     sourceText,
-    /if \(!shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"\) \{[\s\S]*setActiveRailPanel\("outline"\)/,
+    /if \(!shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"\) \{[\s\S]*setActiveNotebookRailPanel\("outline"\)/,
   );
   assert.match(
     sourceText,

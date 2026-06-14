@@ -15,7 +15,6 @@ import {
   useIsolatedRenderer,
 } from "@/components/isolated/isolated-renderer-context";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
-import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   NotebookConnectionIdentity,
   NotebookDocumentToolbar,
@@ -38,6 +37,12 @@ import {
   useFocusedCellId,
   useNotebookViewModel,
 } from "@/components/notebook";
+import {
+  openNotebookRailPanel,
+  setActiveNotebookRailPanel,
+  setNotebookRailCollapsed,
+  useNotebookRailUiState,
+} from "@/components/notebook/state/rail-ui-state";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { EnvironmentSummary } from "@/components/environment";
@@ -256,8 +261,7 @@ export function NotebookViewer({
     flushCellUIState();
   }, []);
   const handleNotebookViewFocus = useCallback(() => {}, []);
-  const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
-  const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);
+  const { activePanelId: activeRailPanel, collapsed: railCollapsed } = useNotebookRailUiState();
   const handledHeadingHashRef = useRef<string | null>(null);
   const [latestAccessRequest, setLatestAccessRequest] = useState<CloudNotebookAccessRequest | null>(
     null,
@@ -593,18 +597,16 @@ export function NotebookViewer({
   );
   const handleTogglePackagesRail = useCallback(() => {
     if (activeRailPanel === "packages" && !railCollapsed) {
-      setActiveRailPanel("outline");
+      setActiveNotebookRailPanel("outline");
       return;
     }
-    setRailCollapsed(false);
-    setActiveRailPanel("packages");
+    openNotebookRailPanel("packages");
   }, [activeRailPanel, railCollapsed]);
   const handleOpenMobileRail = useCallback(() => {
-    setRailCollapsed(false);
+    setNotebookRailCollapsed(false);
   }, []);
   const handleOpenWorkstationsRail = useCallback(() => {
-    setRailCollapsed(false);
-    setActiveRailPanel("workstations");
+    openNotebookRailPanel("workstations");
   }, []);
   const hasBrowserAppIdentity =
     hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
@@ -1327,7 +1329,7 @@ export function NotebookViewer({
     shellCapabilities.auth.canUseAuthenticatedIdentity;
   useEffect(() => {
     if (!shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations") {
-      setActiveRailPanel("outline");
+      setActiveNotebookRailPanel("outline");
     }
   }, [activeRailPanel, shouldShowCloudWorkstationsPanel]);
   const toolbarAddAfterCellId =
@@ -1380,8 +1382,8 @@ export function NotebookViewer({
           }
         />
       }
-      onActivePanelChange={setActiveRailPanel}
-      onCollapsedChange={setRailCollapsed}
+      onActivePanelChange={setActiveNotebookRailPanel}
+      onCollapsedChange={setNotebookRailCollapsed}
       onSelectOutlineItem={handleSelectOutlineItem}
       onNavigateOutlineItem={handleNavigateOutlineItem}
       className="cloud-notebook-rail"
@@ -1701,8 +1703,4 @@ function cloudAccessRequestNotice(
       {projection.message}
     </NotebookNotice>
   );
-}
-
-function initialCloudRailCollapsed(): boolean {
-  return true;
 }

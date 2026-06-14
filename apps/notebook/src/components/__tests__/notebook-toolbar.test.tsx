@@ -699,4 +699,17 @@ describe("connection/identity slot wiring", () => {
     expect(appSource).toMatch(/createDesktopConnectionStatusSource\(host\.daemonEvents\)/);
     expect(appSource).not.toMatch(/connectionStatus\$=\{host\.transport\.connectionStatus\$\}/);
   });
+
+  it("App.tsx reads rail chrome from the shared rail UI store", () => {
+    const appSource = readFileSync(resolve(process.cwd(), "apps/notebook/src/App.tsx"), "utf8");
+
+    expect(appSource).toMatch(/useNotebookRailUiState/);
+    expect(appSource).toMatch(
+      /const \{ activePanelId: activeRailPanel, collapsed: railCollapsed \} = useNotebookRailUiState\(\)/,
+    );
+    expect(appSource).toMatch(/openNotebookRailPanel\(panelId\)/);
+    expect(appSource).toMatch(/toggleNotebookRailPanel\("packages"\)/);
+    expect(appSource).not.toMatch(/\[activeRailPanel, setActiveRailPanel\] = useState/);
+    expect(appSource).not.toMatch(/\[railCollapsed, setRailCollapsed\] = useState/);
+  });
 });

@@ -31,6 +31,7 @@ export interface NotebookQueueProjectionSnapshot {
 }
 
 const _executionMap: Map<string, ExecutionSnapshot> = new Map();
+const _runtimeOwnedExecutionIds = new Set<string>();
 
 /** Per-cell reverse index: cell_id -> latest execution_id. */
 const _cellToExecution: Map<string, string> = new Map();
@@ -190,6 +191,23 @@ export function setExecution(execution_id: string, snap: ExecutionSnapshot): voi
 }
 
 /**
+ * Mark execution snapshots whose authoritative source is RuntimeStateDoc.
+ *
+ * Projection placeholders can seed the same execution id before runtime sync
+ * catches up. Runtime upserts call this even when the snapshot is unchanged so
+ * projector cleanup can release ownership without deleting the runtime record.
+ */
+export function markExecutionsRuntimeOwned(execution_ids: Iterable<string>): void {
+  for (const execution_id of execution_ids) {
+    _runtimeOwnedExecutionIds.add(execution_id);
+  }
+}
+
+export function isExecutionRuntimeOwned(execution_id: string): boolean {
+  return _runtimeOwnedExecutionIds.has(execution_id);
+}
+
+/**
  * Explicitly set the active execution_id for a cell.
  *
  * Used on execution_started broadcasts and on clearOutputs (pass null).
@@ -233,7 +251,9 @@ export function setNotebookQueueProjection(projection: NotebookQueueProjectionSn
  */
 export function deleteExecutions(execution_ids: Iterable<string>): void {
   for (const eid of execution_ids) {
-    if (!_executionMap.delete(eid)) continue;
+    const existed = _executionMap.delete(eid);
+    _runtimeOwnedExecutionIds.delete(eid);
+    if (!existed) continue;
     emitExecutionChange(eid);
     const cellId = _executionToCell.get(eid);
     _executionToCell.delete(eid);
@@ -264,6 +284,7 @@ export function resetNotebookExecutions(): void {
   const eids = [..._executionMap.keys()];
   const cells = [..._cellToExecution.keys()];
   _executionMap.clear();
+  _runtimeOwnedExecutionIds.clear();
   _cellToExecution.clear();
   _executionToCell.clear();
   _notebookQueueProjection = {
