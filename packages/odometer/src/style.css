@@ -1,0 +1,49 @@
+.nteract-odometer {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.nteract-odo-slot {
+  position: relative;
+  display: inline-block;
+  height: 1.2em;
+  overflow: hidden;
+  vertical-align: baseline;
+  line-height: 1.2;
+  white-space: pre;
+  contain: layout style paint;
+}
+
+.nteract-odo-sizer {
+  visibility: hidden;
+  white-space: pre;
+}
+
+.nteract-odo-face {
+  position: absolute;
+  inset: 0 auto auto 0;
+  white-space: pre;
+}
+
+.nteract-odo-strip {
+  position: absolute;
+  inset: 0 auto auto 0;
+  display: flex;
+  flex-direction: column;
+  transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.nteract-odo-num {
+  display: block;
+  height: 1.2em;
+  line-height: 1.2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nteract-odo-strip {
+    transition: none;
+  }
+}
