@@ -365,6 +365,16 @@ export {
   type ProjectNotebookWorkstationLaunchReadinessOptions,
 } from "./notebook-workstation-launch";
 
+// Notebook workstation surface projection
+export {
+  clearNotebookWorkstationSurfaceProjectionCacheForTests,
+  projectNotebookWorkstationSurface,
+  type NotebookWorkstationSurfaceMutationProjection,
+  type NotebookWorkstationSurfaceProjection,
+  type NotebookWorkstationToolbarActionProjection,
+  type ProjectNotebookWorkstationSurfaceOptions,
+} from "./notebook-workstation-surface";
+
 // Notebook launch environment projection
 export {
   clearNotebookLaunchEnvironmentProjectionCacheForTests,

@@ -187,7 +187,7 @@ Shape originates in Rust (`notebook-doc/src/diff.rs`). TypeScript source of trut
 | `apps/notebook/src/hooks/useNotebook.ts` | Product-facing notebook controller hook |
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Current WASM handle owner and materialization implementation |
 | `apps/notebook/src/lib/materialize-cells.ts` | WASM → React conversion |
-| `apps/notebook/src/lib/notebook-frame-bus.ts` | Pub/sub for broadcast and presence |
+| `src/components/notebook/state/notebook-frame-bus.ts` | Pub/sub for broadcast and presence |
 | `apps/notebook/src/hooks/usePresence.ts` | Remote presence tracking |
 | `packages/runtimed/src/transport.ts` | `FrameType` constants and transport interface |
 | `apps/notebook/src/lib/frame-pipeline.ts` | Frame event processing and materialization planning |

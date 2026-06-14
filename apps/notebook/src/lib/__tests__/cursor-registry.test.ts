@@ -4,11 +4,11 @@ import {
   getPeersForCell,
   startCursorDispatch,
   subscribeToCell,
-} from "../cursor-registry";
-import * as frameBus from "../notebook-frame-bus";
+} from "@/components/notebook/cursor-registry";
+import * as frameBus from "@/components/notebook/state/notebook-frame-bus";
 
 // Mock the frame bus
-vi.mock("../notebook-frame-bus", () => ({
+vi.mock("@/components/notebook/state/notebook-frame-bus", () => ({
   subscribePresence: vi.fn(() => vi.fn()),
 }));
 

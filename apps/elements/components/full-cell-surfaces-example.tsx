@@ -3,15 +3,14 @@
 import { NotebookHostProvider } from "@nteract/notebook-host";
 import { FileCode2, FileText, Rows3, ShieldCheck } from "lucide-react";
 import { useLayoutEffect, useMemo, useState } from "react";
+import { CrdtBridgeProvider, type NotebookViewCell } from "@/components/notebook";
 import {
   getElementsNotebookPrimaryCodeCell,
   getElementsNotebookScenario,
   resolveElementsNotebookLanguage,
 } from "@/components/notebook-scenarios";
-import type { NotebookViewCell } from "@/components/notebook";
 import {
   CodeCell,
-  CrdtBridgeProvider,
   MarkdownCell,
   NotebookView,
   RawCell,

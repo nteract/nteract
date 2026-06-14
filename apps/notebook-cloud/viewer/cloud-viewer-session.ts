@@ -19,7 +19,6 @@ import type { WidgetStore } from "@/components/widgets/widget-store";
 import {
   applyExecutionViewChangeset,
   applyOutputChangeset,
-  resetRuntimeStoresProjection,
 } from "@/components/notebook/state/runtime-store-projection";
 import {
   cloudConnectionErrorAcceptsAccessDiagnostic,
@@ -27,14 +26,10 @@ import {
   diagnoseCloudConnectionAccess,
   isCloudConnectionAccessDiagnostic,
 } from "./connection-diagnostics";
-import {
-  emitBroadcast,
-  emitPresence,
-  materializeChangeset,
-  resetPoolState,
-  startCursorDispatch,
-  setPoolState,
-} from "../../notebook/src/notebook-surface";
+import { materializeChangeset } from "../../notebook/src/notebook-surface";
+import { startCursorDispatch } from "@/components/notebook/cursor-registry";
+import { emitBroadcast, emitPresence } from "@/components/notebook/state/notebook-frame-bus";
+import { resetPoolState, setPoolState } from "@/components/notebook/state/pool-state";
 import { resetRuntimeState, setRuntimeState } from "@/components/notebook/state/runtime-state";
 import {
   cloudSyncAuthFromPrototypeAuthState,
@@ -83,11 +78,11 @@ import {
   type OfflineMergeNoticeData,
 } from "./offline-merge-tracker";
 import {
-  cleanupCloudProjectionForRemovedCells,
-  projectCloudCellsIntoNotebookViewStores,
-  resetCloudProjectionUnlessPreserved,
-  resetCloudViewStoreProjection,
-} from "./notebook-view-store-bridge";
+  cleanupNotebookProjectionForRemovedCells,
+  projectNotebookCellsIntoViewStores,
+  resetNotebookProjectionStores,
+  resetNotebookProjectionUnlessPreserved,
+} from "@/components/notebook/state/projection-lifecycle";
 import { CloudViewerPresenceStore } from "./presence";
 import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
 import { loadRenderSnapshotHandle, loadSnapshotPairHandle } from "./runtimed-wasm-client";
@@ -366,7 +361,7 @@ export function useCloudViewerSession({
   const paintedNotebookIdentityRef = useRef<string | null>(null);
   const applyResolvedCells = useCallback(
     (resolvedCells: ResolvedCell[]) => {
-      projectCloudCellsIntoNotebookViewStores(resolvedCells);
+      projectNotebookCellsIntoViewStores(resolvedCells);
       if (resolvedCells.length > 0) {
         paintedNotebookIdentityRef.current = `id:${config.notebookId}`;
       }
@@ -380,9 +375,7 @@ export function useCloudViewerSession({
   // them for same-notebook re-runs, so it cannot be the unmount janitor).
   useEffect(
     () => () => {
-      resetCloudViewStoreProjection();
-      resetRuntimeState();
-      resetRuntimeStoresProjection();
+      resetNotebookProjectionStores();
     },
     [],
   );
@@ -995,7 +988,7 @@ export function useCloudViewerSession({
       if (disposed || sequence !== materializeSequence) return;
 
       if (changeset?.removed.length) {
-        cleanupCloudProjectionForRemovedCells(changeset.removed);
+        cleanupNotebookProjectionForRemovedCells(changeset.removed);
       }
       applyExecutionViewChangeset(liveRuntime.handle.project_execution_view_changeset?.());
 
@@ -1137,9 +1130,9 @@ export function useCloudViewerSession({
     // when the painted cells belong to a different notebook (or nothing
     // usable is painted); a same-notebook re-run's paint survives untouched
     // and is replaced wholesale by this run's materialization.
-    const preservedAcrossRuns = resetCloudProjectionUnlessPreserved({
-      paintedNotebookIdentity: paintedNotebookIdentityRef.current,
-      nextNotebookIdentity: `id:${config.notebookId}`,
+    const preservedAcrossRuns = resetNotebookProjectionUnlessPreserved({
+      previousIdentity: paintedNotebookIdentityRef.current,
+      nextIdentity: `id:${config.notebookId}`,
     });
     if (!preservedAcrossRuns) {
       paintedNotebookIdentityRef.current = null;
@@ -1521,9 +1514,9 @@ export function useCloudViewerSession({
       // with visible cells ⇒ preserve"; REAL notebook switches are cleared
       // by the next run's body gate, and true unmount clears via the
       // mount-scoped effect above.
-      resetCloudProjectionUnlessPreserved({
-        paintedNotebookIdentity: paintedNotebookIdentityRef.current,
-        nextNotebookIdentity: `id:${config.notebookId}`,
+      resetNotebookProjectionUnlessPreserved({
+        previousIdentity: paintedNotebookIdentityRef.current,
+        nextIdentity: `id:${config.notebookId}`,
       });
       resetPoolState();
       livePresenceStore = null;

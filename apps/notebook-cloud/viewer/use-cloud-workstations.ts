@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { WorkstationAttachmentState } from "runtimed";
 
 import {
-  projectNotebookWorkstationLaunchReadiness,
-  projectNotebookWorkstationSelection,
+  projectNotebookWorkstationSurface,
   type NotebookCommandToolbarWorkstationAction,
   type NotebookShellCapabilities,
 } from "@/components/notebook";
@@ -354,72 +353,60 @@ export function useCloudWorkstationManager({
     };
   }, [refreshCloudWorkstations, workstationRefreshIntervalMs]);
 
-  const workstationSelection = useMemo(
+  const workstationSurface = useMemo(
     () =>
-      projectNotebookWorkstationSelection({
+      projectNotebookWorkstationSurface({
         activeAttachment: workstationAttachment,
+        capabilities,
         canRegisterWorkstation: canChooseHostedWorkstation,
         canSelectWorkstation: canChooseHostedWorkstation,
         canSetDefaultWorkstation: canChooseHostedWorkstation,
+        canStartWorkstation: canChooseHostedWorkstation,
         defaultWorkstationId: workstationsState.defaultWorkstationId,
+        loadingMessage:
+          !canLoadCloudWorkstations && canChooseHostedWorkstation
+            ? "Preparing workstation access..."
+            : null,
+        mutation: workstationMutation,
         registeredWorkstations: workstationsState.workstations,
+        registryError: workstationsError,
       }),
-    [canChooseHostedWorkstation, workstationAttachment, workstationsState],
+    [
+      canChooseHostedWorkstation,
+      canLoadCloudWorkstations,
+      capabilities,
+      workstationAttachment,
+      workstationMutation,
+      workstationsError,
+      workstationsState,
+    ],
   );
-
-  const workstationLaunchReadiness = useMemo(
-    () =>
-      projectNotebookWorkstationLaunchReadiness({
-        capabilities,
-        selection: workstationSelection,
-      }),
-    [capabilities, workstationSelection],
-  );
+  const workstationSelection = workstationSurface.selection;
+  const workstationLaunchReadiness = workstationSurface.launchReadiness;
+  const workstationPanelStatusMessage = workstationSurface.panelStatusMessage;
+  const canStartSelectedWorkstation = workstationSurface.canStartSelectedWorkstation;
 
   const workstationAction = useMemo<NotebookCommandToolbarWorkstationAction | null>(() => {
-    const { primaryAction, workstationId } = workstationLaunchReadiness;
-    if (workstationMutation.kind === "attach" && workstationMutation.workstationId) {
-      const pendingTarget =
-        workstationLaunchReadiness.workstationId === workstationMutation.workstationId
-          ? workstationLaunchReadiness.targetLabel
-          : null;
+    const action = workstationSurface.toolbarAction;
+    if (!action) return null;
+    if (action.disabled || action.kind !== "attach_workstation" || !action.workstationId) {
       return {
-        disabled: true,
-        label: "Starting",
-        pending: true,
-        title: pendingTarget
-          ? `Starting compute on ${pendingTarget}`
-          : "Starting compute on the selected workstation",
-        onClick: () => {},
+        disabled: action.disabled,
+        label: action.label,
+        pending: action.pending,
+        title: action.title,
+        onClick: onOpenWorkstationsRail,
       };
     }
-    return primaryAction.kind !== "none" && primaryAction.label && primaryAction.title
-      ? {
-          label: primaryAction.label,
-          title: primaryAction.title,
-          onClick:
-            primaryAction.kind === "attach_workstation" && workstationId
-              ? () => handleAttachWorkstation(workstationId)
-              : onOpenWorkstationsRail,
-        }
-      : null;
-  }, [
-    handleAttachWorkstation,
-    onOpenWorkstationsRail,
-    workstationLaunchReadiness,
-    workstationMutation.kind,
-    workstationMutation.workstationId,
-  ]);
-
-  const workstationPanelStatusMessage =
-    workstationMutation.message ??
-    (!canLoadCloudWorkstations && canChooseHostedWorkstation
-      ? "Preparing workstation access..."
-      : null) ??
-    workstationsError ??
-    (workstationLaunchReadiness.state === "workstation_unavailable"
-      ? workstationLaunchReadiness.detail
-      : null);
+    const workstationId = action.workstationId;
+    return {
+      disabled: action.disabled,
+      label: action.label,
+      pending: action.pending,
+      title: action.title,
+      onClick: () => handleAttachWorkstation(workstationId),
+    };
+  }, [handleAttachWorkstation, onOpenWorkstationsRail, workstationSurface.toolbarAction]);
 
   useEffect(() => {
     if (workstationMutation.kind !== "attach" || !workstationAttachment?.workstation_id) {
@@ -444,14 +431,9 @@ export function useCloudWorkstationManager({
     },
     [handleAttachWorkstation, onOpenWorkstationsRail, workstationLaunchReadiness.workstationId],
   );
-  const canStartSelectedWorkstation =
-    canChooseHostedWorkstation &&
-    workstationMutation.kind !== "attach" &&
-    Boolean(workstationLaunchReadiness.workstationId);
-
   return useMemo(
     () => ({
-      busyWorkstationId: workstationMutation.workstationId,
+      busyWorkstationId: workstationSurface.busyWorkstationId,
       canStartSelectedWorkstation,
       onStartSelectedWorkstation: canChooseHostedWorkstation ? startSelectedWorkstation : undefined,
       onAttachWorkstation: canChooseHostedWorkstation
@@ -474,8 +456,8 @@ export function useCloudWorkstationManager({
       handleStartPairing,
       startSelectedWorkstation,
       pairingWithName,
+      workstationSurface.busyWorkstationId,
       workstationAction,
-      workstationMutation.workstationId,
       workstationPanelStatusMessage,
       workstationSelection,
     ],

@@ -35,30 +35,38 @@ concerns.
       Runtime-state reads/writes now import from
       `src/components/notebook/state/runtime-state.ts`; runtime/output store
       projection and reset now import from
-      `src/components/notebook/state/runtime-store-projection.ts`.
+      `src/components/notebook/state/runtime-store-projection.ts`. Projection
+      lifecycle, pool state, frame bus, cursor dispatch, CRDT bridge,
+      controller, and cell-id helpers now also import from shared modules.
 - [x] Make output identity strict for modern cloud/runtime paths: missing
       `output_id` values now render as invariant errors instead of receiving
       `cloud-output:*` positional IDs in the cloud resolver.
-- [ ] Move host-neutral projection lifecycle helpers into shared
-      notebook/runtimed modules. The cloud `notebook-view-store-bridge` should
-      eventually disappear or become a thin host call site instead of a named
-      abstraction layer.
-- [ ] Finish shared-store convergence for focus, interaction,
+- [x] Move host-neutral projection lifecycle helpers into shared
+      notebook/runtimed modules. The cloud `notebook-view-store-bridge` is
+      gone; Cloud calls shared projection lifecycle functions directly and
+      keeps only host-owned timing decisions.
+- [ ] Finish shared-store convergence for interaction,
       runtime/workstation status, and output cache identity. Each fact should
-      have one projection owner and host-local write authority. The outline now
-      reads raster output waypoints from the execution/output stores; remaining
-      work should keep pushing cross-cell derived views toward those stores
-      instead of per-host React copies.
-- [ ] Deduplicate shell/runtime/workstation projection facts while keeping host
+      have one projection owner and host-local write authority. Desktop focus
+      now reads/writes the shared cell UI store directly; the outline now reads
+      raster output waypoints from the execution/output stores. Remaining work
+      should keep pushing cross-cell derived views toward those stores instead
+      of per-host React copies.
+- [x] Deduplicate shell/runtime/workstation projection facts while keeping host
       authority local. Shared helpers should project facts, not own callbacks,
-      credentials, ACLs, launch, or attach policy.
+      credentials, ACLs, launch, or attach policy. Workstation selection,
+      launch readiness, toolbar intent, busy id, and panel status now flow
+      through the shared `projectNotebookWorkstationSurface` projection while
+      Cloud keeps fetch, pairing, default, attach, and ACL policy local.
 - [ ] Extract reusable RxJS projection-store patterns only after concrete
       duplicated stores prove the shape. Avoid generic factories that hide
       simple store logic without reducing real coupling.
 - [x] Add import guard tests so Cloud cannot depend on Desktop app internals
       for shared headless behavior. The guard no longer allows
       `notebook-surface-stores` and asserts runtime/output projection helpers
-      come from shared state rather than the desktop surface import.
+      come from shared state rather than the desktop surface import. It also
+      rejects controller, cell-id, presence, CRDT, cursor, frame-bus, pool, and
+      projection lifecycle helpers from the temporary desktop surface barrel.
 - [ ] Keep durable docs updated as boundaries become real decisions. Amend this
       checklist for execution status; amend ADRs only when the boundary becomes
       durable architecture.
@@ -83,7 +91,7 @@ concerns.
   logger and external-link host shims directly through shared modules. Also
   drained public cell-store/change-set imports from `notebook-surface`, so the
   desktop surface barrel is smaller and restricted to the remaining
-  component/controller seam.
+  component/materialization seam.
 - 2026-06-14: Promoted runtime/output store projection to
   `src/components/notebook/state/runtime-store-projection.ts`. Desktop keeps a
   thin wrapper for blob resolver discovery, logging, and execution performance
@@ -107,3 +115,19 @@ concerns.
   appear as outline waypoints. Code-cell view-model outputs are now store-only:
   materialized `cell.outputs` source snapshots must be projected into
   execution/output stores before they can render or appear in the outline.
+- 2026-06-14: Removed the cloud-only notebook view store bridge and promoted the
+  projection lifecycle into `src/components/notebook/state/projection-lifecycle.ts`.
+  Cloud now calls shared projection/reset/cleanup helpers directly while keeping
+  room timing and auth policy local.
+- 2026-06-14: Promoted pool state, notebook controller/cell id, frame bus,
+  presence value context, CRDT bridge/provider, cursor dispatch, and editor
+  registry helpers into shared notebook modules. Desktop keeps compatibility
+  re-export files for old app-local imports; Cloud and Elements now import the
+  host-neutral helpers directly from shared notebook paths.
+- 2026-06-14: Added `projectNotebookWorkstationSurface` in `packages/runtimed`
+  to compose workstation selection, launch readiness, toolbar intent, busy id,
+  and panel status without taking ownership of Cloud fetch/default/attach/ACL
+  policy.
+- 2026-06-14: Collapsed desktop focused-cell ownership onto the shared cell UI
+  store. `useAutomergeNotebook` now writes focus through the shared store and
+  command handlers read the current focused cell at invocation time.

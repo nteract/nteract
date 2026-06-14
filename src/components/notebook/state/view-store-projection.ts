@@ -29,8 +29,6 @@ export interface NotebookViewStoreProjectionCell {
 
 export interface NotebookViewStoreProjectorOptions {
   syntheticExecutionId?: (cellId: string) => string;
-  syntheticOutputId?: (cellId: string, outputIndex: number) => string;
-  syntheticOutputPrefix?: (cellId: string) => string;
 }
 
 export interface ResetNotebookViewStoreProjectionOptions {
@@ -53,17 +51,11 @@ export class NotebookViewStoreProjector {
   private ownedOutputIds = new Set<string>();
   private readonly outputCacheKeys = new WeakMap<NotebookStoreOutput, string>();
   private readonly syntheticExecutionId: (cellId: string) => string;
-  private readonly syntheticOutputId: (cellId: string, outputIndex: number) => string;
-  private readonly syntheticOutputPrefix: (cellId: string) => string | null;
 
   constructor({
     syntheticExecutionId = (cellId) => `notebook-view-execution:${cellId}`,
-    syntheticOutputId = (cellId, outputIndex) => `notebook-view-output:${cellId}:${outputIndex}`,
-    syntheticOutputPrefix,
   }: NotebookViewStoreProjectorOptions = {}) {
     this.syntheticExecutionId = syntheticExecutionId;
-    this.syntheticOutputId = syntheticOutputId;
-    this.syntheticOutputPrefix = syntheticOutputPrefix ?? (() => null);
   }
 
   projectCells(cells: readonly NotebookViewStoreProjectionCell[]): void {
@@ -152,15 +144,6 @@ export class NotebookViewStoreProjector {
         this.ownedExecutionIds.delete(executionId);
       }
 
-      const syntheticOutputPrefix = this.syntheticOutputPrefix(cellId);
-      if (syntheticOutputPrefix) {
-        for (const outputId of this.ownedOutputIds) {
-          if (outputId.startsWith(syntheticOutputPrefix)) {
-            outputIdsToDelete.add(outputId);
-          }
-        }
-      }
-
       setCellExecutionPointer(cellId, null);
     }
 
@@ -241,7 +224,10 @@ export class NotebookViewStoreProjector {
     cellId: string,
     index: number,
   ): NotebookStoreOutput {
-    const output_id = output.output_id ?? this.syntheticOutputId(cellId, index);
+    const output_id = output.output_id;
+    if (typeof output_id !== "string" || output_id.length === 0) {
+      return missingOutputIdProjectionError(cellId, index);
+    }
     const previous = getOutputById(output_id);
     let normalized: NotebookStoreOutput;
 
@@ -300,6 +286,17 @@ export class NotebookViewStoreProjector {
   private outputCacheKeyForEquality(output: NotebookStoreOutput): string | null {
     return stampedOutputCacheKey(output) ?? this.outputCacheKeys.get(output) ?? null;
   }
+}
+
+function missingOutputIdProjectionError(cellId: string, index: number): NotebookStoreOutput {
+  const message = `Cannot project output without output_id for cell ${cellId} at index ${index}`;
+  return {
+    output_id: `resolution-error:missing-output-id:${cellId}:${index}`,
+    output_type: "error",
+    ename: "OutputProjectionError",
+    evalue: message,
+    traceback: [message],
+  };
 }
 
 export function createNotebookViewStoreProjector(

@@ -32,10 +32,10 @@ Two findings sharpen the original #3530 design:
    local-first persistence exists to protect.
 2. **The reconnect teardown is the data-loss point**, not the wire protocol.
    `scheduleReconnect` → `handle.free()` destroys unflushed changes;
-   `resetCloudViewStoreProjection()` blanks the visible notebook. The daemon's
-   own cloud runtime agent already demonstrates the correct shape
-   (`runtime_agent.rs`): preserve the docs and the queue, recreate only the
-   sync states, and resync.
+   replacing notebook projection state with an empty snapshot blanks the visible
+   notebook. The daemon's own cloud runtime agent already demonstrates the
+   correct shape (`runtime_agent.rs`): preserve the docs and the queue, recreate
+   only the sync states, and resync.
 
 ## Direction
 
@@ -331,8 +331,8 @@ automerge-repo websocket adapter's good parts and fixing its known flaws:
 The reconnect effect no longer tears the world down. Across a transport-level
 reconnect the session **preserves** the WASM handle (unflushed local edits
 live there), the `SyncEngine` and its subscriptions, and the store projections
-(no `resetCloudViewStoreProjection()` / `replaceNotebookCells([])` blanking —
-the desktop bootstrap-preservation pattern, applied to cloud). On each
+(no empty-projection reset / `replaceNotebookCells([])` blanking — the desktop
+bootstrap-preservation pattern, applied to cloud). On each
 `roomReady$` after the first it **recreates** only the per-connection state,
 mirroring the daemon agent (`runtime_agent.rs:1046-1052`) via
 `CloudSyncRuntime.applyRoomReady` → `reestablishCloudConnection`:

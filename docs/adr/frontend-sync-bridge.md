@@ -253,9 +253,9 @@ This is the one place where editor input bypasses the React render path entirely
 - `apps/notebook/src/components/NotebookView.tsx:519` - `stableDomOrder` memo and Decision 2 invariant.
 - `apps/notebook/src/components/NotebookView.tsx:307` - `order: index` style.
 - `apps/notebook/src/hooks/useAutomergeNotebook.ts` - WASM handle owner and bridge caller.
-- `apps/notebook/src/hooks/useCrdtBridge.tsx` - CodeMirror -> CRDT bridge.
-- `apps/notebook/src/lib/crdt-editor-bridge.ts` - `splice_source` + remote-change application.
-- `apps/notebook/src/lib/notebook-frame-bus.ts` - module-level pub/sub for broadcasts and presence.
+- `src/components/notebook/crdt-bridge.tsx` - CodeMirror -> CRDT React bridge.
+- `src/components/notebook/crdt-editor-bridge.ts` - `splice_source` + remote-change application.
+- `src/components/notebook/state/notebook-frame-bus.ts` - module-level pub/sub for broadcasts and presence.
 - `apps/notebook/src/lib/notebook-cells.ts` - split cell store (`useCell`, `useCellIds`).
 - `apps/notebook/src/lib/runtime-state.ts` - runtime-state store and `isRuntimeStateLoaded`.
 - `apps/notebook/src/lib/project-runtime-stores.ts` - execution-view projection.
