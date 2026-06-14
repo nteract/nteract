@@ -142,7 +142,9 @@ async function runAgentStep(step, fn) {
 
 async function heartbeatIfNeeded(pythonPath) {
   const now = Date.now();
-  if (now - lastHeartbeatAt < heartbeatIntervalMs) {
+  const shouldRegister =
+    lastHeartbeatAt === 0 || (activeJobs.size > 0 && now - lastHeartbeatAt >= heartbeatIntervalMs);
+  if (!shouldRegister) {
     return false;
   }
   await registerWorkstation(pythonPath);
