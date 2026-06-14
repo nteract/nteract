@@ -125,9 +125,61 @@ describe("cloud viewer sharing client", () => {
     );
     assert.equal(projection.notebookAccessSummary, "1 person, 1 invite");
     assert.equal(projection.runtimeAccessSummary, "1 runtime peer");
+    assert.deepEqual(projection.accessRequestRows, []);
+    assert.equal(projection.accessRequestSummary, null);
     assert.equal(Object.isFrozen(projection), true);
     assert.equal(Object.isFrozen(projection.notebookAccessRows), true);
     assert.equal(Object.isFrozen(projection.runtimeAccessRows), true);
+    assert.equal(Object.isFrozen(projection.accessRequestRows), true);
+  });
+
+  it("projects pending edit requests as their own action queue", () => {
+    const owner = aclRow({
+      subject: "user:anaconda:owner",
+      scope: "owner",
+      display: {
+        kind: "principal",
+        label: "Owner User",
+        principal: "user:anaconda:owner",
+        email: "owner@example.com",
+      },
+    });
+    const pendingRequest = accessRequestRow({
+      id: "request-pending",
+      requester_principal: "user:anaconda:dana",
+      display: {
+        kind: "principal",
+        label: "Dana Requester",
+        principal: "user:anaconda:dana",
+        email: "dana@example.com",
+      },
+    });
+
+    const projection = buildCloudShareAccessProjection({
+      acl: [owner],
+      invites: [],
+      accessRequests: [
+        pendingRequest,
+        accessRequestRow({ id: "request-approved", status: "approved" }),
+      ],
+    });
+
+    assert.deepEqual(
+      projection.notebookAccessRows.map((row) => [row.kind, row.label]),
+      [["acl", "Owner User"]],
+    );
+    assert.deepEqual(
+      projection.accessRequestRows.map((row) => [
+        row.kind,
+        row.label,
+        row.badge,
+        row.stateLabel,
+        row.removable,
+      ]),
+      [["access_request", "Dana Requester", "Can edit", "Requested", false]],
+    );
+    assert.equal(projection.notebookAccessSummary, "1 person");
+    assert.equal(projection.accessRequestSummary, "1 request");
   });
 
   it("detects public viewer access from explicit public ACL rows", () => {

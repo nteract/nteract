@@ -312,6 +312,10 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /const accessProjection = useMemo\(\s*\(\) => buildCloudShareAccessProjection\(\{ acl, invites, accessRequests \}\)/,
   );
   assert.match(sharingSourceText, /<div className="cloud-share-current-heading">/);
+  assert.match(sharingSourceText, /aria-label="Edit access requests"/);
+  assert.match(sharingSourceText, /<h3>Edit requests<\/h3>/);
+  assert.match(sharingSourceText, /accessProjection\.accessRequestRows\.map/);
+  assert.match(sharingSourceText, /accessProjection\.accessRequestSummary/);
   assert.match(sharingSourceText, /aria-label="Compute access"/);
   assert.match(sharingSourceText, /accessProjection\.runtimeAccessRows\.map/);
   assert.match(sharingSourceText, /<div className="cloud-share-row-actions">/);
@@ -330,6 +334,10 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(
     sharingSourceText,
     /accessProjection\.notebookAccessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong>\{row\.label\}<\/strong>[\s\S]*<span>\{row\.detail\}<\/span>/,
+  );
+  assert.match(
+    sharingSourceText,
+    /accessProjection\.accessRequestRows\.map\(\(row\) =>[\s\S]*aria-label=\{`Approve \$\{row\.label\}`\}/,
   );
   assert.match(sharingSourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
   const sharePanelCss = cssText.match(/\.cloud-share-panel \{(?<body>[\s\S]*?)\n\}/)?.groups?.body;
