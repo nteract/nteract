@@ -78,6 +78,13 @@ the flush strands the update (marked dirty, never emitted).
   local: desktop still collapses the packages rail on a second toolbar toggle,
   and cloud still falls back to outline when the owner-only workstations panel
   is unavailable.
+- **Outline raster waypoints → shared execution/output stores.**
+  `NotebookViewModel` resolves each code cell's current execution pointer
+  through `execution-store.ts` and reads its output manifests from
+  `output-store.ts`, so raster image outputs that no longer live on
+  `cell.outputs` still project into the shared outline. The output structure
+  subscription now advances for raster-preview payload updates under an
+  existing output id; legacy `cell.outputs` remains the no-execution fallback.
 
 ## Remaining work (ranked)
 

@@ -44,7 +44,10 @@ concerns.
       abstraction layer.
 - [ ] Finish shared-store convergence for focus, interaction,
       runtime/workstation status, and output cache identity. Each fact should
-      have one projection owner and host-local write authority.
+      have one projection owner and host-local write authority. The outline now
+      reads raster output waypoints from the execution/output stores; remaining
+      work should keep pushing cross-cell derived views toward those stores
+      instead of per-host React copies.
 - [ ] Deduplicate shell/runtime/workstation projection facts while keeping host
       authority local. Shared helpers should project facts, not own callbacks,
       credentials, ACLs, launch, or attach policy.
@@ -84,3 +87,7 @@ concerns.
   `src/components/notebook/state/bootstrap-preservation.ts`; Desktop re-exports
   the old path for compatibility and Cloud imports the preservation predicate
   through the shared projection-lifecycle helper.
+- 2026-06-14: Reconnected `NotebookViewModel` outline projection to the shared
+  execution/output stores so raster outputs emitted through RuntimeStateDoc
+  appear as outline waypoints; legacy `cell.outputs` still acts as the fallback
+  when no execution pointer exists.
