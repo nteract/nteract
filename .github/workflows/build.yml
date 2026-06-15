@@ -33,6 +33,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       source_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.source == 'true' || steps.e2e_source_filter.outputs.e2e_source == 'true' }}
+      docs_agent_changed: ${{ steps.filter.outputs.docs_agent == 'true' }}
+      docs_agent_files: ${{ steps.filter.outputs.docs_agent_files }}
       ci_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.ci == 'true' }}
       rust_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.rust == 'true' }}
       frontend_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.frontend == 'true' }}
@@ -51,6 +53,7 @@ jobs:
         id: filter
         uses: dorny/paths-filter@v4
         with:
+          list-files: json
           filters: |
             source:
               - ".github/workflows/**"
@@ -75,6 +78,19 @@ jobs:
               - "tailwind.config.js"
               - "tsconfig.json"
               - "vitest.config.ts"
+            docs_agent:
+              - "docs/**"
+              - ".agents/**"
+              - ".claude/**"
+              - "scripts/ci/check-docs-guidance.py"
+              - "AGENTS.md"
+              - "**/AGENTS.md"
+              - "CLAUDE.md"
+              - "**/CLAUDE.md"
+              - "README.md"
+              - "CONTRIBUTING.md"
+              - "DESIGN.md"
+              - "RELEASING.md"
             ci:
               - ".github/workflows/**"
               - ".github/actions/**"
@@ -172,6 +188,27 @@ jobs:
               - "e2e/**"
               - "!e2e/*.md"
 
+  docs-agent-guidance:
+    name: Docs & Agent Guidance
+    needs: [changes]
+    if: needs.changes.outputs.docs_agent_changed == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: false
+
+      - name: Check docs and agent guidance
+        env:
+          DOCS_AGENT_FILES: ${{ needs.changes.outputs.docs_agent_files }}
+        run: |
+          python3 -m py_compile scripts/ci/check-docs-guidance.py
+          if [ -z "$DOCS_AGENT_FILES" ] || [ "$DOCS_AGENT_FILES" = "[]" ]; then
+            echo "No docs/agent guidance files changed."
+            exit 0
+          fi
+          python3 scripts/ci/check-docs-guidance.py --paths-json "$DOCS_AGENT_FILES"
+
   lint:
     name: Lint & Format
     needs: [changes]
@@ -232,10 +269,11 @@ jobs:
 
           "$bin" -color
 
-  # Pull requests always run the two branch-protection checks above:
-  # Lint & Format and JS Tests & Benchmarks. The jobs below are advisory on PRs:
-  # they run for relevant paths or ci:* labels, but branch protection does not
-  # require them.
+  # Pull requests with source changes always run the two branch-protection checks
+  # above: Lint & Format and JS Tests & Benchmarks. Docs/agent-only changes run
+  # the Docs & Agent Guidance verifier. The jobs below are advisory on PRs: they
+  # run for relevant paths or ci:* labels, but branch protection does not require
+  # them.
   nsis-bootstrap:
     name: NSIS Bootstrap Syntax
     needs: [changes]
