@@ -2749,13 +2749,11 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
-    /// Replace the full state for an existing comm.
+    /// Set a single property in the legacy RuntimeStateDoc comm-state slot.
     ///
-    /// Set a single property in a comm's state map.
-    ///
-    /// Writes directly to `comms/{comm_id}/state/{key}` as a native
-    /// Automerge value. This is the per-property write path used by
-    /// the frontend for CRDT-based widget updates.
+    /// RuntimeStateDoc still preserves this embedded state map for topology
+    /// snapshots and compatibility reads, but frontend CRDT widget writes go
+    /// through CommsDoc.
     pub fn set_comm_state_property(
         &mut self,
         comm_id: &str,
