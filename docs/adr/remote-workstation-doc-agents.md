@@ -790,12 +790,13 @@ sequence:
   disconnect-aware, and non-durable until runtime generations and room-owned
   lifecycle transitions are explicit.
 - **Unsupported response-bearing runtime requests fail honestly.** Hosted cloud
-  rooms reject direct `launch_kernel`, `shutdown_kernel`, `sync_environment`,
-  and `get_history` request frames instead of acknowledging them as empty
-  room-host no-ops. The cloud viewer still handles current hosted history in
-  `CloudNotebookHostTransport`; a real kernel-backed history implementation
-  needs a product decision about whether history is notebook-wide, user-wide,
-  or kernel-local before routing it through the runtime peer.
+  rooms reject direct `launch_kernel`, `restart_kernel`, `shutdown_kernel`,
+  `sync_environment`, and `get_history` request frames instead of acknowledging
+  them as empty room-host no-ops. The cloud viewer still handles current hosted
+  history in `CloudNotebookHostTransport`; a real kernel-backed history
+  implementation needs a product decision about whether history is
+  notebook-wide, user-wide, or kernel-local before routing it through the
+  runtime peer.
 
 Runtime request subtleties to keep visible:
 
