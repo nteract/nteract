@@ -8,8 +8,38 @@ import {
   frameSizeLimits,
   frameTypeName,
   isClientWritableFrame,
+  isKnownFrameType,
   splitTypedFrame,
+  type FrameTypeValue,
 } from "../src/protocol.ts";
+
+const EXPECTED_FRAME_TYPE_ENTRIES = [
+  ["AUTOMERGE_SYNC", 0x00, "automerge_sync", true],
+  ["REQUEST", 0x01, "request", true],
+  ["RESPONSE", 0x02, "response", true],
+  ["BROADCAST", 0x03, "broadcast", false],
+  ["PRESENCE", 0x04, "presence", true],
+  ["RUNTIME_STATE_SYNC", 0x05, "runtime_state_sync", true],
+  ["POOL_STATE_SYNC", 0x06, "pool_state_sync", true],
+  ["SESSION_CONTROL", 0x07, "session_control", false],
+  ["PUT_BLOB", 0x08, "put_blob", true],
+  ["COMMS_DOC_SYNC", 0x09, "comms_doc_sync", true],
+] as const satisfies ReadonlyArray<
+  readonly [keyof typeof FrameType, FrameTypeValue, string, boolean]
+>;
+
+const EXPECTED_CLIENT_WRITABLE = {
+  0x00: true,
+  0x01: true,
+  0x02: true,
+  0x03: false,
+  0x04: true,
+  0x05: true,
+  0x06: true,
+  0x07: false,
+  0x08: true,
+  0x09: true,
+} as const satisfies Readonly<Record<FrameTypeValue, boolean>>;
 
 describe("typed-frame protocol helpers", () => {
   it("encodes and splits v4-shaped typed frames", () => {
@@ -52,12 +82,30 @@ describe("typed-frame protocol helpers", () => {
     );
   });
 
-  it("names and gates client writable frames", () => {
-    assert.equal(frameTypeName(FrameType.RUNTIME_STATE_SYNC), "runtime_state_sync");
-    assert.equal(frameTypeName(FrameType.COMMS_DOC_SYNC), "comms_doc_sync");
-    assert.equal(isClientWritableFrame(FrameType.AUTOMERGE_SYNC), true);
-    assert.equal(isClientWritableFrame(FrameType.COMMS_DOC_SYNC), true);
-    assert.equal(isClientWritableFrame(FrameType.SESSION_CONTROL), false);
+  it("names and gates every known frame type", () => {
+    const expectedKeys = EXPECTED_FRAME_TYPE_ENTRIES.map(([key]) => key);
+    const expectedWireOrder = EXPECTED_FRAME_TYPE_ENTRIES.map(([, frameType]) => frameType);
+
+    assert.deepEqual(Object.keys(FrameType).sort(), [...expectedKeys].sort());
+    assert.deepEqual([...new Set(expectedWireOrder)], expectedWireOrder);
+    assert.deepEqual(
+      Object.values(FrameType).sort((left, right) => left - right),
+      expectedWireOrder,
+    );
+
+    for (const [key, frameType, displayName, clientWritable] of EXPECTED_FRAME_TYPE_ENTRIES) {
+      assert.equal(FrameType[key], frameType);
+      assert.equal(isKnownFrameType(frameType), true);
+      assert.equal(frameTypeName(frameType), displayName);
+      assert.equal(isClientWritableFrame(frameType), clientWritable);
+      assert.equal(isClientWritableFrame(frameType), EXPECTED_CLIENT_WRITABLE[frameType]);
+      assert.deepEqual(splitTypedFrame(new Uint8Array([frameType, 42])), {
+        type: frameType,
+        payload: new Uint8Array([42]),
+      });
+    }
+    assert.equal(isKnownFrameType(255), false);
+    assert.equal(frameTypeName(255), "unknown_255");
   });
 
   it("mirrors notebook-wire per-frame payload size limits", () => {
