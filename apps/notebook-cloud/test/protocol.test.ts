@@ -13,21 +13,32 @@ import {
   type FrameTypeValue,
 } from "../src/protocol.ts";
 
-const KNOWN_FRAME_TYPE_ENTRIES = Object.entries(FrameType) as Array<
-  readonly [string, FrameTypeValue]
+const EXPECTED_FRAME_TYPE_ENTRIES = [
+  ["AUTOMERGE_SYNC", 0x00, "automerge_sync", true],
+  ["REQUEST", 0x01, "request", true],
+  ["RESPONSE", 0x02, "response", true],
+  ["BROADCAST", 0x03, "broadcast", false],
+  ["PRESENCE", 0x04, "presence", true],
+  ["RUNTIME_STATE_SYNC", 0x05, "runtime_state_sync", true],
+  ["POOL_STATE_SYNC", 0x06, "pool_state_sync", true],
+  ["SESSION_CONTROL", 0x07, "session_control", false],
+  ["PUT_BLOB", 0x08, "put_blob", true],
+  ["COMMS_DOC_SYNC", 0x09, "comms_doc_sync", true],
+] as const satisfies ReadonlyArray<
+  readonly [keyof typeof FrameType, FrameTypeValue, string, boolean]
 >;
 
 const EXPECTED_CLIENT_WRITABLE = {
-  [FrameType.AUTOMERGE_SYNC]: true,
-  [FrameType.REQUEST]: true,
-  [FrameType.RESPONSE]: true,
-  [FrameType.BROADCAST]: false,
-  [FrameType.PRESENCE]: true,
-  [FrameType.RUNTIME_STATE_SYNC]: true,
-  [FrameType.COMMS_DOC_SYNC]: true,
-  [FrameType.POOL_STATE_SYNC]: true,
-  [FrameType.SESSION_CONTROL]: false,
-  [FrameType.PUT_BLOB]: true,
+  0x00: true,
+  0x01: true,
+  0x02: true,
+  0x03: false,
+  0x04: true,
+  0x05: true,
+  0x06: true,
+  0x07: false,
+  0x08: true,
+  0x09: true,
 } as const satisfies Readonly<Record<FrameTypeValue, boolean>>;
 
 describe("typed-frame protocol helpers", () => {
@@ -72,9 +83,21 @@ describe("typed-frame protocol helpers", () => {
   });
 
   it("names and gates every known frame type", () => {
-    for (const [name, frameType] of KNOWN_FRAME_TYPE_ENTRIES) {
+    const expectedKeys = EXPECTED_FRAME_TYPE_ENTRIES.map(([key]) => key);
+    const expectedWireOrder = EXPECTED_FRAME_TYPE_ENTRIES.map(([, frameType]) => frameType);
+
+    assert.deepEqual(Object.keys(FrameType).sort(), [...expectedKeys].sort());
+    assert.deepEqual([...new Set(expectedWireOrder)], expectedWireOrder);
+    assert.deepEqual(
+      Object.values(FrameType).sort((left, right) => left - right),
+      expectedWireOrder,
+    );
+
+    for (const [key, frameType, displayName, clientWritable] of EXPECTED_FRAME_TYPE_ENTRIES) {
+      assert.equal(FrameType[key], frameType);
       assert.equal(isKnownFrameType(frameType), true);
-      assert.equal(frameTypeName(frameType), name.toLowerCase());
+      assert.equal(frameTypeName(frameType), displayName);
+      assert.equal(isClientWritableFrame(frameType), clientWritable);
       assert.equal(isClientWritableFrame(frameType), EXPECTED_CLIENT_WRITABLE[frameType]);
       assert.deepEqual(splitTypedFrame(new Uint8Array([frameType, 42])), {
         type: frameType,
