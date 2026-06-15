@@ -34,7 +34,7 @@ pub struct SharedDocState {
     /// Incoming presence state from remote peers (cursors, selections, etc.).
     pub(crate) presence: PresenceState,
 
-    /// Runtime state doc — daemon-authoritative, synced read-only.
+    /// Runtime state doc — runtime-authoritative, synced read-only here.
     pub(crate) state_doc: RuntimeStateDoc,
 
     /// Automerge sync protocol state for the RuntimeStateDoc peer.

@@ -35,7 +35,7 @@
 //!
 //! A cloud peer is a *consumer* of the room's authoritative RuntimeStateDoc, so
 //! it must apply incoming changes with `receive_sync_message_with_changes`, not
-//! the daemon-authoritative `receive_sync_message` (which strips them). That is
+//! the read-only-peer `receive_sync_message` path (which strips them). That is
 //! an agent-loop policy decision, recorded in the #16 decision log; this crate
 //! only moves bytes.
 

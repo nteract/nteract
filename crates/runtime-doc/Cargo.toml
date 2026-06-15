@@ -2,7 +2,7 @@
 name = "runtime-doc"
 version = "0.3.2"
 edition.workspace = true
-description = "RuntimeStateDoc and RuntimeStateHandle — per-notebook Automerge document for daemon-authoritative runtime state"
+description = "RuntimeStateDoc and RuntimeStateHandle — per-notebook Automerge document for runtime-authoritative state"
 repository.workspace = true
 license.workspace = true
 

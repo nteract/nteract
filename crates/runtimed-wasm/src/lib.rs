@@ -1848,7 +1848,7 @@ fn editor_change_root_label(patch: &automerge::Patch) -> String {
 pub struct NotebookHandle {
     doc: NotebookDoc,
     sync_state: sync::State,
-    /// Runtime state doc — daemon-authoritative, synced read-only.
+    /// Runtime state doc — server/runtime-authored, synced read-only here.
     state_doc: RuntimeStateDoc,
     state_sync_state: sync::State,
     /// Widget comm state doc — mutable by notebook editors and runtime.
@@ -4019,10 +4019,10 @@ impl NotebookHandle {
                 }
             }
             frame_types::RUNTIME_STATE_SYNC => {
-                // Apply daemon's RuntimeStateDoc sync message to our local replica.
+                // Apply a server-authored RuntimeStateDoc sync message to our local replica.
                 // We use the raw Automerge sync (no change stripping) because the
-                // WASM is a read-only consumer — stripping is done daemon-side for
-                // the client→daemon direction.
+                // browser WASM peer is a read-only RuntimeStateDoc consumer. The
+                // host applies write policy on inbound client/runtime-peer frames.
                 let Ok(msg) = sync::Message::decode(payload) else {
                     return JsValue::UNDEFINED;
                 };

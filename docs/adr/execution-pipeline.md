@@ -255,7 +255,7 @@ Execution spans two synced Automerge documents:
 The split is intentional and load-bearing:
 
 1. **Different write cadence.** NotebookDoc absorbs character-level edits from human typing. RuntimeStateDoc absorbs output streams from kernels. Combining them would tie editing latency to output churn.
-2. **Different writer authority.** NotebookDoc is frontend-authoritative for source and structure. RuntimeStateDoc is daemon-authoritative for outputs and lifecycle (except for the narrow `comms/*/state/*` widget-state surface). Keeping them separate lets the trust gate enforce different scopes at the frame layer (see `docs/adr/identity-and-trust.md`, Decision 5).
+2. **Different writer authority.** NotebookDoc is frontend-authoritative for source and structure. RuntimeStateDoc sync is read-only for ordinary notebook clients; validated runtime peers write runtime progress, lifecycle, outputs, and topology for accepted work, while coordinator/room-host paths own execution intent and room facts. Mutable widget values live in CommsDoc. Keeping these documents separate lets the trust gate enforce different scopes at the frame layer (see `docs/adr/identity-and-trust.md`, Decision 5).
 3. **Different persistence shapes.** NotebookDoc serializes to `.ipynb` on autosave. RuntimeStateDoc is ephemeral and recreated on daemon restart.
 4. **Different sync streams.** Both flow over the same connection but use distinct frame types and sync states. A flood on one document's stream does not stall the other.
 

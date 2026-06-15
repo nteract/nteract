@@ -1,8 +1,9 @@
 //! RuntimeStateDoc — per-notebook ephemeral Automerge document for runtime state.
 //!
-//! Daemon-authoritative. One per notebook room. Describes the kernel, execution
-//! queue, and environment state. Clients sync read-only via the Automerge sync
-//! protocol — the daemon strips any client-side changes.
+//! Runtime-authoritative. One per notebook room. Describes the kernel,
+//! execution queue, environment state, outputs, and runtime topology. Regular
+//! notebook clients sync it read-only; runtime peers and room/coordinator code
+//! use the validated writable path for policy-allowed runtime state.
 //!
 //! Schema:
 //! ```text
@@ -454,11 +455,13 @@ impl RuntimeStateDoc {
         })
     }
 
-    /// Create a bootstrap `RuntimeStateDoc` for read-only clients.
+    /// Create a bootstrap `RuntimeStateDoc` with a random local actor.
     ///
     /// The document starts from the canonical schema seed, not from an empty
     /// AutoCommit, so the first RuntimeStateSync frame can merge into the
     /// shared root scaffold instead of replacing local encoding/actor state.
+    /// This is used by read-only replicas and by hosted/runtime-peer surfaces
+    /// that validate writes before applying them.
     pub fn try_new_empty() -> Result<Self, RuntimeStateError> {
         let mut doc = Self::schema_seed_doc()?;
         doc.set_actor(ActorId::random());
@@ -3238,9 +3241,9 @@ impl RuntimeStateDoc {
 
     /// Receive a sync message with change stripping (read-only enforcement).
     ///
-    /// The daemon is the sole authority for runtime state. Any changes a
-    /// client embeds in its sync message are stripped — only the heads/need/have
-    /// handshake is processed so the client can catch up.
+    /// Regular notebook clients do not author RuntimeStateDoc changes over
+    /// sync. Any changes embedded in this path are stripped; only the
+    /// heads/need/have handshake is processed so the peer can catch up.
     pub fn receive_sync_message(
         &mut self,
         peer_state: &mut sync::State,
@@ -3305,11 +3308,13 @@ impl RuntimeStateDoc {
         )
     }
 
-    /// Receive a sync message accepting client writes.
+    /// Receive a sync message accepting policy-validated runtime writes.
     ///
-    /// Unlike `receive_sync_message()` which strips client changes, this
-    /// accepts the full message including any mutations the client made
-    /// (e.g., widget state updates written to `comms/*/state/*`).
+    /// Unlike `receive_sync_message()` which strips peer changes, this accepts
+    /// the full message after the caller has established that the peer is
+    /// allowed to author RuntimeStateDoc state, such as a `runtime_peer`
+    /// updating lifecycle/progress/output/topology for accepted work. Mutable
+    /// widget values belong to CommsDoc, not RuntimeStateDoc.
     ///
     /// Returns `true` if the document heads changed (i.e., client sent
     /// new changes, not just a handshake).
@@ -4207,7 +4212,7 @@ mod tests {
     fn last_seen_is_runtime_peer_writable_but_blocked_for_editor() {
         // last_seen lives under `state.kernel`, so the existing kernel-ownership
         // policy governs it: a runtime_peer may write it, an editor/owner sync
-        // may not (it is part of the daemon/runtime-owned kernel snapshot). This
+        // may not (it is part of the runtime-authored kernel snapshot). This
         // pins that a liveness stamp can't be forged over an editor sync.
         use crate::policy::{
             runtime_state_policy_snapshot, validate_runtime_state_sync_scope,
