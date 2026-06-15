@@ -644,7 +644,10 @@ export function isRecoverableCloudFrameRejection(message: SessionControlMessage)
 }
 
 function isSyncDivergenceRejectionReason(reason: string): boolean {
-  return /\bPatchLogMismatch\b/i.test(reason) || /\bpatch log mismatch\b/i.test(reason);
+  return (
+    /\bPatchLogMismatch\b/i.test(reason) ||
+    /patch logs cannot be shared between documents/i.test(reason)
+  );
 }
 
 /**
