@@ -317,6 +317,10 @@ async fn test_room_load_or_create_new() {
         doc.runtime_state_doc_id(),
         Some(notebook_doc::default_runtime_state_doc_id("test-nb"))
     );
+    assert_eq!(
+        doc.comms_doc_id(),
+        Some(notebook_doc::default_comms_doc_id("test-nb"))
+    );
     assert_eq!(doc.cell_count(), 0);
     assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 0);
     drop(doc);
@@ -464,11 +468,13 @@ async fn test_new_fresh_creates_empty_doc() {
     let doc = room.doc.try_read().unwrap();
     let notebook_id = uuid.to_string();
     let runtime_state_doc_id = notebook_doc::default_runtime_state_doc_id(&notebook_id);
+    let comms_doc_id = notebook_doc::default_comms_doc_id(&notebook_id);
     assert_eq!(doc.notebook_id(), Some(notebook_id.clone()));
     assert_eq!(
         doc.runtime_state_doc_id(),
         Some(runtime_state_doc_id.clone())
     );
+    assert_eq!(doc.comms_doc_id(), Some(comms_doc_id));
     assert_eq!(doc.cell_count(), 0);
     drop(doc);
 

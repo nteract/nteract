@@ -14,6 +14,7 @@ export interface SnapshotRender {
   notebook_id: string;
   heads_hash: string;
   runtime_state_doc_id: string | null;
+  comms_doc_id: string | null;
   runtime_heads_hash: string | null;
   metadata: unknown;
   source: "snapshot-pair";
@@ -42,6 +43,7 @@ export async function materializeSnapshotPairRender(input: {
     const runtimeState = handle.get_runtime_state();
     const commsState = handle.get_comms_state();
     const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json());
+    const commsDocId = readOptionalCommsDocId(handle);
     const rawWidgetComms = snapshotWidgetCommsFromRuntimeAndCommsState(runtimeState, commsState);
     const widgetComms = input.blobResolver
       ? resolveSnapshotWidgetComms(rawWidgetComms, input.blobResolver)
@@ -53,6 +55,7 @@ export async function materializeSnapshotPairRender(input: {
       notebook_id: input.notebookId,
       heads_hash: input.notebookHeadsHash,
       runtime_state_doc_id: handle.get_runtime_state_doc_id() ?? null,
+      comms_doc_id: commsDocId,
       runtime_heads_hash: input.runtimeHeadsHash,
       metadata,
       source: "snapshot-pair",
@@ -74,4 +77,10 @@ function parseJsonOrNull(value: string | undefined): unknown {
   } catch {
     return null;
   }
+}
+
+function readOptionalCommsDocId(handle: {
+  get_comms_doc_id?: () => string | undefined;
+}): string | null {
+  return typeof handle.get_comms_doc_id === "function" ? (handle.get_comms_doc_id() ?? null) : null;
 }

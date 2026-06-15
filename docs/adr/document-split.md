@@ -130,7 +130,7 @@ What lives in `NotebookDoc` (schema v5, `crates/notebook-doc/src/lib.rs`):
 - `cells/{cell_id}/`: `id`, `cell_type`, `position` (fractional index hex string for ordering), `source` (Automerge Text), `metadata`, `resolved_assets`, `attachments`, `execution_count` (legacy JSON-encoded string preserved for nbformat round-trip).
 - `cells/{cell_id}/execution_id`: a pointer that the daemon stamps at queue time. This is the **only** runtime-state field that lives in `NotebookDoc`.
 - `metadata/`: `runtime`, `kernelspec`, `language_info`, `runt` (deps / trust / cell-execution metadata), legacy `notebook_metadata` JSON string.
-- `schema_version`, `notebook_id`, `runtime_state_doc_id`.
+- `schema_version`, `notebook_id`, `runtime_state_doc_id`, `comms_doc_id`.
 
 What lives in `RuntimeStateDoc` (schema v2, `crates/runtime-doc/src/doc.rs`):
 
@@ -158,7 +158,7 @@ This matches nbformat semantics. `.ipynb` files carry cell source, cell type, me
 
 A cell's "current outputs" are looked up by following the `cells/{cell_id}/execution_id` pointer in `NotebookDoc` into the `executions/{execution_id}/outputs` map in `RuntimeStateDoc`. The daemon stamps this pointer at queue time (`NotebookDoc::set_execution_id`, `lib.rs:1707`). `clear_outputs` sets the pointer to null and resets the legacy `execution_count` field; it never deletes the execution entry in `RuntimeStateDoc` (`lib.rs:1736`).
 
-This is currently the only structural link between the two documents. Everything else is keyed entirely within one or the other. Output history sits in `RuntimeStateDoc` indefinitely; the cell just looks at one of the entries.
+This is the per-cell structural link between `NotebookDoc` and `RuntimeStateDoc`. Document-level pairings are carried by `NotebookDoc.runtime_state_doc_id` and `NotebookDoc.comms_doc_id`.
 
 The choice to store the pointer in `NotebookDoc` and the body in `RuntimeStateDoc` was driven by save semantics. The pointer is the part that survives a `.ipynb` export. The body is the part that gets thrown away.
 
@@ -168,7 +168,8 @@ which `RuntimeStateDoc` belongs with the notebook. The runtime-state document
 itself remains document-agnostic: it carries its own `runtime_state_doc_id`, not
 a notebook backlink, so the same schema can support markdown-associated or
 standalone runtime state later. It does not replace `cell.execution_id`, and it
-does not store runtime-state heads in `NotebookDoc`.
+does not store runtime-state heads in `NotebookDoc`. ADR 0002 adds the parallel
+`NotebookDoc.comms_doc_id` pointer for the paired CommsDoc.
 
 ## Decision 3: Write authority is per-document, and `RuntimeStateDoc` separates runtime authority from widget state
 
@@ -196,19 +197,19 @@ kernel.
 |---|---|---|
 | `NotebookDoc` writes from viewer scope | Frame-level scope check (`identity-and-trust.md` Decision 5) | `peer_notebook_sync.rs::handle_notebook_doc_frame` |
 | `NotebookDoc` actor-principal forgery | Clone-preview validator | `peer_notebook_sync.rs` (mirror of `peer_runtime_sync.rs:80-107`) |
-| `RuntimeStateDoc` writes from editor/owner scope | Shared before/after policy rejects comm-state and other non-runtime writes; widget state belongs in `CommsDoc`. | `crates/runtime-doc/src/policy.rs`, `peer_runtime_sync.rs`, hosted WASM room host |
+| `RuntimeStateDoc` writes from editor/owner scope | Frame-level scope check rejects non-runtime-agent writes; widget state belongs in `CommsDoc`. | `crates/runtime-doc/src/policy.rs`, `peer_runtime_sync.rs`, hosted WASM room host |
 | `RuntimeStateDoc` actor-principal forgery | Clone-preview validator | `peer_runtime_sync.rs:80-107` |
 | `CommsDoc` orphan state | Runtime forward path and orphan GC derive membership from `RuntimeStateDoc` topology. | `peer_comms_sync.rs`, `runtime_agent.rs`, `crates/runtime-doc/src/comms.rs` |
 | `PoolDoc` writes from any peer | Strip all changes at ingress | `pool_state.rs:341` |
 | Runtime-agent ID provenance mismatch | Ingress reject on agent ID mismatch | `peer_runtime_agent.rs:47-63` |
 
-Editor/owner `RuntimeStateDoc` deltas are server-validated before apply and are
-rejected outside the notebook-authoring surface. Queue, execution, kernel,
-environment, output routing, comm topology, and hidden root/schema writes remain
-runtime-owned. Runtime-peer deltas are also policy-validated: progress and
-output updates for accepted executions pass, but newly created execution entries
-and queue entries for unknown executions are rejected. The runtime-agent
-provenance check above is a separate gate: it filters who may write under the
+Editor/owner `RuntimeStateDoc` deltas are rejected; their mutable widget state
+writes belong in `CommsDoc`. Queue, execution, kernel, environment, output
+routing, comm topology, and hidden root/schema writes remain runtime-owned.
+Runtime-peer deltas are also policy-validated: progress and output updates for
+accepted executions pass, but newly created execution entries and queue entries
+for unknown executions are rejected. The runtime-agent provenance check above is
+a separate gate: it filters who may write under the
 runtime-agent actor, while the shared policy filters what each scope may mutate.
 
 `RuntimeStateDoc` exposes two ingress APIs internally: `receive_sync_message` (read-only, strips changes for clone-preview validation) and `receive_sync_message_with_changes_recovering` (writable, applies changes after validation). The server uses the read-only API in the clone-preview pass and the writable one for committed application; library callers use the writable API directly (`crates/runtime-doc/src/doc.rs:2720`, `:2789`).
@@ -350,4 +351,4 @@ to implement; **Design** = needs a decision in this ADR before code moves.
 - **3D-6** (Design; `crates/runtimed/src/notebook_sync_server/`): `PoolDoc` does not participate in the clone-preview validator. Mitigation is `strip_changes`, not `validate`. Future write-bearing pool features would need the validator path wired back in.
 - **3D-7** (Design; `docs/adr/remote-workstation-doc-agents.md` workstation dispatch): **Reframed.** The routing contract exists and its core is implemented: owner-scoped `REQUEST` frames are validated by the room host, become queued executions with coordinator-owned provenance in `RuntimeStateDoc` (`crates/runtimed-wasm/src/lib.rs::receive_request`), and the runtime peer consumes them through normal `RuntimeStateDoc` sync while the shared policy rejects runtime-peer-forged execution intent. Remaining design is active-target selection, kernel-lifecycle request dispatch, and disconnect/liveness gating, tracked in `remote-workstation-doc-agents.md` (#3399).
 - **3D-8** (Design; `crates/runtimed/src/notebook_sync_server/peer_writer.rs`): The first peer-egress lane split has landed: `PeerWriter` separates reliable sync/response traffic from ephemeral presence/broadcast traffic. Remaining design work is reserved control capacity, explicit session-control barriers, and RuntimeStateDoc catch-up when reliable runtime traffic saturates. See `peer-egress-lanes.md`.
-- **3D-9** (Targeted PR; `crates/notebook-doc/`, `crates/runtime-doc/src/comms.rs`, sync bootstrap/load paths): `CommsDoc` now exists as a room document, but `NotebookDoc.comms_doc_id` has not landed. ADR 0002 requires a deterministic durable pointer so clone/save-as/publish/snapshot flows do not rely on room attachment alone.
+- **3D-9** (Landed 2026-06-15; `crates/notebook-doc/`, room bootstrap/load paths): `NotebookDoc.comms_doc_id` is now deterministically derived as `comms:{notebook_id}` and stamped/ensured alongside `runtime_state_doc_id`. Remaining hosted persistence cleanup is to move comms snapshot routes/catalog metadata from runtime-state-keyed paths to first-class `comms_doc_id` keying.

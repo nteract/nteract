@@ -387,7 +387,7 @@ impl ConnectionScope {
 
     /// Whether this scope can send RuntimeStateDoc frames.
     pub const fn allows_runtime_state_write(self) -> bool {
-        matches!(self, Self::Editor | Self::RuntimePeer | Self::Owner)
+        matches!(self, Self::RuntimePeer)
     }
 
     /// Whether this scope can upload blobs (`PUT_BLOB` frames and the
@@ -781,14 +781,14 @@ mod tests {
         assert!(!ConnectionScope::Viewer.allows_runtime_state_write());
 
         assert!(ConnectionScope::Editor.allows_notebook_write());
-        assert!(ConnectionScope::Editor.allows_runtime_state_write());
+        assert!(!ConnectionScope::Editor.allows_runtime_state_write());
         assert!(!ConnectionScope::Editor.allows_publish());
 
         assert!(!ConnectionScope::RuntimePeer.allows_notebook_write());
         assert!(ConnectionScope::RuntimePeer.allows_runtime_state_write());
 
         assert!(ConnectionScope::Owner.allows_notebook_write());
-        assert!(ConnectionScope::Owner.allows_runtime_state_write());
+        assert!(!ConnectionScope::Owner.allows_runtime_state_write());
         assert!(ConnectionScope::Owner.allows_publish());
         assert!(ConnectionScope::Owner.allows_acl_mutation());
     }

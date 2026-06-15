@@ -4,6 +4,11 @@
 - Implements: [ADR 0002 - CommsDoc split](../adr/0002-comms-document-split.md), Phase 1 of 4
 - Date: 2026-06-04
 
+> Status update, 2026-06-15: production CommsDoc sync/projection and the
+> deterministic `NotebookDoc.comms_doc_id` pointer have landed. This document
+> remains as the historical test-first implementation plan; its expected-failure
+> steps describe the original sequence, not the current tree state.
+
 Implement task-by-task, test-first: each task adds a failing test, the minimal code to pass it, and a commit. Checkbox (`- [ ]`) steps track progress. Every task is independently testable and ends green; the two crate lanes (notebook-doc, runtime-doc) are independent and can be built concurrently, joining at the final room task.
 
 **Goal:** Lay the additive foundation for the CommsDoc split from ADR 0002 - a new `CommsDoc` Automerge document type, its frozen genesis seed, and the owner-only `comms_doc_id` identity pointer - with zero behavior change, so it ships green and de-risks the later phases.

@@ -323,7 +323,7 @@ with a collaborator is the baseline expectation for an editable notebook, so the
 editor write surface is not restricted to markdown. Everything else at the
 document root stays owner-authored: notebook metadata (kernelspec, trust,
 environment, path, project) and the document-identity roots `schema_version`,
-`notebook_id`, and `runtime_state_doc_id`.
+`notebook_id`, `runtime_state_doc_id`, and `comms_doc_id`.
 
 UI-only hiding is not an authorization boundary. A malicious browser can send
 arbitrary `NotebookDoc` sync frames, so the room host enforces the editor
@@ -331,8 +331,9 @@ surface server-side with a semantic diff validator: it clone-previews the
 incoming `NotebookDoc` message, diffs it against the heads before the change,
 and accepts it only if every patch lands inside the `cells` map. The policy is
 an allowlist, not a metadata denylist: any other root write — notebook
-metadata, `schema_version`, `notebook_id`, `runtime_state_doc_id`, or a
-root-level replace/delete of the `cells` map itself — is rejected. Owners skip
+metadata, `schema_version`, `notebook_id`, `runtime_state_doc_id`,
+`comms_doc_id`, or a root-level replace/delete of the `cells` map itself — is
+rejected. Owners skip
 the validator (they may write all notebook changes). This is
 `validate_editor_notebook_changes` in `runtimed-wasm`, reached from
 `receive_notebook_sync` whenever `can_write_all_notebook_changes` is false. The
