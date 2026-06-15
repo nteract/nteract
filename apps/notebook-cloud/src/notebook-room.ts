@@ -87,6 +87,7 @@ type RuntimePeerForwardedRequestAction = "interrupt_execution" | "send_comm";
 type RuntimePeerQueryRequestAction = "complete";
 type UnsupportedHostedRuntimeRequestAction =
   | "launch_kernel"
+  | "restart_kernel"
   | "shutdown_kernel"
   | "sync_environment"
   | "get_history";
@@ -127,6 +128,7 @@ const runtimePeerForwardedRequestActions = new Set<RuntimePeerForwardedRequestAc
 const runtimePeerQueryRequestActions = new Set<RuntimePeerQueryRequestAction>(["complete"]);
 const unsupportedHostedRuntimeRequestActions = new Set<UnsupportedHostedRuntimeRequestAction>([
   "launch_kernel",
+  "restart_kernel",
   "shutdown_kernel",
   "sync_environment",
   "get_history",

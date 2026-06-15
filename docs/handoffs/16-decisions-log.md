@@ -38,11 +38,14 @@ decision: what, the alternative, why.
    stripping silently discards the room's queued executions and stalls convergence.
 
 7. **A lifecycle safety net is required before relying on cloud hosting (Phase 3).**
-   Why: `kernel.lifecycle` is `runtime_peer`-only-writable (`policy.rs:403-405`), so when
-   the runtime itself vanishes no surviving room participant can correct the doc and the
-   room has no watchdog. A dropped workstation strands the room with a phantom-live
-   kernel. Needs a cloud-room watchdog plus a narrow policy relaxation (or a `Disconnected`
-   lifecycle the room can stamp). See `16-lifecycle-analysis.md`.
+   Historical reason: when the runtime itself vanished, the room had no watchdog
+   and could strand viewers with phantom-live executions. Phase 3d later built
+   the Durable Object watchdog and `RoomHostHandle::reconcile_runtime_peer_gone`;
+   no policy relaxation was needed because the room host authors the
+   reconciliation directly on its state doc. Remaining work is live preview
+   peer-drop re-proof and hosted REQUEST dispatch for restart, launch, and other
+   response-bearing runtime requests.
+   See `16-lifecycle-analysis.md` and the Phase 3d/3f notes below.
 
 8. **Output path: plain nbformat manifest + a minted `output_id` is sufficient.**
    Verified live: it persists across peer disconnect and renders in the cloud viewer
@@ -409,9 +412,12 @@ change. Decide (2) when 3d's mechanism is chosen.
 
 34. **3f is split: req 6 (writer-error must not kill the kernel on a recoverable
     transport) lands now; req 5 (inbound request channel) defers — it needs the
-    3d worker.** req 5 routes interrupt/restart `RuntimeAgentRequest`s from the
-    cloud room to the agent, which requires a hosted REQUEST dispatch on the
-    DurableObject (3d, Deferred). req 6 is pure Rust in `runtime_agent` and is the
+    3d worker.** req 5 was originally framed as routing interrupt/restart
+    `RuntimeAgentRequest`s from the cloud room to the agent. Interrupt is now
+    forwarded as a fire-and-forget runtime-peer command; the remaining req 5 gap
+    is restart, launch, and other response-bearing runtime requests that need a
+    hosted REQUEST dispatch contract on the DurableObject. req 6 is pure Rust in
+    `runtime_agent` and is the
     last place a transient cloud blip still destroys a healthy kernel after 3a:
     the two outbound (writer) `select!` arms — the `state_changed_rx`
     RuntimeStateSync send and the `async_response_rx` reply send — `break` the loop
@@ -442,11 +448,13 @@ Phase 3f(req 6) verification: `cargo test -p runtimed` 891 lib (was 888) +
 integration suites green (UDS unchanged); `cargo xtask lint --fix` clean; clippy
 `-D warnings` clean.
 
-**Deferred (3f req 5):** the inbound request channel — needs the 3d DurableObject
-hosted REQUEST dispatch to deliver interrupt/restart `RuntimeAgentRequest`s to the
-cloud agent. Detection of the kernel-side *effect* already survives (decision/req
-analysis); only the trigger path is missing, and it can't be built or verified
-without the worker (3d) + a live room. Build it alongside 3d.
+**Deferred (3f req 5):** the response-bearing inbound request channel — needs the
+DurableObject hosted REQUEST dispatch contract to deliver restart, launch, and
+other response-bearing `RuntimeAgentRequest`s to the cloud agent. Interrupt is
+already forwarded as a fire-and-forget runtime-peer command. Detection of the
+kernel-side *effect* already survives (decision/req analysis); the remaining
+trigger/response path can't be built or verified without the worker + a live
+room.
 
 ## Phase 3d (CODE): cloud-room DurableObject watchdog
 
@@ -515,10 +523,12 @@ storage backend without alarms (or the desktop/UDS path) is unaffected.
 3a (req 1), 3b (req 2), 3c CODE (doc-actor identity), 3d CODE (watchdog), 3e model
 half (`last_seen`), and 3f req 6 (writer-error recovery) are done. Remaining:
 
-- **3f req 5: inbound request channel.** Route interrupt/restart
-  `RuntimeAgentRequest`s to the cloud agent via the 3d DurableObject hosted REQUEST
-  dispatch. req 6 (don't tear the kernel down on a writer error) is DONE
-  (decisions 34–35); req 5's trigger path needs the worker + a live room.
+- **3f req 5: response-bearing inbound request channel.** Route restart,
+  launch, and other response-bearing `RuntimeAgentRequest`s to the cloud agent
+  via the DurableObject hosted REQUEST dispatch contract. Interrupt is already
+  forwarded as a fire-and-forget runtime-peer command. req 6 (don't tear the
+  kernel down on a writer error) is DONE (decisions 34–35); req 5's
+  trigger/response path needs the worker + a live room.
 
 ## Workstation endpoint (the second half of 16): scoping
 
