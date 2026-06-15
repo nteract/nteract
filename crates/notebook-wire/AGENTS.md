@@ -9,7 +9,7 @@ Scope: `crates/notebook-wire/`, `crates/notebook-doc/`, `crates/notebook-protoco
 - `notebook-wire` — frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes.
 - `notebook-protocol` — handshakes and JSON wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, runtime-agent envelopes.
 - `notebook-doc` — `NotebookDoc` Automerge schema. `SCHEMA_VERSION` bumps only with a migration that preserves real user data.
-- `runtime-doc` — `RuntimeStateDoc` and `CommsDoc` schemas. RuntimeStateDoc is daemon/runtime-agent authored for kernel lifecycle, queue, outputs, env, trust, project, path, save state, and comm topology. CommsDoc carries mutable widget state written by the daemon/runtime agent and the approved frontend comm CRDT writer.
+- `runtime-doc` — `RuntimeStateDoc` and `CommsDoc` schemas. RuntimeStateDoc is read-only to regular clients; the local daemon / room host own coordinator facts, and runtime peers may write policy-allowed lifecycle, progress, output, and comm topology for accepted work. CommsDoc carries mutable widget state written by editor/owner clients and runtime peers.
 
 ## Versioning
 

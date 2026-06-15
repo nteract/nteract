@@ -379,7 +379,8 @@ bridge, or JupyterHub sidecar. A runtime peer:
 
 - can send `RuntimeStateDoc` sync frames;
 - can upload blobs referenced by runtime output manifests;
-- can emit kernel lifecycle broadcasts;
+- can author kernel lifecycle/progress through policy-validated
+  `RuntimeStateDoc` sync;
 - cannot edit `NotebookDoc`;
 - cannot mutate ACLs or publish revisions unless it also has owner capability.
 

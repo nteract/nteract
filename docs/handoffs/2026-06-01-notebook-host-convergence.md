@@ -2,6 +2,11 @@
 
 **Date:** 2026-06-01
 **Why this exists:** the work was done in a Codex worktree (`~/.codex/worktrees/a2f3/desktop`). Resume here on `~/projects/nteract` (`main`), which already has the merged code below. Pick up the two design threads in the second half of this doc - they are not yet started.
+**Current status, 2026-06-15:** this handoff is historical. CommsDoc and the
+regular-client-read-only RuntimeStateDoc boundary have since shipped; use
+`docs/adr/0002-comms-document-split.md`, `docs/adr/document-split.md`, and
+source policy checks for current writer authority. The old shorthand below
+should not be read as live authorization guidance.
 
 ## Where we landed (shipped, in `main`)
 
@@ -37,17 +42,26 @@ Proposed by the user as the document-level generalization of the #3316 lesson. T
 | Doc | Writers | Rule |
 |---|---|---|
 | NotebookDoc | editors+owners (cells), owner (identity/metadata) | structural authoring |
-| **CommsDoc (new)** | anyone in the room + runtime | free-for-all, bidirectional |
-| RuntimeStateDoc | daemon/runtime only | truly read-only to clients |
+| **CommsDoc (new)** | editor/owner/runtime peer | mutable widget state, topology-gated |
+| RuntimeStateDoc | local daemon / room host / runtime peer, policy-scoped | read-only to regular clients |
 | PoolDoc | daemon only | unchanged |
 
-The subtlety that keeps it clean: split comm **topology** (which comms exist, target, owning cell - stays runtime-owned in RuntimeStateDoc) from comm **state** (the mutable model values - CommsDoc, keyed by comm_id). Then "anyone writes CommsDoc" is genuinely safe: editor state written for a comm_id with no topology is orphaned and ignored by the runtime. The daemon and room host both drop the `comms/*/state/*` exception, and Decision 7's "editor RuntimeStateDoc enforcement" collapses to "editors can't write that doc, period."
+The subtlety that keeps it clean: split comm **topology** (which comms exist,
+target, owning cell - stays runtime-owned in RuntimeStateDoc) from comm
+**state** (the mutable model values - CommsDoc, keyed by comm_id). Then
+multi-principal CommsDoc writes are safe at the kernel-forward boundary: editor
+or owner state written for a comm_id with no topology is orphaned and ignored by
+the runtime. The daemon and room host both drop the `comms/*/state/*` exception,
+and Decision 7's "editor RuntimeStateDoc enforcement" collapses to "editors
+can't write that doc, period."
 
 **Honest cost** (name it before committing): a fourth CRDT doc threads through a frozen genesis seed, a new transport frame type, daemon+wasm writer paths, the room host's snapshot logic (NotebookDoc+RuntimeStateDoc *pair* becomes a triple), a `comms_doc_id` identity pointer (NotebookDoc-owned, same shape as `runtime_state_doc_id`), and a new sync-bridge stream. Easier at the authorization layer, more plumbing at the document-management layer. Plus a migration story (RuntimeStateDoc genesis is frozen).
 
 **Open questions to resolve in the brainstorm:** topology/state boundary exactly; is Automerge even the right substrate for live comm state vs a presence-style ephemeral-but-persisted channel; closed-comm GC authority; cross-version sync during migration.
 
-Status: **not started.** Should become a `four-document-split` ADR superseding `document-split.md` plus a simplification pass on `hosted-room-authorization.md` Decision 7. Brainstorm first, then ADR, then implement.
+Status: **superseded.** The CommsDoc split is now covered by
+`docs/adr/0002-comms-document-split.md`; do not treat this section as open
+backlog without checking that ADR and source first.
 
 ## Active design thread 2: sync-divergence recovery (user's priority)
 

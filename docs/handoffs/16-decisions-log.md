@@ -33,9 +33,10 @@ decision: what, the alternative, why.
    without entrenching the duplicate on `main`.
 
 6. **Consumer-side RuntimeStateDoc receive uses `receive_sync_message_with_changes`, not
-   `receive_sync_message`.** Why: the plain receive is daemon-authoritative and *strips
-   incoming changes*. A cloud peer is a consumer of the room's authoritative state, so
-   stripping silently discards the room's queued executions and stalls convergence.
+   `receive_sync_message`.** Why: the plain receive is the read-only-peer path and
+   *strips incoming changes*. A cloud peer is a consumer of the room's authoritative
+   state, so stripping silently discards the room's queued executions and stalls
+   convergence.
 
 7. **A lifecycle safety net is required before relying on cloud hosting (Phase 3).**
    Historical reason: when the runtime itself vanished, the room had no watchdog

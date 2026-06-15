@@ -2,7 +2,12 @@
 
 **Date:** 2026-06-01
 **Inputs:** `docs/handoffs/2026-06-01-notebook-host-convergence.md` (the two design threads), the merged work in #3316/#3317, and a 50-agent investigation + premortem (raw result archived at the task output for run `wf_6ab5a807-669`).
-**Status:** design-first. Nothing here has touched code. This supersedes the "brainstorm thread 1, then thread 2" framing of the handoff with a single coupled analysis and a sequenced recommendation.
+**Status, updated 2026-06-15:** historical design analysis. CommsDoc has since
+shipped and its current authority is tracked in
+`docs/adr/0002-comms-document-split.md` and `docs/adr/document-split.md`.
+NotebookDoc owner/cells splitting remains a proposal, not shipped behavior. Read
+the tables below as the analysis that led to later decisions, not as current
+writer policy.
 
 ## TL;DR
 
@@ -28,11 +33,21 @@ The investigation read the actual code and corrected two premises the handoff (a
 |---|---|---|---|
 | **MetadataDoc** (new, from NotebookDoc root) | owner only | `notebook_id`, `schema_version`, the doc-id pointers, full `metadata` map (kernelspec, trust, deps, path) | yes |
 | **CellsDoc** (new, from NotebookDoc cells) | editors + owners | cells map, source, `execution_count`, cell metadata, `resolved_assets`, attachments, `execution_id` pointer (no outputs) | yes |
-| **RuntimeStateDoc** | daemon only | executions, outputs, env, trust, display index, comm **topology** | yes (once comm-state leaves) |
-| **CommsDoc** (new, from RuntimeStateDoc carve-out) | anyone + runtime | comm **state** (trait values only), keyed by comm_id | yes |
+| **RuntimeStateDoc** | local daemon / room host / runtime peer, policy-scoped | executions, outputs, env, trust, display index, comm **topology** | yes for regular clients |
+| **CommsDoc** (new, from RuntimeStateDoc carve-out) | editor/owner/runtime peer | comm **state** (trait values only), keyed by comm_id | yes |
 | **PoolDoc** | daemon only | pool state | unchanged |
 
-**The topology/state boundary that keeps CommsDoc safe.** Comm *topology* (which comms exist, target, model module/name, owning cell) stays runtime-owned in RuntimeStateDoc. Comm *state* (mutable trait values) moves to CommsDoc. The field split already exists and is enforced by `validate_comm_metadata_unchanged` (`policy.rs:497-502`). The load-bearing subtlety: today orphan-comm state writes silently no-op because `set_comm_state_property` bails `Ok` when the comm entry is absent (`doc.rs:2502-2512`) - call it **Guard A**. Guard A only works because topology and state are co-located. A flat anyone-writes CommsDoc destroys Guard A, so safety rests entirely on the runtime before-snapshot membership gate `diff_comm_state` (`runtime_agent.rs:1500-1521`), which CommsDoc **must** preserve, plus an explicit runtime-side drop of orphan state.
+**The topology/state boundary that keeps CommsDoc safe.** Comm *topology* (which
+comms exist, target, model module/name, owning cell) stays runtime-owned in
+RuntimeStateDoc. Comm *state* (mutable trait values) moves to CommsDoc. The
+field split already exists and is enforced by `validate_comm_metadata_unchanged`
+(`policy.rs:497-502`). The load-bearing subtlety: today orphan-comm state writes
+silently no-op because `set_comm_state_property` bails `Ok` when the comm entry
+is absent (`doc.rs:2502-2512`) - call it **Guard A**. Guard A only works because
+topology and state are co-located. Multi-principal CommsDoc writes remove that
+co-location, so safety rests entirely on the runtime before-snapshot membership
+gate `diff_comm_state` (`runtime_agent.rs:1500-1521`), which CommsDoc **must**
+preserve, plus an explicit runtime-side drop of orphan state.
 
 **Identity pointers** (all owner-only, in MetadataDoc): `cells_doc_id` (new), `comms_doc_id` (new), `runtime_state_doc_id` (moves from NotebookDoc root, already `ensure_`-based at `room.rs:835/960`), plus `notebook_id`/`schema_version`. **Make every new pointer deterministically derivable** (`cells:{notebook_id}`, `comms:{notebook_id}`), mirroring `default_runtime_state_doc_id` (`lib.rs:118-120`). A random, non-derivable id whose `put` fails to reach disk gets re-minted divergently on next load - a silent fork (see failure mode). Each multi-principal doc (CellsDoc, CommsDoc) needs its own `is_canonical_*_seed_change` hash-pin mirroring NotebookDoc (`lib.rs:2400-2429`); daemon-only docs need none.
 

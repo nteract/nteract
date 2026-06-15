@@ -7,7 +7,11 @@
 > Status update, 2026-06-15: production CommsDoc sync/projection and the
 > deterministic `NotebookDoc.comms_doc_id` pointer have landed. This document
 > remains as the historical test-first implementation plan; its expected-failure
-> steps describe the original sequence, not the current tree state.
+> steps describe the original sequence, not the current tree state. Production
+> write authority is narrower than the early shorthand here: editor, owner, and
+> runtime-peer scopes may write `CommsDoc`; regular clients do not write
+> `RuntimeStateDoc`. Use ADR 0002 and source policy checks for current
+> architecture.
 
 Implement task-by-task, test-first: each task adds a failing test, the minimal code to pass it, and a commit. Checkbox (`- [ ]`) steps track progress. Every task is independently testable and ends green; the two crate lanes (notebook-doc, runtime-doc) are independent and can be built concurrently, joining at the final room task.
 
@@ -315,9 +319,9 @@ Create `crates/runtime-doc/src/comms_doc.rs`. Model the constructors on `Runtime
 //! CommsDoc: the document holding widget comm *state*, keyed by comm_id.
 //!
 //! Comm *topology* (target, model, owning cell, capture routing) stays in
-//! RuntimeStateDoc and is daemon-authored. CommsDoc holds only the mutable
-//! trait values, so it can be writable by anyone in the room without weakening
-//! RuntimeStateDoc's all-or-nothing daemon ownership. See ADR 0002.
+//! RuntimeStateDoc. CommsDoc holds only the mutable trait values, so
+//! editor/owner/runtime-peer writers can update widget state without giving
+//! regular clients RuntimeStateDoc write access. See ADR 0002.
 //!
 //! Phase 1 (this module's first form) is the document shell only: the `comms`
 //! scaffold map, the `comms_doc_id` self-identity, and the canonical-seed
@@ -481,7 +485,11 @@ git commit -m "feat(runtime-doc): add CommsDoc type and frozen genesis seed"
 
 ### Task 5: Canonical-seed authorization helper for CommsDoc
 
-CommsDoc is multi-principal (anyone in the room may write it in later phases), so it needs an `is_canonical_comms_seed_change` mirroring `is_canonical_schema_seed_change` (`notebook-doc/src/lib.rs:2496-2504`) - the seed actor may converge the canonical root objects, but only for the exact frozen hashes.
+CommsDoc is multi-principal (editor/owner/runtime-peer writers in later
+phases), so it needs an `is_canonical_comms_seed_change` mirroring
+`is_canonical_schema_seed_change` (`notebook-doc/src/lib.rs:2496-2504`) - the
+seed actor may converge the canonical root objects, but only for the exact
+frozen hashes.
 
 **Files:**
 - Modify: `crates/runtime-doc/src/comms_doc.rs`

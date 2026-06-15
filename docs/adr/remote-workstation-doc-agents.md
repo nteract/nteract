@@ -663,7 +663,7 @@ Built since (the runtime half):
   the submitter's full `principal/operator` actor label. `--run-cell` here drives
   it and observes the queued execution; verified end-to-end against preview. The
   consumer-side receive on this client uses `receive_sync_message_with_changes`,
-  not the daemon-authoritative `receive_sync_message` (which strips incoming
+  not the read-only-peer `receive_sync_message` path (which strips incoming
   changes) - otherwise the room's queued execution never lands locally.
 
 Remaining for "run a cell", not yet built:
