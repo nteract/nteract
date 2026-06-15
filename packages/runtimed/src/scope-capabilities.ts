@@ -38,7 +38,7 @@ export function allowsNotebookWrite(scope: ConnectionScope): boolean {
 
 /** Whether this scope can send RuntimeStateDoc changes. */
 export function allowsRuntimeStateWrite(scope: ConnectionScope): boolean {
-  return scope === "editor" || scope === "runtime_peer" || scope === "owner";
+  return scope === "runtime_peer";
 }
 
 /** Whether this scope can upload blobs (PUT_BLOB frames and multipart upload requests). */

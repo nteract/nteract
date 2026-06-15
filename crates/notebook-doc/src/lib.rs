@@ -20,6 +20,7 @@
 //!   schema_version: u64           ← Document schema version (currently 5)
 //!   notebook_id: Str
 //!   runtime_state_doc_id: Str     ← RuntimeStateDoc identity associated with this notebook
+//!   comms_doc_id: Str             ← CommsDoc identity associated with this notebook
 //!   cells/                        ← Map keyed by cell ID (O(1) lookup)
 //!     {cell_id}/
 //!       id: Str                   ← cell UUID (redundant but convenient)
@@ -66,7 +67,8 @@ use std::collections::HashMap;
 /// - **4** — Addressable outputs: `OutputManifest` carries a required `output_id` (UUIDv4).
 ///   Outputs live in RuntimeStateDoc keyed by `execution_id` and then `output_id`.
 /// - **5** — NotebookDoc carries `runtime_state_doc_id`, the durable identity of the
-///   associated RuntimeStateDoc. Runtime-state heads remain checkpoint/publish metadata.
+///   associated RuntimeStateDoc. It also carries `comms_doc_id`, the durable identity
+///   of the associated CommsDoc. Runtime/comms heads remain checkpoint/publish metadata.
 ///
 /// v1–v2 predate the nteract 2.0 pre-release series and are no longer
 /// supported. `load_or_create_inner` discards pre-v3 documents on load.
@@ -111,6 +113,9 @@ use std::path::Path;
 /// Identifier of the RuntimeStateDoc associated with a NotebookDoc.
 pub type RuntimeStateDocId = String;
 
+/// Identifier of the CommsDoc associated with a NotebookDoc.
+pub type CommsDocId = String;
+
 /// Derive the default RuntimeStateDoc id for a notebook id.
 ///
 /// This keeps older notebooks migratable without adding a random-id source at
@@ -118,6 +123,14 @@ pub type RuntimeStateDocId = String;
 /// for new documents, but this stable derivation is the compatibility default.
 pub fn default_runtime_state_doc_id(notebook_id: &str) -> RuntimeStateDocId {
     format!("runtime:{notebook_id}")
+}
+
+/// Derive the default CommsDoc id for a notebook id.
+///
+/// Keep this deterministic: a missing pointer on an older document must repair
+/// to the same sidecar identity on every peer and reload.
+pub fn default_comms_doc_id(notebook_id: &str) -> CommsDocId {
+    format!("comms:{notebook_id}")
 }
 
 /// Extract a non-negative schema version from an Automerge scalar value.
@@ -1011,6 +1024,11 @@ impl NotebookDoc {
             "runtime_state_doc_id",
             default_runtime_state_doc_id(notebook_id),
         );
+        let _ = doc.put(
+            automerge::ROOT,
+            "comms_doc_id",
+            default_comms_doc_id(notebook_id),
+        );
 
         Self { doc }
     }
@@ -1258,6 +1276,9 @@ impl NotebookDoc {
                             if loaded.runtime_state_doc_id().is_none() {
                                 let _ = loaded.ensure_runtime_state_doc_id(notebook_id);
                             }
+                            if loaded.comms_doc_id().is_none() {
+                                let _ = loaded.ensure_comms_doc_id(notebook_id);
+                            }
                             return loaded;
                         }
 
@@ -1278,6 +1299,7 @@ impl NotebookDoc {
                                 loaded.set_actor(label);
                             }
                             let _ = loaded.ensure_runtime_state_doc_id(notebook_id);
+                            let _ = loaded.ensure_comms_doc_id(notebook_id);
                             let _ =
                                 loaded
                                     .doc
@@ -1442,6 +1464,31 @@ impl NotebookDoc {
         }
         let id = default_runtime_state_doc_id(notebook_id);
         self.set_runtime_state_doc_id(&id)?;
+        Ok(id)
+    }
+
+    /// Read the associated CommsDoc ID from the document.
+    pub fn comms_doc_id(&self) -> Option<CommsDocId> {
+        read_str(&self.doc, automerge::ROOT, "comms_doc_id")
+    }
+
+    /// Set the associated CommsDoc ID.
+    pub fn set_comms_doc_id(&mut self, comms_doc_id: &str) -> Result<(), AutomergeError> {
+        self.doc
+            .put(automerge::ROOT, "comms_doc_id", comms_doc_id)?;
+        Ok(())
+    }
+
+    /// Ensure the document has an associated CommsDoc ID.
+    ///
+    /// Returns the existing value when present; otherwise writes the stable
+    /// default derived from the notebook id and returns it.
+    pub fn ensure_comms_doc_id(&mut self, notebook_id: &str) -> Result<CommsDocId, AutomergeError> {
+        if let Some(id) = self.comms_doc_id() {
+            return Ok(id);
+        }
+        let id = default_comms_doc_id(notebook_id);
+        self.set_comms_doc_id(&id)?;
         Ok(id)
     }
 
@@ -2416,7 +2463,8 @@ impl NotebookDoc {
 
     /// True when nothing beyond document creation has been applied: the change
     /// graph contains only the canonical schema seed and the identity puts
-    /// (`notebook_id`, `runtime_state_doc_id`) that `new_with_actor` writes.
+    /// (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`) that
+    /// `new_with_actor` writes.
     ///
     /// This is the host-authority seeding gate. Unlike a `cell_count()` check it
     /// is derived from immutable history, so it is convergence-safe (no transient
@@ -2450,8 +2498,9 @@ impl NotebookDoc {
                 // creation, before any seeding or user interaction.
                 //
                 // (1) Initial `Put` (empty `pred`) to ROOT's `notebook_id` /
-                //     `runtime_state_doc_id` (from `new_with_actor`). A delete or
-                //     overwrite of those keys is post-creation history and fails.
+                //     `runtime_state_doc_id` / `comms_doc_id` (from
+                //     `new_with_actor`). A delete or overwrite of those keys is
+                //     post-creation history and fails.
                 //
                 //     INVARIANT: this ROOT allowlist must never grow to include
                 //     `cells`, `metadata`, or any structural ROOT key. Those Maps
@@ -2476,6 +2525,7 @@ impl NotebookDoc {
                         LegacyKey::Map(k)
                             if k.as_str() == "notebook_id"
                                 || k.as_str() == "runtime_state_doc_id"
+                                || k.as_str() == "comms_doc_id"
                     );
                 let is_ephemeral_flag = matches!(op.action, LegacyOpType::Put(_))
                     && op.pred.is_empty()
@@ -3231,6 +3281,7 @@ mod tests {
         let doc = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         assert_eq!(doc.notebook_id(), None);
         assert_eq!(doc.runtime_state_doc_id(), None);
+        assert_eq!(doc.comms_doc_id(), None);
         assert_eq!(doc.cell_count(), 0);
         assert!(doc.has_cells_map());
         assert_eq!(doc.get_cells(), vec![]);
@@ -3241,8 +3292,13 @@ mod tests {
 
     #[test]
     fn fresh_notebook_doc_is_pristine() {
-        // genesis + the two identity puts, nothing else
+        // genesis + the identity puts, nothing else
         let mut doc = NotebookDoc::new_with_actor("nb-1", "runtimed");
+        assert_eq!(
+            doc.runtime_state_doc_id(),
+            Some(default_runtime_state_doc_id("nb-1"))
+        );
+        assert_eq!(doc.comms_doc_id(), Some(default_comms_doc_id("nb-1")));
         assert!(doc.is_pristine());
     }
 
@@ -3317,12 +3373,22 @@ mod tests {
             !deleted.is_pristine(),
             "a delete of an identity key is an OpType::Delete, not a Put"
         );
+
+        let mut deleted_comms = NotebookDoc::new_with_actor("nb-1", "runtimed");
+        deleted_comms
+            .doc
+            .delete(automerge::ROOT, "comms_doc_id")
+            .expect("delete comms_doc_id");
+        assert!(
+            !deleted_comms.is_pristine(),
+            "a delete of comms_doc_id is an OpType::Delete, not a Put"
+        );
     }
 
     #[test]
     fn every_fresh_constructor_is_pristine() {
         // Guard: the allowlist is sound only while every creation path writes
-        // nothing to ROOT except the two identity puts. Enumerate the public fresh
+        // nothing to ROOT except the identity puts. Enumerate the public fresh
         // constructors so a future ROOT scaffolding put trips here instead of
         // silently shipping a notebook that never seeds.
         assert!(NotebookDoc::new("nb-1").is_pristine());
@@ -3542,7 +3608,12 @@ mod tests {
             daemon.runtime_state_doc_id(),
             Some(default_runtime_state_doc_id("test-notebook"))
         );
+        assert_eq!(
+            daemon.comms_doc_id(),
+            Some(default_comms_doc_id("test-notebook"))
+        );
         assert_eq!(frontend.runtime_state_doc_id(), None);
+        assert_eq!(frontend.comms_doc_id(), None);
 
         assert_eq!(daemon.root_map_conflict_count("cells"), 1);
         assert_eq!(daemon.root_map_conflict_count("metadata"), 1);
@@ -4113,6 +4184,10 @@ mod tests {
             loaded.runtime_state_doc_id(),
             Some(default_runtime_state_doc_id("migrate-test"))
         );
+        assert_eq!(
+            loaded.comms_doc_id(),
+            Some(default_comms_doc_id("migrate-test"))
+        );
         assert_eq!(loaded.cell_count(), 1);
         let cells = loaded.get_cells();
         assert_eq!(cells[0].source, "import numpy");
@@ -4308,6 +4383,38 @@ mod tests {
             loaded.runtime_state_doc_id(),
             Some(default_runtime_state_doc_id("v4-migrate-test"))
         );
+        assert_eq!(
+            loaded.comms_doc_id(),
+            Some(default_comms_doc_id("v4-migrate-test"))
+        );
+        assert_eq!(loaded.cell_count(), 1);
+        assert_eq!(loaded.get_cells()[0].source, "hello");
+    }
+
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_load_v5_doc_migrates_comms_doc_id() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("notebook.automerge");
+
+        let mut doc = NotebookDoc::new("v5-comms-migrate-test");
+        doc.add_cell(0, "c1", "markdown").unwrap();
+        doc.update_source("c1", "hello").unwrap();
+        let _ = doc.doc.delete(automerge::ROOT, "comms_doc_id");
+        assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
+        assert_eq!(doc.comms_doc_id(), None);
+        doc.save_to_file(&path).unwrap();
+
+        let loaded = NotebookDoc::load_or_create(&path, "v5-comms-migrate-test");
+        assert_eq!(loaded.schema_version(), Some(SCHEMA_VERSION));
+        assert_eq!(
+            loaded.runtime_state_doc_id(),
+            Some(default_runtime_state_doc_id("v5-comms-migrate-test"))
+        );
+        assert_eq!(
+            loaded.comms_doc_id(),
+            Some(default_comms_doc_id("v5-comms-migrate-test"))
+        );
         assert_eq!(loaded.cell_count(), 1);
         assert_eq!(loaded.get_cells()[0].source, "hello");
     }
@@ -4357,6 +4464,7 @@ mod tests {
             loaded.runtime_state_doc_id(),
             Some(default_runtime_state_doc_id("v4-rich"))
         );
+        assert_eq!(loaded.comms_doc_id(), Some(default_comms_doc_id("v4-rich")));
 
         // Cells: count, order, and sources preserved.
         let cells = loaded.get_cells();

@@ -1781,8 +1781,9 @@ fn validate_room_notebook_change_actors_inner<'a>(
 /// Editors may add, remove, reorder, and edit cells of any type. Everything else
 /// at the document root is owner-authored: notebook metadata (kernelspec, trust,
 /// environment, path, project), `schema_version`, `notebook_id`, and the
-/// `runtime_state_doc_id` pairing. So the policy is an allowlist over the diff —
-/// every patch must land inside the `cells` map; any other root write is
+/// `runtime_state_doc_id` / `comms_doc_id` pairings. So the policy is an
+/// allowlist over the diff — every patch must land inside the `cells` map; any
+/// other root write is
 /// rejected. Cell-level `execution_count`/`execution_id` live under `cells`, so
 /// editors may write them — the live execution authority is RuntimeStateDoc,
 /// gated separately, so this cannot fabricate live execution state. Owners skip
@@ -1810,8 +1811,8 @@ fn validate_editor_notebook_changes<'a>(
     {
         // A cell op modifies an object at or below `cells`, so its patch path
         // begins with `cells`. Anything else — root metadata, schema_version,
-        // notebook_id, runtime_state_doc_id, or a root-level replace/delete of
-        // the cells map itself — is owner-authored and rejected.
+        // notebook_id, runtime_state_doc_id, comms_doc_id, or a root-level
+        // replace/delete of the cells map itself — is owner-authored and rejected.
         let within_cells =
             matches!(patch.path.first(), Some((_, Prop::Map(key))) if key == "cells");
         if !within_cells {
@@ -2273,6 +2274,11 @@ impl NotebookHandle {
         self.doc.runtime_state_doc_id()
     }
 
+    /// CommsDoc identity recorded by the NotebookDoc pointer.
+    pub fn get_comms_doc_id(&self) -> Option<String> {
+        self.doc.comms_doc_id()
+    }
+
     /// Set the RuntimeStateDoc identity on both documents in this snapshot pair.
     ///
     /// This is intentionally narrower than changing notebook identity: fixture
@@ -2286,6 +2292,14 @@ impl NotebookHandle {
         self.state_doc
             .set_runtime_state_doc_id(Some(runtime_state_doc_id))
             .map_err(|e| JsError::new(&format!("set runtime state doc id failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Set the CommsDoc identity on the NotebookDoc pointer.
+    pub fn set_comms_doc_id(&mut self, comms_doc_id: &str) -> Result<(), JsError> {
+        self.doc
+            .set_comms_doc_id(comms_doc_id)
+            .map_err(|e| JsError::new(&format!("set notebook comms_doc_id failed: {e}")))?;
         Ok(())
     }
 
@@ -5188,6 +5202,28 @@ mod tests {
             )
             .is_err(),
             "editor scope cannot repoint runtime_state_doc_id",
+        );
+    }
+
+    #[test]
+    fn editor_changes_reject_comms_doc_id_writes() {
+        let mut preview = NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::UnicodeCodePoint,
+            "user:dev:alice/desktop:a",
+        );
+        let heads_before = preview.get_heads();
+        preview
+            .set_comms_doc_id("forged-comms-doc")
+            .expect("forge comms_doc_id");
+
+        assert!(
+            validate_editor_notebook_changes(
+                &mut preview,
+                &heads_before,
+                std::iter::empty::<&ChangeActor>(),
+            )
+            .is_err(),
+            "editor scope cannot repoint comms_doc_id",
         );
     }
 

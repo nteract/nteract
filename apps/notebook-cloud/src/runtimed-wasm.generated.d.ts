@@ -60,6 +60,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     generate_pool_state_sync_reply(): Uint8Array | undefined;
     generate_runtime_state_sync_reply(): Uint8Array | undefined;
     get_cells_json(): string;
+    get_comms_doc_id(): string | undefined;
     get_comms_state(): unknown;
     get_dependency_fingerprint(): string | undefined;
     get_heads_hex(): string[];
@@ -75,6 +76,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     resolve_comm_state(commId: string): unknown;
     set_actor(actorLabel: string): void;
     set_blob_port(port: number): void;
+    set_comms_doc_id(commsDocId: string): void;
     set_runtime_state_doc_id(runtimeStateDocId: string): void;
     set_comm_state_batch(commId: string, patchJson: string): boolean;
     set_comm_state_property(commId: string, key: string, valueJson: string): boolean;

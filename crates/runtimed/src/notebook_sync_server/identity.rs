@@ -185,7 +185,7 @@ mod tests {
         assert!(identity.actor_label().as_str().contains("/agent:codex:s1"));
         assert_eq!(identity.scope(), ConnectionScope::Owner);
         assert!(identity.allows_notebook_write());
-        assert!(identity.allows_runtime_state_write());
+        assert!(!identity.allows_runtime_state_write());
     }
 
     #[tokio::test]

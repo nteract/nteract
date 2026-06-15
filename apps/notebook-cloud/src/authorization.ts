@@ -149,6 +149,6 @@ export function capabilityMask(scope: ConnectionScope): number {
     case "runtime_peer":
       return CAP_READ | CAP_RUNTIME_WRITE;
     case "owner":
-      return CAP_READ | CAP_NOTEBOOK_WRITE | CAP_RUNTIME_WRITE | CAP_PUBLISH | CAP_MANAGE_ACL;
+      return CAP_READ | CAP_NOTEBOOK_WRITE | CAP_PUBLISH | CAP_MANAGE_ACL;
   }
 }

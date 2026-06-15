@@ -13,7 +13,7 @@ Scope: `crates/notebook-doc/`, `crates/runtimed-wasm/`, `apps/notebook/src/hooks
 | Cell metadata (tags, visibility) | Frontend | Author — `set_cell_source_hidden`, `set_cell_tags`, … |
 | Notebook metadata (deps, runtime) | Frontend or MCP agent | Author — `add_uv_dependency`, `set_metadata`, … |
 | `runtime_state_doc_id` | Daemon/schema migration | Reader; associates notebook cells with runtime/output state |
-| `comms_doc_id` | ADR-required follow-up | Not implemented yet; must be deterministic and travel with clone/save/publish once added |
+| `comms_doc_id` | Daemon/schema migration | Reader; associates notebook cells with CommsDoc widget state |
 | Execution count | Daemon/runtime via `RuntimeStateDoc` | Read from runtime-state projection; notebook field is legacy export/import fallback |
 | Cell outputs | Daemon/runtime via `RuntimeStateDoc` | Materialize from runtime-state sync and blob refs |
 | Output clearing (pre-execute) | Daemon/runtime via `RuntimeStateDoc` | Reader of runtime-state mutation |
@@ -75,11 +75,10 @@ Route all UI-side source edits through `splice_source`. Inbound changes carry `e
 
 2. **Exactly one peer creates document structure.** Top-level Maps/Lists like `cells` and `metadata` are created by the daemon in `new_inner()`; other peers receive them via sync. Two `put_object(ROOT, "cells", Map)` from different actors create *two distinct* Map objects at the same key — one wins, the loser's children go invisible. That's why `NotebookDoc::bootstrap()` only seeds `schema_version` (a scalar).
 
-   Sidecar document pointers follow the same rule. `runtime_state_doc_id` is
-   current. ADR 0002 requires `comms_doc_id` as a deterministic root pointer;
-   until it lands, do not treat room attachment as the final portable identity
-   model. When adding any new root identity pointer, update pristine-seeding
-   allowlists and constructor guards in the same change.
+   Sidecar document pointers follow the same rule. `runtime_state_doc_id` and
+   `comms_doc_id` are deterministic root pointers stamped by constructors and
+   load/migration repair paths. When adding any new root identity pointer,
+   update pristine-seeding allowlists and constructor guards in the same change.
 
 3. **Reconcile across `.await`.** When daemon code reads the CRDT, awaits something, and writes back, compose the write against the baseline view from before the await — otherwise concurrent edits during the gap are silently overwritten. See the next section.
 

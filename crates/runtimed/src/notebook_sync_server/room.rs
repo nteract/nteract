@@ -881,6 +881,7 @@ impl NotebookRoom {
             let _ = doc.set_metadata("ephemeral", "true");
         }
         let runtime_state_doc_id = doc.ensure_runtime_state_doc_id(&notebook_id_str)?;
+        let _comms_doc_id = doc.ensure_comms_doc_id(&notebook_id_str)?;
 
         let (persist_tx, flush_request_tx) = if ephemeral {
             (None, None)
@@ -1017,6 +1018,9 @@ impl NotebookRoom {
         let runtime_state_doc_id = doc
             .ensure_runtime_state_doc_id(notebook_id)
             .expect("seed runtime state document id");
+        let _comms_doc_id = doc
+            .ensure_comms_doc_id(notebook_id)
+            .expect("seed comms document id");
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         let (flush_request_tx, flush_rx) = mpsc::unbounded_channel::<FlushRequest>();
         spawn_persist_debouncer(persist_rx, flush_rx, persist_path.clone());
