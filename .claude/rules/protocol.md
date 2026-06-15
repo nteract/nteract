@@ -12,6 +12,7 @@ paths:
   - packages/runtimed/src/request-types.ts
   - apps/notebook/src/lib/frame-pipeline.ts
   - apps/notebook/src/lib/notebook-frame-bus.ts
+  - src/components/notebook/state/notebook-frame-bus.ts
 ---
 
 @crates/notebook-wire/AGENTS.md
