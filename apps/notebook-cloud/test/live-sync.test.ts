@@ -1,7 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { BehaviorSubject } from "rxjs";
-import { SyncEngine, type PersistedNotebookDoc, type SyncableHandle } from "runtimed";
+import {
+  SyncEngine,
+  type NotebookTransport,
+  type PersistedNotebookDoc,
+  type SyncableHandle,
+} from "runtimed";
 import {
   CloudConnectionStatusBridge,
   CloudRecoverableRejectionTracker,
@@ -101,18 +106,33 @@ describe("cloud live sync", () => {
     assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
   });
 
-  it("treats rejected NotebookDoc sync frames as recoverable bootstrap failures", () => {
-    assert.equal(
-      isRecoverableCloudFrameRejection({
-        type: "cloud_frame_rejected",
-        notebook_id: "room",
-        peer_id: "peer-1",
-        frame_type: FrameType.AUTOMERGE_SYNC,
-        reason: "duplicate seq from stale room-host actor",
-        timestamp: "2026-06-08T00:00:00.000Z",
-      }),
-      true,
-    );
+  it("treats rejected materialized sync-divergence frames as recoverable bootstrap failures", () => {
+    for (const [frameType, reason] of [
+      [
+        FrameType.AUTOMERGE_SYNC,
+        "room host rejected AUTOMERGE_SYNC frame: connection scope cannot write NotebookDoc changes",
+      ],
+      [
+        FrameType.RUNTIME_STATE_SYNC,
+        "room host rejected RUNTIME_STATE_SYNC frame: [cloud-room-state-receive-sync] automerge operation failed: patch logs cannot be shared between documents; this probably means a PatchLog created for one document was reused with another",
+      ],
+      [
+        FrameType.COMMS_DOC_SYNC,
+        "room host rejected COMMS_DOC_SYNC frame: [cloud-room-comms-receive-sync] automerge operation failed: patch logs cannot be shared between documents; this probably means a PatchLog created for one document was reused with another",
+      ],
+    ] as const) {
+      assert.equal(
+        isRecoverableCloudFrameRejection({
+          type: "cloud_frame_rejected",
+          notebook_id: "room",
+          peer_id: "peer-1",
+          frame_type: frameType,
+          reason,
+          timestamp: "2026-06-08T00:00:00.000Z",
+        }),
+        true,
+      );
+    }
     assert.equal(
       isRecoverableCloudFrameRejection({
         type: "cloud_frame_rejected",
@@ -124,6 +144,50 @@ describe("cloud live sync", () => {
       }),
       false,
     );
+    for (const [frameType, reason] of [
+      [
+        FrameType.RUNTIME_STATE_SYNC,
+        "room host rejected RUNTIME_STATE_SYNC frame: connection scope cannot write RuntimeStateDoc changes",
+      ],
+      [
+        FrameType.COMMS_DOC_SYNC,
+        "room host rejected COMMS_DOC_SYNC frame: connection scope cannot write CommsDoc changes",
+      ],
+    ] as const) {
+      assert.equal(
+        isRecoverableCloudFrameRejection({
+          type: "cloud_frame_rejected",
+          notebook_id: "room",
+          peer_id: "peer-1",
+          frame_type: frameType,
+          reason,
+          timestamp: "2026-06-08T00:00:00.000Z",
+        }),
+        false,
+      );
+    }
+    for (const [frameType, reason] of [
+      [
+        FrameType.RUNTIME_STATE_SYNC,
+        "room host rejected RUNTIME_STATE_SYNC frame: connection scope cannot write RuntimeStateDoc changes for actor user:PatchLogMismatch",
+      ],
+      [
+        FrameType.COMMS_DOC_SYNC,
+        "room host rejected COMMS_DOC_SYNC frame: connection scope cannot write CommsDoc changes for actor user:PatchLogMismatch",
+      ],
+    ] as const) {
+      assert.equal(
+        isRecoverableCloudFrameRejection({
+          type: "cloud_frame_rejected",
+          notebook_id: "room",
+          peer_id: "peer-1",
+          frame_type: frameType,
+          reason,
+          timestamp: "2026-06-08T00:00:00.000Z",
+        }),
+        false,
+      );
+    }
   });
 
   it("labels authenticated browser sync connections as browser operators", () => {
@@ -857,7 +921,7 @@ describe("cloud persisted-seed handle resolution", () => {
     assert.deepEqual(harness.calls, ["loadPersisted:user:dev:alice", "clear", "createBootstrap"]);
   });
 
-  it("discards the persisted seed only for seeded sessions hitting sync rejections", () => {
+  it("discards the persisted seed only for seeded sessions hitting NotebookDoc sync rejections", () => {
     const rejection = {
       type: "cloud_frame_rejected" as const,
       notebook_id: "room",
@@ -869,6 +933,13 @@ describe("cloud persisted-seed handle resolution", () => {
 
     assert.equal(shouldDiscardPersistedSeedOnRejection(rejection, true), true);
     assert.equal(shouldDiscardPersistedSeedOnRejection(rejection, false), false);
+    assert.equal(
+      shouldDiscardPersistedSeedOnRejection(
+        { ...rejection, frame_type: FrameType.COMMS_DOC_SYNC },
+        true,
+      ),
+      false,
+    );
     assert.equal(
       shouldDiscardPersistedSeedOnRejection({ ...rejection, frame_type: FrameType.REQUEST }, true),
       false,
@@ -2238,6 +2309,89 @@ describe("cloud reconnect session policies", () => {
     } finally {
       console.warn = originalWarn;
     }
+  });
+
+  it("waits for RuntimeStateDoc and CommsDoc fire-and-forget flush delivery", async () => {
+    let releaseRuntimeState!: () => void;
+    let releaseCommsDoc!: () => void;
+    const sent: number[] = [];
+    let runtimeStateSync: Uint8Array | null = new Uint8Array([1]);
+    let commsDocSync: Uint8Array | null = new Uint8Array([2]);
+    const handle: SyncableHandle = {
+      receive_frame: () => [],
+      flush_local_changes: () => null,
+      cancel_last_flush: () => undefined,
+      flush_runtime_state_sync: () => {
+        const msg = runtimeStateSync;
+        runtimeStateSync = null;
+        return msg;
+      },
+      cancel_last_runtime_state_flush: () => undefined,
+      generate_runtime_state_sync_reply: () => null,
+      flush_comms_doc_sync: () => {
+        const msg = commsDocSync;
+        commsDocSync = null;
+        return msg;
+      },
+      cancel_last_comms_doc_flush: () => undefined,
+      generate_comms_doc_sync_reply: () => null,
+      flush_pool_state_sync: () => null,
+      cancel_last_pool_state_flush: () => undefined,
+      generate_pool_state_sync_reply: () => null,
+      reset_sync_state: () => undefined,
+      cell_count: () => 1,
+      get_heads_hex: () => ["aa"],
+      get_dependency_fingerprint: () => undefined,
+    };
+    const transport: NotebookTransport = {
+      connected: true,
+      connectionStatus$: new BehaviorSubject<"online">("online"),
+      disconnect: () => undefined,
+      onFrame: () => () => undefined,
+      sendRequest: async () => ({}),
+      sendTypedRequest: async () => {
+        throw new Error("unused");
+      },
+      sendFrame: async (frameType) => {
+        sent.push(frameType);
+        if (frameType === FrameType.RUNTIME_STATE_SYNC) {
+          await new Promise<void>((resolve) => {
+            releaseRuntimeState = resolve;
+          });
+        }
+        if (frameType === FrameType.COMMS_DOC_SYNC) {
+          await new Promise<void>((resolve) => {
+            releaseCommsDoc = resolve;
+          });
+        }
+      },
+    };
+    const engine = new SyncEngine({
+      getHandle: () => handle,
+      transport,
+      presenceHeartbeat: { intervalMs: 60_000, encode: () => new Uint8Array([0]) },
+      flushDeliveryTimeoutMs: 1_000,
+    });
+
+    engine.flush();
+    await drainMicrotasks();
+    assert.deepEqual(sent, [FrameType.RUNTIME_STATE_SYNC, FrameType.COMMS_DOC_SYNC]);
+
+    let settled = false;
+    const flushed = engine.flushAndWait().then((delivered) => {
+      settled = true;
+      return delivered;
+    });
+    await drainMicrotasks();
+    assert.equal(settled, false);
+
+    releaseRuntimeState();
+    await drainMicrotasks();
+    assert.equal(settled, false);
+
+    releaseCommsDoc();
+    assert.equal(await flushed, true);
+    assert.equal(settled, true);
   });
 
   it("mints a fresh operator nonce and re-resolves auth per connect target call", async () => {

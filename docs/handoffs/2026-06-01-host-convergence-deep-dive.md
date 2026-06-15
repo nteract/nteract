@@ -4,6 +4,25 @@
 **Inputs:** `docs/handoffs/2026-06-01-notebook-host-convergence.md` (the two design threads), the merged work in #3316/#3317, and a 50-agent investigation + premortem (raw result archived at the task output for run `wf_6ab5a807-669`).
 **Status:** design-first. Nothing here has touched code. This supersedes the "brainstorm thread 1, then thread 2" framing of the handoff with a single coupled analysis and a sequenced recommendation.
 
+## Current status (2026-06-15)
+
+This deep dive is historical evidence. Several headline claims below have been
+superseded:
+
+- The **CommsDoc** portion is accepted and implemented via
+  [ADR 0002](../adr/0002-comms-document-split.md). Use that ADR and current
+  source for the live document-boundary contract.
+- The claim that `cloud_frame_rejected` has no recovery action is stale for
+  hosted browser sync. The viewer now handles rejected materialized sync frames
+  with in-place `resetAndResync()` first, then teardown/bootstrap escalation for
+  repeated rejection. Seed discard remains NotebookDoc-specific because the
+  persisted browser seed stores NotebookDoc bytes.
+- The proposed `ResyncRequired { doc_id, authoritative_heads }` and terminal
+  `Sever` variants are not the implemented wire shape. Current code still uses
+  `cloud_frame_rejected` with `frame_type` and `reason`. Doc-specific rejection
+  metadata, per-doc reset, and ACL/repeated-abuse sever semantics remain open
+  design/code work.
+
 ## TL;DR
 
 The forced derivation is **confirmed**: to make every CRDT document all-or-nothing per principal, `NotebookDoc` must split into an owner-only `MetadataDoc` and an editor+owner `CellsDoc`, and `RuntimeStateDoc`'s editor comm-state carve-out forces a `CommsDoc`. That is five documents. The logic holds.

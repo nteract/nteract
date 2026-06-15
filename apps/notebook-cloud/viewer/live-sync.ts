@@ -630,7 +630,31 @@ async function clearPersistedSeed(persistence: CloudSyncPersistenceSeed): Promis
 }
 
 export function isRecoverableCloudFrameRejection(message: SessionControlMessage): boolean {
-  return message.type === "cloud_frame_rejected" && message.frame_type === FrameType.AUTOMERGE_SYNC;
+  if (message.type !== "cloud_frame_rejected") {
+    return false;
+  }
+  if (message.frame_type === FrameType.AUTOMERGE_SYNC) {
+    return true;
+  }
+  if (message.frame_type === FrameType.RUNTIME_STATE_SYNC) {
+    return isSyncDivergenceRejectionReason(message.reason, "cloud-room-state-receive-sync");
+  }
+  if (message.frame_type === FrameType.COMMS_DOC_SYNC) {
+    return isSyncDivergenceRejectionReason(message.reason, "cloud-room-comms-receive-sync");
+  }
+  return false;
+}
+
+function isSyncDivergenceRejectionReason(reason: string, docTag: string): boolean {
+  const escapedTag = docTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const prefix = new RegExp(`\\[${escapedTag}\\]\\s+automerge operation failed:\\s+`, "i");
+  if (!prefix.test(reason)) {
+    return false;
+  }
+  return (
+    /\bPatchLogMismatch\b/i.test(reason) ||
+    /patch logs cannot be shared between documents/i.test(reason)
+  );
 }
 
 /**
@@ -645,7 +669,11 @@ export function shouldDiscardPersistedSeedOnRejection(
   message: SessionControlMessage,
   seededFromPersistence: boolean,
 ): boolean {
-  return seededFromPersistence && isRecoverableCloudFrameRejection(message);
+  return (
+    seededFromPersistence &&
+    message.type === "cloud_frame_rejected" &&
+    message.frame_type === FrameType.AUTOMERGE_SYNC
+  );
 }
 
 /**

@@ -92,6 +92,7 @@ import { cloudWidgetUpdateManager } from "./widget-runtime";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
 import type { CloudAppSession } from "./app-session";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
+import { FrameType } from "../src/protocol";
 
 const quietSyncHealLogger = {
   debug: () => {},
@@ -233,7 +234,7 @@ export function useCloudViewerSession({
   // Set when a seeded session's replayed changes were rejected by the room:
   // the next connect attempt must bootstrap (survives the effect re-run).
   const skipSeedOnceRef = useRef(false);
-  // Escalated AUTOMERGE_SYNC rejections quarantine the cross-tab bridge
+  // Escalated materialized sync rejections quarantine the cross-tab bridge
   // for the remainder of the session (page lifetime): the bridge's
   // principal is sender-asserted, so a hostile/buggy same-origin tab can
   // feed changes the room will keep rejecting — without this flag the
@@ -1250,12 +1251,12 @@ export function useCloudViewerSession({
                 disposeCurrentRuntime,
                 persistenceSeed.clear,
               );
-            } else if (!liveRuntime) {
+            } else if (!liveRuntime && message.frame_type === FrameType.AUTOMERGE_SYNC) {
               // A rejection before the runtime resolved means the in-flight
-              // bootstrap flush was refused. We cannot tell from here
-              // whether that attempt was seeded, so bootstrap the next one
-              // either way — a non-seeded attempt bootstraps identically,
-              // and a healthy record is re-persisted after convergence.
+              // NotebookDoc bootstrap flush was refused. We cannot tell from
+              // here whether that attempt was seeded, so bootstrap the next one
+              // either way. RuntimeStateDoc/CommsDoc rejections do not
+              // incriminate the persisted NotebookDoc seed.
               skipSeedOnceRef.current = true;
             }
             scheduleReconnect(reason);
