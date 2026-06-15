@@ -359,12 +359,14 @@ widening the editor document surface.
 
 The editor `RuntimeStateDoc` write surface is closed by the shared runtime-doc
 policy used by the hosted room host and daemon. Editor and owner scopes write
-mutable widget state through `CommsDoc`; `RuntimeStateDoc` remains runtime-owned
-for lifecycle, execution status, comm topology, and output routing. In a
-multi-user room, an editor sending arbitrary `RuntimeStateDoc` sync changes
-would be privilege escalation into runtime lifecycle, execution status, or
-fabricated outputs, so frames that touch those fields are rejected before the
-real room document mutates.
+mutable widget state through `CommsDoc`; runtime peers may write only
+policy-allowed lifecycle, execution status, comm topology, output routing, and
+output updates for accepted work. Execution intent/provenance plus room-host
+facts stay outside the runtime-peer write surface. In a multi-user room, an
+editor sending arbitrary `RuntimeStateDoc` sync changes would be privilege
+escalation into runtime lifecycle, execution status, or fabricated outputs, so
+frames that touch those fields are rejected before the real room document
+mutates.
 
 Locking the surface down further is a future owner capability, not the baseline:
 an owner-only "freeze structure" or metadata-edit grant can narrow what editors
@@ -377,7 +379,8 @@ bridge, or JupyterHub sidecar. A runtime peer:
 
 - can send `RuntimeStateDoc` sync frames;
 - can upload blobs referenced by runtime output manifests;
-- can emit kernel lifecycle broadcasts;
+- can author kernel lifecycle/progress through policy-validated
+  `RuntimeStateDoc` sync;
 - cannot edit `NotebookDoc`;
 - cannot mutate ACLs or publish revisions unless it also has owner capability.
 
@@ -428,9 +431,11 @@ enforce equivalent access.
    without kernels.
 7. **Editor RuntimeStateDoc path enforcement.** Done in the shared
    runtime-doc policy: editor/owner `RuntimeStateDoc` sync is rejected for
-   widget state and other runtime-owned fields. Mutable widget state lives in
-   `CommsDoc`; queue, execution, kernel, environment, output routing, comm
-   topology, and schema/root writes remain runtime-owned.
+   widget state and runtime state. Mutable widget values live in `CommsDoc`.
+   Runtime peers may write only policy-allowed lifecycle, progress, output,
+   and topology updates for accepted work; execution intent/provenance plus
+   environment, trust, workstation, and schema/root facts remain
+   coordinator/room-host owned.
 8. **Editor cell-editing slice.** Server-side semantic gate
    (`validate_editor_notebook_changes`) accepts full cell editing (any cell
    type, source, and structure) from authenticated `editor`/`owner`

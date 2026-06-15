@@ -188,7 +188,7 @@ pub async fn run_cloud_peer(
                 // Use the change-accepting receive: this peer is a *consumer*
                 // of the room's authoritative RuntimeStateDoc, like a frontend.
                 // The plain receive_sync_message() strips incoming changes
-                // (daemon-authoritative semantics), which silently discards the
+                // (read-only-peer semantics), which silently discards the
                 // room's queued executions and stalls convergence.
                 rt.receive_sync_message_with_changes(&mut rt_peer, incoming)
                     .map_err(|e| anyhow!("apply runtime-state sync: {e}"))?;

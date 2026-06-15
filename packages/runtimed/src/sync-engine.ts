@@ -432,9 +432,9 @@ export class SyncEngine {
    * `NotebookDoc` bytes for local storage.
    *
    * Note: only `NotebookDoc` bytes may seed a syncing handle —
-   * `RuntimeStateDoc` is daemon-authoritative and must never be restored
-   * into the sync path. (A render-only RuntimeStateDoc paint cache is the
-   * one storage exception; see `RUNTIME_STATE_CACHE_KEY_SEGMENT`.)
+   * `RuntimeStateDoc` is runtime-authoritative and must never be restored
+   * into a regular client sync path. (A render-only RuntimeStateDoc paint
+   * cache is the one storage exception; see `RUNTIME_STATE_CACHE_KEY_SEGMENT`.)
    */
   readonly notebookDocChanged$: Observable<void>;
 

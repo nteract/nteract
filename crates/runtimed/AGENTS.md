@@ -38,15 +38,15 @@ The Tauri app crate (`crates/notebook/`) is glue — it wires Tauri commands to 
 | Cell source (`Text` CRDT) | Frontend WASM | Local-first, character-level merge |
 | Cell position, type, metadata | Frontend WASM | User-initiated via UI |
 | Notebook metadata (deps, runtime) | Frontend WASM | User edits deps, runtime picker |
-| Cell outputs (inline manifests) | Daemon | Kernel IOPub → blob store → inline manifest Maps in RuntimeStateDoc |
-| Execution count | Daemon | Set on `execute_input` from kernel |
+| Cell outputs (inline manifests) | Local daemon / runtime peer | Kernel IOPub → blob store → inline manifest Maps in RuntimeStateDoc |
+| Execution count | Local daemon / runtime peer | Set on `execute_input` from kernel |
 | Widget state | Daemon/runtime agent + frontend comm deltas | RuntimeStateDoc holds comm topology; CommsDoc holds mutable comm state; the runtime agent gates state by topology, suppresses echoes, and forwards accepted frontend deltas to the kernel |
-| RuntimeStateDoc (kernel status, queue, executions, env, trust) | Daemon | Separate per-notebook Automerge doc synced via frame `0x05` |
+| RuntimeStateDoc (kernel status, queue, executions, env, trust) | Local daemon / room host / runtime peer, policy-scoped | Separate per-notebook Automerge doc synced via frame `0x05`; regular clients read it but do not author it |
 | CommsDoc (widget state) | Daemon/runtime agent + frontend comm deltas | Separate per-notebook Automerge doc synced via frame `0x09` |
 
 ## RuntimeStateDoc
 
-Each notebook room has a daemon-authoritative **RuntimeStateDoc** — a separate Automerge document (frame type `0x05`). It tracks:
+Each notebook room has a runtime-authoritative **RuntimeStateDoc** — a separate Automerge document (frame type `0x05`). It tracks:
 
 - **Kernel state**: status, starting phase, name, language, env_source
 - **Execution queue**: `executing_execution_id` plus ordered `queued_execution_ids`; notebook cells point at executions from `NotebookDoc`
@@ -54,7 +54,14 @@ Each notebook room has a daemon-authoritative **RuntimeStateDoc** — a separate
 - **Environment drift**: in_sync flag, added/removed packages
 - **Trust state**: status and needs_approval flag
 
-The daemon is the authoritative writer for kernel lifecycle, env, trust, queue, execution, output state, and comm topology. Frontend reads via `useRuntimeState()`, and Python reads via `notebook.runtime`. Widget values live in the paired CommsDoc so RuntimeStateDoc remains daemon-owned; the runtime agent gates CommsDoc deltas by RuntimeStateDoc topology and filters out kernel-authored echoes before forwarding foreign deltas to the kernel.
+Regular notebook clients read RuntimeStateDoc via sync but do not author it. In
+local rooms, the daemon writes runtime state. In hosted/runtime-agent paths,
+runtime peers may write policy-allowed lifecycle, queue/progress, output, and
+comm-topology updates for accepted work, while the room host/local daemon owns
+environment, trust, path/save, workstation, and schema/root facts. Widget values
+live in the paired CommsDoc; the runtime agent gates CommsDoc deltas by
+RuntimeStateDoc topology and filters out kernel-authored echoes before
+forwarding foreign deltas to the kernel.
 
 Key files: `crates/runtime-doc/src/doc.rs`, `crates/runtime-doc/src/handle.rs`, `apps/notebook/src/lib/runtime-state.ts`.
 

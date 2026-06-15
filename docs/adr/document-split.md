@@ -87,11 +87,12 @@ control/resync lanes.
 The reasons for keeping them separate, not just logically but physically on the wire:
 
 1. **Different write authority.** `NotebookDoc` is multi-writer (any
-   editor-scope peer authors cells). `RuntimeStateDoc` is daemon-authored for
-   execution intent and daemon/runtime-peer authored for lifecycle, execution
-   progress, output, and comm topology. `CommsDoc` is room-writable widget
-   state, but RuntimeStateDoc topology gates which comm state can reach the
-   kernel. `PoolDoc` is daemon-only, with all client changes stripped at ingress
+   editor-scope peer authors cells). `RuntimeStateDoc` is coordinator-authored
+   for execution intent and room facts, and runtime-peer authored for
+   policy-allowed lifecycle, execution progress, output, and comm topology.
+   `CommsDoc` carries editor/owner/runtime-peer widget state, but
+   RuntimeStateDoc topology gates which comm state can reach the kernel.
+   `PoolDoc` is daemon-only, with all client changes stripped at ingress
    (`pool_state.rs:341`, `message.changes = Vec::<Vec<u8>>::new().into()`).
 2. **Different trust scopes.** The identity ADR
    (`docs/adr/identity-and-trust.md` Decision 5) carves four scopes precisely
@@ -248,8 +249,10 @@ top-level object IDs (`cells`, `metadata`, `kernel`, `queue`, `executions`,
 `comms`, ...) agree before the first sync round. The `notebook-doc/AGENTS.md`
 invariant "exactly one peer creates document structure" applies inside
 `NotebookDoc` for any non-genesis structure (so the daemon owns `cells`
-creation when scaffolding from empty); for `RuntimeStateDoc`, the daemon owns
-everything by convention because the genesis already scaffolds the runtime tree.
+creation when scaffolding from empty). For `RuntimeStateDoc`, the frozen genesis
+scaffolds the runtime tree; regular clients remain read-only, the
+coordinator/room host owns intent and room facts, and runtime peers may only
+mutate policy-allowed runtime progress/output/topology state.
 
 Room eviction is driven by "last peer disconnected." `peer_eviction.rs` runs the teardown: stop kernel, optionally clean up env, save `.ipynb` if file-backed and dirty, drop the room from the registry. Room-scoped live docs go out of scope. Re-opening the room recreates `RuntimeStateDoc` and `CommsDoc` fresh from seed.
 

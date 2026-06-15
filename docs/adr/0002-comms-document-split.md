@@ -15,26 +15,31 @@ A deep investigation of where that principle leads is recorded in `docs/handoffs
 This ADR is the first decoupled piece. It is also the original "thread 1" of the host-convergence handoff.
 
 The historical document split (`document-split.md`) separated notebook content,
-runtime state, and daemon pool state. Since then, the notebook-room set has
-grown beyond that original count:
+runtime state, and daemon pool state. At the time this ADR was written, the
+notebook-room set had grown beyond that original count but still carried a
+RuntimeStateDoc field-level carve-out:
 
 | Doc | Writers | Rule |
 |---|---|---|
 | NotebookDoc | editors+owners (cells), owner (identity/metadata) | structural authoring |
-| RuntimeStateDoc | daemon/runtime only **except widget comm state** | runtime authority |
+| RuntimeStateDoc | daemon/runtime path only **except widget comm state** | runtime authority |
 | PoolDoc | daemon only | daemon-scoped pool template, fanned out to room peers |
 
-RuntimeStateDoc is not cleanly read-only to clients for exactly one reason: **widget comm state is bidirectional.** Editors must be able to write `comms/{comm_id}/state/{key}` so a slider or a text box pushes its value back to the kernel. That is the lone carve-out in the hosted-room authorization model (Decision 7), and it is enforced not by a document boundary but by a field-subtree policy diff.
+The current implementation has shipped the CommsDoc split. RuntimeStateDoc sync
+is read-only for ordinary viewer/editor/owner clients; runtime peers can write
+only policy-allowed runtime progress, lifecycle, outputs, and topology for
+accepted work, and coordinator/room-host paths own execution intent and room
+facts. Bidirectional widget values live in CommsDoc.
 
 ## Problem
 
-The comm-state carve-out is exactly the kind of partial-document ownership the convergence principle exists to retire.
+The comm-state carve-out was exactly the kind of partial-document ownership the convergence principle exists to retire.
 
-1. **RuntimeStateDoc is partially owned.** An editor may write it, but only the `comms/*/state/*` subtree. Enforcement is a before/after policy snapshot run at **two sites**: the cloud host (`receive_runtime_state_sync`, `crates/runtimed-wasm/src/lib.rs:663-697`, scopes at `:844-849`) and the daemon peer-sync path (`crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs:114-116`), both comparing `runtime_state_policy_snapshot(&state_doc)` against `runtime_state_policy_snapshot(&preview)` and rejecting anything outside the permitted comm-state delta. The carve-out does more than drop orphan state: it rejects editor comm *creation* (`policy.rs:464-472`) and *deletion* (`policy.rs:454-461`), freezes all topology/metadata (`validate_comm_metadata_unchanged`, `policy.rs:491-513`), and rejects any write outside `comms/*/state`. This is a field-subtree gate inside one document, with the same shape as the NotebookDoc editor gate that #3316 had to harden.
+1. **RuntimeStateDoc was partially owned.** Before CommsDoc, an editor could write it, but only the `comms/*/state/*` subtree. Enforcement was a before/after policy snapshot run at **two sites**: the cloud host's `receive_runtime_state_sync` path and the daemon peer-sync path in `crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs`, both comparing `runtime_state_policy_snapshot(&state_doc)` against `runtime_state_policy_snapshot(&preview)` and rejecting anything outside the permitted comm-state delta. The carve-out did more than drop orphan state: it rejected editor comm creation/deletion, froze all topology/metadata, and rejected any write outside `comms/*/state`. This was a field-subtree gate inside one document, with the same shape as the NotebookDoc editor gate that #3316 had to harden.
 
-2. **It blocks "RuntimeStateDoc is read-only to clients, period."** As long as the carve-out exists, the daemon and the room host both carry a comm-state exception, and the divergence-recovery work (the handoff's thread 2) cannot make the clean statement "a client rejected on RuntimeStateDoc wrote a document it may not write at all."
+2. **It blocked "RuntimeStateDoc is read-only to regular clients."** As long as the carve-out existed, the daemon and the room host both carried a comm-state exception, and the divergence-recovery work (the handoff's thread 2) could not make the clean statement "a regular client rejected on RuntimeStateDoc wrote a document it may not write at all."
 
-3. **The carve-out couples comm topology and comm state in one object.** `comms/{comm_id}` holds both the runtime-authored topology and the bidirectional state map (`crates/runtime-doc/src/doc.rs:2467-2496`). "Topology" here is wider than "target, model, owning cell": `validate_comm_metadata_unchanged` (`policy.rs:497-502`) treats `target_name`, `model_module`, `model_name`, `outputs`, `seq`, and `capture_msg_id` (the Output-widget routing field) as daemon-owned. The policy snapshot has to thread that needle on every write.
+3. **The carve-out coupled comm topology and comm state in one object.** Before the split, `comms/{comm_id}` held both the runtime-authored topology and the bidirectional state map. "Topology" here was wider than "target, model, owning cell": it included `target_name`, `model_module`, `model_name`, `outputs`, `seq`, and `capture_msg_id` (the Output-widget routing field). The policy snapshot had to thread that needle on every write.
 
 What makes this tractable is that co-location is currently providing a **cluster of co-location guarantees - three of them load-bearing** - and any split has to re-provide each deliberately:
 
@@ -45,8 +50,10 @@ What makes this tractable is that co-location is currently providing a **cluster
 ## Forces
 
 - **Document-level authorization.** After the change, "who may write this document" is a single bit per principal, no subtree policy diff.
-- **RuntimeStateDoc becomes truly read-only to clients.** The comm-state exception leaves it entirely.
-- **Safety of "anyone writes."** A document anyone in the room may write is only safe if a write that does not correspond to real runtime topology is inert.
+- **RuntimeStateDoc becomes truly read-only to regular clients.** The comm-state exception leaves it entirely.
+- **Safety of multi-principal widget writes.** A document writable by editors,
+  owners, and runtime peers is only safe if a write that does not correspond to
+  real runtime topology is inert.
 - **No data loss across save/load and `.ipynb` export.** Widget state must still round-trip.
 - **Low blast radius.** CommsDoc is additive. RuntimeStateDoc genesis is frozen (`RUNTIME_STATE_GENESIS_V2_BYTES`, `doc.rs:338`), so this must not reshape it in place.
 - **Decoupled from the frozen-NotebookDoc data-move.** This ADR must stand alone and ship before any `cells`/`metadata` structural split.
@@ -66,20 +73,37 @@ A fourth document holds comm **state** only; comm **topology** stays in RuntimeS
 
 | Doc | Writers | Contents |
 |---|---|---|
-| RuntimeStateDoc | daemon/runtime only | executions, outputs, env, trust, display index, **comm topology** (target, model, owning cell) |
-| **CommsDoc** (new) | anyone in the room + runtime | **comm state** (mutable trait values), keyed by comm_id |
+| RuntimeStateDoc | local daemon / room host / runtime peer, policy-scoped | executions, outputs, env, trust, display index, **comm topology** (target, model, owning cell) |
+| **CommsDoc** (new) | editor/owner/runtime peer | **comm state** (mutable trait values), keyed by comm_id |
 
-The boundary is the existing topology/state field split (already enforced by `validate_comm_metadata_unchanged`, `crates/runtime-doc/src/policy.rs:491`). Editors stop writing RuntimeStateDoc entirely; the policy-snapshot carve-out and the `RuntimeStateWriteScope::Editor` comm exception are deleted at both enforcement sites.
+The boundary is the existing topology/state field split: RuntimeStateDoc keeps
+comm topology, while CommsDoc owns mutable widget values. Editors stop writing
+RuntimeStateDoc entirely; the policy-snapshot carve-out and the
+`RuntimeStateWriteScope::Editor` comm exception are deleted at both enforcement
+sites.
 
-"Anyone writes CommsDoc" is safe **at the kernel-forward boundary**, and this needs scoping honestly. State written for a comm_id with no topology in RuntimeStateDoc is dropped by the membership gate (`diff_comm_state`, `runtime_agent.rs:1495-1522`) and never reaches the kernel. It is *not* inert to durable persistence or cross-client rendering: the open-write doc lets a malicious or buggy peer mint arbitrary comm-state entries that land durably and broadcast to every peer's widget layer until a GC pass reaps them. There is no per-comm owner concept in the code today (`CommDocEntry`, `doc.rs:276`, has no owner field) and the current carve-out already lets any editor write state for any comm with topology, so the split does **not** regress authorization. What it does shift is the entire safety burden onto a gate that today governs only kernel-forwarding, not storage or render, and it turns Guard A from write-rejection into forward-suppression. So the orphan-reclamation path is a **named requirement**, not a fallback (see Decision).
+CommsDoc's multi-principal write surface is safe **at the kernel-forward
+boundary**, and this needs scoping honestly. State written for a comm_id with no
+topology in RuntimeStateDoc is dropped by the membership gate
+(`diff_comm_state`, `runtime_agent.rs:1495-1522`) and never reaches the kernel.
+It is *not* inert to durable persistence or cross-client rendering: a malicious
+or buggy CommsDoc writer can mint arbitrary comm-state entries that land durably
+and broadcast to every peer's widget layer until a GC pass reaps them. There is
+no per-comm owner concept in the code today (`CommDocEntry`, `doc.rs:276`, has
+no owner field) and the previous carve-out already let any editor write state
+for any comm with topology, so the split does **not** regress authorization.
+What it does shift is the entire safety burden onto a gate that today governs
+only kernel-forwarding, not storage or render, and it turns Guard A from
+write-rejection into forward-suppression. So the orphan-reclamation path is a
+**named requirement**, not a fallback (see Decision).
 
 - **Pros:**
-  - RuntimeStateDoc becomes all-or-nothing (daemon-only), read-only to clients.
+  - RuntimeStateDoc becomes all-or-nothing for regular clients. Runtime peers still use the validated runtime-authoring path.
   - Authorization is a document bit, not a subtree diff.
   - Additive: CommsDoc gets its own frozen genesis seed; RuntimeStateDoc genesis is untouched.
   - Unblocks the clean divergence-recovery statement for RuntimeStateDoc.
 - **Cons (each maps to a load-bearing invariant that must be rebuilt, not assumed):**
-  - **Guard A becomes forward-suppression.** Membership can no longer be inferred from CommsDoc's own keys (membership is exactly the untrusted thing anyone can write). It must be re-derived from RuntimeStateDoc topology on every CommsDoc receive. Orphan state now lands in the doc, so the runtime-side drop is a forward-suppression *plus* a reclamation pass, not a write rejection.
+  - **Guard A becomes forward-suppression.** Membership can no longer be inferred from CommsDoc's own keys (membership is exactly the untrusted thing multiple principals can write). It must be re-derived from RuntimeStateDoc topology on every CommsDoc receive. Orphan state now lands in the doc, so the runtime-side drop is a forward-suppression *plus* a reclamation pass, not a write rejection.
   - **The echo filter loses its substrate, on all three layers.** Per-field LWW-authorship, the content-hash `EchoSuppressor`, and the no-op scalar skip all assume kernel and frontend writes co-locate. After the split each must be re-homed onto CommsDoc's receive path, preserving the causality argument at `doc.rs:3169-3175`. The CI guard must assert that **both** a kernel-actor-authored change **and** a content-hash echo within TTL are never forwarded to the kernel - not just the actor case.
   - **GC splits into authority and atomicity.** The daemon (a pure reader of CommsDoc state for live-sync) must be given CommsDoc write authority so `remove_comm`/`clear_comms` reclaim both docs, *and* a topology-absence GC pass must reap orphans the gate suppresses. Because the two docs have independent sync heads, the delete is non-atomic: a peer can observe topology-gone/state-present (inert, covered by the membership gate) or state-gone/topology-present (surfaces a widget with identity but no values). Specify delete ordering or have readers treat present-topology/absent-state as "not yet loaded."
   - A fourth sync stream on the frontend bridge and a fourth document to bootstrap/reset.
@@ -125,14 +149,17 @@ CommsDoc is a CRDT document, for three reasons that survive scrutiny: durability
 
 Option D's presence idea is retained, but in its correct slot: an **optional ephemeral fast-lane for in-flight high-frequency updates** (mid-drag intermediate values) that commits to the CRDT on settle. It is **not** built now. It is added only if measured churn proves to hurt, and it never owns durability - the CRDT remains the record. This keeps presence's churn-shedding exactly where it helps without giving up durability or late-join where it does not.
 
-The per-key prerequisite is **already satisfied** - comm state is a native per-key Automerge map today, which lowers implementation risk and is the reason invariant #2's per-field LWW-authorship works at all. The write path (`put_comm` -> `put_json_at_key` -> `put_object(Map)`, `doc.rs:2481-2482`), the per-property setter (`set_comm_state_property` requires `Value::Object(ObjType::Map)`, `doc.rs:2508-2513`), the kernel-forward diff (per-key, `runtime_agent.rs:1502-1517`), and the policy gate are all per-key. No `serde_json::to_string` of comm state exists. The only thing claiming "Str" is a stale doc-comment at `doc.rs:68`, which this work should delete. So per-key is a **non-regression invariant** to preserve, not a representation to migrate. The per-comm `state` map is created lazily on first `comm_open` (`scaffold_map`, `doc.rs:2476`), not in frozen genesis, so the seed shape does not bind it; the write helpers and unit tests do.
+The per-key prerequisite is **already satisfied** - comm state is a native per-key Automerge map today, which lowers implementation risk and is the reason invariant #2's per-field LWW-authorship works at all. The legacy RuntimeStateDoc write path (`put_comm` -> `automunge::put_json_at_key_batched`) creates a native map, the per-property setter requires an existing map, the kernel-forward diff is per-key, and the policy gate is per-key. No `serde_json::to_string` of comm state exists. So per-key is a **non-regression invariant** to preserve, not a representation to migrate. The per-comm `state` map is created lazily on first `comm_open`, not in frozen genesis, so the seed shape does not bind it; the write helpers and unit tests do.
 
-One concurrency hazard to call out: `put_comm` creates the state object via the **deprecated** `automunge::put_json_at_key` (`doc.rs:2481-2482`, under `#[allow(deprecated)]`), which warns that two peers calling `put_object` at the same key produce competing objects. Per-property updates correctly use the safe `update_json_at_key`, but initial state-object creation does not. Under "anyone writes CommsDoc," concurrent creation of the same comm's state object could fork; the initial-create path needs the safe API or daemon-only object creation.
+Resolved implementation note: `put_comm` now uses the batched automunge helper
+instead of the older deprecated per-key helper, and mutable widget values moved
+to CommsDoc. Preserve that object-identity behavior if this topology helper is
+rewritten again.
 
 ## Consequences
 
-- **RuntimeStateDoc becomes daemon-only and read-only to clients.** The `RuntimeStateWriteScope::Editor` comm-state exception and the `runtime_state_policy_snapshot` before/after carve-out are removed at **both** enforcement sites: the cloud host (`crates/runtimed-wasm/src/lib.rs:663-697`) and the daemon peer-sync path (`crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs:114-116`). Deleting only the wasm gate leaves the daemon gate dangling; both belong in the removal list and in the cross-environment conformance-test scope (deep-dive handoff item 13). This is the convergence principle applied to the runtime document.
-- **Anyone can now mint unbounded orphan comm_ids.** Because orphan state lands durably (forward-suppression, not write-rejection), CommsDoc needs an orphan floor / size consideration: the reclamation pass must bound how much un-topologied state can accumulate, and the doc-size budget has to account for abusive minting.
+- **RuntimeStateDoc becomes read-only to regular clients.** The `RuntimeStateWriteScope::Editor` comm-state exception and the `runtime_state_policy_snapshot` before/after carve-out are removed at both enforcement sites: the cloud host and the daemon peer-sync path. Runtime peers remain the runtime-authoring scope for policy-allowed progress, lifecycle, outputs, and topology; execution intent/provenance remains coordinator/room-host owned. This is the convergence principle applied to regular client writes into the runtime document.
+- **Any CommsDoc writer can now mint unbounded orphan comm_ids.** Because orphan state lands durably (forward-suppression, not write-rejection), CommsDoc needs an orphan floor / size consideration: the reclamation pass must bound how much un-topologied state can accumulate, and the doc-size budget has to account for abusive minting.
 - **A new frozen CommsDoc genesis seed** is added and registered in `GENESIS_SEEDS_IN_WASM` (`crates/xtask/src/main.rs:1509`), with a shape-asserting `verify-genesis` check, or an old wasm ships the wrong seed and re-triggers the #3086 zeroing footgun. CommsDoc is multi-principal, so it needs its own `is_canonical_*_seed_change` hash-pin mirroring NotebookDoc's seed authorization.
 - **A `comms_doc_id` identity pointer** is added, owner-only, alongside `runtime_state_doc_id`. **Make it deterministically derivable** (`comms:{notebook_id}`), mirroring `default_runtime_state_doc_id` (`crates/notebook-doc/src/lib.rs:118-120`); a random pointer whose `put` fails to reach disk gets re-minted divergently on reload, a silent fork.
 - **Implementation update, 2026-06-15:** production CommsDoc sync, storage,
@@ -147,10 +174,10 @@ One concurrency hazard to call out: `put_comm` creates the state object via the 
 - **A fourth frontend sync stream** is added to the bridge (`apps/notebook/src/lib/notebook-sync-store-bridge.ts`, `runtime-state.ts`), with its own bootstrap and reset path. Per-document reset matters here: resetting CommsDoc must not blow away RuntimeStateDoc or CellsDoc projections (a constraint the divergence-recovery ADR builds on).
 - **`.ipynb` and save/load** must read topology from RuntimeStateDoc and state from CommsDoc and reassemble one widget-state blob. Confirm the two docs' comm_id sets are read at a consistent snapshot so widgets do not restore with identity-but-no-values or values-but-no-identity.
 
-## Open questions (resolve in the implementation plan)
+## Follow-up status
 
-1. **Comm-state representation - resolved, no migration.** Comm state is already a native per-key Automerge map (write path `put_comm` -> `put_json_at_key` -> `put_object(Map)`; per-property setter requires a Map). The only "Str" is the stale doc-comment at `doc.rs:68`, which this work deletes. The remaining action is to treat per-key as a non-regression invariant and to replace the deprecated `put_json_at_key` initial-create with the concurrency-safe path (see substrate hazard above). Substrate itself is resolved in Decision: CRDT spine, presence fast-lane deferred.
-2. **Closed-comm GC: authority *and* atomicity.** Daemon CommsDoc write authority reclaims state on `comm_close`/relaunch, *and* a topology-absence GC pass reaps orphans the membership gate suppresses (both required, not either/or). Open: the exact delete ordering across the two docs (state before topology) so a non-atomic cross-doc delete never strands present-topology/absent-state.
-3. **Echo-filter homing.** Exactly which document does the kernel write widget echoes into after the split, and does `rt:kernel:` actor-prefix discrimination still hold on that document's receive path?
-4. **Consistent save snapshot.** Is there a read path that snapshots RuntimeStateDoc topology and CommsDoc state at mutually consistent heads for export, given they now have independent sync heads and independent GC?
-5. **Seed hash-pinning.** Does CommsDoc need a new `is_canonical_comms_seed_change` helper for multi-principal seed convergence, matching `is_canonical_schema_seed_change`? (Almost certainly yes, since anyone may write it.)
+1. **Comm-state representation - resolved, no migration.** Comm state is already a native per-key Automerge map. RuntimeStateDoc topology creation now uses the batched automunge helper, CommsDoc stores mutable widget values, and the per-property setter requires a Map. Treat per-key state as a non-regression invariant. Substrate itself is resolved in Decision: CRDT spine, presence fast-lane deferred.
+2. **Closed-comm GC: implemented with non-atomic cross-doc ordering.** Daemon/runtime cleanup has CommsDoc write authority for `comm_close`/relaunch and topology-absence pruning. Readers must still tolerate the transient split states caused by independent RuntimeStateDoc and CommsDoc heads.
+3. **Echo-filter homing: implemented on the CommsDoc receive/forward path.** Kernel-authored widget state lands in CommsDoc under runtime actor labels, and the runtime forward path filters kernel-authored echoes before forwarding foreign deltas to the kernel.
+4. **Consistent save snapshot: implemented, still worth watching.** Save/export reads RuntimeStateDoc topology and CommsDoc state and reassembles widget metadata; because the two docs have independent heads, future changes should preserve the current tolerance for identity-without-values and values-without-identity windows.
+5. **Seed hash-pinning: implemented through the frozen CommsDoc genesis artifact.** Keep CommsDoc genesis verification alongside NotebookDoc and RuntimeStateDoc genesis verification when the schema evolves.

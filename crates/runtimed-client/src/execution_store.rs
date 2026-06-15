@@ -1,6 +1,6 @@
 //! Durable execution-result store.
 //!
-//! RuntimeStateDoc remains the live, daemon-authoritative sync document. This
+//! RuntimeStateDoc remains the live, runtime-authoritative sync document. This
 //! store is a small sidecar ledger for terminal executions so tools can recover
 //! `get_results(execution_id)` after a room is evicted.
 

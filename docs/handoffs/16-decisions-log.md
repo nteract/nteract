@@ -33,9 +33,10 @@ decision: what, the alternative, why.
    without entrenching the duplicate on `main`.
 
 6. **Consumer-side RuntimeStateDoc receive uses `receive_sync_message_with_changes`, not
-   `receive_sync_message`.** Why: the plain receive is daemon-authoritative and *strips
-   incoming changes*. A cloud peer is a consumer of the room's authoritative state, so
-   stripping silently discards the room's queued executions and stalls convergence.
+   `receive_sync_message`.** Why: the plain receive is the read-only-peer path and
+   *strips incoming changes*. A cloud peer is a consumer of the room's authoritative
+   state, so stripping silently discards the room's queued executions and stalls
+   convergence.
 
 7. **A lifecycle safety net is required before relying on cloud hosting (Phase 3).**
    Historical reason: when the runtime itself vanished, the room had no watchdog
@@ -360,17 +361,18 @@ The code path is additive and gated, so it cannot affect the desktop/daemon path
     (watchdog) before 3e and called 3e the thing that "gates 3d being legal." Two
     findings reshaped that:
     - **The watchdog's own write path does NOT go through the
-      `validate_runtime_state_sync_scope` policy, so the policy relaxation is not
-      actually on 3d's critical path.** `validate_runtime_state_sync_scope`
-      (policy.rs:115) and its `validate_comm_state_only_runtime_delta` deadlock
-      (policy.rs:403-405) gate only *incoming peer sync frames* — they run in
-      `RoomHostHandle::receive_runtime_state_sync` (`runtimed-wasm/src/lib.rs:715`)
-      before applying a peer's sync message. A DO-internal `alarm()` watchdog that
+      `validate_runtime_state_sync_scope` peer-sync policy, so a peer-scope policy
+      relaxation is not actually on 3d's critical path.**
+      `validate_runtime_state_sync_scope` gates only *incoming peer sync frames*
+      — it runs in `RoomHostHandle::receive_runtime_state_sync` before applying a
+      peer's sync message. Current code rejects non-runtime-peer RuntimeStateDoc
+      deltas unless `before == after`; the older comm-state carve-out helper has
+      been retired after the CommsDoc split. A DO-internal `alarm()` watchdog that
       authors *directly* on the room host's `state_doc` (the recommended 3d design,
       and the only place the net can live since the daemon's death is the trigger)
-      bypasses that check entirely. The relaxation matters only for an alternative
-      "Owner peer pushes the reconciliation" design — which 3d should avoid for
-      exactly this reason. So 3e's policy half is deferred, not blocking.
+      bypasses the peer-sync check entirely. The relaxation matters only for an
+      alternative "Owner peer pushes the reconciliation" design — which 3d should
+      avoid for exactly this reason. So 3e's policy half is deferred, not blocking.
     - **A new `RuntimeLifecycle::Disconnected` variant has a ~28-Rust-file + TS
       blast radius and its payoff is viewer-facing UX**, verifiable only against a
       deployed viewer (Deferred). Landing it unverified is higher
@@ -403,10 +405,11 @@ The code path is additive and gated, so it cannot affect the desktop/daemon path
 **Deferred (3e deferred halves):** (1) the `RuntimeLifecycle::Disconnected` variant —
 defer to land with 3d so its viewer UX is validated against a live deployed viewer in
 the same pass (the watchdog can already express "stale" via `last_seen` + flipping to
-the existing `Error`/`Shutdown` terminal states in the meantime); (2) the
-`policy.rs:403-405` relaxation — only needed if 3d is ever built as an Owner-peer-push
-rather than a DO-internal watchdog; the recommended DO-internal design needs no policy
-change. Decide (2) when 3d's mechanism is chosen.
+the existing `Error`/`Shutdown` terminal states in the meantime); (2) a peer-sync
+policy relaxation to allow owner/editor lifecycle reconciliation — only needed if 3d
+is ever built as an Owner-peer-push rather than a DO-internal watchdog; the
+recommended DO-internal design needs no policy change. Decide (2) when 3d's
+mechanism is chosen.
 
 ## Phase 3f req 6: writer-error recovery (the headless half of 3f)
 

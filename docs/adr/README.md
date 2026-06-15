@@ -61,7 +61,7 @@ These entries define the center of gravity for the system:
 | [The Document Split](document-split.md) | Draft | Count-neutral document-boundary baseline for notebook-room docs and daemon-scoped PoolDoc; extended by CommsDoc and CommentsDoc follow-ons. |
 | [Peer Egress Lane Split Investigation](peer-egress-lanes.md) | Draft | Reliable/ephemeral peer-writer lane split investigation; implementation has partially landed. |
 | [ADR 0001: Notebook seeding invariant](0001-notebook-seeding-invariant.md) | Accepted | Causal `is_pristine` seeding gate replacing the cell-count/metadata proxy. |
-| [ADR 0002: CommsDoc split](0002-comms-document-split.md) | Accepted | Extract widget comm state into a fourth document so RuntimeStateDoc becomes cleanly daemon-only. |
+| [ADR 0002: CommsDoc split](0002-comms-document-split.md) | Accepted | Extract widget comm state into a fourth document so RuntimeStateDoc is read-only to regular notebook clients. |
 | [Notebook Comments Document](notebook-comments-document.md) | Draft | Separate per-notebook CommentsDoc for human and agent comments across local and hosted rooms. |
 | [Runtime State Document Identity](runtime-state-document-identity.md) | Draft | NotebookDoc-owned pointer to the RuntimeStateDoc identity and checkpoint-head split. |
 | [Notebook Schema Evolution and the Frozen Genesis](schema-evolution-and-genesis.md) | Draft | Frozen genesis seed, freeze-and-layer evolution, forward-tolerant reader, and cross-version sync hazards. |

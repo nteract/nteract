@@ -63,7 +63,7 @@ export function useDaemonKernel({
   onQueueChange,
 }: UseDaemonKernelOptions) {
   const host = useNotebookHost();
-  // ── State from RuntimeStateDoc (daemon-authoritative) ─────────────
+  // ── State from RuntimeStateDoc (runtime-authoritative) ─────────────
   // Each projection is deduplicated in the shared store, so a daemon tick
   // that doesn't change the slice doesn't re-render this hook's host.
   const runtimeState = useRuntimeState();

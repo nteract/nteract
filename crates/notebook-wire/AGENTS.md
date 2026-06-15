@@ -9,7 +9,7 @@ Scope: `crates/notebook-wire/`, `crates/notebook-doc/`, `crates/notebook-protoco
 - `notebook-wire` — frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes.
 - `notebook-protocol` — handshakes and JSON wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, runtime-agent envelopes.
 - `notebook-doc` — `NotebookDoc` Automerge schema. `SCHEMA_VERSION` bumps only with a migration that preserves real user data.
-- `runtime-doc` — `RuntimeStateDoc` and `CommsDoc` schemas. RuntimeStateDoc is daemon/runtime-agent authored for kernel lifecycle, queue, outputs, env, trust, project, path, save state, and comm topology. CommsDoc carries mutable widget state written by the daemon/runtime agent and the approved frontend comm CRDT writer.
+- `runtime-doc` — `RuntimeStateDoc` and `CommsDoc` schemas. RuntimeStateDoc is read-only to regular clients; the local daemon / room host own coordinator facts, and runtime peers may write policy-allowed lifecycle, progress, output, and comm topology for accepted work. CommsDoc carries mutable widget state written by editor/owner clients and runtime peers.
 
 ## Versioning
 
@@ -289,9 +289,15 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 ### RuntimeStateDoc
 
-State-carrying broadcasts (kernel status, env sync diff, queue) were replaced because they suffered from silent drops, no initial state for late joiners, and ordering races between windows. `RuntimeStateDoc` is a daemon-authoritative per-notebook Automerge document synced via frame `0x05` on the existing notebook connection.
+State-carrying broadcasts (kernel status, env sync diff, queue) were replaced because they suffered from silent drops, no initial state for late joiners, and ordering races between windows. `RuntimeStateDoc` is a runtime-authoritative per-notebook Automerge document synced via frame `0x05` on the existing notebook connection.
 
-The daemon writes kernel status, execution queue, environment progress, project context, trust state, path/save state, outputs, and comm topology. Clients receive those fields via normal Automerge sync, with unexpected client changes stripped. Mutable widget comm state lives in CommsDoc so RuntimeStateDoc remains daemon-owned. The frontend reads runtime state via `useRuntimeState()` and the project runtime stores.
+Regular clients receive RuntimeStateDoc fields via normal Automerge sync, with
+unexpected client changes stripped. The local daemon and hosted room host own
+environment, trust, project, path/save, workstation, and schema/root facts.
+Runtime peers may write policy-allowed kernel lifecycle, queue/progress,
+outputs, and comm topology for accepted work. Mutable widget comm state lives in
+CommsDoc. The frontend reads runtime state via `useRuntimeState()` and the
+project runtime stores.
 
 **Key files:** `crates/runtime-doc/src/doc.rs` (schema + setters), `crates/runtime-doc/src/handle.rs` (handle), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
 
@@ -345,7 +351,7 @@ Because the daemon socket is same-UID trusted, treat the runtime-agent handshake
 | `crates/runtimed/src/{output_store,blob_store}.rs` | Output manifest creation + blob inlining threshold; content-addressed blob storage |
 | `crates/runtimed-wasm/src/lib.rs` | WASM bindings: cell mutations, sync, per-cell accessors, `CellChangeset` |
 | `crates/notebook-doc/src/{lib,diff}.rs` | `NotebookDoc` schema + per-cell accessors; `CellChangeset` structural diff |
-| `crates/runtime-doc/src/doc.rs` | `RuntimeStateDoc` schema — daemon-authoritative per-notebook state |
+| `crates/runtime-doc/src/doc.rs` | `RuntimeStateDoc` schema — runtime-authoritative per-notebook state, read-only to regular clients |
 | `apps/notebook/src/lib/{frame-pipeline,notebook-frame-bus,runtime-state,materialize-cells,notebook-cells}.ts` | App-side frame processing, in-memory bus, runtime store, materialization, split cell store |
 | `apps/notebook/src/hooks/{useAutomergeNotebook,useDaemonKernel}.ts` | WASM handle owner + kernel execution/broadcast handling |
 | `crates/notebook/src/lib.rs` | Tauri commands and relay tasks (transparent byte pipe) |
