@@ -2,7 +2,7 @@
 
 This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates dev credentials, first-party browser app-session cookies minted from OIDC, Anaconda API-key publishing/runtime requests, or anonymous viewer connections, authorizes the principal through the D1 room ACL, stamps a trusted `<principal>/<operator>` actor label, and routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id.
 
-The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document set in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and stores bounded frame metadata for sync frames that actually change a materialized document. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes cover the allowed cell surface, while notebook identity and metadata remain owner-only. Widget state writes live in `CommsDoc`; `RuntimeStateDoc` remains runtime-peer/room-host owned. Runtime peers can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
+The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document set in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and keeps in-memory frame-budget telemetry for live sync traffic. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes cover the allowed cell surface, while notebook identity and metadata remain owner-only. Widget state writes live in `CommsDoc`; `RuntimeStateDoc` remains runtime-peer/room-host owned. Runtime peers can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
 
 `/n/:notebookId/:vanityName` is a hosted notebook page backed by `/n/:id/sync`. Latest notebook views do not fetch a separate materialized render document; viewers join the live Automerge room as read-only peers and editor+ connections use the same synced document for permitted edits. `/n/:id/r/:headsHash` is an immutable pinned viewer that loads the persisted `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` Automerge snapshot set directly through `/api/n/:id/snapshots/:headsHash`, `/api/n/:id/runtime-snapshots/:runtimeHeadsHash`, `/api/n/:id/comms-snapshots/:commsHeadsHash`, and catalog revision metadata. Snapshot publishes validate that the documents can be loaded and that referenced output/widget blobs exist before recording the catalog revision, so missing runtime or comm snapshots, corrupt snapshot bytes, or missing blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, widgets, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
 
@@ -697,17 +697,17 @@ markdown edit convergence loop when chasing intermittent editor divergence.
 
 Use `GET /api/n/{id}/acl` with an owner credential to confirm editor/viewer
 grants. A healthy throwaway collaboration run should show editor
-`room.materialized_frame.applied` records with `persisted=true` when Alice/Bob
+`room.materialized_frame.applied` records with `changed=true` when Alice/Bob
 change the document, viewer `room.peer_sync.completed` records, no unexpected
 `room.frame.rejected` records for Alice/Bob, and anonymous viewer presence
 logged only as `room.presence.local_only`. Read-only viewer sync acks/needs may
-emit `room.materialized_frame.applied` with `persisted=false`; they should not
-create stored room-event history. If the browser shows `Offline`, open the key
-menu first: placeholder or stale dev tokens are surfaced there, and the Worker
-logs token/auth failures as `auth.failed` without recording raw token material.
-The copied browser diagnostic should include the requested principal/scope,
-connected actor/scope when available, and the last WebSocket connection error,
-but never the stored token value.
+emit `room.materialized_frame.applied` with `changed=false`; they should not
+checkpoint document bytes or create stored room-event history. If the browser
+shows `Offline`, open the key menu first: placeholder or stale dev tokens are
+surfaced there, and the Worker logs token/auth failures as `auth.failed` without
+recording raw token material. The copied browser diagnostic should include the
+requested principal/scope, connected actor/scope when available, and the last
+WebSocket connection error, but never the stored token value.
 
 Live runtime-peer smoke with preview API-key credentials:
 

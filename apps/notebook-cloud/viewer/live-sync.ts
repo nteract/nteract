@@ -630,12 +630,21 @@ async function clearPersistedSeed(persistence: CloudSyncPersistenceSeed): Promis
 }
 
 export function isRecoverableCloudFrameRejection(message: SessionControlMessage): boolean {
+  if (message.type !== "cloud_frame_rejected") {
+    return false;
+  }
+  if (message.frame_type === FrameType.AUTOMERGE_SYNC) {
+    return true;
+  }
   return (
-    message.type === "cloud_frame_rejected" &&
-    (message.frame_type === FrameType.AUTOMERGE_SYNC ||
-      message.frame_type === FrameType.RUNTIME_STATE_SYNC ||
-      message.frame_type === FrameType.COMMS_DOC_SYNC)
+    (message.frame_type === FrameType.RUNTIME_STATE_SYNC ||
+      message.frame_type === FrameType.COMMS_DOC_SYNC) &&
+    isSyncDivergenceRejectionReason(message.reason)
   );
+}
+
+function isSyncDivergenceRejectionReason(reason: string): boolean {
+  return /\bPatchLogMismatch\b/i.test(reason) || /\bpatch log mismatch\b/i.test(reason);
 }
 
 /**

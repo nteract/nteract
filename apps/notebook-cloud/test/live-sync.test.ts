@@ -101,19 +101,28 @@ describe("cloud live sync", () => {
     assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
   });
 
-  it("treats rejected materialized sync frames as recoverable bootstrap failures", () => {
-    for (const frameType of [
-      FrameType.AUTOMERGE_SYNC,
-      FrameType.RUNTIME_STATE_SYNC,
-      FrameType.COMMS_DOC_SYNC,
-    ]) {
+  it("treats rejected materialized sync-divergence frames as recoverable bootstrap failures", () => {
+    for (const [frameType, reason] of [
+      [
+        FrameType.AUTOMERGE_SYNC,
+        "room host rejected AUTOMERGE_SYNC frame: connection scope cannot write NotebookDoc changes",
+      ],
+      [
+        FrameType.RUNTIME_STATE_SYNC,
+        "room host rejected RUNTIME_STATE_SYNC frame: [cloud-room-state-receive-sync] automerge operation failed: PatchLogMismatch",
+      ],
+      [
+        FrameType.COMMS_DOC_SYNC,
+        "room host rejected COMMS_DOC_SYNC frame: [cloud-room-comms-receive-sync] automerge operation failed: PatchLogMismatch",
+      ],
+    ] as const) {
       assert.equal(
         isRecoverableCloudFrameRejection({
           type: "cloud_frame_rejected",
           notebook_id: "room",
           peer_id: "peer-1",
           frame_type: frameType,
-          reason: "duplicate seq from stale room-host actor",
+          reason,
           timestamp: "2026-06-08T00:00:00.000Z",
         }),
         true,
@@ -130,6 +139,28 @@ describe("cloud live sync", () => {
       }),
       false,
     );
+    for (const [frameType, reason] of [
+      [
+        FrameType.RUNTIME_STATE_SYNC,
+        "room host rejected RUNTIME_STATE_SYNC frame: connection scope cannot write RuntimeStateDoc changes",
+      ],
+      [
+        FrameType.COMMS_DOC_SYNC,
+        "room host rejected COMMS_DOC_SYNC frame: connection scope cannot write CommsDoc changes",
+      ],
+    ] as const) {
+      assert.equal(
+        isRecoverableCloudFrameRejection({
+          type: "cloud_frame_rejected",
+          notebook_id: "room",
+          peer_id: "peer-1",
+          frame_type: frameType,
+          reason,
+          timestamp: "2026-06-08T00:00:00.000Z",
+        }),
+        false,
+      );
+    }
   });
 
   it("labels authenticated browser sync connections as browser operators", () => {
