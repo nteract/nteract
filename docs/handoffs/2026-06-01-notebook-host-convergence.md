@@ -2,11 +2,6 @@
 
 **Date:** 2026-06-01
 **Why this exists:** the work was done in a Codex worktree (`~/.codex/worktrees/a2f3/desktop`). Resume here on `~/projects/nteract` (`main`), which already has the merged code below. Pick up the two design threads in the second half of this doc - they are not yet started.
-**Current status, 2026-06-15:** this handoff is historical. CommsDoc and the
-regular-client-read-only RuntimeStateDoc boundary have since shipped; use
-`docs/adr/0002-comms-document-split.md`, `docs/adr/document-split.md`, and
-source policy checks for current writer authority. The old shorthand below
-should not be read as live authorization guidance.
 
 ## Current status (2026-06-15)
 

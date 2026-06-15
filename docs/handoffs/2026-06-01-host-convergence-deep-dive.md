@@ -2,12 +2,6 @@
 
 **Date:** 2026-06-01
 **Inputs:** `docs/handoffs/2026-06-01-notebook-host-convergence.md` (the two design threads), the merged work in #3316/#3317, and a 50-agent investigation + premortem (raw result archived at the task output for run `wf_6ab5a807-669`).
-**Status, updated 2026-06-15:** historical design analysis. CommsDoc has since
-shipped and its current authority is tracked in
-`docs/adr/0002-comms-document-split.md` and `docs/adr/document-split.md`.
-NotebookDoc owner/cells splitting remains a proposal, not shipped behavior. Read
-the tables below as the analysis that led to later decisions, not as current
-writer policy.
 
 ## Current status (2026-06-15)
 
