@@ -64,6 +64,7 @@ export interface CloudMarkdownDocumentConfig {
   documentKind: "markdown";
   documentId: string;
   catalogEndpoint: string;
+  aclEndpoint: string;
   snapshotBasePath: string;
   syncEndpoint: string;
   runtimedWasmModulePath: string;

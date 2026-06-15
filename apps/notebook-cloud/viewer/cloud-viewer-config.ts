@@ -120,6 +120,7 @@ export function loadMarkdownDocumentConfig(): CloudMarkdownDocumentConfig | null
       parsed.documentKind !== "markdown" ||
       !parsed.documentId ||
       !parsed.catalogEndpoint ||
+      !parsed.aclEndpoint ||
       !parsed.snapshotBasePath ||
       !parsed.syncEndpoint ||
       !parsed.runtimedWasmModulePath ||
@@ -131,6 +132,7 @@ export function loadMarkdownDocumentConfig(): CloudMarkdownDocumentConfig | null
       documentKind: "markdown",
       documentId: parsed.documentId,
       catalogEndpoint: parsed.catalogEndpoint,
+      aclEndpoint: parsed.aclEndpoint,
       snapshotBasePath: parsed.snapshotBasePath,
       syncEndpoint: parsed.syncEndpoint,
       runtimedWasmModulePath: parsed.runtimedWasmModulePath,

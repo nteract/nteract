@@ -2204,7 +2204,7 @@ body {
 .cloud-dashboard-create-actions button,
 .cloud-dashboard-button,
 .cloud-dashboard-secondary-action,
-.cloud-markdown-toolbar-actions button {
+.cloud-markdown-toolbar-actions > button {
   display: inline-flex;
   gap: 0.375rem;
   align-items: center;
@@ -2271,7 +2271,7 @@ body {
   gap: 0.375rem;
 }
 
-.cloud-markdown-toolbar-actions button[aria-pressed="true"] {
+.cloud-markdown-toolbar-actions > button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--foreground) 28%, transparent);
   background: color-mix(in srgb, var(--foreground) 9%, var(--background));
 }

@@ -16,6 +16,7 @@ import {
   startMarkdownDocumentLiveSync,
   type MarkdownDocumentLiveSyncController,
 } from "./markdown-document-live-sync";
+import { MarkdownSharingControls } from "./markdown-sharing-controls";
 import {
   useCloudAppSessionBridge,
   useCloudAppSessionStatus,
@@ -190,7 +191,11 @@ export function MarkdownDocumentRoute({
   }
 
   const canEdit = projection.canEdit && routeState.bodyReady;
+  const canManageSharing =
+    projection.canShare && config.hostCapabilities?.canManageSharing !== false;
   const connectionCopy = markdownConnectionCopy(routeState.connectionStatus, routeState.bodyReady);
+  const publicLink =
+    typeof window === "undefined" ? "" : `${window.location.origin}${window.location.pathname}`;
 
   return (
     <main className="cloud-markdown-shell">
@@ -203,6 +208,13 @@ export function MarkdownDocumentRoute({
           <h1>{projection.title}</h1>
         </div>
         <div className="cloud-markdown-toolbar-actions">
+          {canManageSharing ? (
+            <MarkdownSharingControls
+              aclEndpoint={config.aclEndpoint}
+              authState={authState}
+              publicLink={publicLink}
+            />
+          ) : null}
           <button type="button" aria-pressed={mode === "read"} onClick={() => setMode("read")}>
             <Eye aria-hidden="true" />
             Read

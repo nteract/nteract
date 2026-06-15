@@ -1786,6 +1786,131 @@ describe("Worker artifact routes", () => {
     assert.equal("runtime_snapshots" in body.document.endpoints, false);
   });
 
+  it("lets Markdown document owners manage principal ACL rows", async () => {
+    const env = fakeEnv();
+    env.DB.markdownDocuments.set("markdown-share", {
+      id: "markdown-share",
+      owner_principal: "user:dev:alice",
+      title: "Shared Markdown",
+      body_doc_id: "markdown-share",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: null,
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-share",
+      subject_kind: "principal",
+      subject: "user:dev:alice",
+      scope: "owner",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+
+    const before = await markdownAclRequest(env, "GET", undefined, "markdown-share");
+    assert.equal(before.status, 200);
+    const beforeBody = (await before.json()) as {
+      document_id: string;
+      acl: MarkdownDocumentAclRow[];
+    };
+    assert.equal(beforeBody.document_id, "markdown-share");
+    assert.deepEqual(
+      beforeBody.acl.map((row) => [row.subject_kind, row.subject, row.scope]),
+      [["principal", "user:dev:alice", "owner"]],
+    );
+
+    const grant = await markdownAclRequest(
+      env,
+      "POST",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:bob",
+        scope: "editor",
+      },
+      "markdown-share",
+    );
+    assert.equal(grant.status, 201);
+    assert.equal(
+      env.DB.markdownDocumentAcl.some(
+        (row) =>
+          row.document_id === "markdown-share" &&
+          row.subject === "user:dev:bob" &&
+          row.scope === "editor",
+      ),
+      true,
+    );
+
+    const bobCatalog = await worker.fetch(
+      new Request("http://localhost/api/m/markdown-share?user=bob&operator=desktop:b&scope=editor"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(bobCatalog.status, 200);
+
+    const revoke = await markdownAclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:bob",
+        scope: "editor",
+      },
+      "markdown-share",
+    );
+    assert.equal(revoke.status, 200);
+    assert.equal(
+      env.DB.markdownDocumentAcl.some(
+        (row) =>
+          row.document_id === "markdown-share" &&
+          row.subject === "user:dev:bob" &&
+          row.scope === "editor",
+      ),
+      false,
+    );
+  });
+
+  it("rejects runtime peer ACL rows for Markdown documents", async () => {
+    const env = fakeEnv();
+    env.DB.markdownDocuments.set("markdown-no-runtime", {
+      id: "markdown-no-runtime",
+      owner_principal: "user:dev:alice",
+      title: "No Runtime",
+      body_doc_id: "markdown-no-runtime",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: null,
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-no-runtime",
+      subject_kind: "principal",
+      subject: "user:dev:alice",
+      scope: "owner",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+
+    const response = await markdownAclRequest(
+      env,
+      "POST",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:runtime-service",
+        scope: "runtime_peer",
+      },
+      "markdown-no-runtime",
+    );
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: "Markdown document ACL scope cannot be runtime_peer",
+    });
+    assert.equal(
+      env.DB.markdownDocumentAcl.some((row) => row.subject === "user:dev:runtime-service"),
+      false,
+    );
+  });
+
   it("routes hosted Markdown document sync through the Markdown room binding", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "markdown-ws-user" });
     let forwardedRequest: Request | undefined;
@@ -5874,6 +5999,34 @@ async function aclRequest(
 
   return worker.fetch(
     new Request(new URL(`/api/n/${notebookId}/acl`, "http://localhost"), init),
+    env,
+    fakeContext(),
+  );
+}
+
+async function markdownAclRequest(
+  env: FakeEnv,
+  method: "GET" | "POST" | "DELETE",
+  body: Record<string, unknown> | undefined,
+  documentId = "markdown-acl-demo",
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  const init: RequestInit = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "X-User": "alice",
+      "X-Operator": "desktop:test",
+      "X-Scope": "owner",
+      ...headers,
+    },
+  };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+
+  return worker.fetch(
+    new Request(new URL(`/api/m/${documentId}/acl`, "http://localhost"), init),
     env,
     fakeContext(),
   );

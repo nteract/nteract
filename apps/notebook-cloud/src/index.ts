@@ -44,6 +44,7 @@ import {
   ensureCatalogSchema,
   getCanonicalPrincipalForTransport,
   getDefaultWorkstationId,
+  getMarkdownDocumentAclRows,
   getMarkdownDocumentCatalog,
   getMarkdownDocumentRow,
   getNotebookAclRows,
@@ -52,6 +53,7 @@ import {
   getPublicPublishedMarkdownDocumentRow,
   getPublicPublishedNotebookRow,
   getWorkstationRow,
+  grantMarkdownDocumentAclRow,
   listMarkdownDocumentsForPrincipal,
   grantNotebookAclRow,
   listActiveWorkstationAttachJobs,
@@ -59,6 +61,7 @@ import {
   listWorkstationsForPrincipal,
   recordBlob,
   recordRevision,
+  revokeMarkdownDocumentAclRow,
   registerWorkstation,
   revokeNotebookAclRow,
   runtimeStateSnapshotKey,
@@ -69,6 +72,7 @@ import {
   updateWorkstationAttachJobStatus,
   type ListedMarkdownDocumentRow,
   type ListedNotebookRow,
+  type MarkdownDocumentAclRow,
   type MarkdownDocumentScope,
   type NotebookAclRow,
   type NotebookAccessRequestRow,
@@ -419,6 +423,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     methods: ["PATCH"],
     handler: ({ params }, request, env) =>
       routeUpdateMarkdownDocumentMetadata(request, env, params.documentId),
+  },
+  {
+    match: routePath("/api/m/:documentId/acl", { trailingSlash: "optional" }),
+    handler: ({ params }, request, env) =>
+      routeMarkdownDocumentAcl(request, env, params.documentId),
   },
   {
     match: routePath("/api/n/:notebookId/acl", { trailingSlash: "optional" }),
@@ -3637,6 +3646,43 @@ function aclRowResponse(
   };
 }
 
+async function markdownAclResponseRows(
+  env: Env,
+  rows: MarkdownDocumentAclRow[],
+): Promise<Array<MarkdownDocumentAclRow & { display: ReturnType<typeof shareTargetDisplay> }>> {
+  const principals = rows
+    .filter((row) => row.subject_kind === "principal")
+    .map((row) => row.subject);
+  const profilesByPrincipal = new Map(
+    (await getPrincipalProfiles(env, principals)).map((profile) => [profile.principal, profile]),
+  );
+  return rows.map((row) => markdownAclRowResponse(row, profilesByPrincipal.get(row.subject)));
+}
+
+function markdownAclRowResponse(
+  row: MarkdownDocumentAclRow,
+  profile?: PrincipalProfileRow,
+): MarkdownDocumentAclRow & { display: ReturnType<typeof shareTargetDisplay> } {
+  if (row.subject_kind === "public") {
+    return {
+      ...row,
+      display: shareTargetDisplay({ publicViewer: true }),
+    };
+  }
+
+  return {
+    ...row,
+    display: profile
+      ? shareTargetDisplay({ profile: principalProfileFromRow(profile) })
+      : {
+          kind: "principal",
+          label: row.subject,
+          principal: row.subject,
+          email: null,
+        },
+  };
+}
+
 function principalProfileFromRow(row: PrincipalProfileRow): PrincipalProfile {
   return {
     principal: row.principal,
@@ -3646,6 +3692,108 @@ function principalProfileFromRow(row: PrincipalProfileRow): PrincipalProfile {
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
   };
+}
+
+async function routeMarkdownDocumentAcl(
+  request: Request,
+  env: Env,
+  documentId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "POST" || request.method === "DELETE") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
+  }
+
+  const identity = await authenticateAndAuthorizeMarkdownOrAppSessionOrResponse(
+    request,
+    env,
+    documentId,
+    "owner",
+  );
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  if (request.method === "GET") {
+    const acl = await getMarkdownDocumentAclRows(env, documentId);
+    return json({
+      document_id: documentId,
+      acl: await markdownAclResponseRows(env, acl),
+    });
+  }
+
+  if (request.method !== "POST" && request.method !== "DELETE") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const aclInput = await parseMarkdownDocumentAclInput(request);
+  if (aclInput instanceof Response) {
+    return aclInput;
+  }
+
+  if (request.method === "DELETE") {
+    const revoked = await revokeMarkdownDocumentAclRow(env, {
+      documentId,
+      subjectKind: aclInput.subject_kind,
+      subject: aclInput.subject,
+      scope: aclInput.scope,
+    });
+    const acl = await getMarkdownDocumentAclRows(env, documentId);
+    if (!revoked && isMarkdownOwnerAclInput(aclInput) && markdownAclContainsInput(acl, aclInput)) {
+      if (isOnlyMarkdownOwnerAclRow(acl, aclInput)) {
+        return json({ error: "cannot remove the last owner ACL row" }, 409);
+      }
+      return json({ error: "owner ACL row was not removed; retry the request" }, 409);
+    }
+    cloudLog("info", "markdown_acl.revoke.completed", {
+      document_id: documentId,
+      principal: identity.principal,
+      actor_label: identity.actorLabel,
+      acl_subject_kind: aclInput.subject_kind,
+      acl_subject: aclInput.subject,
+      acl_scope: aclInput.scope,
+      revoked,
+      counter: "markdown_acl_revocations",
+      counter_delta: 1,
+    });
+    return json({
+      ok: true,
+      document_id: documentId,
+      acl: await markdownAclResponseRows(env, acl),
+    });
+  }
+
+  await grantMarkdownDocumentAclRow(env, {
+    documentId,
+    subjectKind: aclInput.subject_kind,
+    subject: aclInput.subject,
+    scope: aclInput.scope,
+    actorLabel: identity.actorLabel,
+  });
+  cloudLog("info", "markdown_acl.grant.completed", {
+    document_id: documentId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    acl_subject_kind: aclInput.subject_kind,
+    acl_subject: aclInput.subject,
+    acl_scope: aclInput.scope,
+    counter: "markdown_acl_grants",
+    counter_delta: 1,
+  });
+  return json(
+    {
+      ok: true,
+      document_id: documentId,
+      acl: await markdownAclResponseRows(env, await getMarkdownDocumentAclRows(env, documentId)),
+    },
+    201,
+  );
 }
 
 async function routeNotebookAcl(request: Request, env: Env, notebookId: string): Promise<Response> {
@@ -4421,6 +4569,12 @@ interface ParsedNotebookAclInput {
   scope: NotebookAclRow["scope"];
 }
 
+interface ParsedMarkdownDocumentAclInput {
+  subject_kind: MarkdownDocumentAclRow["subject_kind"];
+  subject: string;
+  scope: MarkdownDocumentAclRow["scope"];
+}
+
 async function parseNotebookAclInput(request: Request): Promise<ParsedNotebookAclInput | Response> {
   let payload: NotebookAclPayload;
   try {
@@ -4480,6 +4634,19 @@ async function parseNotebookAclInput(request: Request): Promise<ParsedNotebookAc
     subject,
     scope,
   };
+}
+
+async function parseMarkdownDocumentAclInput(
+  request: Request,
+): Promise<ParsedMarkdownDocumentAclInput | Response> {
+  const input = await parseNotebookAclInput(request);
+  if (input instanceof Response) {
+    return input;
+  }
+  if (input.scope === "runtime_peer") {
+    return json({ error: "Markdown document ACL scope cannot be runtime_peer" }, 400);
+  }
+  return input as ParsedMarkdownDocumentAclInput;
 }
 
 function stringField(value: unknown, fieldName: string): string | Response {
@@ -4544,6 +4711,10 @@ function isOwnerAclInput(row: ParsedNotebookAclInput): boolean {
   return row.subject_kind === "principal" && row.scope === "owner";
 }
 
+function isMarkdownOwnerAclInput(row: ParsedMarkdownDocumentAclInput): boolean {
+  return row.subject_kind === "principal" && row.scope === "owner";
+}
+
 function isPublicViewerAclInput(row: ParsedNotebookAclInput): boolean {
   return row.subject_kind === "public" && row.subject === "anonymous" && row.scope === "viewer";
 }
@@ -4557,7 +4728,33 @@ function aclContainsInput(rows: NotebookAclRow[], row: ParsedNotebookAclInput): 
   );
 }
 
+function markdownAclContainsInput(
+  rows: MarkdownDocumentAclRow[],
+  row: ParsedMarkdownDocumentAclInput,
+): boolean {
+  return rows.some(
+    (candidate) =>
+      candidate.subject_kind === row.subject_kind &&
+      candidate.subject === row.subject &&
+      candidate.scope === row.scope,
+  );
+}
+
 function isOnlyOwnerAclRow(rows: NotebookAclRow[], row: ParsedNotebookAclInput): boolean {
+  if (row.subject_kind !== "principal" || row.scope !== "owner") {
+    return false;
+  }
+
+  const ownerRows = rows.filter(
+    (candidate) => candidate.subject_kind === "principal" && candidate.scope === "owner",
+  );
+  return ownerRows.length === 1 && ownerRows[0]?.subject === row.subject;
+}
+
+function isOnlyMarkdownOwnerAclRow(
+  rows: MarkdownDocumentAclRow[],
+  row: ParsedMarkdownDocumentAclInput,
+): boolean {
   if (row.subject_kind !== "principal" || row.scope !== "owner") {
     return false;
   }
@@ -5098,10 +5295,11 @@ async function markdownDocumentViewer(
     documentKind: "markdown",
     documentId,
     catalogEndpoint: documentApiBasePath,
+    aclEndpoint: `${documentApiBasePath}/acl`,
     snapshotBasePath: `${documentApiBasePath}/snapshots/`,
     syncEndpoint: `/m/${encodeURIComponent(documentId)}/sync`,
     hostCapabilities: {
-      canManageSharing: false,
+      canManageSharing: true,
       canPublish: false,
     },
     session: session ? appSessionResponse(session) : null,
