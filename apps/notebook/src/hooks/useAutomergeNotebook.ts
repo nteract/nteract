@@ -23,7 +23,8 @@ import {
   updateCellById,
   useCellIds,
 } from "@/components/notebook/state/cell-store";
-import { createNotebookController } from "../lib/notebook-controller";
+import { flushCellUIState, setFocusedCellId } from "@/components/notebook/state/cell-ui-state";
+import { createNotebookController } from "@/components/notebook/state/notebook-controller";
 import {
   applyExecutionViewChangeset,
   resetRuntimeStoresProjection,
@@ -113,7 +114,6 @@ function preWarmCellRenderers(cells: readonly NotebookCell[]) {
 export function useNotebook() {
   const host = useNotebookHost();
   const cellIds = useCellIds();
-  const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [canAcceptCellMutations, setCanAcceptCellMutations] = useState(false);
@@ -217,6 +217,11 @@ export function useNotebook() {
     [handleHost],
   );
 
+  const focusCellInStore = useCallback((cellId: string) => {
+    setFocusedCellId(cellId);
+    flushCellUIState();
+  }, []);
+
   const notebookController = useMemo(
     () =>
       createNotebookController<NotebookHandle>({
@@ -240,10 +245,10 @@ export function useNotebook() {
           }
         },
         refreshCanAcceptCellMutations,
-        onFocusCell: setFocusedCellId,
+        onFocusCell: focusCellInStore,
         logPrefix: "[automerge-notebook]",
       }),
-    [handleHost, refreshCanAcceptCellMutations, rematerializeCellsSync],
+    [focusCellInStore, handleHost, refreshCanAcceptCellMutations, rematerializeCellsSync],
   );
 
   // ── Bootstrap ──────────────────────────────────────────────────────
@@ -534,8 +539,6 @@ export function useNotebook() {
     cellIds,
     isLoading,
     canAcceptCellMutations,
-    focusedCellId,
-    setFocusedCellId,
     updateCellSource,
     addCell,
     moveCell,

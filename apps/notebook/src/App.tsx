@@ -64,7 +64,8 @@ import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
 import { PresenceProvider } from "./contexts/PresenceContext";
 import { useNotebook } from "./hooks/useNotebook";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
-import { CrdtBridgeProvider } from "./hooks/useCrdtBridge";
+import { CrdtBridgeProvider } from "@/components/notebook";
+import { startCursorDispatch } from "@/components/notebook/cursor-registry";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
 import { useDenoConfig } from "./hooks/useDenoConfig";
 import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
@@ -79,14 +80,19 @@ import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
 import { getBlobResolver, useBlobPort } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
-import { useNotebookCellUIStateBridge } from "@/components/notebook/state/cell-ui-state";
+import {
+  flushCellUIState,
+  getFocusedCellId,
+  setFocusedCellId,
+  useFocusedCellId,
+  useNotebookCellUIStateBridge,
+} from "@/components/notebook/state/cell-ui-state";
 import {
   openNotebookRailPanel,
   setNotebookRailCollapsed,
   toggleNotebookRailPanel,
   useNotebookRailUiState,
 } from "@/components/notebook/state/rail-ui-state";
-import { startCursorDispatch } from "./lib/cursor-registry";
 import { desktopNotebookShellCapabilities } from "./lib/desktop-shell-capabilities";
 import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kernel-status";
 import { useNotebookActionPolicy } from "./lib/notebook-action-policy";
@@ -279,8 +285,6 @@ function AppContent() {
     isLoading,
     canAcceptCellMutations,
     loadError,
-    focusedCellId,
-    setFocusedCellId,
     updateCellSource,
     addCell,
     moveCell,
@@ -679,6 +683,13 @@ function AppContent() {
     }
   }, [blobPort, getEngine]);
 
+  const focusedCellId = useFocusedCellId();
+  const focusCellInStore = useCallback((cellId: string) => {
+    setFocusedCellId(cellId);
+    flushCellUIState();
+  }, []);
+  const handleNotebookViewFocus = useCallback(() => {}, []);
+
   const getOutlineStatusLabel = useOutlineStatusLabel();
   const notebookViewModel = useNotebookViewModel({ getOutlineStatusLabel });
   const outlineItems = notebookViewModel.outlineItems;
@@ -691,12 +702,11 @@ function AppContent() {
   const { selectedOutlineItemId, handleSelectOutlineItem } = useOutlineSelection({
     outlineItems,
     focusedCellId,
-    setFocusedCellId,
+    setFocusedCellId: focusCellInStore,
   });
 
-  // ── Sync host-owned transient UI state into shared cell UI store ─────
+  // ── Sync host-owned transient search state into shared cell UI store ─
   useNotebookCellUIStateBridge({
-    focusedCellId,
     searchQuery: globalFind.query,
     searchCurrentMatch: globalFind.currentMatch,
   });
@@ -1093,14 +1103,13 @@ function AppContent() {
   // a single ref. The ref is updated every render; the host-level registration
   // below runs only once per host, so a native menu event that lands during
   // a state-driven re-render never finds the slot empty — the previous
-  // design re-registered every command on focusedCellId change, which
+  // design re-registered every command on focused cell changes, which
   // opened a "no handler" window any menu click could fall into.
   const commandHandlersRef = useRef({
     save,
     openNotebook,
     cloneNotebook,
     handleAddCell,
-    focusedCellId,
     clearOutputs,
     handleRunAllCells,
     handleRestartAndRunAll,
@@ -1111,7 +1120,6 @@ function AppContent() {
     openNotebook,
     cloneNotebook,
     handleAddCell,
-    focusedCellId,
     clearOutputs,
     handleRunAllCells,
     handleRestartAndRunAll,
@@ -1131,14 +1139,15 @@ function AppContent() {
       }),
       host.commands.register("notebook.insertCell", ({ type }) => {
         const h = commandHandlersRef.current;
-        h.handleAddCell(type, h.focusedCellId);
+        h.handleAddCell(type, getFocusedCellId());
       }),
       host.commands.register("notebook.clearOutputs", async () => {
         const h = commandHandlersRef.current;
-        if (!h.focusedCellId) return;
-        const cell = getNotebookCellsSnapshot().find((c) => c.id === h.focusedCellId);
+        const focusedCellId = getFocusedCellId();
+        if (!focusedCellId) return;
+        const cell = getNotebookCellsSnapshot().find((c) => c.id === focusedCellId);
         if (!cell || cell.cell_type !== "code") return;
-        await h.clearOutputs(h.focusedCellId);
+        await h.clearOutputs(focusedCellId);
       }),
       host.commands.register("notebook.clearAllOutputs", async () => {
         const h = commandHandlersRef.current;
@@ -1590,7 +1599,7 @@ function AppContent() {
                 loadError={loadError}
                 runtime={runtime}
                 sessionRuntimeState={sessionStatus?.runtime_state ?? null}
-                onFocusCell={setFocusedCellId}
+                onFocusCell={handleNotebookViewFocus}
                 onExecuteCell={handleExecuteCell}
                 onInterruptKernel={interruptKernel}
                 onDeleteCell={deleteCell}

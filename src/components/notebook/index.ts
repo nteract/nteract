@@ -14,6 +14,16 @@ export {
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
 } from "./actor-projection";
+export { CrdtBridgeProvider, useCrdtBridge } from "./crdt-bridge";
+export {
+  createCrdtBridge,
+  remoteChangesFromTextAttributions,
+  type CrdtBridge,
+  type CrdtBridgeConfig,
+  type CrdtSourceHandle,
+  type RemoteChange,
+  type TextAttributionLike,
+} from "./crdt-editor-bridge";
 export {
   notebookShellRuntimeTargetSummary,
   projectNotebookLaunchEnvironment,
@@ -23,6 +33,7 @@ export {
   projectNotebookShellCapabilities,
   projectNotebookWorkstationLaunchReadiness,
   projectNotebookWorkstationSelection,
+  projectNotebookWorkstationSurface,
   readOnlyNotebookShellCapabilities,
   resolveNotebookShellRuntimeTarget,
   stabilizeNotebookShellCapabilities,
@@ -72,11 +83,15 @@ export {
   type NotebookWorkstationPanelTone,
   type NotebookWorkstationSelectionProjection,
   type NotebookWorkstationSelectionState,
+  type NotebookWorkstationSurfaceMutationProjection,
+  type NotebookWorkstationSurfaceProjection,
+  type NotebookWorkstationToolbarActionProjection,
   type ProjectNotebookCommandRuntimeActionsOptions,
   type ProjectNotebookCommandRuntimeStatusOptions,
   type ProjectNotebookLaunchEnvironmentOptions,
   type ProjectNotebookWorkstationLaunchReadinessOptions,
   type ProjectNotebookWorkstationSelectionOptions,
+  type ProjectNotebookWorkstationSurfaceOptions,
 } from "./capabilities";
 export {
   applyExecutionViewChangeset,
@@ -205,6 +220,12 @@ export {
 export { NotebookDocumentRail, type NotebookDocumentRailProps } from "./NotebookDocumentRail";
 export { NotebookReadOnlyView, type NotebookReadOnlyViewProps } from "./NotebookReadOnlyView";
 export {
+  PresenceValueProvider,
+  usePresenceContext,
+  usePresenceContextRequired,
+  type PresenceContextValue,
+} from "./presence-context";
+export {
   navigateNotebookOutlineItem,
   type NavigateNotebookOutlineItemOptions,
 } from "./outline-navigation";
@@ -255,6 +276,16 @@ export {
   type NotebookCellUIStateBridgeInput,
   type NotebookFindMatch,
 } from "./state/cell-ui-state";
+export { createNotebookCellId, type NotebookCellIdRandomSource } from "./state/notebook-cell-id";
+export {
+  createNotebookController,
+  type NotebookController,
+  type NotebookControllerCellType,
+  type NotebookControllerHandle,
+  type NotebookControllerMutationKind,
+  type NotebookControllerOptions,
+  type NotebookControllerSyncMode,
+} from "./state/notebook-controller";
 export {
   deleteExecutions,
   getCellExecutionId,

@@ -57,7 +57,7 @@ export function flushCellUIState(): void {
 }
 
 export interface NotebookCellUIStateBridgeInput {
-  focusedCellId: string | null;
+  focusedCellId?: string | null;
   activeInteractionTarget?: NotebookInteractionTarget | null;
   searchQuery?: string;
   searchCurrentMatch?: NotebookFindMatch | null;
@@ -78,7 +78,7 @@ export function useNotebookCellUIStateBridge({
 }: NotebookCellUIStateBridgeInput): void {
   if (activeInteractionTarget !== undefined) {
     setActiveInteractionTarget(activeInteractionTarget);
-  } else {
+  } else if (focusedCellId !== undefined) {
     setFocusedCellId(focusedCellId);
   }
   setSearchQuery(searchQuery);

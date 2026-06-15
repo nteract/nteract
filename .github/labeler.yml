@@ -39,6 +39,7 @@ editor:
   - changed-files:
     - any-glob-to-any-file:
       - 'src/components/editor/**'
+      - 'src/components/notebook/cursor-registry*'
       - 'apps/notebook/src/lib/cursor-registry*'
       - 'apps/notebook/src/lib/presence-sender*'
 
@@ -57,6 +58,9 @@ presence:
   - changed-files:
     - any-glob-to-any-file:
       - 'crates/notebook-doc/src/presence*'
+      - 'src/components/notebook/cursor-registry*'
+      - 'src/components/notebook/presence-context*'
+      - 'src/components/notebook/state/notebook-frame-bus*'
       - 'apps/notebook/src/lib/cursor-registry*'
       - 'apps/notebook/src/lib/presence-sender*'
       - 'apps/notebook/src/hooks/usePresence*'

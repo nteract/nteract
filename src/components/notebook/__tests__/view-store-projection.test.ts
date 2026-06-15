@@ -33,8 +33,6 @@ describe("NotebookViewStoreProjector", () => {
     restoreMarkdownProjectionProjector = setMarkdownProjectionProjector(testMarkdownProjector);
     const projector = createNotebookViewStoreProjector({
       syntheticExecutionId: (cellId) => `projection-execution:${cellId}`,
-      syntheticOutputId: (cellId, outputIndex) => `projection-output:${cellId}:${outputIndex}`,
-      syntheticOutputPrefix: (cellId) => `projection-output:${cellId}:`,
     });
 
     projector.projectCells([
@@ -55,6 +53,7 @@ describe("NotebookViewStoreProjector", () => {
         executionCount: 12,
         outputs: [
           {
+            output_id: "out-code-stdout",
             output_type: "stream",
             name: "stdout",
             text: ["hello", "\n"],
@@ -76,10 +75,10 @@ describe("NotebookViewStoreProjector", () => {
       execution_count: 12,
       status: "done",
       success: null,
-      output_ids: ["projection-output:code:0"],
+      output_ids: ["out-code-stdout"],
     });
-    expect(getOutputById("projection-output:code:0")).toEqual({
-      output_id: "projection-output:code:0",
+    expect(getOutputById("out-code-stdout")).toEqual({
+      output_id: "out-code-stdout",
       output_type: "stream",
       name: "stdout",
       text: "hello\n",
@@ -89,10 +88,8 @@ describe("NotebookViewStoreProjector", () => {
   it("keeps projector-owned execution records across repeated projections", () => {
     const projector = createNotebookViewStoreProjector({
       syntheticExecutionId: (cellId) => `projection-execution:${cellId}`,
-      syntheticOutputId: (cellId, outputIndex) => `projection-output:${cellId}:${outputIndex}`,
-      syntheticOutputPrefix: (cellId) => `projection-output:${cellId}:`,
     });
-    const cells = [codeCellWithSyntheticOutput("code", "hello\n")];
+    const cells = [codeCellWithIdentifiedOutput("code", "out-code-stdout", "hello\n")];
 
     projector.projectCells(cells);
     projector.projectCells(cells);
@@ -102,9 +99,29 @@ describe("NotebookViewStoreProjector", () => {
       execution_count: 1,
       status: "done",
       success: null,
-      output_ids: ["projection-output:code:0"],
+      output_ids: ["out-code-stdout"],
     });
-    expect(getOutputById("projection-output:code:0")).toBeDefined();
+    expect(getOutputById("out-code-stdout")).toBeDefined();
+  });
+
+  it("projects missing output IDs as visible invariant errors", () => {
+    const projector = createNotebookViewStoreProjector({
+      syntheticExecutionId: (cellId) => `projection-execution:${cellId}`,
+    });
+
+    projector.projectCells([codeCellWithoutOutputId("legacy-code", "legacy output\n")]);
+
+    const errorOutputId = "resolution-error:missing-output-id:legacy-code:0";
+    expect(getCellExecutionId("legacy-code")).toBe("projection-execution:legacy-code");
+    expect(getExecutionById("projection-execution:legacy-code")?.output_ids).toEqual([
+      errorOutputId,
+    ]);
+    expect(getOutputById(errorOutputId)).toMatchObject({
+      output_id: errorOutputId,
+      output_type: "error",
+      ename: "OutputProjectionError",
+    });
+    expect(getOutputById(errorOutputId)?.evalue).toMatch(/without output_id/);
   });
 
   it("preserves RuntimeStateDoc-owned queue and execution snapshots", () => {
@@ -263,29 +280,27 @@ describe("NotebookViewStoreProjector", () => {
     }
   });
 
-  it("cleans only projector-owned synthetic executions and outputs for removed cells", () => {
+  it("cleans only projector-owned executions and outputs for removed cells", () => {
     const projector = createNotebookViewStoreProjector({
       syntheticExecutionId: (cellId) => `projection-execution:${cellId}`,
-      syntheticOutputId: (cellId, outputIndex) => `projection-output:${cellId}:${outputIndex}`,
-      syntheticOutputPrefix: (cellId) => `projection-output:${cellId}:`,
     });
 
     projector.projectCells([
-      codeCellWithSyntheticOutput("removed-cell", "gone"),
-      codeCellWithSyntheticOutput("kept-cell", "still here"),
+      codeCellWithIdentifiedOutput("removed-cell", "out-removed", "gone"),
+      codeCellWithIdentifiedOutput("kept-cell", "out-kept", "still here"),
     ]);
 
     expect(getExecutionById("projection-execution:removed-cell")).toBeDefined();
-    expect(getOutputById("projection-output:removed-cell:0")).toBeDefined();
+    expect(getOutputById("out-removed")).toBeDefined();
 
     projector.cleanupRemovedCells(["removed-cell"]);
 
     expect(getCellExecutionId("removed-cell")).toBe(null);
     expect(getExecutionById("projection-execution:removed-cell")).toBeUndefined();
-    expect(getOutputById("projection-output:removed-cell:0")).toBeUndefined();
+    expect(getOutputById("out-removed")).toBeUndefined();
     expect(getCellExecutionId("kept-cell")).toBe("projection-execution:kept-cell");
     expect(getExecutionById("projection-execution:kept-cell")).toBeDefined();
-    expect(getOutputById("projection-output:kept-cell:0")).toBeDefined();
+    expect(getOutputById("out-kept")).toBeDefined();
   });
 });
 
@@ -312,7 +327,26 @@ function codeCellWithStampedOutput(cellId: string, cacheKey: string, text: strin
   };
 }
 
-function codeCellWithSyntheticOutput(cellId: string, text: string) {
+function codeCellWithIdentifiedOutput(cellId: string, outputId: string, text: string) {
+  return {
+    id: cellId,
+    cellType: "code" as const,
+    source: "print(value)",
+    executionId: null,
+    executionCount: 1,
+    outputs: [
+      {
+        output_id: outputId,
+        output_type: "stream" as const,
+        name: "stdout" as const,
+        text,
+      },
+    ],
+    metadata: {},
+  };
+}
+
+function codeCellWithoutOutputId(cellId: string, text: string) {
   return {
     id: cellId,
     cellType: "code" as const,

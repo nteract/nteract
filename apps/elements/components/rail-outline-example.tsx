@@ -10,11 +10,12 @@ import {
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
+  CrdtBridgeProvider,
   type NotebookViewCell,
 } from "@/components/notebook";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
-import { CrdtBridgeProvider, NotebookView } from "../../notebook/src/notebook-surface";
+import { NotebookView } from "../../notebook/src/notebook-surface";
 import {
   flushCellUIState,
   setFocusedCellId as setNotebookFocusedCellId,
@@ -37,7 +38,7 @@ import type {
   MarkdownProjectionBlock,
   MarkdownProjectionPlan,
   MarkdownProjectionRun,
-} from "../../notebook/src/lib/markdown-projection";
+} from "../../../src/lib/markdown-projection";
 import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,

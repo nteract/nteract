@@ -66,10 +66,10 @@ the flush strands the update (marked dirty, never emitted).
   mechanics for projecting materialized cells into the shared cell, execution,
   and output stores: markdown projection attachment, synthetic output IDs,
   synthetic display executions, output cache-key reuse, and cleanup of
-  projector-owned execution/output entries. Cloud now keeps only a thin
-  `notebook-view-store-bridge.ts` adapter that applies the
-  bootstrap-preservation policy. RuntimeStateDoc-owned queue/execution
-  snapshots still win over snapshot placeholders.
+  projector-owned execution/output entries. The shared
+  `projection-lifecycle.ts` module now owns the reset, removed-cell cleanup,
+  and bootstrap-preservation lifecycle around that projection. RuntimeStateDoc-
+  owned queue/execution snapshots still win over snapshot placeholders.
 - **Rail/outline chrome → shared `rail-ui-state` store.**
   `src/components/notebook/state/rail-ui-state.ts` now owns
   `activePanelId`, `collapsed`, and `selectedOutlineItemId` through

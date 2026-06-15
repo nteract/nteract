@@ -73,14 +73,14 @@ import {
   cloudBrowserApiAuthStateForFetch,
   cloudSyncAuthConnectionKey,
 } from "./session-auth-stability";
+import { NotebookView } from "../../notebook/src/notebook-surface";
 import {
   CrdtBridgeProvider,
   createNotebookCellId,
   createNotebookController,
-  NotebookView,
   PresenceValueProvider,
   type PresenceContextValue,
-} from "../../notebook/src/notebook-surface";
+} from "@/components/notebook";
 import {
   useRuntimeState,
   useWorkstationAttachment,

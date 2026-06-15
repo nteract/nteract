@@ -4,7 +4,7 @@ import { extname, join } from "node:path";
 import { test } from "node:test";
 import { viewerCorpus, viewerFileContaining } from "./viewer-source-corpus";
 
-test("cloud notebook body renders through the desktop NotebookView surface", () => {
+test("cloud notebook body renders through the temporary shared NotebookView surface", () => {
   const sourceText = viewerCorpus;
 
   assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/notebook-surface"/);
@@ -97,11 +97,11 @@ test("cloud projects live cells into the NotebookView stores", () => {
 
   assert.doesNotMatch(
     sessionSourceText,
-    /useLayoutEffect\(\(\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(cells\);/,
+    /useLayoutEffect\(\(\) => \{[\s\S]*projectNotebookCellsIntoViewStores\(cells\);/,
   );
   assert.match(
     sessionSourceText,
-    /const applyResolvedCells = useCallback\(\s*\(resolvedCells: ResolvedCell\[\]\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(resolvedCells\);[\s\S]*setCells\(resolvedCells\);/,
+    /const applyResolvedCells = useCallback\(\s*\(resolvedCells: ResolvedCell\[\]\) => \{[\s\S]*projectNotebookCellsIntoViewStores\(resolvedCells\);[\s\S]*setCells\(resolvedCells\);/,
   );
   assert.match(sessionSourceText, /applyResolvedCells\(syncCells\);/);
   assert.match(sessionSourceText, /applyResolvedCells\(progressiveCells\);/);
@@ -137,24 +137,28 @@ test("cloud live changesets gate stale post-await status writes", () => {
 });
 
 test("cloud runtime store projection comes from the shared store module", () => {
-  const bridgeSourcePath = new URL("../viewer/notebook-view-store-bridge.ts", import.meta.url);
-  const bridgeSourceText = readFileSync(bridgeSourcePath, "utf8");
+  const projectionLifecycleSourcePath = new URL(
+    "../../../src/components/notebook/state/projection-lifecycle.ts",
+    import.meta.url,
+  );
+  const projectionLifecycleSourceText = readFileSync(projectionLifecycleSourcePath, "utf8");
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
-  assert.match(
-    bridgeSourceText,
-    /from ["']@\/components\/notebook\/state\/runtime-store-projection["']/,
-  );
+  assert.match(projectionLifecycleSourceText, /from ["']\.\/runtime-store-projection["']/);
   assert.match(
     sessionSourceText,
     /from ["']@\/components\/notebook\/state\/runtime-store-projection["']/,
   );
-  assert.doesNotMatch(bridgeSourceText, /notebook-surface-stores/);
+  assert.doesNotMatch(projectionLifecycleSourceText, /notebook-surface-stores/);
   assert.doesNotMatch(sessionSourceText, /notebook-surface-stores/);
+  assert.doesNotMatch(sessionSourceText, /notebook-view-store-bridge/);
 
   const notebookSurfaceImports = [
     ...sessionSourceText.matchAll(
+      /import\s+{([^}]*)}\s+from\s+["']\.\.\/\.\.\/notebook\/src\/notebook-surface["']/g,
+    ),
+    ...viewerCorpus.matchAll(
       /import\s+{([^}]*)}\s+from\s+["']\.\.\/\.\.\/notebook\/src\/notebook-surface["']/g,
     ),
   ];
@@ -162,7 +166,7 @@ test("cloud runtime store projection comes from the shared store module", () => 
     const importList = importMatch[1] ?? "";
     assert.doesNotMatch(
       importList,
-      /\b(applyExecutionViewChangeset|applyOutputChangeset|resetRuntimeStoresProjection|getCellById|getCellIdsSnapshot|CellChangeset|JupyterOutput)\b/,
+      /\b(applyExecutionViewChangeset|applyOutputChangeset|resetRuntimeStoresProjection|getCellById|getCellIdsSnapshot|CellChangeset|JupyterOutput|createNotebookCellId|createNotebookController|PresenceValueProvider|PresenceContextValue|CrdtBridgeProvider|startCursorDispatch|emitBroadcast|emitPresence|resetPoolState|setPoolState)\b/,
     );
   }
 });
@@ -171,6 +175,11 @@ test("cloud notebook mutations route through the shared notebook controller", ()
   const sourceText = viewerCorpus;
 
   assert.match(sourceText, /createNotebookController/);
+  assert.match(sourceText, /from "@\/components\/notebook"/);
+  assert.doesNotMatch(
+    sourceText,
+    /import\s+{[^}]*createNotebookController[^}]*}\s+from\s+["']\.\.\/\.\.\/notebook\/src\/notebook-surface["']/,
+  );
   assert.match(sourceText, /const cloudNotebookController = useMemo/);
   assert.match(sourceText, /cloudNotebookController\.addCell\(type, afterCellId\)/);
   assert.match(sourceText, /cloudNotebookController\.deleteCell\(cellId\)/);
@@ -248,10 +257,14 @@ test("cloud wires shared presence and cleans projected store entries", () => {
   const sourceText = viewerFileContaining("export function NotebookViewer");
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
-  const bridgeSourcePath = new URL("../viewer/notebook-view-store-bridge.ts", import.meta.url);
-  const bridgeSourceText = readFileSync(bridgeSourcePath, "utf8");
+  const projectionLifecycleSourcePath = new URL(
+    "../../../src/components/notebook/state/projection-lifecycle.ts",
+    import.meta.url,
+  );
+  const projectionLifecycleSourceText = readFileSync(projectionLifecycleSourcePath, "utf8");
 
   assert.match(sourceText, /PresenceValueProvider/);
+  assert.match(sourceText, /from "@\/components\/notebook"/);
   assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/notebook-surface"/);
   assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/contexts\/PresenceContext/);
   assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/hooks\/useCrdtBridge/);
@@ -264,19 +277,25 @@ test("cloud wires shared presence and cleans projected store entries", () => {
     /sendSelectionPresence\(\s+cellId,\s+anchorLine,\s+anchorCol,\s+headLine,\s+headCol,/,
   );
   assert.match(sourceText, /sendInteractionPresence\(target\)/);
-  assert.match(sessionSourceText, /resetCloudViewStoreProjection/);
-  assert.match(bridgeSourceText, /@\/components\/notebook\/state\/view-store-projection/);
-  assert.match(bridgeSourceText, /createNotebookViewStoreProjector\(\)/);
-  assert.doesNotMatch(bridgeSourceText, /syntheticExecutionId/);
-  assert.doesNotMatch(bridgeSourceText, /syntheticOutputId/);
-  assert.doesNotMatch(bridgeSourceText, /@\/components\/notebook\/state\/cell-store/);
-  assert.doesNotMatch(bridgeSourceText, /@\/components\/notebook\/state\/execution-store/);
-  assert.doesNotMatch(bridgeSourceText, /@\/components\/notebook\/state\/output-store/);
-  assert.doesNotMatch(bridgeSourceText, /\.\.\/\.\.\/notebook\/src\/lib\/notebook-cells/);
-  assert.doesNotMatch(bridgeSourceText, /\.\.\/\.\.\/notebook\/src\/lib\/notebook-executions/);
-  assert.doesNotMatch(bridgeSourceText, /\.\.\/\.\.\/notebook\/src\/lib\/notebook-outputs/);
-  assert.doesNotMatch(bridgeSourceText, /deleteOutputs\(difference/);
-  assert.doesNotMatch(bridgeSourceText, /deleteExecutions\(difference/);
+  assert.match(sessionSourceText, /cleanupNotebookProjectionForRemovedCells/);
+  assert.match(projectionLifecycleSourceText, /from "\.\/view-store-projection"/);
+  assert.match(projectionLifecycleSourceText, /createNotebookViewStoreProjector\(\)/);
+  assert.doesNotMatch(projectionLifecycleSourceText, /syntheticExecutionId/);
+  assert.doesNotMatch(projectionLifecycleSourceText, /syntheticOutputId/);
+  assert.doesNotMatch(
+    projectionLifecycleSourceText,
+    /\.\.\/\.\.\/notebook\/src\/lib\/notebook-cells/,
+  );
+  assert.doesNotMatch(
+    projectionLifecycleSourceText,
+    /\.\.\/\.\.\/notebook\/src\/lib\/notebook-executions/,
+  );
+  assert.doesNotMatch(
+    projectionLifecycleSourceText,
+    /\.\.\/\.\.\/notebook\/src\/lib\/notebook-outputs/,
+  );
+  assert.doesNotMatch(projectionLifecycleSourceText, /deleteOutputs\(difference/);
+  assert.doesNotMatch(projectionLifecycleSourceText, /deleteExecutions\(difference/);
 });
 
 test("cloud package rail renders package metadata through the shared shell panel", () => {
@@ -321,12 +340,14 @@ test("cloud workstation registry state lives in the workstation manager hook", (
   assert.doesNotMatch(sourceText, /setCloudDefaultWorkstation/);
   assert.doesNotMatch(sourceText, /requestCloudWorkstationAttachment/);
   assert.doesNotMatch(sourceText, /projectNotebookWorkstationSelection/);
+  assert.doesNotMatch(sourceText, /projectNotebookWorkstationSurface/);
   assert.doesNotMatch(sourceText, /cloudWorkstationRefreshIntervalMs/);
   assert.match(hookSourceText, /fetchCloudWorkstations/);
   assert.match(hookSourceText, /setCloudDefaultWorkstation/);
   assert.match(hookSourceText, /requestCloudWorkstationAttachment/);
-  assert.match(hookSourceText, /projectNotebookWorkstationSelection/);
-  assert.match(hookSourceText, /projectNotebookWorkstationLaunchReadiness/);
+  assert.match(hookSourceText, /projectNotebookWorkstationSurface/);
+  assert.doesNotMatch(hookSourceText, /projectNotebookWorkstationSelection/);
+  assert.doesNotMatch(hookSourceText, /projectNotebookWorkstationLaunchReadiness/);
   assert.match(hookSourceText, /cloudWorkstationRefreshIntervalMs/);
 });
 
