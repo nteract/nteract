@@ -51,9 +51,8 @@ pub fn default_cache_dir_conda() -> PathBuf {
 /// Base package set every Conda kernel env is warmed with.
 ///
 /// Used by the daemon's Conda pool warmer (`conda_prewarmed_packages` in
-/// runtimed) and by the unified env design's capture step (`strip_base`) so
-/// the notebook's metadata records only user-level deps. Keep this in sync
-/// with the warmer.
+/// runtimed), kernel-env install paths, and the unified env design's capture
+/// step (`strip_base`) so the notebook's metadata records only user-level deps.
 pub const CONDA_BASE_PACKAGES: &[&str] = &[
     "ipykernel",
     "ipywidgets",
@@ -62,6 +61,18 @@ pub const CONDA_BASE_PACKAGES: &[&str] = &[
     "nbformat",
     "pyarrow>=14",
 ];
+
+/// Return [`CONDA_BASE_PACKAGES`] as owned package spec strings for install paths.
+pub fn conda_base_packages() -> Vec<String> {
+    CONDA_BASE_PACKAGES
+        .iter()
+        .map(|package| (*package).to_string())
+        .collect()
+}
+
+fn is_conda_base_package(dep: &str) -> bool {
+    CONDA_BASE_PACKAGES.contains(&dep)
+}
 
 const CONDA_GIL_SELECTOR: &str = "python-gil";
 
@@ -479,21 +490,12 @@ async fn install_conda_env(
         specs.push(MatchSpec::from_str(CONDA_GIL_SELECTOR, match_spec_options)?);
     }
 
-    specs.push(MatchSpec::from_str("ipykernel", match_spec_options)?);
-    specs.push(MatchSpec::from_str("ipywidgets", match_spec_options)?);
-    specs.push(MatchSpec::from_str("anywidget", match_spec_options)?);
-    specs.push(MatchSpec::from_str("pip", match_spec_options)?);
-    specs.push(MatchSpec::from_str("nbformat", match_spec_options)?);
-    specs.push(MatchSpec::from_str("pyarrow>=14", match_spec_options)?);
+    for package in CONDA_BASE_PACKAGES {
+        specs.push(MatchSpec::from_str(package, match_spec_options)?);
+    }
 
     for dep in &deps.dependencies {
-        if dep != "ipykernel"
-            && dep != "ipywidgets"
-            && dep != "anywidget"
-            && dep != "pip"
-            && dep != "nbformat"
-            && dep != "pyarrow>=14"
-        {
+        if !is_conda_base_package(dep) {
             specs.push(MatchSpec::from_str(dep, match_spec_options)?);
         }
     }
@@ -632,8 +634,8 @@ async fn install_conda_env(
     Ok(())
 }
 
-/// Create a prewarmed conda environment with ipykernel, ipywidgets,
-/// and any caller-supplied extra packages.
+/// Create a prewarmed conda environment with [`CONDA_BASE_PACKAGES`] and any
+/// caller-supplied extra packages.
 ///
 /// Returns an environment at `prewarm-{uuid}` that can later be claimed
 /// via [`claim_prewarmed_environment`].
@@ -665,11 +667,7 @@ pub async fn create_prewarmed_environment_in(
 
     tokio::fs::create_dir_all(cache_dir).await?;
 
-    let mut deps_list = vec![
-        "ipykernel".to_string(),
-        "ipywidgets".to_string(),
-        "pip".to_string(),
-    ];
+    let mut deps_list = conda_base_packages();
     if !extra_packages.is_empty() {
         info!("[prewarm] Including extra packages: {:?}", extra_packages);
         deps_list.extend(extra_packages.iter().cloned());
@@ -922,14 +920,10 @@ pub async fn sync_dependencies(
     // Always include base runtime packages — the solver only returns packages
     // needed to satisfy specs, and locked_packages are "preferred" not "required".
     // Without these, the Installer will remove ipykernel etc from the env.
-    let mut specs: Vec<MatchSpec> = vec![
-        MatchSpec::from_str("ipykernel", match_spec_options)?,
-        MatchSpec::from_str("ipywidgets", match_spec_options)?,
-        MatchSpec::from_str("anywidget", match_spec_options)?,
-        MatchSpec::from_str("pip", match_spec_options)?,
-        MatchSpec::from_str("nbformat", match_spec_options)?,
-        MatchSpec::from_str("pyarrow>=14", match_spec_options)?,
-    ];
+    let mut specs: Vec<MatchSpec> = CONDA_BASE_PACKAGES
+        .iter()
+        .map(|package| MatchSpec::from_str(package, match_spec_options))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
 
     if let Some(ref py_ver) = installed_python_version {
         info!("Pinning Python to installed version: {}", py_ver);
@@ -958,13 +952,7 @@ pub async fn sync_dependencies(
     }
 
     for dep in &deps.dependencies {
-        if dep != "ipykernel"
-            && dep != "ipywidgets"
-            && dep != "anywidget"
-            && dep != "pip"
-            && dep != "nbformat"
-            && dep != "pyarrow>=14"
-        {
+        if !is_conda_base_package(dep) {
             specs.push(MatchSpec::from_str(dep, match_spec_options)?);
         }
     }
@@ -1142,21 +1130,10 @@ fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
         specs.push(CONDA_GIL_SELECTOR.to_string());
     }
 
-    specs.push("ipykernel".to_string());
-    specs.push("ipywidgets".to_string());
-    specs.push("anywidget".to_string());
-    specs.push("pip".to_string());
-    specs.push("nbformat".to_string());
-    specs.push("pyarrow>=14".to_string());
+    specs.extend(conda_base_packages());
 
     for dep in &deps.dependencies {
-        if dep != "ipykernel"
-            && dep != "ipywidgets"
-            && dep != "anywidget"
-            && dep != "pip"
-            && dep != "nbformat"
-            && dep != "pyarrow>=14"
-        {
+        if !is_conda_base_package(dep) {
             specs.push(dep.clone());
         }
     }

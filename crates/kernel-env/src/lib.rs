@@ -45,10 +45,10 @@ pub mod warmup;
 
 // Re-export key types
 #[cfg(feature = "runtime")]
-pub use conda::{CondaDependencies, CondaEnvironment, CONDA_BASE_PACKAGES};
+pub use conda::{conda_base_packages, CondaDependencies, CondaEnvironment, CONDA_BASE_PACKAGES};
 pub use progress::{EnvProgressPhase, LogHandler, ProgressHandler};
 #[cfg(feature = "runtime")]
-pub use uv::{UvDependencies, UvEnvironment, UV_BASE_PACKAGES};
+pub use uv::{uv_base_packages, UvDependencies, UvEnvironment, UV_BASE_PACKAGES};
 
 /// Return the subset of `installed` that isn't in `base`, preserving input order.
 ///

@@ -456,27 +456,28 @@ fn extend_default_packages(
     }
 }
 
+fn base_packages_without_display_overrides(base_packages: Vec<String>) -> Vec<String> {
+    base_packages
+        .into_iter()
+        .filter(|package| {
+            crate::inline_env::extract_conda_package_name(package)
+                .map(crate::inline_env::normalize_package_name)
+                .is_none_or(|name| name != "nbformat" && name != "pyarrow")
+        })
+        .collect()
+}
+
 fn uv_prewarmed_packages(extra: &[String], install_default_data_packages: bool) -> Vec<String> {
     // The launcher package is vendored post-creation. pyarrow and nbformat are
     // part of the managed notebook runtime so rich display formatters work by
     // default; user defaults can still override either package by name.
-    let mut packages = vec![
-        "ipykernel".to_string(),
-        "ipywidgets".to_string(),
-        "anywidget".to_string(),
-        "uv".to_string(),
-    ];
+    let mut packages = base_packages_without_display_overrides(kernel_env::uv_base_packages());
     extend_default_packages(&mut packages, extra, install_default_data_packages);
     packages
 }
 
 fn conda_prewarmed_packages(extra: &[String], install_default_data_packages: bool) -> Vec<String> {
-    let mut packages = vec![
-        "ipykernel".to_string(),
-        "ipywidgets".to_string(),
-        "anywidget".to_string(),
-        "pip".to_string(),
-    ];
+    let mut packages = base_packages_without_display_overrides(kernel_env::conda_base_packages());
     extend_default_packages(&mut packages, extra, install_default_data_packages);
     packages
 }
@@ -5828,6 +5829,25 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn test_prewarmed_packages_derive_from_kernel_env_base_constants() {
+        assert_eq!(
+            uv_prewarmed_packages(&[], false),
+            vec![
+                "ipykernel".to_string(),
+                "ipywidgets".to_string(),
+                "anywidget".to_string(),
+                "uv".to_string(),
+                "nbformat".to_string(),
+                "pyarrow>=14".to_string(),
+            ]
+        );
+        assert_eq!(
+            conda_prewarmed_packages(&[], false),
+            kernel_env::conda_base_packages()
+        );
+    }
 
     #[test]
     fn test_uv_prewarmed_packages_include_required_display_deps() {
