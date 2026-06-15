@@ -19,12 +19,34 @@ export function cloudMarkdownDocumentDisplayTitle(document: CloudMarkdownDocumen
   return document.title?.trim() || "Untitled Markdown";
 }
 
-export function cloudMarkdownDocumentOpenUrl(document: CloudMarkdownDocumentListItem): string {
-  const url = new URL(document.viewer_url, window.location.origin);
-  if (url.origin === window.location.origin) {
+export function cloudMarkdownDocumentOpenUrl(
+  document: CloudMarkdownDocumentListItem,
+  options: { browserOrigin?: string | null } = {},
+): string {
+  return cloudMarkdownDocumentUrlOnCurrentOrigin(document.viewer_url, options);
+}
+
+export function cloudMarkdownDocumentUrlOnCurrentOrigin(
+  value: string,
+  options: { browserOrigin?: string | null } = {},
+): string {
+  const browserOrigin = options.browserOrigin ?? currentBrowserOrigin();
+  const url = new URL(value, browserOrigin ?? undefined);
+  if (
+    browserOrigin &&
+    (url.origin === browserOrigin || isHostedMarkdownDocumentPath(url.pathname))
+  ) {
     return `${url.pathname}${url.search}${url.hash}`;
   }
-  return document.viewer_url;
+  return value;
+}
+
+function currentBrowserOrigin(): string | null {
+  return typeof window === "undefined" ? null : window.location.origin;
+}
+
+function isHostedMarkdownDocumentPath(pathname: string): boolean {
+  return /^\/m\/[^/]+(?:\/.*)?\/?$/.test(pathname);
 }
 
 export function isCloudMarkdownDocumentListItem(

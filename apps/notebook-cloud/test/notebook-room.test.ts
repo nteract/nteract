@@ -8,6 +8,7 @@ import {
   authenticateAnonymousViewer,
   authenticateDevRequest,
   stampTrustedIdentity,
+  webSocketUpgradeHeaders,
 } from "../src/identity.ts";
 import {
   NotebookRoom,
@@ -16,7 +17,6 @@ import {
   runtimePeerWorkstationMetadataFromRequest,
   rewritePresenceFrame,
   shouldBroadcastFrame,
-  webSocketUpgradeHeaders,
 } from "../src/notebook-room.ts";
 import {
   FrameType,

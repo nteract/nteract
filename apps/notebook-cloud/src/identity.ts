@@ -560,6 +560,14 @@ export function stampTrustedIdentity(request: Request, identity: AuthenticatedCo
   return new Request(request, { headers });
 }
 
+export function webSocketUpgradeHeaders(identity: AuthenticatedConnection): Headers {
+  const headers = new Headers();
+  if (identity.webSocketProtocol) {
+    headers.set("Sec-WebSocket-Protocol", identity.webSocketProtocol);
+  }
+  return headers;
+}
+
 export function readTrustedIdentity(request: Request): AuthenticatedConnection {
   const principal = request.headers.get(TRUSTED_PRINCIPAL_HEADER);
   const operator = request.headers.get(TRUSTED_OPERATOR_HEADER);

@@ -1,6 +1,10 @@
 import type { CloudflareWebSocket, DurableObjectState, Env } from "./cloudflare-types.ts";
 import { identityDisplayLabel } from "./display-label.ts";
-import { readTrustedIdentity, type AuthenticatedConnection } from "./identity.ts";
+import {
+  readTrustedIdentity,
+  webSocketUpgradeHeaders,
+  type AuthenticatedConnection,
+} from "./identity.ts";
 import {
   encodeTypedFrame,
   FrameType,
@@ -111,6 +115,7 @@ export class MarkdownDocumentRoom {
     this.state.waitUntil(this.syncPeerFromRoomHost(documentId, peer));
     return new Response(null, {
       status: 101,
+      headers: webSocketUpgradeHeaders(identity),
       webSocket: pair[0],
     } as ResponseInit & { webSocket: CloudflareWebSocket });
   }

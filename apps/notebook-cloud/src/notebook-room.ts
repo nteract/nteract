@@ -11,6 +11,7 @@ import {
   allowsExecutionRequestSubmit,
   isAnonymousViewer,
   readTrustedIdentity,
+  webSocketUpgradeHeaders,
   type AuthenticatedConnection,
 } from "./identity.ts";
 import {
@@ -1978,14 +1979,6 @@ function normalizeNonNegativeInteger(value: number, fallback: number): number {
     return fallback;
   }
   return Math.max(0, Math.trunc(value));
-}
-
-export function webSocketUpgradeHeaders(identity: AuthenticatedConnection): Headers {
-  const headers = new Headers();
-  if (identity.webSocketProtocol) {
-    headers.set("Sec-WebSocket-Protocol", identity.webSocketProtocol);
-  }
-  return headers;
 }
 
 export function rewritePresenceFrame(

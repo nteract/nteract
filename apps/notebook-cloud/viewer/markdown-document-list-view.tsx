@@ -13,6 +13,7 @@ import { loadCloudMarkdownDocumentListBootstrap } from "./cloud-viewer-config";
 import {
   cloudMarkdownDocumentDisplayTitle,
   cloudMarkdownDocumentOpenUrl,
+  cloudMarkdownDocumentUrlOnCurrentOrigin,
   isCloudMarkdownDocumentListItem,
   type CloudMarkdownDocumentListItem,
 } from "./markdown-document-dashboard";
@@ -329,14 +330,6 @@ function markdownDocumentListEndpoint(): string {
 
 function markdownDocumentCollectionEndpoint(): string {
   return new URL("api/m", `${window.location.origin}/`).href;
-}
-
-function cloudMarkdownDocumentUrlOnCurrentOrigin(value: string): string {
-  const url = new URL(value, window.location.origin);
-  if (url.origin !== window.location.origin) {
-    return value;
-  }
-  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function cloudAuthWithScope(

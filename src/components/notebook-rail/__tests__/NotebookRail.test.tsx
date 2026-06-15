@@ -4,6 +4,7 @@ import {
   NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY,
   NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES,
   NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
+  NotebookOutlinePanel,
   NotebookPackagesPanel,
   NotebookRail,
 } from "../NotebookRail";
@@ -85,6 +86,12 @@ describe("NotebookRail", () => {
 
     fireEvent.click(screen.getByRole("link", { name: "Clean columns" }));
     expect(onSelectOutlineItem).toHaveBeenCalledWith(outlineItems[1]);
+  });
+
+  it("allows non-notebook hosts to name the outline navigation", () => {
+    render(<NotebookOutlinePanel items={outlineItems} ariaLabel="Document outline" />);
+
+    expect(screen.getByRole("navigation", { name: "Document outline" })).toBeVisible();
   });
 
   it("switches to packages without owning package-management state", () => {

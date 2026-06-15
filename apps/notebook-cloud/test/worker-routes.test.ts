@@ -1787,8 +1787,11 @@ describe("Worker artifact routes", () => {
   });
 
   it("routes hosted Markdown document sync through the Markdown room binding", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "markdown-ws-user" });
     let forwardedRequest: Request | undefined;
     const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
       MARKDOWN_DOCUMENT_ROOMS: {
         idFromName: (name: string) => ({ toString: () => name }),
         get: () => ({
@@ -1801,7 +1804,7 @@ describe("Worker artifact routes", () => {
     });
     env.DB.markdownDocuments.set("markdown-sync", {
       id: "markdown-sync",
-      owner_principal: "user:dev:alice",
+      owner_principal: "user:anaconda:markdown-ws-user",
       title: "Synced Markdown",
       body_doc_id: "markdown-sync",
       created_at: "2026-06-15T00:00:00.000Z",
@@ -1811,21 +1814,21 @@ describe("Worker artifact routes", () => {
     env.DB.markdownDocumentAcl.push({
       document_id: "markdown-sync",
       subject_kind: "principal",
-      subject: "user:dev:alice",
+      subject: "user:anaconda:markdown-ws-user",
       scope: "editor",
       created_at: "2026-06-15T00:00:00.000Z",
       updated_at: "2026-06-15T00:00:00.000Z",
-      created_by_actor_label: "user:dev:alice/browser:tab",
+      created_by_actor_label: "user:anaconda:markdown-ws-user/browser:tab",
     });
+    const cookie = await oidcAppSessionCookie(env, token);
 
     const response = await worker.fetch(
       new Request("http://localhost/m/markdown-sync/sync?scope=editor", {
         headers: {
+          Cookie: cookie,
           Origin: "http://localhost",
+          "Sec-WebSocket-Protocol": NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
           Upgrade: "websocket",
-          "X-Operator": "browser:tab",
-          "X-Scope": "editor",
-          "X-User": "alice",
         },
       }),
       env,
@@ -1835,6 +1838,14 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 200);
     assert.ok(forwardedRequest);
     assert.equal(new URL(forwardedRequest.url).pathname, "/m/markdown-sync/sync");
+    assert.equal(
+      forwardedRequest.headers.get("Sec-WebSocket-Protocol"),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+    assert.equal(
+      forwardedRequest.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
     assert.equal(forwardedRequest.headers.get(TRUSTED_SCOPE_HEADER), "editor");
   });
 

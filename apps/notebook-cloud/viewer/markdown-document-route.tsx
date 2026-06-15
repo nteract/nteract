@@ -67,12 +67,14 @@ export function MarkdownDocumentRoute({
   const [mode, setMode] = useState<"source" | "read">("source");
   const syncControllerRef = useRef<MarkdownDocumentLiveSyncController | null>(null);
   const editorRef = useRef<CodeMirrorEditorRef | null>(null);
+  const connectionStatusRef = useRef<ConnectionStatus>("connecting");
 
   useEffect(() => {
     let disposed = false;
     let controller: MarkdownDocumentLiveSyncController | null = null;
     void (async () => {
       try {
+        connectionStatusRef.current = "connecting";
         setRouteState({ kind: "loading" });
         const catalog = await fetchMarkdownCatalog(config, authState);
         if (disposed) return;
@@ -90,6 +92,7 @@ export function MarkdownDocumentRoute({
             console.warn("[notebook-cloud] Markdown document sync failed", error);
           },
           onStatus: (connectionStatus) => {
+            connectionStatusRef.current = connectionStatus;
             setRouteState((current) =>
               current.kind === "ready" ? { ...current, connectionStatus } : current,
             );
@@ -101,7 +104,7 @@ export function MarkdownDocumentRoute({
               body: snapshot.body,
               bodyReady: snapshot.bodyReady,
               scope: catalog.document.scope,
-              connectionStatus: controller?.transport.connected ? "online" : "connecting",
+              connectionStatus: connectionStatusRef.current,
             });
           },
         });
@@ -224,6 +227,7 @@ export function MarkdownDocumentRoute({
           </div>
           <NotebookOutlinePanel
             items={markdownOutlineItems(projection)}
+            ariaLabel="Document outline"
             emptyMessage="Add Markdown headings to structure this document. They will appear here."
             getItemHref={(item) => item.href}
             onNavigateItem={(_item, href) => {
