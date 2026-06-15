@@ -2433,24 +2433,34 @@ describe("NotebookRoom materialized sync routing", () => {
       removePeer: async () => undefined,
     });
 
-    await harness.handleMessage(
-      "demo",
-      peer,
-      encodeTypedFrame(
-        FrameType.REQUEST,
-        new TextEncoder().encode(JSON.stringify({ id: "request-1", action: "shutdown_kernel" })),
-      ),
-    );
+    const unsupportedActions = [
+      "launch_kernel",
+      "restart_kernel",
+      "shutdown_kernel",
+      "sync_environment",
+      "get_history",
+    ] as const;
 
-    assert.equal(materialized, 0);
-    assert.equal(peer.consecutiveRejectedFrames, 0);
-    assert.equal(socket.sent.length, 1);
-    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
-    assert.equal(rejected.type, "cloud_frame_rejected");
-    assert.equal(
-      rejected.reason,
-      "hosted cloud rooms do not yet support response-bearing runtime request shutdown_kernel",
-    );
+    for (const action of unsupportedActions) {
+      await harness.handleMessage(
+        "demo",
+        peer,
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(JSON.stringify({ id: `request-${action}`, action })),
+        ),
+      );
+
+      assert.equal(materialized, 0);
+      assert.equal(peer.consecutiveRejectedFrames, 0);
+      assert.equal(socket.sent.length, unsupportedActions.indexOf(action) + 1);
+      const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent.at(-1)!.slice(1));
+      assert.equal(rejected.type, "cloud_frame_rejected");
+      assert.equal(
+        rejected.reason,
+        `hosted cloud rooms do not yet support response-bearing runtime request ${action}`,
+      );
+    }
   });
 
   it("rejects non-owner REQUEST frames on the WebSocket path", async () => {
