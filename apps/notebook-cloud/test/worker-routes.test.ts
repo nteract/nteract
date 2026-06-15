@@ -1669,6 +1669,123 @@ describe("Worker artifact routes", () => {
     assert.equal(body.viewer_url, `http://localhost/n/${body.notebook_id}/Exploration%20Notes`);
   });
 
+  it("creates and lists hosted Markdown documents without notebook runtime fields", async () => {
+    const env = fakeEnv();
+
+    const createResponse = await worker.fetch(
+      new Request("http://localhost/api/m", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ title: "Research Brief" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(createResponse.status, 201);
+    const created = (await createResponse.json()) as {
+      body_doc_id: string;
+      document_id: string;
+      title: string;
+      viewer_url: string;
+    };
+    assert.match(created.document_id, /^[0-9A-HJKMNP-TV-Z]{26}$/);
+    assert.equal(created.body_doc_id, created.document_id);
+    assert.equal(created.title, "Research Brief");
+    assert.equal(created.viewer_url, `http://localhost/m/${created.document_id}/Research%20Brief`);
+    assert.equal(env.DB.markdownDocuments.get(created.document_id)?.title, "Research Brief");
+    assert.equal(
+      env.DB.markdownDocumentAcl.some(
+        (row) =>
+          row.document_id === created.document_id &&
+          row.subject === "user:dev:alice" &&
+          row.scope === "owner",
+      ),
+      true,
+    );
+
+    const listResponse = await worker.fetch(
+      new Request("http://localhost/api/m", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "viewer",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(listResponse.status, 200);
+    const listBody = (await listResponse.json()) as {
+      documents: Array<{
+        body_doc_id: string;
+        document_id: string;
+        scope: string;
+        viewer_url: string;
+      }>;
+    };
+    assert.equal(listBody.documents.length, 1);
+    assert.equal(listBody.documents[0]?.document_id, created.document_id);
+    assert.equal(listBody.documents[0]?.body_doc_id, created.document_id);
+    assert.equal(listBody.documents[0]?.scope, "owner");
+    assert.equal(listBody.documents[0]?.viewer_url, created.viewer_url);
+    assert.equal("runtimeSnapshotBasePath" in listBody.documents[0]!, false);
+    assert.equal("workstationAttachEndpoint" in listBody.documents[0]!, false);
+  });
+
+  it("reports the best granted Markdown document scope from the catalog route", async () => {
+    const env = fakeEnv();
+    env.DB.markdownDocuments.set("markdown-owned", {
+      id: "markdown-owned",
+      owner_principal: "user:dev:alice",
+      title: "Owned Markdown",
+      body_doc_id: "markdown-owned",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: null,
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-owned",
+      subject_kind: "principal",
+      subject: "user:dev:alice",
+      scope: "owner",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/m/markdown-owned", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "viewer",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      document: {
+        document_id: string;
+        scope: string;
+        endpoints: Record<string, string>;
+      };
+    };
+    assert.equal(body.document.document_id, "markdown-owned");
+    assert.equal(body.document.scope, "owner");
+    assert.equal(body.document.endpoints.catalog, "/api/m/markdown-owned");
+    assert.equal("runtime_snapshots" in body.document.endpoints, false);
+  });
+
   it("keeps local Browser viewer URLs on loopback when Wrangler preserves the custom-domain URL", async () => {
     const env = fakeEnv({ NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS: "true" });
     const localBrowserHeaders = {
@@ -6185,6 +6302,35 @@ interface NotebookAclRow {
   created_by_actor_label: string;
 }
 
+interface MarkdownDocumentRow {
+  id: string;
+  owner_principal: string;
+  title: string | null;
+  body_doc_id: string;
+  created_at: string;
+  updated_at: string;
+  latest_revision_id: string | null;
+}
+
+interface MarkdownDocumentAclRow {
+  document_id: string;
+  subject_kind: "principal" | "public";
+  subject: string;
+  scope: "viewer" | "editor" | "owner";
+  created_at: string;
+  updated_at: string;
+  created_by_actor_label: string;
+}
+
+interface MarkdownDocumentRevisionRow {
+  id: string;
+  document_id: string;
+  body_heads_hash: string;
+  snapshot_key: string;
+  actor_label: string;
+  created_at: string;
+}
+
 interface NotebookAccessRequestRow {
   id: string;
   notebook_id: string;
@@ -6247,6 +6393,9 @@ interface WorkstationAttachJobRow {
 
 class FakeD1 implements D1Database {
   readonly notebooks = new Map<string, NotebookRow>();
+  readonly markdownDocuments = new Map<string, MarkdownDocumentRow>();
+  readonly markdownDocumentRevisions: MarkdownDocumentRevisionRow[] = [];
+  readonly markdownDocumentAcl: MarkdownDocumentAclRow[] = [];
   readonly revisions: RevisionRow[] = [];
   readonly blobs = new Map<string, BlobRow>();
   readonly acl: NotebookAclRow[] = [];
@@ -6355,7 +6504,63 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async run<T = unknown>(): Promise<D1Result<T>> {
-    if (this.query.includes("INSERT OR IGNORE INTO notebook_acl")) {
+    if (
+      this.query.includes("INSERT INTO markdown_document_acl") &&
+      this.query.includes("WHERE EXISTS")
+    ) {
+      const [documentId, subject, createdAt, updatedAt, actorLabel, expectedDocumentId, owner] =
+        this.values as [string, string, string, string, string, string, string];
+      if (this.db.markdownDocuments.get(expectedDocumentId)?.owner_principal === owner) {
+        this.insertMarkdownDocumentAclIfMissing({
+          document_id: documentId,
+          subject_kind: "principal",
+          subject,
+          scope: "owner",
+          created_at: createdAt,
+          updated_at: updatedAt,
+          created_by_actor_label: actorLabel,
+        });
+      }
+    } else if (this.query.includes("INSERT INTO markdown_document_acl")) {
+      const [documentId, subjectKind, subject, scope, createdAt, updatedAt, actorLabel] = this
+        .values as [
+        string,
+        MarkdownDocumentAclRow["subject_kind"],
+        string,
+        MarkdownDocumentAclRow["scope"],
+        string,
+        string,
+        string,
+      ];
+      this.insertMarkdownDocumentAclIfMissing({
+        document_id: documentId,
+        subject_kind: subjectKind,
+        subject,
+        scope,
+        created_at: createdAt,
+        updated_at: updatedAt,
+        created_by_actor_label: actorLabel,
+      });
+    } else if (this.query.includes("DELETE FROM markdown_document_acl")) {
+      const [documentId, subjectKind, subject, scope] = this.values as [
+        string,
+        MarkdownDocumentAclRow["subject_kind"],
+        string,
+        MarkdownDocumentAclRow["scope"],
+      ];
+      const countBefore = this.db.markdownDocumentAcl.length;
+      const retained = this.db.markdownDocumentAcl.filter(
+        (row) =>
+          !(
+            row.document_id === documentId &&
+            row.subject_kind === subjectKind &&
+            row.subject === subject &&
+            row.scope === scope
+          ),
+      );
+      this.db.markdownDocumentAcl.splice(0, this.db.markdownDocumentAcl.length, ...retained);
+      return okResult(undefined, { changes: countBefore - retained.length });
+    } else if (this.query.includes("INSERT OR IGNORE INTO notebook_acl")) {
       if (this.query.includes("'principal'") && this.query.includes("owner_principal")) {
         for (const notebook of this.db.notebooks.values()) {
           this.insertAclIfMissing({
@@ -6977,6 +7182,29 @@ class FakeD1Statement implements D1PreparedStatement {
         return okResult(undefined, { changes: 1 });
       }
       return okResult(undefined, { changes: 0 });
+    } else if (this.query.includes("INSERT INTO markdown_documents")) {
+      const [id, ownerPrincipal, title, bodyDocId, createdAt, updatedAt] = this.values as [
+        string,
+        string,
+        string | null,
+        string,
+        string,
+        string,
+      ];
+      const existing = this.db.markdownDocuments.get(id);
+      if (existing && this.query.includes("DO NOTHING")) {
+        return okResult(undefined, { changes: 0 });
+      }
+      this.db.markdownDocuments.set(id, {
+        id,
+        owner_principal: existing?.owner_principal ?? ownerPrincipal,
+        title: existing?.title ?? title,
+        body_doc_id: existing?.body_doc_id ?? bodyDocId,
+        created_at: existing?.created_at ?? createdAt,
+        updated_at: updatedAt,
+        latest_revision_id: existing?.latest_revision_id ?? null,
+      });
+      return okResult(undefined, { changes: 1 });
     } else if (this.query.includes("INSERT INTO notebooks")) {
       const [id, ownerPrincipal, maybeTitleOrCreatedAt, createdAtOrUpdatedAt, maybeUpdatedAt] = this
         .values as [string, string, string | null, string | undefined, string | undefined];
@@ -7002,6 +7230,22 @@ class FakeD1Statement implements D1PreparedStatement {
         latest_revision_id: existing?.latest_revision_id ?? null,
       });
       return okResult(undefined, { changes: 1 });
+    } else if (this.query.includes("INSERT INTO markdown_document_revisions")) {
+      const [id, documentId, bodyHeadsHash, snapshotKey, actorLabel] = this.values as [
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      this.db.markdownDocumentRevisions.push({
+        id,
+        document_id: documentId,
+        body_heads_hash: bodyHeadsHash,
+        snapshot_key: snapshotKey,
+        actor_label: actorLabel,
+        created_at: new Date().toISOString(),
+      });
     } else if (this.query.includes("INSERT INTO notebook_revisions")) {
       const [
         id,
@@ -7039,6 +7283,28 @@ class FakeD1Statement implements D1PreparedStatement {
         actor_label: actorLabel,
         created_at: new Date().toISOString(),
       });
+    } else if (
+      this.query.includes("UPDATE markdown_documents") &&
+      this.query.includes("latest_revision_id")
+    ) {
+      const [revisionId, updatedAt, documentId] = this.values as [string, string, string];
+      const existing = this.db.markdownDocuments.get(documentId);
+      if (existing) {
+        existing.latest_revision_id = revisionId;
+        existing.updated_at = updatedAt;
+      }
+    } else if (
+      this.query.includes("UPDATE markdown_documents") &&
+      this.query.includes("SET title")
+    ) {
+      const [title, updatedAt, documentId] = this.values as [string | null, string, string];
+      const existing = this.db.markdownDocuments.get(documentId);
+      if (!existing) {
+        return okResult(undefined, { changes: 0 });
+      }
+      existing.title = title;
+      existing.updated_at = updatedAt;
+      return okResult(undefined, { changes: 1 });
     } else if (
       this.query.includes("UPDATE notebooks") &&
       this.query.includes("latest_revision_id")
@@ -7192,6 +7458,21 @@ class FakeD1Statement implements D1PreparedStatement {
     this.db.acl.push(row);
   }
 
+  private insertMarkdownDocumentAclIfMissing(row: MarkdownDocumentAclRow): void {
+    const existing = this.db.markdownDocumentAcl.find(
+      (candidate) =>
+        candidate.document_id === row.document_id &&
+        candidate.subject_kind === row.subject_kind &&
+        candidate.subject === row.subject &&
+        candidate.scope === row.scope,
+    );
+    if (existing) {
+      existing.updated_at = row.updated_at;
+      return;
+    }
+    this.db.markdownDocumentAcl.push(row);
+  }
+
   async first<T = unknown>(): Promise<T | null> {
     if (this.query.includes("FROM notebook_access_requests")) {
       if (this.query.includes("requester_principal = ?")) {
@@ -7322,6 +7603,25 @@ class FakeD1Statement implements D1PreparedStatement {
           row.scope === "viewer",
       );
       return (notebook?.latest_revision_id && publicViewer ? notebook : null) as T | null;
+    }
+    if (
+      this.query.includes("FROM markdown_documents d") &&
+      this.query.includes("JOIN markdown_document_acl a") &&
+      this.query.includes("a.subject_kind = 'public'")
+    ) {
+      const documentId = this.values[0] as string;
+      const document = this.db.markdownDocuments.get(documentId);
+      const publicViewer = this.db.markdownDocumentAcl.some(
+        (row) =>
+          row.document_id === documentId &&
+          row.subject_kind === "public" &&
+          row.subject === "anonymous" &&
+          row.scope === "viewer",
+      );
+      return (document?.latest_revision_id && publicViewer ? document : null) as T | null;
+    }
+    if (this.query.includes("FROM markdown_documents")) {
+      return (this.db.markdownDocuments.get(this.values[0] as string) as T | undefined) ?? null;
     }
     if (this.query.includes("FROM notebooks")) {
       return (this.db.notebooks.get(this.values[0] as string) as T | undefined) ?? null;
@@ -7473,6 +7773,84 @@ class FakeD1Statement implements D1PreparedStatement {
           .map(({ scopeRank: _scopeRank, ...row }) => row) as T[],
       );
     }
+    if (
+      this.query.includes("FROM markdown_documents d") &&
+      this.query.includes("JOIN markdown_document_acl a")
+    ) {
+      const [principal, linkedPrincipal, limitValue] = this.values as [string, string, number];
+      const linked = this.db.accountLinks.get(linkedPrincipal)?.canonical_principal;
+      const subjects = new Set([principal, ...(linked ? [linked] : [])]);
+      const byDocument = new Map<
+        string,
+        MarkdownDocumentRow & { scope: MarkdownDocumentAclRow["scope"]; scopeRank: number }
+      >();
+
+      for (const row of this.db.markdownDocumentAcl) {
+        if (row.subject_kind !== "principal" || !subjects.has(row.subject)) {
+          continue;
+        }
+        const document = this.db.markdownDocuments.get(row.document_id);
+        if (!document) {
+          continue;
+        }
+        const rank = markdownDocumentScopeRank(row.scope);
+        const existing = byDocument.get(document.id);
+        if (!existing || rank > existing.scopeRank) {
+          byDocument.set(document.id, {
+            ...document,
+            scope: row.scope,
+            scopeRank: rank,
+          });
+        }
+      }
+
+      const limit = Number.isFinite(limitValue) ? limitValue : Number.POSITIVE_INFINITY;
+      return okResult(
+        [...byDocument.values()]
+          .sort(
+            (left, right) =>
+              right.updated_at.localeCompare(left.updated_at) ||
+              right.created_at.localeCompare(left.created_at) ||
+              right.id.localeCompare(left.id),
+          )
+          .slice(0, limit)
+          .map(({ scopeRank: _scopeRank, ...row }) => row) as T[],
+      );
+    }
+    if (this.query.includes("FROM markdown_document_acl")) {
+      const documentId = this.values[0] as string;
+      if (
+        !this.query.includes("subject_kind = 'principal'") &&
+        !this.query.includes("subject_kind = 'public'")
+      ) {
+        return okResult(
+          this.db.markdownDocumentAcl.filter((row) => row.document_id === documentId) as T[],
+        );
+      }
+      if (this.query.includes("subject_kind = 'principal'")) {
+        const principal = this.values[1] as string;
+        const linked = this.db.accountLinks.get(principal)?.canonical_principal;
+        const subjects = new Set([principal, ...(linked ? [linked] : [])]);
+        return okResult(
+          this.db.markdownDocumentAcl.filter(
+            (row) =>
+              row.document_id === documentId &&
+              row.subject_kind === "principal" &&
+              subjects.has(row.subject),
+          ) as T[],
+        );
+      }
+      if (this.query.includes("subject_kind = 'public'")) {
+        return okResult(
+          this.db.markdownDocumentAcl.filter(
+            (row) =>
+              row.document_id === documentId &&
+              row.subject_kind === "public" &&
+              row.subject === "anonymous",
+          ) as T[],
+        );
+      }
+    }
     if (this.query.includes("FROM notebook_acl")) {
       const notebookId = this.values[0] as string;
       if (
@@ -7511,6 +7889,14 @@ class FakeD1Statement implements D1PreparedStatement {
         this.db.revisions.filter((revision) => revision.notebook_id === notebookId) as T[],
       );
     }
+    if (this.query.includes("FROM markdown_document_revisions")) {
+      const documentId = this.values[0] as string;
+      return okResult(
+        this.db.markdownDocumentRevisions.filter(
+          (revision) => revision.document_id === documentId,
+        ) as T[],
+      );
+    }
     if (this.query.includes("FROM notebook_blobs")) {
       const notebookId = this.values[0] as string;
       return okResult(
@@ -7540,6 +7926,17 @@ function scopeRank(scope: NotebookAclRow["scope"]): number {
     case "editor":
       return 3;
     case "runtime_peer":
+      return 2;
+    case "viewer":
+      return 1;
+  }
+}
+
+function markdownDocumentScopeRank(scope: MarkdownDocumentAclRow["scope"]): number {
+  switch (scope) {
+    case "owner":
+      return 3;
+    case "editor":
       return 2;
     case "viewer":
       return 1;

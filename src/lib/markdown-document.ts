@@ -37,6 +37,14 @@ export interface MarkdownDocumentOutlineItem {
   blockId: string;
 }
 
+export interface MarkdownDocumentHeadingAnchor {
+  itemId: string;
+  title: string;
+  level: number;
+  anchor: string;
+  headingAnchorId: string;
+}
+
 export interface MarkdownDocumentProjection {
   id: string;
   title: string;
@@ -52,6 +60,7 @@ export interface MarkdownDocumentProjection {
   markdownPlan: MarkdownProjectionPlan | null;
   canRenderInHost: boolean;
   outlineItems: readonly MarkdownDocumentOutlineItem[];
+  headingAnchors: readonly MarkdownDocumentHeadingAnchor[];
 }
 
 export function projectMarkdownDocument(
@@ -63,6 +72,8 @@ export function projectMarkdownDocument(
   const mode = canEdit ? (input.requestedMode ?? "read") : "read";
   const markdownPlan = projectMarkdownPlan(body);
   const publishedRevisionId = input.publishedRevisionId ?? null;
+
+  const outlineItems = markdownPlan ? projectMarkdownDocumentOutline(markdownPlan) : [];
 
   return {
     id: input.id,
@@ -78,7 +89,8 @@ export function projectMarkdownDocument(
     updatedAt: input.updatedAt ?? null,
     markdownPlan,
     canRenderInHost: canRenderMarkdownProjectionInHost(markdownPlan),
-    outlineItems: markdownPlan ? projectMarkdownDocumentOutline(markdownPlan) : [],
+    outlineItems,
+    headingAnchors: markdownDocumentHeadingAnchors(outlineItems),
   };
 }
 
@@ -86,6 +98,18 @@ export function projectMarkdownDocumentOutline(
   plan: MarkdownProjectionPlan,
 ): MarkdownDocumentOutlineItem[] {
   return plan.anchors.map((anchor, index) => markdownAnchorToOutlineItem(anchor, index));
+}
+
+export function markdownDocumentHeadingAnchors(
+  outlineItems: readonly MarkdownDocumentOutlineItem[],
+): MarkdownDocumentHeadingAnchor[] {
+  return outlineItems.map((item) => ({
+    itemId: item.id,
+    title: item.title,
+    level: item.level,
+    anchor: item.anchor,
+    headingAnchorId: item.anchor,
+  }));
 }
 
 export function normalizeMarkdownDocumentAccess(

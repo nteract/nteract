@@ -2120,3 +2120,231 @@ body {
     display: inline;
   }
 }
+
+.cloud-document-list {
+  display: grid;
+  gap: 0.5rem;
+  width: min(100%, 56rem);
+}
+
+.cloud-document-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: center;
+  border-top: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+  padding: 0.875rem 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.cloud-document-row svg {
+  color: color-mix(in srgb, var(--foreground) 55%, transparent);
+}
+
+.cloud-document-row span {
+  display: grid;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.cloud-document-row strong,
+.cloud-document-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-document-row strong {
+  font-size: 0.9375rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.cloud-document-row small {
+  color: color-mix(in srgb, var(--foreground) 56%, transparent);
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+
+.cloud-dashboard-create {
+  display: grid;
+  gap: 0.75rem;
+  width: min(100%, 36rem);
+  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  border-radius: 8px;
+  padding: 0.875rem;
+  background: color-mix(in srgb, var(--background) 94%, var(--foreground) 6%);
+}
+
+.cloud-dashboard-create label {
+  display: grid;
+  gap: 0.25rem;
+  color: color-mix(in srgb, var(--foreground) 65%, transparent);
+  font-size: 0.75rem;
+}
+
+.cloud-dashboard-create input {
+  min-height: 2.25rem;
+  border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
+  border-radius: 6px;
+  padding: 0 0.625rem;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+}
+
+.cloud-dashboard-create-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.cloud-dashboard-create-actions button,
+.cloud-dashboard-button,
+.cloud-dashboard-secondary-action,
+.cloud-markdown-toolbar-actions button {
+  display: inline-flex;
+  gap: 0.375rem;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
+  border-radius: 6px;
+  padding: 0 0.75rem;
+  background: color-mix(in srgb, var(--background) 96%, var(--foreground) 4%);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 620;
+}
+
+.cloud-dashboard-secondary-action {
+  width: fit-content;
+}
+
+.cloud-markdown-shell {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.cloud-markdown-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+  padding: 0.75rem 1rem;
+}
+
+.cloud-markdown-toolbar h1,
+.cloud-markdown-toolbar p {
+  margin: 0;
+}
+
+.cloud-markdown-toolbar h1 {
+  overflow: hidden;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-markdown-home-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  border-radius: 6px;
+  color: inherit;
+}
+
+.cloud-markdown-toolbar-actions {
+  display: inline-flex;
+  gap: 0.375rem;
+}
+
+.cloud-markdown-toolbar-actions button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--foreground) 28%, transparent);
+  background: color-mix(in srgb, var(--foreground) 9%, var(--background));
+}
+
+.cloud-markdown-notice {
+  border-bottom: 1px solid color-mix(in srgb, #b45309 18%, transparent);
+  padding: 0.5rem 1rem;
+  color: color-mix(in srgb, #92400e 78%, var(--foreground));
+  background: color-mix(in srgb, #f59e0b 8%, var(--background));
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.cloud-markdown-workspace {
+  display: grid;
+  grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.cloud-markdown-rail {
+  min-height: 0;
+  border-right: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+  padding: 0.75rem;
+  overflow: auto;
+}
+
+.cloud-markdown-rail-title {
+  display: flex;
+  gap: 0.375rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  color: color-mix(in srgb, var(--foreground) 62%, transparent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.cloud-markdown-stage {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: clamp(1rem, 3vw, 2rem);
+}
+
+.cloud-markdown-editor,
+.cloud-markdown-preview {
+  width: min(100%, 52rem);
+  margin: 0 auto;
+}
+
+.cloud-markdown-editor {
+  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+@media (max-width: 760px) {
+  .cloud-markdown-toolbar {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .cloud-markdown-toolbar-actions {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .cloud-markdown-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .cloud-markdown-rail {
+    max-height: 14rem;
+    border-right: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+  }
+}

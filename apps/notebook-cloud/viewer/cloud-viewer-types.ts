@@ -1,5 +1,6 @@
 import type { CloudAppSession } from "./app-session";
 import type { CloudViewerConfig } from "./cloud-viewer-session";
+import type { CloudMarkdownDocumentListItem } from "./markdown-document-dashboard";
 import type { CloudNotebookListItem } from "./notebook-dashboard";
 import type { CloudOidcAuthConfig } from "./oidc-auth";
 
@@ -31,6 +32,46 @@ export interface CloudNotebookListBootstrap {
   notebooks: CloudNotebookListItem[];
   saved_at: string;
   session?: CloudAppSession | null;
+}
+
+export interface CloudMarkdownDocumentListResponse {
+  ok: boolean;
+  documents: CloudMarkdownDocumentListItem[];
+}
+
+export interface CloudMarkdownDocumentListBootstrap {
+  kind: "markdown-document-list";
+  documents: CloudMarkdownDocumentListItem[];
+  saved_at: string;
+  session?: CloudAppSession | null;
+}
+
+export interface CloudMarkdownDocumentCreateResponse {
+  ok: boolean;
+  title?: string | null;
+  viewer_url?: string;
+}
+
+export interface CloudMarkdownDocumentUpdateResponse {
+  ok: boolean;
+  document_id?: string;
+  title?: string | null;
+  updated_at?: string;
+  viewer_url?: string;
+}
+
+export interface CloudMarkdownDocumentConfig {
+  documentKind: "markdown";
+  documentId: string;
+  catalogEndpoint: string;
+  snapshotBasePath: string;
+  runtimedWasmModulePath: string;
+  runtimedWasmPath: string;
+  session?: CloudAppSession | null;
+  hostCapabilities?: {
+    canManageSharing?: boolean;
+    canPublish?: boolean;
+  };
 }
 
 export interface CloudNotebookCreateResponse {

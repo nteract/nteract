@@ -85,6 +85,15 @@ describe("markdown document projection", () => {
         href: "#research",
       }),
     ]);
+    expect(projection.headingAnchors).toEqual([
+      {
+        itemId: "anchor:0",
+        title: "Research",
+        level: 1,
+        anchor: "research",
+        headingAnchorId: "research",
+      },
+    ]);
   });
 
   it("forces read mode for viewers", () => {
@@ -114,6 +123,7 @@ describe("markdown document projection", () => {
     expect(projection.access).toBe("none");
     expect(projection.markdownPlan).toBeNull();
     expect(projection.outlineItems).toEqual([]);
+    expect(projection.headingAnchors).toEqual([]);
   });
 
   it("treats invalid access as none", () => {

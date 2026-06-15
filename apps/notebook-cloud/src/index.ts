@@ -30,18 +30,28 @@ import {
   type AuthorizeNotebookAccessOptions,
 } from "./authorization.ts";
 import {
+  MarkdownAuthorizationError,
+  authorizeMarkdownDocumentAccess,
+  authorizeMarkdownDocumentReadWithBestScope,
+} from "./markdown-authorization.ts";
+import {
   blobKey,
   commsDocSnapshotKey,
+  createMarkdownDocumentWithOwnerAcl,
   createNotebookWithOwnerAcl,
   createWorkstationAttachJob,
   ensureCatalogSchema,
   getCanonicalPrincipalForTransport,
   getDefaultWorkstationId,
+  getMarkdownDocumentCatalog,
+  getMarkdownDocumentRow,
   getNotebookAclRows,
   getNotebookRow,
   getNotebookCatalog,
+  getPublicPublishedMarkdownDocumentRow,
   getPublicPublishedNotebookRow,
   getWorkstationRow,
+  listMarkdownDocumentsForPrincipal,
   grantNotebookAclRow,
   listActiveWorkstationAttachJobs,
   listNotebooksForPrincipal,
@@ -53,9 +63,12 @@ import {
   runtimeStateSnapshotKey,
   snapshotKey,
   setDefaultWorkstation,
+  updateMarkdownDocumentTitle,
   updateNotebookTitle,
   updateWorkstationAttachJobStatus,
+  type ListedMarkdownDocumentRow,
   type ListedNotebookRow,
+  type MarkdownDocumentScope,
   type NotebookAclRow,
   type NotebookAccessRequestRow,
   type NotebookAccessRequestStatus,
@@ -254,6 +267,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     handler: (_match, request, env) => notebookListViewer(request, env),
   },
   {
+    match: exactPath("/m", "/m/"),
+    methods: ["GET", "HEAD"],
+    handler: (_match, request, env) => markdownDocumentListViewer(request, env),
+  },
+  {
     match: exactPath("/oidc"),
     methods: ["GET", "HEAD"],
     handler: (_match, request, env) => oidcCallbackViewer(request, env),
@@ -279,6 +297,17 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
       viewer(params.notebookId, request, env, undefined, params.vanityName),
   },
   {
+    match: routePath("/m/:documentId/:vanityName", { trailingSlash: "optional" }),
+    methods: ["GET", "HEAD"],
+    handler: ({ params }, request, env) =>
+      markdownDocumentViewer(params.documentId, request, env, params.vanityName),
+  },
+  {
+    match: routePath("/m/:documentId", { trailingSlash: "optional" }),
+    methods: ["GET", "HEAD"],
+    handler: ({ params }, request, env) => markdownDocumentViewer(params.documentId, request, env),
+  },
+  {
     match: exactPath("/api/n"),
     methods: ["POST"],
     handler: (_match, request, env) => routeCreateNotebook(request, env),
@@ -287,6 +316,16 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: exactPath("/api/n"),
     methods: ["GET"],
     handler: (_match, request, env) => routeListNotebooks(request, env),
+  },
+  {
+    match: exactPath("/api/m"),
+    methods: ["POST"],
+    handler: (_match, request, env) => routeCreateMarkdownDocument(request, env),
+  },
+  {
+    match: exactPath("/api/m"),
+    methods: ["GET"],
+    handler: (_match, request, env) => routeListMarkdownDocuments(request, env),
   },
   {
     match: exactPath("/api/workstations"),
@@ -363,6 +402,18 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     methods: ["PATCH"],
     handler: ({ params }, request, env) =>
       routeUpdateNotebookMetadata(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/m/:documentId", { trailingSlash: "optional" }),
+    methods: ["GET"],
+    handler: ({ params }, request, env) =>
+      routeMarkdownDocumentCatalog(request, env, params.documentId),
+  },
+  {
+    match: routePath("/api/m/:documentId", { trailingSlash: "optional" }),
+    methods: ["PATCH"],
+    handler: ({ params }, request, env) =>
+      routeUpdateMarkdownDocumentMetadata(request, env, params.documentId),
   },
   {
     match: routePath("/api/n/:notebookId/acl", { trailingSlash: "optional" }),
@@ -1211,6 +1262,148 @@ function parseNotebookListLimit(request: Request): number | Response {
   return Math.min(limit, MAX_NOTEBOOK_LIST_LIMIT);
 }
 
+type CreateMarkdownDocumentPayload = Record<string, unknown>;
+
+async function routeCreateMarkdownDocument(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (!allowsPublish(identity.scope)) {
+    return json({ error: `${identity.scope} cannot create Markdown documents` }, 403);
+  }
+
+  const payload = await readCreateMarkdownDocumentPayload(request);
+  if (payload instanceof Response) {
+    return payload;
+  }
+  const title = optionalPayloadString(payload, ["title"], {
+    field: "title",
+    maxLength: 160,
+  });
+  if (title instanceof Response) {
+    return title;
+  }
+
+  const documentId = await createUniqueMarkdownDocumentId(env);
+  if (!documentId) {
+    return json({ error: "could not allocate Markdown document id" }, 500);
+  }
+  const creation = await createMarkdownDocumentWithOwnerAcl(env, documentId, identity, {
+    title,
+  });
+  if (!creation.created) {
+    return json({ error: "could not allocate Markdown document id" }, 500);
+  }
+
+  cloudLog("info", "markdown_document.created", {
+    document_id: documentId,
+    owner_principal: creation.ownerPrincipal,
+    actor_label: identity.actorLabel,
+    counter: "markdown_documents_created",
+    counter_delta: 1,
+  });
+
+  const viewerUrl = markdownDocumentViewerUrlForRequest(request, documentId, title, env);
+  const apiBasePath = `/api/m/${encodeURIComponent(documentId)}`;
+  return json(
+    {
+      ok: true,
+      document_id: documentId,
+      title,
+      body_doc_id: documentId,
+      viewer_url: viewerUrl,
+      endpoints: {
+        catalog: apiBasePath,
+        snapshots: `${apiBasePath}/snapshots/{bodyHeadsHash}`,
+      },
+    },
+    201,
+  );
+}
+
+async function routeListMarkdownDocuments(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") {
+    return json({ error: "method not allowed" }, 405);
+  }
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const limit = parseNotebookListLimit(request);
+  if (limit instanceof Response) {
+    return limit;
+  }
+
+  let principal: string | null = null;
+  let appSession: CloudAppSession | null = null;
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (!isAnonymousViewer(identity)) {
+    principal = identity.principal;
+  } else {
+    appSession = await readCloudAppSession(env, request);
+    principal = appSession?.principal ?? null;
+  }
+  if (!principal) {
+    return json({ error: "sign in to list Markdown documents" }, 401);
+  }
+  if (appSession) {
+    await syncStoredAppSessionProfile(env, appSession);
+  }
+
+  const documents = await listMarkdownDocumentsForPrincipal(env, principal, limit);
+  return json({
+    ok: true,
+    documents: markdownDocumentListResponseRows(request, documents, env),
+  });
+}
+
+function markdownDocumentListResponseRows(
+  request: Request,
+  documents: ListedMarkdownDocumentRow[],
+  env?: Env,
+): Array<Record<string, unknown>> {
+  return documents.map((document) => markdownDocumentListResponseRow(request, document, env));
+}
+
+function markdownDocumentListResponseRow(
+  request: Request,
+  document: ListedMarkdownDocumentRow,
+  env?: Env,
+): Record<string, unknown> {
+  const documentPathId = encodeURIComponent(document.id);
+  const apiBasePath = `/api/m/${documentPathId}`;
+  return {
+    document_id: document.id,
+    title: document.title,
+    owner_principal: document.owner_principal,
+    body_doc_id: document.body_doc_id,
+    scope: document.scope,
+    created_at: document.created_at,
+    updated_at: document.updated_at,
+    latest_revision_id: document.latest_revision_id,
+    viewer_url: markdownDocumentViewerUrlForRequest(request, document.id, document.title, env),
+    endpoints: {
+      catalog: apiBasePath,
+    },
+  };
+}
+
 const WORKSTATION_HEARTBEAT_STALE_MS = 3 * 60_000;
 const MAX_WORKSTATION_ATTACH_JOBS_LIMIT = 25;
 
@@ -2045,6 +2238,12 @@ async function readCreateNotebookPayload(
   return payload;
 }
 
+async function readCreateMarkdownDocumentPayload(
+  request: Request,
+): Promise<CreateMarkdownDocumentPayload | Response> {
+  return readCreateNotebookPayload(request);
+}
+
 function optionalPayloadString(
   payload: Record<string, unknown>,
   keys: string[],
@@ -2446,6 +2645,16 @@ async function createUniqueNotebookId(env: Env): Promise<string | null> {
   return null;
 }
 
+async function createUniqueMarkdownDocumentId(env: Env): Promise<string | null> {
+  for (let attempt = 0; attempt < CREATE_NOTEBOOK_ID_ATTEMPTS; attempt += 1) {
+    const documentId = createUlid();
+    if (!(await getMarkdownDocumentRow(env, documentId))) {
+      return documentId;
+    }
+  }
+  return null;
+}
+
 function createUlid(now = Date.now(), random = randomBytes(10)): string {
   let time = BigInt(Math.max(0, Math.min(now, 0xffffffffffff)));
   let encodedTime = "";
@@ -2482,6 +2691,20 @@ function viewerUrlForRequest(
   const url = new URL(trustedLoopbackBrowserOrigin(request, env) ?? request.url);
   const vanitySegment = vanityName?.trim() || "notebook";
   url.pathname = `/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanitySegment)}`;
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
+function markdownDocumentViewerUrlForRequest(
+  request: Request,
+  documentId: string,
+  title: string | null,
+  env?: Env,
+): string {
+  const url = new URL(trustedLoopbackBrowserOrigin(request, env) ?? request.url);
+  const vanitySegment = title?.trim() || "document";
+  url.pathname = `/m/${encodeURIComponent(documentId)}/${encodeURIComponent(vanitySegment)}`;
   url.search = "";
   url.hash = "";
   return url.href;
@@ -3548,6 +3771,63 @@ async function routeCatalog(request: Request, env: Env, notebookId: string): Pro
   return json(catalog);
 }
 
+async function routeMarkdownDocumentCatalog(
+  request: Request,
+  env: Env,
+  documentId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "viewer");
+  if (identity instanceof Response) {
+    return identity;
+  }
+  const authorized = await authorizeMarkdownIdentityReadOrResponse(env, documentId, identity);
+  if (authorized instanceof Response) {
+    return authorized;
+  }
+
+  const catalog = await getMarkdownDocumentCatalog(env, documentId);
+  if (!catalog) {
+    return json({ error: "Markdown document not found" }, 404);
+  }
+
+  return json(markdownDocumentCatalogResponse(request, catalog, authorized.scope, env));
+}
+
+function markdownDocumentCatalogResponse(
+  request: Request,
+  catalog: NonNullable<Awaited<ReturnType<typeof getMarkdownDocumentCatalog>>>,
+  scope: MarkdownDocumentScope,
+  env?: Env,
+): Record<string, unknown> {
+  const apiBasePath = `/api/m/${encodeURIComponent(catalog.document.id)}`;
+  return {
+    document: {
+      document_id: catalog.document.id,
+      title: catalog.document.title,
+      owner_principal: catalog.document.owner_principal,
+      body_doc_id: catalog.document.body_doc_id,
+      scope,
+      created_at: catalog.document.created_at,
+      updated_at: catalog.document.updated_at,
+      latest_revision_id: catalog.document.latest_revision_id,
+      viewer_url: markdownDocumentViewerUrlForRequest(
+        request,
+        catalog.document.id,
+        catalog.document.title,
+        env,
+      ),
+      endpoints: {
+        catalog: apiBasePath,
+        snapshots: `${apiBasePath}/snapshots/{bodyHeadsHash}`,
+      },
+    },
+    revisions: catalog.revisions,
+  };
+}
+
 async function routeUpdateNotebookMetadata(
   request: Request,
   env: Env,
@@ -3605,6 +3885,66 @@ async function routeUpdateNotebookMetadata(
     title: notebook.title,
     updated_at: notebook.updated_at,
     viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title, env),
+  });
+}
+
+async function routeUpdateMarkdownDocumentMetadata(
+  request: Request,
+  env: Env,
+  documentId: string,
+): Promise<Response> {
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const identity = await authenticateAndAuthorizeMarkdownOrAppSessionOrResponse(
+    request,
+    env,
+    documentId,
+    "editor",
+  );
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  const payload = await readCreateMarkdownDocumentPayload(request);
+  if (payload instanceof Response) {
+    return payload;
+  }
+  if (!Object.hasOwn(payload, "title")) {
+    return json({ error: "title is required" }, 400);
+  }
+  const title = optionalPayloadString(payload, ["title"], {
+    field: "title",
+    maxLength: 160,
+  });
+  if (title instanceof Response) {
+    return title;
+  }
+
+  const document = await updateMarkdownDocumentTitle(env, documentId, title);
+  if (!document) {
+    return json({ error: "Markdown document not found" }, 404);
+  }
+  cloudLog("info", "markdown_document.metadata.updated", {
+    document_id: documentId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    title_present: title !== null,
+    counter: "markdown_document_metadata_updates",
+    counter_delta: 1,
+  });
+
+  return json({
+    ok: true,
+    document_id: document.id,
+    title: document.title,
+    updated_at: document.updated_at,
+    viewer_url: markdownDocumentViewerUrlForRequest(request, document.id, document.title, env),
   });
 }
 
@@ -4385,6 +4725,52 @@ async function authenticateAndAuthorizeOrAppSessionOrResponse(
   return authorizeIdentityOrResponse(env, notebookId, identity, requestedScope);
 }
 
+async function authenticateAndAuthorizeMarkdownOrAppSessionOrResponse(
+  request: Request,
+  env: Env,
+  documentId: string,
+  requestedScope: MarkdownDocumentScope,
+): Promise<(AuthenticatedConnection & { scope: MarkdownDocumentScope }) | Response> {
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, requestedScope);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  return authorizeMarkdownIdentityOrResponse(env, documentId, identity, requestedScope);
+}
+
+async function authorizeMarkdownIdentityOrResponse(
+  env: Env,
+  documentId: string,
+  identity: AuthenticatedConnection,
+  requestedScope: MarkdownDocumentScope = identity.scope === "runtime_peer"
+    ? "viewer"
+    : identity.scope,
+): Promise<(AuthenticatedConnection & { scope: MarkdownDocumentScope }) | Response> {
+  try {
+    return await authorizeMarkdownDocumentAccess(env, documentId, identity, requestedScope);
+  } catch (error) {
+    if (error instanceof MarkdownAuthorizationError) {
+      return json({ error: error.message }, error.status);
+    }
+    throw error;
+  }
+}
+
+async function authorizeMarkdownIdentityReadOrResponse(
+  env: Env,
+  documentId: string,
+  identity: AuthenticatedConnection,
+): Promise<(AuthenticatedConnection & { scope: MarkdownDocumentScope }) | Response> {
+  try {
+    return await authorizeMarkdownDocumentReadWithBestScope(env, documentId, identity);
+  } catch (error) {
+    if (error instanceof MarkdownAuthorizationError) {
+      return json({ error: error.message }, error.status);
+    }
+    throw error;
+  }
+}
+
 async function authorizeIdentityOrResponse(
   env: Env,
   notebookId: string,
@@ -4580,8 +4966,8 @@ interface ViewerShellConfig extends Record<string, unknown> {
   outputDocumentBaseUrl?: string | null;
   rendererAssetsBasePath?: string;
   rendererAssets?: RendererSidecarAssetNames;
-  runtimedWasmModulePath: string;
-  runtimedWasmPath: string;
+  runtimedWasmModulePath?: string;
+  runtimedWasmPath?: string;
   workstationAttachEndpoint?: string;
   workstationDefaultEndpoint?: string;
   workstationsEndpoint?: string;
@@ -4627,6 +5013,65 @@ async function notebookListViewer(request: Request, env: Env): Promise<Response>
       bootstrap,
       resourceHints,
     ),
+  );
+}
+
+async function markdownDocumentListViewer(request: Request, env: Env): Promise<Response> {
+  if (request.method === "HEAD") {
+    return viewerShellHead(env);
+  }
+
+  const bootstrap = await markdownDocumentListBootstrap(request, env);
+  return responseForRequestMethod(
+    request,
+    viewerShell(
+      {
+        title: "nteract Markdown documents",
+        description: "Open, create, and manage hosted nteract Markdown documents.",
+      },
+      env,
+      authConfigForRequest(request, env),
+      null,
+      bootstrap,
+      null,
+    ),
+  );
+}
+
+async function markdownDocumentViewer(
+  documentId: string,
+  request: Request,
+  env: Env,
+  routeTitleSegment?: string,
+): Promise<Response> {
+  if (request.method === "HEAD") {
+    return viewerShellHead(env);
+  }
+
+  const shellMetadata = await publicMarkdownDocumentShellMetadata(
+    env,
+    documentId,
+    routeTitleSegment,
+  );
+  const documentApiBasePath = `/api/m/${encodeURIComponent(documentId)}`;
+  const runtimeWasmAssets = await runtimeWasmAssetNames(env);
+  const session = await readCloudAppSession(env, request).catch(() => null);
+  const config = {
+    documentKind: "markdown",
+    documentId,
+    catalogEndpoint: documentApiBasePath,
+    snapshotBasePath: `${documentApiBasePath}/snapshots/`,
+    hostCapabilities: {
+      canManageSharing: false,
+      canPublish: false,
+    },
+    session: session ? appSessionResponse(session) : null,
+    runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),
+    runtimedWasmPath: runtimedWasmAssetPath(env, runtimeWasmAssets.wasm),
+  };
+  return responseForRequestMethod(
+    request,
+    viewerShell(shellMetadata, env, authConfigForRequest(request, env), config),
   );
 }
 
@@ -4698,6 +5143,47 @@ async function publicViewerShellMetadata(
   return {
     title: `nteract notebook: ${displayTitle}`,
     description: `${displayTitle} is a public nteract notebook at ${revisionPart}.`,
+  };
+}
+
+async function publicMarkdownDocumentShellMetadata(
+  env: Env,
+  documentId: string,
+  routeTitleSegment?: string,
+): Promise<ViewerShellMetadata> {
+  const generic = genericMarkdownDocumentShellMetadata(documentId, routeTitleSegment);
+  if (!env.DB) {
+    return generic;
+  }
+
+  const row = await getPublicPublishedMarkdownDocumentRow(env, documentId);
+  if (!row?.latest_revision_id) {
+    return generic;
+  }
+
+  const displayTitle = row.title?.trim() || `Markdown ${shortNotebookId(documentId)}`;
+  return {
+    title: `nteract Markdown: ${displayTitle}`,
+    description: `${displayTitle} is a public nteract Markdown document.`,
+  };
+}
+
+function genericMarkdownDocumentShellMetadata(
+  documentId: string,
+  routeTitleSegment?: string,
+): ViewerShellMetadata {
+  const routeTitle = notebookRouteSegmentTitle(routeTitleSegment);
+  if (routeTitle) {
+    return {
+      title: `nteract Markdown: ${routeTitle}`,
+      description:
+        "A hosted nteract Markdown document. Private document metadata is shown after access is verified.",
+    };
+  }
+  return {
+    title: `nteract Markdown document ${documentId}`,
+    description:
+      "A hosted nteract Markdown document. Private document metadata is shown after access is verified.",
   };
 }
 
@@ -4808,6 +5294,31 @@ async function notebookListBootstrap(
     kind: "notebook-list",
     session: appSessionResponse(session),
     notebooks: notebookListResponseRows(request, notebooks, env),
+    saved_at: new Date().toISOString(),
+  };
+}
+
+async function markdownDocumentListBootstrap(
+  request: Request,
+  env: Env,
+): Promise<Record<string, unknown> | null> {
+  if (!env.DB) {
+    return null;
+  }
+  const session = await readCloudAppSession(env, request);
+  if (!session) {
+    return null;
+  }
+  await syncStoredAppSessionProfile(env, session);
+  const documents = await listMarkdownDocumentsForPrincipal(
+    env,
+    session.principal,
+    DEFAULT_NOTEBOOK_LIST_LIMIT,
+  );
+  return {
+    kind: "markdown-document-list",
+    session: appSessionResponse(session),
+    documents: markdownDocumentListResponseRows(request, documents, env),
     saved_at: new Date().toISOString(),
   };
 }

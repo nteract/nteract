@@ -7,15 +7,20 @@ import { setOpenUrlHost } from "@/lib/open-url";
 import { installDocumentThemeSync } from "./theme";
 import {
   isHomePath,
+  isMarkdownDocumentListPath,
+  isMarkdownDocumentRoutePath,
   isNotebookListPath,
   isOidcCallbackPath,
   loadAuthConfig,
+  loadMarkdownDocumentConfig,
   loadViewerRuntime,
   requireElement,
 } from "./cloud-viewer-config";
 import type { CloudViewerAuthConfig, ViewerRuntimeState } from "./cloud-viewer-types";
 import { cloudNotebookRouteTitleFromPathname } from "./cloud-notebook-title-state";
 import { CloudHomeView } from "./home-view";
+import { CloudMarkdownDocumentListView } from "./markdown-document-list-view";
+import { MarkdownDocumentRoute } from "./markdown-document-route";
 import { CloudNotebookListView } from "./notebook-list-view";
 import { loadNotebookRouteModule } from "./notebook-route-preload";
 import { OidcCallbackView } from "./oidc-callback-view";
@@ -45,7 +50,14 @@ installDocumentThemeSync();
 function App() {
   const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());
   const [runtimeState] = useState<ViewerRuntimeState | null>(() =>
-    isOidcCallbackPath() || isHomePath() || isNotebookListPath() ? null : loadViewerRuntime(),
+    isOidcCallbackPath() || isHomePath() || isNotebookListPath() || isMarkdownDocumentListPath()
+      ? null
+      : isMarkdownDocumentRoutePath()
+        ? null
+        : loadViewerRuntime(),
+  );
+  const [markdownConfig] = useState(() =>
+    isMarkdownDocumentRoutePath() ? loadMarkdownDocumentConfig() : null,
   );
 
   if (isHomePath()) {
@@ -59,8 +71,19 @@ function App() {
     return <CloudNotebookListView authConfig={authConfig} />;
   }
 
+  if (isMarkdownDocumentListPath()) {
+    return <CloudMarkdownDocumentListView authConfig={authConfig} />;
+  }
+
   if (isOidcCallbackPath()) {
     return <OidcCallbackView authConfig={authConfig} />;
+  }
+
+  if (isMarkdownDocumentRoutePath()) {
+    if (!markdownConfig) {
+      return <ViewerStartupError message="Unable to start Markdown document: missing config" />;
+    }
+    return <MarkdownDocumentRoute config={markdownConfig} authConfig={authConfig} />;
   }
 
   if (!runtimeState) {

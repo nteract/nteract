@@ -7,6 +7,11 @@ export interface NotebookCatalog {
   blobs: BlobRow[];
 }
 
+export interface MarkdownDocumentCatalog {
+  document: MarkdownDocumentRow;
+  revisions: MarkdownDocumentRevisionRow[];
+}
+
 export interface NotebookRow {
   id: string;
   owner_principal: string;
@@ -51,6 +56,49 @@ export interface NotebookAclRow {
 
 export interface ListedNotebookRow extends NotebookRow {
   scope: NotebookAclRow["scope"];
+}
+
+export type MarkdownDocumentScope = Exclude<AuthenticatedConnection["scope"], "runtime_peer">;
+
+export interface MarkdownDocumentRow {
+  id: string;
+  owner_principal: string;
+  title: string | null;
+  body_doc_id: string;
+  created_at: string;
+  updated_at: string;
+  latest_revision_id: string | null;
+}
+
+export interface MarkdownDocumentRevisionRow {
+  id: string;
+  document_id: string;
+  body_heads_hash: string;
+  snapshot_key: string;
+  actor_label: string;
+  created_at: string;
+}
+
+export interface MarkdownDocumentAclRow {
+  document_id: string;
+  subject_kind: "principal" | "public";
+  subject: string;
+  scope: MarkdownDocumentScope;
+  created_at: string;
+  updated_at: string;
+  created_by_actor_label: string;
+}
+
+export interface ListedMarkdownDocumentRow extends MarkdownDocumentRow {
+  scope: MarkdownDocumentAclRow["scope"];
+}
+
+export interface MarkdownDocumentAclInput {
+  documentId: string;
+  subjectKind: MarkdownDocumentAclRow["subject_kind"];
+  subject: string;
+  scope: MarkdownDocumentAclRow["scope"];
+  actorLabel: string;
 }
 
 export interface NotebookAclInput {
@@ -177,6 +225,38 @@ const SCHEMA_STATEMENTS = [
     PRIMARY KEY (notebook_id, hash),
     FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS markdown_documents (
+    id TEXT PRIMARY KEY,
+    owner_principal TEXT NOT NULL,
+    title TEXT,
+    body_doc_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    latest_revision_id TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS markdown_document_revisions (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    body_heads_hash TEXT NOT NULL,
+    snapshot_key TEXT NOT NULL,
+    actor_label TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (document_id) REFERENCES markdown_documents(id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS markdown_document_acl (
+    document_id TEXT NOT NULL,
+    subject_kind TEXT NOT NULL CHECK (subject_kind IN ('principal', 'public')),
+    subject TEXT NOT NULL,
+    scope TEXT NOT NULL CHECK (scope IN ('viewer', 'editor', 'owner')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    created_by_actor_label TEXT NOT NULL,
+    PRIMARY KEY (document_id, subject_kind, subject, scope),
+    FOREIGN KEY (document_id) REFERENCES markdown_documents(id),
+    CHECK (subject_kind != 'public' OR (subject = 'anonymous' AND scope = 'viewer'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS markdown_document_acl_subject_idx
+    ON markdown_document_acl (subject_kind, subject, document_id)`,
   `CREATE TABLE IF NOT EXISTS notebook_acl (
     notebook_id TEXT NOT NULL,
     subject_kind TEXT NOT NULL CHECK (subject_kind IN ('principal', 'public')),
@@ -383,6 +463,10 @@ export function blobKey(notebookId: string, hash: string): string {
   return `n/${encodePathComponent(notebookId)}/blobs/${encodePathComponent(hash)}`;
 }
 
+export function markdownDocumentSnapshotKey(documentId: string, headsHash: string): string {
+  return `m/${encodePathComponent(documentId)}/snapshots/${encodePathComponent(headsHash)}.am`;
+}
+
 export async function ensureCatalogSchema(env: Env): Promise<void> {
   if (!env.DB) {
     return;
@@ -480,6 +564,61 @@ export async function getNotebookRow(env: Env, notebookId: string): Promise<Note
     .first<NotebookRow>();
 }
 
+export async function getMarkdownDocumentRow(
+  env: Env,
+  documentId: string,
+): Promise<MarkdownDocumentRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  return await env.DB.prepare(
+    `SELECT id,
+            owner_principal,
+            title,
+            body_doc_id,
+            created_at,
+            updated_at,
+            latest_revision_id
+       FROM markdown_documents
+       WHERE id = ?`,
+  )
+    .bind(documentId)
+    .first<MarkdownDocumentRow>();
+}
+
+export async function getPublicPublishedMarkdownDocumentRow(
+  env: Env,
+  documentId: string,
+): Promise<MarkdownDocumentRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  return await env.DB.prepare(
+    `SELECT d.id,
+            d.owner_principal,
+            d.title,
+            d.body_doc_id,
+            d.created_at,
+            d.updated_at,
+            d.latest_revision_id
+       FROM markdown_documents d
+       JOIN markdown_document_acl a
+         ON a.document_id = d.id
+      WHERE d.id = ?
+        AND d.latest_revision_id IS NOT NULL
+        AND a.subject_kind = 'public'
+        AND a.subject = 'anonymous'
+        AND a.scope = 'viewer'
+      LIMIT 1`,
+  )
+    .bind(documentId)
+    .first<MarkdownDocumentRow>();
+}
+
 export async function getPublicPublishedNotebookRow(
   env: Env,
   notebookId: string,
@@ -535,6 +674,31 @@ export async function updateNotebookTitle(
   return await getNotebookRow(env, notebookId);
 }
 
+export async function updateMarkdownDocumentTitle(
+  env: Env,
+  documentId: string,
+  title: string | null,
+): Promise<MarkdownDocumentRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const updatedAt = new Date().toISOString();
+  const result = await env.DB.prepare(
+    `UPDATE markdown_documents
+        SET title = ?,
+            updated_at = ?
+      WHERE id = ?`,
+  )
+    .bind(title, updatedAt, documentId)
+    .run();
+  if (d1Changes(result) === 0) {
+    return null;
+  }
+  return await getMarkdownDocumentRow(env, documentId);
+}
+
 export async function getNotebookAclRowsForPrincipal(
   env: Env,
   notebookId: string,
@@ -568,6 +732,42 @@ export async function getNotebookAclRowsForPrincipal(
   )
     .bind(notebookId, principal, principal)
     .all<NotebookAclRow>();
+  return rows.results ?? [];
+}
+
+export async function getMarkdownDocumentAclRowsForPrincipal(
+  env: Env,
+  documentId: string,
+  principal: string,
+): Promise<MarkdownDocumentAclRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT document_id,
+            subject_kind,
+            subject,
+            scope,
+            created_at,
+            updated_at,
+            created_by_actor_label
+       FROM markdown_document_acl
+       WHERE document_id = ?
+         AND subject_kind = 'principal'
+         AND (
+           subject = ?
+           OR subject IN (
+             SELECT canonical_principal
+               FROM principal_account_links
+              WHERE transport_principal = ?
+           )
+         )
+       ORDER BY scope`,
+  )
+    .bind(documentId, principal, principal)
+    .all<MarkdownDocumentAclRow>();
   return rows.results ?? [];
 }
 
@@ -628,6 +828,63 @@ export async function listNotebooksForPrincipal(
   return rows.results ?? [];
 }
 
+export async function listMarkdownDocumentsForPrincipal(
+  env: Env,
+  principal: string,
+  limit: number,
+): Promise<ListedMarkdownDocumentRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT d.id,
+            d.owner_principal,
+            d.title,
+            d.body_doc_id,
+            d.created_at,
+            d.updated_at,
+            d.latest_revision_id,
+            CASE MAX(
+              CASE a.scope
+                WHEN 'owner' THEN 3
+                WHEN 'editor' THEN 2
+                WHEN 'viewer' THEN 1
+                ELSE 0
+              END
+            )
+              WHEN 3 THEN 'owner'
+              WHEN 2 THEN 'editor'
+              ELSE 'viewer'
+            END AS scope
+       FROM markdown_documents d
+       JOIN markdown_document_acl a
+         ON a.document_id = d.id
+      WHERE a.subject_kind = 'principal'
+        AND (
+          a.subject = ?
+          OR a.subject IN (
+            SELECT canonical_principal
+              FROM principal_account_links
+             WHERE transport_principal = ?
+          )
+        )
+      GROUP BY d.id,
+               d.owner_principal,
+               d.title,
+               d.body_doc_id,
+               d.created_at,
+               d.updated_at,
+               d.latest_revision_id
+      ORDER BY d.updated_at DESC, d.created_at DESC, d.id DESC
+      LIMIT ?`,
+  )
+    .bind(principal, principal, limit)
+    .all<ListedMarkdownDocumentRow>();
+  return rows.results ?? [];
+}
+
 export async function getPublicNotebookAclRows(
   env: Env,
   notebookId: string,
@@ -656,6 +913,34 @@ export async function getPublicNotebookAclRows(
   return rows.results ?? [];
 }
 
+export async function getPublicMarkdownDocumentAclRows(
+  env: Env,
+  documentId: string,
+): Promise<MarkdownDocumentAclRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT document_id,
+            subject_kind,
+            subject,
+            scope,
+            created_at,
+            updated_at,
+            created_by_actor_label
+       FROM markdown_document_acl
+       WHERE document_id = ?
+         AND subject_kind = 'public'
+         AND subject = 'anonymous'
+       ORDER BY scope`,
+  )
+    .bind(documentId)
+    .all<MarkdownDocumentAclRow>();
+  return rows.results ?? [];
+}
+
 export async function getNotebookAclRows(env: Env, notebookId: string): Promise<NotebookAclRow[]> {
   if (!env.DB) {
     return [];
@@ -679,6 +964,32 @@ export async function getNotebookAclRows(env: Env, notebookId: string): Promise<
   return rows.results ?? [];
 }
 
+export async function getMarkdownDocumentAclRows(
+  env: Env,
+  documentId: string,
+): Promise<MarkdownDocumentAclRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT document_id,
+            subject_kind,
+            subject,
+            scope,
+            created_at,
+            updated_at,
+            created_by_actor_label
+       FROM markdown_document_acl
+       WHERE document_id = ?
+       ORDER BY subject_kind, subject, scope`,
+  )
+    .bind(documentId)
+    .all<MarkdownDocumentAclRow>();
+  return rows.results ?? [];
+}
+
 export async function grantNotebookAclRow(env: Env, row: NotebookAclInput): Promise<void> {
   if (!env.DB) {
     return;
@@ -687,6 +998,25 @@ export async function grantNotebookAclRow(env: Env, row: NotebookAclInput): Prom
   await ensureCatalogSchema(env);
   await notebookAclInsert(env, {
     notebookId: row.notebookId,
+    subjectKind: row.subjectKind,
+    subject: row.subject,
+    scope: row.scope,
+    actorLabel: row.actorLabel,
+    timestamp: new Date().toISOString(),
+  }).run();
+}
+
+export async function grantMarkdownDocumentAclRow(
+  env: Env,
+  row: MarkdownDocumentAclInput,
+): Promise<void> {
+  if (!env.DB) {
+    return;
+  }
+
+  await ensureCatalogSchema(env);
+  await markdownDocumentAclInsert(env, {
+    documentId: row.documentId,
     subjectKind: row.subjectKind,
     subject: row.subject,
     scope: row.scope,
@@ -724,6 +1054,39 @@ export async function revokeNotebookAclRow(
          )`,
   )
     .bind(row.notebookId, row.subjectKind, row.subject, row.scope, row.notebookId, row.subject)
+    .run();
+  return d1Changes(result) > 0;
+}
+
+export async function revokeMarkdownDocumentAclRow(
+  env: Env,
+  row: Omit<MarkdownDocumentAclInput, "actorLabel">,
+): Promise<boolean> {
+  if (!env.DB) {
+    return false;
+  }
+
+  await ensureCatalogSchema(env);
+  const result = await env.DB.prepare(
+    `DELETE FROM markdown_document_acl
+       WHERE document_id = ?
+         AND subject_kind = ?
+         AND subject = ?
+         AND scope = ?
+         AND (
+           subject_kind != 'principal'
+           OR scope != 'owner'
+           OR (
+             SELECT COUNT(*)
+               FROM markdown_document_acl
+              WHERE document_id = ?
+                AND subject_kind = 'principal'
+                AND scope = 'owner'
+                AND subject != ?
+           ) > 0
+         )`,
+  )
+    .bind(row.documentId, row.subjectKind, row.subject, row.scope, row.documentId, row.subject)
     .run();
   return d1Changes(result) > 0;
 }
@@ -1198,6 +1561,11 @@ export interface CreateNotebookWithOwnerAclResult {
   created: boolean;
 }
 
+export interface CreateMarkdownDocumentWithOwnerAclResult {
+  ownerPrincipal: string;
+  created: boolean;
+}
+
 export async function createNotebookWithOwnerAcl(
   env: Env,
   notebookId: string,
@@ -1228,6 +1596,46 @@ export async function createNotebookWithOwnerAcl(
   return {
     ownerPrincipal: ownerSubject,
     created: d1Changes(notebookInsertResult) > 0,
+  };
+}
+
+export async function createMarkdownDocumentWithOwnerAcl(
+  env: Env,
+  documentId: string,
+  identity: AuthenticatedConnection,
+  options: { title?: string | null; bodyDocId?: string | null } = {},
+): Promise<CreateMarkdownDocumentWithOwnerAclResult> {
+  if (!env.DB) {
+    return { ownerPrincipal: identity.principal, created: true };
+  }
+
+  await ensureCatalogSchema(env);
+  const now = new Date().toISOString();
+  const ownerSubject =
+    (await getCanonicalPrincipalForTransport(env, identity.principal)) ?? identity.principal;
+  const bodyDocId = options.bodyDocId?.trim() || documentId;
+  const [documentInsertResult] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO markdown_documents (
+         id,
+         owner_principal,
+         title,
+         body_doc_id,
+         created_at,
+         updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO NOTHING`,
+    ).bind(documentId, ownerSubject, options.title ?? null, bodyDocId, now, now),
+    markdownDocumentOwnerAclInsert(env, {
+      documentId,
+      subject: ownerSubject,
+      actorLabel: identity.actorLabel,
+      timestamp: now,
+    }),
+  ]);
+  return {
+    ownerPrincipal: ownerSubject,
+    created: d1Changes(documentInsertResult) > 0,
   };
 }
 
@@ -1366,6 +1774,83 @@ export function copyNotebookAclForPrincipalStatement(
        updated_at = excluded.updated_at`,
     )
     .bind(input.targetPrincipal, input.timestamp, input.sourcePrincipal);
+}
+
+function markdownDocumentAclInsert(
+  env: Env,
+  row: {
+    documentId: string;
+    subjectKind: MarkdownDocumentAclRow["subject_kind"];
+    subject: string;
+    scope: MarkdownDocumentAclRow["scope"];
+    actorLabel: string;
+    timestamp: string;
+  },
+): D1PreparedStatement {
+  return env
+    .DB!.prepare(
+      `INSERT INTO markdown_document_acl (
+       document_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(document_id, subject_kind, subject, scope) DO UPDATE SET
+       updated_at = excluded.updated_at`,
+    )
+    .bind(
+      row.documentId,
+      row.subjectKind,
+      row.subject,
+      row.scope,
+      row.timestamp,
+      row.timestamp,
+      row.actorLabel,
+    );
+}
+
+function markdownDocumentOwnerAclInsert(
+  env: Env,
+  row: {
+    documentId: string;
+    subject: string;
+    actorLabel: string;
+    timestamp: string;
+  },
+): D1PreparedStatement {
+  return env
+    .DB!.prepare(
+      `INSERT INTO markdown_document_acl (
+       document_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+     )
+     SELECT ?, 'principal', ?, 'owner', ?, ?, ?
+      WHERE EXISTS (
+        SELECT 1
+          FROM markdown_documents
+         WHERE id = ?
+           AND owner_principal = ?
+      )
+     ON CONFLICT(document_id, subject_kind, subject, scope) DO UPDATE SET
+       updated_at = excluded.updated_at`,
+    )
+    .bind(
+      row.documentId,
+      row.subject,
+      row.timestamp,
+      row.timestamp,
+      row.actorLabel,
+      row.documentId,
+      row.subject,
+    );
 }
 
 function notebookAclInsert(
@@ -1514,6 +1999,60 @@ export async function recordRevision(
   return revisionId;
 }
 
+export async function recordMarkdownDocumentRevision(
+  env: Env,
+  revision: {
+    documentId: string;
+    bodyHeadsHash: string;
+    snapshotKey: string;
+    actorLabel: string;
+    publishPublic?: boolean;
+  },
+): Promise<string> {
+  if (!env.DB) {
+    return crypto.randomUUID();
+  }
+
+  await ensureCatalogSchema(env);
+  const revisionId = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO markdown_document_revisions (
+       id,
+       document_id,
+       body_heads_hash,
+       snapshot_key,
+       actor_label
+     ) VALUES (?, ?, ?, ?, ?)`,
+    ).bind(
+      revisionId,
+      revision.documentId,
+      revision.bodyHeadsHash,
+      revision.snapshotKey,
+      revision.actorLabel,
+    ),
+    env.DB.prepare(
+      `UPDATE markdown_documents
+       SET latest_revision_id = ?, updated_at = ?
+       WHERE id = ?`,
+    ).bind(revisionId, createdAt, revision.documentId),
+    ...(revision.publishPublic
+      ? [
+          markdownDocumentAclInsert(env, {
+            documentId: revision.documentId,
+            subjectKind: "public",
+            subject: "anonymous",
+            scope: "viewer",
+            actorLabel: revision.actorLabel,
+            timestamp: createdAt,
+          }),
+        ]
+      : []),
+  ]);
+  return revisionId;
+}
+
 export async function recordBlob(
   env: Env,
   blob: {
@@ -1600,6 +2139,41 @@ export async function getNotebookCatalog(
     notebook,
     revisions: revisions.results ?? [],
     blobs: blobs.results ?? [],
+  };
+}
+
+export async function getMarkdownDocumentCatalog(
+  env: Env,
+  documentId: string,
+): Promise<MarkdownDocumentCatalog | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const document = await getMarkdownDocumentRow(env, documentId);
+  if (!document) {
+    return null;
+  }
+
+  const revisions = await env.DB.prepare(
+    `SELECT id,
+            document_id,
+            body_heads_hash,
+            snapshot_key,
+            actor_label,
+            created_at
+       FROM markdown_document_revisions
+       WHERE document_id = ?
+       ORDER BY created_at DESC
+       LIMIT 50`,
+  )
+    .bind(documentId)
+    .all<MarkdownDocumentRevisionRow>();
+
+  return {
+    document,
+    revisions: revisions.results ?? [],
   };
 }
 

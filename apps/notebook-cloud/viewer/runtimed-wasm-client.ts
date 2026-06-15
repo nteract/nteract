@@ -3,7 +3,10 @@ import {
   type NotebookInteractionTarget,
 } from "runtimed";
 import { setMarkdownProjectionProjector } from "../../../src/lib/markdown-projection";
-import type { NotebookHandle } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
+import type {
+  MarkdownHandle,
+  NotebookHandle,
+} from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 import {
   asRuntimedWasmAssetFailure,
   RUNTIMED_WASM_ASSET_FAILURE_PREFIX,
@@ -125,6 +128,27 @@ export async function createBootstrapNotebookHandle(
   return module.NotebookHandle.create_bootstrap(actorLabel);
 }
 
+export async function createMarkdownHandle(
+  documentId: string,
+  title: string,
+  actorLabel: string,
+  modulePath: string | URL,
+  moduleOrPath: WasmModuleOrPath,
+): Promise<MarkdownHandle> {
+  const module = await initializeRuntimedWasmClient(modulePath, moduleOrPath);
+  return module.MarkdownHandle.create(documentId, title, actorLabel);
+}
+
+export async function loadMarkdownHandleFromBytes(
+  bytes: Uint8Array,
+  actorLabel: string,
+  modulePath: string | URL,
+  moduleOrPath: WasmModuleOrPath,
+): Promise<MarkdownHandle> {
+  const module = await initializeRuntimedWasmClient(modulePath, moduleOrPath);
+  return module.MarkdownHandle.load_with_actor(bytes, actorLabel);
+}
+
 export async function loadNotebookHandleFromBytes(
   notebookBytes: Uint8Array,
   actorLabel: string,
@@ -242,7 +266,7 @@ export function encodeInteractionPresenceAfterInit(
   );
 }
 
-export type { NotebookHandle };
+export type { MarkdownHandle, NotebookHandle };
 
 function loadRuntimedWasmModule(modulePath: string | URL): Promise<RuntimedWasmModule> {
   const href = normalizedWasmSource(typeof modulePath === "string" ? modulePath : modulePath.href);

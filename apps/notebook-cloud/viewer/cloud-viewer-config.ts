@@ -1,8 +1,11 @@
 import { isCloudAppSession } from "./app-session";
 import type { CloudRendererAssetNames, CloudViewerConfig } from "./cloud-viewer-session";
+import { isCloudMarkdownDocumentListItem } from "./markdown-document-dashboard";
 import { isCloudNotebookListItem } from "./notebook-dashboard";
 import { normalizeOidcAuthConfig, type CloudOidcAuthConfig } from "./oidc-auth";
 import type {
+  CloudMarkdownDocumentConfig,
+  CloudMarkdownDocumentListBootstrap,
   CloudNotebookListBootstrap,
   CloudViewerAuthConfig,
   CloudViewerLocalDevAuthConfig,
@@ -106,6 +109,41 @@ export function loadViewerRuntime(): ViewerRuntimeState {
   }
 }
 
+export function loadMarkdownDocumentConfig(): CloudMarkdownDocumentConfig | null {
+  const element = document.querySelector<HTMLScriptElement>("#nteract-cloud-viewer-config");
+  if (!element) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(element.textContent ?? "{}") as Partial<CloudMarkdownDocumentConfig>;
+    if (
+      parsed.documentKind !== "markdown" ||
+      !parsed.documentId ||
+      !parsed.catalogEndpoint ||
+      !parsed.snapshotBasePath ||
+      !parsed.runtimedWasmModulePath ||
+      !parsed.runtimedWasmPath
+    ) {
+      return null;
+    }
+    return {
+      documentKind: "markdown",
+      documentId: parsed.documentId,
+      catalogEndpoint: parsed.catalogEndpoint,
+      snapshotBasePath: parsed.snapshotBasePath,
+      runtimedWasmModulePath: parsed.runtimedWasmModulePath,
+      runtimedWasmPath: parsed.runtimedWasmPath,
+      session: isCloudAppSession(parsed.session) ? parsed.session : null,
+      hostCapabilities: {
+        canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
+        canPublish: Boolean(parsed.hostCapabilities?.canPublish),
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function loadAuthConfig(): CloudViewerAuthConfig {
   const element = document.querySelector<HTMLScriptElement>("#nteract-cloud-auth-config");
   if (!element) {
@@ -163,6 +201,22 @@ export function loadCloudNotebookListBootstrap(): CloudNotebookListBootstrap | n
   return null;
 }
 
+export function loadCloudMarkdownDocumentListBootstrap(): CloudMarkdownDocumentListBootstrap | null {
+  const element = document.querySelector<HTMLScriptElement>("#nteract-cloud-bootstrap");
+  if (!element) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(element.textContent ?? "{}") as unknown;
+    if (isCloudMarkdownDocumentListBootstrap(parsed)) {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function isOidcCallbackPath(): boolean {
   return window.location.pathname.replace(/\/+$/, "") === "/oidc";
 }
@@ -176,6 +230,14 @@ export function isNotebookListPath(): boolean {
   return window.location.pathname.replace(/\/+$/, "") === "/n";
 }
 
+export function isMarkdownDocumentListPath(): boolean {
+  return window.location.pathname.replace(/\/+$/, "") === "/m";
+}
+
+export function isMarkdownDocumentRoutePath(): boolean {
+  return /^\/m\/[^/]+(?:\/.*)?\/?$/.test(window.location.pathname);
+}
+
 function isCloudNotebookListBootstrap(value: unknown): value is CloudNotebookListBootstrap {
   if (!value || typeof value !== "object") {
     return false;
@@ -186,6 +248,24 @@ function isCloudNotebookListBootstrap(value: unknown): value is CloudNotebookLis
     typeof candidate.saved_at === "string" &&
     Array.isArray(candidate.notebooks) &&
     candidate.notebooks.every(isCloudNotebookListItem) &&
+    (candidate.session === undefined ||
+      candidate.session === null ||
+      isCloudAppSession(candidate.session))
+  );
+}
+
+function isCloudMarkdownDocumentListBootstrap(
+  value: unknown,
+): value is CloudMarkdownDocumentListBootstrap {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<CloudMarkdownDocumentListBootstrap>;
+  return (
+    candidate.kind === "markdown-document-list" &&
+    typeof candidate.saved_at === "string" &&
+    Array.isArray(candidate.documents) &&
+    candidate.documents.every(isCloudMarkdownDocumentListItem) &&
     (candidate.session === undefined ||
       candidate.session === null ||
       isCloudAppSession(candidate.session))

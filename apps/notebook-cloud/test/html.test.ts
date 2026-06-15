@@ -360,6 +360,43 @@ describe("HTML script serialization", () => {
     );
   });
 
+  it("serves the Markdown document list shell without notebook route config", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/m"),
+      fakeEnv(),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(html, /<title>nteract Markdown documents<\/title>/);
+    assert.match(html, /id="nteract-cloud-auth-config"/);
+    assert.doesNotMatch(html, /id="nteract-cloud-viewer-config"/);
+    assert.doesNotMatch(html, /notebookRoute/);
+    assert.doesNotMatch(html, /"notebookId"/);
+  });
+
+  it("serves Markdown document viewers with Markdown config, not notebook config", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/m/doc-123/Research%20Plan"),
+      fakeEnv(),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(html, /<title>nteract Markdown: Research Plan<\/title>/);
+    assert.match(html, /"documentKind":"markdown"/);
+    assert.match(html, /"documentId":"doc-123"/);
+    assert.match(html, /"catalogEndpoint":"\/api\/m\/doc-123"/);
+    assert.match(html, /"snapshotBasePath":"\/api\/m\/doc-123\/snapshots\/"/);
+    assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.js"/);
+    assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.wasm"/);
+    assert.doesNotMatch(html, /"notebookId"/);
+    assert.doesNotMatch(html, /"syncEndpoint"/);
+    assert.doesNotMatch(html, /"workstationAttachEndpoint"/);
+  });
+
   it("does not serve legacy one-segment notebook viewer URLs", async () => {
     const response = await worker.fetch(
       new Request("https://cloud.test/n/demo"),
