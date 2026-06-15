@@ -365,7 +365,7 @@ function instrumentPage({ page, failures, visitedUrls }) {
   page.on("requestfailed", (request) => {
     const url = request.url();
     visitedUrls.add(url);
-    if (!isRelevantRequestUrl(url)) {
+    if (!isRelevantRequestUrl(url) || isBenignRequestFailureUrl(url)) {
       return;
     }
     failures.push({
@@ -452,6 +452,10 @@ function isRelevantRequestUrl(url) {
   const parsed = new URL(url);
   const target = new URL(baseUrl);
   return parsed.origin === target.origin;
+}
+
+function isBenignRequestFailureUrl(url) {
+  return new URL(url).pathname === "/cdn-cgi/rum";
 }
 
 function safeDiagnosticUrl(url) {
