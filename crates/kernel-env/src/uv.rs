@@ -59,9 +59,9 @@ pub async fn check_uv_available() -> bool {
 
 /// Base package set every UV kernel env is warmed with.
 ///
-/// Used by the daemon's UV pool warmer (`uv_prewarmed_packages` in runtimed) and
-/// by the unified env design's capture step (`strip_base`) so the notebook's
-/// metadata records only user-level deps. Keep this in sync with the warmer.
+/// Used by the daemon's UV pool warmer (`uv_prewarmed_packages` in runtimed),
+/// kernel-env install paths, and the unified env design's capture step
+/// (`strip_base`) so the notebook's metadata records only user-level deps.
 ///
 /// The `dx` PyPI package is no longer installed — its behavior (DataFrame
 /// formatters, buffer hooks, nteract renderers) is provided by the vendored
@@ -77,6 +77,14 @@ pub const UV_BASE_PACKAGES: &[&str] = &[
     "pyarrow>=14",
     "uv",
 ];
+
+/// Return [`UV_BASE_PACKAGES`] as owned package spec strings for install paths.
+pub fn uv_base_packages() -> Vec<String> {
+    UV_BASE_PACKAGES
+        .iter()
+        .map(|package| (*package).to_string())
+        .collect()
+}
 
 /// Compute the unified env hash for a notebook. Used by the captured-deps
 /// reopen path from the unified env resolution design.
@@ -277,14 +285,7 @@ pub async fn prepare_environment_in(
     }
 
     // Build list of packages to install (for progress reporting)
-    let mut packages = vec![
-        "ipykernel".to_string(),
-        "ipywidgets".to_string(),
-        "anywidget".to_string(),
-        "nbformat".to_string(),
-        "pyarrow>=14".to_string(),
-        "uv".to_string(), // For %uv magic in notebooks
-    ];
+    let mut packages = uv_base_packages();
     packages.extend(deps.dependencies.iter().cloned());
 
     // Build install command args.
@@ -520,7 +521,7 @@ pub async fn prepare_environment_unified(
     // `deps.dependencies` is the user-level set (with base already stripped
     // at capture time). This ensures a reopen-path rebuild produces the same
     // installed set as the original pool env.
-    let mut packages: Vec<String> = UV_BASE_PACKAGES.iter().map(|p| p.to_string()).collect();
+    let mut packages = uv_base_packages();
     packages.extend(deps.dependencies.iter().cloned());
 
     let mut install_args = vec![
@@ -728,8 +729,8 @@ pub async fn sync_dependencies(
     Ok(())
 }
 
-/// Create a prewarmed environment with ipykernel, ipywidgets, and
-/// any caller-supplied extra packages.
+/// Create a prewarmed environment with [`UV_BASE_PACKAGES`] and any
+/// caller-supplied extra packages.
 ///
 /// Returns an environment at `prewarm-{uuid}` that can later be claimed
 /// via [`claim_prewarmed_environment`].
@@ -784,8 +785,10 @@ pub async fn create_prewarmed_environment_in(
         ));
     }
 
-    // Install ipykernel, ipywidgets, uv, and any extra packages.
+    // Install the managed UV base and any extra packages.
     // Use hardlink mode to share files from uv's global cache.
+    let mut packages = uv_base_packages();
+    packages.extend(extra_packages.iter().cloned());
     let mut install_args = vec![
         "pip".to_string(),
         "install".to_string(),
@@ -793,13 +796,10 @@ pub async fn create_prewarmed_environment_in(
         "hardlink".to_string(),
         "--python".to_string(),
         python_path.to_string_lossy().to_string(),
-        "ipykernel".to_string(),
-        "ipywidgets".to_string(),
-        "uv".to_string(), // For %uv magic in notebooks
     ];
-    if !extra_packages.is_empty() {
-        info!("[prewarm] Including extra packages: {:?}", extra_packages);
-        install_args.extend(extra_packages.iter().cloned());
+    if !packages.is_empty() {
+        info!("[prewarm] Installing packages: {:?}", packages);
+        install_args.extend(packages.iter().cloned());
     }
 
     handler.on_progress(
