@@ -8,9 +8,10 @@
 > `crates/runtimed-wasm/src/lib.rs::reconcile_runtime_peer_gone_inner` reconciles
 > in-flight executions and live kernel lifecycle when the runtime peer is gone.
 > The runtime agent also has transport-specific clean-EOF reconnect behavior for
-> recoverable sinks. Remaining live gaps are the hosted REQUEST dispatch for
-> interrupt/restart delivery, live preview peer-drop re-proof with real
-> Cloudflare alarms, and tuning the grace window against real reconnect latency.
+> recoverable sinks. Remaining live gaps are hosted dispatch for restart,
+> launch, and other response-bearing runtime requests, live preview peer-drop
+> re-proof with real Cloudflare alarms, and tuning the grace window against real
+> reconnect latency.
 > See `16-decisions-log.md` Phase 3d/3f for the implementation evidence and
 > deferred verification.
 

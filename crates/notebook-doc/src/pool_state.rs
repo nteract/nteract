@@ -50,7 +50,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Snapshot types ───────────────────────────────────────────────────
 
-/// State of a single runtime pool (UV or Conda).
+/// State of a single runtime pool.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimePoolState {
     pub available: u64,
