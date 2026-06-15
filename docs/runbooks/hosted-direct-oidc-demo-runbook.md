@@ -129,9 +129,13 @@ NOTEBOOK_CLOUD_OIDC_CLIENT_ID = "cec4781f-853c-4267-bf09-4bc59a2a3750"
 NOTEBOOK_CLOUD_OIDC_REDIRECT_URI = "https://preview.runt.run/oidc"
 ```
 
-The browser stores short-lived OIDC access material only in the notebook
-application origin. It sends HTTP auth as `Authorization: Bearer` and WebSocket
-auth as the non-echoed `nteract-bearer.<base64url-token>` subprotocol.
+The browser stores short-lived OIDC access material only long enough to
+establish or refresh the notebook application's first-party session. It
+exchanges the validated OIDC bearer at `/api/auth/session` for an HttpOnly app
+session cookie; first-party HTTP APIs and live-room WebSockets use that cookie
+with same-origin/trusted-origin checks. The non-echoed
+`nteract-bearer.<base64url-token>` WebSocket subprotocol remains an explicit
+fallback for browser clients that cannot use the app-session cookie path.
 
 ## Principal Shape
 

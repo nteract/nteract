@@ -123,7 +123,10 @@ After capture the notebook is indistinguishable from inline-deps. `capture_env_i
 
 ### Reopen cache-hit
 
-On subsequent launches: read metadata deps + `env_id`, recompute hash, check `unified_env_on_disk`. Cache hit → instant return. Cache miss → rebuild via inline-deps path.
+On subsequent launches: read metadata deps + `env_id`, recompute hash, and
+resolve the typed `CapturedEnvDiskState` with
+`captured_env_disk_state(...)`. `Usable` and `Partial` stay on the captured-env
+route; `Missing` falls back to the inline-deps rebuild path.
 
 ### Preserve captured envs on room eviction
 

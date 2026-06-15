@@ -56,9 +56,16 @@ runt workstation run
 ```
 
    This launches `runtimed workstation-agent`, which heartbeats the
-   registration, polls for attach jobs, and spawns one
-   `runtimed cloud-runtime-agent` runtime peer per job (pending → accepted →
-   running → completed/failed). The credential rides the environment
+   registration, keeps a server-sent event stream open for attach-job wakeups,
+   and spawns one `runtimed cloud-runtime-agent` runtime peer per job
+   (pending → accepted → running → completed/failed). The event stream is the
+   fast path; low-frequency attach-job polling remains as recovery for missed
+   events, older servers, and jobs that existed before the agent started.
+   The stream is deliberately only a wakeup signal, not a replay log: attach
+   jobs are durable in the hosted database, so reconnect recovery polls the
+   queue instead of relying on SSE `Last-Event-ID` state. Keeping idle presence
+   and wakeups on one SSE request avoids the request churn of tight polling or
+   a per-workstation control WebSocket. The credential rides the environment
    (`RUNT_CLOUD_TOKEN`), never argv. `RUNT_CLOUD_TOKEN` / `RUNT_CLOUD_URL`
    environment variables override the stored credential when set.
    Use `--python-path /path/to/python` when the workstation should launch

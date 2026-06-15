@@ -60,17 +60,19 @@ Reasons:
 
 ## Decision 3: Stable bundles use Git LFS; volatile bundles stay gitignored
 
-Stable renderer plugin bundles are LFS-tracked so fresh checkouts can boot and
-build without paying the full Vite rebuild cost:
+Stable third-party renderer plugin bundles are LFS-tracked so fresh checkouts
+can boot and build without paying the full vendor rebuild cost:
 
 - `plotly.js`
 - `vega.js`
 - `leaflet.js` / `leaflet.css`
-- `markdown.js` / `markdown.css`
-- `isolated-renderer.js` / `isolated-renderer.css`
 
 Volatile artifacts stay gitignored and are regenerated:
 
+- `apps/notebook/src/renderer-plugins/isolated-renderer.js`
+- `apps/notebook/src/renderer-plugins/isolated-renderer.css`
+- `apps/notebook/src/renderer-plugins/markdown.js`
+- `apps/notebook/src/renderer-plugins/markdown.css`
 - `apps/notebook/src/renderer-plugins/sift.js`
 - `apps/notebook/src/renderer-plugins/sift.css`
 - `apps/notebook/src/wasm/runtimed-wasm/`

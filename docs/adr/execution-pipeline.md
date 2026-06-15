@@ -139,7 +139,7 @@ The final lifecycle signal for an execution travels through the stream committer
 ```rust
 stream_committer.flush_then_signal(
     final_stream_flushes,
-    QueueCommand::ExecutionDone { execution_id: eid },
+    LifecycleSignal::ExecutionDone { execution_id: eid },
 );
 ```
 
@@ -147,7 +147,12 @@ This is the ordering glue. The committer flushes the final stream content, then 
 
 `KernelIdle` rides the lifecycle channel directly (`jupyter_kernel.rs:1408-1430`). It releases the queue and is allowed to arrive before the final stream flush; what cannot arrive early is `ExecutionDone`.
 
-One subtle case: when `flush_then_signal` is called with an empty flushes list, it sends the lifecycle signal directly on `lifecycle_tx` instead of routing through the priority committer (`stream_committer.rs:106-118`, test `flush_then_signal_without_flushes_sends_lifecycle_immediately`). For a no-output execution, `ExecutionDone` and `KernelIdle` therefore race freely on the same lifecycle channel. Both writes are idempotent on the receiver side, but if a consumer treated `KernelIdle` as terminal it would see the queue released before `set_execution_done` ran. The cleanup punchlist tracks this as EP-11.
+The no-output case now follows the same rule. When `flush_then_signal` is
+called with an empty flush list, it still enqueues an empty priority commit
+rather than sending directly on `lifecycle_tx` (`stream_committer.rs:106-124`,
+test `flush_then_signal_without_flushes_rides_priority_queue`). That keeps a
+no-output execution's `ExecutionDone` behind any earlier priority stream commit,
+so terminal runtime state remains causally after the final stream manifest.
 
 ### Counterfactual: synchronous output writes from the IOPub reader
 
@@ -297,7 +302,7 @@ If lifecycle and work shared one channel, the interrupt's `KernelIdle` would hav
 4. ~~**The `is_lifecycle()` discipline is a runtime check.**~~ **Resolved by
    EP-2.** `LifecycleSignal` and `WorkCommand` are now separate types, so the
    lifecycle channel no longer accepts widget replay work. Remaining lifecycle
-   concerns are tracked as EP-10 and EP-11.
+   select-ordering concerns are tracked as EP-10.
 
 5. **`required_heads` is `NotebookDoc`-only.** A request that semantically depends on a recent RuntimeStateDoc write (rare in v1, but conceivable for future request types) has no causal gate.
 
@@ -309,7 +314,7 @@ If lifecycle and work shared one channel, the interrupt's `KernelIdle` would hav
 
 9. **`SendCommUpdate` drop telemetry is asymmetric.** The `Full` arm of `try_send_comm_update` logs at `debug`; the `Closed` arm logs at `warn` (`jupyter_kernel.rs:208-220`). Production daemons running with default log levels see channel-closed drops but not capacity drops. EP-4 and EP-13 in the punchlist.
 
-11. **`KernelDied` is also produced by committer-supervisor panic.** Both `start_stream_committer` and `start_display_update_committer` use `spawn_supervised`, which on panic enqueues `QueueCommand::KernelDied` on the lifecycle channel to release the queue (`display_update_committer.rs:249-262`). The ADR's coverage of `KernelDied` reads as IOPub-disconnect-only; the committer-crash path is also load-bearing. Punchlist EP-12.
+11. **`KernelDied` is also produced by committer-supervisor panic.** Both `start_stream_committer` and `start_display_update_committer` use `spawn_supervised`, which on panic enqueues `LifecycleSignal::KernelDied` on the lifecycle channel to release the queue (`display_update_committer.rs:249-262`). The ADR's coverage of `KernelDied` reads as IOPub-disconnect-only; the committer-crash path is also load-bearing. Punchlist EP-12.
 
 12. **Stale-stream-flush-after-clear is silently dropped.** If the stream buffer is cleared (terminal state reset) between a `request_flush` and its commit, the committer drops the stale write (`stale_stream_flush_after_clear_is_ignored` test at `stream_committer.rs:438`). This is relied on by the ordering-boundary clears in `jupyter_kernel.rs:1716,1923` but is not stated as an invariant.
 
@@ -319,7 +324,7 @@ If lifecycle and work shared one channel, the interrupt's `KernelIdle` would hav
 
 - `crates/runtimed/src/stream_committer.rs` - bounded periodic + unbounded priority paths, `flush_then_signal`, `flush_for_ordering`.
 - `crates/runtimed/src/display_update_committer.rs` - coalesced display updates, priority flush ack.
-- `crates/runtimed/src/output_prep.rs:444-501` - `QueueCommand`, `is_lifecycle`, channel construction.
+- `crates/runtimed/src/output_prep.rs:465-550` - `LifecycleSignal`, `WorkCommand`, and channel construction.
 - `crates/runtimed/src/runtime_agent.rs:592-639, 1414-1430` - lifecycle/work select arms and `drain_lifecycle_commands`.
 - `crates/runtimed/src/jupyter_kernel.rs:1394-1441, 1805-1818` - IOPub `status: idle` and `UpdateDisplayData` handling.
 - `crates/runtimed/src/kernel_state.rs:147-181` - `execution_done` and `set_execution_done`.

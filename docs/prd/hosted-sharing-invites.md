@@ -273,14 +273,12 @@ flows may leave a notebook without an `owner` ACL row.
 Owner-only APIs:
 
 ```text
-GET    /api/n/{notebookId}/shares
-POST   /api/n/{notebookId}/shares
-DELETE /api/n/{notebookId}/shares/{shareId}
-POST   /api/n/{notebookId}/public-viewer
-DELETE /api/n/{notebookId}/public-viewer
+GET    /api/n/{notebookId}/invites
+POST   /api/n/{notebookId}/invites
+DELETE /api/n/{notebookId}/invites/{inviteId}
 ```
 
-`POST /shares` request:
+`POST /invites` request:
 
 ```json
 {
@@ -332,11 +330,12 @@ The checked-in TypeScript prototype models the core transition:
 - `shareTargetDisplay(...)` maps principal profiles, pending invites, and
   public viewer rows into UI labels.
 
-The checked-in storage foundation now creates the `principal_profiles` and
+The checked-in storage foundation creates the `principal_profiles` and
 `notebook_invites` D1 tables and exposes helpers that upsert profiles, create
-pending invites, and resolve first-login invites into principal ACL rows. HTTP
-routes should come after the direct-OIDC demo proves principal shape and after
-we choose the final share API names.
+pending invites, and resolve first-login invites into principal ACL rows. The
+hosted Worker exposes the invite routes as `/api/n/:id/invites` and
+`/api/n/:id/invites/:inviteId`; public viewer access remains an explicit ACL
+row rather than a separate `/public-viewer` route.
 
 ## Open Questions
 
