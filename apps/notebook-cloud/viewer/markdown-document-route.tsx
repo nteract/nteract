@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Eye, FileText, Loader2, PencilLine } from "lucide-react";
+import { ArrowLeft, Eye, FileText, Globe2, Loader2, PencilLine } from "lucide-react";
 import type { ConnectionStatus, NotebookOutlineItem } from "runtimed";
 import {
   CodeMirrorEditor,
@@ -30,8 +30,15 @@ interface MarkdownCatalogResponse {
     body_doc_id: string;
     scope: "owner" | "editor" | "viewer";
     updated_at: string;
+    latest_revision_id: string | null;
   };
 }
+
+type PublishStatus =
+  | { kind: "idle"; message: string | null }
+  | { kind: "publishing"; message: string }
+  | { kind: "published"; message: string; revisionId: string }
+  | { kind: "error"; message: string };
 
 type RouteState =
   | { kind: "loading" }
@@ -42,6 +49,7 @@ type RouteState =
       bodyReady: boolean;
       scope: "owner" | "editor" | "viewer";
       connectionStatus: ConnectionStatus;
+      latestRevisionId: string | null;
     }
   | { kind: "error"; message: string };
 
@@ -66,9 +74,14 @@ export function MarkdownDocumentRoute({
   );
   const [routeState, setRouteState] = useState<RouteState>({ kind: "loading" });
   const [mode, setMode] = useState<"source" | "read">("source");
+  const [publishStatus, setPublishStatus] = useState<PublishStatus>({
+    kind: "idle",
+    message: null,
+  });
   const syncControllerRef = useRef<MarkdownDocumentLiveSyncController | null>(null);
   const editorRef = useRef<CodeMirrorEditorRef | null>(null);
   const connectionStatusRef = useRef<ConnectionStatus>("connecting");
+  const latestRevisionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -79,6 +92,7 @@ export function MarkdownDocumentRoute({
         setRouteState({ kind: "loading" });
         const catalog = await fetchMarkdownCatalog(config, authState);
         if (disposed) return;
+        latestRevisionIdRef.current = catalog.document.latest_revision_id;
         const title = catalog.document.title?.trim() || "Untitled Markdown";
         controller = await startMarkdownDocumentLiveSync({
           authState,
@@ -106,6 +120,7 @@ export function MarkdownDocumentRoute({
               bodyReady: snapshot.bodyReady,
               scope: catalog.document.scope,
               connectionStatus: connectionStatusRef.current,
+              latestRevisionId: latestRevisionIdRef.current,
             });
           },
         });
@@ -143,13 +158,49 @@ export function MarkdownDocumentRoute({
       body: routeState.body,
       access: routeState.scope,
       requestedMode: mode,
+      publishedRevisionId: routeState.latestRevisionId,
       updatedAt: null,
     });
   }, [config.documentId, mode, routeState]);
 
   const onEditorValueChange = useCallback((nextBody: string) => {
     syncControllerRef.current?.editBody(nextBody);
+    setPublishStatus((current) =>
+      current.kind === "published" ? { kind: "idle", message: "Unpublished changes." } : current,
+    );
   }, []);
+
+  const publishMarkdownDocumentSnapshot = useCallback(async () => {
+    const controller = syncControllerRef.current;
+    if (!controller || routeState.kind !== "ready") {
+      setPublishStatus({
+        kind: "error",
+        message: "Markdown document is still connecting. Try publishing again in a moment.",
+      });
+      return;
+    }
+    setPublishStatus({
+      kind: "publishing",
+      message: "Publishing Markdown document...",
+    });
+    try {
+      const snapshot = await controller.publishSnapshot();
+      latestRevisionIdRef.current = snapshot.revisionId;
+      setRouteState((current) =>
+        current.kind === "ready" ? { ...current, latestRevisionId: snapshot.revisionId } : current,
+      );
+      setPublishStatus({
+        kind: "published",
+        message: "Public link updated.",
+        revisionId: snapshot.revisionId,
+      });
+    } catch (error) {
+      setPublishStatus({
+        kind: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [routeState.kind]);
 
   useEffect(() => {
     if (routeState.kind !== "ready" || mode !== "source") {
@@ -193,9 +244,11 @@ export function MarkdownDocumentRoute({
   const canEdit = projection.canEdit && routeState.bodyReady;
   const canManageSharing =
     projection.canShare && config.hostCapabilities?.canManageSharing !== false;
+  const canPublish = projection.canPublish && config.hostCapabilities?.canPublish !== false;
   const connectionCopy = markdownConnectionCopy(routeState.connectionStatus, routeState.bodyReady);
   const publicLink =
     typeof window === "undefined" ? "" : `${window.location.origin}${window.location.pathname}`;
+  const publishCopy = publishStatus.message;
 
   return (
     <main className="cloud-markdown-shell">
@@ -215,6 +268,20 @@ export function MarkdownDocumentRoute({
               publicLink={publicLink}
             />
           ) : null}
+          {canPublish ? (
+            <button
+              type="button"
+              disabled={publishStatus.kind === "publishing" || !routeState.bodyReady}
+              onClick={() => void publishMarkdownDocumentSnapshot()}
+            >
+              {publishStatus.kind === "publishing" ? (
+                <Loader2 aria-hidden="true" />
+              ) : (
+                <Globe2 aria-hidden="true" />
+              )}
+              {projection.isPublished ? "Publish update" : "Publish"}
+            </button>
+          ) : null}
           <button type="button" aria-pressed={mode === "read"} onClick={() => setMode("read")}>
             <Eye aria-hidden="true" />
             Read
@@ -231,6 +298,11 @@ export function MarkdownDocumentRoute({
         </div>
       </header>
       {connectionCopy ? <div className="cloud-markdown-notice">{connectionCopy}</div> : null}
+      {publishCopy ? (
+        <div className="cloud-markdown-notice" data-kind={publishStatus.kind}>
+          {publishCopy}
+        </div>
+      ) : null}
       <div className="cloud-markdown-workspace">
         <aside className="cloud-markdown-rail">
           <div className="cloud-markdown-rail-title">
@@ -306,7 +378,8 @@ function isMarkdownCatalogResponse(value: unknown): value is MarkdownCatalogResp
     (document.title === null || typeof document.title === "string") &&
     typeof document.body_doc_id === "string" &&
     (document.scope === "owner" || document.scope === "editor" || document.scope === "viewer") &&
-    typeof document.updated_at === "string"
+    typeof document.updated_at === "string" &&
+    (document.latest_revision_id === null || typeof document.latest_revision_id === "string")
   );
 }
 

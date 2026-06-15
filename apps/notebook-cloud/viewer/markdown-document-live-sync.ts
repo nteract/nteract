@@ -10,8 +10,10 @@ import {
 import {
   cloudSyncAuthFromAppSessionCookie,
   cloudSyncAuthFromPrototypeAuthState,
+  fetchWithCloudPrototypeAuth,
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
+import { cloudResponseError } from "./cloud-response";
 import {
   createBootstrapMarkdownHandle,
   loadMarkdownHandleFromBytes,
@@ -31,7 +33,13 @@ export interface MarkdownDocumentLiveSyncController {
   readonly transport: CloudWebSocketTransport;
   editBody(nextBody: string): void;
   flushNow(): Promise<void>;
+  publishSnapshot(): Promise<MarkdownDocumentPublishedSnapshot>;
   dispose(): void;
+}
+
+export interface MarkdownDocumentPublishedSnapshot {
+  headsHash: string;
+  revisionId: string;
 }
 
 export interface StartMarkdownDocumentLiveSyncOptions {
@@ -220,6 +228,42 @@ export async function startMarkdownDocumentLiveSync({
         }
         await saveNow();
       },
+      publishSnapshot: async () => {
+        if (!handle) {
+          throw new Error("Markdown document is not ready to publish");
+        }
+        flush();
+        if (saveTimer !== null) {
+          clearTimeout(saveTimer);
+          saveTimer = null;
+        }
+        const snapshotBytes = handle.save();
+        await saveNow();
+        const headsHash = await markdownHeadsDigest(handle.get_heads_hex());
+        const response = await fetchWithCloudPrototypeAuth(
+          markdownSnapshotEndpoint(config.snapshotBasePath, headsHash),
+          {
+            method: "PUT",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/octet-stream",
+            },
+            body: snapshotBytes,
+          },
+          authState.mode === "dev" ? { ...authState, requestedScope: "owner" } : authState,
+        );
+        if (!response.ok) {
+          throw await cloudResponseError(response, "Unable to publish Markdown document");
+        }
+        const body = (await response.json()) as { revision_id?: unknown };
+        if (typeof body.revision_id !== "string" || body.revision_id.trim() === "") {
+          throw new Error("Markdown publish response did not include a revision id");
+        }
+        return {
+          headsHash,
+          revisionId: body.revision_id,
+        };
+      },
       dispose: () => {
         disposed = true;
         statusSubscription?.unsubscribe();
@@ -270,6 +314,19 @@ function markdownPersistenceKey(documentId: string, principal: string): string[]
     principal,
     MARKDOWN_PERSISTENCE_SNAPSHOT_SEGMENT,
   ];
+}
+
+function markdownSnapshotEndpoint(basePath: string, headsHash: string): string {
+  const normalizedBasePath = basePath.endsWith("/") ? basePath : `${basePath}/`;
+  return `${normalizedBasePath}${encodeURIComponent(headsHash)}`;
+}
+
+async function markdownHeadsDigest(heads: string[]): Promise<string> {
+  const input = heads.length > 0 ? [...heads].sort().join("\n") : "empty";
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return `heads-${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 24)}`;
 }
 
 function diffAsSplice(

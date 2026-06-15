@@ -2285,6 +2285,18 @@ body {
   line-height: 1.4;
 }
 
+.cloud-markdown-notice[data-kind="published"] {
+  border-bottom-color: color-mix(in srgb, #047857 18%, transparent);
+  color: color-mix(in srgb, #047857 72%, var(--foreground));
+  background: color-mix(in srgb, #10b981 7%, var(--background));
+}
+
+.cloud-markdown-notice[data-kind="error"] {
+  border-bottom-color: color-mix(in srgb, #b91c1c 20%, transparent);
+  color: color-mix(in srgb, #b91c1c 78%, var(--foreground));
+  background: color-mix(in srgb, #ef4444 7%, var(--background));
+}
+
 .cloud-markdown-workspace {
   display: grid;
   grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);

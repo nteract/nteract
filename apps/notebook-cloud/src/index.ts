@@ -59,7 +59,9 @@ import {
   listActiveWorkstationAttachJobs,
   listNotebooksForPrincipal,
   listWorkstationsForPrincipal,
+  markdownDocumentSnapshotKey,
   recordBlob,
+  recordMarkdownDocumentRevision,
   recordRevision,
   revokeMarkdownDocumentAclRow,
   registerWorkstation,
@@ -100,6 +102,7 @@ import {
   type WorkstationAttachJobNotification,
 } from "./workstation-events.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
+import { loadMarkdownRoomHostSnapshot } from "./runtimed-wasm.ts";
 import { notebookRouteSegmentTitle } from "./notebook-route-title.ts";
 import {
   createNotebookCloudBlobResolver,
@@ -423,6 +426,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     methods: ["PATCH"],
     handler: ({ params }, request, env) =>
       routeUpdateMarkdownDocumentMetadata(request, env, params.documentId),
+  },
+  {
+    match: routePath("/api/m/:documentId/snapshots/:headsHash"),
+    handler: ({ params }, request, env) =>
+      routeMarkdownDocumentSnapshot(request, env, params.documentId, params.headsHash),
   },
   {
     match: routePath("/api/m/:documentId/acl", { trailingSlash: "optional" }),
@@ -2923,6 +2931,170 @@ async function routeSnapshot(
   );
 }
 
+async function routeMarkdownDocumentSnapshot(
+  request: Request,
+  env: Env,
+  documentId: string,
+  headsHash: string,
+): Promise<Response> {
+  const key = markdownDocumentSnapshotKey(documentId, headsHash);
+
+  if (request.method === "GET") {
+    const identity = await authenticateAndAuthorizeMarkdownOrAppSessionOrResponse(
+      request,
+      env,
+      documentId,
+      "viewer",
+    );
+    if (identity instanceof Response) {
+      return identity;
+    }
+    const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
+    if (!object) {
+      return json({ error: "Markdown snapshot not found" }, 404);
+    }
+    return immutableR2ObjectResponse(object);
+  }
+
+  if (request.method !== "PUT") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+  if (!env.NOTEBOOK_SNAPSHOTS) {
+    return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
+  }
+
+  const identity = await authenticateAndAuthorizeMarkdownOrAppSessionOrResponse(
+    request,
+    env,
+    documentId,
+    "owner",
+  );
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  const body = await request.arrayBuffer();
+  const validation = await validateMarkdownSnapshot({
+    documentId,
+    bodyHeadsHash: headsHash,
+    body: new Uint8Array(body),
+  });
+  if (!validation.ok) {
+    return json(validation.body, validation.status);
+  }
+
+  await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+    httpMetadata: {
+      contentType: request.headers.get("content-type") ?? "application/octet-stream",
+      cacheControl: "public, max-age=31536000, immutable",
+    },
+    customMetadata: {
+      document_id: documentId,
+      body_heads_hash: headsHash,
+    },
+  });
+
+  let revisionId: string;
+  try {
+    revisionId = await recordMarkdownDocumentRevision(env, {
+      documentId,
+      bodyHeadsHash: headsHash,
+      snapshotKey: key,
+      actorLabel: identity.actorLabel,
+      publishPublic: true,
+    });
+  } catch (error) {
+    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    throw error;
+  }
+
+  cloudLog("info", "markdown_snapshot.published", {
+    document_id: documentId,
+    body_heads_hash: headsHash,
+    revision_id: revisionId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    byte_length: body.byteLength,
+    counter: "markdown_snapshot_publishes",
+    counter_delta: 1,
+  });
+
+  return json(
+    {
+      ok: true,
+      revision_id: revisionId,
+      key,
+      body_heads_hash: headsHash,
+    },
+    201,
+  );
+}
+
+async function validateMarkdownSnapshot(options: {
+  documentId: string;
+  bodyHeadsHash: string;
+  body: Uint8Array;
+}): Promise<SnapshotPairValidationResult> {
+  const startedAt = Date.now();
+  let handle: Awaited<ReturnType<typeof loadMarkdownRoomHostSnapshot>> | null = null;
+  try {
+    handle = await loadMarkdownRoomHostSnapshot(options.body);
+    const actualHeadsHash = await markdownDocumentHeadsHash(handle.get_heads_hex());
+    if (actualHeadsHash !== options.bodyHeadsHash) {
+      cloudLog("warn", "markdown_snapshot.validation.heads_mismatch", {
+        document_id: options.documentId,
+        expected_body_heads_hash: options.bodyHeadsHash,
+        actual_body_heads_hash: actualHeadsHash,
+        duration_ms: durationMs(startedAt),
+        counter: "markdown_snapshot_validation_heads_mismatches",
+        counter_delta: 1,
+      });
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "Markdown snapshot heads mismatch",
+          expected_body_heads_hash: options.bodyHeadsHash,
+          actual_body_heads_hash: actualHeadsHash,
+        },
+      };
+    }
+    return { ok: true };
+  } catch (error) {
+    cloudLog("warn", "markdown_snapshot.validation.failed", {
+      document_id: options.documentId,
+      body_heads_hash: options.bodyHeadsHash,
+      duration_ms: durationMs(startedAt),
+      error: errorMessage(error),
+      counter: "markdown_snapshot_validation_failures",
+      counter_delta: 1,
+    });
+    return {
+      ok: false,
+      status: 422,
+      body: {
+        error: "Markdown snapshot validation failed",
+        details: errorMessage(error),
+      },
+    };
+  } finally {
+    handle?.free();
+  }
+}
+
+async function markdownDocumentHeadsHash(heads: string[]): Promise<string> {
+  const input = heads.length > 0 ? [...heads].sort().join("\n") : "empty";
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return `heads-${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 24)}`;
+}
+
 async function routeCommsSnapshot(
   request: Request,
   env: Env,
@@ -5300,7 +5472,7 @@ async function markdownDocumentViewer(
     syncEndpoint: `/m/${encodeURIComponent(documentId)}/sync`,
     hostCapabilities: {
       canManageSharing: true,
-      canPublish: false,
+      canPublish: true,
     },
     session: session ? appSessionResponse(session) : null,
     runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),

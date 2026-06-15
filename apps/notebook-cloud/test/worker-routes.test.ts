@@ -29,7 +29,11 @@ import type {
   R2ObjectBody,
   R2PutOptions,
 } from "../src/cloudflare-types.ts";
-import { initializeRuntimedWasm, RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
+import {
+  initializeRuntimedWasm,
+  MarkdownHandle,
+  RuntimeStatePeerHandle,
+} from "../src/runtimed-wasm.ts";
 import {
   WORKSTATION_ATTACH_JOB_STALE_MS,
   blobKey,
@@ -37,12 +41,16 @@ import {
   createNotebookWithOwnerAcl,
   getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
+  markdownDocumentSnapshotKey,
   runtimeStateSnapshotKey,
   snapshotKey,
 } from "../src/storage.ts";
 import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
 import { canonicalAccountPrincipalForProfile } from "../src/sharing-storage.ts";
-import type { PrincipalAccountLinkRow } from "../src/storage.ts";
+import type {
+  MarkdownDocumentAclRow as StorageMarkdownDocumentAclRow,
+  PrincipalAccountLinkRow,
+} from "../src/storage.ts";
 import type {
   WorkstationCredentialRow,
   WorkstationPairingCodeRow,
@@ -1811,7 +1819,7 @@ describe("Worker artifact routes", () => {
     assert.equal(before.status, 200);
     const beforeBody = (await before.json()) as {
       document_id: string;
-      acl: MarkdownDocumentAclRow[];
+      acl: StorageMarkdownDocumentAclRow[];
     };
     assert.equal(beforeBody.document_id, "markdown-share");
     assert.deepEqual(
@@ -1909,6 +1917,78 @@ describe("Worker artifact routes", () => {
       env.DB.markdownDocumentAcl.some((row) => row.subject === "user:dev:runtime-service"),
       false,
     );
+  });
+
+  it("lets Markdown document owners publish public snapshots", async () => {
+    const env = fakeEnv();
+    env.DB.markdownDocuments.set("markdown-publish", {
+      id: "markdown-publish",
+      owner_principal: "user:dev:alice",
+      title: "Published Markdown",
+      body_doc_id: "markdown-publish",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: null,
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-publish",
+      subject_kind: "principal",
+      subject: "user:dev:alice",
+      scope: "owner",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+
+    const handle = MarkdownHandle.create(
+      "markdown-publish",
+      "Published Markdown",
+      "user:dev:alice/browser:test",
+    );
+    handle.replace_body_for_import("# Published Markdown\n\nA public draft.");
+    const snapshotBytes = handle.save();
+    const bodyHeadsHash = await markdownTestHeadsDigest(handle.get_heads_hex());
+    handle.free();
+    const response = await ownerPut(
+      env,
+      `/api/m/markdown-publish/snapshots/${bodyHeadsHash}`,
+      snapshotBytes,
+    );
+
+    assert.equal(response.status, 201);
+    const body = (await response.json()) as {
+      ok: boolean;
+      revision_id: string;
+      key: string;
+      body_heads_hash: string;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.body_heads_hash, bodyHeadsHash);
+    const key = markdownDocumentSnapshotKey("markdown-publish", bodyHeadsHash);
+    assert.equal(body.key, key);
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.has(key), true);
+    assert.equal(
+      env.DB.markdownDocuments.get("markdown-publish")?.latest_revision_id,
+      body.revision_id,
+    );
+    assert.equal(
+      env.DB.markdownDocumentAcl.some(
+        (row) =>
+          row.document_id === "markdown-publish" &&
+          row.subject_kind === "public" &&
+          row.subject === "anonymous" &&
+          row.scope === "viewer",
+      ),
+      true,
+    );
+
+    const anonymousRead = await worker.fetch(
+      new Request(`http://localhost/api/m/markdown-publish/snapshots/${bodyHeadsHash}`),
+      env,
+      fakeContext(),
+    );
+    assert.equal(anonymousRead.status, 200);
+    assert.deepEqual(new Uint8Array(await anonymousRead.arrayBuffer()), snapshotBytes);
   });
 
   it("routes hosted Markdown document sync through the Markdown room binding", async () => {
@@ -8268,6 +8348,14 @@ class FakeR2Object implements R2ObjectBody {
       headers.set("Content-Type", this.httpMetadata.contentType);
     }
   }
+}
+
+async function markdownTestHeadsDigest(heads: string[]): Promise<string> {
+  const input = heads.length > 0 ? [...heads].sort().join("\n") : "empty";
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return `heads-${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 24)}`;
 }
 
 async function toBytes(

@@ -2213,6 +2213,10 @@ impl MarkdownHandle {
         self.doc.save()
     }
 
+    pub fn get_heads_hex(&mut self) -> Vec<String> {
+        self.doc.get_heads_hex()
+    }
+
     pub fn flush_local_changes(&mut self) -> Option<Vec<u8>> {
         self.doc
             .generate_sync_message(&mut self.sync_state)
