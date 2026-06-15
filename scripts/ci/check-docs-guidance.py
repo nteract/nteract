@@ -143,13 +143,12 @@ def check_index(path: Path, errors: list[str]) -> None:
 
 def check_file(path: Path, tracked: set[str], errors: list[str]) -> None:
     absolute = REPO_ROOT / path
+    check_index(path, errors)
     if path.suffix.lower() not in GUIDANCE_EXTENSIONS:
-        check_index(path, errors)
         return
     if not absolute.exists() or not absolute.is_file():
         return
 
-    check_index(path, errors)
     text = absolute.read_text(encoding="utf-8", errors="replace")
     for line, raw_target in iter_link_targets(text):
         target = local_target(raw_target, path)
