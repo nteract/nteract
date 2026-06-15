@@ -83,8 +83,24 @@ async function main() {
     await timed(timingsMs, "create_document", async () => {
       await page.getByRole("button", { name: "New Markdown" }).click({ timeout: timeoutMs });
       await page.getByLabel("Title").fill(smokeTitle, { timeout: timeoutMs });
-      await page.getByRole("button", { name: "Create" }).click({ timeout: timeoutMs });
-      await page.waitForURL(/\/m\/[^/]+(?:\/.*)?$/, { timeout: timeoutMs });
+      const [response] = await Promise.all([
+        page.waitForResponse(
+          (candidate) =>
+            candidate.request().method() === "POST" &&
+            new URL(candidate.url()).pathname === "/api/m",
+          { timeout: timeoutMs },
+        ),
+        page.getByRole("button", { name: "Create" }).click({ timeout: timeoutMs }),
+      ]);
+      if (response.status() !== 201) {
+        throw new Error(
+          `Markdown create returned HTTP ${response.status()}: ${await response.text()}`,
+        );
+      }
+      await page.waitForURL(/\/m\/[^/]+(?:\/.*)?$/, {
+        waitUntil: "domcontentloaded",
+        timeout: timeoutMs,
+      });
     });
     const documentUrl = page.url();
     checks.push("markdown_document_created");
@@ -385,6 +401,13 @@ async function readOidcTokenStorageJson(path) {
     return parsed;
   }
   if (parsed && typeof parsed === "object") {
+    if (
+      typeof parsed.accessToken === "string" &&
+      parsed.accessToken.length > 0 &&
+      typeof parsed.expiresAt === "number"
+    ) {
+      return JSON.stringify(parsed);
+    }
     if (typeof parsed.token === "string" && typeof parsed.expiresAt === "number") {
       return JSON.stringify(parsed);
     }

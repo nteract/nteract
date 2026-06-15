@@ -147,6 +147,10 @@ export function CloudMarkdownDocumentListView({
     try {
       setCreateError(null);
       setCreateState("starting");
+      if (authState.mode === "oidc" && authState.token && !hasAppSession) {
+        await establishCloudAppSession(authState);
+        appSessionStatus.refreshAppSessionStatus();
+      }
       const response = await fetchWithCloudPrototypeAuth(
         markdownDocumentCollectionEndpoint(),
         {
