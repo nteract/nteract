@@ -1,8 +1,7 @@
 # Captured Environment Lifecycle
 
-**Status:** Draft / planned, 2026-05-24. This document records the target
-lifecycle shape; parts of the current daemon still use the older boolean
-`unified_env_on_disk()` model.
+**Status:** Draft, 2026-05-24. This document records the target lifecycle
+shape; parts of the implementation remain planned rather than fully enforced.
 
 ## Related ADRs
 

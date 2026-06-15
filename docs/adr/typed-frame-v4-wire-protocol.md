@@ -268,7 +268,7 @@ Wire compatibility is enforced by:
 
 The contract tests compare enum variant lists and frame-type byte values, not the full per-type size table. Per-type caps and warns are copied by hand into `frameSizeLimits` and are not asserted against the Rust table by CI.
 
-The Python client (`crates/runtimed-py`) uses the Rust framing directly through `crates/notebook-sync` and `crates/notebook-protocol`, so it inherits any Rust-side change automatically. The bare WebSocket transport that hosted rooms will eventually ship is not implemented yet; when it lands it has to choose between calling the same Rust framing through WASM or reimplementing the byte layout in TS.
+The Python client (`crates/runtimed-py`) uses the Rust framing directly through `crates/notebook-sync` and `crates/notebook-protocol`, so it inherits any Rust-side change automatically. Hosted rooms now have two WebSocket transports: the browser-side `CloudWebSocketTransport` in `apps/notebook-cloud/viewer/live-sync.ts`, and the non-browser/runtime-peer `CloudWsFrameTransport` in `crates/notebook-cloud-transport`. Both carry one typed frame per WebSocket binary message with no outer length preamble; the browser transport owns its TypeScript byte layout, while the runtime-peer transport reuses Rust framing types.
 
 ## Worked examples
 

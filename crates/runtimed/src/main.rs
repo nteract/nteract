@@ -193,10 +193,11 @@ enum Commands {
     },
 
     /// Serve this machine as a workstation for a hosted nteract cloud:
-    /// register/heartbeat, poll attach jobs, and spawn one
-    /// `cloud-runtime-agent` runtime peer per job. The workstation credential
-    /// is read from RUNT_CLOUD_TOKEN (never argv); `runt workstation connect`
-    /// stores it and `runt workstation run` launches this subcommand.
+    /// register/heartbeat, keep an SSE attach-job wakeup stream open, and
+    /// spawn one `cloud-runtime-agent` runtime peer per job. Polling remains
+    /// the fallback path. The workstation credential is read from
+    /// RUNT_CLOUD_TOKEN (never argv); `runt workstation connect` stores it and
+    /// `runt workstation run` launches this subcommand.
     #[command(name = "workstation-agent")]
     WorkstationAgent {
         /// Base URL of the notebook cloud (https/http).

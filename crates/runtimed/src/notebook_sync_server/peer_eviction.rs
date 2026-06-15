@@ -381,10 +381,10 @@ pub(super) async fn handle_peer_disconnect(
             }
 
             // Rename the env dir to match the post-flush unified
-            // hash so the next reopen's `unified_env_on_disk` lookup
-            // finds it. Skip the rename when save failed — leaving
-            // disk metadata on the old hash while the env moved to
-            // the new one would defeat the next reopen. Kernel is
+            // hash so the next reopen's `captured_env_disk_state`
+            // check finds it. Skip the rename when save failed —
+            // leaving disk metadata on the old hash while the env moved
+            // to the new one would defeat the next reopen. Kernel is
             // already dead at this point (runtime agent was shut
             // down above), so the rename is safe.
             if let Some(runtime) = flushed_runtime {
@@ -455,9 +455,9 @@ pub(super) async fn handle_peer_disconnect(
             // no persistent `env_id` reference. Both delete eagerly.
             //
             // Captured envs for saved notebooks are the reopen cache.
-            // Preserve them so the next launch's `unified_env_on_disk`
-            // lookup hits the cached env instead of rebuilding from the
-            // pool. A future age-based GC sweeps envs whose notebook
+            // Preserve them so the next launch's typed captured-env disk
+            // state check hits the cached env instead of rebuilding from
+            // the pool. A future age-based GC sweeps envs whose notebook
             // hasn't been opened in a long time.
             //
             // Use pool_env_root() to normalise pixi paths — their

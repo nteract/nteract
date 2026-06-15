@@ -26,6 +26,10 @@ Related document homes:
   as the architectural source of truth.
 - **Draft**: proposed or recently extracted decision that should be reviewed
   before being used as a hard dependency.
+- **Proposed**: scoped direction for a planned change that still needs review
+  or implementation evidence before it becomes a decision.
+- **In progress**: design line with landed slices and remaining open work;
+  review the "Done" / "Next" sections before treating it as complete.
 
 ## Read First
 
@@ -67,6 +71,8 @@ These entries define the center of gravity for the system:
 | [Generated Runtime Artifacts](generated-runtime-artifacts.md) | Draft | Gitignored WASM/renderer outputs, LFS bundles, and `xtask artifacts` ownership. |
 | [Frontend Sync Bridge and Stable DOM Order](frontend-sync-bridge.md) | Draft | React/store projection and iframe-preserving cell order. |
 | [Live Notebook Projection Policy](live-notebook-projection-policy.md) | Draft | Full materialization fallback boundaries and narrow live store projections. |
+| [Local-First Notebook State](local-first-notebook-state.md) | Proposed | Cloud reconnect, persistence, and offline-read direction for live notebook handles. |
+| [Shared-Store Projection Convergence](shared-store-projection-convergence.md) | In progress | Shared store migration pattern and landed slices across Desktop and Cloud. |
 | [MCP Session Lifecycle and Daemon Supervision](mcp-session-lifecycle.md) | Draft | MCP proxy, daemon, and session lifetime boundaries. |
 | [MCP Resource Addressing](mcp-resource-addressing.md) | Draft | Local `nteract://` MCP resource namespace. |
 | [Cloud-Connected Local MCP Clients](cloud-connected-local-mcp.md) | Draft | Local MCP target resolution for hosted notebook URLs and machine-local cloud remote config. |

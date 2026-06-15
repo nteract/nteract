@@ -133,6 +133,10 @@ export class WorkstationEvents {
 }
 
 function formatServerSentEvent(event: string, data: unknown): string {
+  // This stream is a wakeup/presence path, not the durable attach-job log.
+  // Attach jobs live in D1 and agents recover by polling the queue after a
+  // reconnect, so we intentionally do not assign SSE ids or support
+  // Last-Event-ID replay here.
   const payload = JSON.stringify(data);
   const dataLines = payload.split(/\r?\n/).map((line) => `data: ${line}`);
   return [`event: ${event}`, ...dataLines, ""].join("\n") + "\n";

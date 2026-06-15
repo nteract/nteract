@@ -356,10 +356,11 @@ Properties:
   so existing room attachment (owner-principal `runtime_peer` ACL row) and the
   WebSocket dial work unchanged.
 - The credential is least-privilege by allowlist: it authenticates only the
-  workstation surface (registration/heartbeat, attach-job polling and status
-  patches) and room WebSocket dials, and may request only `viewer` or
-  `runtime_peer` connection scope. Every other route rejects it by default —
-  the gate sits in the central request-auth wrapper, not per-route opt-outs.
+  workstation surface (registration/heartbeat, the attach-job SSE stream,
+  fallback attach-job polling, and status patches) and room WebSocket dials,
+  and may request only `viewer` or `runtime_peer` connection scope. Every other
+  route rejects it by default — the gate sits in the central request-auth
+  wrapper, not per-route opt-outs.
 - Pairing codes use a 12-character unambiguous alphabet (~59 bits) so a
   guessed code cannot realistically register an attacker workstation —
   important because first registration auto-selects the owner's default

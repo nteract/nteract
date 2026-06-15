@@ -125,12 +125,28 @@ The doc-agent control channel is not the notebook room sync channel. It is a
 workstation registration and command channel:
 
 - register/update workstation metadata;
-- heartbeat and report health;
+- heartbeat while work is active and keep idle presence through a server-sent
+  event stream;
 - advertise runtime, workspace, catalog, and environment capabilities;
-- receive "attach this workstation to room X" commands;
+- receive "attach this workstation to room X" wakeups through the event stream,
+  with attach-job polling as a recovery path;
 - report attachment status and provider diagnostics.
 
 Room execution still flows through a room-scoped `runtime_peer` connection.
+
+The event stream is deliberately SSE rather than a control WebSocket, and it
+replaces tight polling as the fast path. The hosted Worker and Durable Objects
+are request-sensitive: periodic polling burns one HTTP/D1 path per workstation
+per interval even when nothing is happening, while a dedicated control
+WebSocket adds another long-lived socket beside the actual room sync WebSocket.
+SSE gives each online workstation one simple HTTP stream for wakeups and idle
+presence, while preserving low-frequency polling for old server versions and
+recovery. The stream is not the durable job log: it does not use SSE
+`Last-Event-ID` replay because attach jobs already live in D1 and the agent
+claims them by polling `GET /api/workstations/:id/attach-jobs`. Adding
+`Last-Event-ID` would require a persisted per-workstation event sequence or
+replay buffer in the Durable Object; that is useful only if SSE becomes the
+source of truth rather than a wakeup signal.
 
 ## Decision 2: Providers supply workstations through adapters
 
@@ -548,8 +564,8 @@ Notebook contents flow over the room WebSocket after room authorization.
    API-key auth.
 4. **Connector skeleton.** Add a Linux-friendly `runt workstation` or
    `runtimed workstation` mode that stores an API key, registers the host,
-   maintains an outbound control WebSocket, and reports capabilities. No
-   notebook execution yet.
+   maintains an outbound server-sent event stream for attach-job wakeups, and
+   reports capabilities. No notebook execution yet.
 5. **Catalog projection.** Project registered workstations into host-owned
    catalog data that can later feed PR #3380's Content rail contract, without
    making the rail responsible for runtime authority.
@@ -591,8 +607,8 @@ The smallest valuable PR should avoid kernel execution:
 - D1 tables for workstation registry.
 - `POST /api/workstations/register` authenticated by write-capable Anaconda API
   key.
-- `WS /api/workstations/:id/control` heartbeat with version, provider, and
-  capability payload.
+- `POST /api/workstations` registration/heartbeat, plus
+  `GET /api/workstations/:id/events` as the attach-job wakeup stream.
 - A connector command that can run on Linux and keep the target visible.
 - Tests proving API keys authenticate a principal, deployed routes do not accept
   query-scope authority, and workstation registration does not grant
@@ -727,12 +743,13 @@ sequence:
   `workstation_attach_jobs` (`apps/notebook-cloud/src/storage.ts`), with Worker
   routes `/api/workstations`, `/api/workstations/default`, and the attach-job
   endpoints. Registration upserts and refreshes `last_seen_at`.
-- **Connector (step 4).** `apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`
-  registers the workstation, polls attach jobs over HTTP, and spawns
-  `runtimed cloud-runtime-agent` per job. This diverges from the sketch above:
-  attach commands arrive by polling `workstation_attach_jobs`, not a
-  `WS /api/workstations/:id/control` channel. A Rust `runt workstation` service
-  mode is still open.
+- **Connector (step 4).** The Rust `runtimed workstation-agent` service loop
+  registers the workstation, keeps
+  `GET /api/workstations/:id/events` open as an SSE attach-job wakeup stream,
+  falls back to low-frequency `GET /api/workstations/:id/attach-jobs` polling,
+  and spawns `runtimed cloud-runtime-agent` per job. The older
+  `apps/notebook-cloud/scripts/hosted-workstation-agent.mjs` smoke remains a
+  dev-loop equivalent and still polls attach jobs directly.
 - **Target selection + attachment (steps 8–9).** The viewer's workstation panel
   (`use-cloud-workstations.ts`) drives `/api/n/:id/workstation-attachments`;
   attach jobs command the connector, which attaches as `runtime_peer` over
