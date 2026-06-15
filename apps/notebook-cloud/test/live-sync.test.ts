@@ -101,18 +101,24 @@ describe("cloud live sync", () => {
     assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
   });
 
-  it("treats rejected NotebookDoc sync frames as recoverable bootstrap failures", () => {
-    assert.equal(
-      isRecoverableCloudFrameRejection({
-        type: "cloud_frame_rejected",
-        notebook_id: "room",
-        peer_id: "peer-1",
-        frame_type: FrameType.AUTOMERGE_SYNC,
-        reason: "duplicate seq from stale room-host actor",
-        timestamp: "2026-06-08T00:00:00.000Z",
-      }),
-      true,
-    );
+  it("treats rejected materialized sync frames as recoverable bootstrap failures", () => {
+    for (const frameType of [
+      FrameType.AUTOMERGE_SYNC,
+      FrameType.RUNTIME_STATE_SYNC,
+      FrameType.COMMS_DOC_SYNC,
+    ]) {
+      assert.equal(
+        isRecoverableCloudFrameRejection({
+          type: "cloud_frame_rejected",
+          notebook_id: "room",
+          peer_id: "peer-1",
+          frame_type: frameType,
+          reason: "duplicate seq from stale room-host actor",
+          timestamp: "2026-06-08T00:00:00.000Z",
+        }),
+        true,
+      );
+    }
     assert.equal(
       isRecoverableCloudFrameRejection({
         type: "cloud_frame_rejected",
@@ -857,7 +863,7 @@ describe("cloud persisted-seed handle resolution", () => {
     assert.deepEqual(harness.calls, ["loadPersisted:user:dev:alice", "clear", "createBootstrap"]);
   });
 
-  it("discards the persisted seed only for seeded sessions hitting sync rejections", () => {
+  it("discards the persisted seed only for seeded sessions hitting NotebookDoc sync rejections", () => {
     const rejection = {
       type: "cloud_frame_rejected" as const,
       notebook_id: "room",
@@ -869,6 +875,13 @@ describe("cloud persisted-seed handle resolution", () => {
 
     assert.equal(shouldDiscardPersistedSeedOnRejection(rejection, true), true);
     assert.equal(shouldDiscardPersistedSeedOnRejection(rejection, false), false);
+    assert.equal(
+      shouldDiscardPersistedSeedOnRejection(
+        { ...rejection, frame_type: FrameType.COMMS_DOC_SYNC },
+        true,
+      ),
+      false,
+    );
     assert.equal(
       shouldDiscardPersistedSeedOnRejection({ ...rejection, frame_type: FrameType.REQUEST }, true),
       false,

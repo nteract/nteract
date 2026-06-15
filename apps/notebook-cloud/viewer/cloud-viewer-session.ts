@@ -233,7 +233,7 @@ export function useCloudViewerSession({
   // Set when a seeded session's replayed changes were rejected by the room:
   // the next connect attempt must bootstrap (survives the effect re-run).
   const skipSeedOnceRef = useRef(false);
-  // Escalated AUTOMERGE_SYNC rejections quarantine the cross-tab bridge
+  // Escalated materialized sync rejections quarantine the cross-tab bridge
   // for the remainder of the session (page lifetime): the bridge's
   // principal is sender-asserted, so a hostile/buggy same-origin tab can
   // feed changes the room will keep rejecting — without this flag the
