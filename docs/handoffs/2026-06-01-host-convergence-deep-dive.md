@@ -9,6 +9,25 @@ NotebookDoc owner/cells splitting remains a proposal, not shipped behavior. Read
 the tables below as the analysis that led to later decisions, not as current
 writer policy.
 
+## Current status (2026-06-15)
+
+This deep dive is historical evidence. Several headline claims below have been
+superseded:
+
+- The **CommsDoc** portion is accepted and implemented via
+  [ADR 0002](../adr/0002-comms-document-split.md). Use that ADR and current
+  source for the live document-boundary contract.
+- The claim that `cloud_frame_rejected` has no recovery action is stale for
+  hosted browser sync. The viewer now handles rejected materialized sync frames
+  with in-place `resetAndResync()` first, then teardown/bootstrap escalation for
+  repeated rejection. Seed discard remains NotebookDoc-specific because the
+  persisted browser seed stores NotebookDoc bytes.
+- The proposed `ResyncRequired { doc_id, authoritative_heads }` and terminal
+  `Sever` variants are not the implemented wire shape. Current code still uses
+  `cloud_frame_rejected` with `frame_type` and `reason`. Doc-specific rejection
+  metadata, per-doc reset, and ACL/repeated-abuse sever semantics remain open
+  design/code work.
+
 ## TL;DR
 
 The forced derivation is **confirmed**: to make every CRDT document all-or-nothing per principal, `NotebookDoc` must split into an owner-only `MetadataDoc` and an editor+owner `CellsDoc`, and `RuntimeStateDoc`'s editor comm-state carve-out forces a `CommsDoc`. That is five documents. The logic holds.

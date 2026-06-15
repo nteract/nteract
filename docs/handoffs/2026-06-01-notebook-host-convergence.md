@@ -8,6 +8,27 @@ regular-client-read-only RuntimeStateDoc boundary have since shipped; use
 source policy checks for current writer authority. The old shorthand below
 should not be read as live authorization guidance.
 
+## Current status (2026-06-15)
+
+This is a historical handoff, not the current source of truth.
+
+- **Thread 1 (CommsDoc) has landed as the decoupled path.**
+  [ADR 0002](../adr/0002-comms-document-split.md) is accepted, `NotebookDoc`
+  carries a required deterministic `comms_doc_id`, and hosted rooms now
+  materialize `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc`. Do not treat the
+  "not started" text below as current backlog.
+- **Thread 2 (sync-divergence recovery) is narrowed, not untouched.** Hosted
+  browser sessions already treat rejected materialized sync frames as
+  recoverable by resetting sync state and resyncing, with escalation for
+  repeated post-resync rejection. The remaining gaps are more specific:
+  doc-specific rejection metadata (`doc_id`/heads/reason kind), per-doc reset
+  instead of whole-handle reset, server-side abuse/sever policy for repeated
+  materialized sync rejection, and daemon/cloud parity.
+- Keep this handoff as investigation context. Prefer
+  [ADR 0002](../adr/0002-comms-document-split.md), the
+  [hosted room authorization ADR](../adr/hosted-room-authorization.md), and
+  current source files for live architecture.
+
 ## Where we landed (shipped, in `main`)
 
 Two stacked PRs, both merged:
