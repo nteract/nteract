@@ -8,4 +8,5 @@ new durable decisions.
 
 | Plan | Status | Notes |
 |------|--------|-------|
+| [Hosted Markdown Documents Implementation Plan](hosted-markdown-documents-implementation-plan.md) | Implementation plan | First-class Markdown document surface across Cloud and Desktop without compute/runtime assumptions. |
 | [Notebook Surface Library Refactor Checklist](notebook-surface-library-refactor-checklist.md) | Active checklist | Living checklist for shared notebook libraries across Desktop, Cloud, and Elements. |

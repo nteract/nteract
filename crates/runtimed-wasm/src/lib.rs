@@ -12,6 +12,7 @@ use automerge::patches::PatchAction;
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::Prop;
+use markdown_doc::MarkdownDoc;
 use notebook_doc::diff::{
     diff_doc, extract_change_actor_hashes, extract_change_actors, CellChangeset, ChangeActor,
     TextPatch,
@@ -1881,6 +1882,17 @@ pub struct NotebookHandle {
     blob_port: Option<u16>,
 }
 
+/// A handle to a local Automerge Markdown document.
+///
+/// The body is edited with UTF-16 positional splices, matching CodeMirror and
+/// the notebook source bridge. Cloud and Desktop hosts can wrap this same
+/// handle with different transports and persistence.
+#[wasm_bindgen]
+pub struct MarkdownHandle {
+    doc: MarkdownDoc,
+    sync_state: sync::State,
+}
+
 /// A cell snapshot returned to JavaScript.
 #[wasm_bindgen]
 pub struct JsCell {
@@ -1897,6 +1909,139 @@ pub struct JsCell {
     outputs: Vec<serde_json::Value>,
     metadata: serde_json::Value,
     resolved_assets: HashMap<String, String>,
+}
+
+#[wasm_bindgen]
+impl MarkdownHandle {
+    pub fn create(
+        document_id: &str,
+        title: &str,
+        actor_label: &str,
+    ) -> Result<MarkdownHandle, JsError> {
+        Ok(MarkdownHandle {
+            doc: MarkdownDoc::try_new_with_actor(document_id, title, actor_label)
+                .map_err(|e| JsError::new(&format!("create markdown doc failed: {}", e)))?,
+            sync_state: sync::State::new(),
+        })
+    }
+
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        document_id: &str,
+        title: &str,
+        actor_label: &str,
+    ) -> Result<MarkdownHandle, JsError> {
+        Self::create(document_id, title, actor_label)
+    }
+
+    pub fn create_bootstrap(actor_label: &str) -> MarkdownHandle {
+        MarkdownHandle {
+            doc: MarkdownDoc::bootstrap_with_actor(actor_label),
+            sync_state: sync::State::new(),
+        }
+    }
+
+    pub fn load(bytes: &[u8]) -> Result<MarkdownHandle, JsError> {
+        Ok(MarkdownHandle {
+            doc: MarkdownDoc::load(bytes)
+                .map_err(|e| JsError::new(&format!("load markdown doc failed: {}", e)))?,
+            sync_state: sync::State::new(),
+        })
+    }
+
+    pub fn load_with_actor(bytes: &[u8], actor_label: &str) -> Result<MarkdownHandle, JsError> {
+        Ok(MarkdownHandle {
+            doc: MarkdownDoc::load_with_actor(bytes, actor_label)
+                .map_err(|e| JsError::new(&format!("load markdown doc failed: {}", e)))?,
+            sync_state: sync::State::new(),
+        })
+    }
+
+    pub fn set_actor(&mut self, actor_label: &str) {
+        self.doc.set_actor(actor_label);
+    }
+
+    pub fn actor_label(&self) -> String {
+        self.doc.actor_label()
+    }
+
+    pub fn document_id(&self) -> Option<String> {
+        self.doc.document_id()
+    }
+
+    pub fn title(&self) -> Option<String> {
+        self.doc.title()
+    }
+
+    pub fn set_title(&mut self, title: &str) -> Result<(), JsError> {
+        self.doc
+            .set_title(title)
+            .map_err(|e| JsError::new(&format!("set markdown title failed: {}", e)))
+    }
+
+    pub fn body(&self) -> Option<String> {
+        self.doc.body()
+    }
+
+    pub fn body_len(&self) -> Option<usize> {
+        self.doc.body_len()
+    }
+
+    pub fn slice_body(&self, start: usize, end: usize) -> Option<String> {
+        self.doc.slice_body(start, end)
+    }
+
+    pub fn splice_body(
+        &mut self,
+        index: usize,
+        delete_count: usize,
+        text: &str,
+    ) -> Result<bool, JsError> {
+        self.doc
+            .splice_body(index, delete_count, text)
+            .map_err(|e| JsError::new(&format!("splice markdown body failed: {}", e)))
+    }
+
+    pub fn replace_body_for_import(&mut self, body: &str) -> Result<bool, JsError> {
+        self.doc
+            .replace_body_for_import(body)
+            .map_err(|e| JsError::new(&format!("replace markdown body failed: {}", e)))
+    }
+
+    pub fn snapshot(&self) -> Result<JsValue, JsError> {
+        serialize_to_js(&self.doc.snapshot())
+            .map_err(|e| JsError::new(&format!("serialize markdown snapshot failed: {e}")))
+    }
+
+    pub fn save(&mut self) -> Vec<u8> {
+        self.doc.save()
+    }
+
+    pub fn flush_local_changes(&mut self) -> Option<Vec<u8>> {
+        self.doc
+            .generate_sync_message(&mut self.sync_state)
+            .map(|msg| msg.encode())
+    }
+
+    pub fn cancel_last_flush(&mut self) {
+        self.sync_state.in_flight = false;
+        self.sync_state.sent_hashes.clear();
+    }
+
+    pub fn receive_sync_message(&mut self, message: &[u8]) -> Result<bool, JsError> {
+        let msg = sync::Message::decode(message)
+            .map_err(|e| JsError::new(&format!("decode markdown sync message: {}", e)))?;
+        let heads_before = self.doc.doc_mut().get_heads();
+        self.doc
+            .receive_sync_message(&mut self.sync_state, msg)
+            .map_err(|e| JsError::new(&format!("receive markdown sync message: {}", e)))?;
+        let heads_after = self.doc.doc_mut().get_heads();
+        Ok(heads_before != heads_after)
+    }
+
+    pub fn reset_sync_state(&mut self) {
+        self.sync_state = sync::State::new();
+    }
 }
 
 #[wasm_bindgen]

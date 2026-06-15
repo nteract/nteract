@@ -4395,6 +4395,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "markdown-doc"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "automerge-recovery",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7747,6 +7757,7 @@ dependencies = [
  "getrandom 0.3.4",
  "getrandom 0.4.2",
  "hex",
+ "markdown-doc",
  "notebook-doc",
  "notebook-wire",
  "nteract-identity",

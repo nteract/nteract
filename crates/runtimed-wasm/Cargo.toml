@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 automerge = { workspace = true }
+markdown-doc = { path = "../markdown-doc" }
 notebook-doc = { path = "../notebook-doc" }
 notebook-wire = { path = "../notebook-wire" }
 nteract-identity = { path = "../nteract-identity", default-features = false }
