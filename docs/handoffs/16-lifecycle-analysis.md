@@ -1,5 +1,19 @@
 # Runtime lifecycle analysis: transport-agnostic `runtime_agent`
 
+> **Current status (2026-06-15): partially superseded.** This analysis is a
+> historical input to the transport-agnostic runtime-agent work, not a live P0
+> backlog as written. The cloud-room runtime-peer departure watchdog now exists:
+> `apps/notebook-cloud/src/notebook-room.ts` tracks `runtime_peer` membership and
+> arms a Durable Object alarm, while
+> `crates/runtimed-wasm/src/lib.rs::reconcile_runtime_peer_gone_inner` reconciles
+> in-flight executions and live kernel lifecycle when the runtime peer is gone.
+> The runtime agent also has transport-specific clean-EOF reconnect behavior for
+> recoverable sinks. Remaining live gaps are the hosted REQUEST dispatch for
+> interrupt/restart delivery, live preview peer-drop re-proof with real
+> Cloudflare alarms, and tuning the grace window against real reconnect latency.
+> See `16-decisions-log.md` Phase 3d/3f for the implementation evidence and
+> deferred verification.
+
 With the daemon still managing the kernel but syncing to a cloud room instead of the local socket, which kernel lifecycle events are missed? This grounds that question in file:line evidence.
 
 ## Verdict
@@ -168,4 +182,3 @@ Transport-COUPLED (lives in the local daemon, does NOT travel to a cloud room): 
 | restart | partial | set_lifecycle walks Resolving -> PreparingEnv -> Launching -> Connecting -> Running(Idle) (launch_kernel.rs:95,538,1504,1649,1727; metadata. |
 | clean shutdown | partial | set_lifecycle(Shutdown) (shutdown_kernel.rs:26; jupyter_kernel.rs:1415 IoPubStateUpdate::Lifecycle(Shutdown)). Viewer maps Shutdown -> Execu |
 | runtime_peer itself disconnects (the new failure mode) | no | No doc write on disconnect itself. Doc retains the dead peer's last lifecycle (e.g. Running(Idle)) indefinitely. Per policy, neither Editor, |
-

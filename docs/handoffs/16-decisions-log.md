@@ -38,11 +38,13 @@ decision: what, the alternative, why.
    stripping silently discards the room's queued executions and stalls convergence.
 
 7. **A lifecycle safety net is required before relying on cloud hosting (Phase 3).**
-   Why: `kernel.lifecycle` is `runtime_peer`-only-writable (`policy.rs:403-405`), so when
-   the runtime itself vanishes no surviving room participant can correct the doc and the
-   room has no watchdog. A dropped workstation strands the room with a phantom-live
-   kernel. Needs a cloud-room watchdog plus a narrow policy relaxation (or a `Disconnected`
-   lifecycle the room can stamp). See `16-lifecycle-analysis.md`.
+   Historical reason: when the runtime itself vanished, the room had no watchdog
+   and could strand viewers with phantom-live executions. Phase 3d later built
+   the Durable Object watchdog and `RoomHostHandle::reconcile_runtime_peer_gone`;
+   no policy relaxation was needed because the room host authors the
+   reconciliation directly on its state doc. Remaining work is live preview
+   peer-drop re-proof and hosted REQUEST dispatch for interrupt/restart delivery.
+   See `16-lifecycle-analysis.md` and the Phase 3d/3f notes below.
 
 8. **Output path: plain nbformat manifest + a minted `output_id` is sufficient.**
    Verified live: it persists across peer disconnect and renders in the cloud viewer

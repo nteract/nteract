@@ -1,7 +1,8 @@
 //! PoolDoc — global daemon-authoritative Automerge document for pool state.
 //!
-//! One per daemon (not per notebook). Describes the UV and Conda prewarm pool
-//! status: available environments, warming count, pool size, and error state.
+//! One per daemon (not per notebook). Describes the UV, Conda, and Pixi
+//! prewarm pool status: available environments, warming count, pool size, and
+//! error state.
 //! Clients sync read-only via the Automerge sync protocol — the daemon strips
 //! any client-side changes.
 //!
@@ -15,6 +16,7 @@
 //!     consecutive_failures: u64
 //!     retry_in_secs: u64
 //!     error: Str (optional — deleted when None)
+//!     failed_package: Str (optional — deleted when None)
 //!     error_kind: Str (optional — "timeout"|"invalid_package"|"import_error"|"setup_failed")
 //!   conda/
 //!     available: u64
@@ -23,6 +25,16 @@
 //!     consecutive_failures: u64
 //!     retry_in_secs: u64
 //!     error: Str (optional — deleted when None)
+//!     failed_package: Str (optional — deleted when None)
+//!     error_kind: Str (optional — "timeout"|"invalid_package"|"import_error"|"setup_failed")
+//!   pixi/
+//!     available: u64
+//!     warming: u64
+//!     pool_size: u64
+//!     consecutive_failures: u64
+//!     retry_in_secs: u64
+//!     error: Str (optional — deleted when None)
+//!     failed_package: Str (optional — deleted when None)
 //!     error_kind: Str (optional — "timeout"|"invalid_package"|"import_error"|"setup_failed")
 //! ```
 

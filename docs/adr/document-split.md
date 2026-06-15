@@ -328,7 +328,7 @@ The split was designed for the desktop topology (one daemon per user, same-UID t
 - `crates/notebook-doc/AGENTS.md` - mutation rules for NotebookDoc.
 - `crates/runtime-doc/src/doc.rs` - RuntimeStateDoc schema v2.
 - `crates/runtime-doc/src/comms.rs` - CommsDoc schema v1.
-- `crates/notebook-doc/src/pool_state.rs:8-27, :128-141` - PoolDoc schema. The doc-comment at 8-27 names `uv` and `conda` only; the live scaffold at 128-141 also includes `pixi` and a per-pool `failed_package` field (`pool_state.rs:52, :223`). The doc-comment is stale.
+- `crates/notebook-doc/src/pool_state.rs:8-34, :128-141` - PoolDoc schema. The doc-comment and live scaffold both model `uv`, `conda`, and `pixi` counters with optional per-pool error fields, including `failed_package`.
 - `crates/notebook-wire/src/lib.rs:9-44` - frame type constants and per-type caps.
 - `crates/notebook-wire/AGENTS.md` - wire protocol overview.
 - `crates/runtimed/src/notebook_sync_server/peer_loop.rs` - the sync select loop holding per-document peer-state objects.
