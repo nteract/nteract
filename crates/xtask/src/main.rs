@@ -616,7 +616,7 @@ fn cmd_vite() {
 fn ensure_pnpm_install() {
     if let Some(reason) = pnpm_install_reason() {
         println!("Running pnpm install ({reason})...");
-        run_cmd("pnpm", &["install"]);
+        run_cmd(pnpm_bin(), &["install"]);
     } else {
         println!("Skipping pnpm install (node_modules is up to date).");
     }

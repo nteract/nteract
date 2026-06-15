@@ -43,12 +43,12 @@ The daemon (`runtimed`) is a singleton coordinating notebook windows over a Unix
 
 ### How `cargo xtask build` works (4 phases)
 
-0. **Artifact guard** — verify gitignored WASM + renderer-plugin outputs. Build/dev commands fingerprint workspace inputs and skip wasm-pack when outputs are current; rebuild only when outputs are missing, invalid, or stale.
+0. **Artifact guard** — verify gitignored WASM, renderer-plugin, and MCP widget outputs. Build/dev commands fingerprint workspace inputs and skip wasm-pack when outputs are current; rebuild only when outputs are missing, invalid, or stale.
 1. **Single Rust compilation** — `cargo build -p runtimed -p runt -p mcp-supervisor -p notebook`. Sidecars copied to `crates/notebook/binaries/`.
 2. **Frontend build** — `pnpm build` (TypeScript + Vite). `--rust-only` skips this.
 3. **Tauri link** — `cargo tauri build --debug --no-bundle` with embedded frontend assets. Use `--skip-tauri` only for fast edit checks where updated sidecar binaries are enough; run a normal build before launching the bundled app.
 
-All Rust targets build in one `cargo build` call to avoid feature-unification recompilation. WASM outputs are gitignored; `runtimed`'s `build.rs` panics if missing.
+All Rust targets build in one `cargo build` call to avoid feature-unification recompilation. WASM outputs are gitignored; `runtimed`'s `build.rs` panics if missing. `nteract-mcp` embeds the MCP widget HTML; prepare it with `cargo xtask artifacts ensure mcp-widget`.
 
 ### WASM rebuild
 

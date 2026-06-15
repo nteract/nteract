@@ -47,19 +47,16 @@ jobs:
         with:
           shared-key: windows-smoke
 
-      - name: Build runtime artifacts (wasm + renderer plugins)
+      - name: Build runtime artifacts (wasm + renderer plugins + MCP widget)
         uses: ./.github/actions/build-runtime-artifacts
+        with:
+          include-mcp-widget: true
 
       - name: Build frontend
         run: pnpm build
 
       - name: Install Tauri CLI
         uses: ./.github/actions/install-tauri-cli
-
-      # Build the MCP output widget HTML. runt-mcp's include_str! needs it
-      # before we compile the Rust binaries.
-      - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build external binaries
         shell: bash
@@ -416,13 +413,10 @@ jobs:
         with:
           shared-key: linux-smoke
 
-      - name: Build runtime artifacts (wasm + renderer plugins)
+      - name: Build runtime artifacts (wasm + renderer plugins + MCP widget)
         uses: ./.github/actions/build-runtime-artifacts
-
-      # runt-mcp's include_str! pulls in the MCP output widget HTML. Build
-      # before compiling Rust so the assets/_output.html target exists.
-      - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
+        with:
+          include-mcp-widget: true
 
       - name: Build runtimed and runt
         run: cargo build --release -p runtimed -p runt -p nteract-mcp

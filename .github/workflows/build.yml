@@ -297,11 +297,10 @@ jobs:
           APT
           rustup target add x86_64-pc-windows-gnu
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
+      # Build wasm + renderer plugins and MCP widget HTML (gitignored; runtimed/runt-mcp embed them)
       - uses: ./.github/actions/build-runtime-artifacts
-
-      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
-      - run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
+        with:
+          include-mcp-widget: true
 
       - name: Clippy (Windows cross-check)
         # runtimed-node stays excluded here: napi's build script needs libnode.dll
@@ -399,8 +398,11 @@ jobs:
 
       # The notebook Vite build imports from apps/notebook/src/renderer-plugins/
       # and apps/notebook/src/wasm/runtimed-wasm/, both gitignored. Rebuild
-      # before pnpm build.
+      # before pnpm build. Also build the MCP widget so apps/mcp-app changes
+      # get a frontend build signal in PR CI.
       - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          include-mcp-widget: true
 
       - name: Build UIs
         run: |
@@ -558,9 +560,7 @@ jobs:
       - uses: ./.github/actions/build-runtime-artifacts
         with:
           skip-wasm: true
-
-      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
-      - run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
+          include-mcp-widget: true
 
       - name: Build external binaries
         shell: bash
@@ -649,11 +649,10 @@ jobs:
         with:
           shared-key: ubuntu-clippy
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
+      # Build wasm + renderer plugins and MCP widget HTML (gitignored; runtimed/runt-mcp embed them)
       - uses: ./.github/actions/build-runtime-artifacts
-
-      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
-      - run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
+        with:
+          include-mcp-widget: true
 
       # Excludes: notebook (needs bundled binaries, checked in build-linux),
       # runtimed-wasm (needs wasm-pack, tested in wasm-deno),
@@ -691,11 +690,10 @@ jobs:
         with:
           shared-key: ubuntu-clippy
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
+      # Build wasm + renderer plugins and MCP widget HTML (gitignored; runtimed/runt-mcp embed them)
       - uses: ./.github/actions/build-runtime-artifacts
-
-      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
-      - run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
+        with:
+          include-mcp-widget: true
 
       - name: Run tests
         run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --verbose
@@ -848,10 +846,7 @@ jobs:
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         with:
           skip-wasm: true
-
-      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
-      - run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+          include-mcp-widget: true
 
       - name: Build external binaries
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
