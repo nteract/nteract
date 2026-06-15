@@ -390,10 +390,10 @@ describe("HTML script serialization", () => {
     assert.match(html, /"documentId":"doc-123"/);
     assert.match(html, /"catalogEndpoint":"\/api\/m\/doc-123"/);
     assert.match(html, /"snapshotBasePath":"\/api\/m\/doc-123\/snapshots\/"/);
+    assert.match(html, /"syncEndpoint":"\/m\/doc-123\/sync"/);
     assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.js"/);
     assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.wasm"/);
     assert.doesNotMatch(html, /"notebookId"/);
-    assert.doesNotMatch(html, /"syncEndpoint"/);
     assert.doesNotMatch(html, /"workstationAttachEndpoint"/);
   });
 

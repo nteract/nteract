@@ -121,6 +121,7 @@ export function loadMarkdownDocumentConfig(): CloudMarkdownDocumentConfig | null
       !parsed.documentId ||
       !parsed.catalogEndpoint ||
       !parsed.snapshotBasePath ||
+      !parsed.syncEndpoint ||
       !parsed.runtimedWasmModulePath ||
       !parsed.runtimedWasmPath
     ) {
@@ -131,6 +132,7 @@ export function loadMarkdownDocumentConfig(): CloudMarkdownDocumentConfig | null
       documentId: parsed.documentId,
       catalogEndpoint: parsed.catalogEndpoint,
       snapshotBasePath: parsed.snapshotBasePath,
+      syncEndpoint: parsed.syncEndpoint,
       runtimedWasmModulePath: parsed.runtimedWasmModulePath,
       runtimedWasmPath: parsed.runtimedWasmPath,
       session: isCloudAppSession(parsed.session) ? parsed.session : null,

@@ -8,6 +8,8 @@ import initWasm, {
   rewrite_presence_ingress,
   NotebookHandle,
   RoomHostHandle,
+  MarkdownRoomHostHandle,
+  MarkdownHandle,
   RuntimeStatePeerHandle,
 } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 
@@ -191,4 +193,26 @@ export async function loadRoomHostSnapshot(
   return host;
 }
 
-export { NotebookHandle, RoomHostHandle, RuntimeStatePeerHandle };
+export async function createEmptyMarkdownRoomHost(
+  documentId: string,
+  title: string,
+  actorLabel: string,
+): Promise<MarkdownRoomHostHandle> {
+  await initializeRuntimedWasm();
+  return MarkdownRoomHostHandle.create_empty(documentId, title, actorLabel);
+}
+
+export async function loadMarkdownRoomHostSnapshot(
+  markdownBytes: Uint8Array,
+): Promise<MarkdownRoomHostHandle> {
+  await initializeRuntimedWasm();
+  return MarkdownRoomHostHandle.load_snapshot(markdownBytes);
+}
+
+export {
+  NotebookHandle,
+  RoomHostHandle,
+  RuntimeStatePeerHandle,
+  MarkdownRoomHostHandle,
+  MarkdownHandle,
+};

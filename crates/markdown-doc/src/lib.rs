@@ -98,6 +98,10 @@ impl MarkdownDoc {
         &mut self.doc
     }
 
+    pub fn from_doc(doc: AutoCommit) -> Self {
+        Self { doc }
+    }
+
     pub fn save(&mut self) -> Vec<u8> {
         self.doc.save()
     }
@@ -120,6 +124,17 @@ impl MarkdownDoc {
 
     pub fn set_actor(&mut self, actor_label: &str) {
         self.doc.set_actor(ActorId::from(actor_label.as_bytes()));
+    }
+
+    pub fn get_heads(&mut self) -> Vec<automerge::ChangeHash> {
+        self.doc.get_heads()
+    }
+
+    pub fn get_heads_hex(&mut self) -> Vec<String> {
+        self.get_heads()
+            .into_iter()
+            .map(|head| hex::encode(head.as_ref()))
+            .collect()
     }
 
     pub fn actor_label(&self) -> String {

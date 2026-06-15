@@ -7,6 +7,7 @@ import type {
 } from "./cloudflare-types.ts";
 import { projectNotebookWorkstationAttachmentFromClaim, type BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
+import { MarkdownDocumentRoom } from "./markdown-document-room.ts";
 import {
   AuthError,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -164,7 +165,7 @@ import {
   trustsLoopbackRequestHeaders,
 } from "./loopback.ts";
 
-export { NotebookRoom, WorkstationEvents };
+export { NotebookRoom, MarkdownDocumentRoom, WorkstationEvents };
 
 // `/plugins/*` is a raw static asset path in deployed Workers. Use a
 // Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
@@ -279,6 +280,10 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: routePath("/n/:notebookId/sync", { trailingSlash: "optional" }),
     handler: (_match, request, env) => routeRoomSync(request, env),
+  },
+  {
+    match: routePath("/m/:documentId/sync", { trailingSlash: "optional" }),
+    handler: (_match, request, env) => routeMarkdownDocumentSync(request, env),
   },
   {
     match: routePath("/n/:notebookId/debug", { trailingSlash: "optional" }),
@@ -763,6 +768,39 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
 
   const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
   const room = env.NOTEBOOK_ROOMS.get(id);
+  return room.fetch(stampTrustedIdentity(request, authorizedIdentity));
+}
+
+async function routeMarkdownDocumentSync(request: Request, env: Env): Promise<Response> {
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return json({ error: "expected WebSocket upgrade" }, 426);
+  }
+  if (!env.MARKDOWN_DOCUMENT_ROOMS) {
+    return json({ error: "Markdown document rooms are not configured" }, 503);
+  }
+
+  const originRejection = rejectUntrustedWebSocketOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const url = new URL(request.url);
+  const documentId = decodeURIComponent(url.pathname.match(/^\/m\/([^/]+)\/sync\/?$/)?.[1] ?? "");
+  if (!documentId) {
+    return json({ error: "Markdown document id is required" }, 400);
+  }
+  const appSessionIdentity = await appSessionIdentityFromWebSocketRequest(request, env);
+  const identity = appSessionIdentity ?? (await authenticateRequestOrResponse(request, env));
+  if (identity instanceof Response) {
+    return identity;
+  }
+  const authorizedIdentity = await authorizeMarkdownIdentityOrResponse(env, documentId, identity);
+  if (authorizedIdentity instanceof Response) {
+    return authorizedIdentity;
+  }
+
+  const id = env.MARKDOWN_DOCUMENT_ROOMS.idFromName(documentId);
+  const room = env.MARKDOWN_DOCUMENT_ROOMS.get(id);
   return room.fetch(stampTrustedIdentity(request, authorizedIdentity));
 }
 
@@ -5061,6 +5099,7 @@ async function markdownDocumentViewer(
     documentId,
     catalogEndpoint: documentApiBasePath,
     snapshotBasePath: `${documentApiBasePath}/snapshots/`,
+    syncEndpoint: `/m/${encodeURIComponent(documentId)}/sync`,
     hostCapabilities: {
       canManageSharing: false,
       canPublish: false,

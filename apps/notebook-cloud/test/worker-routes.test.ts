@@ -1786,6 +1786,76 @@ describe("Worker artifact routes", () => {
     assert.equal("runtime_snapshots" in body.document.endpoints, false);
   });
 
+  it("routes hosted Markdown document sync through the Markdown room binding", async () => {
+    let forwardedRequest: Request | undefined;
+    const env = fakeEnv({
+      MARKDOWN_DOCUMENT_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedRequest = request;
+            return new Response("markdown room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    env.DB.markdownDocuments.set("markdown-sync", {
+      id: "markdown-sync",
+      owner_principal: "user:dev:alice",
+      title: "Synced Markdown",
+      body_doc_id: "markdown-sync",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: null,
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-sync",
+      subject_kind: "principal",
+      subject: "user:dev:alice",
+      scope: "editor",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/m/markdown-sync/sync?scope=editor", {
+        headers: {
+          Origin: "http://localhost",
+          Upgrade: "websocket",
+          "X-Operator": "browser:tab",
+          "X-Scope": "editor",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.ok(forwardedRequest);
+    assert.equal(new URL(forwardedRequest.url).pathname, "/m/markdown-sync/sync");
+    assert.equal(forwardedRequest.headers.get(TRUSTED_SCOPE_HEADER), "editor");
+  });
+
+  it("fails Markdown document sync clearly when the room binding is absent", async () => {
+    const response = await worker.fetch(
+      new Request("http://localhost/m/missing-room/sync", {
+        headers: {
+          Origin: "http://localhost",
+          Upgrade: "websocket",
+        },
+      }),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), {
+      error: "Markdown document rooms are not configured",
+    });
+  });
+
   it("keeps local Browser viewer URLs on loopback when Wrangler preserves the custom-domain URL", async () => {
     const env = fakeEnv({ NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS: "true" });
     const localBrowserHeaders = {

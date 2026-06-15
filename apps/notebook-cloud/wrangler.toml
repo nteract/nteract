@@ -14,6 +14,10 @@ name = "NOTEBOOK_ROOMS"
 class_name = "NotebookRoom"
 
 [[durable_objects.bindings]]
+name = "MARKDOWN_DOCUMENT_ROOMS"
+class_name = "MarkdownDocumentRoom"
+
+[[durable_objects.bindings]]
 name = "WORKSTATION_EVENTS"
 class_name = "WorkstationEvents"
 
@@ -24,6 +28,10 @@ new_sqlite_classes = ["NotebookRoom"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["WorkstationEvents"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["MarkdownDocumentRoom"]
 
 [[d1_databases]]
 binding = "DB"

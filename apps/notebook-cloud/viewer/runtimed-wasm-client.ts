@@ -139,6 +139,15 @@ export async function createMarkdownHandle(
   return module.MarkdownHandle.create(documentId, title, actorLabel);
 }
 
+export async function createBootstrapMarkdownHandle(
+  actorLabel: string,
+  modulePath: string | URL,
+  moduleOrPath: WasmModuleOrPath,
+): Promise<MarkdownHandle> {
+  const module = await initializeRuntimedWasmClient(modulePath, moduleOrPath);
+  return module.MarkdownHandle.create_bootstrap(actorLabel);
+}
+
 export async function loadMarkdownHandleFromBytes(
   bytes: Uint8Array,
   actorLabel: string,

@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 automerge = { workspace = true }
 automerge-recovery = { path = "../automerge-recovery" }
+hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 thiserror = { workspace = true }
 

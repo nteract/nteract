@@ -367,6 +367,198 @@ impl RoomHostFrameResult {
     }
 }
 
+/// Durable-Object room host for a first-class MarkdownDoc sync stream.
+///
+/// This intentionally mirrors the Notebook room host's per-peer sync-state
+/// shape without pulling in RuntimeStateDoc, CommsDoc, requests, or presence.
+/// A hosted Markdown room is a single Automerge text document with ACL-backed
+/// read/write authority.
+#[wasm_bindgen]
+pub struct MarkdownRoomHostHandle {
+    doc: MarkdownDoc,
+    peer_states: HashMap<String, sync::State>,
+}
+
+#[wasm_bindgen]
+impl MarkdownRoomHostHandle {
+    pub fn create_empty(
+        document_id: &str,
+        title: &str,
+        actor_label: &str,
+    ) -> Result<MarkdownRoomHostHandle, JsError> {
+        Ok(MarkdownRoomHostHandle {
+            doc: MarkdownDoc::try_new_with_actor(document_id, title, actor_label)
+                .map_err(|e| JsError::new(&format!("create markdown room failed: {e}")))?,
+            peer_states: HashMap::new(),
+        })
+    }
+
+    pub fn load_snapshot(bytes: &[u8]) -> Result<MarkdownRoomHostHandle, JsError> {
+        Ok(MarkdownRoomHostHandle {
+            doc: MarkdownDoc::load(bytes)
+                .map_err(|e| JsError::new(&format!("load markdown room failed: {e}")))?,
+            peer_states: HashMap::new(),
+        })
+    }
+
+    pub fn remove_peer(&mut self, peer_id: &str) {
+        self.peer_states.remove(peer_id);
+    }
+
+    pub fn sync_peer(&mut self, peer_id: &str, connection_scope: &str) -> Result<JsValue, JsError> {
+        let connection_scope = parse_connection_scope(connection_scope)?;
+        let mut result = RoomHostFrameResult::empty();
+        self.queue_markdown_sync_for_peer(
+            peer_id,
+            markdown_scope_allows_write(connection_scope),
+            &mut result.outbound,
+        )?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize markdown room result: {e}")))
+    }
+
+    pub fn receive_peer_frame(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        connection_scope: &str,
+        frame_bytes: &[u8],
+    ) -> Result<JsValue, JsError> {
+        if frame_bytes.is_empty() {
+            return Err(JsError::new("typed frame cannot be empty"));
+        }
+
+        let connection_scope = parse_connection_scope(connection_scope)?;
+        let frame_type = frame_bytes[0];
+        let payload = &frame_bytes[1..];
+        let result = match frame_type {
+            frame_types::AUTOMERGE_SYNC => self.receive_markdown_sync(
+                peer_id,
+                principal,
+                markdown_scope_allows_write(connection_scope),
+                payload,
+            )?,
+            _ => RoomHostFrameResult::empty(),
+        };
+
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize markdown room result: {e}")))
+    }
+
+    pub fn save_doc(&mut self) -> Vec<u8> {
+        self.doc.save()
+    }
+
+    pub fn get_heads_hex(&mut self) -> Vec<String> {
+        self.doc.get_heads_hex()
+    }
+}
+
+impl MarkdownRoomHostHandle {
+    fn receive_markdown_sync(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        can_write: bool,
+        payload: &[u8],
+    ) -> Result<RoomHostFrameResult, JsError> {
+        let message = sync::Message::decode(payload)
+            .map_err(|e| JsError::new(&format!("decode markdown sync: {e}")))?;
+        let has_changes = !message.changes.is_empty();
+        if has_changes && !can_write {
+            return Err(JsError::new(
+                "connection scope cannot write MarkdownDoc changes",
+            ));
+        }
+        if has_changes {
+            let heads_before = self.doc.get_heads();
+            let peer_state = self
+                .peer_states
+                .entry(peer_id.to_string())
+                .or_insert_with(|| room_peer_sync_state(can_write));
+            let mut preview = MarkdownDoc::from_doc(self.doc.doc().clone());
+            let mut preview_peer_state = peer_state.clone();
+            preview
+                .receive_sync_message_recovering(
+                    &mut preview_peer_state,
+                    message.clone(),
+                    "cloud-markdown-doc-auth-preview",
+                )
+                .map_err(|e| JsError::new(&format!("markdown auth preview failed: {e}")))?;
+            let actors = extract_change_actors(preview.doc_mut(), &heads_before);
+            validate_room_actor_labels(principal, actors.iter().map(String::as_str))?;
+        }
+
+        let heads_before = self.doc.get_heads();
+        {
+            let peer_state = self
+                .peer_states
+                .entry(peer_id.to_string())
+                .or_insert_with(|| room_peer_sync_state(can_write));
+            self.doc
+                .receive_sync_message_recovering(
+                    peer_state,
+                    message,
+                    "cloud-markdown-doc-receive-sync",
+                )
+                .map_err(|e| JsError::new(&format!("receive markdown sync: {e}")))?;
+        }
+        let heads_after = self.doc.get_heads();
+        let changed = heads_before != heads_after;
+
+        let mut result = RoomHostFrameResult {
+            changed,
+            notebook_changed: changed,
+            runtime_state_changed: false,
+            outbound: Vec::new(),
+        };
+        self.queue_markdown_sync_for_peer(peer_id, can_write, &mut result.outbound)?;
+        if changed {
+            self.queue_markdown_sync_for_other_peers(peer_id, &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+
+    fn queue_markdown_sync_for_peer(
+        &mut self,
+        peer_id: &str,
+        can_write: bool,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        let peer_state = self
+            .peer_states
+            .entry(peer_id.to_string())
+            .or_insert_with(|| room_peer_sync_state(can_write));
+        if let Some(message) = self
+            .doc
+            .generate_sync_message_recovering(peer_state, "cloud-markdown-doc-sync-outbound")
+            .map_err(|e| JsError::new(&format!("generate markdown sync: {e}")))?
+        {
+            outbound.push(RoomHostOutboundFrame {
+                peer_id: peer_id.to_string(),
+                frame_type: frame_types::AUTOMERGE_SYNC,
+                payload: message.encode(),
+            });
+        }
+        Ok(())
+    }
+
+    fn queue_markdown_sync_for_other_peers(
+        &mut self,
+        changed_peer_id: &str,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        let peers: Vec<String> = self.peer_states.keys().cloned().collect();
+        for peer_id in peers {
+            if peer_id == changed_peer_id {
+                continue;
+            }
+            self.queue_markdown_sync_for_peer(&peer_id, false, outbound)?;
+        }
+        Ok(())
+    }
+}
+
 /// WASM-side authoring handle for a runtime peer.
 ///
 /// This is intentionally separate from [`NotebookHandle`]: hosted runtime
@@ -1704,6 +1896,10 @@ fn allows_execution_request_submit(scope: ConnectionScope) -> bool {
     matches!(scope, ConnectionScope::Owner)
 }
 
+fn markdown_scope_allows_write(scope: ConnectionScope) -> bool {
+    matches!(scope, ConnectionScope::Editor | ConnectionScope::Owner)
+}
+
 fn allows_comms_doc_write(scope: ConnectionScope) -> bool {
     matches!(
         scope,
@@ -2037,6 +2233,59 @@ impl MarkdownHandle {
             .map_err(|e| JsError::new(&format!("receive markdown sync message: {}", e)))?;
         let heads_after = self.doc.doc_mut().get_heads();
         Ok(heads_before != heads_after)
+    }
+
+    pub fn receive_frame(&mut self, frame_bytes: &[u8]) -> JsValue {
+        if frame_bytes.is_empty() {
+            return JsValue::UNDEFINED;
+        }
+
+        let frame_type = frame_bytes[0];
+        let payload = &frame_bytes[1..];
+        let mut events: Vec<FrameEvent> = Vec::new();
+
+        match frame_type {
+            frame_types::AUTOMERGE_SYNC => {
+                let Ok(msg) = sync::Message::decode(payload) else {
+                    return JsValue::UNDEFINED;
+                };
+                let heads_before = self.doc.doc_mut().get_heads();
+                if self
+                    .doc
+                    .receive_sync_message(&mut self.sync_state, msg)
+                    .is_err()
+                {
+                    let _ = self.doc.rebuild_from_save();
+                    self.sync_state = sync::State::new();
+                    let heads_after = self.doc.doc_mut().get_heads();
+                    let changed = heads_before != heads_after;
+                    let reply = self
+                        .doc
+                        .generate_sync_message(&mut self.sync_state)
+                        .map(|msg| msg.encode());
+                    events.push(FrameEvent::SyncError { changed, reply });
+                    return serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED);
+                }
+                let heads_after = self.doc.doc_mut().get_heads();
+                let changed = heads_before != heads_after;
+                let reply = self
+                    .doc
+                    .generate_sync_message(&mut self.sync_state)
+                    .map(|msg| msg.encode());
+                events.push(FrameEvent::SyncApplied {
+                    changed,
+                    changeset: None,
+                    attributions: Vec::new(),
+                    reply,
+                    execution_view_changeset: ExecutionViewChangeset::default(),
+                });
+            }
+            _ => {
+                events.push(FrameEvent::Unknown { frame_type });
+            }
+        }
+
+        serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED)
     }
 
     pub fn reset_sync_state(&mut self) {
@@ -4665,6 +4914,56 @@ mod tests {
         resolve_comm_state_for_frontend(&val, 1234, true)
     }
 
+    fn apply_markdown_sync_to_peer(
+        peer_doc: &mut MarkdownDoc,
+        peer_state: &mut sync::State,
+        payload: &[u8],
+    ) {
+        let message = sync::Message::decode(payload).expect("decode markdown sync");
+        peer_doc
+            .receive_sync_message(peer_state, message)
+            .expect("receive markdown sync");
+    }
+
+    fn sync_markdown_peer_until_idle(
+        host: &mut MarkdownRoomHostHandle,
+        peer_id: &str,
+        principal: &str,
+        can_write: bool,
+        peer_doc: &mut MarkdownDoc,
+        peer_state: &mut sync::State,
+    ) {
+        for _ in 0..16 {
+            let mut progressed = false;
+
+            let mut outbound = Vec::new();
+            host.queue_markdown_sync_for_peer(peer_id, can_write, &mut outbound)
+                .expect("queue markdown host sync");
+            for frame in outbound {
+                assert_eq!(frame.frame_type, frame_types::AUTOMERGE_SYNC);
+                apply_markdown_sync_to_peer(peer_doc, peer_state, &frame.payload);
+                progressed = true;
+            }
+
+            if let Some(message) = peer_doc.generate_sync_message(peer_state) {
+                let result = host
+                    .receive_markdown_sync(peer_id, principal, can_write, &message.encode())
+                    .expect("apply markdown peer sync");
+                for frame in result.outbound {
+                    if frame.peer_id == peer_id {
+                        assert_eq!(frame.frame_type, frame_types::AUTOMERGE_SYNC);
+                        apply_markdown_sync_to_peer(peer_doc, peer_state, &frame.payload);
+                    }
+                }
+                progressed = true;
+            }
+
+            if !progressed {
+                break;
+            }
+        }
+    }
+
     #[test]
     fn room_host_seeds_initial_code_cell_idempotently() {
         let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
@@ -4688,6 +4987,68 @@ mod tests {
         assert!(!seeded_again);
         assert_eq!(host.doc.cell_count(), 1);
         assert!(host.doc.get_cell("cell-second").is_none());
+    }
+
+    #[test]
+    fn markdown_room_host_applies_editor_splices_and_fans_out() {
+        let mut host = MarkdownRoomHostHandle::create_empty(
+            "doc-1",
+            "Research Plan",
+            "system:notebook-cloud-markdown-room/room:doc-1",
+        )
+        .expect("create markdown room host");
+
+        let mut editor_doc = MarkdownDoc::bootstrap_with_actor("user:anaconda:alice/browser:tab");
+        let mut editor_state = sync::State::new();
+        sync_markdown_peer_until_idle(
+            &mut host,
+            "editor-peer",
+            "user:anaconda:alice",
+            true,
+            &mut editor_doc,
+            &mut editor_state,
+        );
+        assert_eq!(editor_doc.body().as_deref(), Some(""));
+
+        let mut initial_viewer_sync = Vec::new();
+        host.queue_markdown_sync_for_peer("viewer-peer", false, &mut initial_viewer_sync)
+            .expect("register viewer peer");
+
+        editor_doc
+            .splice_body(0, 0, "# Hello\n\nShared notes")
+            .expect("splice markdown body");
+        let message = editor_doc
+            .generate_sync_message(&mut editor_state)
+            .expect("editor sync message");
+
+        let result = host
+            .receive_markdown_sync(
+                "editor-peer",
+                "user:anaconda:alice",
+                true,
+                &message.encode(),
+            )
+            .expect("apply editor sync");
+
+        assert!(result.changed);
+        assert!(result.notebook_changed);
+        assert!(!result.runtime_state_changed);
+        assert!(
+            result.outbound.iter().any(|frame| {
+                frame.peer_id == "editor-peer" && frame.frame_type == frame_types::AUTOMERGE_SYNC
+            }),
+            "editor receives an inline sync reply"
+        );
+        assert!(
+            result.outbound.iter().any(|frame| {
+                frame.peer_id == "viewer-peer" && frame.frame_type == frame_types::AUTOMERGE_SYNC
+            }),
+            "other peers receive the updated MarkdownDoc"
+        );
+
+        let saved = host.save_doc();
+        let saved_doc = MarkdownDoc::load(&saved).expect("load saved markdown doc");
+        assert_eq!(saved_doc.body().as_deref(), Some("# Hello\n\nShared notes"));
     }
 
     // -- runtime_peer-gone reconciliation (Phase 3d watchdog core) --------

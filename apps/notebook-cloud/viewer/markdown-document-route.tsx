@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Eye, FileText, Loader2, PencilLine } from "lucide-react";
-import type { NotebookOutlineItem } from "runtimed";
-import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
+import type { ConnectionStatus, NotebookOutlineItem } from "runtimed";
+import {
+  CodeMirrorEditor,
+  externalChangeAnnotation,
+  type CodeMirrorEditorRef,
+} from "@/components/editor/codemirror-editor";
 import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
 import { NotebookOutlinePanel } from "@/components/notebook-rail/NotebookRail";
 import { projectMarkdownDocument, type MarkdownDocumentProjection } from "@/lib/markdown-document";
 import { cloudResponseError } from "./cloud-response";
 import type { CloudMarkdownDocumentConfig, CloudViewerAuthConfig } from "./cloud-viewer-types";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
-import { createMarkdownHandle, type MarkdownHandle } from "./runtimed-wasm-client";
+import {
+  startMarkdownDocumentLiveSync,
+  type MarkdownDocumentLiveSyncController,
+} from "./markdown-document-live-sync";
 import {
   useCloudAppSessionBridge,
   useCloudAppSessionStatus,
@@ -27,7 +34,14 @@ interface MarkdownCatalogResponse {
 
 type RouteState =
   | { kind: "loading" }
-  | { kind: "ready"; title: string; body: string; scope: "owner" | "editor" | "viewer" }
+  | {
+      kind: "ready";
+      title: string;
+      body: string;
+      bodyReady: boolean;
+      scope: "owner" | "editor" | "viewer";
+      connectionStatus: ConnectionStatus;
+    }
   | { kind: "error"; message: string };
 
 export function MarkdownDocumentRoute({
@@ -51,33 +65,52 @@ export function MarkdownDocumentRoute({
   );
   const [routeState, setRouteState] = useState<RouteState>({ kind: "loading" });
   const [mode, setMode] = useState<"source" | "read">("source");
-  const handleRef = useRef<MarkdownHandle | null>(null);
+  const syncControllerRef = useRef<MarkdownDocumentLiveSyncController | null>(null);
+  const editorRef = useRef<CodeMirrorEditorRef | null>(null);
 
   useEffect(() => {
     let disposed = false;
+    let controller: MarkdownDocumentLiveSyncController | null = null;
     void (async () => {
       try {
         setRouteState({ kind: "loading" });
         const catalog = await fetchMarkdownCatalog(config, authState);
         if (disposed) return;
         const title = catalog.document.title?.trim() || "Untitled Markdown";
-        const handle = await createMarkdownHandle(
-          catalog.document.body_doc_id,
+        controller = await startMarkdownDocumentLiveSync({
+          authState,
+          config,
+          appSession: appSessionStatus.session,
           title,
-          markdownActorLabel(authState),
-          config.runtimedWasmModulePath,
-          config.runtimedWasmPath,
-        );
-        const initialBody = `# ${title}\n\nStart writing.`;
-        handle.replace_body_for_import(initialBody);
-        handleRef.current?.free();
-        handleRef.current = handle;
-        setRouteState({
-          kind: "ready",
-          title,
-          body: handle.body() ?? "",
           scope: catalog.document.scope,
+          onConnectionLost: (reason) => {
+            console.warn("[notebook-cloud] Markdown document connection lost", reason);
+          },
+          onError: (error) => {
+            console.warn("[notebook-cloud] Markdown document sync failed", error);
+          },
+          onStatus: (connectionStatus) => {
+            setRouteState((current) =>
+              current.kind === "ready" ? { ...current, connectionStatus } : current,
+            );
+          },
+          onSnapshot: (snapshot) => {
+            setRouteState({
+              kind: "ready",
+              title: snapshot.title,
+              body: snapshot.body,
+              bodyReady: snapshot.bodyReady,
+              scope: catalog.document.scope,
+              connectionStatus: controller?.transport.connected ? "online" : "connecting",
+            });
+          },
         });
+        if (disposed) {
+          controller.dispose();
+          return;
+        }
+        syncControllerRef.current?.dispose();
+        syncControllerRef.current = controller;
       } catch (error) {
         if (disposed) return;
         setRouteState({
@@ -89,10 +122,12 @@ export function MarkdownDocumentRoute({
 
     return () => {
       disposed = true;
-      handleRef.current?.free();
-      handleRef.current = null;
+      controller?.dispose();
+      if (syncControllerRef.current === controller) {
+        syncControllerRef.current = null;
+      }
     };
-  }, [authState, config]);
+  }, [appSessionStatus.session, authState, config]);
 
   const projection = useMemo<MarkdownDocumentProjection | null>(() => {
     if (routeState.kind !== "ready") {
@@ -109,16 +144,26 @@ export function MarkdownDocumentRoute({
   }, [config.documentId, mode, routeState]);
 
   const onEditorValueChange = useCallback((nextBody: string) => {
-    const handle = handleRef.current;
-    if (!handle) {
+    syncControllerRef.current?.editBody(nextBody);
+  }, []);
+
+  useEffect(() => {
+    if (routeState.kind !== "ready" || mode !== "source") {
       return;
     }
-    const previousBody = handle.body() ?? "";
-    const splice = diffAsSplice(previousBody, nextBody);
-    handle.splice_body(splice.index, splice.deleteCount, splice.insertText);
-    const body = handle.body() ?? nextBody;
-    setRouteState((current) => (current.kind === "ready" ? { ...current, body } : current));
-  }, []);
+    const editor = editorRef.current?.getEditor();
+    if (!editor) {
+      return;
+    }
+    const currentBody = editor.state.doc.toString();
+    if (currentBody === routeState.body) {
+      return;
+    }
+    editor.dispatch({
+      changes: { from: 0, to: editor.state.doc.length, insert: routeState.body },
+      annotations: externalChangeAnnotation.of(true),
+    });
+  }, [mode, routeState]);
 
   if (routeState.kind === "loading") {
     return (
@@ -141,7 +186,8 @@ export function MarkdownDocumentRoute({
     );
   }
 
-  const canEdit = projection.canEdit;
+  const canEdit = projection.canEdit && routeState.bodyReady;
+  const connectionCopy = markdownConnectionCopy(routeState.connectionStatus, routeState.bodyReady);
 
   return (
     <main className="cloud-markdown-shell">
@@ -169,9 +215,7 @@ export function MarkdownDocumentRoute({
           </button>
         </div>
       </header>
-      <div className="cloud-markdown-notice">
-        Markdown body edits are local to this browser until the hosted Automerge sync channel lands.
-      </div>
+      {connectionCopy ? <div className="cloud-markdown-notice">{connectionCopy}</div> : null}
       <div className="cloud-markdown-workspace">
         <aside className="cloud-markdown-rail">
           <div className="cloud-markdown-rail-title">
@@ -191,6 +235,7 @@ export function MarkdownDocumentRoute({
         <section className="cloud-markdown-stage">
           {mode === "source" && canEdit ? (
             <CodeMirrorEditor
+              ref={editorRef}
               key={config.documentId}
               initialValue={projection.body}
               language="markdown"
@@ -206,7 +251,7 @@ export function MarkdownDocumentRoute({
             />
           ) : (
             <div className="cloud-state" data-kind="empty">
-              Nothing to render yet.
+              {routeState.bodyReady ? "Nothing to render yet." : "Syncing Markdown document body."}
             </div>
           )}
         </section>
@@ -264,39 +309,18 @@ function markdownOutlineItems(projection: MarkdownDocumentProjection): NotebookO
   }));
 }
 
-function markdownActorLabel(authState: CloudPrototypeAuthState): string {
-  const user = encodeURIComponent(authState.user ?? "browser");
-  return `user:markdown:${user}/browser:${crypto.randomUUID()}`;
-}
-
-function diffAsSplice(
-  previous: string,
-  next: string,
-): { index: number; deleteCount: number; insertText: string } {
-  if (previous === next) {
-    return { index: 0, deleteCount: 0, insertText: "" };
+function markdownConnectionCopy(status: ConnectionStatus, bodyReady: boolean): string | null {
+  if (!bodyReady) {
+    return "Syncing Markdown document body.";
   }
-  let prefix = 0;
-  while (
-    prefix < previous.length &&
-    prefix < next.length &&
-    previous.charCodeAt(prefix) === next.charCodeAt(prefix)
-  ) {
-    prefix += 1;
+  switch (status) {
+    case "connecting":
+      return "Connecting to the live Markdown document.";
+    case "reconnecting":
+      return "Reconnecting to the live Markdown document.";
+    case "offline":
+      return "Markdown document is offline. Local changes will wait for reconnection.";
+    case "online":
+      return null;
   }
-  let previousSuffix = previous.length;
-  let nextSuffix = next.length;
-  while (
-    previousSuffix > prefix &&
-    nextSuffix > prefix &&
-    previous.charCodeAt(previousSuffix - 1) === next.charCodeAt(nextSuffix - 1)
-  ) {
-    previousSuffix -= 1;
-    nextSuffix -= 1;
-  }
-  return {
-    index: prefix,
-    deleteCount: previousSuffix - prefix,
-    insertText: next.slice(prefix, nextSuffix),
-  };
 }
