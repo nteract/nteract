@@ -8,8 +8,27 @@ import {
   frameSizeLimits,
   frameTypeName,
   isClientWritableFrame,
+  isKnownFrameType,
   splitTypedFrame,
+  type FrameTypeValue,
 } from "../src/protocol.ts";
+
+const KNOWN_FRAME_TYPE_ENTRIES = Object.entries(FrameType) as Array<
+  readonly [string, FrameTypeValue]
+>;
+
+const EXPECTED_CLIENT_WRITABLE = {
+  [FrameType.AUTOMERGE_SYNC]: true,
+  [FrameType.REQUEST]: true,
+  [FrameType.RESPONSE]: true,
+  [FrameType.BROADCAST]: false,
+  [FrameType.PRESENCE]: true,
+  [FrameType.RUNTIME_STATE_SYNC]: true,
+  [FrameType.COMMS_DOC_SYNC]: true,
+  [FrameType.POOL_STATE_SYNC]: true,
+  [FrameType.SESSION_CONTROL]: false,
+  [FrameType.PUT_BLOB]: true,
+} as const satisfies Readonly<Record<FrameTypeValue, boolean>>;
 
 describe("typed-frame protocol helpers", () => {
   it("encodes and splits v4-shaped typed frames", () => {
@@ -52,12 +71,18 @@ describe("typed-frame protocol helpers", () => {
     );
   });
 
-  it("names and gates client writable frames", () => {
-    assert.equal(frameTypeName(FrameType.RUNTIME_STATE_SYNC), "runtime_state_sync");
-    assert.equal(frameTypeName(FrameType.COMMS_DOC_SYNC), "comms_doc_sync");
-    assert.equal(isClientWritableFrame(FrameType.AUTOMERGE_SYNC), true);
-    assert.equal(isClientWritableFrame(FrameType.COMMS_DOC_SYNC), true);
-    assert.equal(isClientWritableFrame(FrameType.SESSION_CONTROL), false);
+  it("names and gates every known frame type", () => {
+    for (const [name, frameType] of KNOWN_FRAME_TYPE_ENTRIES) {
+      assert.equal(isKnownFrameType(frameType), true);
+      assert.equal(frameTypeName(frameType), name.toLowerCase());
+      assert.equal(isClientWritableFrame(frameType), EXPECTED_CLIENT_WRITABLE[frameType]);
+      assert.deepEqual(splitTypedFrame(new Uint8Array([frameType, 42])), {
+        type: frameType,
+        payload: new Uint8Array([42]),
+      });
+    }
+    assert.equal(isKnownFrameType(255), false);
+    assert.equal(frameTypeName(255), "unknown_255");
   });
 
   it("mirrors notebook-wire per-frame payload size limits", () => {

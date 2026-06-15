@@ -123,48 +123,42 @@ export function splitTypedFrame(message: ArrayBuffer | ArrayBufferView): TypedFr
   };
 }
 
+const KNOWN_FRAME_TYPE_ENTRIES = Object.entries(FrameType) as Array<
+  readonly [keyof typeof FrameType, FrameTypeValue]
+>;
+const KNOWN_FRAME_TYPES = KNOWN_FRAME_TYPE_ENTRIES.map(([, value]) => value);
+const KNOWN_FRAME_TYPE_SET = new Set<number>(KNOWN_FRAME_TYPES);
+
+const FRAME_TYPE_NAMES = Object.fromEntries(
+  KNOWN_FRAME_TYPE_ENTRIES.map(([name, value]) => [value, name.toLowerCase()]),
+) as Readonly<Record<FrameTypeValue, string>>;
+
+const CLIENT_WRITABLE_FRAME_TYPES = {
+  [FrameType.AUTOMERGE_SYNC]: true,
+  [FrameType.REQUEST]: true,
+  [FrameType.RESPONSE]: true,
+  [FrameType.BROADCAST]: false,
+  [FrameType.PRESENCE]: true,
+  [FrameType.RUNTIME_STATE_SYNC]: true,
+  [FrameType.COMMS_DOC_SYNC]: true,
+  [FrameType.POOL_STATE_SYNC]: true,
+  [FrameType.SESSION_CONTROL]: false,
+  [FrameType.PUT_BLOB]: true,
+} as const satisfies Readonly<Record<FrameTypeValue, boolean>>;
+
 export function frameTypeName(type: number): string {
-  switch (type) {
-    case FrameType.AUTOMERGE_SYNC:
-      return "automerge_sync";
-    case FrameType.REQUEST:
-      return "request";
-    case FrameType.RESPONSE:
-      return "response";
-    case FrameType.BROADCAST:
-      return "broadcast";
-    case FrameType.PRESENCE:
-      return "presence";
-    case FrameType.RUNTIME_STATE_SYNC:
-      return "runtime_state_sync";
-    case FrameType.COMMS_DOC_SYNC:
-      return "comms_doc_sync";
-    case FrameType.POOL_STATE_SYNC:
-      return "pool_state_sync";
-    case FrameType.SESSION_CONTROL:
-      return "session_control";
-    case FrameType.PUT_BLOB:
-      return "put_blob";
-    default:
-      return `unknown_${type}`;
+  if (isKnownFrameType(type)) {
+    return FRAME_TYPE_NAMES[type];
   }
+  return `unknown_${type}`;
 }
 
 export function isKnownFrameType(type: number): type is FrameTypeValue {
-  return Object.values(FrameType).includes(type as FrameTypeValue);
+  return KNOWN_FRAME_TYPE_SET.has(type);
 }
 
 export function isClientWritableFrame(type: FrameTypeValue): boolean {
-  return (
-    type === FrameType.AUTOMERGE_SYNC ||
-    type === FrameType.REQUEST ||
-    type === FrameType.RESPONSE ||
-    type === FrameType.PRESENCE ||
-    type === FrameType.RUNTIME_STATE_SYNC ||
-    type === FrameType.COMMS_DOC_SYNC ||
-    type === FrameType.POOL_STATE_SYNC ||
-    type === FrameType.PUT_BLOB
-  );
+  return CLIENT_WRITABLE_FRAME_TYPES[type];
 }
 
 export function toUint8Array(message: ArrayBuffer | ArrayBufferView): Uint8Array {
