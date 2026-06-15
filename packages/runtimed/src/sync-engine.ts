@@ -75,6 +75,8 @@ const FLUSH_DEBOUNCE_MS = 20;
 /** Maximum wait for a host transport to accept an outbound sync frame. */
 const DEFAULT_FLUSH_DELIVERY_TIMEOUT_MS = 5000;
 
+type FlushDocKey = "notebook" | "runtimeState" | "commsDoc" | "pool";
+
 // ── Logger interface ─────────────────────────────────────────────────
 
 export interface SyncEngineLogger {
@@ -315,8 +317,8 @@ export class SyncEngine {
   /** The running pipeline's materialize subject (null while stopped). */
   private materializeIn: Subject<CellChangeset | null> | null = null;
 
-  /** Promise for the most recent fire-and-forget flush (debounced path). */
-  private inflightFlush: Promise<boolean> | null = null;
+  /** Delivery promises for fire-and-forget flushes that already claimed sync state. */
+  private inflightFlushes = new Map<FlushDocKey, Promise<boolean>>();
 
   // ── Public observables ───────────────────────────────────────────
 
@@ -1284,7 +1286,7 @@ export class SyncEngine {
         () => handle.cancel_last_flush(),
       );
       // Track the in-flight flush so flushAndWait() can await it.
-      this.inflightFlush = done;
+      this.trackInflightFlush("notebook", done);
     }
 
     // Also flush RuntimeStateDoc sync so the daemon sends kernel status,
@@ -1293,10 +1295,13 @@ export class SyncEngine {
     // stuck on "not_started" (#runtime-state-race).
     const stateMsg = handle.flush_runtime_state_sync();
     if (stateMsg) {
-      void this.awaitFrameDelivery(
-        this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg),
-        "runtime state sync to relay",
-        () => handle.cancel_last_runtime_state_flush(),
+      this.trackInflightFlush(
+        "runtimeState",
+        this.awaitFrameDelivery(
+          this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg),
+          "runtime state sync to relay",
+          () => handle.cancel_last_runtime_state_flush(),
+        ),
       );
     }
 
@@ -1304,20 +1309,26 @@ export class SyncEngine {
     // independently from runtime topology/status.
     const commsMsg = handle.flush_comms_doc_sync();
     if (commsMsg) {
-      void this.awaitFrameDelivery(
-        this.opts.transport.sendFrame(FrameType.COMMS_DOC_SYNC, commsMsg),
-        "comms doc sync to relay",
-        () => handle.cancel_last_comms_doc_flush(),
+      this.trackInflightFlush(
+        "commsDoc",
+        this.awaitFrameDelivery(
+          this.opts.transport.sendFrame(FrameType.COMMS_DOC_SYNC, commsMsg),
+          "comms doc sync to relay",
+          () => handle.cancel_last_comms_doc_flush(),
+        ),
       );
     }
 
     // Also flush PoolDoc sync so the daemon sends pool state.
     const poolMsg = handle.flush_pool_state_sync();
     if (poolMsg) {
-      void this.awaitFrameDelivery(
-        this.opts.transport.sendFrame(FrameType.POOL_STATE_SYNC, poolMsg),
-        "pool state sync to relay",
-        () => handle.cancel_last_pool_state_flush(),
+      this.trackInflightFlush(
+        "pool",
+        this.awaitFrameDelivery(
+          this.opts.transport.sendFrame(FrameType.POOL_STATE_SYNC, poolMsg),
+          "pool state sync to relay",
+          () => handle.cancel_last_pool_state_flush(),
+        ),
       );
     }
   }
@@ -1334,19 +1345,11 @@ export class SyncEngine {
    * execute/save to guarantee the daemon has the latest source.
    */
   async flushAndWait(): Promise<boolean> {
-    // Drain all in-flight debounced flushes. A new debounced flush can
-    // start while we're awaiting the current one (the 20ms timer fires
-    // independently), so loop until stable.
-    while (this.inflightFlush) {
-      const current = this.inflightFlush;
-      const delivered = await current;
-      // Only clear if no newer flush replaced it while we awaited.
-      if (this.inflightFlush === current) {
-        this.inflightFlush = null;
-      }
-      if (!delivered) {
-        return false;
-      }
+    // Drain all in-flight debounced/fire-and-forget flushes. A new debounced
+    // flush can start while we're awaiting current deliveries (the 20ms timer
+    // fires independently), so loop until stable.
+    if (!(await this.drainInflightFlushes())) {
+      return false;
     }
 
     const handle = this.opts.getHandle();
@@ -1452,6 +1455,30 @@ export class SyncEngine {
         clearTimeout(timeoutId);
       }
     }
+  }
+
+  private trackInflightFlush(key: FlushDocKey, delivery: Promise<boolean>): void {
+    this.inflightFlushes.set(key, delivery);
+  }
+
+  private async drainInflightFlushes(): Promise<boolean> {
+    while (this.inflightFlushes.size > 0) {
+      const entries = Array.from(this.inflightFlushes.entries());
+      const results = await Promise.all(
+        entries.map(async ([key, current]) => {
+          const delivered = await current;
+          // Only clear if no newer flush replaced it while we awaited.
+          if (this.inflightFlushes.get(key) === current) {
+            this.inflightFlushes.delete(key);
+          }
+          return delivered;
+        }),
+      );
+      if (results.some((delivered) => !delivered)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**

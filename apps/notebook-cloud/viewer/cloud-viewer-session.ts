@@ -92,6 +92,7 @@ import { cloudWidgetUpdateManager } from "./widget-runtime";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
 import type { CloudAppSession } from "./app-session";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
+import { FrameType } from "../src/protocol";
 
 const quietSyncHealLogger = {
   debug: () => {},
@@ -1250,12 +1251,12 @@ export function useCloudViewerSession({
                 disposeCurrentRuntime,
                 persistenceSeed.clear,
               );
-            } else if (!liveRuntime) {
+            } else if (!liveRuntime && message.frame_type === FrameType.AUTOMERGE_SYNC) {
               // A rejection before the runtime resolved means the in-flight
-              // bootstrap flush was refused. We cannot tell from here
-              // whether that attempt was seeded, so bootstrap the next one
-              // either way — a non-seeded attempt bootstraps identically,
-              // and a healthy record is re-persisted after convergence.
+              // NotebookDoc bootstrap flush was refused. We cannot tell from
+              // here whether that attempt was seeded, so bootstrap the next one
+              // either way. RuntimeStateDoc/CommsDoc rejections do not
+              // incriminate the persisted NotebookDoc seed.
               skipSeedOnceRef.current = true;
             }
             scheduleReconnect(reason);

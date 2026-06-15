@@ -636,14 +636,21 @@ export function isRecoverableCloudFrameRejection(message: SessionControlMessage)
   if (message.frame_type === FrameType.AUTOMERGE_SYNC) {
     return true;
   }
-  return (
-    (message.frame_type === FrameType.RUNTIME_STATE_SYNC ||
-      message.frame_type === FrameType.COMMS_DOC_SYNC) &&
-    isSyncDivergenceRejectionReason(message.reason)
-  );
+  if (message.frame_type === FrameType.RUNTIME_STATE_SYNC) {
+    return isSyncDivergenceRejectionReason(message.reason, "cloud-room-state-receive-sync");
+  }
+  if (message.frame_type === FrameType.COMMS_DOC_SYNC) {
+    return isSyncDivergenceRejectionReason(message.reason, "cloud-room-comms-receive-sync");
+  }
+  return false;
 }
 
-function isSyncDivergenceRejectionReason(reason: string): boolean {
+function isSyncDivergenceRejectionReason(reason: string, docTag: string): boolean {
+  const escapedTag = docTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const prefix = new RegExp(`\\[${escapedTag}\\]\\s+automerge operation failed:\\s+`, "i");
+  if (!prefix.test(reason)) {
+    return false;
+  }
   return (
     /\bPatchLogMismatch\b/i.test(reason) ||
     /patch logs cannot be shared between documents/i.test(reason)
