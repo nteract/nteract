@@ -82,12 +82,20 @@ blocking `.send().await` does not compile. The remaining ordering questions
 are about when lifecycle signals are drained, not about accidentally routing
 widget replay work onto the lifecycle path or blocking the reader on it.
 
-The runtime agent's `select!` loop has two arms for these channels (`crates/runtimed/src/runtime_agent.rs:592-639`):
+The runtime agent's `select!` loop includes separate arms for these channels
+(`crates/runtimed/src/runtime_agent.rs`):
 
+- The loop uses `tokio::select! { biased; ... }` so lifecycle/control work is
+  polled before the bounded output/work channel when both are ready.
 - The lifecycle arm runs whenever a lifecycle command is ready.
 - The work arm, before processing its own command, drains every pending lifecycle command via `drain_lifecycle_commands`. This prevents the work arm from being chosen while lifecycle signals sit unprocessed.
 
-The `biased;` modifier is intentionally **not** used here. The reordering is at the body level, not the arm level. Both arms compete fairly for selection, but once the work arm wins it still defers to lifecycle. A `biased;` strict-priority loop would starve work entirely whenever lifecycle signals arrive faster than they can be drained, which we don't want.
+This is the EP-10 resolution: the loop now makes polling order deterministic
+and still keeps the work-arm drain as a second guard. The strict-priority risk
+is bounded by the lifecycle channel's cardinality (`KernelIdle`,
+`ExecutionDone`, `CellError`, `KernelDied` are rare and finite per execution),
+while the failure mode of randomly choosing output work ahead of a ready
+lifecycle signal is user-visible interrupt or queue-release latency.
 
 ### Why separate channels
 
@@ -300,9 +308,11 @@ If lifecycle and work shared one channel, the interrupt's `KernelIdle` would hav
 3. **What if `set_execution_done` is never written?** A panic or task drop between the final output write and `set_execution_done` leaves the execution in `running` forever. Consumers time out. There is no per-execution timeout or watchdog at the daemon side. `KernelDied` clears the queue but only fires when IOPub disconnects or a committer task panics (see `crates/runtimed/src/stream_committer.rs:227`, `display_update_committer.rs:259`). The framing of a *fix* for this — divergence detection rather than a wall-clock watchdog, since multi-hour training jobs are legitimate — is explored in `docs/memos/execution-liveness.md`.
 
 4. ~~**The `is_lifecycle()` discipline is a runtime check.**~~ **Resolved by
-   EP-2.** `LifecycleSignal` and `WorkCommand` are now separate types, so the
-   lifecycle channel no longer accepts widget replay work. Remaining lifecycle
-   select-ordering concerns are tracked as EP-10.
+   EP-2 and EP-10.** `LifecycleSignal` and `WorkCommand` are now separate
+   types, so the lifecycle channel no longer accepts widget replay work. The
+   runtime agent also uses a biased select loop with the lifecycle arm before
+   the bounded work arm, while the work arm drains lifecycle commands before
+   handling output work.
 
 5. **`required_heads` is `NotebookDoc`-only.** A request that semantically depends on a recent RuntimeStateDoc write (rare in v1, but conceivable for future request types) has no causal gate.
 
