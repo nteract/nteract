@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Eye, FileText, Globe2, Loader2, PencilLine } from "lucide-react";
+import type { EditorView } from "@codemirror/view";
 import type { ConnectionStatus, NotebookOutlineItem } from "runtimed";
 import {
   CodeMirrorEditor,
@@ -314,7 +315,19 @@ export function MarkdownDocumentRoute({
             ariaLabel="Document outline"
             emptyMessage="Add Markdown headings to structure this document. They will appear here."
             getItemHref={(item) => item.href}
-            onNavigateItem={(_item, href) => {
+            onNavigateItem={(item, href) => {
+              if (
+                mode === "source" &&
+                canEdit &&
+                scrollEditorToMarkdownOutlineItem(
+                  editorRef.current?.getEditor() ?? null,
+                  projection.outlineItems,
+                  item.id,
+                )
+              ) {
+                window.history.replaceState(null, "", href);
+                return true;
+              }
               window.location.hash = href;
               return true;
             }}
@@ -396,6 +409,24 @@ function markdownOutlineItems(projection: MarkdownDocumentProjection): NotebookO
     href: item.href,
     anchor: item.anchor,
   }));
+}
+
+function scrollEditorToMarkdownOutlineItem(
+  editor: EditorView | null,
+  outlineItems: readonly MarkdownDocumentProjection["outlineItems"][number][],
+  itemId: string,
+): boolean {
+  const outlineItem = outlineItems.find((candidate) => candidate.id === itemId);
+  if (!editor || !outlineItem) {
+    return false;
+  }
+  const [anchor, head] = outlineItem.sourceSpanUtf16;
+  editor.focus();
+  editor.dispatch({
+    selection: { anchor, head },
+    scrollIntoView: true,
+  });
+  return true;
 }
 
 function markdownConnectionCopy(status: ConnectionStatus, bodyReady: boolean): string | null {

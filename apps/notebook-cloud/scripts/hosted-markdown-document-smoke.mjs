@@ -125,6 +125,16 @@ async function main() {
     });
     checks.push("source_edit_reflected_in_outline");
 
+    await timed(timingsMs, "outline_source_navigation", async () => {
+      const outline = page.getByRole("navigation", { name: "Document outline" });
+      await outline.getByRole("link", { name: "Nested detail" }).click({ timeout: timeoutMs });
+      await page.waitForFunction(() => window.location.hash === "#nested-detail", {
+        timeout: timeoutMs,
+      });
+      await waitForSourceSelection(page, "### Nested detail");
+    });
+    checks.push("outline_navigates_mono_source_editor");
+
     await timed(timingsMs, "read_mode_rendered", async () => {
       await page.getByRole("button", { name: "Read" }).click({ timeout: timeoutMs });
       const preview = page.locator(".cloud-markdown-preview").first();
@@ -272,6 +282,22 @@ async function replaceMarkdownSource(page, source) {
 async function waitForEditorText(page, expectedText) {
   await page.waitForFunction(
     ([selector, expected]) => document.querySelector(selector)?.textContent?.includes(expected),
+    [editableMarkdownEditorSelector, expectedText],
+    { timeout: timeoutMs },
+  );
+}
+
+async function waitForSourceSelection(page, expectedText) {
+  await page.waitForFunction(
+    ([selector, expected]) => {
+      const editor = document.querySelector(selector);
+      const activeElement = document.activeElement;
+      const editorIsFocused =
+        editor instanceof HTMLElement &&
+        activeElement instanceof HTMLElement &&
+        (editor === activeElement || editor.contains(activeElement));
+      return editorIsFocused && document.getSelection()?.toString().includes(expected);
+    },
     [editableMarkdownEditorSelector, expectedText],
     { timeout: timeoutMs },
   );

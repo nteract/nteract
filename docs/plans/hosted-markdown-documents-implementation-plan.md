@@ -1,6 +1,6 @@
 # Hosted Markdown Documents Implementation Plan
 
-- Status: Implementation plan, 2026-06-15.
+- Status: Implementation plan, 2026-06-15. Cloud v0 implemented in PR #3701.
 - Product: [Hosted Markdown Documents](../prd/hosted-markdown-documents.md)
 - Seed memo: [Markdown Plan Documents](../memos/markdown-plan-documents.md)
 
@@ -63,26 +63,26 @@ composition, and security defaults for rendered Markdown.
 - [x] Create this implementation plan.
 - [x] Add the hosted Markdown PRD.
 - [x] Update docs indexes.
-- [ ] Record nonblocking follow-ups in `.context/hosted-markdown-documents.md`.
+- [x] Record nonblocking follow-ups in `.context/hosted-markdown-documents.md`.
 
 ## Phase 1: Shared Markdown Document Surface
 
 Files are tentative and may change during implementation.
 
-- [ ] Add shared TypeScript model/projection helpers, likely under
+- [x] Add shared TypeScript model/projection helpers, likely under
       `src/components/markdown-document/` or `src/lib/markdown-document.ts`.
-- [ ] Add shared Rust/WASM `MarkdownDoc` body operations:
+- [x] Add shared Rust/WASM `MarkdownDoc` body operations:
       `splice_body`, `slice_body`, `body`, save/load, and actor-safe
       constructors.
-- [ ] Add or reuse browser persistence around the MarkdownDoc save bytes so
+- [x] Add or reuse browser persistence around the MarkdownDoc save bytes so
       repeat visits can hydrate from IndexedDB before live sync catches up.
-- [ ] Define `MarkdownDocumentSnapshot`, `MarkdownDocumentAccessLevel`, and
+- [x] Define `MarkdownDocumentSnapshot`, `MarkdownDocumentAccessLevel`, and
       route/view projections without importing Cloud or Tauri APIs.
-- [ ] Add a pure projection helper that takes body/title/access and returns:
+- [x] Add a pure projection helper that takes body/title/access and returns:
       rendered projection plan, outline items, editability, publish state, and
       unsafe-region summary.
-- [ ] Add focused Vitest coverage for title/body/outline/access projection.
-- [ ] Confirm Desktop can import these helpers without importing
+- [x] Add focused Vitest coverage for title/body/outline/access projection.
+- [x] Confirm Desktop can import these helpers without importing
       `apps/notebook-cloud`.
 
 Acceptance:
@@ -115,18 +115,19 @@ semantics.
 
 Expected routes:
 
-- [ ] `GET /m` serves the markdown document home shell.
-- [ ] `GET /m/:documentId/:slug?` serves a markdown document shell.
-- [ ] `GET /api/m` lists Markdown documents visible to the current principal.
-- [ ] `POST /api/m` creates a document and owner ACL row.
-- [ ] `GET /api/m/:documentId` returns authorized document catalog/title/access
+- [x] `GET /m` serves the markdown document home shell.
+- [x] `GET /m/:documentId/:slug?` serves a markdown document shell.
+- [x] `GET /api/m` lists Markdown documents visible to the current principal.
+- [x] `POST /api/m` creates a document and owner ACL row.
+- [x] `GET /api/m/:documentId` returns authorized document catalog/title/access
       plus the body sync endpoint/bootstrap needed by the client.
-- [ ] Body edits sync through the MarkdownDoc Automerge channel for editor/owner
+- [x] Body edits sync through the MarkdownDoc Automerge channel for editor/owner
       as text splices.
-- [ ] `POST /api/m/:documentId/publish` creates a published revision if the
-      first slice reaches publish.
-- [ ] Share routes either reuse hosted sharing helpers or record a scoped
-      follow-up if notebook-specific sharing abstractions need refactoring.
+- [x] `PUT /api/m/:documentId/snapshots/:bodyHeadsHash` validates and stores an
+      immutable R2 published revision; `GET` reads it through Markdown ACLs and
+      explicit public grants.
+- [x] `GET`/`POST`/`DELETE /api/m/:documentId/acl` provide scoped Markdown
+      document sharing without runtime-peer access.
 
 Acceptance:
 
@@ -139,20 +140,22 @@ Acceptance:
 
 Add a Cloud route that reuses shared Markdown document components.
 
-- [ ] Extend cloud viewer route detection for `/m` and `/m/:id`.
-- [ ] Add a Markdown document home/list view or integrate a document tab into
+- [x] Extend cloud viewer route detection for `/m` and `/m/:id`.
+- [x] Add a Markdown document home/list view or integrate a document tab into
       the existing dashboard without making notebooks and Markdown documents
       visually indistinguishable.
-- [ ] Add the editor/reader route:
+- [x] Add the editor/reader route:
       - title line and dashboard navigation;
       - rendered view;
       - source edit mode;
-      - outline rail;
+      - outline rail projected from the single Markdown body, with source-mode
+        navigation into the mono-source editor;
       - share/publish affordances where API support exists;
       - no compute UI.
-- [ ] Handle loading, not-found, no-access, read-only, save-pending, and save
+- [x] Handle loading, not-found, no-access, read-only, save-pending, and save
       failed states.
-- [ ] Verify wide, half-width, and mobile screenshots.
+- [x] Verify wide, half-width, and mobile behavior through the hosted Markdown
+      browser smoke.
 
 Acceptance:
 
@@ -163,8 +166,9 @@ Acceptance:
 
 ## Phase 4: Desktop Compatibility Slice
 
-This phase may be a follow-up PR if the hosted slice is already large, but the
-first PR should leave code boundaries ready for it.
+This phase is a follow-up PR. The hosted slice leaves code boundaries ready for
+it by keeping the shared `markdown-doc` crate and frontend projection/editor
+helpers outside `apps/notebook-cloud`.
 
 - [ ] Add a CLI/opening plan for `.md` paths, likely through `runt open`.
 - [ ] Add a Desktop route or mode that mounts the shared Markdown document
@@ -198,10 +202,14 @@ These are not required for the first usable route.
 Run the narrowest relevant checks while iterating:
 
 ```bash
-pnpm test:run src/lib/__tests__/markdown-projection.test.ts
-pnpm --dir apps/notebook-cloud test
+pnpm test:run src/lib/__tests__/markdown-document.test.ts \
+  src/components/notebook-rail/__tests__/NotebookRail.test.tsx
+pnpm --dir apps/notebook-cloud exec node --import tsx --test \
+  test/markdown-sharing.test.ts test/worker-routes.test.ts
 pnpm --dir apps/notebook-cloud typecheck
 pnpm --dir apps/notebook-cloud build:viewer
+cargo test -p markdown-doc
+cargo test -p runtimed-wasm markdown --lib
 cargo xtask lint --fix
 ```
 
@@ -209,9 +217,12 @@ Browser checks:
 
 - create a hosted Markdown document;
 - edit source and confirm rendered text/outline updates;
+- click outline entries and confirm they navigate the mono-source editor;
 - reload and confirm body persists;
 - open as viewer and confirm edit controls are unavailable;
 - inspect narrow and mobile screenshots.
+- run the hosted smoke:
+  `pnpm --dir apps/notebook-cloud smoke:hosted:markdown-doc https://preview.runt.run`.
 
 ## Follow-Up Decisions
 
