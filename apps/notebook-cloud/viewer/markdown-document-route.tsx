@@ -5,15 +5,15 @@ import type { ConnectionStatus, NotebookOutlineItem } from "runtimed";
 import { notebookRouteSegmentTitle } from "../src/notebook-route-title";
 import type { CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
+import { DocumentTitle } from "@/components/notebook/DocumentTitle";
+import { NotebookDocumentHeader } from "@/components/notebook/NotebookDocumentHeader";
+import { NotebookDocumentShell } from "@/components/notebook/NotebookDocumentShell";
+import { NotebookNotice, NotebookNoticeStack } from "@/components/notebook/NotebookNotice";
+import { NotebookToolbarFrame } from "@/components/notebook/NotebookToolbarFrame";
 import {
-  NotebookDocumentShell,
-  NotebookDocumentToolbar,
-  DocumentTitle,
-  NotebookNotice,
-  NotebookNoticeStack,
   projectNotebookShellCapabilities,
   type NotebookShellCapabilities,
-} from "@/components/notebook";
+} from "@/components/notebook/capabilities";
 import { NotebookOutlinePanel } from "@/components/notebook-rail/NotebookRail";
 import { Rail, RAIL_TAKEOVER_STAGE_CLASS_NAME } from "@/components/rail";
 import { MarkdownDocumentModeToggle } from "@/components/markdown/MarkdownDocumentModeToggle";
@@ -411,49 +411,50 @@ export function MarkdownDocumentRoute({
     </Rail>
   );
   const toolbar = (
-    <NotebookDocumentToolbar
-      capabilities={shellCapabilities}
-      frameClassName="z-20"
-      headerClassName="cloud-room-toolbar cloud-markdown-room-toolbar"
-      presence={
-        <DocumentTitle
-          title={markdownTitle}
-          renameTitle={projection.title === "Untitled Markdown" ? "" : projection.title}
-          canRename={projection.canEdit}
-          renameSaving={markdownTitleSaving}
-          renameError={markdownTitleError}
-          onRename={saveMarkdownDocumentTitle}
-          homeHref="/m"
-          homeAriaLabel="Open Markdown documents"
-          homeTitle="Markdown documents"
-          homeIcon={<House aria-hidden="true" />}
-          inputAriaLabel="Markdown document title"
-          inputName="markdown-document-title"
-          placeholder="Untitled Markdown"
-          renameButtonTitle="Rename Markdown document"
-          classNames={{
-            ...cloudNotebookTitleClassNames,
-            group: "cloud-notebook-title-group cloud-markdown-title-group",
-          }}
-        />
-      }
-      utilityControls={
-        <MarkdownDocumentModeToggle
-          mode={activeMode}
-          canEdit={canEdit}
-          onModeChange={onModeChange}
-        />
-      }
-      sharingControls={
-        canManageSharing ? (
-          <MarkdownSharingControls
-            aclEndpoint={config.aclEndpoint}
-            authState={authState}
-            publicLink={publicLink}
+    <NotebookToolbarFrame className="z-20">
+      <NotebookDocumentHeader
+        capabilities={shellCapabilities}
+        className="cloud-room-toolbar cloud-markdown-room-toolbar"
+        presence={
+          <DocumentTitle
+            title={markdownTitle}
+            renameTitle={projection.title === "Untitled Markdown" ? "" : projection.title}
+            canRename={projection.canEdit}
+            renameSaving={markdownTitleSaving}
+            renameError={markdownTitleError}
+            onRename={saveMarkdownDocumentTitle}
+            homeHref="/m"
+            homeAriaLabel="Open Markdown documents"
+            homeTitle="Markdown documents"
+            homeIcon={<House aria-hidden="true" />}
+            inputAriaLabel="Markdown document title"
+            inputName="markdown-document-title"
+            placeholder="Untitled Markdown"
+            renameButtonTitle="Rename Markdown document"
+            classNames={{
+              ...cloudNotebookTitleClassNames,
+              group: "cloud-notebook-title-group cloud-markdown-title-group",
+            }}
           />
-        ) : null
-      }
-    />
+        }
+        utilityControls={
+          <MarkdownDocumentModeToggle
+            mode={activeMode}
+            canEdit={canEdit}
+            onModeChange={onModeChange}
+          />
+        }
+        sharingControls={
+          canManageSharing ? (
+            <MarkdownSharingControls
+              aclEndpoint={config.aclEndpoint}
+              authState={authState}
+              publicLink={publicLink}
+            />
+          ) : null
+        }
+      />
+    </NotebookToolbarFrame>
   );
   const notices = connectionCopy ? (
     <NotebookNoticeStack>

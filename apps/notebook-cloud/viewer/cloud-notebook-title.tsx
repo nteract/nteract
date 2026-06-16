@@ -1,5 +1,5 @@
 import { House } from "lucide-react";
-import { DocumentTitle } from "@/components/notebook";
+import { DocumentTitle } from "@/components/notebook/DocumentTitle";
 import {
   cloudNotebookRouteTitleFromPathname,
   type CloudNotebookTitleDisplay,

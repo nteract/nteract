@@ -513,10 +513,13 @@ test("Markdown documents honor the URL mode before loading the source editor", (
     /const \[mode, setMode\] = useState<MarkdownDocumentMode>\(initialMarkdownDocumentMode\)/,
   );
   assert.match(markdownRouteText, /function initialMarkdownDocumentMode\(\): MarkdownDocumentMode/);
+  assert.match(markdownRouteText, /import \{ NotebookToolbarFrame \}/);
+  assert.match(markdownRouteText, /import \{ NotebookDocumentHeader \}/);
   assert.match(
     markdownRouteText,
     /<MarkdownDocumentModeToggle[\s\S]*onModeChange=\{onModeChange\}/,
   );
+  assert.doesNotMatch(markdownRouteText, /NotebookDocumentToolbar/);
   assert.doesNotMatch(
     markdownRouteText,
     /const \[mode, setMode\] = useState<MarkdownDocumentMode>\("edit"\)/,
