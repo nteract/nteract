@@ -67,11 +67,6 @@
   font-size: 0.75rem;
 }
 
-.markdown-document-representation-toolbar {
-  align-self: flex-start;
-  margin-bottom: clamp(0.75rem, 2vw, 1.25rem);
-}
-
 .markdown-document-mode-toggle button,
 .markdown-document-representation-toolbar button {
   display: inline-flex;

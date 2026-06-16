@@ -500,7 +500,7 @@ test("cloud viewer defers supplemental CSS loading until the notebook surface mo
   );
 });
 
-test("Markdown documents honor the URL mode before loading the source editor", () => {
+test("Markdown documents keep interaction mode and representation controls in shared toolbar chrome", () => {
   const markdownRouteText = readFileSync(
     new URL("../viewer/markdown-document-route.tsx", import.meta.url),
     "utf8",
@@ -513,17 +513,18 @@ test("Markdown documents honor the URL mode before loading the source editor", (
     /const \[mode, setMode\] = useState<MarkdownDocumentMode>\(initialMarkdownDocumentMode\)/,
   );
   assert.match(markdownRouteText, /function initialMarkdownDocumentMode\(\): MarkdownDocumentMode/);
-  assert.match(markdownRouteText, /import \{ NotebookToolbarFrame \}/);
-  assert.match(markdownRouteText, /import \{ NotebookDocumentHeader \}/);
+  assert.match(markdownRouteText, /import \{ NotebookDocumentToolbar \}/);
+  assert.match(markdownRouteText, /<NotebookDocumentToolbar[\s\S]*reserveCommandToolbar/);
   assert.match(
     markdownRouteText,
     /<MarkdownDocumentModeToggle[\s\S]*onModeChange=\{onModeChange\}/,
   );
   assert.match(
     markdownRouteText,
-    /<MarkdownDocumentRepresentationToolbar[\s\S]*onRepresentationChange=\{onRepresentationChange\}/,
+    /commandToolbar=\{\{[\s\S]*leadingControls:[\s\S]*<MarkdownDocumentRepresentationToolbar[\s\S]*onRepresentationChange=\{onRepresentationChange\}/,
   );
-  assert.doesNotMatch(markdownRouteText, /NotebookDocumentToolbar/);
+  assert.doesNotMatch(markdownRouteText, /<NotebookToolbarFrame/);
+  assert.doesNotMatch(markdownRouteText, /<NotebookDocumentHeader/);
   assert.doesNotMatch(
     markdownRouteText,
     /const \[mode, setMode\] = useState<MarkdownDocumentMode>\("edit"\)/,

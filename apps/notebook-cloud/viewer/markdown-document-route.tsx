@@ -6,10 +6,9 @@ import { notebookRouteSegmentTitle } from "../src/notebook-route-title";
 import type { CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
 import { DocumentTitle } from "@/components/notebook/DocumentTitle";
-import { NotebookDocumentHeader } from "@/components/notebook/NotebookDocumentHeader";
 import { NotebookDocumentShell } from "@/components/notebook/NotebookDocumentShell";
+import { NotebookDocumentToolbar } from "@/components/notebook/NotebookDocumentToolbar";
 import { NotebookNotice, NotebookNoticeStack } from "@/components/notebook/NotebookNotice";
-import { NotebookToolbarFrame } from "@/components/notebook/NotebookToolbarFrame";
 import {
   projectNotebookShellCapabilities,
   type NotebookShellCapabilities,
@@ -364,6 +363,19 @@ export function MarkdownDocumentRoute({
     },
     [],
   );
+  const bodyReadyForEditorPreload = routeState.kind === "ready" && routeState.bodyReady;
+
+  useEffect(() => {
+    if (!bodyReadyForEditorPreload) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      void loadMarkdownEditorModule();
+    }, 0);
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [bodyReadyForEditorPreload]);
 
   useEffect(() => {
     if (routeState.kind !== "ready" || projection?.representation.active !== "source") {
@@ -408,7 +420,7 @@ export function MarkdownDocumentRoute({
   const canManageSharing =
     projection.canShare && config.hostCapabilities?.canManageSharing !== false;
   const activeMode = projection.mode;
-  const markdownTitle = markdownDocumentTitleDisplay(projection.title, projection.access);
+  const markdownTitle = markdownDocumentTitleDisplay(projection.title);
   const shellCapabilities = markdownDocumentShellCapabilities({
     access: routeState.scope,
     authState,
@@ -462,50 +474,59 @@ export function MarkdownDocumentRoute({
     </Rail>
   );
   const toolbar = (
-    <NotebookToolbarFrame className="z-20">
-      <NotebookDocumentHeader
-        capabilities={shellCapabilities}
-        className="cloud-room-toolbar cloud-markdown-room-toolbar"
-        presence={
-          <DocumentTitle
-            title={markdownTitle}
-            renameTitle={projection.title === "Untitled Markdown" ? "" : projection.title}
-            canRename={projection.canEdit}
-            renameSaving={markdownTitleSaving}
-            renameError={markdownTitleError}
-            onRename={saveMarkdownDocumentTitle}
-            homeHref="/m"
-            homeAriaLabel="Open Markdown documents"
-            homeTitle="Markdown documents"
-            homeIcon={<House aria-hidden="true" />}
-            inputAriaLabel="Markdown document title"
-            inputName="markdown-document-title"
-            placeholder="Untitled Markdown"
-            renameButtonTitle="Rename Markdown document"
-            classNames={{
-              ...cloudNotebookTitleClassNames,
-              group: "cloud-notebook-title-group cloud-markdown-title-group",
-            }}
+    <NotebookDocumentToolbar
+      capabilities={shellCapabilities}
+      frameClassName="z-20"
+      headerClassName="cloud-room-toolbar cloud-markdown-room-toolbar"
+      reserveCommandToolbar
+      presence={
+        <DocumentTitle
+          title={markdownTitle}
+          renameTitle={projection.title === "Untitled Markdown" ? "" : projection.title}
+          canRename={projection.canEdit}
+          renameSaving={markdownTitleSaving}
+          renameError={markdownTitleError}
+          onRename={saveMarkdownDocumentTitle}
+          homeHref="/m"
+          homeAriaLabel="Open Markdown documents"
+          homeTitle="Markdown documents"
+          homeIcon={<House aria-hidden="true" />}
+          inputAriaLabel="Markdown document title"
+          inputName="markdown-document-title"
+          placeholder="Untitled Markdown"
+          renameButtonTitle="Rename Markdown document"
+          classNames={{
+            ...cloudNotebookTitleClassNames,
+            group: "cloud-notebook-title-group cloud-markdown-title-group",
+          }}
+        />
+      }
+      utilityControls={
+        <MarkdownDocumentModeToggle
+          mode={activeMode}
+          canEdit={canEdit}
+          onModeChange={onModeChange}
+        />
+      }
+      commandToolbar={{
+        leadingControls: (
+          <MarkdownDocumentRepresentationToolbar
+            active={activeRepresentation}
+            options={projection.representation.options}
+            onRepresentationChange={onRepresentationChange}
           />
-        }
-        utilityControls={
-          <MarkdownDocumentModeToggle
-            mode={activeMode}
-            canEdit={canEdit}
-            onModeChange={onModeChange}
+        ),
+      }}
+      sharingControls={
+        canManageSharing ? (
+          <MarkdownSharingControls
+            aclEndpoint={config.aclEndpoint}
+            authState={authState}
+            publicLink={publicLink}
           />
-        }
-        sharingControls={
-          canManageSharing ? (
-            <MarkdownSharingControls
-              aclEndpoint={config.aclEndpoint}
-              authState={authState}
-              publicLink={publicLink}
-            />
-          ) : null
-        }
-      />
-    </NotebookToolbarFrame>
+        ) : null
+      }
+    />
   );
   const notices = connectionCopy ? (
     <NotebookNoticeStack>
@@ -535,11 +556,6 @@ export function MarkdownDocumentRoute({
         data-mode={activeMode}
         data-representation={activeRepresentation}
       >
-        <MarkdownDocumentRepresentationToolbar
-          active={activeRepresentation}
-          options={projection.representation.options}
-          onRepresentationChange={onRepresentationChange}
-        />
         {activeRepresentation === "source" ? (
           <Suspense
             fallback={
@@ -643,13 +659,10 @@ function markdownDocumentRouteTitle(): string {
   return notebookRouteSegmentTitle(routeSlug) ?? "Markdown document";
 }
 
-function markdownDocumentTitleDisplay(
-  title: string,
-  access: MarkdownDocumentProjection["access"],
-): CloudNotebookTitleDisplay {
+function markdownDocumentTitleDisplay(title: string): CloudNotebookTitleDisplay {
   return {
     label: title,
-    detail: markdownTitleDetail(access),
+    detail: null,
     title,
   };
 }
@@ -724,19 +737,6 @@ function markdownDocumentShellCapabilities({
       requiredSources: ["cloud"],
     },
   });
-}
-
-function markdownTitleDetail(access: MarkdownDocumentProjection["access"]): string {
-  if (access === "owner") {
-    return "Markdown document";
-  }
-  if (access === "editor") {
-    return "Markdown document · Editor";
-  }
-  if (access === "viewer") {
-    return "Markdown document · Viewer";
-  }
-  return "Markdown document";
 }
 
 async function fetchMarkdownCatalog(
