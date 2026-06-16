@@ -424,6 +424,7 @@ export function MarkdownDocumentRoute({
   const shellCapabilities = markdownDocumentShellCapabilities({
     access: routeState.scope,
     authState,
+    hasAppSession: Boolean(appSessionStatus.session),
     canEdit,
     canManageSharing,
     mode: activeMode,
@@ -675,17 +676,20 @@ function markdownDocumentBrowserTitle(title: string): string {
 function markdownDocumentShellCapabilities({
   access,
   authState,
+  hasAppSession,
   canEdit,
   canManageSharing,
   mode,
 }: {
   access: MarkdownDocumentAccessLevel;
   authState: CloudPrototypeAuthState;
+  hasAppSession: boolean;
   canEdit: boolean;
   canManageSharing: boolean;
   mode: MarkdownDocumentMode;
 }): NotebookShellCapabilities {
-  const canUseAuthenticatedIdentity = authState.mode === "dev" || authState.mode === "oidc";
+  const canUseAuthenticatedIdentity =
+    hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
   const wantsEditMode = mode === "edit";
   const canEditMarkdown = wantsEditMode && canEdit;
   return projectNotebookShellCapabilities({
@@ -708,7 +712,8 @@ function markdownDocumentShellCapabilities({
     auth: {
       canSignIn: !canUseAuthenticatedIdentity,
       canUseAuthenticatedIdentity,
-      needsAttention: authState.mode === "invalid" || authState.mode === "oidc_expired",
+      needsAttention:
+        !hasAppSession && (authState.mode === "invalid" || authState.mode === "oidc_expired"),
     },
     runtime: {
       canWriteRuntimeState: false,

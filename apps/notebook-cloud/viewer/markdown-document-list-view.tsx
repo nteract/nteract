@@ -4,6 +4,7 @@ import { useTheme } from "@/hooks/useTheme";
 import {
   clearCloudPrototypeDevAuth,
   fetchWithCloudPrototypeAuth,
+  shouldShowCloudHeaderSignIn,
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
 import { clearCloudAppSession, establishCloudAppSession } from "./app-session";
@@ -69,7 +70,12 @@ export function CloudMarkdownDocumentListView({
   const hasAppSession = Boolean(appSessionStatus.session);
   const signedIn = hasExplicitAuth || hasAppSession;
   const canFetchDocumentList = authState.mode === "dev" || hasAppSession;
-  const waitingForAppSession = authState.mode === "oidc" && !hasAppSession;
+  const appSessionLoading = appSessionStatus.status === "loading";
+  const waitingForAppSession = appSessionLoading || (authState.mode === "oidc" && !hasAppSession);
+  const showSignIn = shouldShowCloudHeaderSignIn(authState, {
+    appSessionLoading,
+    hasAppSession,
+  });
   const documents = listState.kind === "ready" ? listState.documents : [];
 
   useEffect(() => {
@@ -202,11 +208,13 @@ export function CloudMarkdownDocumentListView({
             <BookOpen aria-hidden="true" />
             Notebooks
           </a>
-          <CloudNotebookSignInButton
-            authConfig={authConfig}
-            authState={authState}
-            documentLabel="document"
-          />
+          {showSignIn ? (
+            <CloudNotebookSignInButton
+              authConfig={authConfig}
+              authState={authState}
+              documentLabel="document"
+            />
+          ) : null}
           {signedIn ? (
             <>
               <button type="button" className="cloud-dashboard-button" onClick={refreshList}>

@@ -531,6 +531,36 @@ test("Markdown documents keep interaction mode and representation controls in sh
   );
 });
 
+test("Markdown documents trust app sessions before surfacing sign-in chrome", () => {
+  const markdownListText = readFileSync(
+    new URL("../viewer/markdown-document-list-view.tsx", import.meta.url),
+    "utf8",
+  );
+  const markdownRouteText = readFileSync(
+    new URL("../viewer/markdown-document-route.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    markdownListText,
+    /const appSessionLoading = appSessionStatus\.status === "loading"/,
+  );
+  assert.match(
+    markdownListText,
+    /shouldShowCloudHeaderSignIn\(authState, \{[\s\S]*appSessionLoading,[\s\S]*hasAppSession,[\s\S]*\}\)/,
+  );
+  assert.match(markdownListText, /\{showSignIn \? \([\s\S]*<CloudNotebookSignInButton/);
+  assert.match(markdownRouteText, /hasAppSession: Boolean\(appSessionStatus\.session\)/);
+  assert.match(
+    markdownRouteText,
+    /hasAppSession \|\| authState\.mode === "dev" \|\| authState\.mode === "oidc"/,
+  );
+  assert.match(
+    markdownRouteText,
+    /!hasAppSession && \(authState\.mode === "invalid" \|\| authState\.mode === "oidc_expired"\)/,
+  );
+});
+
 test("cloud notebook shell keeps the rail and toolbar outside the cell scroller", () => {
   const sourcePath = new URL("../viewer/index.css", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
