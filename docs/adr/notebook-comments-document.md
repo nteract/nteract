@@ -432,13 +432,14 @@ Core seams:
   - regenerate and pin the Rust/TypeScript frame constants, per-frame limits,
     display names, and client-writable table
 - `crates/notebook-sync/src/shared.rs`
-  - add `comments_doc: CommentsDoc`
-  - add `comments_peer_state: sync::State`
-  - add receive/generate/rebuild helpers mirroring the CommsDoc recovery path
+  - local client sync now owns a `CommentsDoc` sync target plus
+    `comments_peer_state`
+  - it receives/generates comments sync frames after daemon materialization
 - `crates/notebook-sync/src/sync_task.rs`
   - dispatch inbound `CommentsDocSync`
-  - send outbound comment sync frames when local comment heads change
-  - expose `get_comments`, `get_comments_for_cell`, and sync confirmation helpers
+  - include comments in side-document sync confirmation once materialized
+  - future work: expose `get_comments`, `get_comments_for_cell`, and mutation
+    helpers through the public handle/MCP surfaces
 - `packages/runtimed/src/handle.ts` and `packages/runtimed/src/sync-engine.ts`
   - extend `SyncableHandle`, `FlushDocKey`, flush/reply/cancel paths, delivery
     tracking, observables, and tests for comments sync
@@ -453,19 +454,15 @@ Core seams:
   - subscribe to comments broadcasts
   - dispatch inbound `CommentsDocSync` frames
 - `crates/runtimed/src/notebook_sync_server/peer_runtime_agent.rs`
-  - if runtime agents need CommentsDoc negotiation, add it as read-only sync
-    only; runtime agents/runtime peers must not commit comments changes or
-    authority-finalize policy fields
+  - runtime agents do not participate in CommentsDoc sync; explicit
+    `CommentsDocSync` frames on this channel are dropped
 - `crates/runtimed/src/notebook_sync_server/peer_comments_sync.rs`
   - reuse `peer_comms_sync.rs` mechanics for decoding, actor validation,
     recovery, replies, and broadcasts, but not its authorization policy
   - allow tentative local-first comment mutations to sync
-  - run an authority-finalizer transaction after tentative apply when validation
-    accepts a mutation, so policy fields are authored by the daemon/host rather
-    than trusted from the client change
   - keep runtime_peer out of comment mutation authority
-  - validate or overwrite policy-bearing fields instead of asking the UI to keep
-    a separate optimistic state
+  - future work: add a request/MCP authority path that finalizes or rejects
+    tentative mutations with daemon-authored policy fields
 - `apps/notebook-cloud/src/protocol.ts`
   - add `COMMENTS_DOC_SYNC` to known frame names and size limits
   - mark it client-writable at the protocol-helper layer so empty sync
@@ -887,9 +884,9 @@ Phase 1: schema and projection
 
 Phase 2: local sync and MCP
 
-- Add `COMMENTS_DOC_SYNC`.
+- Add `COMMENTS_DOC_SYNC`. (Landed.)
 - Wire `SharedDocState`, daemon room state, initial sync, peer broadcasts, and
-  sidecar persistence.
+  sidecar persistence. (Landed for local daemon notebook peers.)
 - Add request variants and daemon handlers that can create tentative comment
   mutations and finalize actor labels.
 - Add MCP mutation tools using active-session or `connect_notebook`-style target

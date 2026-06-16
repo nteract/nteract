@@ -1041,6 +1041,12 @@ where
                                 }
                             }
 
+                            NotebookFrameType::CommentsDocSync => {
+                                debug!(
+                                    "[runtime-agent] Ignoring CommentsDocSync frame; runtime agents do not participate in comments sync"
+                                );
+                            }
+
                             // AutomergeSync (NotebookDoc -- for completions context)
                             NotebookFrameType::AutomergeSync => {
                                 // The runtime agent doesn't need NotebookDoc state for execution

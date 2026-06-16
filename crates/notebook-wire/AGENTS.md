@@ -99,18 +99,19 @@ After the handshake, frames carry a leading type byte:
 | `0x07` | SessionControl | JSON (`SessionControlMessage`, daemon-originated readiness/status) |
 | `0x08` | PutBlob | Framed binary blob upload (`PutBlobHeader` + bytes) |
 | `0x09` | CommsDocSync | Binary (per-notebook `CommsDoc` Automerge sync) |
-| `0x0a` | CommentsDocSync | Binary (per-notebook `CommentsDoc` Automerge sync; allocated but not fully wired) |
+| `0x0a` | CommentsDocSync | Binary (per-notebook `CommentsDoc` Automerge sync for local notebook peers) |
 
 | Sender | Valid types |
 |--------|-------------|
-| Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09` |
-| Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09` |
+| Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0a` |
+| Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09`, `0x0a` |
 | Runtime agent peer | `0x00`, `0x01` (RuntimeAgentRequest/Envelope), `0x02` (RuntimeAgentResponse/Envelope), `0x05`, `0x09` |
 
-`0x0a` is reserved for the comments document stream. Until the daemon room,
-runtime-agent read-only policy, frontend/WASM projection, and hosted-room
-materializer are all wired, do not treat `CommentsDocSync` as an accepted client
-write surface.
+`0x0a` carries local daemon `CommentsDoc` sync. Editor/owner notebook peers may
+submit tentative comment changes after actor validation; viewer and
+`runtime_peer` scopes have non-empty changes stripped. Runtime-agent channels do
+not participate in comments sync. Hosted cloud currently marks the frame
+non-client-writable until its room materializer and policy handler land.
 
 `NotebookRequest` / `NotebookResponse` payloads travel in flattened `NotebookRequestEnvelope` / `NotebookResponseEnvelope`. Concurrent requests carry an `id`; clients route responses by id because broadcasts, state sync, and out-of-order responses interleave freely.
 

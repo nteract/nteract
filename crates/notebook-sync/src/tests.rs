@@ -855,15 +855,34 @@ mod tests {
             st.comms_doc
                 .put_comm_state("comm-1", &serde_json::json!({"value": 7}))
                 .unwrap();
+            let comments_identity = comments_doc::local_path_comments_identity("test-notebook");
+            st.comments_doc = comments_doc::CommentsDoc::try_new_with_actor(
+                &comments_identity.comments_doc_id,
+                &comments_identity.notebook_ref,
+                "runtimed:comments",
+            )
+            .unwrap();
+            st.comments_doc
+                .create_thread(
+                    "thread-1",
+                    "message-1",
+                    &comments_doc::CommentAnchor::Notebook,
+                    "Looks good",
+                    None,
+                    "2026-06-16T00:00:00Z",
+                )
+                .unwrap();
         }
 
         let snapshot = handle.save_snapshot_pair().unwrap();
         assert!(!snapshot.notebook_bytes.is_empty());
         assert!(!snapshot.runtime_state_bytes.is_empty());
         assert!(!snapshot.comms_doc_bytes.is_empty());
+        assert!(!snapshot.comments_doc_bytes.is_empty());
         assert!(!snapshot.notebook_heads.is_empty());
         assert!(!snapshot.runtime_state_heads.is_empty());
         assert!(!snapshot.comms_doc_heads.is_empty());
+        assert!(!snapshot.comments_doc_heads.is_empty());
 
         let notebook_doc =
             automerge::AutoCommit::load(&snapshot.notebook_bytes).expect("notebook doc loads");
@@ -891,6 +910,19 @@ mod tests {
             comms_doc.get_comm_state("comm-1").unwrap(),
             serde_json::json!({"value": 7})
         );
+
+        let comments_doc_id = {
+            let st = shared.lock().unwrap();
+            st.comments_doc.comments_doc_id().unwrap()
+        };
+        let comments_doc =
+            comments_doc::CommentsDoc::load(&snapshot.comments_doc_bytes, &comments_doc_id)
+                .expect("comments doc loads");
+        let comments = comments_doc
+            .read_projection(&[], None)
+            .expect("comments project");
+        assert_eq!(comments.threads.len(), 1);
+        assert_eq!(comments.threads[0].id, "thread-1");
     }
 
     #[test]

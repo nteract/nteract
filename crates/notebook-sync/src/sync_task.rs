@@ -80,10 +80,10 @@ pub enum SyncCommand {
 
     /// Flush pending RuntimeStateDoc sync frames from the daemon.
     ///
-    /// Generates and sends a state sync message, then waits for a quiet
-    /// window while the main frame pump keeps processing every inbound frame.
-    /// Since the client is read-only for the state doc, this is a flush — not
-    /// a convergence handshake.
+    /// Generates and sends sync messages for side documents, then waits for a
+    /// quiet window while the main frame pump keeps processing every inbound
+    /// frame. Since the client is read-only for the runtime state doc, this is
+    /// a flush — not a convergence handshake.
     ConfirmStateSync {
         reply: oneshot::Sender<Result<(), SyncError>>,
     },
@@ -475,6 +475,8 @@ impl SyncReactor {
                     let _ = reply.send(Err(e));
                 } else if let Err(e) = send_comms_sync_message(&self.io.doc, writer).await {
                     let _ = reply.send(Err(e));
+                } else if let Err(e) = send_comments_sync_message(&self.io.doc, writer).await {
+                    let _ = reply.send(Err(e));
                 } else {
                     let now = Instant::now();
                     self.state.state_sync_waiters.push(StateSyncWaiter {
@@ -845,13 +847,61 @@ impl SyncReactor {
             }
 
             NotebookFrameType::CommentsDocSync => {
-                // CommentsDoc has a reserved typed-frame lane, but this sync task
-                // does not own a comments document handle yet. Keep the frame
-                // explicit so future wiring cannot be mistaken for CommsDoc.
-                debug!(
-                    "[notebook-sync] Ignoring CommentsDocSync frame for {} (not wired yet)",
-                    self.io.notebook_id
-                );
+                let msg = match sync::Message::decode(&frame.payload) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Failed to decode CommentsDocSync for {}: {}",
+                            self.io.notebook_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let reply_bytes = {
+                    let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+                    match state
+                        .receive_comments_sync_message_recovering(msg, "comments-doc-sync-receive")
+                    {
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Failed to apply CommentsDocSync for {}: {}",
+                                self.io.notebook_id, e
+                            );
+                            return Err(SyncError::Protocol(format!(
+                                "comments doc sync apply failed for {}: {e}",
+                                self.io.notebook_id
+                            )));
+                        }
+                    };
+                    match state.generate_comments_sync_message_recovering("comments-doc-sync-reply")
+                    {
+                        Ok(message) => message.map(|msg| msg.encode()),
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Failed to generate CommentsDocSync reply for {}: {}",
+                                self.io.notebook_id, e
+                            );
+                            return Err(SyncError::Protocol(format!(
+                                "comments doc sync reply failed for {}: {e}",
+                                self.io.notebook_id
+                            )));
+                        }
+                    }
+                };
+
+                if let Some(bytes) = reply_bytes {
+                    if let Err(e) = writer
+                        .send_frame(NotebookFrameType::CommentsDocSync, &bytes)
+                        .await
+                    {
+                        warn!(
+                            "[notebook-sync] Failed to send CommentsDocSync reply for {}: {}",
+                            self.io.notebook_id, e
+                        );
+                    }
+                }
                 Ok(())
             }
 
@@ -1188,6 +1238,32 @@ async fn send_comms_sync_message<W: FrameSink>(
     if let Some(bytes) = msg_bytes {
         writer
             .send_frame(NotebookFrameType::CommsDocSync, &bytes)
+            .await
+            .map_err(SyncError::Io)?;
+    }
+
+    Ok(())
+}
+
+async fn send_comments_sync_message<W: FrameSink>(
+    doc: &Arc<Mutex<SharedDocState>>,
+    writer: &mut W,
+) -> Result<(), SyncError> {
+    let msg_bytes = {
+        let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
+        if state.comments_doc.is_materialized() {
+            state
+                .generate_comments_sync_message_recovering("comments-doc-sync-outbound")
+                .map_err(|e| SyncError::Protocol(e.to_string()))?
+                .map(|msg| msg.encode())
+        } else {
+            None
+        }
+    };
+
+    if let Some(bytes) = msg_bytes {
+        writer
+            .send_frame(NotebookFrameType::CommentsDocSync, &bytes)
             .await
             .map_err(SyncError::Io)?;
     }
@@ -1637,6 +1713,88 @@ mod tests {
                 .is_err(),
             "panic path should not send a runtime-state sync reply"
         );
+    }
+
+    #[tokio::test]
+    async fn comments_doc_sync_frame_applies_to_shared_state() {
+        let mut reactor = test_reactor();
+        let (mut daemon_comments, mut daemon_peer_state) = {
+            let identity = comments_doc::local_path_comments_identity("test-notebook");
+            (
+                comments_doc::CommentsDoc::try_new_with_actor(
+                    &identity.comments_doc_id,
+                    &identity.notebook_ref,
+                    "runtimed:comments",
+                )
+                .expect("daemon comments doc seeded"),
+                sync::State::new(),
+            )
+        };
+        let (client_reply_writer, daemon_reply_reader) = tokio::io::duplex(4096);
+        let mut writer = connection::WriterFrameSink::new(client_reply_writer);
+        let mut reply_reader =
+            connection::FramedReader::spawn(BufReader::new(daemon_reply_reader), 16);
+
+        daemon_comments
+            .create_thread(
+                "thread-1",
+                "message-1",
+                &comments_doc::CommentAnchor::Notebook,
+                "Review note",
+                None,
+                "2026-06-16T00:00:00Z",
+            )
+            .expect("daemon comment created");
+
+        for _ in 0..8 {
+            let Some(daemon_msg) = daemon_comments
+                .generate_sync_message_recovering(&mut daemon_peer_state, "comments-doc-sync-test")
+                .expect("daemon should generate comments sync message")
+            else {
+                continue;
+            };
+            let frame = connection::TypedNotebookFrame {
+                frame_type: NotebookFrameType::CommentsDocSync,
+                payload: daemon_msg.encode(),
+            };
+
+            reactor
+                .handle_incoming_frame(&frame, &mut writer)
+                .await
+                .expect("comments sync applies");
+
+            if let Ok(Some(Ok(reply))) =
+                timeout(Duration::from_millis(100), reply_reader.recv()).await
+            {
+                assert_eq!(reply.frame_type, NotebookFrameType::CommentsDocSync);
+                let msg = sync::Message::decode(&reply.payload).expect("valid comments reply");
+                daemon_comments
+                    .receive_sync_message_with_changes_recovering(
+                        &mut daemon_peer_state,
+                        msg,
+                        "comments-doc-reply-test",
+                    )
+                    .expect("daemon receives comments reply");
+            }
+
+            let materialized = {
+                let state = reactor.io.doc.lock().unwrap();
+                state.comments_doc.is_materialized()
+            };
+            if materialized {
+                break;
+            }
+        }
+
+        let projection = {
+            let state = reactor.io.doc.lock().unwrap();
+            state
+                .comments_doc
+                .read_projection(&[], None)
+                .expect("comments projection")
+        };
+        assert_eq!(projection.threads.len(), 1);
+        assert_eq!(projection.threads[0].id, "thread-1");
     }
 
     #[tokio::test]

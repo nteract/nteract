@@ -12,9 +12,12 @@ use automerge_recovery::{
     catch_automerge_panic, is_recoverable_sync_error, recoverable_automerge_operation,
     AutomergeOperationError, AutomergeRebuildError,
 };
+use comments_doc::CommentsDoc;
 use log::warn;
 use notebook_doc::presence::PresenceState;
 use runtime_doc::{CommsDoc, RuntimeStateDoc};
+
+use crate::error::SyncError;
 
 /// The shared state behind `Arc<Mutex<SharedDocState>>`.
 ///
@@ -46,6 +49,12 @@ pub struct SharedDocState {
     /// Automerge sync protocol state for the CommsDoc peer.
     pub(crate) comms_peer_state: sync::State,
 
+    /// Durable comments doc — synced alongside notebook state.
+    pub(crate) comments_doc: CommentsDoc,
+
+    /// Automerge sync protocol state for the CommentsDoc peer.
+    pub(crate) comments_peer_state: sync::State,
+
     #[cfg(test)]
     panic_on_next_doc_sync: bool,
     #[cfg(test)]
@@ -54,10 +63,8 @@ pub struct SharedDocState {
 
 impl SharedDocState {
     /// Create a new shared state with the given document and notebook ID.
-    pub fn try_new(
-        doc: AutoCommit,
-        notebook_id: String,
-    ) -> Result<Self, runtime_doc::RuntimeStateError> {
+    pub fn try_new(doc: AutoCommit, notebook_id: String) -> Result<Self, SyncError> {
+        let comments_identity = comments_identity_for_notebook_id(&notebook_id);
         Ok(Self {
             doc,
             peer_state: sync::State::new(),
@@ -67,6 +74,8 @@ impl SharedDocState {
             state_peer_state: sync::State::new(),
             comms_doc: CommsDoc::try_new_empty()?,
             comms_peer_state: sync::State::new(),
+            comments_doc: CommentsDoc::try_new_sync_target(&comments_identity.comments_doc_id)?,
+            comments_peer_state: sync::State::new(),
             #[cfg(test)]
             panic_on_next_doc_sync: false,
             #[cfg(test)]
@@ -265,6 +274,30 @@ impl SharedDocState {
         rebuilt
     }
 
+    // ── CommentsDoc sync ────────────────────────────────────────────
+
+    pub(crate) fn generate_comments_sync_message_recovering(
+        &mut self,
+        label: &str,
+    ) -> Result<Option<sync::Message>, comments_doc::CommentsDocError> {
+        self.comments_doc
+            .generate_sync_message_recovering(&mut self.comments_peer_state, label)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn receive_comments_sync_message_recovering(
+        &mut self,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<bool, comments_doc::CommentsDocError> {
+        self.comments_doc
+            .receive_sync_message_with_changes_recovering(
+                &mut self.comments_peer_state,
+                message,
+                label,
+            )
+    }
+
     /// Rebuild the RuntimeStateDoc via save→load and reset its sync state.
     ///
     /// Used after a caller-marked recoverable Automerge failure during
@@ -339,6 +372,14 @@ impl SharedDocState {
     }
 }
 
+fn comments_identity_for_notebook_id(notebook_id: &str) -> comments_doc::LocalCommentsIdentity {
+    if uuid::Uuid::parse_str(notebook_id).is_ok() {
+        comments_doc::local_room_comments_identity(notebook_id.to_string())
+    } else {
+        comments_doc::local_path_comments_identity(notebook_id.to_string())
+    }
+}
+
 struct SharedDocReceiveRecoveryContext<'a> {
     state: &'a mut SharedDocState,
     next_message: Option<sync::Message>,
@@ -377,5 +418,34 @@ mod tests {
             state.generate_state_sync_message().is_some(),
             "reset sync state should force a fresh runtime-state handshake"
         );
+    }
+
+    #[test]
+    fn shared_state_seeds_comments_doc_from_local_path_identity() {
+        let state =
+            SharedDocState::new(AutoCommit::new(), "/tmp/example-notebook.ipynb".to_string());
+        let expected_doc_id =
+            comments_doc::local_path_comments_doc_id("/tmp/example-notebook.ipynb");
+
+        assert_eq!(
+            state.comments_doc.comments_doc_id().as_deref(),
+            Some(expected_doc_id.as_str())
+        );
+        assert!(!state.comments_doc.is_materialized());
+        assert_eq!(state.comments_doc.notebook_ref(), None);
+    }
+
+    #[test]
+    fn shared_state_seeds_comments_doc_from_room_uuid_identity() {
+        let room_id = "b98a5f0c-c4bb-4d44-8ab4-7e369da72401";
+        let state = SharedDocState::new(AutoCommit::new(), room_id.to_string());
+        let expected_doc_id = comments_doc::local_room_comments_doc_id(room_id);
+
+        assert_eq!(
+            state.comments_doc.comments_doc_id().as_deref(),
+            Some(expected_doc_id.as_str())
+        );
+        assert!(!state.comments_doc.is_materialized());
+        assert_eq!(state.comments_doc.notebook_ref(), None);
     }
 }

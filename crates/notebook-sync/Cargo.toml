@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 automerge = { workspace = true }
 automerge-recovery = { path = "../automerge-recovery" }
+comments-doc = { path = "../comments-doc" }
 notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
 notebook-protocol = { path = "../notebook-protocol" }

@@ -26,6 +26,8 @@ pub enum CommentsDocError {
         thread_id: String,
         message_id: String,
     },
+    #[error("unauthorized comment actor: {0}")]
+    UnauthorizedActor(String),
     #[error("after_thread_id not found: {0}")]
     AfterThreadNotFound(String),
     #[error("after_message_id not found: {0}")]

@@ -1,4 +1,7 @@
 use super::blob_upload::{enqueue_put_blob, spawn_put_blob_worker, MultipartUploadState};
+use super::peer_comments_sync::{
+    forward_comments_doc_broadcast, handle_comments_doc_frame, send_initial_comments_doc_sync,
+};
 use super::peer_comms_sync::{
     forward_comms_doc_broadcast, handle_comms_doc_frame, send_initial_comms_doc_sync,
 };
@@ -55,6 +58,7 @@ where
     let mut presence_rx = room.broadcasts.presence_tx.subscribe();
     let mut state_changed_rx = room.state.subscribe();
     let mut comms_changed_rx = room.comms.subscribe();
+    let mut comments_changed_rx = room.comments.subscribe();
 
     // PoolDoc — global daemon pool state (UV/Conda availability, errors).
     let mut pool_changed_rx = daemon.pool_doc_changed.subscribe();
@@ -92,6 +96,7 @@ where
 
     let mut state_peer_state = sync::State::new();
     let mut comms_peer_state = sync::State::new();
+    let mut comments_peer_state = sync::State::new();
     let mut pool_peer_state = sync::State::new();
     let mut persisted_execution_records: std::collections::HashMap<
         String,
@@ -114,6 +119,7 @@ where
     }
 
     send_initial_comms_doc_sync(&mut writer, room, &mut comms_peer_state).await?;
+    send_initial_comments_doc_sync(&mut writer, room, &mut comments_peer_state).await?;
 
     initial_load_phase = stream_initial_load(
         &mut reader,
@@ -347,13 +353,17 @@ where
                             }
 
                             NotebookFrameType::CommentsDocSync => {
-                                // The wire code point is reserved before the
-                                // daemon owns a CommentsDoc sync handler. Drop
-                                // explicit client frames instead of routing them
-                                // through another document's policy by accident.
-                                warn!(
-                                    "[notebook-sync] Ignoring unsupported CommentsDocSync frame from client"
-                                );
+                                if !handle_comments_doc_frame(
+                                    room,
+                                    &mut comments_peer_state,
+                                    &peer_writer,
+                                    &frame.payload,
+                                    connection_identity,
+                                )
+                                .await?
+                                {
+                                    continue;
+                                }
                             }
 
                             NotebookFrameType::PoolStateSync => {
@@ -435,6 +445,21 @@ where
                     room,
                     peer_id,
                     &mut comms_peer_state,
+                    &peer_writer,
+                    result,
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+            }
+
+            // CommentsDoc changed — push comment updates to this client
+            result = comments_changed_rx.recv() => {
+                if !forward_comments_doc_broadcast(
+                    room,
+                    peer_id,
+                    &mut comments_peer_state,
                     &peer_writer,
                     result,
                 )

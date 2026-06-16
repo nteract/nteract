@@ -56,6 +56,7 @@ mod load;
 mod metadata;
 mod nbformat_convert;
 mod path_index;
+mod peer_comments_sync;
 mod peer_comms_sync;
 mod peer_connection;
 mod peer_eviction;

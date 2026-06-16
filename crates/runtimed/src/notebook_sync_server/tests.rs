@@ -1372,6 +1372,210 @@ async fn test_file_backed_room_reuses_comments_sidecar_by_path() {
     assert_eq!(projection.threads[0].messages[0].body, "survives reopen");
 }
 
+#[tokio::test]
+async fn test_comments_doc_sync_accepts_editor_change_and_persists_sidecar() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-sync.ipynb");
+    let identity = RoomConnectionIdentity::local_with_scope(
+        Some("agent:comments-editor".to_string()),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await
+    .unwrap();
+    let mut server_peer_state = automerge::sync::State::new();
+    let payload = comments_sync_payload_from_room(
+        &room,
+        &mut server_peer_state,
+        identity.actor_label().as_str(),
+        "thread-editor",
+        "editor comment",
+    );
+    let (mut reply_reader, reply_writer) = tokio::io::duplex(1024 * 1024);
+    let (peer_writer, _writer_task) = super::peer_writer::spawn_peer_writer(
+        reply_writer,
+        "notebook".to_string(),
+        "peer".to_string(),
+    );
+
+    let handled = super::peer_comments_sync::handle_comments_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &peer_writer,
+        &payload,
+        &identity,
+    )
+    .await
+    .unwrap();
+
+    assert!(handled);
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        notebook_protocol::connection::recv_typed_frame(&mut reply_reader),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .expect("comments sync reply");
+    assert_eq!(
+        reply.frame_type,
+        notebook_protocol::connection::NotebookFrameType::CommentsDocSync
+    );
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(projection.threads.len(), 1);
+    assert_eq!(projection.threads[0].messages[0].body, "editor comment");
+
+    let persisted = std::fs::read(room.comments_store.doc_path(&room.comments_doc_id)).unwrap();
+    let persisted_doc = comments_doc::CommentsDoc::load(&persisted, &room.comments_doc_id).unwrap();
+    let persisted_projection = persisted_doc.read_projection(&[], None).unwrap();
+    assert_eq!(persisted_projection.threads.len(), 1);
+    assert_eq!(
+        persisted_projection.threads[0].messages[0].body,
+        "editor comment"
+    );
+}
+
+#[tokio::test]
+async fn test_comments_doc_sync_strips_runtime_peer_change() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-runtime-peer.ipynb");
+    let identity = RoomConnectionIdentity::local_with_scope(
+        Some("agent:comments-runtime".to_string()),
+        nteract_identity::ConnectionScope::RuntimePeer,
+    )
+    .await
+    .unwrap();
+    let mut server_peer_state = automerge::sync::State::new();
+    let payload = comments_sync_payload_from_room(
+        &room,
+        &mut server_peer_state,
+        identity.actor_label().as_str(),
+        "thread-runtime",
+        "runtime peer comment",
+    );
+    let (_reply_reader, reply_writer) = tokio::io::duplex(1024 * 1024);
+    let (peer_writer, _writer_task) = super::peer_writer::spawn_peer_writer(
+        reply_writer,
+        "notebook".to_string(),
+        "peer".to_string(),
+    );
+
+    let handled = super::peer_comments_sync::handle_comments_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &peer_writer,
+        &payload,
+        &identity,
+    )
+    .await
+    .unwrap();
+
+    assert!(handled);
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[], None))
+        .unwrap()
+        .unwrap();
+    assert!(
+        projection.threads.is_empty(),
+        "runtime_peer must not be able to mutate CommentsDoc"
+    );
+    assert!(!room.comments_store.doc_path(&room.comments_doc_id).exists());
+}
+
+#[tokio::test]
+async fn test_comments_doc_sync_rejects_mismatched_actor_label() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-actor-mismatch.ipynb");
+    let identity = RoomConnectionIdentity::local_with_scope(
+        Some("agent:comments-editor".to_string()),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await
+    .unwrap();
+    let mut server_peer_state = automerge::sync::State::new();
+    let payload = comments_sync_payload_from_room(
+        &room,
+        &mut server_peer_state,
+        "user:anaconda:evil/desktop:window-1",
+        "thread-evil",
+        "wrong actor comment",
+    );
+    let (_reply_reader, reply_writer) = tokio::io::duplex(1024 * 1024);
+    let (peer_writer, _writer_task) = super::peer_writer::spawn_peer_writer(
+        reply_writer,
+        "notebook".to_string(),
+        "peer".to_string(),
+    );
+
+    let err = super::peer_comments_sync::handle_comments_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &peer_writer,
+        &payload,
+        &identity,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{err:#}").contains("unauthorized comment actor"));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[], None))
+        .unwrap()
+        .unwrap();
+    assert!(projection.threads.is_empty());
+    assert!(!room.comments_store.doc_path(&room.comments_doc_id).exists());
+}
+
+fn comments_sync_payload_from_room(
+    room: &NotebookRoom,
+    server_peer_state: &mut automerge::sync::State,
+    actor_label: &str,
+    thread_id: &str,
+    body: &str,
+) -> Vec<u8> {
+    let bytes = room.comments.with_doc(|doc| Ok(doc.save())).unwrap();
+    let mut client =
+        comments_doc::CommentsDoc::load_with_actor(&bytes, &room.comments_doc_id, actor_label)
+            .unwrap();
+    let mut client_peer_state = automerge::sync::State::new();
+    if let Some(initial) = room
+        .comments
+        .with_doc(|doc| {
+            doc.generate_sync_message_recovering(server_peer_state, "test-initial")
+                .map_err(Into::into)
+        })
+        .unwrap()
+    {
+        client
+            .receive_sync_message_with_changes_recovering(
+                &mut client_peer_state,
+                initial,
+                "test-initial-receive",
+            )
+            .unwrap();
+    }
+    client
+        .create_thread(
+            thread_id,
+            "message-1",
+            &comments_doc::CommentAnchor::Notebook,
+            body,
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+    client
+        .generate_sync_message_recovering(&mut client_peer_state, "test-client-change")
+        .unwrap()
+        .expect("client comment sync message")
+        .encode()
+}
+
 #[test]
 fn test_local_workstation_attachment_publish_is_idempotent() {
     let (state_changed_tx, _) = broadcast::channel(16);

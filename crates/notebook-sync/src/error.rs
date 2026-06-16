@@ -45,6 +45,10 @@ pub enum SyncError {
     #[error("Cell not found: {0}")]
     CellNotFound(String),
 
+    /// Comments document setup or mutation failed.
+    #[error("CommentsDoc error: {0}")]
+    CommentsDoc(#[from] comments_doc::CommentsDocError),
+
     /// Serialization/deserialization error.
     #[error("Serialization error: {0}")]
     Serialization(String),

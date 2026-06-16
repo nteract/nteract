@@ -102,14 +102,17 @@ pub struct DocHandle {
 /// saved `RuntimeStateDoc` whose execution/output manifests are resolved by
 /// `execution_id` from the notebook cells. `comms_doc_bytes` are the saved
 /// `CommsDoc` whose widget values pair with RuntimeStateDoc comm topology.
+/// `comments_doc_bytes` are the saved durable per-notebook comments document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotPairBytes {
     pub notebook_bytes: Vec<u8>,
     pub runtime_state_bytes: Vec<u8>,
     pub comms_doc_bytes: Vec<u8>,
+    pub comments_doc_bytes: Vec<u8>,
     pub notebook_heads: Vec<String>,
     pub runtime_state_heads: Vec<String>,
     pub comms_doc_heads: Vec<String>,
+    pub comments_doc_heads: Vec<String>,
 }
 
 impl std::fmt::Debug for DocHandle {
@@ -718,8 +721,8 @@ impl DocHandle {
             .collect())
     }
 
-    /// Save the current local `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`
-    /// replicas.
+    /// Save the current local `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`,
+    /// and `CommentsDoc` replicas.
     ///
     /// Callers that need a daemon-fresh publish artifact should call
     /// [`confirm_sync`](Self::confirm_sync) and
@@ -744,17 +747,26 @@ impl DocHandle {
             .into_iter()
             .map(|head| hex::encode(head.as_ref()))
             .collect();
+        let comments_doc_heads = state
+            .comments_doc
+            .get_heads()
+            .into_iter()
+            .map(|head| hex::encode(head.as_ref()))
+            .collect();
         let notebook_bytes = state.doc.save();
         let runtime_state_bytes = state.state_doc.doc_mut().save();
         let comms_doc_bytes = state.comms_doc.doc_mut().save();
+        let comments_doc_bytes = state.comments_doc.save();
 
         Ok(SnapshotPairBytes {
             notebook_bytes,
             runtime_state_bytes,
             comms_doc_bytes,
+            comments_doc_bytes,
             notebook_heads,
             runtime_state_heads,
             comms_doc_heads,
+            comments_doc_heads,
         })
     }
 
@@ -791,10 +803,10 @@ impl DocHandle {
         crate::reply::recv(reply_rx).await
     }
 
-    /// Flush pending RuntimeStateDoc sync frames from the daemon.
+    /// Flush pending daemon side-doc sync frames.
     ///
-    /// Call before reading RuntimeStateDoc state to ensure the local
-    /// replica reflects the daemon's latest writes.
+    /// Call before reading side-document state to ensure local replicas
+    /// reflect the daemon's latest writes.
     pub async fn confirm_state_sync(&self) -> Result<(), SyncError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx

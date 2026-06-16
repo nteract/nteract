@@ -372,6 +372,11 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                             }
                         }
                     }
+                    NotebookFrameType::CommentsDocSync => {
+                        debug!(
+                            "[notebook-sync] Runtime agent sent CommentsDocSync; dropping because comments are client-only on this channel"
+                        );
+                    }
                     NotebookFrameType::Response => {
                         if let Ok(envelope) = serde_json::from_slice::<
                             notebook_protocol::protocol::RuntimeAgentResponseEnvelope,

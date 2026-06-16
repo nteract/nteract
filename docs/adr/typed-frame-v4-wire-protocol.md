@@ -78,12 +78,16 @@ The fact that the same protocol-version preamble gates two different framing rul
 | `0x07` | `SessionControl` | JSON, `SessionControlMessage` | daemon → client |
 | `0x08` | `PutBlob` | Framed binary (see Decision 6) | client → daemon |
 | `0x09` | `CommsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommsDoc`) | bidirectional |
-| `0x0a` | `CommentsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommentsDoc`) | reserved; planned bidirectional with client write policy |
+| `0x0a` | `CommentsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommentsDoc`) | local notebook peers bidirectional; hosted cloud read-only gate until materializer |
 
-`CommentsDocSync` is allocated at the wire layer before the room materializer
-and peer-policy handlers are complete. Current code may parse, classify, or
-pipe the frame explicitly, but clients must not treat `0x0a` as a usable comment
-write surface until the comments document handler lands.
+`CommentsDocSync` is wired for local daemon notebook peers. The daemon owns the
+materialized `CommentsDoc` sidecar, regular client replicas start as sync
+targets for the required `comments_doc_id`, and editor/owner clients may submit
+tentative comment mutations after actor-label validation. Viewer and
+`runtime_peer` scopes have non-empty changes stripped, and runtime-agent
+channels explicitly drop `CommentsDocSync` instead of participating. Hosted
+cloud currently keeps the frame known but not client-writable until its room
+materializer and policy handler are implemented.
 
 ### Direction is policy, not encoding
 

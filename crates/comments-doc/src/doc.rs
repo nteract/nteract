@@ -51,6 +51,24 @@ impl CommentsDoc {
         Self::try_new_with_actor(comments_doc_id, notebook_ref, &actor)
     }
 
+    pub fn try_new_sync_target(comments_doc_id: &str) -> Result<Self, CommentsDocError> {
+        let actor = ActorId::random().to_string();
+        Self::try_new_sync_target_with_actor(comments_doc_id, &actor)
+    }
+
+    pub fn try_new_sync_target_with_actor(
+        comments_doc_id: &str,
+        actor_label: &str,
+    ) -> Result<Self, CommentsDocError> {
+        validate_comments_doc_id(comments_doc_id)?;
+        let mut doc = Self::schema_seed_doc()?;
+        doc.set_actor(ActorId::from(actor_label.as_bytes()));
+        Ok(Self {
+            doc,
+            comments_doc_id: comments_doc_id.to_string(),
+        })
+    }
+
     pub fn try_new_with_actor(
         comments_doc_id: &str,
         notebook_ref: &NotebookCommentRef,
@@ -128,6 +146,18 @@ impl CommentsDoc {
         }
     }
 
+    pub fn from_doc(doc: AutoCommit) -> Result<Self, CommentsDocError> {
+        let comments_doc_id = read_str(&doc, &ROOT, "comments_doc_id")
+            .ok_or(CommentsDocError::MissingCommentsDocId)?;
+        validate_comments_doc_id(&comments_doc_id)?;
+        let comments = Self {
+            doc,
+            comments_doc_id,
+        };
+        comments.ensure_raw_comments_doc_id_matches()?;
+        Ok(comments)
+    }
+
     pub fn doc(&self) -> &AutoCommit {
         &self.doc
     }
@@ -147,6 +177,10 @@ impl CommentsDoc {
     pub fn notebook_ref(&self) -> Option<NotebookCommentRef> {
         automunge::read_json_value(&self.doc, &ROOT, "notebook_ref")
             .and_then(|value| serde_json::from_value(value).ok())
+    }
+
+    pub fn is_materialized(&self) -> bool {
+        self.ensure_raw_comments_doc_id_matches().is_ok()
     }
 
     pub fn get_heads(&mut self) -> Vec<automerge::ChangeHash> {
@@ -686,13 +720,16 @@ impl CommentsDoc {
         if let Err(err) = self.doc.sync().receive_sync_message(peer_state, message) {
             return Err(CommentsDocError::Automerge(err));
         }
-        if let Err(err) = self.ensure_raw_comments_doc_id_matches() {
-            self.doc = before_doc;
-            self.doc.set_actor(before_actor);
-            *peer_state = sync::State::new();
-            return Err(err);
+        let heads_changed = self.doc.get_heads() != heads_before;
+        if heads_changed || self.is_materialized() {
+            if let Err(err) = self.ensure_raw_comments_doc_id_matches() {
+                self.doc = before_doc;
+                self.doc.set_actor(before_actor);
+                *peer_state = sync::State::new();
+                return Err(err);
+            }
         }
-        Ok(self.doc.get_heads() != heads_before)
+        Ok(heads_changed)
     }
 
     pub fn receive_sync_message_with_changes_recovering(
@@ -1338,6 +1375,32 @@ mod tests {
             err,
             CommentsDocError::CommentsDocIdMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn sync_target_tracks_expected_identity_without_local_materialization() {
+        let doc = CommentsDoc::try_new_sync_target(DOC_ID).unwrap();
+
+        assert_eq!(doc.comments_doc_id().as_deref(), Some(DOC_ID));
+        assert!(!doc.is_materialized());
+        assert_eq!(doc.notebook_ref(), None);
+        assert!(matches!(
+            doc.read_projection(&[AUTHORITY], None),
+            Err(CommentsDocError::MissingCommentsDocId)
+                | Err(CommentsDocError::InvalidCommentsDocId(_))
+        ));
+    }
+
+    #[test]
+    fn sync_target_materializes_from_seeded_comments_doc() {
+        let mut daemon = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), AUTHORITY);
+        let mut client = CommentsDoc::try_new_sync_target(DOC_ID).unwrap();
+
+        sync_pair(&mut daemon, &mut client);
+
+        assert!(client.is_materialized());
+        assert_eq!(client.raw_comments_doc_id().as_deref(), Some(DOC_ID));
+        assert_eq!(client.notebook_ref(), Some(notebook_ref()));
     }
 
     #[test]

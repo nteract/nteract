@@ -9,7 +9,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use comments_doc::{CommentsDoc, CommentsDocHandle, NotebookCommentRef};
+use comments_doc::{
+    local_path_comments_doc_id, local_room_comments_doc_id, CommentsDoc, CommentsDocHandle,
+    NotebookCommentRef,
+};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use tokio::sync::broadcast;
@@ -69,12 +72,12 @@ impl CommentsSidecarStore {
             CommentsLocator::LocalPath(path) => (
                 &mut index.local_paths,
                 path.to_string_lossy().into_owned(),
-                stable_path_comments_doc_id(path),
+                local_path_comments_doc_id(path.to_string_lossy()),
             ),
             CommentsLocator::LocalRoom(uuid) => (
                 &mut index.local_rooms,
                 uuid.to_string(),
-                stable_room_comments_doc_id(*uuid),
+                local_room_comments_doc_id(uuid.to_string()),
             ),
         };
 
@@ -207,15 +210,6 @@ pub(crate) fn comments_dir_for_notebook_docs_dir(docs_dir: &Path) -> PathBuf {
         }
     }
     docs_dir.join("comments")
-}
-
-fn stable_path_comments_doc_id(path: &Path) -> String {
-    let digest = sha2::Sha256::digest(path.to_string_lossy().as_bytes());
-    format!("comments:local-path:{}", hex::encode(digest))
-}
-
-fn stable_room_comments_doc_id(uuid: Uuid) -> String {
-    format!("comments:local-room:{uuid}")
 }
 
 fn comments_doc_filename(comments_doc_id: &str) -> String {
