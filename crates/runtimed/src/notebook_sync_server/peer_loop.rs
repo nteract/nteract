@@ -23,6 +23,7 @@ use super::peer_session::{
 };
 use super::peer_writer::{
     enqueue_notebook_request, queue_session_status, spawn_peer_request_worker, spawn_peer_writer,
+    PeerRequestSubmitter,
 };
 use super::*;
 
@@ -162,8 +163,10 @@ where
         multipart_uploads.clone(),
         notebook_id.clone(),
         peer_id.to_string(),
-        connection_identity.actor_label().as_str().to_string(),
-        connection_identity.scope(),
+        PeerRequestSubmitter::new(
+            connection_identity.actor_label().as_str().to_string(),
+            connection_identity.scope(),
+        ),
     );
     let mut put_blob_worker = spawn_put_blob_worker(
         room.blob_store.clone(),

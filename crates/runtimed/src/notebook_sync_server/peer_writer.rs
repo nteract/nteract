@@ -61,6 +61,17 @@ pub(super) struct PeerRequestWorker {
     pub(super) handle: tokio::task::JoinHandle<anyhow::Result<()>>,
 }
 
+pub(super) struct PeerRequestSubmitter {
+    actor_label: String,
+    scope: ConnectionScope,
+}
+
+impl PeerRequestSubmitter {
+    pub(super) fn new(actor_label: String, scope: ConnectionScope) -> Self {
+        Self { actor_label, scope }
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum RequestEnqueueError {
     Full(Box<notebook_protocol::protocol::NotebookRequestEnvelope>),
@@ -257,8 +268,7 @@ pub(super) fn spawn_peer_request_worker(
     multipart_uploads: MultipartUploadState,
     notebook_id: String,
     peer_id: String,
-    submitter_actor_label: String,
-    submitter_scope: ConnectionScope,
+    submitter: PeerRequestSubmitter,
 ) -> PeerRequestWorker {
     let (tx, mut rx) = mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(
         PEER_REQUEST_QUEUE_CAPACITY,
@@ -290,8 +300,8 @@ pub(super) fn spawn_peer_request_worker(
                             &room,
                             envelope.request,
                             daemon.clone(),
-                            Some(submitter_actor_label.as_str()),
-                            submitter_scope,
+                            Some(submitter.actor_label.as_str()),
+                            submitter.scope,
                         )
                         .await
                     }
