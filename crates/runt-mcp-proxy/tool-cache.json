@@ -583,6 +583,281 @@
     "name": "manage_dependencies"
   },
   {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "List durable notebook comments for the active session.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cell_id": {
+          "default": null,
+          "description": "Filter to threads badged on this cell.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "include_resolved": {
+          "default": null,
+          "description": "Include resolved threads. Defaults to true.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "title": "ListCommentsParams",
+      "type": "object"
+    },
+    "name": "list_comments"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "description": "Create a pending comment thread anchored to the notebook, a cell, a source range, or an output.",
+    "inputSchema": {
+      "$defs": {
+        "CommentAnchorInput": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "notebook",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "cell_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "cell",
+                  "type": "string"
+                },
+                "observed_cell_position": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "cell_id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "end_cell_id": {
+                  "type": "string"
+                },
+                "end_position": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "cell_range",
+                  "type": "string"
+                },
+                "start_cell_id": {
+                  "type": "string"
+                },
+                "start_position": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "start_cell_id",
+                "end_cell_id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "cell_id": {
+                  "type": "string"
+                },
+                "end_column": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "end_line": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "exact_quote": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "source_range",
+                  "type": "string"
+                },
+                "prefix_quote": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "start_column": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start_line": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "suffix_quote": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "cell_id",
+                "start_line",
+                "start_column",
+                "end_line",
+                "end_column"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "cell_id": {
+                  "type": "string"
+                },
+                "execution_id": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "output",
+                  "type": "string"
+                },
+                "output_id": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "cell_id"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "after_thread_id": {
+          "default": null,
+          "description": "Insert after this thread within the same anchor scope.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "anchor": {
+          "$ref": "#/$defs/CommentAnchorInput",
+          "description": "Anchor for the new thread."
+        },
+        "body": {
+          "description": "First message body.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "anchor",
+        "body"
+      ],
+      "title": "CreateCommentThreadParams",
+      "type": "object"
+    },
+    "name": "create_comment_thread"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "description": "Add a pending reply to an existing comment thread.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "after_message_id": {
+          "default": null,
+          "description": "Insert after this message in the thread.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body": {
+          "description": "Reply message body.",
+          "type": "string"
+        },
+        "thread_id": {
+          "description": "Thread ID to reply to.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id",
+        "body"
+      ],
+      "title": "ReplyCommentThreadParams",
+      "type": "object"
+    },
+    "name": "reply_comment_thread"
+  },
+  {
     "_meta": {
       "ui": {
         "resourceUri": "ui://nteract/output.html"

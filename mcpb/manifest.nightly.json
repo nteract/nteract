@@ -129,6 +129,18 @@
       "name": "manage_dependencies"
     },
     {
+      "description": "List durable notebook comments for the active session.",
+      "name": "list_comments"
+    },
+    {
+      "description": "Create a pending comment thread anchored to the notebook, a cell, a source range, or an output.",
+      "name": "create_comment_thread"
+    },
+    {
+      "description": "Add a pending reply to an existing comment thread.",
+      "name": "reply_comment_thread"
+    },
+    {
       "description": "Replace literal text in a cell. Use context_before/context_after to disambiguate repeated matches.",
       "name": "replace_match"
     },
