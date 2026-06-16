@@ -559,6 +559,25 @@ test("Markdown documents trust app sessions before surfacing sign-in chrome", ()
   );
 });
 
+test("Markdown document list reuses the hosted document catalog cache pattern", () => {
+  const markdownListText = readFileSync(
+    new URL("../viewer/markdown-document-list-view.tsx", import.meta.url),
+    "utf8",
+  );
+  const markdownCacheText = readFileSync(
+    new URL("../viewer/markdown-document-list-cache.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(markdownListText, /cloudMarkdownDocumentListSeedFromBootstrapOrCache/);
+  assert.match(markdownListText, /readCachedCloudMarkdownDocumentListFromWindow/);
+  assert.match(markdownListText, /writeCachedCloudMarkdownDocumentListToWindow/);
+  assert.match(markdownListText, /clearCachedCloudMarkdownDocumentListFromWindow/);
+  assert.match(markdownCacheText, /readCachedHostedDocumentList/);
+  assert.match(markdownCacheText, /writeCachedHostedDocumentList/);
+  assert.match(markdownCacheText, /itemsKey: "documents"/);
+});
+
 test("Markdown document sharing uses email-first collaborator input", () => {
   const markdownSharingText = readFileSync(
     new URL("../viewer/markdown-sharing-controls.tsx", import.meta.url),

@@ -18,6 +18,11 @@ import {
   type CloudMarkdownDocumentListItem,
 } from "./markdown-document-dashboard";
 import { projectHostedDocumentAuthState } from "./hosted-document-auth";
+import {
+  clearCachedCloudMarkdownDocumentList,
+  readCachedCloudMarkdownDocumentList,
+  writeCachedCloudMarkdownDocumentList,
+} from "./markdown-document-list-cache";
 import type {
   CloudMarkdownDocumentCreateResponse,
   CloudMarkdownDocumentListBootstrap,
@@ -59,7 +64,7 @@ export function CloudMarkdownDocumentListView({
     appSessionStatus.refreshAppSessionStatus,
   );
   const [listState, setListState] = useState<MarkdownDocumentListState>(() =>
-    initialMarkdownDocumentListState(bootstrap),
+    initialMarkdownDocumentListState(authState, bootstrap),
   );
   const [refreshIndex, setRefreshIndex] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
@@ -84,22 +89,27 @@ export function CloudMarkdownDocumentListView({
   }, [resolvedTheme]);
 
   useEffect(() => {
+    const seededDocuments = cloudMarkdownDocumentListSeedFromBootstrapOrCache(authState, bootstrap);
     if (!canFetchDocumentList) {
-      if (waitingForAppSession && bootstrap) {
-        setListState({ kind: "ready", documents: bootstrap.documents });
+      if (waitingForAppSession) {
+        setListState(
+          seededDocuments ? { kind: "ready", documents: seededDocuments } : { kind: "loading" },
+        );
         return;
       }
+      clearCachedCloudMarkdownDocumentListFromWindow();
       setListState({ kind: "signed_out" });
       return;
     }
     if (refreshIndex === 0 && bootstrap) {
+      writeCachedCloudMarkdownDocumentListToWindow(authState, bootstrap.documents);
       setListState({ kind: "ready", documents: bootstrap.documents });
       return;
     }
 
     const controller = new AbortController();
     setListState(
-      bootstrap ? { kind: "ready", documents: bootstrap.documents } : { kind: "loading" },
+      seededDocuments ? { kind: "ready", documents: seededDocuments } : { kind: "loading" },
     );
     void (async () => {
       try {
@@ -112,6 +122,7 @@ export function CloudMarkdownDocumentListView({
         if (!isCloudMarkdownDocumentListResponse(body)) {
           throw new Error("Unable to list Markdown documents: response shape was invalid");
         }
+        writeCachedCloudMarkdownDocumentListToWindow(authState, body.documents);
         setListState({ kind: "ready", documents: body.documents });
         setBootstrap({
           kind: "markdown-document-list",
@@ -316,6 +327,7 @@ export function CloudMarkdownDocumentListView({
           className="cloud-dashboard-secondary-action"
           onClick={() => {
             clearCloudPrototypeDevAuth(window.localStorage);
+            clearCachedCloudMarkdownDocumentListFromWindow();
             void clearCloudAppSession().finally(() => {
               window.location.reload();
             });
@@ -329,9 +341,11 @@ export function CloudMarkdownDocumentListView({
 }
 
 function initialMarkdownDocumentListState(
+  authState: CloudPrototypeAuthState,
   bootstrap: CloudMarkdownDocumentListBootstrap | null,
 ): MarkdownDocumentListState {
-  return bootstrap ? { kind: "ready", documents: bootstrap.documents } : { kind: "loading" };
+  const seededDocuments = cloudMarkdownDocumentListSeedFromBootstrapOrCache(authState, bootstrap);
+  return seededDocuments ? { kind: "ready", documents: seededDocuments } : { kind: "loading" };
 }
 
 function fetchMarkdownDocumentList(
@@ -358,6 +372,47 @@ function cloudAuthWithScope(
   scope: "viewer" | "editor" | "owner",
 ): CloudPrototypeAuthState {
   return authState.mode === "dev" ? { ...authState, requestedScope: scope } : authState;
+}
+
+function cloudMarkdownDocumentListSeedFromBootstrapOrCache(
+  authState: CloudPrototypeAuthState,
+  bootstrap: CloudMarkdownDocumentListBootstrap | null,
+): CloudMarkdownDocumentListItem[] | null {
+  return bootstrap?.documents ?? readCachedCloudMarkdownDocumentListFromWindow(authState);
+}
+
+function readCachedCloudMarkdownDocumentListFromWindow(
+  authState: CloudPrototypeAuthState,
+): CloudMarkdownDocumentListItem[] | null {
+  const storage = cloudMarkdownDocumentListCacheStorage();
+  return storage ? readCachedCloudMarkdownDocumentList(storage, authState) : null;
+}
+
+function writeCachedCloudMarkdownDocumentListToWindow(
+  authState: CloudPrototypeAuthState,
+  documents: CloudMarkdownDocumentListItem[],
+): void {
+  const storage = cloudMarkdownDocumentListCacheStorage();
+  if (!storage) {
+    return;
+  }
+  writeCachedCloudMarkdownDocumentList(storage, authState, documents);
+}
+
+function clearCachedCloudMarkdownDocumentListFromWindow(): void {
+  const storage = cloudMarkdownDocumentListCacheStorage();
+  if (!storage) {
+    return;
+  }
+  clearCachedCloudMarkdownDocumentList(storage);
+}
+
+function cloudMarkdownDocumentListCacheStorage(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
 }
 
 function defaultMarkdownDocumentTitle(): string {
