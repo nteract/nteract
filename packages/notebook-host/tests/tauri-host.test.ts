@@ -45,6 +45,8 @@ vi.mock("@tauri-apps/api/core", () => ({
           ephemeral: true,
           notebook_path: null,
           runtime: "python",
+          comments_doc_id: "comments:local-room:nb-1",
+          comments_authority_actor_label: "runtimed:comments",
         });
       case "get_default_save_directory":
         return Promise.resolve("/tmp/notebooks");
@@ -198,13 +200,15 @@ describe("createTauriHost()", () => {
     expect(capturedInvokes.at(-1)?.cmd).toBe("get_daemon_info");
   });
 
-  it("routes daemon.getReadyInfo to get_daemon_ready_info and passes ephemeral + path through", async () => {
+  it("routes daemon.getReadyInfo to get_daemon_ready_info and passes comments identity through", async () => {
     const host = createTauriHost({ transport: stubTransport });
     const info = await host.daemon.getReadyInfo();
     expect(capturedInvokes.at(-1)?.cmd).toBe("get_daemon_ready_info");
     expect(info?.ephemeral).toBe(true);
     expect(info?.notebook_path).toBe(null);
     expect(info?.runtime).toBe("python");
+    expect(info?.comments_doc_id).toBe("comments:local-room:nb-1");
+    expect(info?.comments_authority_actor_label).toBe("runtimed:comments");
   });
 
   it("routes blobs.port to get_blob_port", async () => {
@@ -331,6 +335,8 @@ describe("createTauriHost()", () => {
       ephemeral: true,
       notebook_path: null,
       runtime: "python",
+      comments_doc_id: "comments:local-room:nb-1",
+      comments_authority_actor_label: "runtimed:comments",
     });
   });
 

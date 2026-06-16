@@ -45,6 +45,7 @@ import {
 } from "./comm-diff";
 import type {
   CommsState,
+  CommentsProjection,
   ExecutionQueueProjection,
   ExecutionViewChangeset,
   FrameEvent,
@@ -75,7 +76,7 @@ const FLUSH_DEBOUNCE_MS = 20;
 /** Maximum wait for a host transport to accept an outbound sync frame. */
 const DEFAULT_FLUSH_DELIVERY_TIMEOUT_MS = 5000;
 
-type FlushDocKey = "notebook" | "runtimeState" | "commsDoc" | "pool";
+type FlushDocKey = "notebook" | "runtimeState" | "commsDoc" | "commentsDoc" | "pool";
 
 // ── Logger interface ─────────────────────────────────────────────────
 
@@ -400,6 +401,9 @@ export class SyncEngine {
    */
   readonly commChanges$: Observable<CommChanges>;
 
+  /** Durable comment thread projection from CommentsDoc. */
+  readonly commentsProjection$: Observable<CommentsProjection>;
+
   /** Ordered bootstrap/readiness status emitted by the daemon. */
   readonly sessionStatus$: Observable<SessionStatus>;
 
@@ -463,6 +467,7 @@ export class SyncEngine {
   private readonly _sessionStatus$ = new ReplaySubject<SessionStatus>(1);
   private readonly _initialSyncComplete$ = new Subject<void>();
   private readonly _commChanges$ = new Subject<CommChanges>();
+  private readonly _commentsProjection$ = new Subject<CommentsProjection>();
   private readonly _outputIdChanges$ = new Subject<{
     changed: Array<[string, unknown]>;
     removed_ids: string[];
@@ -489,6 +494,7 @@ export class SyncEngine {
     this.sessionStatus$ = this._sessionStatus$.asObservable();
     this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
     this.commChanges$ = this._commChanges$.asObservable();
+    this.commentsProjection$ = this._commentsProjection$.asObservable();
     this.outputIdChanges$ = this._outputIdChanges$.asObservable();
     this.executionViewChanges$ = this._executionViewChanges$.asObservable();
     this.notebookDocChanged$ = this._notebookDocChanged$.asObservable();
@@ -886,6 +892,62 @@ export class SyncEngine {
         if (e.changed && e.state) {
           this.lastCommsState = e.state as CommsState;
           this.projectComms();
+        }
+      }),
+    );
+
+    // ── Sub-pipeline: comments doc sync ────────────────────────────
+
+    sub.add(
+      frameEvents$
+        .pipe(
+          filter((e) => e.type === "comments_doc_sync_applied"),
+          concatMap((e) => {
+            if (e.changed && e.projection) {
+              this._commentsProjection$.next(e.projection);
+            }
+
+            const handle = this.opts.getHandle();
+            const generateReply = handle?.generate_comments_doc_sync_reply;
+            if (handle && generateReply) {
+              try {
+                const reply = generateReply.call(handle);
+                if (reply) {
+                  return from(
+                    this.opts.transport
+                      .sendFrame(FrameType.COMMENTS_DOC_SYNC, reply)
+                      .catch((err: unknown) =>
+                        log.warn("[sync-engine] comments doc sync reply failed:", err),
+                      ),
+                  );
+                }
+              } catch (err) {
+                log.warn("[sync-engine] generate_comments_doc_sync_reply failed:", err);
+              }
+            }
+            return EMPTY;
+          }),
+        )
+        .subscribe(),
+    );
+
+    // CommentsDoc sync error: send recovery reply + publish recovered projection
+    sub.add(
+      frameEvents$.pipe(filter((e) => e.type === "comments_doc_sync_error")).subscribe((e) => {
+        log.warn(
+          "[sync-engine] comments_doc_sync_error: comments doc rebuilt, sync state normalized",
+        );
+        if (e.reply) {
+          this.opts.transport
+            .sendFrame(FrameType.COMMENTS_DOC_SYNC, new Uint8Array(e.reply))
+            .catch((err: unknown) => {
+              const handle = this.opts.getHandle();
+              handle?.cancel_last_comments_doc_flush?.();
+              log.warn("[sync-engine] comments doc recovery reply send failed:", err);
+            });
+        }
+        if (e.changed && e.projection) {
+          this._commentsProjection$.next(e.projection);
         }
       }),
     );
@@ -1319,6 +1381,20 @@ export class SyncEngine {
       );
     }
 
+    // Also flush CommentsDoc sync when the current handle has been initialized
+    // with daemon-provided comments identity.
+    const commentsMsg = handle.flush_comments_doc_sync?.();
+    if (commentsMsg) {
+      this.trackInflightFlush(
+        "commentsDoc",
+        this.awaitFrameDelivery(
+          this.opts.transport.sendFrame(FrameType.COMMENTS_DOC_SYNC, commentsMsg),
+          "comments doc sync to relay",
+          () => handle.cancel_last_comments_doc_flush?.(),
+        ),
+      );
+    }
+
     // Also flush PoolDoc sync so the daemon sends pool state.
     const poolMsg = handle.flush_pool_state_sync();
     if (poolMsg) {
@@ -1392,6 +1468,19 @@ export class SyncEngine {
         this.opts.transport.sendFrame(FrameType.COMMS_DOC_SYNC, commsMsg),
         "flushAndWait comms doc sync",
         () => handle.cancel_last_comms_doc_flush(),
+      );
+      if (!delivered) {
+        return false;
+      }
+    }
+
+    // Also flush CommentsDoc sync.
+    const commentsMsg = handle.flush_comments_doc_sync?.();
+    if (commentsMsg) {
+      const delivered = await this.awaitFrameDelivery(
+        this.opts.transport.sendFrame(FrameType.COMMENTS_DOC_SYNC, commentsMsg),
+        "flushAndWait comments doc sync",
+        () => handle.cancel_last_comments_doc_flush?.(),
       );
       if (!delivered) {
         return false;

@@ -31,6 +31,9 @@ function createMockHandle(overrides: Partial<SyncableHandle> = {}): SyncableHand
     flush_comms_doc_sync: vi.fn(() => null),
     cancel_last_comms_doc_flush: vi.fn(),
     generate_comms_doc_sync_reply: vi.fn(() => null),
+    flush_comments_doc_sync: vi.fn(() => null),
+    cancel_last_comments_doc_flush: vi.fn(),
+    generate_comments_doc_sync_reply: vi.fn(() => null),
     flush_pool_state_sync: vi.fn(() => null),
     cancel_last_pool_state_flush: vi.fn(),
     generate_pool_state_sync_reply: vi.fn(() => null),
@@ -96,6 +99,14 @@ function commsDocSyncEvent(state: Record<string, Record<string, unknown>>): Fram
     type: "comms_doc_sync_applied",
     changed: true,
     state: { comms: state },
+  };
+}
+
+function commentsDocSyncEvent(projection: FrameEvent["projection"]): FrameEvent {
+  return {
+    type: "comments_doc_sync_applied",
+    changed: true,
+    projection,
   };
 }
 
@@ -1174,6 +1185,55 @@ describe("SyncEngine", () => {
       expect(handle.cancel_last_flush).toHaveBeenCalled();
       engine.stop();
     });
+
+    it("emits comments projection and sends CommentsDoc sync reply", async () => {
+      const projection = {
+        comments_doc_id: "comments:local-room:notebook-1",
+        threads: [
+          {
+            id: "thread-1",
+            anchor: { kind: "notebook" },
+            position: "80",
+            status: "open",
+            mutation_state: "accepted",
+            trusted: true,
+            messages: [
+              {
+                id: "message-1",
+                position: "80",
+                body: "hello",
+                mutation_state: "accepted",
+                trusted: true,
+                created_at: "2026-06-16T00:00:00.000Z",
+              },
+            ],
+            badge_cell_ids: [],
+            created_at: "2026-06-16T00:00:00.000Z",
+          },
+        ],
+      } satisfies NonNullable<FrameEvent["projection"]>;
+      const reply = new Uint8Array([0xca, 0xfe]);
+
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        commentsDocSyncEvent(projection),
+      ]);
+      (handle.generate_comments_doc_sync_reply as ReturnType<typeof vi.fn>).mockReturnValue(reply);
+
+      const engine = createEngine();
+      engine.start();
+
+      const projections: NonNullable<FrameEvent["projection"]>[] = [];
+      engine.commentsProjection$.subscribe((value) => projections.push(value));
+
+      transport.deliver(Array.from([FrameType.COMMENTS_DOC_SYNC, 1]));
+
+      await vi.waitFor(() => expect(projections).toEqual([projection]));
+      const commentsFrames = transport.sentFrames.filter(
+        (frame) => frame.frameType === FrameType.COMMENTS_DOC_SYNC,
+      );
+      expect(commentsFrames.some((frame) => frame.payload === reply)).toBe(true);
+      engine.stop();
+    });
   });
 
   // ── Outbound flush ────────────────────────────────────────────
@@ -1227,6 +1287,22 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("flush() also sends initialized CommentsDoc sync", () => {
+      const commentsMsg = new Uint8Array([10, 11, 12]);
+      (handle.flush_comments_doc_sync as ReturnType<typeof vi.fn>).mockReturnValue(commentsMsg);
+
+      const engine = createEngine();
+      engine.start();
+      engine.flush();
+
+      const commentsFrames = transport.sentFrames.filter(
+        (f) => f.frameType === FrameType.COMMENTS_DOC_SYNC,
+      );
+      expect(commentsFrames).toHaveLength(1);
+      expect(commentsFrames[0].payload).toEqual(commentsMsg);
+      engine.stop();
+    });
+
     it("flush() rolls back on transport failure", async () => {
       const syncMsg = new Uint8Array([1, 2, 3]);
       (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(syncMsg);
@@ -1259,6 +1335,15 @@ describe("SyncEngine", () => {
             new Uint8Array([8, 9, 10]),
           ),
         cancel: () => handle.cancel_last_comms_doc_flush,
+      },
+      {
+        name: "comments doc",
+        frameType: FrameType.COMMENTS_DOC_SYNC,
+        flush: () =>
+          (handle.flush_comments_doc_sync as ReturnType<typeof vi.fn>).mockReturnValue(
+            new Uint8Array([10, 11, 12]),
+          ),
+        cancel: () => handle.cancel_last_comments_doc_flush,
       },
       {
         name: "pool state",
