@@ -42,6 +42,7 @@ describe("FrameType constants", () => {
     expect(FrameType.SESSION_CONTROL).toBe(0x07);
     expect(FrameType.PUT_BLOB).toBe(0x08);
     expect(FrameType.COMMS_DOC_SYNC).toBe(0x09);
+    expect(FrameType.COMMENTS_DOC_SYNC).toBe(0x0a);
   });
 });
 
@@ -80,6 +81,10 @@ describe("frameSizeLimits", () => {
       warn: 16 * mib,
     });
     expect(frameSizeLimits(FrameType.COMMS_DOC_SYNC)).toEqual({
+      cap: 64 * mib,
+      warn: 16 * mib,
+    });
+    expect(frameSizeLimits(FrameType.COMMENTS_DOC_SYNC)).toEqual({
       cap: 64 * mib,
       warn: 16 * mib,
     });

@@ -605,6 +605,7 @@ mod tests {
             ft::PRESENCE,
             ft::RUNTIME_STATE_SYNC,
             ft::COMMS_DOC_SYNC,
+            ft::COMMENTS_DOC_SYNC,
             ft::POOL_STATE_SYNC,
             ft::SESSION_CONTROL,
             ft::PUT_BLOB,
@@ -708,6 +709,10 @@ mod tests {
         assert_eq!(
             NotebookFrameType::try_from(0x09).unwrap(),
             NotebookFrameType::CommsDocSync
+        );
+        assert_eq!(
+            NotebookFrameType::try_from(0x0a).unwrap(),
+            NotebookFrameType::CommentsDocSync
         );
         assert!(NotebookFrameType::try_from(0xFF).is_err());
     }

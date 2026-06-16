@@ -1,6 +1,6 @@
 # Wire protocol
 
-The notebook app and the runtimed daemon communicate over a Unix socket (named pipe on Windows) using length-prefixed, typed frames. Traffic classes: Automerge sync, request/response, runtime/pool state sync, broadcasts, and presence/session-control.
+The notebook app and the runtimed daemon communicate over a Unix socket (named pipe on Windows) using length-prefixed, typed frames. Traffic classes: Automerge sync, request/response, runtime/pool/comments state sync, broadcasts, and presence/session-control.
 
 Scope: `crates/notebook-wire/`, `crates/notebook-doc/`, `crates/notebook-protocol/`, `crates/notebook-sync/`, `crates/runtime-doc/`, `crates/runtimed/src/notebook_sync_server/`, `crates/runtimed/src/requests/`, `packages/runtimed/src/{transport,protocol-contract,request-types}.ts`, `apps/notebook/src/lib/{frame-pipeline,notebook-frame-bus}.ts`.
 
@@ -99,12 +99,18 @@ After the handshake, frames carry a leading type byte:
 | `0x07` | SessionControl | JSON (`SessionControlMessage`, daemon-originated readiness/status) |
 | `0x08` | PutBlob | Framed binary blob upload (`PutBlobHeader` + bytes) |
 | `0x09` | CommsDocSync | Binary (per-notebook `CommsDoc` Automerge sync) |
+| `0x0a` | CommentsDocSync | Binary (per-notebook `CommentsDoc` Automerge sync; allocated but not fully wired) |
 
 | Sender | Valid types |
 |--------|-------------|
 | Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09` |
 | Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09` |
 | Runtime agent peer | `0x00`, `0x01` (RuntimeAgentRequest/Envelope), `0x02` (RuntimeAgentResponse/Envelope), `0x05`, `0x09` |
+
+`0x0a` is reserved for the comments document stream. Until the daemon room,
+runtime-agent read-only policy, frontend/WASM projection, and hosted-room
+materializer are all wired, do not treat `CommentsDocSync` as an accepted client
+write surface.
 
 `NotebookRequest` / `NotebookResponse` payloads travel in flattened `NotebookRequestEnvelope` / `NotebookResponseEnvelope`. Concurrent requests carry an `id`; clients route responses by id because broadcasts, state sync, and out-of-order responses interleave freely.
 

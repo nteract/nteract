@@ -346,6 +346,16 @@ where
                                 }
                             }
 
+                            NotebookFrameType::CommentsDocSync => {
+                                // The wire code point is reserved before the
+                                // daemon owns a CommentsDoc sync handler. Drop
+                                // explicit client frames instead of routing them
+                                // through another document's policy by accident.
+                                warn!(
+                                    "[notebook-sync] Ignoring unsupported CommentsDocSync frame from client"
+                                );
+                            }
+
                             NotebookFrameType::PoolStateSync => {
                                 if !handle_pool_state_frame(
                                     &daemon,

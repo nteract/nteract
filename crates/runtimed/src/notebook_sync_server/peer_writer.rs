@@ -38,6 +38,7 @@ impl PeerEgressLane {
             | NotebookFrameType::Response
             | NotebookFrameType::RuntimeStateSync
             | NotebookFrameType::CommsDocSync
+            | NotebookFrameType::CommentsDocSync
             | NotebookFrameType::PoolStateSync
             | NotebookFrameType::SessionControl
             | NotebookFrameType::PutBlob => Self::Reliable,
@@ -737,6 +738,10 @@ mod tests {
         );
         assert_eq!(
             PeerEgressLane::classify(NotebookFrameType::CommsDocSync),
+            PeerEgressLane::Reliable
+        );
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::CommentsDocSync),
             PeerEgressLane::Reliable
         );
         assert_eq!(

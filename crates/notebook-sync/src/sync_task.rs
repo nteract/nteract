@@ -844,6 +844,17 @@ impl SyncReactor {
                 Ok(())
             }
 
+            NotebookFrameType::CommentsDocSync => {
+                // CommentsDoc has a reserved typed-frame lane, but this sync task
+                // does not own a comments document handle yet. Keep the frame
+                // explicit so future wiring cannot be mistaken for CommsDoc.
+                debug!(
+                    "[notebook-sync] Ignoring CommentsDocSync frame for {} (not wired yet)",
+                    self.io.notebook_id
+                );
+                Ok(())
+            }
+
             NotebookFrameType::PoolStateSync => {
                 // PoolDoc sync is handled by the frontend WASM layer, not the Python client.
                 // Ignore in the Python sync task.

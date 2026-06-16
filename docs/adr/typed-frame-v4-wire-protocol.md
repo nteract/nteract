@@ -62,7 +62,7 @@ Both surfaces share the same 100 MiB outer ceiling (`MAX_FRAME_SIZE`) and the sa
 
 The fact that the same protocol-version preamble gates two different framing rules is intentional: pool/settings predate the typed-frame layer and were not worth migrating. New channels should adopt typed framing.
 
-## Decision 3: Ten frame types, fixed numbering
+## Decision 3: Eleven frame types, fixed numbering
 
 `NotebookFrameType` is a `#[repr(u8)]` enum. Adding a new type requires a new byte, a new variant, and a CI-enforced contract test (`cargo test -p notebook-protocol`). The current set:
 
@@ -78,6 +78,12 @@ The fact that the same protocol-version preamble gates two different framing rul
 | `0x07` | `SessionControl` | JSON, `SessionControlMessage` | daemon → client |
 | `0x08` | `PutBlob` | Framed binary (see Decision 6) | client → daemon |
 | `0x09` | `CommsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommsDoc`) | bidirectional |
+| `0x0a` | `CommentsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommentsDoc`) | reserved; planned bidirectional with client write policy |
+
+`CommentsDocSync` is allocated at the wire layer before the room materializer
+and peer-policy handlers are complete. Current code may parse, classify, or
+pipe the frame explicitly, but clients must not treat `0x0a` as a usable comment
+write surface until the comments document handler lands.
 
 ### Direction is policy, not encoding
 
@@ -104,6 +110,7 @@ Every frame type has a hard cap (reject) and a soft warn threshold (log, continu
 | `Presence` | 4 KiB | 1 KiB | Cursor/selection/focus updates (typically <100 bytes CBOR); matches semantic cap in `notebook-doc::presence` |
 | `RuntimeStateSync` | 64 MiB | 16 MiB | Snapshots of `RuntimeStateDoc` with output manifests |
 | `CommsDocSync` | 64 MiB | 16 MiB | Mutable widget comm state snapshots and sync deltas |
+| `CommentsDocSync` | 64 MiB | 16 MiB | Comments document snapshots and sync deltas |
 | `PoolStateSync` | 1 MiB | 256 KiB | Daemon pool state is small (counts, errors, env paths) |
 | `SessionControl` | 1 MiB | 256 KiB | Tiny readiness JSON |
 | `PutBlob` | 32 MiB | 8 MiB | Single-frame blob upload ceiling |
@@ -183,7 +190,7 @@ The first frame after the preamble is a JSON `Handshake`, length-prefixed but **
 |---------|---------|------------------------|
 | `Pool` | Pool IPC | Untyped JSON request/response |
 | `SettingsSync` | Global settings doc | Untyped binary Automerge sync |
-| `NotebookSync` | Per-notebook room | Typed frames (0x00 through 0x08) |
+| `NotebookSync` | Per-notebook room | Typed frames (0x00 through 0x0a) |
 | `OpenNotebook` | Per-notebook room from file path | Typed frames |
 | `CreateNotebook` | New untitled room | Typed frames |
 | `RuntimeAgent` | Kernel sidecar attached to a room | Typed frames, different request/response payloads |
@@ -228,7 +235,7 @@ Both `Request` (0x01) and `Response` (0x02) carry a JSON envelope with a correla
 { "id": "req-7", "result": "cell_queued" }
 ```
 
-The client tracks pending requests by id and routes incoming `Response` frames by id, because `AutomergeSync`, `RuntimeStateSync`, `CommsDocSync`, `Broadcast`, `Presence`, and `SessionControl` frames all interleave freely between request send and response receipt. Frame order across types is **not** an invariant the client can rely on.
+The client tracks pending requests by id and routes incoming `Response` frames by id, because `AutomergeSync`, `RuntimeStateSync`, `CommsDocSync`, `CommentsDocSync`, `Broadcast`, `Presence`, and `SessionControl` frames all interleave freely between request send and response receipt. Frame order across types is **not** an invariant the client can rely on.
 
 The same envelope shape covers the runtime-agent subprotocol (`RuntimeAgentRequestEnvelope` / `RuntimeAgentResponseEnvelope`); the difference is purely in the inner JSON action/result discriminant. The type bytes are identical.
 
