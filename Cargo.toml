@@ -11,6 +11,7 @@ members = [
     "crates/automunge",
     "crates/notebook-wire",
     "crates/notebook-doc",
+    "crates/comments-doc",
     "crates/runtime-doc",
     "crates/notebook-protocol",
     "crates/notebook-cloud-transport",

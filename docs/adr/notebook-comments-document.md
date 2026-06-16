@@ -403,20 +403,21 @@ stable across peers.
 
 ## Wire And Sync
 
-Add the first `CommentsDoc` wrapper module alongside `runtime-doc` because
-`CommsDoc` and the existing Automerge document recovery helpers already live
-there. Move it to a dedicated crate later only if the comment domain grows large
-enough to justify that split.
+Add the first `CommentsDoc` wrapper in a dedicated `comments-doc` crate.
+Comments are durable notebook collaboration state, not runtime state, and the
+crate boundary keeps comment lifetime and moderation policy separate from
+`RuntimeStateDoc` and `CommsDoc`.
 
 Core seams:
 
-- `crates/runtime-doc/src/comments.rs`, `crates/runtime-doc/src/lib.rs`, and
-  related tests
+- `crates/comments-doc/src/lib.rs` and related tests
   - add `CommentsDoc`, `CommentsDocHandle`, state/projection types, schema seed,
     save/load/head/sync helpers, mutation helpers, and authority-finalization
     tests
   - keep comments policy helpers separate from CommsDoc policy; widget-state
     authorization is not comments authorization
+  - require `comments_doc_id` on every materialized comments document and reject
+    sync/projection when the raw document identity conflicts with the expected id
 - `crates/notebook-wire/src/lib.rs`
   - add `frame_types::COMMENTS_DOC_SYNC = 0x0a`
   - add `NotebookFrameType::CommentsDocSync`
@@ -632,6 +633,11 @@ The table is deliberately stricter than the protocol-helper `client writable`
 flag. Helpers may mark `COMMENTS_DOC_SYNC` writable so empty Automerge
 negotiation can pass through generic client code, but room ingress still has to
 inspect `Message.changes` and scope before applying document changes.
+
+Room ingress must also authenticate the connection principal to the Automerge
+actor id before accepting authority-authored comment fields. The `comments-doc`
+crate can project only fields authored by configured authority actor ids, but it
+cannot prove that a remote peer was allowed to use that actor id.
 
 ### Sync policy
 

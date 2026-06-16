@@ -1323,6 +1323,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "comments-doc"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "automerge-recovery",
+ "automunge",
+ "loro_fractional_index",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "compression-codecs"
 version = "0.4.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
