@@ -28,6 +28,10 @@ import {
   cloudDocumentUrlAfterRename,
   type CloudNotebookTitleDisplay,
 } from "./cloud-notebook-title-state";
+import {
+  cloudNotebookModeFromSearch,
+  replaceCloudNotebookModeInCurrentUrl,
+} from "./cloud-notebook-mode";
 import { cloudNotebookTitleClassNames } from "./cloud-notebook-title";
 import type { CloudMarkdownDocumentConfig, CloudViewerAuthConfig } from "./cloud-viewer-types";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
@@ -119,7 +123,7 @@ export function MarkdownDocumentRoute({
   const [routeState, setRouteState] = useState<RouteState>(() =>
     initialMarkdownDocumentRouteState(config),
   );
-  const [mode, setMode] = useState<MarkdownDocumentMode>("edit");
+  const [mode, setMode] = useState<MarkdownDocumentMode>(initialMarkdownDocumentMode);
   const [railCollapsed, setRailCollapsed] = useState(initialMarkdownRailCollapsed);
   const [markdownTitleSaving, setMarkdownTitleSaving] = useState(false);
   const [markdownTitleError, setMarkdownTitleError] = useState<string | null>(null);
@@ -130,6 +134,10 @@ export function MarkdownDocumentRoute({
   useEffect(() => {
     loadSupplementalViewerCss();
   }, []);
+
+  useEffect(() => {
+    replaceCloudNotebookModeInCurrentUrl(mode);
+  }, [mode]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -304,6 +312,10 @@ export function MarkdownDocumentRoute({
     syncControllerRef.current?.editBody(nextBody);
   }, []);
 
+  const onModeChange = useCallback((nextMode: MarkdownDocumentMode) => {
+    setMode(nextMode);
+  }, []);
+
   useEffect(() => {
     if (routeState.kind !== "ready" || mode !== "edit") {
       return;
@@ -426,7 +438,11 @@ export function MarkdownDocumentRoute({
         />
       }
       utilityControls={
-        <MarkdownDocumentModeToggle mode={activeMode} canEdit={canEdit} onModeChange={setMode} />
+        <MarkdownDocumentModeToggle
+          mode={activeMode}
+          canEdit={canEdit}
+          onModeChange={onModeChange}
+        />
       }
       sharingControls={
         canManageSharing ? (
@@ -499,6 +515,13 @@ export function MarkdownDocumentRoute({
 
 function initialMarkdownRailCollapsed(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 599.98px)").matches;
+}
+
+function initialMarkdownDocumentMode(): MarkdownDocumentMode {
+  if (typeof window === "undefined") {
+    return "view";
+  }
+  return cloudNotebookModeFromSearch(window.location.search);
 }
 
 function initialMarkdownDocumentRouteState(config: CloudMarkdownDocumentConfig): RouteState {

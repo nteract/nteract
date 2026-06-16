@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  cloudNotebookModeFromSearch,
   cloudNotebookInteractionModeForAccess,
   cloudNotebookSelectedModeCorrectionForAccess,
+  cloudNotebookUrlWithMode,
 } from "../viewer/cloud-notebook-mode";
 
 test("cloud notebook edit links stay view-only for viewers without an access request", () => {
@@ -140,5 +142,21 @@ test("cloud notebook mode correction normalizes owner edit links for view-only a
       selectedMode: "view",
     }),
     null,
+  );
+});
+
+test("cloud document mode helpers default to view and preserve route URLs", () => {
+  assert.equal(cloudNotebookModeFromSearch(""), "view");
+  assert.equal(cloudNotebookModeFromSearch("?mode=view"), "view");
+  assert.equal(cloudNotebookModeFromSearch("?mode=edit"), "edit");
+  assert.equal(cloudNotebookModeFromSearch("?mode=source"), "view");
+
+  assert.equal(
+    cloudNotebookUrlWithMode("/m/doc-title/Title?mode=view#intro", "edit"),
+    "/m/doc-title/Title?mode=edit#intro",
+  );
+  assert.equal(
+    cloudNotebookUrlWithMode("https://preview.runt.run/m/doc-title/Title#intro", "view"),
+    "https://preview.runt.run/m/doc-title/Title?mode=view#intro",
   );
 });

@@ -500,6 +500,29 @@ test("cloud viewer defers supplemental CSS loading until the notebook surface mo
   );
 });
 
+test("Markdown documents honor the URL mode before loading the source editor", () => {
+  const markdownRouteText = readFileSync(
+    new URL("../viewer/markdown-document-route.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(markdownRouteText, /cloudNotebookModeFromSearch/);
+  assert.match(markdownRouteText, /replaceCloudNotebookModeInCurrentUrl\(mode\)/);
+  assert.match(
+    markdownRouteText,
+    /const \[mode, setMode\] = useState<MarkdownDocumentMode>\(initialMarkdownDocumentMode\)/,
+  );
+  assert.match(markdownRouteText, /function initialMarkdownDocumentMode\(\): MarkdownDocumentMode/);
+  assert.match(
+    markdownRouteText,
+    /<MarkdownDocumentModeToggle[\s\S]*onModeChange=\{onModeChange\}/,
+  );
+  assert.doesNotMatch(
+    markdownRouteText,
+    /const \[mode, setMode\] = useState<MarkdownDocumentMode>\("edit"\)/,
+  );
+});
+
 test("cloud notebook shell keeps the rail and toolbar outside the cell scroller", () => {
   const sourcePath = new URL("../viewer/index.css", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
