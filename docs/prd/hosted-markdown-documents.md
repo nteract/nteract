@@ -147,6 +147,15 @@ projection, editor, and authorization concepts across Cloud and Desktop.
    mobile widths.
 7. The surface must not show runtime, workstation, kernel, dependency, run,
    interrupt, restart, or output-clearing controls.
+8. View and edit modes share one document line. Rendered Markdown, editor
+   text, and future artifact regions should align to the same left gutter used
+   by notebook prose/code/output surfaces rather than switching between a
+   centered article layout and an editor layout.
+9. First paint should prefer safe local-first document bytes over older hosted
+   render seeds. A route may paint persisted Markdown bytes before the room
+   handshake only when local auth material can prove they belong to the same
+   principal; otherwise it waits for the hosted room and must not let a stale
+   seed overwrite newer live content.
 
 ### Cloud Hosting
 

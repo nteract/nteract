@@ -1,12 +1,14 @@
-import { IndexedDbStorageAdapter, type ConnectionStatus } from "runtimed";
+import { IndexedDbStorageAdapter, type ConnectionStatus, type StorageChunk } from "runtimed";
 import type { CloudMarkdownDocumentConfig } from "./cloud-viewer-types";
 import type { CloudAppSession } from "./app-session";
 import {
   cloudPrincipalFromActorLabel,
   CloudWebSocketTransport,
   createCloudConnectTarget,
+  withReadyTimeout,
   type CloudRoomReady,
 } from "./live-sync";
+import { cloudInstantPaintPrincipalMatcher } from "./instant-paint";
 import {
   cloudSyncAuthFromAppSessionCookie,
   cloudSyncAuthFromPrototypeAuthState,
@@ -58,6 +60,73 @@ export interface StartMarkdownDocumentLiveSyncOptions {
 const MARKDOWN_PERSISTENCE_KEY_SEGMENT = "markdown-doc";
 const MARKDOWN_PERSISTENCE_SNAPSHOT_SEGMENT = "snapshot";
 const MARKDOWN_PERSISTENCE_SAVE_DELAY_MS = 500;
+const MARKDOWN_INSTANT_PAINT_READ_TIMEOUT_MS = 2_000;
+const MARKDOWN_INSTANT_PAINT_ACTOR_LABEL = "system:markdown-instant-paint/browser:local";
+
+export async function loadMarkdownDocumentInstantPaintSnapshot({
+  authState,
+  config,
+  appSession,
+  title,
+  onError,
+  readTimeoutMs = MARKDOWN_INSTANT_PAINT_READ_TIMEOUT_MS,
+}: Pick<StartMarkdownDocumentLiveSyncOptions, "authState" | "config" | "appSession" | "title"> & {
+  onError?: (error: unknown) => void;
+  readTimeoutMs?: number;
+}): Promise<MarkdownDocumentLiveSnapshot | null> {
+  const adapter = IndexedDbStorageAdapter.create({ onError });
+  if (!adapter) {
+    return null;
+  }
+  const matchesPrincipal = cloudInstantPaintPrincipalMatcher(authState, {
+    hasAppSession: Boolean(appSession),
+  });
+  if (!matchesPrincipal) {
+    return null;
+  }
+
+  let records: StorageChunk[];
+  try {
+    records = await withReadyTimeout(
+      adapter.loadRange([MARKDOWN_PERSISTENCE_KEY_SEGMENT, config.documentId]),
+      readTimeoutMs,
+      `persisted MarkdownDoc read did not settle within ${readTimeoutMs}ms`,
+    );
+  } catch (error) {
+    console.warn("[notebook-cloud] Markdown instant-paint read failed; skipping paint", error);
+    return null;
+  }
+
+  const seed = selectMarkdownInstantPaintRecord(records, matchesPrincipal);
+  if (!seed) {
+    return null;
+  }
+
+  const moduleUrl = new URL(config.runtimedWasmModulePath, location.href);
+  const wasmUrl = new URL(config.runtimedWasmPath, location.href);
+  let handle: MarkdownHandle | null = null;
+  try {
+    handle = await loadMarkdownHandleFromBytes(
+      seed,
+      MARKDOWN_INSTANT_PAINT_ACTOR_LABEL,
+      moduleUrl,
+      wasmUrl,
+    );
+    return {
+      body: handle.body() ?? "",
+      bodyReady: handle.body_len() != null,
+      title: handle.title()?.trim() || title,
+    };
+  } catch (error) {
+    console.warn(
+      "[notebook-cloud] Markdown instant-paint snapshot load failed; skipping paint",
+      error,
+    );
+    return null;
+  } finally {
+    handle?.free();
+  }
+}
 
 export async function startMarkdownDocumentLiveSync({
   authState,
@@ -337,6 +406,30 @@ function markdownPersistenceKey(documentId: string, principal: string): string[]
     principal,
     MARKDOWN_PERSISTENCE_SNAPSHOT_SEGMENT,
   ];
+}
+
+export function selectMarkdownInstantPaintRecord(
+  records: readonly StorageChunk[],
+  matchesPrincipal: (principal: string) => boolean,
+): Uint8Array | undefined {
+  return records.find((record) => isMatchingMarkdownPersistenceRecord(record, matchesPrincipal))
+    ?.data;
+}
+
+function isMatchingMarkdownPersistenceRecord(
+  record: StorageChunk,
+  matchesPrincipal: (principal: string) => boolean,
+): boolean {
+  const [kind, documentId, principal, segment, ...extra] = record.key;
+  return (
+    kind === MARKDOWN_PERSISTENCE_KEY_SEGMENT &&
+    typeof documentId === "string" &&
+    typeof principal === "string" &&
+    segment === MARKDOWN_PERSISTENCE_SNAPSHOT_SEGMENT &&
+    extra.length === 0 &&
+    Boolean(record.data) &&
+    matchesPrincipal(principal)
+  );
 }
 
 function markdownSnapshotEndpoint(basePath: string, headsHash: string): string {

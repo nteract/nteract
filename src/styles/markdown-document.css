@@ -1,5 +1,4 @@
 .markdown-document-scroll {
-  --markdown-document-content-width: 52rem;
   --markdown-document-content-block-padding: clamp(1.25rem, 4vw, 3rem);
   --markdown-document-content-inline-padding: clamp(1.25rem, 4vw, 3rem);
   display: flex;
@@ -22,16 +21,18 @@
 }
 
 .markdown-document-preview {
-  width: min(100%, var(--markdown-document-content-width));
-  margin: 0 auto;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
 }
 
 .markdown-document-editor {
   display: flex;
   flex: 1;
   min-height: 100%;
-  width: min(100%, var(--markdown-document-content-width));
-  margin: 0 auto;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
   background: transparent;
 }
 

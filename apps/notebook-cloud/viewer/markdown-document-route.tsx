@@ -134,6 +134,7 @@ export function MarkdownDocumentRoute({
   const syncControllerRef = useRef<MarkdownDocumentLiveSyncController | null>(null);
   const editorRef = useRef<CodeMirrorEditorRef | null>(null);
   const connectionStatusRef = useRef<ConnectionStatus>("connecting");
+  const liveSnapshotSeenRef = useRef(false);
 
   useEffect(() => {
     loadSupplementalViewerCss();
@@ -163,6 +164,7 @@ export function MarkdownDocumentRoute({
   useEffect(() => {
     let disposed = false;
     let controller: MarkdownDocumentLiveSyncController | null = null;
+    liveSnapshotSeenRef.current = false;
     void (async () => {
       try {
         connectionStatusRef.current = "connecting";
@@ -181,6 +183,32 @@ export function MarkdownDocumentRoute({
         if (disposed) return;
         const title = catalog.document.title?.trim() || "Untitled Markdown";
         const latestRevisionId = catalog.document.latest_revision_id;
+        void liveSyncModule
+          .loadMarkdownDocumentInstantPaintSnapshot({
+            authState,
+            config,
+            appSession: appSessionStatus.session,
+            title,
+            onError: (error) => {
+              console.warn("[notebook-cloud] Markdown instant paint failed", error);
+            },
+          })
+          .then((snapshot) => {
+            if (!snapshot || disposed || liveSnapshotSeenRef.current) {
+              return;
+            }
+            setRouteState({
+              kind: "ready",
+              title: snapshot.title,
+              body: snapshot.body,
+              bodyReady: snapshot.bodyReady,
+              markdownPlan: null,
+              scope: catalog.document.scope,
+              connectionStatus: connectionStatusRef.current,
+              liveReady: false,
+              latestRevisionId,
+            });
+          });
         controller = await liveSyncModule.startMarkdownDocumentLiveSync({
           authState,
           config,
@@ -200,6 +228,7 @@ export function MarkdownDocumentRoute({
             );
           },
           onSnapshot: (snapshot) => {
+            liveSnapshotSeenRef.current = true;
             setRouteState({
               kind: "ready",
               title: snapshot.title,
