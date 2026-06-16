@@ -74,6 +74,7 @@ import {
   updateWorkstationAttachJobStatus,
   type ListedMarkdownDocumentRow,
   type ListedNotebookRow,
+  type MarkdownDocumentCatalog,
   type MarkdownDocumentAclRow,
   type MarkdownDocumentScope,
   type NotebookAclRow,
@@ -102,7 +103,7 @@ import {
   type WorkstationAttachJobNotification,
 } from "./workstation-events.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
-import { loadMarkdownRoomHostSnapshot } from "./runtimed-wasm.ts";
+import { loadMarkdownRoomHostSnapshot, projectMarkdownJson } from "./runtimed-wasm.ts";
 import { notebookRouteSegmentTitle } from "./notebook-route-title.ts";
 import {
   createNotebookCloudBlobResolver,
@@ -5401,6 +5402,8 @@ interface ViewerShellResourceHints {
   runtimedWasmPath?: string | null;
 }
 
+const MARKDOWN_DOCUMENT_BOOTSTRAP_BODY_MAX_BYTES = 128 * 1024;
+
 function rootNotebookListRedirect(request: Request): Response {
   const url = new URL(request.url);
   url.pathname = "/n";
@@ -5530,17 +5533,82 @@ async function markdownDocumentViewerBootstrap(
   if (!authorized) {
     return null;
   }
-  const document = await getMarkdownDocumentRow(env, documentId);
-  if (!document) {
+  const catalog = await getMarkdownDocumentCatalog(env, documentId);
+  if (!catalog) {
     return null;
   }
+  const document = catalog.document;
+  const renderSeed = await markdownDocumentBootstrapRenderSeed(env, catalog);
   return {
     body_doc_id: document.body_doc_id,
     latest_revision_id: document.latest_revision_id,
+    ...(renderSeed ? { render_seed: renderSeed } : {}),
     scope: authorized.scope,
     title: document.title,
     updated_at: document.updated_at,
   };
+}
+
+async function markdownDocumentBootstrapRenderSeed(
+  env: Env,
+  catalog: MarkdownDocumentCatalog,
+): Promise<Record<string, unknown> | null> {
+  if (!env.NOTEBOOK_SNAPSHOTS || !catalog.document.latest_revision_id) {
+    return null;
+  }
+  const revision =
+    catalog.revisions.find((candidate) => candidate.id === catalog.document.latest_revision_id) ??
+    null;
+  if (!revision) {
+    return null;
+  }
+  try {
+    const object = await env.NOTEBOOK_SNAPSHOTS.get(revision.snapshot_key);
+    if (!object || object.size > MARKDOWN_DOCUMENT_BOOTSTRAP_BODY_MAX_BYTES) {
+      return null;
+    }
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    const handle = await loadMarkdownRoomHostSnapshot(bytes);
+    try {
+      const body = handle.body() ?? "";
+      return {
+        source: "latest_revision",
+        revision_id: revision.id,
+        body_heads_hash: revision.body_heads_hash,
+        byte_length: object.size,
+        title: handle.title()?.trim() || catalog.document.title?.trim() || null,
+        body,
+        markdown_plan: await markdownBootstrapProjection(body),
+      };
+    } finally {
+      handle.free();
+    }
+  } catch (error) {
+    cloudLog("warn", "markdown_document.bootstrap_render_seed.failed", {
+      document_id: catalog.document.id,
+      revision_id: revision.id,
+      snapshot_key: revision.snapshot_key,
+      error: errorMessage(error),
+      counter: "markdown_bootstrap_render_seed_failures",
+      counter_delta: 1,
+    });
+    return null;
+  }
+}
+
+async function markdownBootstrapProjection(body: string): Promise<Record<string, unknown> | null> {
+  if (!body.trim()) {
+    return null;
+  }
+  try {
+    const plan = JSON.parse(await projectMarkdownJson(body)) as Record<string, unknown>;
+    if (typeof plan.error === "string" && plan.error.length > 0) {
+      return null;
+    }
+    return { ...plan, source: body };
+  } catch {
+    return null;
+  }
 }
 
 function oidcCallbackViewer(request: Request, env: Env): Response {

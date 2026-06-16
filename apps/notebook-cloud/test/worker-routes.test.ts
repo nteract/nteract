@@ -1823,6 +1823,35 @@ describe("Worker artifact routes", () => {
       updated_at: "2026-06-15T00:00:00.000Z",
       created_by_actor_label: "user:anaconda:markdown-bootstrap-user/browser:tab",
     });
+    const markdownSeedBody = "# Bootstrapped Markdown\n\nSeeded before live sync.";
+    const seedHandle = MarkdownHandle.create(
+      "markdown-bootstrap",
+      "Bootstrapped Markdown",
+      "user:anaconda:markdown-bootstrap-user/browser:seed",
+    );
+    seedHandle.replace_body_for_import(markdownSeedBody);
+    const snapshotBytes = seedHandle.save();
+    const bodyHeadsHash = await markdownTestHeadsDigest(seedHandle.get_heads_hex());
+    seedHandle.free();
+    const snapshotKey = markdownDocumentSnapshotKey("markdown-bootstrap", bodyHeadsHash);
+    await env.NOTEBOOK_SNAPSHOTS.put(snapshotKey, snapshotBytes, {
+      httpMetadata: {
+        contentType: "application/x-automerge",
+        cacheControl: "public, max-age=31536000, immutable",
+      },
+      customMetadata: {
+        document_id: "markdown-bootstrap",
+        body_heads_hash: bodyHeadsHash,
+      },
+    });
+    env.DB.markdownDocumentRevisions.push({
+      id: "markdown-revision-123",
+      document_id: "markdown-bootstrap",
+      body_heads_hash: bodyHeadsHash,
+      snapshot_key: snapshotKey,
+      actor_label: "user:anaconda:markdown-bootstrap-user/browser:seed",
+      created_at: "2026-06-15T00:30:00.000Z",
+    });
     const cookie = await oidcAppSessionCookie(env, token);
 
     const response = await worker.fetch(
@@ -1838,15 +1867,41 @@ describe("Worker artifact routes", () => {
       bootstrap?: {
         body_doc_id: string;
         latest_revision_id: string | null;
+        render_seed?: {
+          body: string;
+          body_heads_hash: string;
+          byte_length: number;
+          markdown_plan: {
+            anchors?: Array<{ title?: string; slug?: string }>;
+            source?: string;
+            version?: number;
+          } | null;
+          revision_id: string;
+          source: string;
+          title: string | null;
+        };
         scope: string;
         title: string | null;
         updated_at: string;
       } | null;
       session?: { provider: string; expires_at: number } | null;
     };
+    const renderSeed = config.bootstrap?.render_seed;
+    assert.equal(renderSeed?.markdown_plan?.version, 1);
+    assert.equal(renderSeed?.markdown_plan?.source, markdownSeedBody);
+    assert.equal(renderSeed?.markdown_plan?.anchors?.[0]?.title, "Bootstrapped Markdown");
     assert.deepEqual(config.bootstrap, {
       body_doc_id: "markdown-bootstrap-body",
       latest_revision_id: "markdown-revision-123",
+      render_seed: {
+        body: markdownSeedBody,
+        body_heads_hash: bodyHeadsHash,
+        byte_length: snapshotBytes.byteLength,
+        markdown_plan: renderSeed?.markdown_plan,
+        revision_id: "markdown-revision-123",
+        source: "latest_revision",
+        title: "Bootstrapped Markdown",
+      },
       scope: "owner",
       title: "Bootstrapped Markdown",
       updated_at: "2026-06-15T01:02:03.000Z",

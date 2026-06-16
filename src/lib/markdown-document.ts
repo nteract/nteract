@@ -1,6 +1,7 @@
 import {
   canRenderMarkdownProjectionInHost,
   projectMarkdownPlan,
+  resolveMarkdownProjection,
   type MarkdownProjectionAnchor,
   type MarkdownProjectionPlan,
 } from "./markdown-projection";
@@ -21,6 +22,7 @@ export interface MarkdownDocumentProjectionInput {
   id: string;
   title?: string | null;
   body?: string | null;
+  markdownPlan?: MarkdownProjectionPlan | null;
   access?: MarkdownDocumentAccessLevel | null;
   requestedMode?: MarkdownDocumentMode | null;
   publishedRevisionId?: string | null;
@@ -70,7 +72,9 @@ export function projectMarkdownDocument(
   const body = input.body ?? "";
   const canEdit = access === "owner" || access === "editor";
   const mode = canEdit ? (input.requestedMode ?? "view") : "view";
-  const markdownPlan = projectMarkdownPlan(body);
+  const markdownPlan = input.markdownPlan
+    ? resolveMarkdownProjection(input.markdownPlan, body)
+    : projectMarkdownPlan(body);
   const publishedRevisionId = input.publishedRevisionId ?? null;
 
   const outlineItems = markdownPlan ? projectMarkdownDocumentOutline(markdownPlan) : [];

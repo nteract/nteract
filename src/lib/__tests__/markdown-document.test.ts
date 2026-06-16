@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   normalizeMarkdownDocumentAccess,
   projectMarkdownDocument,
@@ -124,6 +124,39 @@ describe("markdown document projection", () => {
     expect(projection.markdownPlan).toBeNull();
     expect(projection.outlineItems).toEqual([]);
     expect(projection.headingAnchors).toEqual([]);
+  });
+
+  it("uses a matching attached Markdown plan before the projector is initialized", () => {
+    const source = "# Seeded\n\nRendered from a persisted snapshot.";
+    const attachedPlan = projectDoc({
+      id: "seeded-doc",
+      title: "Seeded",
+      body: source,
+      access: "viewer",
+    }).markdownPlan;
+    expect(attachedPlan).not.toBeNull();
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const projection = projectMarkdownDocument({
+        id: "seeded-doc",
+        title: "Seeded",
+        body: source,
+        markdownPlan: attachedPlan,
+        access: "viewer",
+      });
+
+      expect(projection.markdownPlan).toBe(attachedPlan);
+      expect(projection.outlineItems).toEqual([
+        expect.objectContaining({
+          title: "Seeded",
+          href: "#seeded",
+        }),
+      ]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("treats invalid access as none", () => {

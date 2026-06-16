@@ -5,6 +5,7 @@ import initWasm, {
   encode_interaction_presence,
   encode_presence_frame,
   encode_selection_presence,
+  project_markdown_json,
   rewrite_presence_ingress,
   NotebookHandle,
   RoomHostHandle,
@@ -207,6 +208,11 @@ export async function loadMarkdownRoomHostSnapshot(
 ): Promise<MarkdownRoomHostHandle> {
   await initializeRuntimedWasm();
   return MarkdownRoomHostHandle.load_snapshot(markdownBytes);
+}
+
+export async function projectMarkdownJson(source: string): Promise<string> {
+  await initializeRuntimedWasm();
+  return project_markdown_json(source);
 }
 
 export {

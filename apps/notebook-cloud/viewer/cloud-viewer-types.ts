@@ -3,6 +3,7 @@ import type { CloudViewerConfig } from "./cloud-viewer-session";
 import type { CloudMarkdownDocumentListItem } from "./markdown-document-dashboard";
 import type { CloudNotebookListItem } from "./notebook-dashboard";
 import type { CloudOidcAuthConfig } from "./oidc-auth";
+import type { MarkdownProjectionPlan } from "@/lib/markdown-projection";
 
 export interface CloudViewerAuthConfig {
   oidc: CloudOidcAuthConfig | null;
@@ -63,9 +64,20 @@ export interface CloudMarkdownDocumentUpdateResponse {
 export interface CloudMarkdownDocumentBootstrap {
   body_doc_id: string;
   latest_revision_id: string | null;
+  render_seed?: CloudMarkdownDocumentRenderSeed | null;
   scope: "owner" | "editor" | "viewer";
   title: string | null;
   updated_at: string;
+}
+
+export interface CloudMarkdownDocumentRenderSeed {
+  source: "latest_revision";
+  revision_id: string;
+  body_heads_hash: string;
+  byte_length: number;
+  title: string | null;
+  body: string;
+  markdown_plan: MarkdownProjectionPlan | null;
 }
 
 export interface CloudMarkdownDocumentConfig {

@@ -22,6 +22,7 @@ import {
   type MarkdownDocumentMode,
   type MarkdownDocumentProjection,
 } from "@/lib/markdown-document";
+import type { MarkdownProjectionPlan } from "@/lib/markdown-projection";
 import { cn } from "@/lib/utils";
 import { cloudResponseError } from "./cloud-response";
 import {
@@ -95,6 +96,8 @@ type RouteState =
       title: string;
       body: string;
       bodyReady: boolean;
+      markdownPlan: MarkdownProjectionPlan | null;
+      liveReady: boolean;
       scope: "owner" | "editor" | "viewer";
       connectionStatus: ConnectionStatus;
       latestRevisionId: string | null;
@@ -164,7 +167,7 @@ export function MarkdownDocumentRoute({
         connectionStatusRef.current = "connecting";
         setRouteState((current) =>
           current.kind === "ready"
-            ? { ...current, bodyReady: false, connectionStatus: "connecting" }
+            ? { ...current, connectionStatus: "connecting" }
             : initialMarkdownDocumentRouteState(config),
         );
         const catalogPromise = Promise.resolve(
@@ -201,8 +204,10 @@ export function MarkdownDocumentRoute({
               title: snapshot.title,
               body: snapshot.body,
               bodyReady: snapshot.bodyReady,
+              markdownPlan: null,
               scope: catalog.document.scope,
               connectionStatus: connectionStatusRef.current,
+              liveReady: true,
               latestRevisionId,
             });
           },
@@ -239,6 +244,7 @@ export function MarkdownDocumentRoute({
       id: config.documentId,
       title: routeState.title,
       body: routeState.body,
+      markdownPlan: routeState.markdownPlan,
       access: routeState.scope,
       requestedMode: mode,
       publishedRevisionId: routeState.latestRevisionId,
@@ -353,7 +359,7 @@ export function MarkdownDocumentRoute({
     );
   }
 
-  const canEdit = projection.canEdit && routeState.bodyReady;
+  const canEdit = projection.canEdit && routeState.liveReady;
   const canManageSharing =
     projection.canShare && config.hostCapabilities?.canManageSharing !== false;
   const activeMode = projection.mode;
@@ -528,11 +534,14 @@ function initialMarkdownDocumentMode(): MarkdownDocumentMode {
 function initialMarkdownDocumentRouteState(config: CloudMarkdownDocumentConfig): RouteState {
   const bootstrap = config.bootstrap;
   if (bootstrap) {
+    const renderSeed = bootstrap.render_seed ?? null;
     return {
       kind: "ready",
-      title: bootstrap.title?.trim() || "Untitled Markdown",
-      body: "",
-      bodyReady: false,
+      title: renderSeed?.title?.trim() || bootstrap.title?.trim() || "Untitled Markdown",
+      body: renderSeed?.body ?? "",
+      bodyReady: typeof renderSeed?.body === "string",
+      markdownPlan: renderSeed?.markdown_plan ?? null,
+      liveReady: false,
       scope: bootstrap.scope,
       connectionStatus: "connecting",
       latestRevisionId: bootstrap.latest_revision_id,
@@ -543,6 +552,8 @@ function initialMarkdownDocumentRouteState(config: CloudMarkdownDocumentConfig):
     title: markdownDocumentRouteTitle(),
     body: "",
     bodyReady: false,
+    markdownPlan: null,
+    liveReady: false,
     scope: "viewer",
     connectionStatus: "connecting",
     latestRevisionId: null,

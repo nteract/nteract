@@ -401,6 +401,14 @@ impl MarkdownRoomHostHandle {
         })
     }
 
+    pub fn title(&self) -> Option<String> {
+        self.doc.title()
+    }
+
+    pub fn body(&self) -> Option<String> {
+        self.doc.body()
+    }
+
     pub fn remove_peer(&mut self, peer_id: &str) {
         self.peer_states.remove(peer_id);
     }
