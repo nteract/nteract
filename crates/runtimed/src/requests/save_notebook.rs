@@ -8,7 +8,8 @@ use tracing::warn;
 use crate::daemon::Daemon;
 use crate::notebook_sync_server::{
     canonical_target_path, finalize_untitled_promotion, format_notebook_cells,
-    persist_notebook_bytes, save_notebook_to_disk, NotebookFileBinding, NotebookRoom, SaveError,
+    persist_notebook_bytes, save_notebook_to_disk, CommentsLocator, NotebookFileBinding,
+    NotebookRoom, SaveError,
 };
 use crate::protocol::NotebookResponse;
 
@@ -115,15 +116,44 @@ pub(crate) async fn handle(
         }
     };
 
+    let mut active_claim = pre_claim.clone();
     if let Some(ref canonical_pre) = pre_claim {
         if canonical_pre != &canonical {
-            NotebookFileBinding::replace_claim(
+            active_claim = if NotebookFileBinding::replace_claim(
                 &daemon.notebook_rooms,
                 canonical_pre,
                 canonical.clone(),
                 room.id,
             )
-            .await;
+            .await
+            {
+                Some(canonical.clone())
+            } else {
+                None
+            };
+        }
+    }
+
+    let comments_doc_needs_path_alias =
+        was_untitled || old_path.as_ref().is_some_and(|old| old != &canonical);
+    if comments_doc_needs_path_alias {
+        let locator = CommentsLocator::LocalPath(canonical.clone());
+        if let Err(error) = room
+            .comments_store
+            .bind_doc_id_to_locator(&locator, &room.comments_doc_id)
+        {
+            if let Some(ref claimed) = active_claim {
+                NotebookFileBinding::release_path(&daemon.notebook_rooms, claimed).await;
+            }
+            return NotebookResponse::SaveError {
+                error: notebook_protocol::protocol::SaveErrorKind::Io {
+                    message: format!(
+                        "failed to bind CommentsDoc {} to {}: {error:#}",
+                        room.comments_doc_id,
+                        canonical.display()
+                    ),
+                },
+            };
         }
     }
 

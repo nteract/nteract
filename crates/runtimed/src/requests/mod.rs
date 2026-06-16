@@ -253,12 +253,32 @@ pub(crate) async fn handle_notebook_request(
             approve_project_environment::handle(room, project_file_path).await
         }
 
-        NotebookRequest::ResolveCommentThread { thread_id } => {
-            comments::resolve_thread(room, thread_id, submitter_actor_label, submitter_scope).await
+        NotebookRequest::ResolveCommentThread {
+            thread_id,
+            observed_comments_heads,
+        } => {
+            comments::resolve_thread(
+                room,
+                thread_id,
+                observed_comments_heads,
+                submitter_actor_label,
+                submitter_scope,
+            )
+            .await
         }
 
-        NotebookRequest::ReopenCommentThread { thread_id } => {
-            comments::reopen_thread(room, thread_id, submitter_actor_label, submitter_scope).await
+        NotebookRequest::ReopenCommentThread {
+            thread_id,
+            observed_comments_heads,
+        } => {
+            comments::reopen_thread(
+                room,
+                thread_id,
+                observed_comments_heads,
+                submitter_actor_label,
+                submitter_scope,
+            )
+            .await
         }
 
         NotebookRequest::AcceptCommentThread {

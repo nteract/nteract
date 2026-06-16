@@ -9,12 +9,14 @@ use crate::protocol::NotebookResponse;
 pub(crate) async fn resolve_thread(
     room: &NotebookRoom,
     thread_id: String,
+    observed_comments_heads: Vec<String>,
     submitter_actor_label: Option<&str>,
     submitter_scope: ConnectionScope,
 ) -> NotebookResponse {
     set_thread_status(
         room,
         thread_id,
+        observed_comments_heads,
         submitter_actor_label,
         submitter_scope,
         ThreadStatusTransition::Resolve,
@@ -24,12 +26,14 @@ pub(crate) async fn resolve_thread(
 pub(crate) async fn reopen_thread(
     room: &NotebookRoom,
     thread_id: String,
+    observed_comments_heads: Vec<String>,
     submitter_actor_label: Option<&str>,
     submitter_scope: ConnectionScope,
 ) -> NotebookResponse {
     set_thread_status(
         room,
         thread_id,
+        observed_comments_heads,
         submitter_actor_label,
         submitter_scope,
         ThreadStatusTransition::Reopen,
@@ -120,6 +124,15 @@ enum ThreadStatusTransition {
     Reopen,
 }
 
+impl ThreadStatusTransition {
+    fn expected_current_status(self) -> &'static str {
+        match self {
+            Self::Resolve => "open",
+            Self::Reopen => "resolved",
+        }
+    }
+}
+
 enum ThreadCreationFinalization {
     Accept,
     Reject { reason: String },
@@ -133,6 +146,7 @@ enum MessageCreationFinalization {
 fn set_thread_status(
     room: &NotebookRoom,
     thread_id: String,
+    observed_comments_heads: Vec<String>,
     submitter_actor_label: Option<&str>,
     submitter_scope: ConnectionScope,
     transition: ThreadStatusTransition,
@@ -146,10 +160,20 @@ fn set_thread_status(
     if let Err(error) = validate_non_empty("thread_id", &thread_id) {
         return NotebookResponse::Error { error };
     }
+    let observed_heads = match parse_observed_comments_heads(&observed_comments_heads) {
+        Ok(heads) => heads,
+        Err(error) => return NotebookResponse::Error { error },
+    };
 
     let actor_label = submitter_actor_label.unwrap_or("unknown");
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let result = room.comments.with_doc(|doc| {
+        doc.validate_thread_status_transition(
+            &thread_id,
+            &observed_heads,
+            &[COMMENTS_DOC_ACTOR],
+            transition.expected_current_status(),
+        )?;
         doc.doc_mut()
             .set_actor(ActorId::from(COMMENTS_DOC_ACTOR.as_bytes()));
         match transition {

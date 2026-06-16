@@ -90,6 +90,30 @@ impl CommentsSidecarStore {
         Ok(fallback)
     }
 
+    pub(crate) fn bind_doc_id_to_locator(
+        &self,
+        locator: &CommentsLocator,
+        comments_doc_id: &str,
+    ) -> anyhow::Result<()> {
+        let mut index = self.load_index()?;
+        let (map, key) = match locator {
+            CommentsLocator::LocalPath(path) => {
+                (&mut index.local_paths, path.to_string_lossy().into_owned())
+            }
+            CommentsLocator::LocalRoom(uuid) => (&mut index.local_rooms, uuid.to_string()),
+        };
+
+        if map
+            .get(&key)
+            .is_some_and(|existing| existing == comments_doc_id)
+        {
+            return Ok(());
+        }
+
+        map.insert(key, comments_doc_id.to_string());
+        self.save_index(&index)
+    }
+
     pub(crate) fn load_or_create(
         &self,
         locator: &CommentsLocator,
@@ -278,6 +302,30 @@ mod tests {
         assert_eq!(store.resolve_doc_id(&path_locator).unwrap(), path_id);
         assert_eq!(store.resolve_doc_id(&room_locator).unwrap(), room_id);
         assert!(store.root().join(INDEX_FILE).exists());
+    }
+
+    #[test]
+    fn resolver_can_bind_new_path_to_existing_doc_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = CommentsSidecarStore::new(tmp.path().join("comments"));
+        let room_uuid = Uuid::new_v4();
+        let room_locator = CommentsLocator::LocalRoom(room_uuid);
+        let path_locator = CommentsLocator::LocalPath(PathBuf::from("/tmp/saved.ipynb"));
+
+        let comments_doc_id = store.resolve_doc_id(&room_locator).unwrap();
+        store
+            .bind_doc_id_to_locator(&path_locator, &comments_doc_id)
+            .unwrap();
+
+        assert_eq!(
+            store.resolve_doc_id(&path_locator).unwrap(),
+            comments_doc_id
+        );
+        let index = store.load_index().unwrap();
+        assert_eq!(
+            index.local_paths.get("/tmp/saved.ipynb"),
+            Some(&comments_doc_id)
+        );
     }
 
     #[test]

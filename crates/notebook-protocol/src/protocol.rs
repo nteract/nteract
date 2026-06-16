@@ -618,10 +618,16 @@ pub enum NotebookRequest {
     },
 
     /// Mark a durable comment thread resolved through the daemon authority.
-    ResolveCommentThread { thread_id: String },
+    ResolveCommentThread {
+        thread_id: String,
+        observed_comments_heads: Vec<String>,
+    },
 
     /// Reopen a durable comment thread through the daemon authority.
-    ReopenCommentThread { thread_id: String },
+    ReopenCommentThread {
+        thread_id: String,
+        observed_comments_heads: Vec<String>,
+    },
 
     /// Accept a pending durable comment thread through the daemon authority.
     AcceptCommentThread {
@@ -1172,9 +1178,11 @@ mod tests {
             },
             NotebookRequest::ResolveCommentThread {
                 thread_id: "thread-1".into(),
+                observed_comments_heads: vec!["abc".into()],
             },
             NotebookRequest::ReopenCommentThread {
                 thread_id: "thread-1".into(),
+                observed_comments_heads: vec!["abc".into()],
             },
             NotebookRequest::AcceptCommentThread {
                 thread_id: "thread-1".into(),
@@ -1437,6 +1445,7 @@ mod tests {
                 serde_json::json!({
                     "action": "resolve_comment_thread",
                     "thread_id": "thread-1",
+                    "observed_comments_heads": ["abc"],
                 }),
             ),
             (
@@ -1444,6 +1453,7 @@ mod tests {
                 serde_json::json!({
                     "action": "reopen_comment_thread",
                     "thread_id": "thread-1",
+                    "observed_comments_heads": ["abc"],
                 }),
             ),
             (

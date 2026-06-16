@@ -508,6 +508,61 @@ impl CommentsDoc {
         obj_actor_label(&message)
     }
 
+    pub fn validate_thread_status_transition(
+        &mut self,
+        thread_id: &str,
+        observed_heads: &[automerge::ChangeHash],
+        authority_actor_labels: &[&str],
+        expected_status: &str,
+    ) -> Result<(), CommentsDocError> {
+        self.validate_observed_heads(observed_heads)?;
+        let thread = self.thread_or_error(thread_id)?;
+        self.validate_thread_visible_at_heads(thread_id, observed_heads)?;
+        let authority_actors = authority_actor_set(authority_actor_labels);
+        let current_mutation_state = read_trusted_str(
+            &self.doc,
+            &thread,
+            "authority_mutation_state",
+            &authority_actors,
+        );
+        let observed_mutation_state = read_trusted_str_at(
+            &self.doc,
+            &thread,
+            "authority_mutation_state",
+            observed_heads,
+            &authority_actors,
+        )?;
+        if current_mutation_state.as_deref() != Some("accepted")
+            || observed_mutation_state.as_deref() != Some("accepted")
+        {
+            return Err(CommentsDocError::ThreadNotAccepted(thread_id.to_string()));
+        }
+
+        let current_status =
+            read_trusted_str(&self.doc, &thread, "authority_status", &authority_actors)
+                .unwrap_or_default();
+        if current_status != expected_status {
+            return Err(CommentsDocError::ThreadStatusMismatch {
+                thread_id: thread_id.to_string(),
+                expected: expected_status.to_string(),
+                actual: current_status,
+            });
+        }
+        let observed_status = read_trusted_str_at(
+            &self.doc,
+            &thread,
+            "authority_status",
+            observed_heads,
+            &authority_actors,
+        )?;
+        if observed_status.as_deref() != Some(expected_status) {
+            return Err(CommentsDocError::ObservedContentChanged(format!(
+                "thread {thread_id} authority_status"
+            )));
+        }
+        Ok(())
+    }
+
     pub fn resolve_thread(
         &mut self,
         thread_id: &str,
@@ -1559,6 +1614,21 @@ fn read_trusted_str(
     })
 }
 
+fn read_trusted_str_at(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    key: &str,
+    heads: &[automerge::ChangeHash],
+    authority_actors: &HashSet<ActorId>,
+) -> Result<Option<String>, CommentsDocError> {
+    Ok(doc.get_at(obj, key, heads)?.and_then(|(value, op_id)| {
+        if !obj_id_authored_by_authority(&op_id, authority_actors) {
+            return None;
+        }
+        scalar_string(&value)
+    }))
+}
+
 fn has_trusted_str(
     doc: &AutoCommit,
     obj: &ObjId,
@@ -1751,6 +1821,25 @@ mod tests {
             cell_id: cell_id.to_string(),
             observed_cell_position: Some(DEFAULT_POSITION.to_string()),
         }
+    }
+
+    fn accepted_thread_doc() -> CommentsDoc {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+        doc.create_thread(
+            "thread-1",
+            "msg-1",
+            &cell_anchor("cell-a"),
+            "needs review",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+        doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
+        doc.accept_thread_creation("thread-1", "local-user", "local_uid")
+            .unwrap();
+        doc.accept_message("thread-1", "msg-1", "local-user", "local_uid")
+            .unwrap();
+        doc
     }
 
     fn change_hashes_for_actor(doc: &mut AutoCommit, actor: &str) -> Vec<automerge::ChangeHash> {
@@ -2285,6 +2374,96 @@ mod tests {
         assert!(
             matches!(error, CommentsDocError::ObservedContentChanged(_)),
             "expected wrong initial message rejection, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn status_transition_validation_accepts_current_trusted_status() {
+        let mut doc = accepted_thread_doc();
+        let open_heads = doc.get_heads();
+        doc.validate_thread_status_transition("thread-1", &open_heads, &[AUTHORITY], "open")
+            .unwrap();
+
+        doc.resolve_thread(
+            "thread-1",
+            "local-user",
+            "local_uid",
+            "2026-06-16T00:00:01Z",
+        )
+        .unwrap();
+        let resolved_heads = doc.get_heads();
+        doc.validate_thread_status_transition(
+            "thread-1",
+            &resolved_heads,
+            &[AUTHORITY],
+            "resolved",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn status_transition_validation_rejects_pending_thread() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+        doc.create_thread(
+            "thread-1",
+            "msg-1",
+            &cell_anchor("cell-a"),
+            "pending",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+        let observed_heads = doc.get_heads();
+
+        let error = doc
+            .validate_thread_status_transition("thread-1", &observed_heads, &[AUTHORITY], "open")
+            .unwrap_err();
+        assert!(
+            matches!(error, CommentsDocError::ThreadNotAccepted(ref id) if id == "thread-1"),
+            "expected pending thread rejection, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn status_transition_validation_rejects_stale_observed_status() {
+        let mut doc = accepted_thread_doc();
+        let open_heads = doc.get_heads();
+        doc.resolve_thread(
+            "thread-1",
+            "local-user",
+            "local_uid",
+            "2026-06-16T00:00:01Z",
+        )
+        .unwrap();
+
+        let error = doc
+            .validate_thread_status_transition("thread-1", &open_heads, &[AUTHORITY], "resolved")
+            .unwrap_err();
+        assert!(
+            matches!(error, CommentsDocError::ObservedContentChanged(_)),
+            "expected stale observed status rejection, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn status_transition_validation_rejects_replayed_current_status() {
+        let mut doc = accepted_thread_doc();
+        let open_heads = doc.get_heads();
+        doc.resolve_thread(
+            "thread-1",
+            "local-user",
+            "local_uid",
+            "2026-06-16T00:00:01Z",
+        )
+        .unwrap();
+
+        let error = doc
+            .validate_thread_status_transition("thread-1", &open_heads, &[AUTHORITY], "open")
+            .unwrap_err();
+        assert!(
+            matches!(error, CommentsDocError::ThreadStatusMismatch { ref thread_id, ref expected, ref actual }
+                if thread_id == "thread-1" && expected == "open" && actual == "resolved"),
+            "expected current status mismatch, got {error:?}"
         );
     }
 

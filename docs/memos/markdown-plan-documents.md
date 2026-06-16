@@ -259,7 +259,7 @@ MarkdownDoc
   artifact_refs: map<artifact_id, ArtifactRef>
   output_artifacts: map<artifact_id, OutputArtifact>
   component_artifacts: map<artifact_id, ComponentArtifact>
-  comments_doc_id: string?
+  comments_doc_id: string? # optional until comments are enabled; required for a materialized CommentsDoc
   metadata: map
 ```
 

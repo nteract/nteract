@@ -30,6 +30,14 @@ pub enum CommentsDocError {
     ObservedHeadNotFound(String),
     #[error("comment thread is not pending: {0}")]
     ThreadNotPending(String),
+    #[error("comment thread is not accepted: {0}")]
+    ThreadNotAccepted(String),
+    #[error("comment thread status mismatch for {thread_id}: expected {expected}, got {actual}")]
+    ThreadStatusMismatch {
+        thread_id: String,
+        expected: String,
+        actual: String,
+    },
     #[error("comment message is not pending: {thread_id}/{message_id}")]
     MessageNotPending {
         thread_id: String,

@@ -163,6 +163,26 @@ fn test_trusted_packages() -> crate::trusted_packages::TrustedPackageStore {
     crate::trusted_packages::TrustedPackageStore::unavailable("test")
 }
 
+fn test_daemon_config(tmp: &tempfile::TempDir) -> crate::daemon::DaemonConfig {
+    crate::daemon::DaemonConfig {
+        socket_path: tmp.path().join("daemon.sock"),
+        cache_dir: tmp.path().join("envs"),
+        blob_store_dir: tmp.path().join("blobs"),
+        execution_store_dir: tmp.path().join("executions"),
+        notebook_docs_dir: tmp.path().join("notebook-docs"),
+        trusted_packages_db_path: tmp.path().join("trusted-packages.sqlite"),
+        uv_pool_size: 0,
+        conda_pool_size: 0,
+        pixi_pool_size: 0,
+        max_age_secs: 3600,
+        lock_dir: Some(tmp.path().join("daemon-lock")),
+        room_eviction_delay_ms: Some(50),
+        use_preferred_blob_port: false,
+        settings_json_path: Some(tmp.path().join("settings.json")),
+        ..Default::default()
+    }
+}
+
 fn legacy_pre_seed_v4_doc_bytes(notebook_id: &str, actor: &str, cell_id: &str) -> Vec<u8> {
     let mut doc = AutoCommit::new_with_encoding(notebook_doc::TextEncoding::UnicodeCodePoint);
     doc.set_actor(ActorId::from(actor.as_bytes()));
@@ -1629,6 +1649,8 @@ async fn test_comment_status_request_resolves_reopens_and_persists_sidecar() {
     let (room, _) = test_room_with_path(&tmp, "comments-status.ipynb");
     room.comments
         .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
             doc.create_thread(
                 "thread-status",
                 "message-status",
@@ -1637,13 +1659,28 @@ async fn test_comment_status_request_resolves_reopens_and_persists_sidecar() {
                 None,
                 "2026-06-16T00:00:00Z",
             )?;
+            doc.doc_mut()
+                .set_actor(ActorId::from(COMMENTS_DOC_ACTOR.as_bytes()));
+            doc.accept_thread_creation(
+                "thread-status",
+                "agent:comments-editor",
+                COMMENTS_DOC_ACTOR,
+            )?;
+            doc.accept_message(
+                "thread-status",
+                "message-status",
+                "agent:comments-editor",
+                COMMENTS_DOC_ACTOR,
+            )?;
             Ok(())
         })
         .unwrap();
+    let resolve_heads = comments_heads_hex(&room);
 
     let resolved = crate::requests::comments::resolve_thread(
         &room,
         "thread-status".to_string(),
+        resolve_heads,
         Some("agent:comments-editor"),
         nteract_identity::ConnectionScope::Editor,
     )
@@ -1671,10 +1708,12 @@ async fn test_comment_status_request_resolves_reopens_and_persists_sidecar() {
             .as_deref(),
         Some(COMMENTS_DOC_ACTOR)
     );
+    let reopen_heads = comments_heads_hex(&room);
 
     let reopened = crate::requests::comments::reopen_thread(
         &room,
         "thread-status".to_string(),
+        reopen_heads,
         Some("agent:comments-editor"),
         nteract_identity::ConnectionScope::Owner,
     )
@@ -1689,6 +1728,117 @@ async fn test_comment_status_request_resolves_reopens_and_persists_sidecar() {
     assert_eq!(
         persisted_projection.threads[0].status,
         comments_doc::ProjectedThreadStatus::Open
+    );
+}
+
+#[tokio::test]
+async fn test_comment_status_request_rejects_pending_thread() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-status-pending.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.create_thread(
+                "thread-pending-status",
+                "message-pending-status",
+                &comments_doc::CommentAnchor::Notebook,
+                "pending must not resolve",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(&room);
+
+    let response = crate::requests::comments::resolve_thread(
+        &room,
+        "thread-pending-status".to_string(),
+        observed_heads,
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].status,
+        comments_doc::ProjectedThreadStatus::Open
+    );
+    assert_eq!(
+        projection.threads[0].mutation_state,
+        comments_doc::ProjectedMutationState::Pending
+    );
+}
+
+#[tokio::test]
+async fn test_comment_status_request_rejects_stale_observed_heads() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-status-stale-heads.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut().set_actor(ActorId::from(b"agent:alice"));
+            doc.create_thread(
+                "thread-stale-status",
+                "message-stale-status",
+                &comments_doc::CommentAnchor::Notebook,
+                "status heads must be current",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            doc.doc_mut()
+                .set_actor(ActorId::from(COMMENTS_DOC_ACTOR.as_bytes()));
+            doc.accept_thread_creation("thread-stale-status", "agent:alice", COMMENTS_DOC_ACTOR)?;
+            doc.accept_message(
+                "thread-stale-status",
+                "message-stale-status",
+                "agent:alice",
+                COMMENTS_DOC_ACTOR,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let open_heads = comments_heads_hex(&room);
+    let resolved = crate::requests::comments::resolve_thread(
+        &room,
+        "thread-stale-status".to_string(),
+        open_heads.clone(),
+        Some("agent:alice"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(resolved, crate::protocol::NotebookResponse::Ok {}));
+
+    let stale_reopen = crate::requests::comments::reopen_thread(
+        &room,
+        "thread-stale-status".to_string(),
+        open_heads,
+        Some("agent:alice"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(
+        stale_reopen,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].status,
+        comments_doc::ProjectedThreadStatus::Resolved
     );
 }
 
@@ -2254,6 +2404,7 @@ async fn test_comment_status_request_rejects_runtime_peer() {
     let response = crate::requests::comments::resolve_thread(
         &room,
         "thread-runtime-status".to_string(),
+        vec![],
         Some("agent:runtime-peer"),
         nteract_identity::ConnectionScope::RuntimePeer,
     )
@@ -5638,6 +5789,87 @@ async fn save_as_to_foreign_path_is_not_staleness_guarded() {
     assert!(
         written.contains("z = 9"),
         "Save As must overwrite the target"
+    );
+}
+
+#[tokio::test]
+async fn save_notebook_binds_comments_doc_to_new_path_for_reopen() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    let docs_dir = tmp.path().join("notebook-docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        &docs_dir,
+        blob_store.clone(),
+        false,
+    ));
+    let original_comments_doc_id = room.comments_doc_id.clone();
+    room.comments
+        .with_doc(|doc| {
+            doc.create_thread(
+                "thread-save-reopen",
+                "message-save-reopen",
+                &comments_doc::CommentAnchor::Notebook,
+                "preserve comments on save",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    room.comments_store.save_handle(&room.comments).unwrap();
+    daemon
+        .notebook_rooms
+        .insert_or_get(room.id, room.clone(), None)
+        .await
+        .expect("registry insert for test setup");
+
+    let save_path = tmp.path().join("saved.ipynb");
+    let response = crate::requests::save_notebook::handle(
+        &room,
+        &daemon,
+        false,
+        Some(save_path.to_string_lossy().into_owned()),
+    )
+    .await;
+    let written = match response {
+        crate::protocol::NotebookResponse::NotebookSaved { path } => path,
+        other => panic!("expected NotebookSaved, got {other:?}"),
+    };
+    let canonical = tokio::fs::canonicalize(&written)
+        .await
+        .unwrap_or_else(|_| PathBuf::from(&written));
+
+    assert_eq!(
+        room.comments_store
+            .resolve_doc_id(&CommentsLocator::LocalPath(canonical.clone()))
+            .unwrap(),
+        original_comments_doc_id
+    );
+
+    let reopened = NotebookRoom::new_fresh_with_trusted_packages(
+        Uuid::new_v4(),
+        Some(canonical),
+        &docs_dir,
+        blob_store,
+        false,
+        test_trusted_packages(),
+    )
+    .unwrap();
+    assert_eq!(reopened.comments_doc_id, original_comments_doc_id);
+    let projection = reopened
+        .comments
+        .read(|doc| doc.read_projection(&[], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(projection.threads.len(), 1);
+    assert_eq!(projection.threads[0].id, "thread-save-reopen");
+    assert_eq!(
+        projection.threads[0].messages[0].body,
+        "preserve comments on save"
     );
 }
 

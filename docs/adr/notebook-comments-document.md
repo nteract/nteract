@@ -117,8 +117,11 @@ $DAEMON_STATE/comments/<sha256(comments_doc_id)>.automerge
 ```
 
 That avoids changing `.ipynb` metadata during the prototype and keeps comments
-available after daemon restart. It does mean path moves and renames are weak in
-v0. Hashing the filename keeps `comments_doc_id` out of platform-sensitive file
+available after daemon restart. Save-as and untitled-to-file promotion must bind
+the new canonical path locator to the room's existing `comments_doc_id`; the
+path-derived fallback is only for first discovery. Path moves outside nteract
+remain weak in v0 because the notebook file still does not carry the association.
+Hashing the filename keeps `comments_doc_id` out of platform-sensitive file
 names; the document still stores and validates the raw `comments_doc_id`. The v1
 portability fix is to add `metadata.runt.comments_doc_id` or a root
 `NotebookDoc.comments_doc_id` in a future notebook schema bump, make that
@@ -198,10 +201,10 @@ ROOT/
   schema_version: 1
   comments_doc_id: Str              # required document identity
   notebook_ref/
-    kind: Str
-    value: Str
-    path: Str?                       # local file-backed evidence
-    runtime_state_doc_id: Str?       # association evidence, not authority
+    kind: "hosted_room" | "local_path" | "local_room"
+    room_locator: Str?               # hosted room evidence
+    canonical_path: Str?             # local file-backed evidence
+    room_id: Str?                    # local untitled room evidence
   threads/
     {thread_id}/
       id: Str
@@ -209,35 +212,36 @@ ROOT/
         kind: Str
         ...anchor fields...
       position: Str                  # fractional order in the projection scope
-      status: Str                    # "open" | "resolved"
       mutation_state: Str            # "pending" | "accepted" | "rejected"
-      rejection_reason: Str?
       created_at: Str
-      created_by_actor_label: Str?   # host/daemon stamped when accepted
-      created_by_authority: Str?     # "host_stamped" | "local_uid" | "imported"
-      created_by_display_name: Str?  # advisory, host projected when available
-      resolved_at: Str?
-      resolved_by_actor_label: Str?
-      resolved_by_authority: Str?
-      archived_at: Str?
-      archived_by_actor_label: Str?
-      archived_by_authority: Str?
+      authority_mutation_state: Str? # authority-written accepted/rejected
+      authority_status: Str?         # authority-written open/resolved
+      authority_anchor_json: Str?    # accepted anchor snapshot
+      authority_position: Str?
+      authority_created_at: Str?
+      authority_created_by_actor_label: Str?
+      authority_created_by_authority: Str?
+      authority_rejection_reason: Str?
+      authority_resolved_at: Str?
+      authority_resolved_by_actor_label: Str?
+      authority_resolved_by_authority: Str?
+      authority_reopened_at: Str?
+      authority_reopened_by_actor_label: Str?
+      authority_reopened_by_authority: Str?
       messages/
         {message_id}/
           id: Str
           position: Str              # fractional reply order
           body: Text
           mutation_state: Str        # "pending" | "accepted" | "rejected"
-          rejection_reason: Str?
           created_at: Str
-          created_by_actor_label: Str?
-          created_by_authority: Str?
-          edited_at: Str?
-          edited_by_actor_label: Str?
-          edited_by_authority: Str?
-          deleted_at: Str?
-          deleted_by_actor_label: Str?
-          deleted_by_authority: Str?
+          authority_mutation_state: Str?
+          authority_body: Str?
+          authority_position: Str?
+          authority_created_at: Str?
+          authority_created_by_actor_label: Str?
+          authority_created_by_authority: Str?
+          authority_rejection_reason: Str?
 ```
 
 Do not store a derived `anchor_index` inside `CommentsDoc`. It would add synced
@@ -250,16 +254,13 @@ Message bodies should be Automerge `Text`, even if v0 only edits a whole comment
 body at once. It keeps the schema ready for collaborative comment editing and
 avoids whole-string conflict behavior.
 
-`created_by_authority` and related authority fields record the trust context of
-the durable attribution field once an authority or import has established that
-field:
-
-- `host_stamped`: Cloud room host stamped the field from an authenticated Cloud
-  request.
-- `local_uid`: local daemon stamped the field from same-UID desktop provenance.
-- `imported`: attribution was carried across a boundary such as local-to-Cloud
-  promotion, clone-with-comments, or external import and should be displayed as
-  imported/unverified.
+`authority_created_by_authority` and related authority fields record which
+comments authority wrote the durable attribution snapshot. In the local
+implementation that value is the authority actor label `runtimed:comments`;
+hosted rooms should use a Cloud comments-authority actor label. Imported
+comments should be replayed or stamped with an explicit imported-authority label
+so they do not become indistinguishable from locally or hosted-authenticated
+comments.
 
 Pending state is carried by `mutation_state`, not by overloading the authority
 enum. While a thread or message is pending, authority fields are absent or
@@ -277,21 +278,24 @@ can display or collapse.
 `mutation_state = "accepted"` is meaningful only because of *who wrote it*, not
 because the field says so. In raw CRDT convergence any editor-scope peer can write
 any field, so a malicious client could set `mutation_state = "accepted"`,
-`created_by_authority = "host_stamped"`, and `created_by_actor_label` to a victim
-in a single client change and self-finalize a spoofed comment.
+`authority_mutation_state = "accepted"`,
+`authority_created_by_authority = "runtimed:comments"`, and
+`authority_created_by_actor_label` to a victim in a single client change and
+self-finalize a spoofed comment.
 
 The trust invariant the projection must enforce:
 
-- Policy-bearing fields (`mutation_state`, `status`, `created_by_*`,
-  `edited_at`, `edited_by_*`, `resolved_at`, `resolved_by_*`, `deleted_at`,
-  `deleted_by_*`, `archived_at`, `archived_by_*`, and the authority fields) are
-  trusted only when the latest change writing them was authored by an actor
-  whose principal is the comments authority (local daemon or Cloud comments
-  host).
+- Policy-bearing `authority_*` fields (`authority_mutation_state`,
+  `authority_status`, `authority_created_by_*`, `authority_resolved_*`,
+  `authority_reopened_*`, future tombstone/edit/moderation snapshots, and any
+  other authority-prefixed policy field) are trusted only when the latest change
+  writing them was authored by an actor whose principal is the comments
+  authority (local daemon or Cloud comments host).
 - Body text is trusted when authored by the claimed author's validated principal.
-- A client-authored `accepted` is ignored and rendered as pending. The field is a
-  cache of "an authority change finalized this," verifiable by the attribution
-  projection below, never a self-asserted boolean.
+- A client-authored `authority_mutation_state = "accepted"` is ignored and
+  rendered as pending/unverified. The field is a cache of "an authority change
+  finalized this," verifiable by the attribution projection below, never a
+  self-asserted boolean.
 
 This makes the attribution projection load-bearing for the core trust model, not
 only for "edited by" display.
@@ -447,8 +451,11 @@ Core seams:
 - `crates/notebook-sync/src/sync_task.rs`
   - dispatch inbound `CommentsDocSync`
   - include comments in side-document sync confirmation once materialized
-  - future work: expose `get_comments`, `get_comments_for_cell`, and mutation
-    helpers through the public handle/MCP surfaces
+  - expose comments projection, current comment heads, and create/reply
+    mutation helpers through the local handle; MCP builds list/create/reply and
+    read resources on top of those helpers
+  - future work: expose frontend/UI-facing comment observables and any direct
+    `get_comments_for_cell` convenience needed by the app shell
 - `packages/runtimed/src/handle.ts` and `packages/runtimed/src/sync-engine.ts`
   - extend `SyncableHandle`, `FlushDocKey`, flush/reply/cancel paths, delivery
     tracking, observables, and tests for comments sync
@@ -470,13 +477,13 @@ Core seams:
     recovery, replies, and broadcasts, but not its authorization policy
   - allow tentative local-first comment mutations to sync
   - keep runtime_peer out of comment mutation authority
-  - future work: add a request/MCP authority path that finalizes or rejects
-    tentative mutations with daemon-authored policy fields
+  - route request/MCP authority handling through daemon-authored policy fields
+    for accept/reject and resolve/reopen
 - `apps/notebook-cloud/src/protocol.ts`
   - add `COMMENTS_DOC_SYNC` to known frame names and size limits
-  - mark it client-writable at the protocol-helper layer so empty sync
-    negotiation can pass, then rely on room-host/materializer policy to reject
-    non-empty viewer/runtime-peer mutations
+  - keep it non-client-writable until hosted room materialization can enforce
+    comments-specific mutation policy; revisit empty sync negotiation when the
+    hosted `CommentsDoc` stream lands
 - `apps/notebook-cloud/src/notebook-room.ts`
   - admit `COMMENTS_DOC_SYNC` through the same sync-frame prefilter as
     notebook/runtime/comms
@@ -525,20 +532,23 @@ The write flow:
 3. The sync stream carries the tentative mutation to the local daemon or Cloud
    comments authority.
 4. The authority validates scope, anchor, and causal evidence; stamps
-   `created_by_*`, `edited_by_*`, `resolved_by_*`, `deleted_by_*`,
-   `archived_by_*`, and authority fields from the authenticated connection; then
-   writes `mutation_state = "accepted"` in the same `CommentsDoc`.
-5. If validation fails, the authority writes `mutation_state = "rejected"` plus
-   `rejection_reason`. The UI can display or collapse the rejected pending item,
-   again from `CommentsDoc`.
+   `authority_created_by_*`, future `authority_edited_by_*`,
+   `authority_resolved_by_*`, future tombstone/archive actor fields, and related
+   authority snapshots from the authenticated connection; then writes
+   `authority_mutation_state = "accepted"` in the same `CommentsDoc`.
+5. If validation fails, the authority writes
+   `authority_mutation_state = "rejected"` plus
+   `authority_rejection_reason`. The UI can display or collapse the rejected
+   pending item, again from `CommentsDoc`.
 
 For v0, `mutation_state` models creation finalization for threads and messages.
 Body `Text` edits can still apply optimistically as content changes, but any
-`edited_at` / `edited_by_*` display fields remain untrusted until the authority
-writes them. Resolve, reopen, delete, and archive are policy transitions: they
-must either be written by the authority through request handling, or represented
-as pending operations until the authority writes the `status`, timestamp,
-tombstone, and actor fields. The authority must not accept policy transitions by
+`authority_edited_at` / `authority_edited_by_*` display fields remain untrusted
+until the authority writes them. Resolve, reopen, delete, and archive are policy
+transitions: they must either be written by the authority through request
+handling, or represented as pending operations until the authority writes
+`authority_status`, authority-authored timestamp, tombstone, and actor fields.
+The authority must not accept policy transitions by
 doing nothing, because that would make client-authored policy fields durable
 truth by projection. If body-edit moderation needs stronger UX later, add
 per-action pending operations; do not overload the object-level creation state.
@@ -547,83 +557,78 @@ Acceptance finalizes policy and attribution fields for the creation mutation. It
 does not freeze body `Text`; later body edits are new content changes attributed
 through the validated change actor and still subject to edit/delete policy.
 
-Requests such as `CreateComment` and MCP tools are command surfaces over the
-same state transition. Human UI actions should perform the local tentative
-mutation before any authority round trip. Agent, daemon, or hosted-tool surfaces
-may ask the daemon/host to create the tentative Automerge mutation on their
-behalf. None of these surfaces should maintain a second optimistic
-representation.
+MCP tools and future UI commands are surfaces over the same state transition.
+Human UI actions should perform the local tentative mutation before any authority
+round trip. Agent tools may ask the local handle to create the tentative
+Automerge mutation on their behalf, then call daemon authority requests to
+accept, reject, resolve, or reopen. None of these surfaces should maintain a
+second optimistic representation.
 
-Add protocol requests:
+The landed local daemon request surface owns authority finalization and thread
+status transitions:
 
 ```text
-CreateComment {
-  thread_id: Option<Str>
-  anchor: CommentAnchor
-  body: Str
-  after_thread_id: Option<Str>
-  observed_notebook_heads: [Str]
-  observed_comments_heads: [Str]
-}
-
-ReplyComment {
-  thread_id: Str
-  message_id: Option<Str>
-  body: Str
-  after_message_id: Option<Str>
-  observed_comments_heads: [Str]
-}
-
-ResolveComment {
-  thread_id: Str
-  observed_comments_heads: [Str]
-}
-
-ReopenComment {
-  thread_id: Str
-  observed_comments_heads: [Str]
-}
-
-EditCommentMessage {
-  thread_id: Str
-  message_id: Str
-  body: Str
-  observed_comments_heads: [Str]
-}
-
-DeleteCommentMessage {
+AcceptCommentThread {
   thread_id: Str
   message_id: Str
   observed_comments_heads: [Str]
 }
+
+RejectCommentThread {
+  thread_id: Str
+  message_id: Str
+  reason: Str
+  observed_comments_heads: [Str]
+}
+
+AcceptCommentMessage {
+  thread_id: Str
+  message_id: Str
+  observed_comments_heads: [Str]
+}
+
+RejectCommentMessage {
+  thread_id: Str
+  message_id: Str
+  reason: Str
+  observed_comments_heads: [Str]
+}
+
+ResolveCommentThread {
+  thread_id: Str
+  observed_comments_heads: [Str]
+}
+
+ReopenCommentThread {
+  thread_id: Str
+  observed_comments_heads: [Str]
+}
 ```
 
-Responses:
-
-```text
-CommentCreated { thread_id, message_id }
-CommentReplied { thread_id, message_id }
-CommentResolved { thread_id }
-CommentReopened { thread_id }
-CommentEdited { thread_id, message_id }
-CommentDeleted { thread_id, message_id }
-CommentMutationRejected { reason }
-```
+These requests return the existing `NotebookResponse::Ok` or
+`NotebookResponse::Error`. Thread/message creation and reply creation are not
+`NotebookRequest` variants in the first local slice; they are local-first
+`CommentsDoc` mutations sent over comments sync, followed by one of the
+authority finalization requests above.
 
 The existing `NotebookRequestEnvelope.required_heads` only guards `NotebookDoc`.
 For comments, use explicit `observed_comments_heads` in the request payload or
-extend the envelope later with per-document required heads. In v0, these heads
-can be advisory conflict evidence: reject only if the target thread/message is
-missing or resolved in a way that invalidates the operation.
+extend the envelope later with per-document required heads. In the landed local
+handler these heads are required: the daemon rejects empty or unknown heads,
+rejects stale content for accept/reject, and rejects status transitions unless
+the observed trusted authority status still matches the requested transition.
 
 Authorization policy for the first implementation:
 
-- create, reply, resolve, reopen: editor or owner.
+- create/reply pending content over comments sync: editor or owner.
+- content finalization: original author principal or owner.
+- resolve/reopen: editor or owner, through authority requests with observed
+  comments heads.
 - edit body, delete message: original author principal, or owner as moderator.
 - runtime_peer: no comment mutation.
 - reply to a resolved thread reopens it with host/daemon-stamped
-  `resolved_at = null`, `resolved_by_* = null`, and the reply author recorded on
-  the new message.
+  `authority_status = "open"` and `authority_reopened_*` fields while recording
+  the reply author on the new message.
 
 Frame-level policy for `COMMENTS_DOC_SYNC = 0x0a`:
 
@@ -631,14 +636,15 @@ Frame-level policy for `COMMENTS_DOC_SYNC = 0x0a`:
 |---|---:|---:|---:|
 | `viewer` | allowed | rejected | rejected |
 | `editor` | allowed | pending content mutations allowed | rejected |
-| `owner` | allowed | pending content mutations allowed; moderation requests allowed | rejected unless acting as the room comments authority |
+| `owner` | allowed | pending non-authority content mutations allowed; moderation/status uses daemon requests | rejected unless acting as the room comments authority |
 | `runtime_peer` | allowed | rejected | rejected |
 | local daemon / Cloud comments authority | allowed | allowed | allowed |
 
-The table is deliberately stricter than the protocol-helper `client writable`
-flag. Helpers may mark `COMMENTS_DOC_SYNC` writable so empty Automerge
-negotiation can pass through generic client code, but room ingress still has to
-inspect `Message.changes` and scope before applying document changes.
+The table is deliberately stricter than a generic protocol-helper
+`client writable` flag. Local room ingress can allow editor/owner pending
+comment changes because `peer_comments_sync.rs` inspects changes and scope; the
+hosted helper currently keeps `COMMENTS_DOC_SYNC` non-client-writable until the
+room materializer has equivalent comments policy.
 
 Room ingress must also authenticate the connection principal to the Automerge
 actor id before accepting authority-authored comment fields. The `comments-doc`
@@ -695,8 +701,8 @@ The repo already has the pieces for this pattern:
 ```text
 CommentProjection/
   threads/{thread_id}/messages/{message_id}/
-    created_by_actor_label          # durable, host/daemon-stamped or imported
-    created_by_authority
+    authority_created_by_actor_label # durable, host/daemon-stamped or imported
+    authority_created_by_authority
     last_writer_actor_label         # derived from validated Automerge actor
     last_writer_authority           # "validated_change_actor" | "unknown"
     attribution_mismatch: Bool      # stamped field disagrees with actor evidence
@@ -729,36 +735,41 @@ The current local MCP implementation exposes:
 list_comments(cell_id?, include_resolved?) -> projected threads
 create_comment_thread(anchor, body, after_thread_id?) -> thread_id, message_id
 reply_comment_thread(thread_id, body, after_message_id?) -> message_id
+resolve_comment_thread(thread_id) -> projected thread
+reopen_comment_thread(thread_id) -> projected thread
 ```
 
 `list_comments` exists because many MCP clients still surface tools better than
 resources; the durable read path is also available as
 `nteract://notebooks/{notebook_id}/comments`. `create_comment_thread` and
 `reply_comment_thread` create pending `CommentsDoc` mutations with the MCP
-process' stable local actor label, then sync before and after the mutation so
-other local peers see the update.
+process' stable local actor label, capture `observed_comments_heads`, and call
+the daemon authority to accept the thread/message. Resolve and reopen tools also
+route through daemon authority requests after capturing current comments heads;
+they are not raw client writes.
 
 The stable actor label is the durable change identity. `peer_label` remains a
 display/presence label and must not be used as the Automerge actor for comment
 authorship; otherwise two MCP clients that choose the same display name could
 collide in durable history.
 
-Resolve/reopen/delete/edit tools are intentionally not exposed by the first MCP
-slice. They are policy transitions and must route through daemon or hosted-room
-request handling so the comments authority writes `status`, tombstone, timestamp,
-and actor fields. Exposing them as direct client writes would make ordinary MCP
-clients appear to finalize comment policy.
+Delete/edit tools are intentionally not exposed by the first MCP slice. They are
+policy transitions and must route through daemon or hosted-room request handling
+so the comments authority writes tombstone, timestamp, and actor fields.
+Resolve/reopen are exposed only because they already use daemon request handling
+and authority-authored `authority_status` / `authority_reopened_*` /
+`authority_resolved_*` fields.
 
 Mutating tools should use the same pending-then-finalized model as human UI
 actions so agent comments have the same durable authorship and ACL behavior as
-human comments. A local daemon will stamp accepted comments with local/same-UID
-provenance (`local_uid` in this ADR's schema language) once the request path
-lands. A hosted room stamps accepted comments from the authenticated hosted
+human comments. The local daemon stamps accepted comments with the local
+comments-authority actor (`runtimed:comments`) and the pending author actor it
+validated. A hosted room stamps accepted comments from the authenticated hosted
 principal; the local MCP process supplies only the operator suffix for
 attribution and must not substitute a local principal for hosted authority.
 
-Reads should follow the repo's newer MCP resource direction rather than landing
-as a tool that immediately needs migration. They must use the local `nteract://`
+Reads follow the repo's newer MCP resource direction rather than landing only as
+a tool that immediately needs migration. They use the local `nteract://`
 resource namespace from `mcp-resource-addressing.md`, not a standalone comment
 scheme that looks like a room locator:
 
@@ -768,13 +779,11 @@ nteract://notebooks/{notebook_id}/cells/{cell_id}/comments
 nteract://notebooks/{notebook_id}/comments/threads/{thread_id}
 ```
 
-The first implemented read resource is
-`nteract://notebooks/{notebook_id}/comments`, returning the projected
-`CommentsDoc` snapshot and resource links. Cell- and thread-scoped resources are
-the target shape but have not landed yet. Path inputs belong on mutating tools
-and `connect_notebook`-style session selection; resource URIs address
-already-visible notebooks by percent-encoded notebook id and comment/cell/thread
-ids.
+The implemented read resources return projected `CommentsDoc` JSON for the whole
+notebook, threads badged on a cell, or a single thread. Path inputs belong on
+mutating tools and `connect_notebook`-style session selection; resource URIs
+address already-visible notebooks by percent-encoded notebook id and
+comment/cell/thread ids.
 
 Per-actor read/unread state is an explicit non-goal for the first spike. Agents
 will eventually want "new since I last looked" and "unaddressed for me," but that
@@ -855,19 +864,20 @@ Clone:
 - If a future clone operation opts into comments, replay comments as fresh
   mutations into the new `CommentsDoc`. Never byte-fork the source comments doc,
   because that would share Automerge history and actor lineage across rooms.
-- Imported clone comments should carry `created_by_authority = "imported"`.
-  Output-anchored comments should be dropped or hard-marked stale because clone
-  has no source outputs.
+- Imported clone comments should carry an imported-authority label in
+  `authority_created_by_authority`. Output-anchored comments should be dropped
+  or hard-marked stale because clone has no source outputs.
 
 Local-to-Cloud promotion or import:
 
 - Imported local comments should not be rejected, and they should not become
   indistinguishable from Cloud-host-stamped comments.
-- Relabel imported author authority to `imported` unless the Cloud host can map
-  the source local principal to an authenticated Cloud principal.
+- Relabel imported author authority to an imported-authority label unless the
+  Cloud host can map the source local principal to an authenticated Cloud
+  principal.
 - Import must not carry raw local Automerge actor history into the hosted room.
   Either replay imported comments as fresh destination-space changes or store
-  them as sanitized projection data with `created_by_authority = "imported"`.
+  them as sanitized projection data with imported authority labels.
 
 Published snapshots:
 
@@ -915,16 +925,20 @@ Phase 2: local sync and MCP
 - Add `COMMENTS_DOC_SYNC`. (Landed.)
 - Wire `SharedDocState`, daemon room state, initial sync, peer broadcasts, and
   sidecar persistence. (Landed for local daemon notebook peers.)
-- Add request variants and daemon handlers that can create tentative comment
-  mutations, finalize actor labels, and own resolve/reopen/delete policy
-  transitions.
+- Add request variants and daemon handlers that finalize actor labels and own
+  resolve/reopen policy transitions. (Landed for accept/reject thread/message
+  creation and resolve/reopen; delete/edit remain future policy work.)
 - Add local MCP `list_comments`, `create_comment_thread`, and
   `reply_comment_thread` tools for the active session. (Landed.)
-- Add `nteract://notebooks/{notebook_id}/comments` read resource. (Landed.)
-- Add cell/thread-scoped comment resources and explicit target resolution for
-  non-active-session tools.
+- Add local MCP `resolve_comment_thread` and `reopen_comment_thread` tools that
+  route through daemon authority requests. (Landed.)
+- Add `nteract://notebooks/{notebook_id}/comments`,
+  `nteract://notebooks/{notebook_id}/cells/{cell_id}/comments`, and
+  `nteract://notebooks/{notebook_id}/comments/threads/{thread_id}` read
+  resources for connected or parked sessions. (Landed.)
+- Add explicit target resolution for non-active-session mutating tools.
 - Ensure save-as follows the existing `comments_doc_id` instead of recomputing a
-  path-hash key.
+  path-hash key. (Landed for local SaveNotebook promotion/save-as.)
 
 Phase 3: UI prototype
 
@@ -990,12 +1004,14 @@ A useful first spike is:
 1. `CommentsDoc` crate/module with create/reply/resolve and fractional ordering.
 2. Local daemon sidecar load/save keyed by `comments_doc_id`, with canonical path
    used only as the v0 resolver/index input.
-3. `list_comments`, `create_comment_thread`, and `reply_comment_thread` MCP
-   tools plus `nteract://` comment read resources.
+3. `list_comments`, `create_comment_thread`, `reply_comment_thread`,
+   `resolve_comment_thread`, and `reopen_comment_thread` MCP tools plus
+   `nteract://` comment read resources.
 4. Notebook UI markers for cell-level comments only.
 5. Pending client-authored comments live in `CommentsDoc`; authority finalization
    is required before treating author/scope fields as durable truth. No
-   source-range inline highlights, direct resolve/reopen tool, or public publish.
+   source-range inline highlights, delete/edit tools, UI markers, or public
+   publish.
 
 That spike proves the storage identity, CRDT shape, author stamping, agent API,
 and stable-DOM-safe UI without committing to the hardest anchoring problem.

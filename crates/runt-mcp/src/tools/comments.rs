@@ -379,10 +379,16 @@ impl CommentThreadStatusAction {
         }
     }
 
-    fn request(self, thread_id: String) -> NotebookRequest {
+    fn request(self, thread_id: String, observed_comments_heads: Vec<String>) -> NotebookRequest {
         match self {
-            Self::Resolve => NotebookRequest::ResolveCommentThread { thread_id },
-            Self::Reopen => NotebookRequest::ReopenCommentThread { thread_id },
+            Self::Resolve => NotebookRequest::ResolveCommentThread {
+                thread_id,
+                observed_comments_heads,
+            },
+            Self::Reopen => NotebookRequest::ReopenCommentThread {
+                thread_id,
+                observed_comments_heads,
+            },
         }
     }
 }
@@ -396,9 +402,13 @@ async fn update_comment_thread_status(
     let thread_id = required_thread_id(request)?;
     let handle = require_handle!(server);
     confirm_comments_sync(&handle, "comment thread status bootstrap").await?;
+    let observed_comments_heads = match handle.current_comments_heads_hex() {
+        Ok(heads) => heads,
+        Err(e) => return comments_tool_error("Failed to capture comment heads for status", e),
+    };
 
     match handle
-        .send_request(action.request(thread_id.to_string()))
+        .send_request(action.request(thread_id.to_string(), observed_comments_heads))
         .await
     {
         Ok(NotebookResponse::Ok {}) => {}

@@ -126,14 +126,21 @@ impl NotebookFileBinding {
         rooms.unbind_path(canonical).await;
     }
 
-    pub async fn replace_claim(rooms: &NotebookRooms, old: &Path, new: PathBuf, uuid: uuid::Uuid) {
+    pub async fn replace_claim(
+        rooms: &NotebookRooms,
+        old: &Path,
+        new: PathBuf,
+        uuid: uuid::Uuid,
+    ) -> bool {
         if let Err(e) = rooms.replace_path(old, new.clone(), uuid).await {
             warn!(
                 "[notebook-sync] post-write path_index reinsert failed for {:?}: {} \
                  — room {} may be orphaned from path lookup",
                 new, e, uuid
             );
+            return false;
         }
+        true
     }
 
     pub async fn set_runtime_path(room: &NotebookRoom, canonical: &Path) {
