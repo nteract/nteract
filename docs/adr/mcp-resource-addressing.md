@@ -10,6 +10,7 @@ tool surface:
 - `nteract://notebooks`
 - `nteract://notebooks/{notebook_id}/cells`
 - `nteract://notebooks/{notebook_id}/cells/{cell_id}`
+- `nteract://notebooks/{notebook_id}/comments`
 
 This gives MCP clients a normal resource-read path for active notebook and cell
 snapshots, but it also creates a naming question for outputs and subscriptions.
@@ -36,7 +37,7 @@ The server only answers notebook-scoped resources for rooms that are visible to
 that MCP server:
 
 - active daemon rooms for `nteract://notebooks`;
-- connected or parked MCP sessions for cell resources.
+- connected or parked MCP sessions for cell and comment resources.
 
 That keeps resource reads from implicitly creating daemon peers or resurrecting
 evicted ephemeral rooms. If a client wants to read a notebook that is not
@@ -56,10 +57,17 @@ The static list may include:
 - `ui://nteract/output.html`
 - `nteract://notebooks`
 - `nteract://notebooks/{notebook_id}/cells` for connected or parked notebooks
+- `nteract://notebooks/{notebook_id}/comments` for connected or parked notebooks
 
 Individual cells and outputs are discoverable through resource templates and
 collection payloads, then read directly. This avoids unbounded resource lists
 for notebooks with hundreds or thousands of cells.
+
+Comment resources follow the same bounded-list rule. The notebook-level comments
+resource is small enough to list for connected or parked notebooks; future
+cell-scoped or thread-scoped comment resources should be discoverable through
+templates and the projected comments payload instead of expanding every thread
+into `resources/list`.
 
 ## Decision 3: Output resources are execution-aware
 
@@ -136,6 +144,11 @@ The migration path is to add parity first, then de-emphasize read-only `get_*`
 tools in descriptions or hide them behind compatibility only after clients use
 resources reliably. Mutating and control-plane tools remain tools.
 
+`list_comments` follows the same compatibility rule: the canonical read model is
+`nteract://notebooks/{notebook_id}/comments`, but a tool remains useful while
+MCP clients differ in how they expose resources. Mutating comment actions remain
+tools because they create or request state transitions.
+
 ## Decision 6: Subscriptions are feasible but separate
 
 `rmcp` supports `resources/subscribe`, `resources/unsubscribe`, and
@@ -157,9 +170,12 @@ Subscriptions should start with coarse resources:
 - `nteract://notebooks`
 - `nteract://notebooks/{notebook_id}/cells`
 - `nteract://notebooks/{notebook_id}/cells/{cell_id}`
+- `nteract://notebooks/{notebook_id}/comments`
 
-Output subscriptions should wait until output resource paths exist. Otherwise
-the server would be notifying about resources that clients cannot read.
+Output subscriptions should wait until output resource paths exist. Cell- or
+thread-scoped comment subscriptions should likewise wait until those resources
+exist; coarse comments subscription can notify the notebook-level comments
+resource.
 
 ## Non-Goals
 
@@ -169,6 +185,7 @@ the server would be notifying about resources that clients cannot read.
 - Streaming output bytes through resource notifications.
 - Removing read-only `get_*` tools in the same change that introduces resource
   addressing.
+- Replacing mutating comment tools with resource writes.
 
 ## Open Questions
 

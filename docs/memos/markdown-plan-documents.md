@@ -147,28 +147,26 @@ document should not fake cell IDs just to reuse the schema.
 `docs/adr/notebook-comments-document.md` is draft status and has the right
 local-first/authority-finalization model:
 
-- `docs/adr/notebook-comments-document.md:12` proposes a per-notebook
-  `CommentsDoc`.
-- `docs/adr/notebook-comments-document.md:21` reserves a likely
-  `COMMENTS_DOC_SYNC = 0x0a` frame.
-- `docs/adr/notebook-comments-document.md:23` requires tentative local comment
-  mutations to land in Automerge, with daemon/Cloud authority finalizing
-  author/scope/resolve fields.
-- `docs/adr/notebook-comments-document.md:54` states comments cannot render as
-  extra notebook cell rows because of stable DOM order.
-- `docs/adr/notebook-comments-document.md:143` places comment persistence in room
-  checkpoints and published snapshots.
-- `docs/adr/notebook-comments-document.md:157` keeps comments off by default for
-  public publish.
-- `docs/adr/notebook-comments-document.md:215` rejects storing derived
-  `anchor_index` in the CommentsDoc; projections should compute indexes.
-- `docs/adr/notebook-comments-document.md:288` defines anchors including
-  `notebook`, `cell`, `cell_range`, `source_range`, and `output`.
-- `docs/adr/notebook-comments-document.md:407` rejects a separate optimistic
-  comment store; optimistic state is the local Automerge mutation.
-- `docs/adr/notebook-comments-document.md:585` sketches MCP mutation tools.
-- `docs/adr/notebook-comments-document.md:618` sketches stable-DOM-safe UI
-  markers, gutters, overlays, and panels.
+- `CommentsDoc` is a separate per-notebook Automerge document with
+  `COMMENTS_DOC_SYNC = 0x0a`.
+- A materialized comments document has a required `comments_doc_id`; local v0 can
+  derive that id from path or room id, but sync, MCP, persistence, and Cloud code
+  should treat a missing id as a resolver or seeding failure.
+- Pending create/reply mutations land in Automerge for immediate local-first
+  rendering; daemon/Cloud authority finalizes author/scope fields and owns
+  resolve/reopen/delete policy transitions.
+- Runtime peers and runtime agents are readers of comments, not comments
+  mutation or finalization authorities.
+- Comments cannot render as extra notebook cell rows because of stable DOM order.
+- Public publish excludes comments by default; if included, publish a frozen
+  read-only projection.
+- The projection layer computes comment indexes and badges from document heads;
+  do not store a derived `anchor_index` in the comments document.
+- Anchors include `notebook`, `cell`, `cell_range`, `source_range`, and `output`.
+- MCP has landed `list_comments`, `create_comment_thread`, and
+  `reply_comment_thread` for active sessions plus
+  `nteract://notebooks/{notebook_id}/comments` as the durable read resource.
+- The UI plan is stable-DOM-safe markers, gutters, overlays, and panels.
 
 For Markdown Plan documents, the ADR needs either an amendment or a sibling ADR
 that generalizes "notebook comments" into "document comments".
@@ -378,6 +376,8 @@ Cloud/local authority semantics can reuse the ADR:
 
 - local-first tentative comment mutation lands in Automerge
 - daemon or Cloud comments authority finalizes author/scope fields
+- resolve/reopen/delete are authority/request transitions, not ordinary direct
+  client writes
 - public publish excludes comments by default
 - if comments are published, publish a frozen read-only comments projection
 

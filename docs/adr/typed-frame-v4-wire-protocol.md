@@ -83,8 +83,10 @@ The fact that the same protocol-version preamble gates two different framing rul
 `CommentsDocSync` is wired for local daemon notebook peers. The daemon owns the
 materialized `CommentsDoc` sidecar, regular client replicas start as sync
 targets for the required `comments_doc_id`, and editor/owner clients may submit
-tentative comment mutations after actor-label validation. Viewer and
-`runtime_peer` scopes have non-empty changes stripped, and runtime-agent
+tentative comment content mutations after actor-label validation. Resolve,
+reopen, delete, and authority finalization remain daemon/host policy transitions,
+not ordinary client-authored durable truth. Viewer and `runtime_peer` scopes have
+non-empty changes stripped, and runtime-agent
 channels explicitly drop `CommentsDocSync` instead of participating. Hosted
 cloud currently keeps the frame known but not client-writable until its room
 materializer and policy handler are implemented.

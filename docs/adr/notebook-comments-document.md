@@ -56,9 +56,10 @@ nteract already follows the same shape:
 - `docs/adr/mcp-resource-addressing.md` keeps MCP read resources under the local
   `nteract://` namespace and explicitly separates them from room locators.
 - Current sync code treats frame types and document streams as explicit seams:
-  `crates/notebook-wire/src/lib.rs` currently stops at `COMMS_DOC_SYNC = 0x09`,
+  `crates/notebook-wire/src/lib.rs` now reserves `COMMENTS_DOC_SYNC = 0x0a`,
   generated TypeScript constants and protocol tests pin that table, and both the
-  daemon and Cloud room host dispatch notebook/runtime/comms streams explicitly.
+  daemon and Cloud room host dispatch notebook/runtime/comms/comments streams
+  explicitly.
 - `NotebookView` has a stable DOM-order invariant; comments cannot be rendered
   as extra cell rows that reorder existing cell DOM nodes.
 
@@ -98,12 +99,12 @@ Cloud hosted room:
 Local file-backed notebook:
   kind: "local_path"
   canonical_path: "/abs/path/notebook.ipynb"
-  comments_doc_id: "comments:path:<sha256(canonical_path)>"
+  comments_doc_id: "comments:local-path:<sha256(canonical_path)>"
 
 Local untitled notebook:
   kind: "local_room"
   room_id: "<uuid>"
-  comments_doc_id: "comments:room:<uuid>"
+  comments_doc_id: "comments:local-room:<uuid>"
 ```
 
 For v0 local desktop, use a daemon-managed sidecar resolver index from canonical
@@ -112,12 +113,14 @@ path or room id to `comments_doc_id`, and store the document bytes by
 
 ```text
 $DAEMON_STATE/comments/index.json
-$DAEMON_STATE/comments/<comments_doc_id>.automerge
+$DAEMON_STATE/comments/<sha256(comments_doc_id)>.automerge
 ```
 
 That avoids changing `.ipynb` metadata during the prototype and keeps comments
 available after daemon restart. It does mean path moves and renames are weak in
-v0. The v1 portability fix is to add `metadata.runt.comments_doc_id` or a root
+v0. Hashing the filename keeps `comments_doc_id` out of platform-sensitive file
+names; the document still stores and validates the raw `comments_doc_id`. The v1
+portability fix is to add `metadata.runt.comments_doc_id` or a root
 `NotebookDoc.comments_doc_id` in a future notebook schema bump, make that
 association required for notebooks with comments, then keep a path index only as
 a lookup cache.
@@ -143,8 +146,10 @@ Local desktop:
   tentative comment mutations into the local `CommentsDoc` so Automerge owns the
   optimistic state, while the daemon finalizes author/scope fields in the same
   doc.
-- Local agents use MCP tools that resolve `notebook_id | path`, submit comment
-  requests to the daemon, and read projected comments from the local doc.
+- Local agents use MCP tools/resources against an active notebook session. The
+  first local MCP slice can list projected comments and create/reply by writing
+  pending comment mutations into the synced local replica; daemon request
+  handling is still needed for finalization and policy transitions.
 
 Cloud hosted rooms:
 
@@ -707,27 +712,46 @@ advisory unless they were host/daemon-stamped during finalization.
 
 ## MCP Surface
 
-Expose a small mutating tool set once the daemon can mutate `CommentsDoc`.
-Tools should default to the active MCP notebook session. For explicit selection,
-they should use the same target model as `connect_notebook`: local `path`,
-local/hosted `notebook_id`, optional hosted `domain`, or a hosted `target` URL.
-Path-only selection is local; hosted comments are stamped from the hosted
-credential principal and the locally configured operator.
+Expose a small comment tool/resource surface on top of the active MCP notebook
+session. For explicit selection, future hosted/local variants should use the
+same target model as `connect_notebook`: local `path`, local/hosted
+`notebook_id`, optional hosted `domain`, or a hosted `target` URL. Path-only
+selection is local; hosted comments are stamped from the hosted credential
+principal and the locally configured operator.
+
+The current local MCP implementation exposes:
 
 ```text
-create_comment(anchor, body, target?, notebook_id?, domain?, path?) -> thread_id, message_id
-reply_comment(thread_id, body, target?, notebook_id?, domain?, path?) -> message_id
-resolve_comment(thread_id, target?, notebook_id?, domain?, path?) -> ok
-reopen_comment(thread_id, target?, notebook_id?, domain?, path?) -> ok
+list_comments(cell_id?, include_resolved?) -> projected threads
+create_comment_thread(anchor, body, after_thread_id?) -> thread_id, message_id
+reply_comment_thread(thread_id, body, after_message_id?) -> message_id
 ```
 
-Mutating tools use the same pending-then-finalized model as human UI actions so
-agent comments have the same durable authorship and ACL behavior as human
-comments. A local daemon stamps accepted comments with local/same-UID provenance
-(`local_uid` in this ADR's schema language). A hosted room stamps accepted
-comments from the authenticated hosted principal; the local MCP process supplies
-only the operator suffix for attribution and must not substitute a local
-principal for hosted authority.
+`list_comments` exists because many MCP clients still surface tools better than
+resources; the durable read path is also available as
+`nteract://notebooks/{notebook_id}/comments`. `create_comment_thread` and
+`reply_comment_thread` create pending `CommentsDoc` mutations with the MCP
+process' stable local actor label, then sync before and after the mutation so
+other local peers see the update.
+
+The stable actor label is the durable change identity. `peer_label` remains a
+display/presence label and must not be used as the Automerge actor for comment
+authorship; otherwise two MCP clients that choose the same display name could
+collide in durable history.
+
+Resolve/reopen/delete/edit tools are intentionally not exposed by the first MCP
+slice. They are policy transitions and must route through daemon or hosted-room
+request handling so the comments authority writes `status`, tombstone, timestamp,
+and actor fields. Exposing them as direct client writes would make ordinary MCP
+clients appear to finalize comment policy.
+
+Mutating tools should use the same pending-then-finalized model as human UI
+actions so agent comments have the same durable authorship and ACL behavior as
+human comments. A local daemon will stamp accepted comments with local/same-UID
+provenance (`local_uid` in this ADR's schema language) once the request path
+lands. A hosted room stamps accepted comments from the authenticated hosted
+principal; the local MCP process supplies only the operator suffix for
+attribution and must not substitute a local principal for hosted authority.
 
 Reads should follow the repo's newer MCP resource direction rather than landing
 as a tool that immediately needs migration. They must use the local `nteract://`
@@ -740,12 +764,13 @@ nteract://notebooks/{notebook_id}/cells/{cell_id}/comments
 nteract://notebooks/{notebook_id}/comments/threads/{thread_id}
 ```
 
-The resource response can be the projected snapshot from `CommentsDoc`, including
-open/resolved filters and stale-anchor metadata. Path inputs belong on mutating
-tools and `connect_notebook`-style session selection; resource URIs address
+The first implemented read resource is
+`nteract://notebooks/{notebook_id}/comments`, returning the projected
+`CommentsDoc` snapshot and resource links. Cell- and thread-scoped resources are
+the target shape but have not landed yet. Path inputs belong on mutating tools
+and `connect_notebook`-style session selection; resource URIs address
 already-visible notebooks by percent-encoded notebook id and comment/cell/thread
-ids. A temporary `list_comments` debug tool is acceptable during the spike, but
-not the target public surface.
+ids.
 
 Per-actor read/unread state is an explicit non-goal for the first spike. Agents
 will eventually want "new since I last looked" and "unaddressed for me," but that
@@ -815,8 +840,8 @@ Save-as:
 - Save-as is the same room rebound to a new path.
 - Comments stay with the room.
 - The local sidecar store must follow the existing `comments_doc_id`; it must not
-  orphan comments by recomputing `comments:path:<sha256(new_path)>` and treating
-  that as a fresh document.
+  orphan comments by recomputing `comments:local-path:<sha256(new_path)>` and
+  treating that as a fresh document.
 
 Clone:
 
@@ -863,16 +888,15 @@ Phase 0: ADR alignment
 - Keep this ADR aligned with `mcp-resource-addressing.md`: comment read
   resources live under `nteract://notebooks/{notebook_id}/comments...` and
   `nteract://notebooks/{notebook_id}/cells/{cell_id}/comments`.
-- Treat the current lack of source implementation as intentional. Until
-  `CommentsDoc` lands in code, neighboring docs may reference it only as the
-  proposed sidecar in this ADR.
+- Keep neighboring docs explicit about landed slices versus future authority/UI
+  work so agents do not treat stale punch-list prose as the current state.
 
 Phase 1: schema and projection
 
 - Add `CommentsDoc` type with schema seed, load/save, heads, sync helpers, and
-  typed mutation methods.
+  typed mutation methods. (Landed.)
 - Ship a committed `comments_doc_genesis_v1.am` asset following the existing
-  schema-evolution and genesis-byte convention.
+  schema-evolution and genesis-byte convention. (Landed.)
 - Add a comments changeset/projection surface that can derive per-message
   `last_writer_actor_label` from validated Automerge change actors and cache it
   by `CommentsDoc` heads.
@@ -888,9 +912,13 @@ Phase 2: local sync and MCP
 - Wire `SharedDocState`, daemon room state, initial sync, peer broadcasts, and
   sidecar persistence. (Landed for local daemon notebook peers.)
 - Add request variants and daemon handlers that can create tentative comment
-  mutations and finalize actor labels.
-- Add MCP mutation tools using active-session or `connect_notebook`-style target
-  resolution, and comment read resources using `nteract://`.
+  mutations, finalize actor labels, and own resolve/reopen/delete policy
+  transitions.
+- Add local MCP `list_comments`, `create_comment_thread`, and
+  `reply_comment_thread` tools for the active session. (Landed.)
+- Add `nteract://notebooks/{notebook_id}/comments` read resource. (Landed.)
+- Add cell/thread-scoped comment resources and explicit target resolution for
+  non-active-session tools.
 - Ensure save-as follows the existing `comments_doc_id` instead of recomputing a
   path-hash key.
 
@@ -935,8 +963,9 @@ Phase 5: portable identity
   policy, and frozen projection format.
 - `COMMENTS_DOC_SYNC = 0x0a` is currently free, but every generated binding,
   exhaustive cap table, client-writable gate, materialized-routing switch, and
-  protocol test must move together. A partial wire change will look like an
-  unknown frame or a broadcast-only frame in some clients.
+  protocol test must move together. The local branch wires these pieces for
+  local daemon peers and keeps hosted Cloud client-writable policy disabled until
+  the room materializer can enforce comments policy.
 - MCP resource naming can regress if comments use a standalone scheme. Keep read
   resources under `nteract://` and reserve room locators for connection targets.
 - Source-range anchoring needs a real editor integration if line/column plus
@@ -957,12 +986,12 @@ A useful first spike is:
 1. `CommentsDoc` crate/module with create/reply/resolve and fractional ordering.
 2. Local daemon sidecar load/save keyed by `comments_doc_id`, with canonical path
    used only as the v0 resolver/index input.
-3. `create_comment`, `reply_comment`, and `resolve_comment` MCP tools plus
-   `nteract://` comment read resources.
+3. `list_comments`, `create_comment_thread`, and `reply_comment_thread` MCP
+   tools plus `nteract://` comment read resources.
 4. Notebook UI markers for cell-level comments only.
 5. Pending client-authored comments live in `CommentsDoc`; authority finalization
    is required before treating author/scope fields as durable truth. No
-   source-range inline highlights, no public publish.
+   source-range inline highlights, direct resolve/reopen tool, or public publish.
 
 That spike proves the storage identity, CRDT shape, author stamping, agent API,
 and stable-DOM-safe UI without committing to the hardest anchoring problem.
