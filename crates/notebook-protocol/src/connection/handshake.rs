@@ -164,6 +164,9 @@ pub struct ProtocolCapabilities {
     /// from notebook_id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comments_doc_id: Option<String>,
+    /// Actor label whose CommentsDoc authority fields are trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comments_authority_actor_label: Option<String>,
 }
 
 impl ProtocolCapabilities {
@@ -184,6 +187,7 @@ impl ProtocolCapabilities {
             actor_label: None,
             connection_scope: None,
             comments_doc_id: None,
+            comments_authority_actor_label: None,
         }
     }
 
@@ -201,6 +205,12 @@ impl ProtocolCapabilities {
     /// Attach the per-room CommentsDoc identity advertised by the daemon.
     pub fn with_comments_doc_id(mut self, comments_doc_id: impl Into<String>) -> Self {
         self.comments_doc_id = Some(comments_doc_id.into());
+        self
+    }
+
+    /// Attach the daemon CommentsDoc authority actor label.
+    pub fn with_comments_authority_actor_label(mut self, actor_label: impl Into<String>) -> Self {
+        self.comments_authority_actor_label = Some(actor_label.into());
         self
     }
 }

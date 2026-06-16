@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use comments_doc::{
     local_path_comments_doc_id, local_room_comments_doc_id, CommentsDoc, CommentsDocHandle,
-    NotebookCommentRef,
+    NotebookCommentRef, COMMENTS_DOC_DEFAULT_ACTOR,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 const INDEX_FILE: &str = "index.json";
 const INDEX_VERSION: u32 = 1;
-const COMMENTS_DOC_ACTOR: &str = "runtimed:comments";
+pub(crate) const COMMENTS_DOC_ACTOR: &str = COMMENTS_DOC_DEFAULT_ACTOR;
 
 #[derive(Debug, Clone)]
 pub struct CommentsSidecarStore {

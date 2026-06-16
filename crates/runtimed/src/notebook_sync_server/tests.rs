@@ -1430,7 +1430,9 @@ async fn test_comments_doc_sync_accepts_editor_change_and_persists_sidecar() {
 
     let persisted = std::fs::read(room.comments_store.doc_path(&room.comments_doc_id)).unwrap();
     let persisted_doc = comments_doc::CommentsDoc::load(&persisted, &room.comments_doc_id).unwrap();
-    let persisted_projection = persisted_doc.read_projection(&[], None).unwrap();
+    let persisted_projection = persisted_doc
+        .read_projection(&[COMMENTS_DOC_ACTOR], None)
+        .unwrap();
     assert_eq!(persisted_projection.threads.len(), 1);
     assert_eq!(
         persisted_projection.threads[0].messages[0].body,
@@ -1529,6 +1531,120 @@ async fn test_comments_doc_sync_rejects_mismatched_actor_label() {
         .unwrap();
     assert!(projection.threads.is_empty());
     assert!(!room.comments_store.doc_path(&room.comments_doc_id).exists());
+}
+
+#[tokio::test]
+async fn test_comment_status_request_resolves_reopens_and_persists_sidecar() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-status.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.create_thread(
+                "thread-status",
+                "message-status",
+                &comments_doc::CommentAnchor::Notebook,
+                "please review",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let resolved = crate::requests::comments::resolve_thread(
+        &room,
+        "thread-status".to_string(),
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(resolved, crate::protocol::NotebookResponse::Ok {}));
+
+    let persisted = std::fs::read(room.comments_store.doc_path(&room.comments_doc_id)).unwrap();
+    let persisted_doc = comments_doc::CommentsDoc::load(&persisted, &room.comments_doc_id).unwrap();
+    let persisted_projection = persisted_doc
+        .read_projection(&[COMMENTS_DOC_ACTOR], None)
+        .unwrap();
+    assert_eq!(
+        persisted_projection.threads[0].status,
+        comments_doc::ProjectedThreadStatus::Resolved
+    );
+    assert_eq!(
+        persisted_projection.threads[0]
+            .resolved_by_actor_label
+            .as_deref(),
+        Some("agent:comments-editor")
+    );
+    assert_eq!(
+        persisted_projection.threads[0]
+            .resolved_by_authority
+            .as_deref(),
+        Some(COMMENTS_DOC_ACTOR)
+    );
+
+    let reopened = crate::requests::comments::reopen_thread(
+        &room,
+        "thread-status".to_string(),
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Owner,
+    )
+    .await;
+    assert!(matches!(reopened, crate::protocol::NotebookResponse::Ok {}));
+
+    let persisted = std::fs::read(room.comments_store.doc_path(&room.comments_doc_id)).unwrap();
+    let persisted_doc = comments_doc::CommentsDoc::load(&persisted, &room.comments_doc_id).unwrap();
+    let persisted_projection = persisted_doc
+        .read_projection(&[COMMENTS_DOC_ACTOR], None)
+        .unwrap();
+    assert_eq!(
+        persisted_projection.threads[0].status,
+        comments_doc::ProjectedThreadStatus::Open
+    );
+}
+
+#[tokio::test]
+async fn test_comment_status_request_rejects_runtime_peer() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-status-runtime.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.create_thread(
+                "thread-runtime-status",
+                "message-runtime-status",
+                &comments_doc::CommentAnchor::Notebook,
+                "runtime peer must not resolve",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let response = crate::requests::comments::resolve_thread(
+        &room,
+        "thread-runtime-status".to_string(),
+        Some("agent:runtime-peer"),
+        nteract_identity::ConnectionScope::RuntimePeer,
+    )
+    .await;
+
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].status,
+        comments_doc::ProjectedThreadStatus::Open
+    );
+    assert!(
+        projection.threads[0].resolved_by_authority.is_none(),
+        "runtime peer must not authority-finalize CommentsDoc status"
+    );
 }
 
 fn comments_sync_payload_from_room(

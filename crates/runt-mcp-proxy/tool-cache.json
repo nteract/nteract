@@ -619,7 +619,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a pending comment thread anchored to the notebook, a cell, a source range, or an output.",
+    "description": "Create a pending comment thread.",
     "inputSchema": {
       "$defs": {
         "CommentAnchorInput": {
@@ -826,7 +826,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Add a pending reply to an existing comment thread.",
+    "description": "Reply to a comment thread.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -856,6 +856,52 @@
       "type": "object"
     },
     "name": "reply_comment_thread"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "description": "Mark a comment thread resolved.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "thread_id": {
+          "description": "Thread ID to mark resolved.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id"
+      ],
+      "title": "ResolveCommentThreadParams",
+      "type": "object"
+    },
+    "name": "resolve_comment_thread"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "description": "Reopen a comment thread.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "thread_id": {
+          "description": "Thread ID to reopen.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id"
+      ],
+      "title": "ReopenCommentThreadParams",
+      "type": "object"
+    },
+    "name": "reopen_comment_thread"
   },
   {
     "_meta": {

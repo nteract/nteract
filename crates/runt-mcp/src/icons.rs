@@ -55,7 +55,9 @@ pub(crate) fn tool_icon(name: &str) -> Option<IconKind> {
         "manage_dependencies" => IconKind::ManageDependencies,
         "list_comments" => IconKind::ReadCell,
         "create_comment_thread" => IconKind::CreateCell,
-        "reply_comment_thread" => IconKind::EditCell,
+        "reply_comment_thread" | "resolve_comment_thread" | "reopen_comment_thread" => {
+            IconKind::EditCell
+        }
         "replace_match" | "replace_regex" => IconKind::ReplaceCell,
         _ => return None,
     })

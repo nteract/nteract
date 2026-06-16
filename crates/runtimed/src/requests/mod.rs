@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use notebook_protocol::protocol::BlobUploadErrorKind;
+use nteract_identity::ConnectionScope;
 use runtime_doc::{QueueEntry, RuntimeLifecycle};
 use tracing::{debug, warn};
 
@@ -61,6 +62,7 @@ pub(crate) fn publish_startup_queue_from_queued_executions(room: &NotebookRoom) 
 pub(crate) mod approve_project_environment;
 pub(crate) mod approve_trust;
 pub(crate) mod clone_notebook;
+pub(crate) mod comments;
 pub(crate) mod complete;
 pub(crate) mod execute_cell;
 pub(crate) mod get_doc_bytes;
@@ -145,6 +147,8 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::SyncEnvironment { .. } => "SyncEnvironment",
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
         NotebookRequest::ApproveProjectEnvironment { .. } => "ApproveProjectEnvironment",
+        NotebookRequest::ResolveCommentThread { .. } => "ResolveCommentThread",
+        NotebookRequest::ReopenCommentThread { .. } => "ReopenCommentThread",
         NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
         NotebookRequest::CreateBlobUpload { .. } => "CreateBlobUpload",
         NotebookRequest::CompleteBlobUpload { .. } => "CompleteBlobUpload",
@@ -158,6 +162,7 @@ pub(crate) async fn handle_notebook_request(
     request: NotebookRequest,
     daemon: Arc<Daemon>,
     submitter_actor_label: Option<&str>,
+    submitter_scope: ConnectionScope,
 ) -> NotebookResponse {
     debug!(
         "[notebook-sync] Handling request: {}",
@@ -242,6 +247,14 @@ pub(crate) async fn handle_notebook_request(
 
         NotebookRequest::ApproveProjectEnvironment { project_file_path } => {
             approve_project_environment::handle(room, project_file_path).await
+        }
+
+        NotebookRequest::ResolveCommentThread { thread_id } => {
+            comments::resolve_thread(room, thread_id, submitter_actor_label, submitter_scope).await
+        }
+
+        NotebookRequest::ReopenCommentThread { thread_id } => {
+            comments::reopen_thread(room, thread_id, submitter_actor_label, submitter_scope).await
         }
 
         NotebookRequest::GetDocBytes {} => get_doc_bytes::handle(room).await,

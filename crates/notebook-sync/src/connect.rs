@@ -217,6 +217,7 @@ pub async fn connect_with_options(
         peer_state,
         notebook_id,
         caps.comments_doc_id.clone(),
+        caps.comments_authority_actor_label.clone(),
         reader,
         writer,
     )
@@ -278,6 +279,7 @@ pub async fn connect_open(
         peer_state,
         notebook_id,
         info.capabilities.comments_doc_id.clone(),
+        info.capabilities.comments_authority_actor_label.clone(),
         reader,
         writer,
     )
@@ -405,6 +407,7 @@ async fn connect_create_inner(
         peer_state,
         notebook_id,
         info.capabilities.comments_doc_id.clone(),
+        info.capabilities.comments_authority_actor_label.clone(),
         reader,
         writer,
     )
@@ -439,7 +442,7 @@ where
     let doc = bootstrap.into_inner();
     let peer_state = sync::State::new();
 
-    build_and_spawn_frame_io(doc, peer_state, notebook_id, None, source, sink)
+    build_and_spawn_frame_io(doc, peer_state, notebook_id, None, None, source, sink)
         .await
         .map(|(handle, broadcast_rx)| ConnectResult {
             handle,
@@ -461,6 +464,7 @@ async fn build_and_spawn<R, W>(
     peer_state: sync::State,
     notebook_id: String,
     comments_doc_id: Option<String>,
+    comments_authority_actor_label: Option<String>,
     reader: R,
     writer: W,
 ) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
@@ -468,8 +472,13 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let (handle, task_config, broadcast_rx) =
-        build_sync_task_state(doc, peer_state, notebook_id.clone(), comments_doc_id)?;
+    let (handle, task_config, broadcast_rx) = build_sync_task_state(
+        doc,
+        peer_state,
+        notebook_id.clone(),
+        comments_doc_id,
+        comments_authority_actor_label,
+    )?;
 
     let notebook_id_for_task = notebook_id;
     tokio::spawn(async move {
@@ -492,6 +501,7 @@ async fn build_and_spawn_frame_io<S, W>(
     peer_state: sync::State,
     notebook_id: String,
     comments_doc_id: Option<String>,
+    comments_authority_actor_label: Option<String>,
     source: S,
     sink: W,
 ) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
@@ -499,8 +509,13 @@ where
     S: FrameSource + Send + 'static,
     W: FrameSink + Send + 'static,
 {
-    let (handle, task_config, broadcast_rx) =
-        build_sync_task_state(doc, peer_state, notebook_id.clone(), comments_doc_id)?;
+    let (handle, task_config, broadcast_rx) = build_sync_task_state(
+        doc,
+        peer_state,
+        notebook_id.clone(),
+        comments_doc_id,
+        comments_authority_actor_label,
+    )?;
 
     let notebook_id_for_task = notebook_id;
     tokio::spawn(async move {
@@ -523,6 +538,7 @@ fn build_sync_task_state(
     peer_state: sync::State,
     notebook_id: String,
     comments_doc_id: Option<String>,
+    comments_authority_actor_label: Option<String>,
 ) -> Result<
     (
         DocHandle,
@@ -531,8 +547,12 @@ fn build_sync_task_state(
     ),
     SyncError,
 > {
-    let mut shared_state =
-        SharedDocState::try_new_with_comments_doc_id(doc, notebook_id.clone(), comments_doc_id)?;
+    let mut shared_state = SharedDocState::try_new_with_comments_doc_identity(
+        doc,
+        notebook_id.clone(),
+        comments_doc_id,
+        comments_authority_actor_label,
+    )?;
     shared_state.peer_state = peer_state;
 
     let shared = Arc::new(Mutex::new(shared_state));

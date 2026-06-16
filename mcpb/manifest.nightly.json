@@ -133,12 +133,20 @@
       "name": "list_comments"
     },
     {
-      "description": "Create a pending comment thread anchored to the notebook, a cell, a source range, or an output.",
+      "description": "Create a pending comment thread.",
       "name": "create_comment_thread"
     },
     {
-      "description": "Add a pending reply to an existing comment thread.",
+      "description": "Reply to a comment thread.",
       "name": "reply_comment_thread"
+    },
+    {
+      "description": "Mark a comment thread resolved.",
+      "name": "resolve_comment_thread"
+    },
+    {
+      "description": "Reopen a comment thread.",
+      "name": "reopen_comment_thread"
     },
     {
       "description": "Replace literal text in a cell. Use context_before/context_after to disambiguate repeated matches.",

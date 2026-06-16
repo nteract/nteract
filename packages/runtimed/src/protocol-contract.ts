@@ -30,6 +30,8 @@ export const NOTEBOOK_REQUEST_TYPES = [
   "sync_environment",
   "approve_trust",
   "approve_project_environment",
+  "resolve_comment_thread",
+  "reopen_comment_thread",
   "get_doc_bytes",
   "create_blob_upload",
   "complete_blob_upload",

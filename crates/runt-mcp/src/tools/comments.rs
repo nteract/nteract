@@ -1,5 +1,6 @@
-//! CommentsDoc tools: list_comments, create_comment_thread, reply_comment_thread.
+//! CommentsDoc tools for durable notebook comment threads.
 
+use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
@@ -45,6 +46,22 @@ pub struct ReplyCommentThreadParams {
     /// Insert after this message in the thread.
     #[serde(default)]
     pub after_message_id: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveCommentThreadParams {
+    /// Thread ID to mark resolved.
+    pub thread_id: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReopenCommentThreadParams {
+    /// Thread ID to reopen.
+    pub thread_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -296,6 +313,99 @@ pub async fn reply_comment_thread(
     comments_resource_json_success(value, handle.notebook_id())
 }
 
+/// Mark a comment thread resolved through the daemon authority.
+pub async fn resolve_comment_thread(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    update_comment_thread_status(server, request, CommentThreadStatusAction::Resolve).await
+}
+
+/// Reopen a comment thread through the daemon authority.
+pub async fn reopen_comment_thread(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    update_comment_thread_status(server, request, CommentThreadStatusAction::Reopen).await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CommentThreadStatusAction {
+    Resolve,
+    Reopen,
+}
+
+impl CommentThreadStatusAction {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Resolve => "resolve",
+            Self::Reopen => "reopen",
+        }
+    }
+
+    fn request(self, thread_id: String) -> NotebookRequest {
+        match self {
+            Self::Resolve => NotebookRequest::ResolveCommentThread { thread_id },
+            Self::Reopen => NotebookRequest::ReopenCommentThread { thread_id },
+        }
+    }
+}
+
+async fn update_comment_thread_status(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+    action: CommentThreadStatusAction,
+) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(request, &["thread_id"])?;
+    let thread_id = required_thread_id(request)?;
+    let handle = require_handle!(server);
+    confirm_comments_sync(&handle, "comment thread status bootstrap").await?;
+
+    match handle
+        .send_request(action.request(thread_id.to_string()))
+        .await
+    {
+        Ok(NotebookResponse::Ok {}) => {}
+        Ok(NotebookResponse::Error { error }) => {
+            return tool_error(&format!(
+                "Failed to {} comment thread: {error}",
+                action.verb()
+            ));
+        }
+        Ok(other) => {
+            return tool_error(&format!(
+                "Failed to {} comment thread: unexpected daemon response {other:?}",
+                action.verb()
+            ));
+        }
+        Err(error) => {
+            return tool_error(&format!(
+                "Failed to {} comment thread: {error}",
+                action.verb()
+            ));
+        }
+    }
+
+    confirm_comments_sync(&handle, "comment thread status").await?;
+    let projection = match handle.get_comments_projection() {
+        Ok(projection) => projection,
+        Err(e) => return comments_tool_error("Failed to read comments after status update", e),
+    };
+    let thread = projection
+        .threads
+        .into_iter()
+        .find(|thread| thread.id == thread_id);
+
+    let value = serde_json::json!({
+        "notebook_id": handle.notebook_id(),
+        "comments_doc_id": projection.comments_doc_id,
+        "thread_id": thread_id,
+        "thread": thread,
+        "resources": crate::resources::notebook_resources_json(handle.notebook_id()),
+    });
+    comments_resource_json_success(value, handle.notebook_id())
+}
+
 fn required_anchor(request: &CallToolRequestParams) -> Result<CommentAnchorInput, McpError> {
     let value = request
         .arguments
@@ -304,6 +414,15 @@ fn required_anchor(request: &CallToolRequestParams) -> Result<CommentAnchorInput
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: anchor", None))?;
     serde_json::from_value(value.clone())
         .map_err(|e| McpError::invalid_params(format!("Invalid anchor: {e}"), None))
+}
+
+fn required_thread_id(request: &CallToolRequestParams) -> Result<&str, McpError> {
+    let thread_id = arg_str(request, "thread_id")
+        .ok_or_else(|| McpError::invalid_params("Missing required parameter: thread_id", None))?;
+    if thread_id.trim().is_empty() {
+        return Err(McpError::invalid_params("thread_id cannot be empty", None));
+    }
+    Ok(thread_id)
 }
 
 fn required_body(request: &CallToolRequestParams) -> Result<&str, McpError> {
@@ -404,12 +523,29 @@ fn comments_resource_json_success(
     result: serde_json::Value,
     notebook_id: &str,
 ) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::success(vec![
+    let mut content = vec![
         Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()),
         Content::resource_link(crate::resources::notebook_comments_resource_link(
             notebook_id,
         )),
-    ]))
+    ];
+    if let Some(thread_id) = result.get("thread_id").and_then(serde_json::Value::as_str) {
+        content.push(Content::resource_link(
+            crate::resources::notebook_comment_thread_resource_link(notebook_id, thread_id),
+        ));
+    }
+    if let Some(cell_id) = result
+        .get("thread")
+        .and_then(|thread| thread.get("badge_cell_ids"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|ids| ids.first())
+        .and_then(serde_json::Value::as_str)
+    {
+        content.push(Content::resource_link(
+            crate::resources::notebook_cell_comments_resource_link(notebook_id, cell_id),
+        ));
+    }
+    Ok(CallToolResult::success(content))
 }
 
 #[cfg(test)]

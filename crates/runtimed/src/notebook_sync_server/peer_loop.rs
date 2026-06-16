@@ -163,6 +163,7 @@ where
         notebook_id.clone(),
         peer_id.to_string(),
         connection_identity.actor_label().as_str().to_string(),
+        connection_identity.scope(),
     );
     let mut put_blob_worker = spawn_put_blob_worker(
         room.blob_store.clone(),

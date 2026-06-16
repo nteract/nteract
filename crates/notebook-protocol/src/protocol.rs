@@ -617,6 +617,12 @@ pub enum NotebookRequest {
         project_file_path: Option<String>,
     },
 
+    /// Mark a durable comment thread resolved through the daemon authority.
+    ResolveCommentThread { thread_id: String },
+
+    /// Reopen a durable comment thread through the daemon authority.
+    ReopenCommentThread { thread_id: String },
+
     /// Get the full Automerge document bytes from the daemon's canonical doc.
     /// Used by the frontend to bootstrap its WASM Automerge peer.
     GetDocBytes {},
@@ -1134,6 +1140,12 @@ mod tests {
             NotebookRequest::ApproveProjectEnvironment {
                 project_file_path: Some("/tmp/project/environment.yml".into()),
             },
+            NotebookRequest::ResolveCommentThread {
+                thread_id: "thread-1".into(),
+            },
+            NotebookRequest::ReopenCommentThread {
+                thread_id: "thread-1".into(),
+            },
         ];
 
         for request in cases {
@@ -1366,6 +1378,20 @@ mod tests {
                 serde_json::json!({
                     "action": "approve_project_environment",
                     "project_file_path": "/tmp/project/environment.yml",
+                }),
+            ),
+            (
+                "resolve_comment_thread",
+                serde_json::json!({
+                    "action": "resolve_comment_thread",
+                    "thread_id": "thread-1",
+                }),
+            ),
+            (
+                "reopen_comment_thread",
+                serde_json::json!({
+                    "action": "reopen_comment_thread",
+                    "thread_id": "thread-1",
                 }),
             ),
             (

@@ -3086,7 +3086,10 @@ impl Daemon {
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
                 )
-                .with_comments_doc_id(room.comments_doc_id.clone()),
+                .with_comments_doc_id(room.comments_doc_id.clone())
+                .with_comments_authority_actor_label(
+                    crate::notebook_sync_server::COMMENTS_DOC_ACTOR,
+                ),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
@@ -3320,7 +3323,10 @@ impl Daemon {
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
                 )
-                .with_comments_doc_id(room.comments_doc_id.clone()),
+                .with_comments_doc_id(room.comments_doc_id.clone())
+                .with_comments_authority_actor_label(
+                    crate::notebook_sync_server::COMMENTS_DOC_ACTOR,
+                ),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,

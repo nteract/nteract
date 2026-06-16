@@ -258,6 +258,7 @@ pub(super) fn spawn_peer_request_worker(
     notebook_id: String,
     peer_id: String,
     submitter_actor_label: String,
+    submitter_scope: ConnectionScope,
 ) -> PeerRequestWorker {
     let (tx, mut rx) = mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(
         PEER_REQUEST_QUEUE_CAPACITY,
@@ -290,6 +291,7 @@ pub(super) fn spawn_peer_request_worker(
                             envelope.request,
                             daemon.clone(),
                             Some(submitter_actor_label.as_str()),
+                            submitter_scope,
                         )
                         .await
                     }
@@ -450,6 +452,10 @@ fn request_allowed_for_scope(
         notebook_protocol::protocol::NotebookRequest::GetDocBytes {}
     ) || match request_required_scope(request) {
         RequestRequiredScope::NotebookWrite => connection_scope.allows_notebook_write(),
+        RequestRequiredScope::CommentsWrite => matches!(
+            connection_scope,
+            ConnectionScope::Editor | ConnectionScope::Owner
+        ),
         RequestRequiredScope::BlobUpload => connection_scope.allows_local_blob_upload(),
         RequestRequiredScope::Owner => matches!(connection_scope, ConnectionScope::Owner),
     }
@@ -457,6 +463,7 @@ fn request_allowed_for_scope(
 
 enum RequestRequiredScope {
     NotebookWrite,
+    CommentsWrite,
     /// Multipart blob upload requests share the `PUT_BLOB` frame's local gate
     /// (`ConnectionScope::allows_local_blob_upload`): runtime peers upload
     /// outputs without notebook write access, editors keep document-scoped
@@ -484,6 +491,8 @@ fn request_required_scope(
         | NotebookRequest::SyncEnvironment { .. }
         | NotebookRequest::ApproveTrust { .. }
         | NotebookRequest::ApproveProjectEnvironment { .. } => RequestRequiredScope::Owner,
+        NotebookRequest::ResolveCommentThread { .. }
+        | NotebookRequest::ReopenCommentThread { .. } => RequestRequiredScope::CommentsWrite,
         NotebookRequest::SendComm { .. }
         | NotebookRequest::CloneAsEphemeral { .. }
         | NotebookRequest::GetDocBytes {} => RequestRequiredScope::NotebookWrite,

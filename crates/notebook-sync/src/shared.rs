@@ -52,6 +52,9 @@ pub struct SharedDocState {
     /// Durable comments doc — synced alongside notebook state.
     pub(crate) comments_doc: CommentsDoc,
 
+    /// Trusted CommentsDoc authority actor labels advertised by the daemon.
+    pub(crate) comments_authority_actor_labels: Vec<String>,
+
     /// Automerge sync protocol state for the CommentsDoc peer.
     pub(crate) comments_peer_state: sync::State,
 
@@ -64,19 +67,32 @@ pub struct SharedDocState {
 impl SharedDocState {
     /// Create a new shared state with the given document and notebook ID.
     pub fn try_new(doc: AutoCommit, notebook_id: String) -> Result<Self, SyncError> {
-        Self::try_new_with_comments_doc_id(doc, notebook_id, None)
+        Self::try_new_with_comments_doc_identity(doc, notebook_id, None, None)
     }
 
     /// Create a new shared state, optionally seeding CommentsDoc from the
-    /// daemon-advertised identity.
+    /// daemon-advertised identity and trusted authority actor.
     pub fn try_new_with_comments_doc_id(
         doc: AutoCommit,
         notebook_id: String,
         comments_doc_id: Option<String>,
     ) -> Result<Self, SyncError> {
+        Self::try_new_with_comments_doc_identity(doc, notebook_id, comments_doc_id, None)
+    }
+
+    pub fn try_new_with_comments_doc_identity(
+        doc: AutoCommit,
+        notebook_id: String,
+        comments_doc_id: Option<String>,
+        comments_authority_actor_label: Option<String>,
+    ) -> Result<Self, SyncError> {
         let derived_comments_identity = comments_identity_for_notebook_id(&notebook_id);
         let comments_doc_id =
             comments_doc_id.unwrap_or_else(|| derived_comments_identity.comments_doc_id.clone());
+        let comments_authority_actor_labels = comments_authority_actor_label
+            .into_iter()
+            .filter(|label| !label.trim().is_empty())
+            .collect();
         Ok(Self {
             doc,
             peer_state: sync::State::new(),
@@ -87,6 +103,7 @@ impl SharedDocState {
             comms_doc: CommsDoc::try_new_empty()?,
             comms_peer_state: sync::State::new(),
             comments_doc: CommentsDoc::try_new_sync_target(&comments_doc_id)?,
+            comments_authority_actor_labels,
             comments_peer_state: sync::State::new(),
             #[cfg(test)]
             panic_on_next_doc_sync: false,
@@ -478,5 +495,22 @@ mod tests {
         );
         assert!(!state.comments_doc.is_materialized());
         assert_eq!(state.comments_doc.notebook_ref(), None);
+    }
+
+    #[test]
+    fn shared_state_stores_daemon_advertised_comments_authority_actor() {
+        let room_id = "b98a5f0c-c4bb-4d44-8ab4-7e369da72401";
+        let state = SharedDocState::try_new_with_comments_doc_identity(
+            AutoCommit::new(),
+            room_id.to_string(),
+            None,
+            Some(comments_doc::COMMENTS_DOC_DEFAULT_ACTOR.to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.comments_authority_actor_labels,
+            vec![comments_doc::COMMENTS_DOC_DEFAULT_ACTOR.to_string()]
+        );
     }
 }

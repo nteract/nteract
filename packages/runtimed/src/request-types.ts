@@ -120,6 +120,8 @@ export type NotebookRequest =
   | { type: "sync_environment"; guard?: DependencyGuard | null }
   | { type: "approve_trust"; observed_heads?: string[] | null }
   | { type: "approve_project_environment"; project_file_path?: string | null }
+  | { type: "resolve_comment_thread"; thread_id: string }
+  | { type: "reopen_comment_thread"; thread_id: string }
   | { type: "get_doc_bytes" }
   | {
       type: "create_blob_upload";

@@ -203,9 +203,14 @@ impl DocHandle {
     pub fn get_comments_projection(&self) -> Result<comments_doc::CommentsProjection, SyncError> {
         let current_cell_order = self.get_cell_ids();
         let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        let authority_actor_labels: Vec<&str> = state
+            .comments_authority_actor_labels
+            .iter()
+            .map(String::as_str)
+            .collect();
         state
             .comments_doc
-            .read_projection(&[], Some(&current_cell_order))
+            .read_projection(&authority_actor_labels, Some(&current_cell_order))
             .map_err(Into::into)
     }
 

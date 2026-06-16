@@ -31,6 +31,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -53,8 +54,14 @@ COMMENTS_TOOLS = {
     "list_comments",
     "create_comment_thread",
     "reply_comment_thread",
+    "resolve_comment_thread",
+    "reopen_comment_thread",
 }
-COMMENTS_TEMPLATE = "nteract://notebooks/{notebook_id}/comments"
+COMMENTS_TEMPLATES = {
+    "nteract://notebooks/{notebook_id}/comments",
+    "nteract://notebooks/{notebook_id}/cells/{cell_id}/comments",
+    "nteract://notebooks/{notebook_id}/comments/threads/{thread_id}",
+}
 CELL_SUMMARY_RE = re.compile(r"\bcell\s+([A-Za-z0-9_.:-]+)\s+\(")
 COMMENT_SYNC_TIMEOUT_SECS = 20
 DAEMON_READY_TIMEOUT_SECS = 30
@@ -138,6 +145,22 @@ def resource_template_uris(result: Any) -> set[str]:
     return {str(getattr(t, "uriTemplate", getattr(t, "uri_template", ""))) for t in templates or []}
 
 
+def segment(value: str) -> str:
+    return quote(value, safe="-._~")
+
+
+def comments_uri(notebook_id: str) -> str:
+    return f"nteract://notebooks/{segment(notebook_id)}/comments"
+
+
+def cell_comments_uri(notebook_id: str, cell_id: str) -> str:
+    return f"nteract://notebooks/{segment(notebook_id)}/cells/{segment(cell_id)}/comments"
+
+
+def comment_thread_uri(notebook_id: str, thread_id: str) -> str:
+    return f"nteract://notebooks/{segment(notebook_id)}/comments/threads/{segment(thread_id)}"
+
+
 @contextlib.asynccontextmanager
 async def mcp_session(label: str, runt: Path, socket: Path | None = None):
     args = ["mcp", "--no-show"]
@@ -159,8 +182,12 @@ async def assert_comment_surface(session: ClientSession, label: str) -> None:
 
     templates = await session.list_resource_templates()
     template_uris = resource_template_uris(templates)
-    if COMMENTS_TEMPLATE not in template_uris:
-        fail(f"[{label}] missing comments resource template; got {sorted(template_uris)}")
+    missing_templates = sorted(COMMENTS_TEMPLATES - template_uris)
+    if missing_templates:
+        fail(
+            f"[{label}] missing comments resource templates: "
+            f"{missing_templates}; got {sorted(template_uris)}"
+        )
 
 
 async def wait_for_comments(
@@ -197,14 +224,12 @@ def summarize_threads(threads: Any) -> str:
         if isinstance(thread, dict):
             messages = thread.get("messages")
             count = len(messages) if isinstance(messages, list) else "?"
-            parts.append(f"{thread.get('id')}:{count}")
+            parts.append(f"{thread.get('id')}:{thread.get('status')}:{count}")
     return ", ".join(parts) if parts else "<none>"
 
 
 def thread_with_body(payload: dict[str, Any], body: str) -> dict[str, Any] | None:
-    for thread in payload.get("threads", []):
-        if not isinstance(thread, dict):
-            continue
+    for thread in iter_threads(payload):
         for message in thread.get("messages", []):
             if isinstance(message, dict) and message.get("body") == body:
                 return thread
@@ -226,18 +251,33 @@ def contains_thread_and_reply(payload: dict[str, Any], first: str, reply: str) -
 
 
 def thread_ids(payload: dict[str, Any]) -> set[str]:
-    return {
-        thread["id"]
-        for thread in payload.get("threads", [])
-        if isinstance(thread, dict) and isinstance(thread.get("id"), str)
-    }
+    return {thread["id"] for thread in iter_threads(payload) if isinstance(thread.get("id"), str)}
+
+
+def thread_by_id(payload: dict[str, Any], thread_id: str) -> dict[str, Any] | None:
+    for thread in iter_threads(payload):
+        if thread.get("id") == thread_id:
+            return thread
+    return None
+
+
+def thread_status(payload: dict[str, Any], thread_id: str) -> str | None:
+    thread = thread_by_id(payload, thread_id)
+    status = thread.get("status") if thread else None
+    return status if isinstance(status, str) else None
+
+
+def iter_threads(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    threads = [thread for thread in payload.get("threads", []) if isinstance(thread, dict)]
+    thread = payload.get("thread")
+    if isinstance(thread, dict):
+        threads.append(thread)
+    return threads
 
 
 def message_bodies(payload: dict[str, Any]) -> set[str]:
     bodies: set[str] = set()
-    for thread in payload.get("threads", []):
-        if not isinstance(thread, dict):
-            continue
+    for thread in iter_threads(payload):
         for message in thread.get("messages", []):
             if isinstance(message, dict) and isinstance(message.get("body"), str):
                 bodies.add(message["body"])
@@ -285,7 +325,11 @@ def write_notebook(path: Path) -> None:
     path.write_text(json.dumps(notebook, indent=2), encoding="utf-8")
 
 
-async def run_pair_scenario(alice: ClientSession, bob: ClientSession, notebook_path: Path) -> str:
+async def run_pair_scenario(
+    alice: ClientSession,
+    bob: ClientSession,
+    notebook_path: Path,
+) -> tuple[str, str]:
     await asyncio.gather(
         assert_comment_surface(alice, "alice"),
         assert_comment_surface(bob, "bob"),
@@ -302,8 +346,12 @@ async def run_pair_scenario(alice: ClientSession, bob: ClientSession, notebook_p
     if bob_open.get("notebook_id") != notebook_id:
         fail(f"alice/bob connected to different notebooks: {alice_open} vs {bob_open}")
     cell_id = first_cell_id(alice_open)
-    comments_uri = f"nteract://notebooks/{notebook_id}/comments"
-    log(f"connected notebook_id={notebook_id} cell_id={cell_id}")
+    notebook_comments_uri = comments_uri(notebook_id)
+    cell_resource_uri = cell_comments_uri(notebook_id, cell_id)
+    log(
+        f"connected notebook_id={notebook_id} cell_id={cell_id} "
+        f"comments_uri={notebook_comments_uri}"
+    )
 
     alice_initial, bob_initial = await asyncio.gather(
         call_json(alice, "alice", "list_comments"),
@@ -341,7 +389,7 @@ async def run_pair_scenario(alice: ClientSession, bob: ClientSession, notebook_p
     await wait_for_comments(
         bob,
         "bob",
-        comments_uri,
+        notebook_comments_uri,
         lambda tool, resource: (
             contains_message(tool, alice_body) and contains_message(resource, alice_body)
         ),
@@ -357,20 +405,30 @@ async def run_pair_scenario(alice: ClientSession, bob: ClientSession, notebook_p
     await wait_for_comments(
         alice,
         "alice",
-        comments_uri,
+        notebook_comments_uri,
         lambda tool, resource: (
             contains_thread_and_reply(tool, alice_body, bob_reply)
             and contains_thread_and_reply(resource, alice_body, bob_reply)
         ),
         "bob reply",
     )
+    created_thread_resource = await read_resource_json(
+        alice,
+        "alice",
+        comment_thread_uri(notebook_id, created_thread_id),
+    )
+    if not contains_thread_and_reply(created_thread_resource, alice_body, bob_reply):
+        fail(f"thread resource did not include notebook thread reply: {created_thread_resource}")
 
-    await call_json(
+    cell_created = await call_json(
         alice,
         "alice",
         "create_comment_thread",
         {"anchor": {"kind": "cell", "cell_id": cell_id}, "body": cell_body},
     )
+    cell_thread_id = cell_created.get("thread_id")
+    if not isinstance(cell_thread_id, str) or not cell_thread_id:
+        fail(f"cell create did not return thread_id: {cell_created}")
     filtered = await call_json(alice, "alice", "list_comments", {"cell_id": cell_id})
     matching = thread_with_body(filtered, cell_body)
     if not matching:
@@ -378,6 +436,65 @@ async def run_pair_scenario(alice: ClientSession, bob: ClientSession, notebook_p
     badge_cell_ids = matching.get("badge_cell_ids")
     if cell_id not in badge_cell_ids:
         fail(f"cell thread did not badge {cell_id}: {matching}")
+    cell_resource = await read_resource_json(alice, "alice", cell_resource_uri)
+    if not contains_message(cell_resource, cell_body):
+        fail(f"cell comments resource did not include cell thread: {cell_resource}")
+    cell_thread_resource = await read_resource_json(
+        bob,
+        "bob",
+        comment_thread_uri(notebook_id, cell_thread_id),
+    )
+    if not contains_message(cell_thread_resource, cell_body):
+        fail(f"cell thread resource did not include cell message: {cell_thread_resource}")
+
+    await call_json(
+        bob,
+        "bob",
+        "resolve_comment_thread",
+        {"thread_id": created_thread_id},
+    )
+    await wait_for_comments(
+        alice,
+        "alice",
+        notebook_comments_uri,
+        lambda tool, resource: (
+            thread_status(tool, created_thread_id) == "resolved"
+            and thread_status(resource, created_thread_id) == "resolved"
+        ),
+        "bob resolved notebook thread",
+    )
+    hidden_resolved = await call_json(
+        alice,
+        "alice",
+        "list_comments",
+        {"include_resolved": False},
+    )
+    if created_thread_id in thread_ids(hidden_resolved):
+        fail(f"resolved thread was not hidden by include_resolved=false: {hidden_resolved}")
+    resolved_thread_resource = await read_resource_json(
+        bob,
+        "bob",
+        comment_thread_uri(notebook_id, created_thread_id),
+    )
+    if thread_status(resolved_thread_resource, created_thread_id) != "resolved":
+        fail(f"thread resource did not show resolved status: {resolved_thread_resource}")
+
+    await call_json(
+        alice,
+        "alice",
+        "reopen_comment_thread",
+        {"thread_id": created_thread_id},
+    )
+    await wait_for_comments(
+        bob,
+        "bob",
+        notebook_comments_uri,
+        lambda tool, resource: (
+            thread_status(tool, created_thread_id) == "open"
+            and thread_status(resource, created_thread_id) == "open"
+        ),
+        "alice reopened notebook thread",
+    )
 
     concurrent_results = await asyncio.gather(
         call_json(
@@ -404,7 +521,7 @@ async def run_pair_scenario(alice: ClientSession, bob: ClientSession, notebook_p
     alice_final, _ = await wait_for_comments(
         alice,
         "alice",
-        comments_uri,
+        notebook_comments_uri,
         lambda tool, resource: (
             expected_concurrent_ids.issubset(thread_ids(tool))
             and expected_concurrent_ids.issubset(thread_ids(resource))
@@ -414,7 +531,7 @@ async def run_pair_scenario(alice: ClientSession, bob: ClientSession, notebook_p
     bob_final, _ = await wait_for_comments(
         bob,
         "bob",
-        comments_uri,
+        notebook_comments_uri,
         lambda tool, resource: (
             thread_ids(alice_final).issubset(thread_ids(tool))
             and thread_ids(alice_final).issubset(thread_ids(resource))
@@ -426,11 +543,12 @@ async def run_pair_scenario(alice: ClientSession, bob: ClientSession, notebook_p
 
     log(
         "user-test friction: comments require polling; tool results are JSON text plus "
-        "resource links; actor labels are stable but not Alice/Bob display labels; "
+        "resource links; scoped resources made cell and thread reads easier; "
+        "actor labels are stable but not Alice/Bob display labels; "
         "multi-client tests should join by notebook_id after one path open to avoid "
         "the current concurrent path-open race"
     )
-    return comments_doc_id
+    return comments_doc_id, created_thread_id
 
 
 async def run_persistence_check(
@@ -439,6 +557,7 @@ async def run_persistence_check(
     notebook_path: Path,
     expected_comments_doc_id: str,
     expected_bodies: set[str],
+    reopened_thread_id: str,
 ) -> None:
     async with mcp_session("charlie", runt, socket) as charlie:
         connected = await call_json(
@@ -450,16 +569,18 @@ async def run_persistence_check(
         notebook_id = connected.get("notebook_id")
         if not isinstance(notebook_id, str):
             fail(f"charlie connect did not return notebook_id: {connected}")
-        comments_uri = f"nteract://notebooks/{notebook_id}/comments"
+        notebook_comments_uri = comments_uri(notebook_id)
         comments, resource = await wait_for_comments(
             charlie,
             "charlie",
-            comments_uri,
+            notebook_comments_uri,
             lambda tool, res: (
                 expected_bodies.issubset(message_bodies(tool))
                 and expected_bodies.issubset(message_bodies(res))
+                and thread_status(tool, reopened_thread_id) == "open"
+                and thread_status(res, reopened_thread_id) == "open"
             ),
-            "persisted comment bodies after daemon restart",
+            "persisted comment bodies and reopened status after daemon restart",
         )
         if comments.get("comments_doc_id") != resource.get("comments_doc_id"):
             fail(f"tool/resource comments_doc_id mismatch after restart: {comments} vs {resource}")
@@ -468,6 +589,13 @@ async def run_persistence_check(
                 "comments_doc_id changed after restart: "
                 f"expected {expected_comments_doc_id}, got {comments.get('comments_doc_id')}"
             )
+        thread_resource = await read_resource_json(
+            charlie,
+            "charlie",
+            comment_thread_uri(notebook_id, reopened_thread_id),
+        )
+        if thread_status(thread_resource, reopened_thread_id) != "open":
+            fail(f"thread resource did not persist reopened status: {thread_resource}")
 
 
 def env_for_socket(socket: Path | None) -> dict[str, str] | None:
@@ -605,7 +733,11 @@ async def smoke(args: argparse.Namespace) -> None:
             mcp_session("alice", args.runt, socket) as alice,
             mcp_session("bob", args.runt, socket) as bob,
         ):
-            comments_doc_id = await run_pair_scenario(alice, bob, notebook_path)
+            comments_doc_id, reopened_thread_id = await run_pair_scenario(
+                alice,
+                bob,
+                notebook_path,
+            )
 
         if args.restart_daemon_for_persistence:
             if not args.start_daemon:
@@ -626,6 +758,7 @@ async def smoke(args: argparse.Namespace) -> None:
                     "comments-smoke concurrent alice",
                     "comments-smoke concurrent bob",
                 },
+                reopened_thread_id,
             )
 
         log("ALL PASSES GREEN")

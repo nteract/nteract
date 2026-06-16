@@ -4,7 +4,7 @@ mod handle;
 mod identity;
 mod types;
 
-pub use doc::CommentsDoc;
+pub use doc::{CommentsDoc, COMMENTS_DOC_DEFAULT_ACTOR};
 pub use error::CommentsDocError;
 pub use handle::CommentsDocHandle;
 pub use identity::{

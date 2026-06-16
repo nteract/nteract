@@ -28,6 +28,8 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "sync_environment",
     "approve_trust",
     "approve_project_environment",
+    "resolve_comment_thread",
+    "reopen_comment_thread",
     "get_doc_bytes",
     "create_blob_upload",
     "complete_blob_upload",
@@ -281,6 +283,8 @@ export type NotebookRequest =
   | {{ type: "sync_environment"; guard?: DependencyGuard | null }}
   | {{ type: "approve_trust"; observed_heads?: string[] | null }}
   | {{ type: "approve_project_environment"; project_file_path?: string | null }}
+  | {{ type: "resolve_comment_thread"; thread_id: string }}
+  | {{ type: "reopen_comment_thread"; thread_id: string }}
   | {{ type: "get_doc_bytes" }}
   | {{
       type: "create_blob_upload";

@@ -240,14 +240,26 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "create_comment_thread",
-            "Create a pending comment thread anchored to the notebook, a cell, a source range, or an output.",
+            "Create a pending comment thread.",
             schema_for::<comments::CreateCommentThreadParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
         Tool::new(
             "reply_comment_thread",
-            "Add a pending reply to an existing comment thread.",
+            "Reply to a comment thread.",
             schema_for::<comments::ReplyCommentThreadParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
+        Tool::new(
+            "resolve_comment_thread",
+            "Mark a comment thread resolved.",
+            schema_for::<comments::ResolveCommentThreadParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
+        Tool::new(
+            "reopen_comment_thread",
+            "Reopen a comment thread.",
+            schema_for::<comments::ReopenCommentThreadParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
         // -- Editing --
@@ -366,6 +378,8 @@ pub async fn dispatch(
         "list_comments" => comments::list_comments(server, request).await,
         "create_comment_thread" => comments::create_comment_thread(server, request).await,
         "reply_comment_thread" => comments::reply_comment_thread(server, request).await,
+        "resolve_comment_thread" => comments::resolve_comment_thread(server, request).await,
+        "reopen_comment_thread" => comments::reopen_comment_thread(server, request).await,
         // Editing
         "replace_match" => editing::replace_match(server, request).await,
         "replace_regex" => editing::replace_regex(server, request).await,

@@ -23,7 +23,7 @@ use crate::types::{
 const COMMENTS_DOC_SCHEMA_SEED_ACTOR: &str = "nteract:comments-doc-schema:v1";
 #[cfg(test)]
 const COMMENTS_DOC_SCHEMA_SEED_ACTOR_BYTES: &[u8] = b"nteract:comments-doc-schema:v1";
-const COMMENTS_DOC_DEFAULT_ACTOR: &str = "runtimed:comments";
+pub const COMMENTS_DOC_DEFAULT_ACTOR: &str = "runtimed:comments";
 #[cfg(test)]
 const COMMENTS_DOC_SCHEMA_VERSION: u64 = 1;
 const COMMENTS_DOC_GENESIS_V1_BYTES: &[u8] = include_bytes!("../assets/comments_doc_genesis_v1.am");

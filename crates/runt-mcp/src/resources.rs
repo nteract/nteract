@@ -140,6 +140,22 @@ pub fn list_resource_templates() -> ListResourceTemplatesResult {
             IconKind::ReadCell,
             NOTEBOOK_CONTEXT_PRIORITY,
         ),
+        assistant_resource_template(
+            "nteract://notebooks/{notebook_id}/cells/{cell_id}/comments",
+            "nteract cell comments",
+            "Durable comment threads badged on a notebook cell",
+            COMMENTS_MIME_TYPE,
+            IconKind::ReadCell,
+            NOTEBOOK_CONTEXT_PRIORITY,
+        ),
+        assistant_resource_template(
+            "nteract://notebooks/{notebook_id}/comments/threads/{thread_id}",
+            "nteract comment thread",
+            "Single durable comment thread for a connected or parked notebook session",
+            COMMENTS_MIME_TYPE,
+            IconKind::ReadCell,
+            NOTEBOOK_CONTEXT_PRIORITY,
+        ),
     ];
 
     ListResourceTemplatesResult {
@@ -181,16 +197,32 @@ pub async fn read_resource(
         }
         NotebookResourceUri::Comments { notebook_id } => {
             let handle = handle_for_notebook(server, &notebook_id).await?;
-            handle.confirm_state_sync().await.map_err(|e| {
-                McpError::internal_error(format!("Failed to sync comments resource: {e}"), None)
-            })?;
-            let projection = handle.get_comments_projection().map_err(|e| {
-                McpError::resource_not_found(
-                    format!("Comments resource is not ready for notebook_id {notebook_id}: {e}"),
-                    None,
-                )
-            })?;
+            let projection = comments_projection_for_resource(&notebook_id, &handle).await?;
             let text = comments_json(&notebook_id, &projection);
+            Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
+        }
+        NotebookResourceUri::CellComments {
+            notebook_id,
+            cell_id,
+        } => {
+            let handle = handle_for_notebook(server, &notebook_id).await?;
+            if handle.get_cell(&cell_id).is_none() {
+                return Err(McpError::resource_not_found(
+                    format!("Cell not found: {cell_id}"),
+                    None,
+                ));
+            }
+            let projection = comments_projection_for_resource(&notebook_id, &handle).await?;
+            let text = cell_comments_json(&notebook_id, &cell_id, &projection);
+            Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
+        }
+        NotebookResourceUri::CommentThread {
+            notebook_id,
+            thread_id,
+        } => {
+            let handle = handle_for_notebook(server, &notebook_id).await?;
+            let projection = comments_projection_for_resource(&notebook_id, &handle).await?;
+            let text = comment_thread_json(&notebook_id, &thread_id, &projection)?;
             Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
         }
         NotebookResourceUri::Cell {
@@ -323,6 +355,21 @@ fn json_resource(uri: &str, text: String) -> ResourceContents {
     }
 }
 
+async fn comments_projection_for_resource(
+    notebook_id: &str,
+    handle: &notebook_sync::handle::DocHandle,
+) -> Result<comments_doc::CommentsProjection, McpError> {
+    handle.confirm_state_sync().await.map_err(|e| {
+        McpError::internal_error(format!("Failed to sync comments resource: {e}"), None)
+    })?;
+    handle.get_comments_projection().map_err(|e| {
+        McpError::resource_not_found(
+            format!("Comments resource is not ready for notebook_id {notebook_id}: {e}"),
+            None,
+        )
+    })
+}
+
 fn cells_json(notebook_id: &str, handle: &notebook_sync::handle::DocHandle) -> String {
     let status_by_cell = crate::tools::cell_read::build_cell_status_map(handle);
     let execution_count_by_cell = crate::tools::cell_read::build_cell_execution_count_map(handle);
@@ -339,6 +386,7 @@ fn cells_json(notebook_id: &str, handle: &notebook_sync::handle::DocHandle) -> S
             serde_json::json!({
                 "cell_id": cell.id,
                 "uri": notebook_cell_uri(notebook_id, &cell.id),
+                "comments_uri": notebook_cell_comments_uri(notebook_id, &cell.id),
                 "cell_type": cell.cell_type,
                 "previous_cell_id": previous_cell_id(&cells, index),
                 "next_cell_id": next_cell_id(&cells, index),
@@ -395,6 +443,7 @@ fn cell_json(
         "cell": {
             "cell_id": cell.id,
             "uri": notebook_cell_uri(notebook_id, cell_id),
+            "comments_uri": notebook_cell_comments_uri(notebook_id, cell_id),
             "cell_type": cell.cell_type,
             "previous_cell_id": previous_cell_id,
             "next_cell_id": next_cell_id,
@@ -452,6 +501,14 @@ enum NotebookResourceUri {
     Comments {
         notebook_id: String,
     },
+    CellComments {
+        notebook_id: String,
+        cell_id: String,
+    },
+    CommentThread {
+        notebook_id: String,
+        thread_id: String,
+    },
     Cell {
         notebook_id: String,
         cell_id: String,
@@ -474,7 +531,15 @@ fn parse_notebook_resource_uri(uri: &str) -> Result<NotebookResourceUri, String>
         [notebook_id, "comments"] => Ok(NotebookResourceUri::Comments {
             notebook_id: decode_segment(notebook_id)?,
         }),
+        [notebook_id, "comments", "threads", thread_id] => Ok(NotebookResourceUri::CommentThread {
+            notebook_id: decode_segment(notebook_id)?,
+            thread_id: decode_segment(thread_id)?,
+        }),
         [notebook_id, "cells", cell_id] => Ok(NotebookResourceUri::Cell {
+            notebook_id: decode_segment(notebook_id)?,
+            cell_id: decode_segment(cell_id)?,
+        }),
+        [notebook_id, "cells", cell_id, "comments"] => Ok(NotebookResourceUri::CellComments {
             notebook_id: decode_segment(notebook_id)?,
             cell_id: decode_segment(cell_id)?,
         }),
@@ -497,6 +562,10 @@ pub(crate) fn notebook_cell_uri(notebook_id: &str, cell_id: &str) -> String {
     )
 }
 
+pub(crate) fn notebook_cell_comments_uri(notebook_id: &str, cell_id: &str) -> String {
+    format!("{}/comments", notebook_cell_uri(notebook_id, cell_id))
+}
+
 pub(crate) fn notebook_comments_uri(notebook_id: &str) -> String {
     format!(
         "{NOTEBOOKS_RESOURCE_URI}/{}/comments",
@@ -504,11 +573,21 @@ pub(crate) fn notebook_comments_uri(notebook_id: &str) -> String {
     )
 }
 
+pub(crate) fn notebook_comment_thread_uri(notebook_id: &str, thread_id: &str) -> String {
+    format!(
+        "{}/threads/{}",
+        notebook_comments_uri(notebook_id),
+        encode_segment(thread_id)
+    )
+}
+
 pub(crate) fn notebook_resources_json(notebook_id: &str) -> serde_json::Value {
     serde_json::json!({
         "cells": notebook_cells_uri(notebook_id),
         "cell_template": format!("{}/{{cell_id}}", notebook_cells_uri(notebook_id)),
+        "cell_comments_template": format!("{}/{{cell_id}}/comments", notebook_cells_uri(notebook_id)),
         "comments": notebook_comments_uri(notebook_id),
+        "comment_thread_template": format!("{}/threads/{{thread_id}}", notebook_comments_uri(notebook_id)),
     })
 }
 
@@ -534,6 +613,20 @@ pub(crate) fn notebook_cell_resource_link(notebook_id: &str, cell_id: &str) -> R
     resource
 }
 
+pub(crate) fn notebook_cell_comments_resource_link(
+    notebook_id: &str,
+    cell_id: &str,
+) -> RawResource {
+    let mut resource = RawResource::new(
+        notebook_cell_comments_uri(notebook_id, cell_id),
+        format!("nteract comments for cell {cell_id}"),
+    );
+    resource.description = Some("Durable comment threads badged on a notebook cell".into());
+    resource.mime_type = Some(COMMENTS_MIME_TYPE.into());
+    resource.icons = Some(icons::icons(IconKind::ReadCell));
+    resource
+}
+
 pub(crate) fn notebook_comments_resource_link(notebook_id: &str) -> RawResource {
     let mut resource = RawResource::new(
         notebook_comments_uri(notebook_id),
@@ -545,14 +638,91 @@ pub(crate) fn notebook_comments_resource_link(notebook_id: &str) -> RawResource 
     resource
 }
 
+pub(crate) fn notebook_comment_thread_resource_link(
+    notebook_id: &str,
+    thread_id: &str,
+) -> RawResource {
+    let mut resource = RawResource::new(
+        notebook_comment_thread_uri(notebook_id, thread_id),
+        format!("nteract comment thread {thread_id}"),
+    );
+    resource.description = Some("Durable comment thread".into());
+    resource.mime_type = Some(COMMENTS_MIME_TYPE.into());
+    resource.icons = Some(icons::icons(IconKind::ReadCell));
+    resource
+}
+
 fn comments_json(notebook_id: &str, projection: &comments_doc::CommentsProjection) -> String {
+    let threads: Vec<_> = projection
+        .threads
+        .iter()
+        .map(|thread| comment_thread_value(notebook_id, thread))
+        .collect();
     serde_json::to_string_pretty(&serde_json::json!({
         "notebook_id": notebook_id,
         "comments_doc_id": projection.comments_doc_id,
-        "threads": projection.threads,
+        "threads": threads,
         "resources": notebook_resources_json(notebook_id),
     }))
     .unwrap_or_else(|_| "{}".into())
+}
+
+fn cell_comments_json(
+    notebook_id: &str,
+    cell_id: &str,
+    projection: &comments_doc::CommentsProjection,
+) -> String {
+    let threads: Vec<_> = projection
+        .threads
+        .iter()
+        .filter(|thread| thread.badge_cell_ids.iter().any(|id| id == cell_id))
+        .map(|thread| comment_thread_value(notebook_id, thread))
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "notebook_id": notebook_id,
+        "comments_doc_id": projection.comments_doc_id,
+        "cell_id": cell_id,
+        "uri": notebook_cell_comments_uri(notebook_id, cell_id),
+        "threads": threads,
+        "resources": notebook_resources_json(notebook_id),
+    }))
+    .unwrap_or_else(|_| "{}".into())
+}
+
+fn comment_thread_json(
+    notebook_id: &str,
+    thread_id: &str,
+    projection: &comments_doc::CommentsProjection,
+) -> Result<String, McpError> {
+    let thread = projection
+        .threads
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .ok_or_else(|| {
+            McpError::resource_not_found(format!("Comment thread not found: {thread_id}"), None)
+        })?;
+    Ok(serde_json::to_string_pretty(&serde_json::json!({
+        "notebook_id": notebook_id,
+        "comments_doc_id": projection.comments_doc_id,
+        "thread_id": thread_id,
+        "thread": comment_thread_value(notebook_id, thread),
+        "resources": notebook_resources_json(notebook_id),
+    }))
+    .unwrap_or_else(|_| "{}".into()))
+}
+
+fn comment_thread_value(
+    notebook_id: &str,
+    thread: &comments_doc::CommentThreadSnapshot,
+) -> serde_json::Value {
+    let mut value = serde_json::to_value(thread).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "uri".to_string(),
+            serde_json::json!(notebook_comment_thread_uri(notebook_id, &thread.id)),
+        );
+    }
+    value
 }
 
 fn encode_segment(value: &str) -> String {
@@ -722,6 +892,10 @@ mod tests {
         assert!(templates.contains(&"nteract://notebooks/{notebook_id}/cells"));
         assert!(templates.contains(&"nteract://notebooks/{notebook_id}/cells/{cell_id}"));
         assert!(templates.contains(&"nteract://notebooks/{notebook_id}/comments"));
+        assert!(templates.contains(&"nteract://notebooks/{notebook_id}/cells/{cell_id}/comments"));
+        assert!(
+            templates.contains(&"nteract://notebooks/{notebook_id}/comments/threads/{thread_id}")
+        );
 
         for template in &result.resource_templates {
             assert_assistant_context_annotations(
@@ -792,6 +966,24 @@ mod tests {
                 notebook_id: "nb/with/slash".to_string(),
             }
         );
+
+        let uri = notebook_cell_comments_uri("nb 1", "cell/with/slash");
+        assert_eq!(
+            parse_notebook_resource_uri(&uri).expect("parse cell comments uri"),
+            NotebookResourceUri::CellComments {
+                notebook_id: "nb 1".to_string(),
+                cell_id: "cell/with/slash".to_string()
+            }
+        );
+
+        let uri = notebook_comment_thread_uri("nb 1", "thread/with/slash");
+        assert_eq!(
+            parse_notebook_resource_uri(&uri).expect("parse comment thread uri"),
+            NotebookResourceUri::CommentThread {
+                notebook_id: "nb 1".to_string(),
+                thread_id: "thread/with/slash".to_string()
+            }
+        );
     }
 
     #[test]
@@ -811,6 +1003,18 @@ mod tests {
         assert_eq!(
             resources.get("comments"),
             Some(&serde_json::json!("nteract://notebooks/nb%201/comments"))
+        );
+        assert_eq!(
+            resources.get("cell_comments_template"),
+            Some(&serde_json::json!(
+                "nteract://notebooks/nb%201/cells/{cell_id}/comments"
+            ))
+        );
+        assert_eq!(
+            resources.get("comment_thread_template"),
+            Some(&serde_json::json!(
+                "nteract://notebooks/nb%201/comments/threads/{thread_id}"
+            ))
         );
     }
 
@@ -836,6 +1040,75 @@ mod tests {
         );
         assert_eq!(resource.mime_type.as_deref(), Some(COMMENTS_MIME_TYPE));
         assert_light_dark_icons(resource.icons.as_deref().expect("resource icons"));
+    }
+
+    #[test]
+    fn notebook_cell_comments_resource_link_uses_encoded_uri() {
+        let resource = notebook_cell_comments_resource_link("nb 1", "cell/with/slash");
+
+        assert_eq!(
+            resource.uri,
+            "nteract://notebooks/nb%201/cells/cell%2Fwith%2Fslash/comments"
+        );
+        assert_eq!(resource.mime_type.as_deref(), Some(COMMENTS_MIME_TYPE));
+        assert_light_dark_icons(resource.icons.as_deref().expect("resource icons"));
+    }
+
+    #[test]
+    fn notebook_comment_thread_resource_link_uses_encoded_uri() {
+        let resource = notebook_comment_thread_resource_link("nb 1", "thread/with/slash");
+
+        assert_eq!(
+            resource.uri,
+            "nteract://notebooks/nb%201/comments/threads/thread%2Fwith%2Fslash"
+        );
+        assert_eq!(resource.mime_type.as_deref(), Some(COMMENTS_MIME_TYPE));
+        assert_light_dark_icons(resource.icons.as_deref().expect("resource icons"));
+    }
+
+    #[test]
+    fn comments_json_includes_thread_and_cell_resource_uris() {
+        let projection = comments_doc::CommentsProjection {
+            comments_doc_id: "comments:test".into(),
+            threads: vec![comments_doc::CommentThreadSnapshot {
+                id: "thread/1".into(),
+                anchor: comments_doc::CommentAnchor::Cell {
+                    cell_id: "cell/1".into(),
+                    observed_cell_position: None,
+                },
+                position: "80".into(),
+                status: comments_doc::ProjectedThreadStatus::Open,
+                mutation_state: comments_doc::ProjectedMutationState::Pending,
+                trusted: false,
+                messages: Vec::new(),
+                badge_cell_ids: vec!["cell/1".into()],
+                created_at: "2026-06-16T00:00:00Z".into(),
+                created_by_actor_label: None,
+                created_by_authority: None,
+                rejection_reason: None,
+                resolved_at: None,
+                resolved_by_actor_label: None,
+                resolved_by_authority: None,
+            }],
+        };
+
+        let comments: serde_json::Value =
+            serde_json::from_str(&comments_json("nb 1", &projection)).unwrap();
+        assert_eq!(
+            comments["threads"][0]["uri"],
+            "nteract://notebooks/nb%201/comments/threads/thread%2F1"
+        );
+
+        let cell_comments: serde_json::Value =
+            serde_json::from_str(&cell_comments_json("nb 1", "cell/1", &projection)).unwrap();
+        assert_eq!(
+            cell_comments["uri"],
+            "nteract://notebooks/nb%201/cells/cell%2F1/comments"
+        );
+        assert_eq!(
+            cell_comments["threads"][0]["uri"],
+            "nteract://notebooks/nb%201/comments/threads/thread%2F1"
+        );
     }
 
     #[test]
