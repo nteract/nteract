@@ -1,6 +1,6 @@
 # Notebook Comments Document
 
-**Status:** Draft, 2026-06-07.
+**Status:** Draft, 2026-06-07. Updated 2026-06-16.
 
 This ADR proposes a comment system for nteract notebooks that works in local
 desktop rooms and Cloud hosted rooms, lets humans and agents participate through
@@ -17,12 +17,14 @@ count.
 
 `CommentsDoc` is durable collaboration state with different authority,
 durability, attachment, fan-out, and publish policy from cells, outputs,
-widgets, or runtime lifecycle. It should sync over its own typed frame, likely
-`COMMENTS_DOC_SYNC = 0x0a`. User-facing comment writes should still use
-Automerge for immediate local-first rendering: the client writes a tentative
-comment mutation into its local `CommentsDoc` replica, and the daemon or Cloud
-comments authority finalizes policy-bearing fields such as author identity,
-scope, resolve state, and rejection status in the same document.
+widgets, or runtime lifecycle. It should sync over its own typed frame. The next
+available byte on current main is `COMMENTS_DOC_SYNC = 0x0a`; adding it is an
+exhaustive wire change, not only a constant. User-facing comment writes should
+still use Automerge for immediate local-first rendering: the client writes a
+tentative comment mutation into its local `CommentsDoc` replica, and the daemon
+or Cloud comments authority finalizes policy-bearing fields such as author
+identity, scope, resolve/delete state, and rejection status in the same
+document.
 Rendering must not wait for a request round trip. Pending comments are projected
 from local Automerge heads; daemon or Cloud writes are subsequent authoritative
 changes to the same objects.
@@ -51,6 +53,12 @@ nteract already follows the same shape:
 - `PoolDoc` is daemon-level, not notebook-level.
 - `docs/adr/identity-and-trust.md` makes the principal the security boundary and
   the operator the attribution layer.
+- `docs/adr/mcp-resource-addressing.md` keeps MCP read resources under the local
+  `nteract://` namespace and explicitly separates them from room locators.
+- Current sync code treats frame types and document streams as explicit seams:
+  `crates/notebook-wire/src/lib.rs` currently stops at `COMMS_DOC_SYNC = 0x09`,
+  generated TypeScript constants and protocol tests pin that table, and both the
+  daemon and Cloud room host dispatch notebook/runtime/comms streams explicitly.
 - `NotebookView` has a stable DOM-order invariant; comments cannot be rendered
   as extra cell rows that reorder existing cell DOM nodes.
 
@@ -75,7 +83,11 @@ the same humans and agents reviewing one notebook room.
 
 The hardest part is not the schema. It is the attachment identity.
 
-Use a `NotebookCommentLocator` abstraction from the start:
+Use a `NotebookCommentLocator` abstraction from the start. Once a `CommentsDoc`
+exists, its `comments_doc_id` is required identity for that doc; v0 local
+desktop may derive it from path or room id without mutating `NotebookDoc`, but
+sync, persistence, MCP, and Cloud code should treat a missing id as a resolver
+or seeding failure, not as optional comments state.
 
 ```text
 Cloud hosted room:
@@ -94,7 +106,9 @@ Local untitled notebook:
   comments_doc_id: "comments:room:<uuid>"
 ```
 
-For v0 local desktop, use a daemon-managed sidecar store keyed by canonical path:
+For v0 local desktop, use a daemon-managed sidecar resolver index from canonical
+path or room id to `comments_doc_id`, and store the document bytes by
+`comments_doc_id`:
 
 ```text
 $DAEMON_STATE/comments/index.json
@@ -104,8 +118,9 @@ $DAEMON_STATE/comments/<comments_doc_id>.automerge
 That avoids changing `.ipynb` metadata during the prototype and keeps comments
 available after daemon restart. It does mean path moves and renames are weak in
 v0. The v1 portability fix is to add `metadata.runt.comments_doc_id` or a root
-`NotebookDoc.comments_doc_id` in a future notebook schema bump, then keep a path
-index only as a lookup cache.
+`NotebookDoc.comments_doc_id` in a future notebook schema bump, make that
+association required for notebooks with comments, then keep a path index only as
+a lookup cache.
 
 An adjacent file such as `notebook.ipynb.comments.automerge` is attractive for
 Git portability, but it has product tradeoffs: hidden files appear next to every
@@ -146,6 +161,10 @@ Cloud hosted rooms:
   tentative `CommentsDoc` changes that render immediately. The Cloud comments
   authority stamps author fields from the authenticated connection and accepts or
   rejects the tentative mutation in the same doc.
+- Runtime peers are readers of comments, not comments authorities. A
+  `runtime_peer` may need empty sync negotiation to keep a shared document set
+  connected, but it must not create, edit, resolve, reject, or authority-finalize
+  comment mutations.
 - Publication policy must be explicit. Comments should not automatically become
   part of a public notebook publish because review notes and agent comments can
   be more sensitive than notebook contents or outputs.
@@ -172,7 +191,7 @@ user-visible order. Do not rely on list indexes for thread or reply order.
 ```text
 ROOT/
   schema_version: 1
-  comments_doc_id: Str
+  comments_doc_id: Str              # required document identity
   notebook_ref/
     kind: Str
     value: Str
@@ -196,6 +215,8 @@ ROOT/
       resolved_by_actor_label: Str?
       resolved_by_authority: Str?
       archived_at: Str?
+      archived_by_actor_label: Str?
+      archived_by_authority: Str?
       messages/
         {message_id}/
           id: Str
@@ -210,6 +231,8 @@ ROOT/
           edited_by_actor_label: Str?
           edited_by_authority: Str?
           deleted_at: Str?
+          deleted_by_actor_label: Str?
+          deleted_by_authority: Str?
 ```
 
 Do not store a derived `anchor_index` inside `CommentsDoc`. It would add synced
@@ -254,10 +277,12 @@ in a single client change and self-finalize a spoofed comment.
 
 The trust invariant the projection must enforce:
 
-- Policy-bearing fields (`mutation_state`, `created_by_*`, `edited_by_*`,
-  `resolved_by_*`, and the authority fields) are trusted only when the latest
-  change writing them was authored by an actor whose principal is the comments
-  authority (local daemon or Cloud comments host).
+- Policy-bearing fields (`mutation_state`, `status`, `created_by_*`,
+  `edited_at`, `edited_by_*`, `resolved_at`, `resolved_by_*`, `deleted_at`,
+  `deleted_by_*`, `archived_at`, `archived_by_*`, and the authority fields) are
+  trusted only when the latest change writing them was authored by an actor
+  whose principal is the comments authority (local daemon or Cloud comments
+  host).
 - Body text is trusted when authored by the claimed author's validated principal.
 - A client-authored `accepted` is ignored and rendered as pending. The field is a
   cache of "an authority change finalized this," verifiable by the attribution
@@ -265,6 +290,19 @@ The trust invariant the projection must enforce:
 
 This makes the attribution projection load-bearing for the core trust model, not
 only for "edited by" display.
+
+Implementation must therefore ship one of two explicit mechanisms:
+
+1. an object-path/field attribution helper that can answer "which actor last
+   wrote this policy field at the current heads?" with tests for concurrent
+   client/authority changes; or
+2. authority-authored acceptance records that are easier to validate than
+   per-field latest-writer inference.
+
+Do not rely on broad sync-frame actor validation alone. Existing ingress paths
+can prove that an incoming change principal matches the connection, but they do
+not by themselves prove that the current winning value for a policy field was
+written by the comments authority.
 
 ### Anchors
 
@@ -365,21 +403,47 @@ stable across peers.
 
 ## Wire And Sync
 
-Add a `CommentsDoc` wrapper crate or module, probably alongside `runtime-doc`
-first because `CommsDoc` already lives there, then move to a dedicated crate if
-it grows.
+Add the first `CommentsDoc` wrapper module alongside `runtime-doc` because
+`CommsDoc` and the existing Automerge document recovery helpers already live
+there. Move it to a dedicated crate later only if the comment domain grows large
+enough to justify that split.
 
 Core seams:
 
+- `crates/runtime-doc/src/comments.rs`, `crates/runtime-doc/src/lib.rs`, and
+  related tests
+  - add `CommentsDoc`, `CommentsDocHandle`, state/projection types, schema seed,
+    save/load/head/sync helpers, mutation helpers, and authority-finalization
+    tests
+  - keep comments policy helpers separate from CommsDoc policy; widget-state
+    authorization is not comments authorization
 - `crates/notebook-wire/src/lib.rs`
   - add `frame_types::COMMENTS_DOC_SYNC = 0x0a`
   - add `NotebookFrameType::CommentsDocSync`
   - give it the same initial size cap as `COMMS_DOC_SYNC` unless data says
     otherwise
+  - update the exhaustive `TryFrom<u8>` and `typed_frame_size_limits` matches
+    so the new byte does not fall through to the unknown-frame ceiling
+- `crates/notebook-protocol/src/connection.rs`,
+  `packages/runtimed/src/wire-constants.ts`,
+  `packages/runtimed/tests/transport.test.ts`, and
+  `apps/notebook-cloud/test/protocol.test.ts`
+  - regenerate and pin the Rust/TypeScript frame constants, per-frame limits,
+    display names, and client-writable table
 - `crates/notebook-sync/src/shared.rs`
   - add `comments_doc: CommentsDoc`
   - add `comments_peer_state: sync::State`
+  - add receive/generate/rebuild helpers mirroring the CommsDoc recovery path
+- `crates/notebook-sync/src/sync_task.rs`
+  - dispatch inbound `CommentsDocSync`
+  - send outbound comment sync frames when local comment heads change
   - expose `get_comments`, `get_comments_for_cell`, and sync confirmation helpers
+- `packages/runtimed/src/handle.ts` and `packages/runtimed/src/sync-engine.ts`
+  - extend `SyncableHandle`, `FlushDocKey`, flush/reply/cancel paths, delivery
+    tracking, observables, and tests for comments sync
+  - add `FrameEvent` variants for comments sync applied/error, including a
+    comments projection changeset instead of forcing UI code to rematerialize the
+    full document on every frame
 - `crates/runtimed/src/notebook_sync_server/room.rs`
   - add a room-owned `comments` document handle
   - load/save it from the local comments sidecar store
@@ -387,20 +451,57 @@ Core seams:
   - send initial comments sync after notebook/runtime/comms
   - subscribe to comments broadcasts
   - dispatch inbound `CommentsDocSync` frames
+- `crates/runtimed/src/notebook_sync_server/peer_runtime_agent.rs`
+  - if runtime agents need CommentsDoc negotiation, add it as read-only sync
+    only; runtime agents/runtime peers must not commit comments changes or
+    authority-finalize policy fields
 - `crates/runtimed/src/notebook_sync_server/peer_comments_sync.rs`
-  - mirror `peer_comms_sync.rs` for sync mechanics
+  - reuse `peer_comms_sync.rs` mechanics for decoding, actor validation,
+    recovery, replies, and broadcasts, but not its authorization policy
   - allow tentative local-first comment mutations to sync
-  - canonicalize authority-owned fields from the daemon or Cloud comments host
+  - run an authority-finalizer transaction after tentative apply when validation
+    accepts a mutation, so policy fields are authored by the daemon/host rather
+    than trusted from the client change
   - keep runtime_peer out of comment mutation authority
   - validate or overwrite policy-bearing fields instead of asking the UI to keep
     a separate optimistic state
 - `apps/notebook-cloud/src/protocol.ts`
-  - add `COMMENTS_DOC_SYNC` and route it as materialized sync
+  - add `COMMENTS_DOC_SYNC` to known frame names and size limits
+  - mark it client-writable at the protocol-helper layer so empty sync
+    negotiation can pass, then rely on room-host/materializer policy to reject
+    non-empty viewer/runtime-peer mutations
+- `apps/notebook-cloud/src/notebook-room.ts`
+  - admit `COMMENTS_DOC_SYNC` through the same sync-frame prefilter as
+    notebook/runtime/comms
+  - keep scope handling explicit: viewers and runtime peers may negotiate sync
+    but cannot commit comment changes; editors and owners can create tentative
+    comment changes subject to authority finalization
 - `apps/notebook-cloud/src/room-materializer.ts`
   - checkpoint comments bytes and heads with notebook/runtime/comms
-  - include comments snapshots in published revisions
+  - route `COMMENTS_DOC_SYNC` through `isMaterializedSyncFrame`
+  - include a sanitized frozen comments projection in published revisions only
+    when publication policy explicitly opts in; do not publish raw CommentsDoc
+    bytes as the public artifact
+- `apps/notebook-cloud/viewer/live-sync.ts`
+  - include comments sync methods in the cloud handle adapter and recoverable
+    rejection handling, mirroring the CommsDoc deployed-WASM tolerance pattern
 - `crates/runtimed-wasm/src/lib.rs`
-  - add `RoomHostHandle` methods for comments sync, save/load, and heads
+  - add browser `NotebookHandle` and `RoomHostHandle` methods for comments sync,
+    save/load, heads, and projection
+  - add WASM sync state, `FrameEvent` variants, `receive_frame` routing,
+    `flush_comments_doc_sync`, `cancel_last_comments_doc_flush`, and
+    `generate_comments_doc_sync_reply`
+  - do not give `RuntimeStatePeerHandle` comment mutation helpers; runtime-peer
+    comments sync, if needed, is read-only negotiation through the room host
+- `crates/notebook-protocol/src/protocol.rs`,
+  `crates/runtimed/src/requests`, `crates/runt-mcp/src/tools`, and
+  `crates/runt-mcp/src/resources.rs`
+  - add first-class comment request variants, daemon handlers, MCP tools, and
+    `nteract://` resource parsing/templates
+- future `NotebookDoc.comments_doc_id` schema bump
+  - add `CommentsDocId`, deterministic `default_comments_doc_id`, read/set/ensure
+    APIs, genesis/schema verification, migration repair, and authorization tests
+    matching the existing runtime/comms pointer protections
 
 ### Local-first mutation and authority finalization
 
@@ -417,24 +518,27 @@ The write flow:
 3. The sync stream carries the tentative mutation to the local daemon or Cloud
    comments authority.
 4. The authority validates scope, anchor, and causal evidence; stamps
-   `created_by_*`, `edited_by_*`, `resolved_by_*`, and authority fields from the
-   authenticated connection; then writes `mutation_state = "accepted"` in the
-   same `CommentsDoc`.
+   `created_by_*`, `edited_by_*`, `resolved_by_*`, `deleted_by_*`,
+   `archived_by_*`, and authority fields from the authenticated connection; then
+   writes `mutation_state = "accepted"` in the same `CommentsDoc`.
 5. If validation fails, the authority writes `mutation_state = "rejected"` plus
    `rejection_reason`. The UI can display or collapse the rejected pending item,
    again from `CommentsDoc`.
 
 For v0, `mutation_state` models creation finalization for threads and messages.
-Edits, resolves, reopens, and deletes against already-accepted objects apply
-optimistically as normal Automerge changes. The authority can accept them by doing
-nothing, correct policy fields with a follow-up authority-authored change, or
-revert/tombstone invalid changes. If that proves too coarse for the product, add
-per-action pending operations later; do not overload the object-level creation
-state.
+Body `Text` edits can still apply optimistically as content changes, but any
+`edited_at` / `edited_by_*` display fields remain untrusted until the authority
+writes them. Resolve, reopen, delete, and archive are policy transitions: they
+must either be written by the authority through request handling, or represented
+as pending operations until the authority writes the `status`, timestamp,
+tombstone, and actor fields. The authority must not accept policy transitions by
+doing nothing, because that would make client-authored policy fields durable
+truth by projection. If body-edit moderation needs stronger UX later, add
+per-action pending operations; do not overload the object-level creation state.
 
 Acceptance finalizes policy and attribution fields for the creation mutation. It
 does not freeze body `Text`; later body edits are new content changes attributed
-through the validated change actor and subject to edit/delete policy.
+through the validated change actor and still subject to edit/delete policy.
 
 Requests such as `CreateComment` and MCP tools are command surfaces over the
 same state transition. Human UI actions should perform the local tentative
@@ -514,6 +618,21 @@ Authorization policy for the first implementation:
   `resolved_at = null`, `resolved_by_* = null`, and the reply author recorded on
   the new message.
 
+Frame-level policy for `COMMENTS_DOC_SYNC = 0x0a`:
+
+| Scope | Empty sync negotiation | Non-empty comment changes | Policy-field finalization |
+|---|---:|---:|---:|
+| `viewer` | allowed | rejected | rejected |
+| `editor` | allowed | pending content mutations allowed | rejected |
+| `owner` | allowed | pending content mutations allowed; moderation requests allowed | rejected unless acting as the room comments authority |
+| `runtime_peer` | allowed | rejected | rejected |
+| local daemon / Cloud comments authority | allowed | allowed | allowed |
+
+The table is deliberately stricter than the protocol-helper `client writable`
+flag. Helpers may mark `COMMENTS_DOC_SYNC` writable so empty Automerge
+negotiation can pass through generic client code, but room ingress still has to
+inspect `Message.changes` and scope before applying document changes.
+
 ### Sync policy
 
 `CommentsDocSync` is the replication path for both pending client-authored
@@ -526,7 +645,8 @@ Prototype policy:
 - Local desktop and Cloud both render pending comments from `CommentsDoc`.
 - Empty sync frames remain normal. They carry heads/have/need and no document
   changes.
-- Non-empty client sync frames may create or update pending comment state.
+- Non-empty editor/owner sync frames may create or update pending comment state;
+  viewer and runtime-peer changes are rejected.
 - The daemon/Cloud comments authority owns transition from pending to accepted or
   rejected, and owns durable author/scope fields.
 - If a client writes policy fields directly, the projection treats them as
@@ -584,31 +704,45 @@ advisory unless they were host/daemon-stamped during finalization.
 
 ## MCP Surface
 
-Expose a small mutating tool set once the daemon can mutate `CommentsDoc`:
+Expose a small mutating tool set once the daemon can mutate `CommentsDoc`.
+Tools should default to the active MCP notebook session. For explicit selection,
+they should use the same target model as `connect_notebook`: local `path`,
+local/hosted `notebook_id`, optional hosted `domain`, or a hosted `target` URL.
+Path-only selection is local; hosted comments are stamped from the hosted
+credential principal and the locally configured operator.
 
 ```text
-create_comment(notebook_id | path, anchor, body) -> thread_id, message_id
-reply_comment(notebook_id | path, thread_id, body) -> message_id
-resolve_comment(notebook_id | path, thread_id) -> ok
-reopen_comment(notebook_id | path, thread_id) -> ok
+create_comment(anchor, body, target?, notebook_id?, domain?, path?) -> thread_id, message_id
+reply_comment(thread_id, body, target?, notebook_id?, domain?, path?) -> message_id
+resolve_comment(thread_id, target?, notebook_id?, domain?, path?) -> ok
+reopen_comment(thread_id, target?, notebook_id?, domain?, path?) -> ok
 ```
 
 Mutating tools use the same pending-then-finalized model as human UI actions so
 agent comments have the same durable authorship and ACL behavior as human
-comments.
+comments. A local daemon stamps accepted comments with local/same-UID provenance
+(`local_uid` in this ADR's schema language). A hosted room stamps accepted
+comments from the authenticated hosted principal; the local MCP process supplies
+only the operator suffix for attribution and must not substitute a local
+principal for hosted authority.
 
 Reads should follow the repo's newer MCP resource direction rather than landing
-as a tool that immediately needs migration:
+as a tool that immediately needs migration. They must use the local `nteract://`
+resource namespace from `mcp-resource-addressing.md`, not a standalone comment
+scheme that looks like a room locator:
 
 ```text
-comments://notebook/<notebook_id_or_path>
-comments://notebook/<notebook_id_or_path>/cell/<cell_id>
-comments://notebook/<notebook_id_or_path>/thread/<thread_id>
+nteract://notebooks/{notebook_id}/comments
+nteract://notebooks/{notebook_id}/cells/{cell_id}/comments
+nteract://notebooks/{notebook_id}/comments/threads/{thread_id}
 ```
 
 The resource response can be the projected snapshot from `CommentsDoc`, including
-open/resolved filters and stale-anchor metadata. A temporary `list_comments`
-debug tool is acceptable during the spike, but not the target public surface.
+open/resolved filters and stale-anchor metadata. Path inputs belong on mutating
+tools and `connect_notebook`-style session selection; resource URIs address
+already-visible notebooks by percent-encoded notebook id and comment/cell/thread
+ids. A temporary `list_comments` debug tool is acceptable during the spike, but
+not the target public surface.
 
 Per-actor read/unread state is an explicit non-goal for the first spike. Agents
 will eventually want "new since I last looked" and "unaddressed for me," but that
@@ -657,9 +791,11 @@ Cloud hosted:
 
 1. Durable Object loads `CommentsDoc` alongside notebook/runtime/comms.
 2. Checkpoint stores comments bytes and comments heads.
-3. Published snapshots include comments bytes if the publication policy allows
-   comments.
-4. Public viewers receive read-only comments sync if comments are published.
+3. Published snapshots include a sanitized frozen comments projection if the
+   publication policy allows comments; they do not expose raw CommentsDoc bytes
+   as the public artifact.
+4. Published public viewers receive a frozen read-only comments projection if
+   comments are published; they do not subscribe to live comments sync.
 5. Editor/owner comment mutations route through host request handling and ACL
    checks.
 
@@ -697,6 +833,9 @@ Local-to-Cloud promotion or import:
   indistinguishable from Cloud-host-stamped comments.
 - Relabel imported author authority to `imported` unless the Cloud host can map
   the source local principal to an authenticated Cloud principal.
+- Import must not carry raw local Automerge actor history into the hosted room.
+  Either replay imported comments as fresh destination-space changes or store
+  them as sanitized projection data with `created_by_authority = "imported"`.
 
 Published snapshots:
 
@@ -705,15 +844,25 @@ Published snapshots:
   published heads.
 - Public viewers do not subscribe to live comments sync and cannot write back.
 - Publish may redact or coarsen author labels and display names.
+- Published comments follow the identity ADR's publish boundary: the public
+  artifact does not preserve source Automerge history or raw local actor labels.
+  The destination records who published the snapshot and may include sanitized,
+  imported comment projection fields only when the publish policy opts in.
 
 ## Implementation Plan
 
 Phase 0: ADR alignment
 
 - Land this decision as an ADR before implementation.
-- Amend or cross-link `document-split.md` because `CommentsDoc` becomes
-  another notebook-room document alongside `NotebookDoc`, `RuntimeStateDoc`,
-  and `CommsDoc`, while `PoolDoc` remains daemon-scoped.
+- Keep `document-split.md` and the ADR register count-neutral: `CommentsDoc`
+  becomes another notebook-room document alongside `NotebookDoc`,
+  `RuntimeStateDoc`, and `CommsDoc`, while `PoolDoc` remains daemon-scoped.
+- Keep this ADR aligned with `mcp-resource-addressing.md`: comment read
+  resources live under `nteract://notebooks/{notebook_id}/comments...` and
+  `nteract://notebooks/{notebook_id}/cells/{cell_id}/comments`.
+- Treat the current lack of source implementation as intentional. Until
+  `CommentsDoc` lands in code, neighboring docs may reference it only as the
+  proposed sidecar in this ADR.
 
 Phase 1: schema and projection
 
@@ -737,8 +886,8 @@ Phase 2: local sync and MCP
   sidecar persistence.
 - Add request variants and daemon handlers that can create tentative comment
   mutations and finalize actor labels.
-- Add MCP mutation tools and comment read resources using notebook ID or path
-  resolution.
+- Add MCP mutation tools using active-session or `connect_notebook`-style target
+  resolution, and comment read resources using `nteract://`.
 - Ensure save-as follows the existing `comments_doc_id` instead of recomputing a
   path-hash key.
 
@@ -758,6 +907,8 @@ Phase 4: hosted room host
 - Route Cloud mutations through the comments authority so pending comments are
   finalized with stamped author authority.
 - Add published snapshot policy for comments, defaulting to excluded.
+- Add Cloud protocol tests that prove viewer/runtime-peer connections can do
+  empty sync negotiation but cannot commit comment mutations.
 
 Phase 5: portable identity
 
@@ -770,10 +921,21 @@ Phase 5: portable identity
 
 - Path identity is weak under rename/move until the notebook carries an explicit
   `comments_doc_id`.
+- `comments_doc_id` cannot remain "nice to have" after comments exist. A local
+  v0 path-derived id is acceptable as a resolver input, but the created
+  `CommentsDoc` must carry a stable id and implementation code must not silently
+  create a second comments doc for the same notebook.
 - Client-authored CRDT writes can spoof durable author fields unless the
   projection treats them as pending/unverified until authority-finalized.
-- Public publish behavior needs a product decision. Comments are not obviously
-  safe to publish with notebook outputs, and attribution may need redaction.
+- Public publish behavior needs product controls. The architectural default is
+  exclusion; remaining product decisions are the opt-in control, redaction
+  policy, and frozen projection format.
+- `COMMENTS_DOC_SYNC = 0x0a` is currently free, but every generated binding,
+  exhaustive cap table, client-writable gate, materialized-routing switch, and
+  protocol test must move together. A partial wire change will look like an
+  unknown frame or a broadcast-only frame in some clients.
+- MCP resource naming can regress if comments use a standalone scheme. Keep read
+  resources under `nteract://` and reserve room locators for connection targets.
 - Source-range anchoring needs a real editor integration if line/column plus
   quote context is not good enough.
 - Comment document tombstones can grow. Keep the active doc coarse-grained, but
@@ -790,9 +952,10 @@ Phase 5: portable identity
 A useful first spike is:
 
 1. `CommentsDoc` crate/module with create/reply/resolve and fractional ordering.
-2. Local daemon sidecar load/save keyed by canonical path.
+2. Local daemon sidecar load/save keyed by `comments_doc_id`, with canonical path
+   used only as the v0 resolver/index input.
 3. `create_comment`, `reply_comment`, and `resolve_comment` MCP tools plus
-   comment read resources.
+   `nteract://` comment read resources.
 4. Notebook UI markers for cell-level comments only.
 5. Pending client-authored comments live in `CommentsDoc`; authority finalization
    is required before treating author/scope fields as durable truth. No
