@@ -6034,11 +6034,9 @@ async function markdownDocumentViewer(
     aclEndpoint: `${documentApiBasePath}/acl`,
     invitesEndpoint: `${documentApiBasePath}/invites`,
     accessRequestsEndpoint: `${documentApiBasePath}/access-requests`,
-    snapshotBasePath: `${documentApiBasePath}/snapshots/`,
     syncEndpoint: `/m/${encodeURIComponent(documentId)}/sync`,
     hostCapabilities: {
       canManageSharing: true,
-      canPublish: true,
     },
     bootstrap,
     session: session ? appSessionResponse(session) : null,

@@ -87,7 +87,6 @@ export interface CloudMarkdownDocumentConfig {
   aclEndpoint: string;
   invitesEndpoint: string;
   accessRequestsEndpoint: string;
-  snapshotBasePath: string;
   syncEndpoint: string;
   runtimedWasmModulePath: string;
   runtimedWasmPath: string;
@@ -95,7 +94,6 @@ export interface CloudMarkdownDocumentConfig {
   session?: CloudAppSession | null;
   hostCapabilities?: {
     canManageSharing?: boolean;
-    canPublish?: boolean;
   };
 }
 

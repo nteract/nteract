@@ -124,7 +124,6 @@ export function loadMarkdownDocumentConfig(): CloudMarkdownDocumentConfig | null
       !parsed.aclEndpoint ||
       !parsed.invitesEndpoint ||
       !parsed.accessRequestsEndpoint ||
-      !parsed.snapshotBasePath ||
       !parsed.syncEndpoint ||
       !parsed.runtimedWasmModulePath ||
       !parsed.runtimedWasmPath
@@ -138,7 +137,6 @@ export function loadMarkdownDocumentConfig(): CloudMarkdownDocumentConfig | null
       aclEndpoint: parsed.aclEndpoint,
       invitesEndpoint: parsed.invitesEndpoint,
       accessRequestsEndpoint: parsed.accessRequestsEndpoint,
-      snapshotBasePath: parsed.snapshotBasePath,
       syncEndpoint: parsed.syncEndpoint,
       runtimedWasmModulePath: parsed.runtimedWasmModulePath,
       runtimedWasmPath: parsed.runtimedWasmPath,
@@ -146,7 +144,6 @@ export function loadMarkdownDocumentConfig(): CloudMarkdownDocumentConfig | null
       session: isCloudAppSession(parsed.session) ? parsed.session : null,
       hostCapabilities: {
         canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
-        canPublish: Boolean(parsed.hostCapabilities?.canPublish),
       },
     };
   } catch {

@@ -38,7 +38,7 @@ Users and agents also need documents that do not require compute:
 - product and architecture notes;
 - ADR drafts and implementation plans;
 - collaborative prose with comments, outline, and source-aware review;
-- published read-only pages with stable links;
+- shareable live documents with stable links;
 - eventually, explicit output snapshots or component regions that are attached
   artifacts rather than live execution.
 
@@ -53,8 +53,8 @@ projection, editor, and authorization concepts across Cloud and Desktop.
 
 1. Create a first-class Markdown document surface that does not imply kernels,
    workstations, package management, or execution.
-2. Let Cloud users create, list, open, edit, share, and publish Markdown
-   documents with OIDC-backed identity and hosted ACLs.
+2. Let Cloud users create, list, open, edit, and share Markdown documents with
+   OIDC-backed identity and hosted ACLs.
 3. Let Desktop grow the same surface for local `.md` files, using the same
    document model and shared React/projection code rather than a separate app
    protocol.
@@ -71,7 +71,7 @@ projection, editor, and authorization concepts across Cloud and Desktop.
 - This PRD does not make Markdown executable.
 - This PRD does not replace notebooks or turn notebooks into Markdown files.
 - This PRD does not enable arbitrary MDX JavaScript execution in the host app.
-- This PRD does not require all notebook sharing, publishing, or room protocol
+- This PRD does not require all notebook sharing, revision, or room protocol
   code to become generic in the first PR.
 - This PRD does not require a separate repository or separately packaged app
   before the document model is proven.
@@ -88,17 +88,17 @@ projection, editor, and authorization concepts across Cloud and Desktop.
 | View mode | A zen reading view derived from Markdown projection. It has no cell rows and no runtime controls. |
 | Edit mode | A CodeMirror-backed Markdown editor for the same document body. |
 | Outline | A projection of headings from the current Markdown body. |
-| Published revision | A stable, read-only hosted snapshot of a Markdown document. |
+| Revision snapshot | A future stable, read-only hosted snapshot of a Markdown document. Live sharing is the v0 model. |
 | Artifact reference | A durable reference from Markdown source or metadata to an attached output, component, image, or asset. |
 
 ## Target Scenarios
 
 | Scenario | Expected behavior |
 |----------|-------------------|
-| Cloud owner creates a doc | Owner opens the hosted dashboard, creates a Markdown document, edits Markdown text, sees view mode and outline update, and can rename/share/publish without compute UI. |
+| Cloud owner creates a doc | Owner opens the hosted dashboard, creates a Markdown document, edits Markdown text, sees view mode and outline update, and can rename/share without compute UI. |
 | Cloud editor | Editor can open an invited Markdown document, edit body/title if allowed, and see the same projected view mode. |
-| Cloud viewer | Viewer can read the rendered document and inspect safe source where product allows, but cannot mutate body, sharing, or publish state. |
-| Public published reader | Anonymous or signed-out reader can view only explicitly published/public content. Private body, comments, and collaborator identity do not leak through metadata. |
+| Cloud viewer | Viewer can read the rendered document and inspect safe source where product allows, but cannot mutate body or sharing state. |
+| Public reader | Anonymous or signed-out reader can view only documents with explicit public viewer access. Private body, comments, and collaborator identity do not leak through metadata. |
 | Desktop local author | User opens a `.md` file and gets the same edit/view/outline shell, backed by local file sync rather than hosted ACLs. |
 | Agent collaborator | An authorized local or hosted agent can read and update Markdown source through the same document model as the UI, with principal/operator attribution when available. |
 
@@ -115,7 +115,7 @@ projection, editor, and authorization concepts across Cloud and Desktop.
 4. The shared model must be usable by both hosted Cloud documents and Desktop
    `.md` files.
 5. Markdown body must be Automerge-backed. Hosted catalog rows may store
-   searchable summaries, titles, ACLs, and published revision metadata, but the
+   searchable summaries, titles, ACLs, and future revision metadata, but the
    live body is not a D1 text column pretending to be collaborative state.
 6. Live body writes use text splices:
    `splice_body(index, delete_count, text)`. Projection and export read the
@@ -172,9 +172,9 @@ projection, editor, and authorization concepts across Cloud and Desktop.
    Markdown documents do not have a `runtime_peer` scope.
 3. Owner can share a Markdown document with another principal through the same
    identity/profile principles used by hosted notebooks.
-4. Owner can publish a read-only revision when publish is implemented for the
-   slice. Public access must be represented explicitly, not by falling through
-   to anonymous access.
+4. Owner can enable live public viewer access. Public access must be
+   represented explicitly, not by falling through to anonymous access. Stable
+   revision publishing is future work.
 5. Dashboard and navigation should make Markdown documents visually distinct
    from notebooks while preserving a coherent nteract document home.
 6. Private documents must not leak body content through public OG metadata,
@@ -190,8 +190,8 @@ projection, editor, and authorization concepts across Cloud and Desktop.
    metadata unless the user explicitly exports to another format.
 4. Desktop and Cloud should share editor, projection, outline, and rendered view
    components. Host adapters own filesystem or hosted side effects.
-5. Desktop does not need hosted ACL or publish UI for local-only files, but the
-   same document model should allow future remote sync.
+5. Desktop does not need hosted ACL or revision UI for local-only files, but
+   the same document model should allow future remote sync.
 
 ### Security
 
@@ -199,7 +199,7 @@ projection, editor, and authorization concepts across Cloud and Desktop.
    unless an approved component registry or isolated renderer exists.
 2. Rendered Markdown must not read app credentials, localStorage tokens,
    cookies, or hosted room credentials.
-3. Public documents expose only explicitly public body/revision data.
+3. Public documents expose only explicitly public body data.
 4. Agent and MCP write paths must use the same authorization model as UI edits.
 5. Artifact references must be explicit and content-addressed or otherwise
    authority-checked before rendering private assets.

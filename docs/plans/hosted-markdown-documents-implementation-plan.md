@@ -11,7 +11,7 @@ projection/editor shell before the hosted route becomes product surface.
 ## Goal
 
 Ship a usable hosted Markdown document prototype that can create, open, edit,
-render, outline, share, and publish Markdown without compute, while preserving a
+render, outline, and share Markdown without compute, while preserving a
 Desktop path for local `.md` files through the same model and UI primitives.
 
 ## Architecture Posture
@@ -30,7 +30,7 @@ MarkdownDoc
 ```
 
 The live body must be Automerge-backed from the start. D1 may hold catalog,
-ACLs, searchable summaries, titles, and published revision metadata, but it must
+ACLs, searchable summaries, titles, and future revision metadata, but it must
 not be the live collaborative body store. Code should keep body/title/access
 operations behind shared `MarkdownDoc` types and host adapters so Desktop can
 add a file-backed session without rewriting the UI.
@@ -53,8 +53,8 @@ copy, then catch up over sync. Hosted catalog/API fetches are for identity,
 ACLs, revision metadata, and room bootstrap; they should not be the only path to
 render existing body content after the first visit.
 
-Cloud owns OIDC, ACL rows, publish storage, and hosted routing. Desktop owns
-filesystem, local window commands, and `.md` file watching. Shared code owns
+Cloud owns OIDC, ACL rows, hosted routing, and any future revision storage.
+Desktop owns filesystem, local window commands, and `.md` file watching. Shared code owns
 Markdown projection, source/rendered view state, outline projection, editor
 composition, and security defaults for rendered Markdown.
 
@@ -79,8 +79,8 @@ Files are tentative and may change during implementation.
 - [x] Define `MarkdownDocumentSnapshot`, `MarkdownDocumentAccessLevel`, and
       route/view projections without importing Cloud or Tauri APIs.
 - [x] Add a pure projection helper that takes body/title/access and returns:
-      rendered projection plan, outline items, editability, publish state, and
-      unsafe-region summary.
+      rendered projection plan, outline items, editability, and unsafe-region
+      summary.
 - [x] Add focused Vitest coverage for title/body/outline/access projection.
 - [x] Confirm Desktop can import these helpers without importing
       `apps/notebook-cloud`.
@@ -110,8 +110,7 @@ markdown_document_revisions(id, document_id, title, body_doc_hash, snapshot_key,
 Use Markdown-specific tables for v0. They avoid coupling the first Markdown
 document slice to a generic document-catalog migration before the document model
 is proven. A later migration can promote notebook and Markdown catalogs into a
-shared `documents` table once both products have stable revision and publish
-semantics.
+shared `documents` table once both products have stable revision semantics.
 
 Expected routes:
 
@@ -124,8 +123,9 @@ Expected routes:
 - [x] Body edits sync through the MarkdownDoc Automerge channel for editor/owner
       as text splices.
 - [x] `PUT /api/m/:documentId/snapshots/:bodyHeadsHash` validates and stores an
-      immutable R2 published revision; `GET` reads it through Markdown ACLs and
-      explicit public grants.
+      immutable R2 snapshot primitive. The browser app does not surface
+      publishing in v0; live sharing through explicit ACL rows is the product
+      path.
 - [x] `GET`/`POST`/`DELETE /api/m/:documentId/acl` provide scoped Markdown
       document sharing without runtime-peer access.
 
@@ -133,7 +133,7 @@ Acceptance:
 
 - Owner/editor/viewer authorization is enforced server-side.
 - Body state is Automerge-backed, not a D1 text column.
-- Anonymous access only works through explicit public/published state.
+- Anonymous access only works through explicit public viewer state.
 - Worker route tests cover create/list/open/edit authorization.
 
 ## Phase 3: Cloud Markdown UI
@@ -150,7 +150,7 @@ Add a Cloud route that reuses shared Markdown document components.
       - source edit mode;
       - outline rail projected from the single Markdown body, with source-mode
         navigation into the mono-source editor;
-      - share/publish affordances where API support exists;
+      - share affordances where API support exists;
       - no compute UI.
 - [x] Handle loading, not-found, no-access, read-only, save-pending, and save
       failed states.
@@ -194,7 +194,7 @@ These are not required for the first usable route.
       Markdown projection schema.
 - [ ] Add safe rendered placeholders for attached output and component
       artifacts.
-- [ ] Sketch MCP tools for create/get/update/publish Markdown documents only
+- [ ] Sketch MCP tools for create/get/update/share Markdown documents only
       after the UI/API path works.
 
 ## Validation
