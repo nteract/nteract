@@ -1,3 +1,5 @@
+import { cloudNotebookUrlWithMode, type CloudNotebookUrlMode } from "./cloud-notebook-mode";
+
 export type CloudMarkdownDocumentScope = "owner" | "editor" | "viewer";
 
 export interface CloudMarkdownDocumentListItem {
@@ -23,7 +25,22 @@ export function cloudMarkdownDocumentOpenUrl(
   document: CloudMarkdownDocumentListItem,
   options: { browserOrigin?: string | null } = {},
 ): string {
-  return cloudMarkdownDocumentUrlOnCurrentOrigin(document.viewer_url, options);
+  return cloudMarkdownDocumentOpenUrlWithMode(
+    document.viewer_url,
+    cloudMarkdownDocumentDefaultOpenMode(document),
+    options,
+  );
+}
+
+export function cloudMarkdownDocumentOpenUrlWithMode(
+  viewerUrl: string,
+  mode: CloudNotebookUrlMode,
+  options: { browserOrigin?: string | null } = {},
+): string {
+  return cloudMarkdownDocumentUrlOnCurrentOrigin(
+    cloudNotebookUrlWithMode(viewerUrl, mode),
+    options,
+  );
 }
 
 export function cloudMarkdownDocumentUrlOnCurrentOrigin(
@@ -47,6 +64,12 @@ function currentBrowserOrigin(): string | null {
 
 function isHostedMarkdownDocumentPath(pathname: string): boolean {
   return /^\/m\/[^/]+(?:\/.*)?\/?$/.test(pathname);
+}
+
+function cloudMarkdownDocumentDefaultOpenMode(
+  document: Pick<CloudMarkdownDocumentListItem, "scope">,
+): CloudNotebookUrlMode {
+  return document.scope === "owner" || document.scope === "editor" ? "edit" : "view";
 }
 
 export function isCloudMarkdownDocumentListItem(

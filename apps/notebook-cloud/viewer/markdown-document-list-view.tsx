@@ -13,7 +13,7 @@ import { loadCloudMarkdownDocumentListBootstrap } from "./cloud-viewer-config";
 import {
   cloudMarkdownDocumentDisplayTitle,
   cloudMarkdownDocumentOpenUrl,
-  cloudMarkdownDocumentUrlOnCurrentOrigin,
+  cloudMarkdownDocumentOpenUrlWithMode,
   isCloudMarkdownDocumentListItem,
   type CloudMarkdownDocumentListItem,
 } from "./markdown-document-dashboard";
@@ -170,7 +170,7 @@ export function CloudMarkdownDocumentListView({
       if (body.ok !== true || typeof body.viewer_url !== "string") {
         throw new Error("Unable to create Markdown document: response shape was invalid");
       }
-      window.location.assign(cloudMarkdownDocumentUrlOnCurrentOrigin(body.viewer_url));
+      window.location.assign(cloudMarkdownDocumentOpenUrlWithMode(body.viewer_url, "edit"));
     } catch (error) {
       setCreateState("idle");
       setCreateError(error instanceof Error ? error.message : String(error));

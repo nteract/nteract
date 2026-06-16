@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   cloudMarkdownDocumentOpenUrl,
+  cloudMarkdownDocumentOpenUrlWithMode,
   cloudMarkdownDocumentUrlOnCurrentOrigin,
   type CloudMarkdownDocumentListItem,
 } from "../viewer/markdown-document-dashboard";
@@ -33,12 +34,55 @@ describe("cloud Markdown document dashboard projection", () => {
 
     assert.equal(
       cloudMarkdownDocumentOpenUrl(document, { browserOrigin: "http://localhost:45540" }),
-      "/m/doc-456/Shared%20Notes#heading",
+      "/m/doc-456/Shared%20Notes?mode=edit#heading",
+    );
+  });
+
+  it("opens editable Markdown documents ready for source editing", () => {
+    const owner = markdownDocument({
+      scope: "owner",
+      viewerUrl: "https://preview.runt.run/m/owner-doc/Owner%20Notes?mode=view#section-a",
+    });
+    const editor = markdownDocument({
+      scope: "editor",
+      viewerUrl: "https://preview.runt.run/m/editor-doc/Editor%20Notes",
+    });
+    const viewer = markdownDocument({
+      scope: "viewer",
+      viewerUrl: "https://preview.runt.run/m/viewer-doc/Viewer%20Notes?mode=edit",
+    });
+
+    assert.equal(
+      cloudMarkdownDocumentOpenUrl(owner, { browserOrigin: "http://localhost:45540" }),
+      "/m/owner-doc/Owner%20Notes?mode=edit#section-a",
+    );
+    assert.equal(
+      cloudMarkdownDocumentOpenUrl(editor, { browserOrigin: "http://localhost:45540" }),
+      "/m/editor-doc/Editor%20Notes?mode=edit",
+    );
+    assert.equal(
+      cloudMarkdownDocumentOpenUrl(viewer, { browserOrigin: "http://localhost:45540" }),
+      "/m/viewer-doc/Viewer%20Notes?mode=view",
+    );
+  });
+
+  it("can force newly-created Markdown documents into edit mode", () => {
+    assert.equal(
+      cloudMarkdownDocumentOpenUrlWithMode("https://preview.runt.run/m/new-doc/New%20Doc", "edit", {
+        browserOrigin: "http://localhost:45540",
+      }),
+      "/m/new-doc/New%20Doc?mode=edit",
     );
   });
 });
 
-function markdownDocument({ viewerUrl }: { viewerUrl: string }): CloudMarkdownDocumentListItem {
+function markdownDocument({
+  scope = "owner",
+  viewerUrl,
+}: {
+  scope?: CloudMarkdownDocumentListItem["scope"];
+  viewerUrl: string;
+}): CloudMarkdownDocumentListItem {
   return {
     body_doc_id: "doc-456",
     created_at: "2026-06-15T00:00:00.000Z",
@@ -46,7 +90,7 @@ function markdownDocument({ viewerUrl }: { viewerUrl: string }): CloudMarkdownDo
     endpoints: { catalog: "/api/m/doc-456" },
     latest_revision_id: null,
     owner_principal: "user:dev:alice",
-    scope: "owner",
+    scope,
     title: "Shared Notes",
     updated_at: "2026-06-15T00:00:00.000Z",
     viewer_url: viewerUrl,
