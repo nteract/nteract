@@ -32,7 +32,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use automerge::{AutoCommit, ReadDoc, Value};
+use automerge::{ActorId, AutoCommit, ReadDoc, Value};
 use log::{debug, warn};
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -173,6 +173,10 @@ impl DocHandle {
         Ok(notebook_doc::actor_label_from_id(state.doc.get_actor()))
     }
 
+    fn current_notebook_actor(state: &SharedDocState) -> ActorId {
+        state.doc.get_actor().clone()
+    }
+
     /// Read the current runtime state from synced runtime documents.
     ///
     /// Returns the latest snapshot of kernel status, queue, env sync,
@@ -189,6 +193,80 @@ impl DocHandle {
             }
         }
         Ok(runtime_state)
+    }
+
+    /// Read the durable comments projection for this notebook.
+    ///
+    /// Callers should use [`Self::confirm_state_sync`] first when they need a
+    /// daemon-fresh projection. The local CommentsDoc replica must already be
+    /// materialized by daemon sync.
+    pub fn get_comments_projection(&self) -> Result<comments_doc::CommentsProjection, SyncError> {
+        let current_cell_order = self.get_cell_ids();
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        state
+            .comments_doc
+            .read_projection(&[], Some(&current_cell_order))
+            .map_err(Into::into)
+    }
+
+    /// Create a pending comment thread in the durable CommentsDoc.
+    ///
+    /// The comment change is stamped with the same authenticated Automerge
+    /// actor label as notebook edits from this handle. Call
+    /// [`Self::confirm_state_sync`] after mutation to flush the side-doc sync
+    /// frame to the daemon.
+    pub fn create_comment_thread(
+        &self,
+        thread_id: &str,
+        message_id: &str,
+        anchor: &comments_doc::CommentAnchor,
+        body: &str,
+        after_thread_id: Option<&str>,
+        created_at: &str,
+    ) -> Result<comments_doc::CommentCreated, SyncError> {
+        let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        if !state.comments_doc.is_materialized() {
+            return Err(comments_doc::CommentsDocError::MissingCommentsDocId.into());
+        }
+        let actor = Self::current_notebook_actor(&state);
+        state.comments_doc.doc_mut().set_actor(actor);
+        state
+            .comments_doc
+            .create_thread(
+                thread_id,
+                message_id,
+                anchor,
+                body,
+                after_thread_id,
+                created_at,
+            )
+            .map_err(Into::into)
+    }
+
+    /// Add a pending reply to an existing comment thread.
+    ///
+    /// The reply change is stamped with the same authenticated Automerge actor
+    /// label as notebook edits from this handle. Call
+    /// [`Self::confirm_state_sync`] after mutation to flush the side-doc sync
+    /// frame to the daemon.
+    pub fn reply_to_comment_thread(
+        &self,
+        thread_id: &str,
+        message_id: &str,
+        body: &str,
+        after_message_id: Option<&str>,
+        created_at: &str,
+    ) -> Result<comments_doc::CommentReplied, SyncError> {
+        let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        if !state.comments_doc.is_materialized() {
+            return Err(comments_doc::CommentsDocError::MissingCommentsDocId.into());
+        }
+        let actor = Self::current_notebook_actor(&state);
+        state.comments_doc.doc_mut().set_actor(actor);
+        state
+            .comments_doc
+            .reply(thread_id, message_id, body, after_message_id, created_at)
+            .map_err(Into::into)
     }
 
     // =====================================================================

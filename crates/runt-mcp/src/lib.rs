@@ -57,6 +57,11 @@ pub struct NteractMcp {
     /// Used as the peer label in notebook sessions so the notebook app shows
     /// "Claude Desktop" or "Claude Code" instead of the default "Inkwell".
     peer_label: Arc<RwLock<String>>,
+    /// Stable Automerge actor/operator label for this MCP process's local
+    /// notebook sync connections. Presence uses `peer_label`; document writes
+    /// use this per-process operator to avoid actor sequence collisions between
+    /// parallel MCP clients that share the same display name.
+    actor_label: Arc<RwLock<String>>,
     /// When true, the `show_notebook` tool is not registered (headless environments).
     no_show: bool,
     /// Daemon version, if it was reachable during startup. Surfaced to the
@@ -83,6 +88,7 @@ impl NteractMcp {
             parked_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             last_session_drop: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
+            actor_label: Arc::new(RwLock::new(local_mcp_actor_label())),
             no_show: false,
             daemon_version: None,
         }
@@ -119,6 +125,11 @@ impl NteractMcp {
         self.peer_label.read().await.clone()
     }
 
+    /// Get the actor/operator label for local notebook sync connections.
+    pub async fn get_actor_label(&self) -> String {
+        self.actor_label.read().await.clone()
+    }
+
     /// Set the peer label for notebook connections.
     pub async fn set_peer_label(&self, label: impl Into<String>) {
         *self.peer_label.write().await = label.into();
@@ -139,6 +150,11 @@ impl NteractMcp {
     /// Get the shared peer label (for the daemon watcher).
     pub fn peer_label_shared(&self) -> &Arc<RwLock<String>> {
         &self.peer_label
+    }
+
+    /// Get the shared actor/operator label (for the daemon watcher).
+    pub fn actor_label_shared(&self) -> &Arc<RwLock<String>> {
+        &self.actor_label
     }
 
     /// Get the shared session drop info (for the daemon watcher).
@@ -179,6 +195,10 @@ impl NteractMcp {
     }
 }
 
+fn local_mcp_actor_label() -> String {
+    format!("agent:nteract-mcp:{}", uuid::Uuid::new_v4().simple())
+}
+
 impl ServerHandler for NteractMcp {
     fn get_info(&self) -> ServerInfo {
         // Advertise MCP Apps extension for output rendering
@@ -214,7 +234,9 @@ impl ServerHandler for NteractMcp {
              Calling these again switches your active session. \
              Read cells through MCP resources: \
              nteract://notebooks/{notebook_id}/cells and \
-             nteract://notebooks/{notebook_id}/cells/{cell_id}.",
+             nteract://notebooks/{notebook_id}/cells/{cell_id}. \
+             Read durable comments through \
+             nteract://notebooks/{notebook_id}/comments.",
         )
     }
 
@@ -422,6 +444,20 @@ mod tests {
         let instructions = info.instructions.as_deref().expect("instructions");
         assert!(instructions.contains("nteract://notebooks/{notebook_id}/cells"));
         assert!(instructions.contains("nteract://notebooks/{notebook_id}/cells/{cell_id}"));
+        assert!(instructions.contains("nteract://notebooks/{notebook_id}/comments"));
+    }
+
+    #[tokio::test]
+    async fn local_actor_label_is_stable_and_separate_from_peer_display_label() {
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
+        let actor_label = server.get_actor_label().await;
+
+        assert!(actor_label.starts_with("agent:nteract-mcp:"));
+        assert!(!actor_label.contains('/'));
+
+        server.set_peer_label("Claude Code").await;
+        assert_eq!(server.get_peer_label().await, "Claude Code");
+        assert_eq!(server.get_actor_label().await, actor_label);
     }
 
     // ── safe_truncate unit tests ─────────────────────────────────────

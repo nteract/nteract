@@ -776,6 +776,66 @@ mod tests {
         (handle, shared, changed_rx, cmd_rx)
     }
 
+    #[test]
+    fn get_comments_projection_requires_materialized_comments_doc() {
+        let (handle, _shared, _changed_rx, _cmd_rx) = test_handle_with_shared();
+
+        let error = handle
+            .get_comments_projection()
+            .expect_err("unmaterialized comments doc should not project");
+
+        assert!(matches!(
+            error,
+            SyncError::CommentsDoc(comments_doc::CommentsDocError::MissingCommentsDocId)
+        ));
+    }
+
+    #[test]
+    fn comment_thread_mutation_uses_handle_actor() {
+        let (handle, shared, _changed_rx, _cmd_rx) = test_handle_with_shared();
+        let comments_identity = comments_doc::local_path_comments_identity("test-notebook");
+        {
+            let mut st = shared.lock().unwrap();
+            st.comments_doc = comments_doc::CommentsDoc::try_new_with_actor(
+                &comments_identity.comments_doc_id,
+                &comments_identity.notebook_ref,
+                "runtimed:comments",
+            )
+            .unwrap();
+        }
+        handle
+            .set_actor("local:test-user/agent:nteract-mcp:test")
+            .expect("set actor");
+        let heads_before = {
+            let mut st = shared.lock().unwrap();
+            st.comments_doc.get_heads()
+        };
+
+        handle
+            .create_comment_thread(
+                "thread-1",
+                "message-1",
+                &comments_doc::CommentAnchor::Notebook,
+                "Please review",
+                None,
+                "2026-06-16T00:00:00Z",
+            )
+            .expect("create comment");
+
+        let actors = {
+            let mut st = shared.lock().unwrap();
+            notebook_doc::diff::extract_change_actors(st.comments_doc.doc_mut(), &heads_before)
+        };
+        assert_eq!(actors, vec!["local:test-user/agent:nteract-mcp:test"]);
+
+        let projection = handle
+            .get_comments_projection()
+            .expect("comments projection");
+        assert_eq!(projection.threads.len(), 1);
+        assert_eq!(projection.threads[0].id, "thread-1");
+        assert_eq!(projection.threads[0].messages[0].body, "Please review");
+    }
+
     /// Simulate the daemon writing an execution into the RuntimeStateDoc.
     fn set_execution(
         shared: &Arc<Mutex<SharedDocState>>,

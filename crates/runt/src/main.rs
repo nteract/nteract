@@ -740,6 +740,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     let session = server.session().clone();
     let session_for_shutdown = session.clone();
     let peer_label = server.peer_label_shared().clone();
+    let actor_label = server.actor_label_shared().clone();
     let last_session_drop = server.last_session_drop().clone();
     let parked_sessions = server.parked_sessions().clone();
 
@@ -764,6 +765,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
             watch_socket,
             session,
             peer_label,
+            actor_label,
             last_session_drop,
             parked_sessions,
         )

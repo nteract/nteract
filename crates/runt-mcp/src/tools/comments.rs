@@ -1,0 +1,547 @@
+//! CommentsDoc tools: list_comments, create_comment_thread, reply_comment_thread.
+
+use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::ErrorData as McpError;
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+use crate::NteractMcp;
+
+use super::{arg_bool, arg_str, assert_cell_exists, reject_unknown_args, tool_error};
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListCommentsParams {
+    /// Filter to threads badged on this cell.
+    #[serde(default)]
+    pub cell_id: Option<String>,
+    /// Include resolved threads. Defaults to true.
+    #[serde(default)]
+    pub include_resolved: Option<bool>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateCommentThreadParams {
+    /// Anchor for the new thread.
+    pub anchor: CommentAnchorInput,
+    /// First message body.
+    pub body: String,
+    /// Insert after this thread within the same anchor scope.
+    #[serde(default)]
+    pub after_thread_id: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplyCommentThreadParams {
+    /// Thread ID to reply to.
+    pub thread_id: String,
+    /// Reply message body.
+    pub body: String,
+    /// Insert after this message in the thread.
+    #[serde(default)]
+    pub after_message_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CommentAnchorInput {
+    Notebook,
+    Cell {
+        cell_id: String,
+        #[serde(default)]
+        observed_cell_position: Option<String>,
+    },
+    CellRange {
+        start_cell_id: String,
+        end_cell_id: String,
+        #[serde(default)]
+        start_position: Option<String>,
+        #[serde(default)]
+        end_position: Option<String>,
+    },
+    SourceRange {
+        cell_id: String,
+        start_line: u64,
+        start_column: u64,
+        end_line: u64,
+        end_column: u64,
+        #[serde(default)]
+        prefix_quote: Option<String>,
+        #[serde(default)]
+        exact_quote: Option<String>,
+        #[serde(default)]
+        suffix_quote: Option<String>,
+    },
+    Output {
+        cell_id: String,
+        #[serde(default)]
+        execution_id: Option<String>,
+        #[serde(default)]
+        output_id: Option<String>,
+    },
+}
+
+impl CommentAnchorInput {
+    fn into_anchor(
+        self,
+        handle: &notebook_sync::handle::DocHandle,
+    ) -> Result<comments_doc::CommentAnchor, McpError> {
+        match self {
+            Self::Notebook => Ok(comments_doc::CommentAnchor::Notebook),
+            Self::Cell {
+                cell_id,
+                observed_cell_position,
+            } => {
+                assert_cell_exists(handle, &cell_id)?;
+                Ok(comments_doc::CommentAnchor::Cell {
+                    observed_cell_position: observed_cell_position
+                        .or_else(|| handle.get_cell_position(&cell_id)),
+                    cell_id,
+                })
+            }
+            Self::CellRange {
+                start_cell_id,
+                end_cell_id,
+                start_position,
+                end_position,
+            } => {
+                assert_cell_exists(handle, &start_cell_id)?;
+                assert_cell_exists(handle, &end_cell_id)?;
+                Ok(comments_doc::CommentAnchor::CellRange {
+                    start_position: start_position
+                        .or_else(|| handle.get_cell_position(&start_cell_id)),
+                    end_position: end_position.or_else(|| handle.get_cell_position(&end_cell_id)),
+                    start_cell_id,
+                    end_cell_id,
+                })
+            }
+            Self::SourceRange {
+                cell_id,
+                start_line,
+                start_column,
+                end_line,
+                end_column,
+                prefix_quote,
+                exact_quote,
+                suffix_quote,
+            } => {
+                assert_cell_exists(handle, &cell_id)?;
+                Ok(comments_doc::CommentAnchor::SourceRange {
+                    cell_id,
+                    start_line,
+                    start_column,
+                    end_line,
+                    end_column,
+                    prefix_quote,
+                    exact_quote,
+                    suffix_quote,
+                })
+            }
+            Self::Output {
+                cell_id,
+                execution_id,
+                output_id,
+            } => {
+                assert_cell_exists(handle, &cell_id)?;
+                Ok(comments_doc::CommentAnchor::Output {
+                    cell_id,
+                    execution_id,
+                    output_id,
+                })
+            }
+        }
+    }
+}
+
+/// List durable notebook comments.
+pub async fn list_comments(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(request, &["cell_id", "include_resolved"])?;
+    let cell_id = arg_str(request, "cell_id");
+    let include_resolved = arg_bool(request, "include_resolved").unwrap_or(true);
+
+    let handle = require_handle!(server);
+    if let Some(cell_id) = cell_id {
+        assert_cell_exists(&handle, cell_id)?;
+    }
+    confirm_comments_sync(&handle, "list_comments").await?;
+
+    let projection = match handle.get_comments_projection() {
+        Ok(projection) => projection,
+        Err(e) => return comments_tool_error("Comments are not ready", e),
+    };
+    let threads = filter_threads(projection.threads, cell_id, include_resolved);
+    let value = serde_json::json!({
+        "notebook_id": handle.notebook_id(),
+        "comments_doc_id": projection.comments_doc_id,
+        "threads": threads,
+        "resources": crate::resources::notebook_resources_json(handle.notebook_id()),
+    });
+
+    comments_resource_json_success(value, handle.notebook_id())
+}
+
+/// Create a pending comment thread.
+pub async fn create_comment_thread(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(request, &["anchor", "body", "after_thread_id"])?;
+    let body = required_body(request)?;
+    let anchor = required_anchor(request)?;
+    let after_thread_id = arg_str(request, "after_thread_id");
+    let handle = require_handle!(server);
+    confirm_comments_sync(&handle, "create_comment_thread bootstrap").await?;
+
+    let anchor = anchor.into_anchor(&handle)?;
+    let after_thread_id_owned = match after_thread_id {
+        Some(thread_id) => Some(thread_id.to_string()),
+        None => match default_after_thread_id(&handle, &anchor) {
+            Ok(thread_id) => thread_id,
+            Err(e) => return comments_tool_error("Failed to inspect existing comments", e),
+        },
+    };
+    let thread_id = format!("thread-{}", uuid::Uuid::new_v4());
+    let message_id = format!("message-{}", uuid::Uuid::new_v4());
+    let created_at = current_timestamp();
+    let created = match handle.create_comment_thread(
+        &thread_id,
+        &message_id,
+        &anchor,
+        body,
+        after_thread_id_owned.as_deref(),
+        &created_at,
+    ) {
+        Ok(created) => created,
+        Err(e) => return comments_tool_error("Failed to create comment thread", e),
+    };
+    confirm_comments_sync(&handle, "create_comment_thread").await?;
+    let projection = match handle.get_comments_projection() {
+        Ok(projection) => projection,
+        Err(e) => return comments_tool_error("Failed to read comments after create", e),
+    };
+    let thread = projection
+        .threads
+        .into_iter()
+        .find(|thread| thread.id == created.thread_id);
+
+    let value = serde_json::json!({
+        "notebook_id": handle.notebook_id(),
+        "comments_doc_id": projection.comments_doc_id,
+        "thread_id": created.thread_id,
+        "message_id": created.message_id,
+        "thread": thread,
+        "resources": crate::resources::notebook_resources_json(handle.notebook_id()),
+    });
+    comments_resource_json_success(value, handle.notebook_id())
+}
+
+/// Add a pending reply to a comment thread.
+pub async fn reply_comment_thread(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(request, &["thread_id", "body", "after_message_id"])?;
+    let thread_id = arg_str(request, "thread_id")
+        .ok_or_else(|| McpError::invalid_params("Missing required parameter: thread_id", None))?;
+    let body = required_body(request)?;
+    let after_message_id = arg_str(request, "after_message_id");
+    let handle = require_handle!(server);
+    confirm_comments_sync(&handle, "reply_comment_thread bootstrap").await?;
+
+    let after_message_id_owned = match after_message_id {
+        Some(message_id) => Some(message_id.to_string()),
+        None => match default_after_message_id(&handle, thread_id) {
+            Ok(message_id) => message_id,
+            Err(e) => return comments_tool_error("Failed to inspect existing comments", e),
+        },
+    };
+    let message_id = format!("message-{}", uuid::Uuid::new_v4());
+    let created_at = current_timestamp();
+    let replied = match handle.reply_to_comment_thread(
+        thread_id,
+        &message_id,
+        body,
+        after_message_id_owned.as_deref(),
+        &created_at,
+    ) {
+        Ok(replied) => replied,
+        Err(e) => return comments_tool_error("Failed to reply to comment thread", e),
+    };
+    confirm_comments_sync(&handle, "reply_comment_thread").await?;
+    let projection = match handle.get_comments_projection() {
+        Ok(projection) => projection,
+        Err(e) => return comments_tool_error("Failed to read comments after reply", e),
+    };
+    let thread = projection
+        .threads
+        .into_iter()
+        .find(|thread| thread.id == replied.thread_id);
+
+    let value = serde_json::json!({
+        "notebook_id": handle.notebook_id(),
+        "comments_doc_id": projection.comments_doc_id,
+        "thread_id": replied.thread_id,
+        "message_id": replied.message_id,
+        "thread": thread,
+        "resources": crate::resources::notebook_resources_json(handle.notebook_id()),
+    });
+    comments_resource_json_success(value, handle.notebook_id())
+}
+
+fn required_anchor(request: &CallToolRequestParams) -> Result<CommentAnchorInput, McpError> {
+    let value = request
+        .arguments
+        .as_ref()
+        .and_then(|args| args.get("anchor"))
+        .ok_or_else(|| McpError::invalid_params("Missing required parameter: anchor", None))?;
+    serde_json::from_value(value.clone())
+        .map_err(|e| McpError::invalid_params(format!("Invalid anchor: {e}"), None))
+}
+
+fn required_body(request: &CallToolRequestParams) -> Result<&str, McpError> {
+    let body = arg_str(request, "body")
+        .ok_or_else(|| McpError::invalid_params("Missing required parameter: body", None))?;
+    if body.trim().is_empty() {
+        return Err(McpError::invalid_params("body cannot be empty", None));
+    }
+    Ok(body)
+}
+
+fn current_timestamp() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn default_after_thread_id(
+    handle: &notebook_sync::handle::DocHandle,
+    anchor: &comments_doc::CommentAnchor,
+) -> Result<Option<String>, notebook_sync::SyncError> {
+    let projection = handle.get_comments_projection()?;
+    Ok(last_thread_id_in_scope(&projection, anchor))
+}
+
+fn default_after_message_id(
+    handle: &notebook_sync::handle::DocHandle,
+    thread_id: &str,
+) -> Result<Option<String>, notebook_sync::SyncError> {
+    let projection = handle.get_comments_projection()?;
+    Ok(last_message_id_in_thread(&projection, thread_id))
+}
+
+fn last_thread_id_in_scope(
+    projection: &comments_doc::CommentsProjection,
+    anchor: &comments_doc::CommentAnchor,
+) -> Option<String> {
+    let scope = anchor.thread_order_scope();
+    projection
+        .threads
+        .iter()
+        .filter(|thread| thread.anchor.thread_order_scope() == scope)
+        .last()
+        .map(|thread| thread.id.clone())
+}
+
+fn last_message_id_in_thread(
+    projection: &comments_doc::CommentsProjection,
+    thread_id: &str,
+) -> Option<String> {
+    projection
+        .threads
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .and_then(|thread| thread.messages.last())
+        .map(|message| message.id.clone())
+}
+
+async fn confirm_comments_sync(
+    handle: &notebook_sync::handle::DocHandle,
+    action: &str,
+) -> Result<(), McpError> {
+    handle.confirm_state_sync().await.map_err(|e| {
+        McpError::internal_error(format!("Failed to sync comments for {action}: {e}"), None)
+    })
+}
+
+fn comments_tool_error(
+    prefix: &str,
+    error: notebook_sync::SyncError,
+) -> Result<CallToolResult, McpError> {
+    match error {
+        notebook_sync::SyncError::CommentsDoc(
+            comments_doc::CommentsDocError::MissingCommentsDocId,
+        ) => tool_error(&format!(
+            "{prefix}: CommentsDoc is not ready yet. Retry after the notebook finishes syncing."
+        )),
+        other => tool_error(&format!("{prefix}: {other}")),
+    }
+}
+
+fn filter_threads(
+    threads: Vec<comments_doc::CommentThreadSnapshot>,
+    cell_id: Option<&str>,
+    include_resolved: bool,
+) -> Vec<comments_doc::CommentThreadSnapshot> {
+    threads
+        .into_iter()
+        .filter(|thread| {
+            include_resolved || thread.status != comments_doc::ProjectedThreadStatus::Resolved
+        })
+        .filter(|thread| match cell_id {
+            Some(cell_id) => thread.badge_cell_ids.iter().any(|id| id == cell_id),
+            None => true,
+        })
+        .collect()
+}
+
+fn comments_resource_json_success(
+    result: serde_json::Value,
+    notebook_id: &str,
+) -> Result<CallToolResult, McpError> {
+    Ok(CallToolResult::success(vec![
+        Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()),
+        Content::resource_link(crate::resources::notebook_comments_resource_link(
+            notebook_id,
+        )),
+    ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_cell_anchor_input() {
+        let anchor: CommentAnchorInput = serde_json::from_value(serde_json::json!({
+            "kind": "cell",
+            "cell_id": "cell-1"
+        }))
+        .expect("anchor parses");
+
+        assert!(matches!(anchor, CommentAnchorInput::Cell { .. }));
+    }
+
+    #[test]
+    fn filters_resolved_threads_by_default_flag() {
+        let threads = vec![
+            comments_doc::CommentThreadSnapshot {
+                id: "open".into(),
+                anchor: comments_doc::CommentAnchor::Notebook,
+                position: "80".into(),
+                status: comments_doc::ProjectedThreadStatus::Open,
+                mutation_state: comments_doc::ProjectedMutationState::Pending,
+                trusted: false,
+                messages: Vec::new(),
+                badge_cell_ids: vec!["cell-1".into()],
+                created_at: String::new(),
+                created_by_actor_label: None,
+                created_by_authority: None,
+                rejection_reason: None,
+                resolved_at: None,
+                resolved_by_actor_label: None,
+                resolved_by_authority: None,
+            },
+            comments_doc::CommentThreadSnapshot {
+                id: "resolved".into(),
+                anchor: comments_doc::CommentAnchor::Notebook,
+                position: "81".into(),
+                status: comments_doc::ProjectedThreadStatus::Resolved,
+                mutation_state: comments_doc::ProjectedMutationState::Accepted,
+                trusted: true,
+                messages: Vec::new(),
+                badge_cell_ids: vec!["cell-1".into()],
+                created_at: String::new(),
+                created_by_actor_label: None,
+                created_by_authority: None,
+                rejection_reason: None,
+                resolved_at: None,
+                resolved_by_actor_label: None,
+                resolved_by_authority: None,
+            },
+        ];
+
+        let filtered = filter_threads(threads, Some("cell-1"), false);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "open");
+    }
+
+    #[test]
+    fn omitted_after_ids_default_to_last_visible_item() {
+        let projection = comments_doc::CommentsProjection {
+            comments_doc_id: "comments:test".into(),
+            threads: vec![
+                thread_snapshot(
+                    "thread-1",
+                    comments_doc::CommentAnchor::Notebook,
+                    vec![message_snapshot("message-1")],
+                ),
+                thread_snapshot(
+                    "thread-2",
+                    comments_doc::CommentAnchor::Notebook,
+                    vec![message_snapshot("message-2"), message_snapshot("message-3")],
+                ),
+                thread_snapshot(
+                    "thread-cell",
+                    comments_doc::CommentAnchor::Cell {
+                        cell_id: "cell-1".into(),
+                        observed_cell_position: None,
+                    },
+                    vec![message_snapshot("message-cell")],
+                ),
+            ],
+        };
+
+        assert_eq!(
+            last_thread_id_in_scope(&projection, &comments_doc::CommentAnchor::Notebook),
+            Some("thread-2".into())
+        );
+        assert_eq!(
+            last_message_id_in_thread(&projection, "thread-2"),
+            Some("message-3".into())
+        );
+    }
+
+    fn thread_snapshot(
+        id: &str,
+        anchor: comments_doc::CommentAnchor,
+        messages: Vec<comments_doc::CommentMessageSnapshot>,
+    ) -> comments_doc::CommentThreadSnapshot {
+        comments_doc::CommentThreadSnapshot {
+            id: id.into(),
+            anchor,
+            position: "80".into(),
+            status: comments_doc::ProjectedThreadStatus::Open,
+            mutation_state: comments_doc::ProjectedMutationState::Pending,
+            trusted: false,
+            messages,
+            badge_cell_ids: Vec::new(),
+            created_at: String::new(),
+            created_by_actor_label: None,
+            created_by_authority: None,
+            rejection_reason: None,
+            resolved_at: None,
+            resolved_by_actor_label: None,
+            resolved_by_authority: None,
+        }
+    }
+
+    fn message_snapshot(id: &str) -> comments_doc::CommentMessageSnapshot {
+        comments_doc::CommentMessageSnapshot {
+            id: id.into(),
+            position: "80".into(),
+            body: String::new(),
+            mutation_state: comments_doc::ProjectedMutationState::Pending,
+            trusted: false,
+            created_at: String::new(),
+            created_by_actor_label: None,
+            created_by_authority: None,
+            rejection_reason: None,
+        }
+    }
+}

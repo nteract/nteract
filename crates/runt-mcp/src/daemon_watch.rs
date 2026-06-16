@@ -173,6 +173,7 @@ pub async fn watch(
     socket_path: PathBuf,
     session: Arc<RwLock<Option<NotebookSession>>>,
     peer_label: Arc<RwLock<String>>,
+    actor_label: Arc<RwLock<String>>,
     last_session_drop: Arc<RwLock<Option<SessionDropInfo>>>,
     parked_sessions: Arc<RwLock<HashMap<String, NotebookSession>>>,
 ) -> i32 {
@@ -260,6 +261,7 @@ pub async fn watch(
                     &socket_path,
                     &session,
                     &peer_label,
+                    &actor_label,
                     &last_session_drop,
                     Some(target),
                 )
@@ -281,6 +283,7 @@ pub async fn watch(
                     &socket_path,
                     &session,
                     &peer_label,
+                    &actor_label,
                     &last_session_drop,
                     None,
                 )
@@ -375,6 +378,7 @@ async fn rejoin(
     socket_path: &Path,
     session: &Arc<RwLock<Option<NotebookSession>>>,
     peer_label: &Arc<RwLock<String>>,
+    actor_label: &Arc<RwLock<String>>,
     last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
     override_target: Option<String>,
 ) -> bool {
@@ -457,7 +461,8 @@ async fn rejoin(
         }
     }
 
-    let label = peer_label.read().await.clone();
+    let actor = actor_label.read().await.clone();
+    let display_label = peer_label.read().await.clone();
 
     for attempt in 0..=REJOIN_MAX_RETRIES {
         let use_path = notebook_path
@@ -468,7 +473,7 @@ async fn rejoin(
             match notebook_sync::connect::connect_open(
                 socket_path.to_path_buf(),
                 PathBuf::from(path),
-                &label,
+                &actor,
             )
             .await
             {
@@ -491,7 +496,7 @@ async fn rejoin(
             match notebook_sync::connect::connect(
                 socket_path.to_path_buf(),
                 notebook_id.clone(),
-                &label,
+                &actor,
             )
             .await
             {
@@ -514,7 +519,7 @@ async fn rejoin(
 
         match result {
             Ok((handle, broadcast_rx, new_cell_count, new_notebook_id)) => {
-                crate::presence::announce(&handle, &label).await;
+                crate::presence::announce(&handle, &display_label).await;
 
                 // Guard: only install the rejoined session if no tool call
                 // (connect_notebook / create_notebook) established a

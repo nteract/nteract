@@ -53,6 +53,9 @@ pub(crate) fn tool_icon(name: &str) -> Option<IconKind> {
         "interrupt_kernel" => IconKind::InterruptKernel,
         "restart_kernel" => IconKind::RestartKernel,
         "manage_dependencies" => IconKind::ManageDependencies,
+        "list_comments" => IconKind::ReadCell,
+        "create_comment_thread" => IconKind::CreateCell,
+        "reply_comment_thread" => IconKind::EditCell,
         "replace_match" | "replace_regex" => IconKind::ReplaceCell,
         _ => return None,
     })

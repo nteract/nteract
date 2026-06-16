@@ -62,6 +62,7 @@ fn cell_resource_content(notebook_id: &str, cell_id: &str) -> Content {
 mod cell_crud;
 mod cell_meta;
 pub(crate) mod cell_read;
+mod comments;
 mod deps;
 mod editing;
 mod execution;
@@ -230,6 +231,25 @@ pub fn all_tools() -> Vec<Tool> {
                 .idempotent(true)
                 .open_world(false),
         ),
+        // -- Comments --
+        Tool::new(
+            "list_comments",
+            "List durable notebook comments for the active session.",
+            schema_for::<comments::ListCommentsParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
+        Tool::new(
+            "create_comment_thread",
+            "Create a pending comment thread anchored to the notebook, a cell, a source range, or an output.",
+            schema_for::<comments::CreateCommentThreadParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
+        Tool::new(
+            "reply_comment_thread",
+            "Add a pending reply to an existing comment thread.",
+            schema_for::<comments::ReplyCommentThreadParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
         // -- Editing --
         Tool::new(
             "replace_match",
@@ -342,6 +362,10 @@ pub async fn dispatch(
         "remove_dependency" => deps::remove_dependency(server, request).await,
         "get_dependencies" => deps::get_dependencies(server, request).await,
         "approve_trust" => deps::approve_trust(server, request).await,
+        // Comments
+        "list_comments" => comments::list_comments(server, request).await,
+        "create_comment_thread" => comments::create_comment_thread(server, request).await,
+        "reply_comment_thread" => comments::reply_comment_thread(server, request).await,
         // Editing
         "replace_match" => editing::replace_match(server, request).await,
         "replace_regex" => editing::replace_regex(server, request).await,
@@ -759,6 +783,31 @@ mod tests {
             .expect("create_notebook schema should expose properties");
 
         assert!(properties.contains_key("environment_mode"));
+    }
+
+    #[test]
+    fn create_comment_thread_tool_exposes_anchor_schema() {
+        let tool = registered_tool("create_comment_thread");
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("create_comment_thread schema should expose properties");
+
+        assert!(properties.contains_key("anchor"));
+        assert!(properties.contains_key("body"));
+        assert_eq!(
+            tool.input_schema.get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .expect("required fields");
+        assert!(required.iter().any(|field| field == "anchor"));
+        assert!(required.iter().any(|field| field == "body"));
     }
 
     #[test]

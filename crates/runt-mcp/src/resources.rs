@@ -14,6 +14,7 @@ const OUTPUT_MIME_TYPE: &str = "text/html;profile=mcp-app";
 const NOTEBOOKS_RESOURCE_URI: &str = "nteract://notebooks";
 const NOTEBOOKS_MIME_TYPE: &str = "application/json";
 const CELLS_MIME_TYPE: &str = "application/json";
+const COMMENTS_MIME_TYPE: &str = "application/json";
 // Assistant-facing notebook JSON is high-value context, but the UI app resource
 // remains the host-facing renderer entrypoint.
 const NOTEBOOK_CONTEXT_PRIORITY: f32 = 0.8;
@@ -95,6 +96,14 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
             IconKind::ListActiveNotebooks,
             NOTEBOOK_CONTEXT_PRIORITY,
         ));
+        resources.push(assistant_resource(
+            notebook_comments_uri(&notebook_id),
+            format!("nteract comments {notebook_id}"),
+            "Durable comment threads for a connected or parked notebook session",
+            COMMENTS_MIME_TYPE,
+            IconKind::ReadCell,
+            NOTEBOOK_CONTEXT_PRIORITY,
+        ));
     }
 
     Ok(ListResourcesResult {
@@ -120,6 +129,14 @@ pub fn list_resource_templates() -> ListResourceTemplatesResult {
             "nteract notebook cell",
             "Notebook cell snapshot for a connected or parked notebook session",
             CELLS_MIME_TYPE,
+            IconKind::ReadCell,
+            NOTEBOOK_CONTEXT_PRIORITY,
+        ),
+        assistant_resource_template(
+            "nteract://notebooks/{notebook_id}/comments",
+            "nteract notebook comments",
+            "Durable comment threads for a connected or parked notebook session",
+            COMMENTS_MIME_TYPE,
             IconKind::ReadCell,
             NOTEBOOK_CONTEXT_PRIORITY,
         ),
@@ -160,6 +177,20 @@ pub async fn read_resource(
         NotebookResourceUri::Cells { notebook_id } => {
             let handle = handle_for_notebook(server, &notebook_id).await?;
             let text = cells_json(&notebook_id, &handle);
+            Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
+        }
+        NotebookResourceUri::Comments { notebook_id } => {
+            let handle = handle_for_notebook(server, &notebook_id).await?;
+            handle.confirm_state_sync().await.map_err(|e| {
+                McpError::internal_error(format!("Failed to sync comments resource: {e}"), None)
+            })?;
+            let projection = handle.get_comments_projection().map_err(|e| {
+                McpError::resource_not_found(
+                    format!("Comments resource is not ready for notebook_id {notebook_id}: {e}"),
+                    None,
+                )
+            })?;
+            let text = comments_json(&notebook_id, &projection);
             Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
         }
         NotebookResourceUri::Cell {
@@ -418,6 +449,9 @@ enum NotebookResourceUri {
     Cells {
         notebook_id: String,
     },
+    Comments {
+        notebook_id: String,
+    },
     Cell {
         notebook_id: String,
         cell_id: String,
@@ -435,6 +469,9 @@ fn parse_notebook_resource_uri(uri: &str) -> Result<NotebookResourceUri, String>
     let parts: Vec<&str> = rest.split('/').collect();
     match parts.as_slice() {
         [notebook_id, "cells"] => Ok(NotebookResourceUri::Cells {
+            notebook_id: decode_segment(notebook_id)?,
+        }),
+        [notebook_id, "comments"] => Ok(NotebookResourceUri::Comments {
             notebook_id: decode_segment(notebook_id)?,
         }),
         [notebook_id, "cells", cell_id] => Ok(NotebookResourceUri::Cell {
@@ -460,10 +497,18 @@ pub(crate) fn notebook_cell_uri(notebook_id: &str, cell_id: &str) -> String {
     )
 }
 
+pub(crate) fn notebook_comments_uri(notebook_id: &str) -> String {
+    format!(
+        "{NOTEBOOKS_RESOURCE_URI}/{}/comments",
+        encode_segment(notebook_id)
+    )
+}
+
 pub(crate) fn notebook_resources_json(notebook_id: &str) -> serde_json::Value {
     serde_json::json!({
         "cells": notebook_cells_uri(notebook_id),
         "cell_template": format!("{}/{{cell_id}}", notebook_cells_uri(notebook_id)),
+        "comments": notebook_comments_uri(notebook_id),
     })
 }
 
@@ -487,6 +532,27 @@ pub(crate) fn notebook_cell_resource_link(notebook_id: &str, cell_id: &str) -> R
     resource.mime_type = Some(CELLS_MIME_TYPE.into());
     resource.icons = Some(icons::icons(IconKind::ReadCell));
     resource
+}
+
+pub(crate) fn notebook_comments_resource_link(notebook_id: &str) -> RawResource {
+    let mut resource = RawResource::new(
+        notebook_comments_uri(notebook_id),
+        format!("nteract comments {notebook_id}"),
+    );
+    resource.description = Some("Durable notebook comment threads".into());
+    resource.mime_type = Some(COMMENTS_MIME_TYPE.into());
+    resource.icons = Some(icons::icons(IconKind::ReadCell));
+    resource
+}
+
+fn comments_json(notebook_id: &str, projection: &comments_doc::CommentsProjection) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "notebook_id": notebook_id,
+        "comments_doc_id": projection.comments_doc_id,
+        "threads": projection.threads,
+        "resources": notebook_resources_json(notebook_id),
+    }))
+    .unwrap_or_else(|_| "{}".into())
 }
 
 fn encode_segment(value: &str) -> String {
@@ -655,6 +721,7 @@ mod tests {
 
         assert!(templates.contains(&"nteract://notebooks/{notebook_id}/cells"));
         assert!(templates.contains(&"nteract://notebooks/{notebook_id}/cells/{cell_id}"));
+        assert!(templates.contains(&"nteract://notebooks/{notebook_id}/comments"));
 
         for template in &result.resource_templates {
             assert_assistant_context_annotations(
@@ -717,6 +784,14 @@ mod tests {
                 cell_id: "cell/with/slash".to_string()
             }
         );
+
+        let uri = notebook_comments_uri("nb/with/slash");
+        assert_eq!(
+            parse_notebook_resource_uri(&uri).expect("parse comments uri"),
+            NotebookResourceUri::Comments {
+                notebook_id: "nb/with/slash".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -733,6 +808,10 @@ mod tests {
                 "nteract://notebooks/nb%201/cells/{cell_id}"
             ))
         );
+        assert_eq!(
+            resources.get("comments"),
+            Some(&serde_json::json!("nteract://notebooks/nb%201/comments"))
+        );
     }
 
     #[test]
@@ -744,6 +823,18 @@ mod tests {
             "nteract://notebooks/nb%201/cells/cell%2Fwith%2Fslash"
         );
         assert_eq!(resource.mime_type.as_deref(), Some(CELLS_MIME_TYPE));
+        assert_light_dark_icons(resource.icons.as_deref().expect("resource icons"));
+    }
+
+    #[test]
+    fn notebook_comments_resource_link_uses_encoded_uri() {
+        let resource = notebook_comments_resource_link("nb/with/slash");
+
+        assert_eq!(
+            resource.uri,
+            "nteract://notebooks/nb%2Fwith%2Fslash/comments"
+        );
+        assert_eq!(resource.mime_type.as_deref(), Some(COMMENTS_MIME_TYPE));
         assert_light_dark_icons(resource.icons.as_deref().expect("resource icons"));
     }
 
