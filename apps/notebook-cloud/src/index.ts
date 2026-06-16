@@ -5461,14 +5461,25 @@ async function markdownDocumentViewer(
     return viewerShellHead(env);
   }
 
-  const shellMetadata = await publicMarkdownDocumentShellMetadata(
+  const documentApiBasePath = `/api/m/${encodeURIComponent(documentId)}`;
+  const shellMetadataPromise = publicMarkdownDocumentShellMetadata(
     env,
     documentId,
     routeTitleSegment,
   );
-  const documentApiBasePath = `/api/m/${encodeURIComponent(documentId)}`;
-  const runtimeWasmAssets = await runtimeWasmAssetNames(env);
-  const session = await readCloudAppSession(env, request).catch(() => null);
+  const runtimeWasmAssetsPromise = runtimeWasmAssetNames(env);
+  const routeAssetsPromise = notebookRouteAssetNames(env);
+  const sessionPromise = readCloudAppSession(env, request).catch(() => null);
+  const bootstrapPromise = sessionPromise.then((session) =>
+    markdownDocumentViewerBootstrap(env, documentId, session),
+  );
+  const [shellMetadata, runtimeWasmAssets, routeAssets, session, bootstrap] = await Promise.all([
+    shellMetadataPromise,
+    runtimeWasmAssetsPromise,
+    routeAssetsPromise,
+    sessionPromise,
+    bootstrapPromise,
+  ]);
   const config = {
     documentKind: "markdown",
     documentId,
@@ -5480,14 +5491,49 @@ async function markdownDocumentViewer(
       canManageSharing: true,
       canPublish: true,
     },
+    bootstrap,
     session: session ? appSessionResponse(session) : null,
     runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),
     runtimedWasmPath: runtimedWasmAssetPath(env, runtimeWasmAssets.wasm),
   };
   return responseForRequestMethod(
     request,
-    viewerShell(shellMetadata, env, authConfigForRequest(request, env), config),
+    viewerShell(shellMetadata, env, authConfigForRequest(request, env), config, null, {
+      notebookRouteAssets: routeAssets,
+      runtimedWasmModulePath: config.runtimedWasmModulePath,
+      runtimedWasmPath: config.runtimedWasmPath,
+    }),
   );
+}
+
+async function markdownDocumentViewerBootstrap(
+  env: Env,
+  documentId: string,
+  session: CloudAppSession | null,
+): Promise<Record<string, unknown> | null> {
+  if (!session) {
+    return null;
+  }
+  const identity = appSessionConnectionIdentity(session, "browser:http", "viewer");
+  const authorized = await authorizeMarkdownDocumentReadWithBestScope(
+    env,
+    documentId,
+    identity,
+  ).catch(() => null);
+  if (!authorized) {
+    return null;
+  }
+  const document = await getMarkdownDocumentRow(env, documentId);
+  if (!document) {
+    return null;
+  }
+  return {
+    body_doc_id: document.body_doc_id,
+    latest_revision_id: document.latest_revision_id,
+    scope: authorized.scope,
+    title: document.title,
+    updated_at: document.updated_at,
+  };
 }
 
 function oidcCallbackViewer(request: Request, env: Env): Response {
@@ -5786,7 +5832,7 @@ function notebookRouteResourceHints(
   const styleRel =
     styleHint === "prefetch"
       ? (name: string) => `<link rel="prefetch" href="/assets/${escapeHtml(name)}" as="style" />`
-      : (name: string) => `<link rel="preload" href="/assets/${escapeHtml(name)}" as="style" />`;
+      : (name: string) => `<link rel="stylesheet" href="/assets/${escapeHtml(name)}" />`;
   return [
     ...assets.modulepreload.map(
       (name) => `<link rel="modulepreload" href="/assets/${escapeHtml(name)}" />`,

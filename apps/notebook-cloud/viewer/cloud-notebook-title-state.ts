@@ -75,11 +75,19 @@ export function cloudNotebookCatalogResponseTitle(
   throw new Error("Unable to load notebook title: response shape was invalid");
 }
 
-export function cloudNotebookUrlAfterRename(currentHref: string, viewerUrl: string): string {
+export function cloudDocumentUrlAfterRename({
+  currentHref,
+  routePrefix,
+  viewerUrl,
+}: {
+  currentHref: string;
+  routePrefix: "/n" | "/m";
+  viewerUrl: string;
+}): string {
   try {
     const currentUrl = new URL(currentHref);
     const renamedUrl = new URL(viewerUrl, currentUrl.origin);
-    if (!renamedUrl.pathname.startsWith("/n/")) {
+    if (!renamedUrl.pathname.startsWith(`${routePrefix}/`)) {
       return currentHref;
     }
     currentUrl.pathname = renamedUrl.pathname;
@@ -87,4 +95,8 @@ export function cloudNotebookUrlAfterRename(currentHref: string, viewerUrl: stri
   } catch {
     return currentHref;
   }
+}
+
+export function cloudNotebookUrlAfterRename(currentHref: string, viewerUrl: string): string {
+  return cloudDocumentUrlAfterRename({ currentHref, viewerUrl, routePrefix: "/n" });
 }

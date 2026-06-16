@@ -32,6 +32,7 @@ export interface MarkdownDocumentLiveSyncController {
   readonly peerId: string;
   readonly transport: CloudWebSocketTransport;
   editBody(nextBody: string): void;
+  editTitle(nextTitle: string): void;
   flushNow(): Promise<void>;
   publishSnapshot(): Promise<MarkdownDocumentPublishedSnapshot>;
   dispose(): void;
@@ -139,6 +140,24 @@ export async function startMarkdownDocumentLiveSync({
     });
   };
 
+  const editTitle = (nextTitle: string) => {
+    if (!handle) {
+      return;
+    }
+    const normalizedTitle = nextTitle.trim() || "Untitled Markdown";
+    if ((handle.title()?.trim() || "Untitled Markdown") === normalizedTitle) {
+      return;
+    }
+    try {
+      handle.set_title(normalizedTitle);
+      publishSnapshot();
+      scheduleSave();
+      flush();
+    } catch (error) {
+      onError?.(error);
+    }
+  };
+
   const applyRoomReady = (ready: CloudRoomReady) => {
     if (!handle || ready.peer_id === peerId) {
       return;
@@ -167,6 +186,9 @@ export async function startMarkdownDocumentLiveSync({
       handle = null;
       transport.disconnect();
       throw new Error("Markdown live sync disposed before ready");
+    }
+    if (scope !== "viewer") {
+      editTitle(title);
     }
     publishSnapshot();
     roomReadySubscription = transport.roomReady$.subscribe(applyRoomReady);
@@ -221,6 +243,7 @@ export async function startMarkdownDocumentLiveSync({
         scheduleSave();
         flush();
       },
+      editTitle,
       flushNow: async () => {
         if (saveTimer !== null) {
           clearTimeout(saveTimer);

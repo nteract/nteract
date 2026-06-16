@@ -60,6 +60,14 @@ export interface CloudMarkdownDocumentUpdateResponse {
   viewer_url?: string;
 }
 
+export interface CloudMarkdownDocumentBootstrap {
+  body_doc_id: string;
+  latest_revision_id: string | null;
+  scope: "owner" | "editor" | "viewer";
+  title: string | null;
+  updated_at: string;
+}
+
 export interface CloudMarkdownDocumentConfig {
   documentKind: "markdown";
   documentId: string;
@@ -69,6 +77,7 @@ export interface CloudMarkdownDocumentConfig {
   syncEndpoint: string;
   runtimedWasmModulePath: string;
   runtimedWasmPath: string;
+  bootstrap?: CloudMarkdownDocumentBootstrap | null;
   session?: CloudAppSession | null;
   hostCapabilities?: {
     canManageSharing?: boolean;

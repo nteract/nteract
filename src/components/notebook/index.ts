@@ -107,6 +107,12 @@ export {
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
 export {
+  DocumentTitle,
+  type DocumentTitleClassNames,
+  type DocumentTitleDisplay,
+  type DocumentTitleProps,
+} from "./DocumentTitle";
+export {
   NotebookNotice,
   NotebookNoticeAction,
   NotebookNoticeStack,

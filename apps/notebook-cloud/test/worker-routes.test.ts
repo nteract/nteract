@@ -1794,6 +1794,66 @@ describe("Worker artifact routes", () => {
     assert.equal("runtime_snapshots" in body.document.endpoints, false);
   });
 
+  it("bootstraps Markdown document chrome from app-session catalog facts", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "markdown-bootstrap-user",
+      email: "markdown-bootstrap@example.test",
+      extraPayload: { email_verified: true },
+      name: "Markdown Bootstrap User",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    env.DB.markdownDocuments.set("markdown-bootstrap", {
+      id: "markdown-bootstrap",
+      owner_principal: "user:anaconda:markdown-bootstrap-user",
+      title: "Bootstrapped Markdown",
+      body_doc_id: "markdown-bootstrap-body",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T01:02:03.000Z",
+      latest_revision_id: "markdown-revision-123",
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-bootstrap",
+      subject_kind: "principal",
+      subject: "user:anaconda:markdown-bootstrap-user",
+      scope: "owner",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:anaconda:markdown-bootstrap-user/browser:tab",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/m/markdown-bootstrap/Bootstrapped%20Markdown", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const config = notebookViewerConfig(await response.text()) as {
+      bootstrap?: {
+        body_doc_id: string;
+        latest_revision_id: string | null;
+        scope: string;
+        title: string | null;
+        updated_at: string;
+      } | null;
+      session?: { provider: string; expires_at: number } | null;
+    };
+    assert.deepEqual(config.bootstrap, {
+      body_doc_id: "markdown-bootstrap-body",
+      latest_revision_id: "markdown-revision-123",
+      scope: "owner",
+      title: "Bootstrapped Markdown",
+      updated_at: "2026-06-15T01:02:03.000Z",
+    });
+    assert.equal(config.session?.provider, "oidc");
+  });
+
   it("lets Markdown document owners manage principal ACL rows", async () => {
     const env = fakeEnv();
     env.DB.markdownDocuments.set("markdown-share", {

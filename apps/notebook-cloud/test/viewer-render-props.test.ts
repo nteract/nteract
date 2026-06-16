@@ -174,6 +174,11 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   const sharingSourceText = readFileSync(sharingSourcePath, "utf8");
   const titleSourcePath = new URL("../viewer/cloud-notebook-title.tsx", import.meta.url);
   const titleSourceText = readFileSync(titleSourcePath, "utf8");
+  const documentTitleSourcePath = new URL(
+    "../../../src/components/notebook/DocumentTitle.tsx",
+    import.meta.url,
+  );
+  const documentTitleSourceText = readFileSync(documentTitleSourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
 
@@ -198,9 +203,10 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(sourceText, /cloudNotebookTitleDisplay,/);
   assert.match(sourceText, /cloudNotebookUrlAfterRename,/);
-  assert.match(titleSourceText, /className="cloud-notebook-home-link"/);
+  assert.match(titleSourceText, /homeLink: "cloud-notebook-home-link"/);
   assert.match(titleSourceText, /<House aria-hidden="true" \/>/);
-  assert.match(titleSourceText, /<PencilLine aria-hidden="true" \/>/);
+  assert.match(titleSourceText, /<DocumentTitle/);
+  assert.match(documentTitleSourceText, /<PencilLine aria-hidden="true" \/>/);
   assert.doesNotMatch(titleSourceText, /cloud-notebook-logo/);
   assert.doesNotMatch(sourceText, /function shouldShowCloudNotebookCommandToolbar/);
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);

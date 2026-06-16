@@ -146,11 +146,8 @@ describe("HTML script serialization", () => {
     assert.match(html, /rel="modulepreload" href="\/assets\/MarkdownText\.0123456789abcdef\.js"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/markdown\.0123456789abcdef\.js"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/katex\.min\.0123456789abcdef\.js"/);
-    assert.match(
-      html,
-      /rel="preload" href="\/assets\/notebook-route\.0123456789abcdef\.css" as="style"/,
-    );
-    assert.match(html, /rel="preload" href="\/assets\/katex\.0123456789abcdef\.css" as="style"/);
+    assert.match(html, /rel="stylesheet" href="\/assets\/notebook-route\.0123456789abcdef\.css"/);
+    assert.match(html, /rel="stylesheet" href="\/assets\/katex\.0123456789abcdef\.css"/);
     assert.ok(
       html.indexOf('rel="modulepreload" href="/assets/notebook-cloud-viewer.js"') <
         html.indexOf('rel="modulepreload" href="/assets/notebook-route.0123456789abcdef.js"'),
@@ -377,15 +374,38 @@ describe("HTML script serialization", () => {
   });
 
   it("serves Markdown document viewers with Markdown config, not notebook config", async () => {
+    const seenPaths: string[] = [];
     const response = await worker.fetch(
       new Request("https://cloud.test/m/doc-123/Research%20Plan"),
-      fakeEnv(),
+      fakeEnv({
+        ASSETS: fakeViewerAssetManifests(
+          {
+            notebookRoute: {
+              modulepreload: [
+                "notebook-route.0123456789abcdef.js",
+                "MarkdownText.0123456789abcdef.js",
+                "markdown.0123456789abcdef.js",
+                "katex.min.0123456789abcdef.js",
+              ],
+              stylepreload: ["notebook-route.0123456789abcdef.css", "katex.0123456789abcdef.css"],
+            },
+          },
+          seenPaths,
+        ),
+      }),
       fakeContext(),
     );
     const html = await response.text();
 
     assert.equal(response.status, 200);
+    assert.ok(seenPaths.includes("/assets/notebook-route-assets.json"));
     assert.match(html, /<title>nteract Markdown: Research Plan<\/title>/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-route\.0123456789abcdef\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/MarkdownText\.0123456789abcdef\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/markdown\.0123456789abcdef\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/katex\.min\.0123456789abcdef\.js"/);
+    assert.match(html, /rel="stylesheet" href="\/assets\/notebook-route\.0123456789abcdef\.css"/);
+    assert.match(html, /rel="stylesheet" href="\/assets\/katex\.0123456789abcdef\.css"/);
     assert.match(html, /"documentKind":"markdown"/);
     assert.match(html, /"documentId":"doc-123"/);
     assert.match(html, /"catalogEndpoint":"\/api\/m\/doc-123"/);
@@ -393,7 +413,9 @@ describe("HTML script serialization", () => {
     assert.match(html, /"syncEndpoint":"\/m\/doc-123\/sync"/);
     assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.js"/);
     assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.wasm"/);
+    assert.match(html, /"bootstrap":null/);
     assert.doesNotMatch(html, /"notebookId"/);
+    assert.doesNotMatch(html, /"notebookRouteAssets"/);
     assert.doesNotMatch(html, /"workstationAttachEndpoint"/);
   });
 

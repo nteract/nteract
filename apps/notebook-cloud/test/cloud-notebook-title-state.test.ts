@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   cloudNotebookCatalogResponseTitle,
+  cloudDocumentUrlAfterRename,
   cloudNotebookDocumentTitle,
   cloudNotebookRouteTitleFromPathname,
   cloudNotebookTitleDisplay,
@@ -87,6 +88,17 @@ describe("cloud notebook title state", () => {
         "https://worker.example/n/abc/New%20Title",
       ),
       "https://preview.runt.run/n/abc/New%20Title?mode=edit#intro",
+    );
+  });
+
+  it("updates Markdown vanity paths with the shared document rename helper", () => {
+    assert.equal(
+      cloudDocumentUrlAfterRename({
+        currentHref: "https://preview.runt.run/m/abc/old-title?mode=edit#intro",
+        routePrefix: "/m",
+        viewerUrl: "https://worker.example/m/abc/New%20Title",
+      }),
+      "https://preview.runt.run/m/abc/New%20Title?mode=edit#intro",
     );
   });
 

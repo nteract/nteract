@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Globe2, House, ListTree, Loader2 } from "lucide-react";
+import { House, ListTree } from "lucide-react";
 import type { EditorView } from "@codemirror/view";
 import type { ConnectionStatus, NotebookOutlineItem } from "runtimed";
+import { notebookRouteSegmentTitle } from "../src/notebook-route-title";
 import {
   CodeMirrorEditor,
   externalChangeAnnotation,
@@ -11,6 +12,7 @@ import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownVi
 import {
   NotebookDocumentShell,
   NotebookDocumentToolbar,
+  DocumentTitle,
   NotebookNotice,
   NotebookNoticeStack,
   projectNotebookShellCapabilities,
@@ -26,6 +28,11 @@ import {
 } from "@/lib/markdown-document";
 import { cn } from "@/lib/utils";
 import { cloudResponseError } from "./cloud-response";
+import {
+  cloudDocumentUrlAfterRename,
+  type CloudNotebookTitleDisplay,
+} from "./cloud-notebook-title-state";
+import { cloudNotebookTitleClassNames } from "./cloud-notebook-title";
 import type { CloudMarkdownDocumentConfig, CloudViewerAuthConfig } from "./cloud-viewer-types";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 import {
@@ -50,11 +57,13 @@ interface MarkdownCatalogResponse {
   };
 }
 
-type PublishStatus =
-  | { kind: "idle"; message: string | null }
-  | { kind: "publishing"; message: string }
-  | { kind: "published"; message: string; revisionId: string }
-  | { kind: "error"; message: string };
+interface MarkdownDocumentMetadataUpdateResponse {
+  ok: true;
+  document_id: string;
+  title: string | null;
+  updated_at: string;
+  viewer_url?: string;
+}
 
 type MarkdownDocumentAccessLevel = "owner" | "editor" | "viewer";
 
@@ -63,7 +72,6 @@ type MarkdownRailPanelId = "outline";
 const MARKDOWN_RAIL_ITEMS = [{ id: "outline" as const, label: "Outline", icon: ListTree }];
 
 type RouteState =
-  | { kind: "loading" }
   | {
       kind: "ready";
       title: string;
@@ -94,17 +102,16 @@ export function MarkdownDocumentRoute({
     appSessionStatus.status === "loading",
     appSessionStatus.refreshAppSessionStatus,
   );
-  const [routeState, setRouteState] = useState<RouteState>({ kind: "loading" });
+  const [routeState, setRouteState] = useState<RouteState>(() =>
+    initialMarkdownDocumentRouteState(config),
+  );
   const [mode, setMode] = useState<MarkdownDocumentMode>("edit");
   const [railCollapsed, setRailCollapsed] = useState(initialMarkdownRailCollapsed);
-  const [publishStatus, setPublishStatus] = useState<PublishStatus>({
-    kind: "idle",
-    message: null,
-  });
+  const [markdownTitleSaving, setMarkdownTitleSaving] = useState(false);
+  const [markdownTitleError, setMarkdownTitleError] = useState<string | null>(null);
   const syncControllerRef = useRef<MarkdownDocumentLiveSyncController | null>(null);
   const editorRef = useRef<CodeMirrorEditorRef | null>(null);
   const connectionStatusRef = useRef<ConnectionStatus>("connecting");
-  const latestRevisionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -129,11 +136,16 @@ export function MarkdownDocumentRoute({
     void (async () => {
       try {
         connectionStatusRef.current = "connecting";
-        setRouteState({ kind: "loading" });
-        const catalog = await fetchMarkdownCatalog(config, authState);
+        setRouteState((current) =>
+          current.kind === "ready"
+            ? { ...current, bodyReady: false, connectionStatus: "connecting" }
+            : initialMarkdownDocumentRouteState(config),
+        );
+        const catalog =
+          markdownCatalogFromBootstrap(config) ?? (await fetchMarkdownCatalog(config, authState));
         if (disposed) return;
-        latestRevisionIdRef.current = catalog.document.latest_revision_id;
         const title = catalog.document.title?.trim() || "Untitled Markdown";
+        const latestRevisionId = catalog.document.latest_revision_id;
         controller = await startMarkdownDocumentLiveSync({
           authState,
           config,
@@ -160,7 +172,7 @@ export function MarkdownDocumentRoute({
               bodyReady: snapshot.bodyReady,
               scope: catalog.document.scope,
               connectionStatus: connectionStatusRef.current,
-              latestRevisionId: latestRevisionIdRef.current,
+              latestRevisionId,
             });
           },
         });
@@ -202,46 +214,72 @@ export function MarkdownDocumentRoute({
       updatedAt: null,
     });
   }, [config.documentId, mode, routeState]);
+  const routeTitle = routeState.kind === "ready" ? routeState.title : null;
+
+  useEffect(() => {
+    if (!routeTitle || typeof document === "undefined") {
+      return;
+    }
+    document.title = markdownDocumentBrowserTitle(routeTitle);
+  }, [routeTitle]);
+
+  const saveMarkdownDocumentTitle = useCallback(
+    async (nextTitle: string): Promise<boolean> => {
+      if (routeState.kind !== "ready" || routeState.scope === "viewer" || markdownTitleSaving) {
+        return false;
+      }
+
+      try {
+        setMarkdownTitleSaving(true);
+        setMarkdownTitleError(null);
+        const response = await fetchWithCloudPrototypeAuth(
+          new URL(config.catalogEndpoint, window.location.origin).href,
+          {
+            method: "PATCH",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ title: nextTitle.trim() || null }),
+          },
+          authState.mode === "dev" ? { ...authState, requestedScope: "editor" } : authState,
+        );
+        if (!response.ok) {
+          throw await cloudResponseError(response, "Unable to rename Markdown document");
+        }
+        const body = (await response.json()) as MarkdownDocumentMetadataUpdateResponse;
+        if (body.ok !== true || body.document_id !== config.documentId) {
+          throw new Error("Unable to rename Markdown document: response shape was invalid");
+        }
+        const displayTitle = body.title?.trim() || "Untitled Markdown";
+        syncControllerRef.current?.editTitle(displayTitle);
+        setRouteState((current) =>
+          current.kind === "ready" ? { ...current, title: displayTitle } : current,
+        );
+        if (body.viewer_url) {
+          const nextHref = cloudDocumentUrlAfterRename({
+            currentHref: window.location.href,
+            routePrefix: "/m",
+            viewerUrl: body.viewer_url,
+          });
+          if (nextHref !== window.location.href) {
+            window.history.replaceState(window.history.state, "", nextHref);
+          }
+        }
+        return true;
+      } catch (error) {
+        setMarkdownTitleError(error instanceof Error ? error.message : String(error));
+        return false;
+      } finally {
+        setMarkdownTitleSaving(false);
+      }
+    },
+    [authState, config.catalogEndpoint, config.documentId, markdownTitleSaving, routeState],
+  );
 
   const onEditorValueChange = useCallback((nextBody: string) => {
     syncControllerRef.current?.editBody(nextBody);
-    setPublishStatus((current) =>
-      current.kind === "published" ? { kind: "idle", message: "Unpublished changes." } : current,
-    );
   }, []);
-
-  const publishMarkdownDocumentSnapshot = useCallback(async () => {
-    const controller = syncControllerRef.current;
-    if (!controller || routeState.kind !== "ready") {
-      setPublishStatus({
-        kind: "error",
-        message: "Markdown document is still connecting. Try publishing again in a moment.",
-      });
-      return;
-    }
-    const hadPublicVersion = latestRevisionIdRef.current !== null;
-    setPublishStatus({
-      kind: "publishing",
-      message: hadPublicVersion ? "Updating public version..." : "Publishing Markdown document...",
-    });
-    try {
-      const snapshot = await controller.publishSnapshot();
-      latestRevisionIdRef.current = snapshot.revisionId;
-      setRouteState((current) =>
-        current.kind === "ready" ? { ...current, latestRevisionId: snapshot.revisionId } : current,
-      );
-      setPublishStatus({
-        kind: "published",
-        message: hadPublicVersion ? "Public version updated." : "Public version saved.",
-        revisionId: snapshot.revisionId,
-      });
-    } catch (error) {
-      setPublishStatus({
-        kind: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }, [routeState.kind]);
 
   useEffect(() => {
     if (routeState.kind !== "ready" || mode !== "edit") {
@@ -261,17 +299,6 @@ export function MarkdownDocumentRoute({
     });
   }, [mode, routeState]);
 
-  if (routeState.kind === "loading") {
-    return (
-      <main className="cloud-markdown-shell">
-        <div className="cloud-state" data-kind="loading">
-          <Loader2 aria-hidden="true" />
-          Opening Markdown document
-        </div>
-      </main>
-    );
-  }
-
   if (routeState.kind === "error" || !projection) {
     return (
       <main className="cloud-markdown-shell">
@@ -285,8 +312,8 @@ export function MarkdownDocumentRoute({
   const canEdit = projection.canEdit && routeState.bodyReady;
   const canManageSharing =
     projection.canShare && config.hostCapabilities?.canManageSharing !== false;
-  const canPublish = projection.canPublish && config.hostCapabilities?.canPublish !== false;
   const activeMode = projection.mode;
+  const markdownTitle = markdownDocumentTitleDisplay(projection.title, projection.access);
   const shellCapabilities = markdownDocumentShellCapabilities({
     access: routeState.scope,
     authState,
@@ -297,7 +324,6 @@ export function MarkdownDocumentRoute({
   const connectionCopy = markdownConnectionCopy(routeState.connectionStatus, routeState.bodyReady);
   const publicLink =
     typeof window === "undefined" ? "" : `${window.location.origin}${window.location.pathname}`;
-  const publishCopy = publishStatus.message;
   const markdownOutline = (
     <NotebookOutlinePanel
       items={markdownOutlineItems(projection)}
@@ -345,53 +371,49 @@ export function MarkdownDocumentRoute({
       capabilities={shellCapabilities}
       frameClassName="z-20"
       headerClassName="cloud-room-toolbar cloud-markdown-room-toolbar"
-      presence={<MarkdownDocumentTitle title={projection.title} access={projection.access} />}
+      presence={
+        <DocumentTitle
+          title={markdownTitle}
+          renameTitle={projection.title === "Untitled Markdown" ? "" : projection.title}
+          canRename={projection.canEdit}
+          renameSaving={markdownTitleSaving}
+          renameError={markdownTitleError}
+          onRename={saveMarkdownDocumentTitle}
+          homeHref="/m"
+          homeAriaLabel="Open Markdown documents"
+          homeTitle="Markdown documents"
+          homeIcon={<House aria-hidden="true" />}
+          inputAriaLabel="Markdown document title"
+          inputName="markdown-document-title"
+          placeholder="Untitled Markdown"
+          renameButtonTitle="Rename Markdown document"
+          classNames={{
+            ...cloudNotebookTitleClassNames,
+            group: "cloud-notebook-title-group cloud-markdown-title-group",
+          }}
+        />
+      }
       utilityControls={
         <MarkdownDocumentModeToggle mode={activeMode} canEdit={canEdit} onModeChange={setMode} />
       }
       sharingControls={
         canManageSharing ? (
-          <>
-            <MarkdownSharingControls
-              aclEndpoint={config.aclEndpoint}
-              authState={authState}
-              publicLink={publicLink}
-            />
-            {canPublish ? (
-              <button
-                type="button"
-                className="markdown-document-toolbar-action"
-                disabled={publishStatus.kind === "publishing" || !routeState.bodyReady}
-                onClick={() => void publishMarkdownDocumentSnapshot()}
-              >
-                {publishStatus.kind === "publishing" ? (
-                  <Loader2 aria-hidden="true" />
-                ) : (
-                  <Globe2 aria-hidden="true" />
-                )}
-                <span>{projection.isPublished ? "Update public version" : "Publish"}</span>
-              </button>
-            ) : null}
-          </>
+          <MarkdownSharingControls
+            aclEndpoint={config.aclEndpoint}
+            authState={authState}
+            publicLink={publicLink}
+          />
         ) : null
       }
     />
   );
-  const notices =
-    connectionCopy || publishCopy ? (
-      <NotebookNoticeStack>
-        {connectionCopy ? (
-          <NotebookNotice tone="warning" title="Sync">
-            {connectionCopy}
-          </NotebookNotice>
-        ) : null}
-        {publishCopy ? (
-          <NotebookNotice tone={publishNoticeTone(publishStatus.kind)} title="Markdown">
-            {publishCopy}
-          </NotebookNotice>
-        ) : null}
-      </NotebookNoticeStack>
-    ) : null;
+  const notices = connectionCopy ? (
+    <NotebookNoticeStack>
+      <NotebookNotice tone="warning" title="Sync">
+        {connectionCopy}
+      </NotebookNotice>
+    </NotebookNoticeStack>
+  ) : null;
 
   return (
     <NotebookDocumentShell
@@ -439,31 +461,72 @@ function initialMarkdownRailCollapsed(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 599.98px)").matches;
 }
 
-function MarkdownDocumentTitle({
-  title,
-  access,
-}: {
-  title: string;
-  access: MarkdownDocumentProjection["access"];
-}) {
-  return (
-    <div className="cloud-notebook-title-group cloud-markdown-title-group">
-      <a
-        className="cloud-notebook-home-link"
-        href="/m"
-        aria-label="Open Markdown documents"
-        title="Markdown documents"
-      >
-        <House aria-hidden="true" />
-      </a>
-      <div className="cloud-notebook-title" title={title}>
-        <div className="cloud-notebook-title-static">
-          <span>{title}</span>
-        </div>
-        <small>{markdownTitleDetail(access)}</small>
-      </div>
-    </div>
-  );
+function initialMarkdownDocumentRouteState(config: CloudMarkdownDocumentConfig): RouteState {
+  const bootstrap = config.bootstrap;
+  if (bootstrap) {
+    return {
+      kind: "ready",
+      title: bootstrap.title?.trim() || "Untitled Markdown",
+      body: "",
+      bodyReady: false,
+      scope: bootstrap.scope,
+      connectionStatus: "connecting",
+      latestRevisionId: bootstrap.latest_revision_id,
+    };
+  }
+  return {
+    kind: "ready",
+    title: markdownDocumentRouteTitle(),
+    body: "",
+    bodyReady: false,
+    scope: "viewer",
+    connectionStatus: "connecting",
+    latestRevisionId: null,
+  };
+}
+
+function markdownCatalogFromBootstrap(
+  config: CloudMarkdownDocumentConfig,
+): MarkdownCatalogResponse | null {
+  const bootstrap = config.bootstrap;
+  if (!bootstrap) {
+    return null;
+  }
+  return {
+    document: {
+      document_id: config.documentId,
+      title: bootstrap.title,
+      body_doc_id: bootstrap.body_doc_id,
+      scope: bootstrap.scope,
+      updated_at: bootstrap.updated_at,
+      latest_revision_id: bootstrap.latest_revision_id,
+    },
+  };
+}
+
+function markdownDocumentRouteTitle(): string {
+  if (typeof window === "undefined") {
+    return "Markdown document";
+  }
+  const pathParts = window.location.pathname.split("/").filter(Boolean);
+  const routeSlug = pathParts[0] === "m" ? pathParts[2] : null;
+  return notebookRouteSegmentTitle(routeSlug) ?? "Markdown document";
+}
+
+function markdownDocumentTitleDisplay(
+  title: string,
+  access: MarkdownDocumentProjection["access"],
+): CloudNotebookTitleDisplay {
+  return {
+    label: title,
+    detail: markdownTitleDetail(access),
+    title,
+  };
+}
+
+function markdownDocumentBrowserTitle(title: string): string {
+  const displayTitle = title.trim() || "Untitled Markdown";
+  return `nteract Markdown: ${displayTitle}`;
 }
 
 function markdownDocumentShellCapabilities({
@@ -544,16 +607,6 @@ function markdownTitleDetail(access: MarkdownDocumentProjection["access"]): stri
     return "Markdown document · Viewer";
   }
   return "Markdown document";
-}
-
-function publishNoticeTone(kind: PublishStatus["kind"]) {
-  if (kind === "published") {
-    return "success";
-  }
-  if (kind === "error") {
-    return "error";
-  }
-  return "info";
 }
 
 async function fetchMarkdownCatalog(

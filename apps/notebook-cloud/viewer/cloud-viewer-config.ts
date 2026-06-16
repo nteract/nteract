@@ -4,6 +4,7 @@ import { isCloudMarkdownDocumentListItem } from "./markdown-document-dashboard";
 import { isCloudNotebookListItem } from "./notebook-dashboard";
 import { normalizeOidcAuthConfig, type CloudOidcAuthConfig } from "./oidc-auth";
 import type {
+  CloudMarkdownDocumentBootstrap,
   CloudMarkdownDocumentConfig,
   CloudMarkdownDocumentListBootstrap,
   CloudNotebookListBootstrap,
@@ -137,6 +138,7 @@ export function loadMarkdownDocumentConfig(): CloudMarkdownDocumentConfig | null
       syncEndpoint: parsed.syncEndpoint,
       runtimedWasmModulePath: parsed.runtimedWasmModulePath,
       runtimedWasmPath: parsed.runtimedWasmPath,
+      bootstrap: isCloudMarkdownDocumentBootstrap(parsed.bootstrap) ? parsed.bootstrap : null,
       session: isCloudAppSession(parsed.session) ? parsed.session : null,
       hostCapabilities: {
         canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
@@ -240,6 +242,20 @@ export function isMarkdownDocumentListPath(): boolean {
 
 export function isMarkdownDocumentRoutePath(): boolean {
   return /^\/m\/[^/]+(?:\/.*)?\/?$/.test(window.location.pathname);
+}
+
+function isCloudMarkdownDocumentBootstrap(value: unknown): value is CloudMarkdownDocumentBootstrap {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<CloudMarkdownDocumentBootstrap>;
+  return (
+    typeof candidate.body_doc_id === "string" &&
+    typeof candidate.updated_at === "string" &&
+    (candidate.title === null || typeof candidate.title === "string") &&
+    (candidate.scope === "owner" || candidate.scope === "editor" || candidate.scope === "viewer") &&
+    (candidate.latest_revision_id === null || typeof candidate.latest_revision_id === "string")
+  );
 }
 
 function isCloudNotebookListBootstrap(value: unknown): value is CloudNotebookListBootstrap {

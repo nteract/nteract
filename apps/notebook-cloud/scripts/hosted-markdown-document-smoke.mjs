@@ -67,7 +67,6 @@ async function main() {
   const checks = [];
   const timingsMs = {};
   const startedAt = performance.now();
-  let snapshotUrl = null;
 
   instrumentPage({ page, failures, visitedUrls });
 
@@ -166,32 +165,6 @@ async function main() {
     });
     checks.push("principal_access_granted_from_share_panel");
 
-    await timed(timingsMs, "publish_document", async () => {
-      const [response] = await Promise.all([
-        page.waitForResponse(
-          (candidate) =>
-            candidate.request().method() === "PUT" &&
-            /\/api\/m\/[^/]+\/snapshots\/heads-/.test(new URL(candidate.url()).pathname),
-          { timeout: timeoutMs },
-        ),
-        page.getByRole("button", { name: /^Publish$/ }).click({ timeout: timeoutMs }),
-      ]);
-      snapshotUrl = response.url();
-      if (response.status() !== 201) {
-        throw new Error(`Markdown publish returned HTTP ${response.status()}`);
-      }
-      await waitForPageText(page, "Public version saved.", "publish notice");
-      await page.getByRole("button", { name: "Update public version" }).waitFor({
-        timeout: timeoutMs,
-      });
-    });
-    checks.push("markdown_document_published");
-
-    const snapshotCheck = await timed(timingsMs, "anonymous_snapshot_read", () =>
-      readPublishedSnapshot(snapshotUrl),
-    );
-    checks.push("published_snapshot_read_without_browser_credentials");
-
     if (screenshotPath) {
       await saveSmokeScreenshot(page, screenshotPath);
       checks.push("screenshot_saved");
@@ -211,11 +184,9 @@ async function main() {
       ok: true,
       baseUrl,
       documentUrl,
-      snapshotUrl,
       title: smokeTitle,
       sharePrincipal,
       checks,
-      snapshot: snapshotCheck,
       timings_ms: {
         ...timingsMs,
         total: elapsedMs(startedAt),
@@ -357,29 +328,6 @@ async function assertResponsiveMarkdownRoute(page) {
       `Markdown route has horizontal overflow:\n${JSON.stringify(failures, null, 2)}`,
     );
   }
-}
-
-async function readPublishedSnapshot(url) {
-  if (!url) {
-    throw new Error("Markdown publish did not record a snapshot URL");
-  }
-  const response = await fetch(url, { headers: { Accept: "application/octet-stream" } });
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (response.status !== 200) {
-    throw new Error(`anonymous Markdown snapshot GET returned HTTP ${response.status}`);
-  }
-  if (bytes.byteLength === 0) {
-    throw new Error("published Markdown snapshot was empty");
-  }
-  const cacheControl = response.headers.get("cache-control") ?? "";
-  if (!cacheControl.includes("immutable")) {
-    throw new Error(`published Markdown snapshot was not immutable: ${cacheControl}`);
-  }
-  return {
-    status: response.status,
-    byteLength: bytes.byteLength,
-    cacheControl,
-  };
 }
 
 function instrumentPage({ page, failures, visitedUrls }) {
