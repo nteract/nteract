@@ -127,7 +127,7 @@ nix = { version = "0.31", features = ["signal", "process"] }
 build-metadata = { path = "../build-metadata" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

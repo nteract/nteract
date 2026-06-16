@@ -6,6 +6,7 @@
 //! UUID. The document bytes themselves are keyed by `comments_doc_id`.
 
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -20,6 +21,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 const INDEX_FILE: &str = "index.json";
+const INDEX_LOCK_FILE: &str = ".index.lock";
 const INDEX_VERSION: u32 = 1;
 pub(crate) const COMMENTS_DOC_ACTOR: &str = COMMENTS_DOC_DEFAULT_ACTOR;
 
@@ -190,6 +192,7 @@ impl CommentsSidecarStore {
         let _guard = lock.lock().map_err(|_| {
             anyhow::anyhow!("comments index lock poisoned for {}", self.root.display())
         })?;
+        let _file_lock = IndexFileLock::acquire(&self.root)?;
         let mut index = self.load_index()?;
         let result = f(&mut index)?;
         self.save_index(&index)?;
@@ -225,14 +228,105 @@ impl CommentsSidecarStore {
 }
 
 fn index_lock_for_root(root: &Path) -> anyhow::Result<Arc<Mutex<()>>> {
+    std::fs::create_dir_all(root)
+        .with_context(|| format!("create comments index root {}", root.display()))?;
+    let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let locks = INDEX_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut locks = locks
         .lock()
         .map_err(|_| anyhow::anyhow!("comments index lock registry poisoned"))?;
     Ok(locks
-        .entry(root.to_path_buf())
+        .entry(key)
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone())
+}
+
+struct IndexFileLock {
+    file: File,
+    lock_path: PathBuf,
+}
+
+impl IndexFileLock {
+    fn acquire(root: &Path) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(root)
+            .with_context(|| format!("create comments index root {}", root.display()))?;
+        let lock_path = root.join(INDEX_LOCK_FILE);
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("open comments index lock {}", lock_path.display()))?;
+
+        lock_index_file(&file, &lock_path)?;
+
+        Ok(Self { file, lock_path })
+    }
+}
+
+impl Drop for IndexFileLock {
+    fn drop(&mut self) {
+        unlock_index_file(&self.file, &self.lock_path);
+    }
+}
+
+#[cfg(unix)]
+fn lock_index_file(file: &File, lock_path: &Path) -> anyhow::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    loop {
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if result == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(err)
+            .with_context(|| format!("acquire comments index lock {}", lock_path.display()));
+    }
+}
+
+#[cfg(unix)]
+fn unlock_index_file(file: &File, _lock_path: &Path) {
+    use std::os::fd::AsRawFd;
+
+    unsafe {
+        let _ = libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+    }
+}
+
+#[cfg(windows)]
+fn lock_index_file(file: &File, lock_path: &Path) -> anyhow::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK};
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let handle = file.as_raw_handle() as HANDLE;
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    let result = unsafe { LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &mut overlapped) };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("acquire comments index lock {}", lock_path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn unlock_index_file(file: &File, _lock_path: &Path) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let handle = file.as_raw_handle() as HANDLE;
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    unsafe {
+        let _ = UnlockFileEx(handle, 0, 1, 0, &mut overlapped);
+    }
 }
 
 pub(crate) fn comments_locator_for_room(uuid: Uuid, path: Option<&Path>) -> CommentsLocator {
@@ -331,6 +425,19 @@ mod tests {
         assert_eq!(store.resolve_doc_id(&path_locator).unwrap(), path_id);
         assert_eq!(store.resolve_doc_id(&room_locator).unwrap(), room_id);
         assert!(store.root().join(INDEX_FILE).exists());
+        assert!(store.root().join(INDEX_LOCK_FILE).exists());
+    }
+
+    #[test]
+    fn index_lock_for_root_normalizes_equivalent_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("comments");
+        let dotted = root.join(".");
+
+        let root_lock = index_lock_for_root(&root).unwrap();
+        let dotted_lock = index_lock_for_root(&dotted).unwrap();
+
+        assert!(Arc::ptr_eq(&root_lock, &dotted_lock));
     }
 
     #[test]
