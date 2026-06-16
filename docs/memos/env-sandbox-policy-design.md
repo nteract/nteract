@@ -252,3 +252,35 @@ but does not cause an error or prompt.
 Only locally user-created packs may be referenced this way. There is no
 registry resolution and no remote pack fetching. A notebook cannot reference
 a pack that the user has not already explicitly created on their machine.
+
+---
+
+## Out of Scope
+
+### Deno kernel sandboxing
+
+This memo covers Python environment builds only. Deno is used in nteract as a
+kernel runtime for TypeScript/JavaScript notebooks, not as a package manager
+that nteract orchestrates. Deno has a first-class native permission model
+(`--allow-net`, `--allow-read`, `--allow-write`, `--allow-run`, etc.) that is
+the appropriate control plane for Deno execution sandboxing. nteract notebooks
+already carry `metadata.runt.deno.permissions` for this purpose.
+
+Deno package management (`npm:` imports, JSR) is handled by Deno itself at
+runtime, not by a separate install step that nteract runs, so the env-build
+sandbox described in this memo does not apply. Deno execution sandboxing is a
+separate concern and belongs in a future design covering runtime sandboxing
+(`nteract/runtime-*` packs), where the design would map nteract sandbox modes
+to sensible default Deno permission flags.
+
+### Registry-based packs
+
+This design restricts per-notebook pack references to locally user-created
+packs only. A natural future extension is registry-based packs, where an
+organisation publishes a named pack to a nono registry (e.g.
+`my-org/data-science`) and notebooks reference it by that name. This would
+require a publisher allowlist in the machine policy, pack signing and
+attestation infrastructure, and a trust decision flow for unknown publishers.
+That complexity is out of scope for this iteration. The pack namespace
+(`nteract/env-*`, `nteract/runtime-*`) is designed to accommodate registry
+publishers without renaming when that feature arrives.
