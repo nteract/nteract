@@ -361,6 +361,7 @@ body {
 
 .cloud-notebook-title-edit-button:focus-visible,
 .cloud-notebook-title-form button:focus-visible,
+.cloud-notebook-title-form [contenteditable="true"]:focus-visible,
 .cloud-notebook-title-form input:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--ring) 70%, transparent);
   outline-offset: 2px;
@@ -378,18 +379,28 @@ body {
   height: 0.9375rem;
 }
 
+.cloud-notebook-title-form [contenteditable="true"],
 .cloud-notebook-title-form input {
   min-width: 7rem;
   width: min(18rem, 32vw);
-  max-width: 100%;
-  height: 1.875rem;
+  max-width: min(100%, 32rem);
+  min-height: 1.875rem;
   border: 1px solid color-mix(in srgb, var(--foreground) 18%, transparent);
   border-radius: 6px;
-  padding: 0 0.5rem;
+  padding: 0.1875rem 0.5rem;
   color: var(--foreground);
   background: color-mix(in srgb, var(--background) 94%, var(--foreground) 6%);
   font-size: 0.875rem;
   font-weight: 600;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.cloud-notebook-title-form [contenteditable="true"]:empty::before {
+  content: attr(data-placeholder);
+  color: color-mix(in srgb, var(--foreground) 42%, transparent);
 }
 
 .cloud-notebook-title-spinner {
@@ -719,6 +730,7 @@ body {
   gap: 0.5rem;
 }
 
+.cloud-notebook-list-actions a,
 .cloud-notebook-list-actions button,
 .cloud-notebook-list-actions .cloud-sign-in-button {
   display: inline-flex;
@@ -732,8 +744,10 @@ body {
   color: var(--foreground);
   background: color-mix(in srgb, var(--background) 94%, var(--foreground) 6%);
   font-size: 0.875rem;
+  text-decoration: none;
 }
 
+.cloud-notebook-list-actions a:hover,
 .cloud-notebook-list-actions button:hover,
 .cloud-notebook-list-actions .cloud-sign-in-button:hover {
   background: color-mix(in srgb, var(--background) 86%, var(--foreground) 10%);
@@ -2121,6 +2135,52 @@ body {
   }
 }
 
+.cloud-dashboard-shell {
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  gap: 1rem;
+  min-height: 100vh;
+  padding: clamp(1rem, 4vw, 2rem);
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.cloud-dashboard-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  width: min(100%, 56rem);
+}
+
+.cloud-dashboard-header h1,
+.cloud-dashboard-header p {
+  margin: 0;
+}
+
+.cloud-dashboard-header h1 {
+  margin-top: 0.25rem;
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  font-weight: 740;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.cloud-dashboard-header p,
+.cloud-dashboard-eyebrow {
+  color: color-mix(in srgb, var(--foreground) 62%, transparent);
+  font-size: 0.875rem;
+  line-height: 1.35;
+}
+
+.cloud-dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 .cloud-document-list {
   display: grid;
   gap: 0.5rem;
@@ -2217,6 +2277,19 @@ body {
   font: inherit;
   font-size: 0.8125rem;
   font-weight: 620;
+  text-decoration: none;
+}
+
+.cloud-dashboard-create-actions button:hover,
+.cloud-dashboard-button:hover,
+.cloud-dashboard-secondary-action:hover {
+  background: color-mix(in srgb, var(--background) 88%, var(--foreground) 10%);
+}
+
+.cloud-dashboard-button svg,
+.cloud-dashboard-secondary-action svg {
+  width: 0.9375rem;
+  height: 0.9375rem;
 }
 
 .cloud-dashboard-secondary-action {
@@ -2250,6 +2323,15 @@ body {
 }
 
 @media (max-width: 599.98px) {
+  .cloud-dashboard-header {
+    display: grid;
+    align-items: start;
+  }
+
+  .cloud-dashboard-actions {
+    justify-content: flex-start;
+  }
+
   .cloud-markdown-room-toolbar [data-slot="notebook-document-header-presence"] {
     flex-basis: auto;
     max-width: none;

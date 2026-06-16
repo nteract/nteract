@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { FileText, Loader2, Plus, RotateCcw } from "lucide-react";
+import { BookOpen, FileText, Loader2, Plus, RotateCcw } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import {
   clearCloudPrototypeDevAuth,
@@ -198,7 +198,15 @@ export function CloudMarkdownDocumentListView({
           </p>
         </div>
         <div className="cloud-dashboard-actions">
-          <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+          <a className="cloud-dashboard-button" href="/n">
+            <BookOpen aria-hidden="true" />
+            Notebooks
+          </a>
+          <CloudNotebookSignInButton
+            authConfig={authConfig}
+            authState={authState}
+            documentLabel="document"
+          />
           {signedIn ? (
             <>
               <button type="button" className="cloud-dashboard-button" onClick={refreshList}>

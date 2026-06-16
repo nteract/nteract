@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   ArrowUpRight,
+  FileText,
   KeyRound,
   LogIn,
   LogOut,
@@ -149,6 +150,10 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
 
           <div className="cloud-home-actions">
             <a href="/n">View notebooks</a>
+            <a href="/m">
+              View Markdown docs
+              <FileText aria-hidden="true" />
+            </a>
             <a href="https://nteract.io/" target="_blank" rel="noreferrer">
               Visit nteract.io
               <ArrowUpRight aria-hidden="true" />

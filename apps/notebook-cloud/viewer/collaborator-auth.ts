@@ -372,6 +372,7 @@ export function cloudNotebookSignInCopy(
   state: CloudPrototypeAuthState,
   action: CloudNotebookSignInAction,
   error: string | null = null,
+  documentLabel = "notebook",
 ): CloudNotebookSignInCopy {
   if (error) {
     return {
@@ -388,7 +389,7 @@ export function cloudNotebookSignInCopy(
   if (state.mode === "oidc_expired") {
     return {
       label: "Sign in again",
-      title: "Renew your sign-in for this notebook",
+      title: `Renew your sign-in for this ${documentLabel}`,
     };
   }
   if (state.mode === "invalid") {

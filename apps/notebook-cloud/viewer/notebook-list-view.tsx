@@ -3,6 +3,7 @@ import {
   AlertCircle,
   ArrowUpRight,
   BookOpen,
+  FileText,
   FilePlus2,
   Loader2,
   LogOut,
@@ -317,6 +318,10 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
           <p>{headerDetail}</p>
         </div>
         <div className="cloud-notebook-list-actions">
+          <a href="/m">
+            <FileText aria-hidden="true" />
+            Markdown docs
+          </a>
           {signedIn ? (
             <>
               <button type="button" disabled={listState.kind === "loading"} onClick={refreshList}>

@@ -1,4 +1,13 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { Check, Loader2, PencilLine, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -56,6 +65,7 @@ export function DocumentTitle({
 }: DocumentTitleProps) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(renameTitle);
+  const editableRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
     if (!editing) {
@@ -63,12 +73,20 @@ export function DocumentTitle({
     }
   }, [editing, renameTitle]);
 
-  const saveRename = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  useLayoutEffect(() => {
+    if (!editing || !editableRef.current) {
+      return;
+    }
+    const editable = editableRef.current;
+    editable.focus();
+    placeCaretAtEnd(editable);
+  }, [editing]);
+
+  const commitRename = (titleDraft = draftTitle) => {
     if (!onRename || renameSaving) {
       return;
     }
-    void Promise.resolve(onRename(draftTitle))
+    void Promise.resolve(onRename(normalizeTitleDraft(titleDraft)))
       .then((saved) => {
         if (saved) {
           setEditing(false);
@@ -77,12 +95,46 @@ export function DocumentTitle({
       .catch(() => {});
   };
 
+  const saveRename = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    commitRename(updateDraftFromEditable());
+  };
+
   const cancelRename = () => {
     if (renameSaving) {
       return;
     }
     setDraftTitle(renameTitle);
     setEditing(false);
+  };
+
+  const updateDraftFromEditable = (): string => {
+    const nextTitle = editableTitleDraft(editableRef.current?.textContent ?? "");
+    if ((editableRef.current?.textContent ?? "") !== nextTitle && editableRef.current) {
+      editableRef.current.textContent = nextTitle;
+      placeCaretAtEnd(editableRef.current);
+    }
+    setDraftTitle(nextTitle);
+    return nextTitle;
+  };
+
+  const handleEditableKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitRename(updateDraftFromEditable());
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelRename();
+    }
+  };
+
+  const handleEditablePaste = (event: ClipboardEvent<HTMLSpanElement>) => {
+    event.preventDefault();
+    const text = normalizeTitleDraft(event.clipboardData.getData("text/plain"));
+    insertPlainTextAtSelection(event.currentTarget, text);
+    updateDraftFromEditable();
   };
 
   return (
@@ -100,17 +152,22 @@ export function DocumentTitle({
       <div className={cn("document-title", classNames?.title)} title={renameError ?? title.title}>
         {editing ? (
           <form className={cn("document-title-form", classNames?.form)} onSubmit={saveRename}>
-            <input
+            <span
               aria-label={inputAriaLabel}
-              autoFocus
-              disabled={renameSaving}
-              maxLength={160}
-              name={inputName}
-              placeholder={placeholder}
-              type="text"
-              value={draftTitle}
-              onChange={(event) => setDraftTitle(event.currentTarget.value)}
-            />
+              aria-disabled={renameSaving}
+              contentEditable={!renameSaving}
+              data-name={inputName}
+              data-placeholder={placeholder}
+              onInput={updateDraftFromEditable}
+              onKeyDown={handleEditableKeyDown}
+              onPaste={handleEditablePaste}
+              ref={editableRef}
+              role="textbox"
+              spellCheck="true"
+              suppressContentEditableWarning
+            >
+              {draftTitle}
+            </span>
             <button
               type="submit"
               disabled={renameSaving}
@@ -163,4 +220,39 @@ export function DocumentTitle({
       </div>
     </div>
   );
+}
+
+function normalizeTitleDraft(value: string): string {
+  return editableTitleDraft(value).trim();
+}
+
+function editableTitleDraft(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").slice(0, 160);
+}
+
+function placeCaretAtEnd(editable: HTMLElement): void {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+  const range = document.createRange();
+  range.selectNodeContents(editable);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function insertPlainTextAtSelection(editable: HTMLElement, text: string): void {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !editable.contains(selection.anchorNode)) {
+    editable.textContent = editableTitleDraft(`${editable.textContent ?? ""}${text}`);
+    placeCaretAtEnd(editable);
+    return;
+  }
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
+  range.insertNode(document.createTextNode(text));
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }

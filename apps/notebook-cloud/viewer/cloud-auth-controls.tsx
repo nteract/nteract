@@ -23,10 +23,12 @@ export function cloudNotebookSignInLabel(authConfig: CloudViewerAuthConfig): str
 export function CloudNotebookSignInButton({
   authConfig,
   authState,
+  documentLabel = "notebook",
   idleLabel,
 }: {
   authConfig: CloudViewerAuthConfig;
   authState: CloudPrototypeAuthState;
+  documentLabel?: string;
   idleLabel?: string;
 }) {
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
@@ -41,7 +43,7 @@ export function CloudNotebookSignInButton({
   if (!useLocalDevAuth && !useOidcAuth) {
     return null;
   }
-  const copy = cloudNotebookSignInCopy(authState, authAction, error);
+  const copy = cloudNotebookSignInCopy(authState, authAction, error, documentLabel);
   const label =
     authAction === "idle" && !error
       ? (idleLabel ?? cloudNotebookSignInLabel(authConfig))
