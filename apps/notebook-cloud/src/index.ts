@@ -119,6 +119,8 @@ import {
   getPrincipalProfile,
   getPrincipalProfiles,
   getPrincipalProfilesForVerifiedEmail,
+  getPendingMarkdownDocumentInvitesForLogin,
+  getPendingNotebookInvitesForLogin,
   createPendingMarkdownDocumentInvite,
   listNotebookInvites,
   listMarkdownDocumentInvites,
@@ -292,12 +294,12 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: exactPath("/n", "/n/"),
     methods: ["GET", "HEAD"],
-    handler: (_match, request, env, ctx) => notebookListViewer(request, env, ctx),
+    handler: (_match, request, env) => notebookListViewer(request, env),
   },
   {
     match: exactPath("/m", "/m/"),
     methods: ["GET", "HEAD"],
-    handler: (_match, request, env, ctx) => markdownDocumentListViewer(request, env, ctx),
+    handler: (_match, request, env) => markdownDocumentListViewer(request, env),
   },
   {
     match: exactPath("/oidc"),
@@ -5607,8 +5609,22 @@ async function syncStoredAppSessionProfile(env: Env, session: CloudAppSession): 
       emailVerified: true,
       displayName: session.displayName ?? profile.display_name,
     };
-    const notebookResolution = await resolveNotebookInvitesForLogin(env, loginProfile);
-    const markdownResolution = await resolveMarkdownDocumentInvitesForLogin(env, loginProfile);
+    const [pendingNotebookInvites, pendingMarkdownDocumentInvites] = await Promise.all([
+      getPendingNotebookInvitesForLogin(env, loginProfile),
+      getPendingMarkdownDocumentInvitesForLogin(env, loginProfile),
+    ]);
+    if (pendingNotebookInvites.length === 0 && pendingMarkdownDocumentInvites.length === 0) {
+      return;
+    }
+
+    const [notebookResolution, markdownResolution] = await Promise.all([
+      pendingNotebookInvites.length > 0
+        ? resolveNotebookInvitesForLogin(env, loginProfile)
+        : Promise.resolve({ acceptedInvites: [], aclGrants: [] }),
+      pendingMarkdownDocumentInvites.length > 0
+        ? resolveMarkdownDocumentInvitesForLogin(env, loginProfile)
+        : Promise.resolve({ acceptedInvites: [], aclGrants: [] }),
+    ]);
     logInviteResolutionCompleted({
       principal: session.principal,
       provider: profile.provider,
@@ -5948,16 +5964,12 @@ function rootNotebookListRedirect(request: Request): Response {
   return Response.redirect(url.toString(), 302);
 }
 
-async function notebookListViewer(
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-): Promise<Response> {
+async function notebookListViewer(request: Request, env: Env): Promise<Response> {
   if (request.method === "HEAD") {
     return viewerShellHead(env);
   }
 
-  const bootstrap = await notebookListBootstrap(request, env, ctx);
+  const bootstrap = await notebookListBootstrap(request, env);
   const resourceHints = notebookListBootstrapHasNotebooks(bootstrap)
     ? {
         notebookRouteAssets: await notebookRouteAssetNames(env),
@@ -5980,16 +5992,12 @@ async function notebookListViewer(
   );
 }
 
-async function markdownDocumentListViewer(
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-): Promise<Response> {
+async function markdownDocumentListViewer(request: Request, env: Env): Promise<Response> {
   if (request.method === "HEAD") {
     return viewerShellHead(env);
   }
 
-  const bootstrap = await markdownDocumentListBootstrap(request, env, ctx);
+  const bootstrap = await markdownDocumentListBootstrap(request, env);
   return responseForRequestMethod(
     request,
     viewerShell(
@@ -6358,7 +6366,6 @@ function viewerShell(
 async function notebookListBootstrap(
   request: Request,
   env: Env,
-  ctx: ExecutionContext,
 ): Promise<Record<string, unknown> | null> {
   if (!env.DB) {
     return null;
@@ -6367,7 +6374,7 @@ async function notebookListBootstrap(
   if (!session) {
     return null;
   }
-  scheduleStoredAppSessionProfileSync(env, ctx, session);
+  await syncStoredAppSessionProfile(env, session);
   const notebooks = await listNotebooksForPrincipal(
     env,
     session.principal,
@@ -6384,7 +6391,6 @@ async function notebookListBootstrap(
 async function markdownDocumentListBootstrap(
   request: Request,
   env: Env,
-  ctx: ExecutionContext,
 ): Promise<Record<string, unknown> | null> {
   if (!env.DB) {
     return null;
@@ -6393,7 +6399,7 @@ async function markdownDocumentListBootstrap(
   if (!session) {
     return null;
   }
-  scheduleStoredAppSessionProfileSync(env, ctx, session);
+  await syncStoredAppSessionProfile(env, session);
   const documents = await listMarkdownDocumentsForPrincipal(
     env,
     session.principal,
@@ -6405,14 +6411,6 @@ async function markdownDocumentListBootstrap(
     documents: markdownDocumentListResponseRows(request, documents, env),
     saved_at: new Date().toISOString(),
   };
-}
-
-function scheduleStoredAppSessionProfileSync(
-  env: Env,
-  ctx: ExecutionContext,
-  session: CloudAppSession,
-): void {
-  ctx.waitUntil(syncStoredAppSessionProfile(env, session));
 }
 
 function notebookListBootstrapHasNotebooks(bootstrap: Record<string, unknown> | null): boolean {

@@ -62,16 +62,20 @@ describe("hosted document app-shell parity", () => {
     assert.doesNotMatch(markdownDocumentRouteSource, /<MarkdownDocumentModeToggle/);
   });
 
-  it("keeps dashboard profile sync off the first HTML response path", () => {
-    assert.match(workerSource, /function scheduleStoredAppSessionProfileSync/);
-    assert.match(workerSource, /ctx\.waitUntil\(syncStoredAppSessionProfile\(env, session\)\)/);
+  it("keeps repeated dashboard profile sync cheap when there are no pending invites", () => {
+    assert.match(workerSource, /getPendingNotebookInvitesForLogin\(env, loginProfile\)/);
+    assert.match(workerSource, /getPendingMarkdownDocumentInvitesForLogin\(env, loginProfile\)/);
     assert.match(
       workerSource,
-      /async function notebookListBootstrap\([\s\S]*scheduleStoredAppSessionProfileSync\(env, ctx, session\);[\s\S]*listNotebooksForPrincipal/,
+      /if \(pendingNotebookInvites\.length === 0 && pendingMarkdownDocumentInvites\.length === 0\) \{[\s\S]*return;[\s\S]*\}/,
     );
     assert.match(
       workerSource,
-      /async function markdownDocumentListBootstrap\([\s\S]*scheduleStoredAppSessionProfileSync\(env, ctx, session\);[\s\S]*listMarkdownDocumentsForPrincipal/,
+      /pendingNotebookInvites\.length > 0[\s\S]*resolveNotebookInvitesForLogin\(env, loginProfile\)/,
+    );
+    assert.match(
+      workerSource,
+      /pendingMarkdownDocumentInvites\.length > 0[\s\S]*resolveMarkdownDocumentInvitesForLogin\(env, loginProfile\)/,
     );
   });
 });
