@@ -157,7 +157,7 @@ export function DocumentTitle({
           onSubmit={saveRename}
         >
           <span
-            aria-disabled={editing ? renameSaving : undefined}
+            aria-disabled={editing && renameSaving ? true : undefined}
             aria-label={editing ? inputAriaLabel : undefined}
             className={cn(!editing && classNames?.staticTitle)}
             contentEditable={editing && !renameSaving}

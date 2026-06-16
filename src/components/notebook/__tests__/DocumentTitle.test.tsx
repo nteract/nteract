@@ -21,6 +21,7 @@ describe("DocumentTitle", () => {
     const editable = screen.getByRole("textbox", { name: "Document title" });
     expect(editable).toBe(titleNode);
     expect(editable).toHaveAttribute("contenteditable", "true");
+    expect(editable).not.toHaveAttribute("aria-disabled");
 
     editable.textContent = "Renamed";
     fireEvent.input(editable);
