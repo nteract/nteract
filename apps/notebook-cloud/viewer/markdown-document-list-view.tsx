@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { BookOpen, FileText, Loader2, Plus, RotateCcw } from "lucide-react";
+import { AlertCircle, BookOpen, FileText, Loader2, LogOut, Plus, RotateCcw } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import {
   clearCloudPrototypeDevAuth,
@@ -205,10 +205,12 @@ export function CloudMarkdownDocumentListView({
   );
 
   return (
-    <main className="cloud-dashboard-shell">
-      <header className="cloud-dashboard-header">
+    <main className="cloud-notebook-list-page cloud-markdown-list-page">
+      <header className="cloud-notebook-list-header">
         <div>
-          <p className="cloud-dashboard-eyebrow">Markdown</p>
+          <a className="cloud-notebook-list-brand" href="/m">
+            Markdown
+          </a>
           <h1>Documents</h1>
           <p>
             {signedIn
@@ -216,8 +218,8 @@ export function CloudMarkdownDocumentListView({
               : "Sign in to open Markdown documents."}
           </p>
         </div>
-        <div className="cloud-dashboard-actions">
-          <a className="cloud-dashboard-button" href="/n">
+        <div className="cloud-notebook-list-actions">
+          <a href="/n">
             <BookOpen aria-hidden="true" />
             Notebooks
           </a>
@@ -230,17 +232,26 @@ export function CloudMarkdownDocumentListView({
           ) : null}
           {signedIn ? (
             <>
-              <button type="button" className="cloud-dashboard-button" onClick={refreshList}>
+              <button type="button" onClick={refreshList}>
                 <RotateCcw aria-hidden="true" />
                 Refresh
               </button>
-              <button
-                type="button"
-                className="cloud-dashboard-button"
-                onClick={() => setCreateOpen(true)}
-              >
+              <button type="button" onClick={() => setCreateOpen(true)}>
                 <Plus aria-hidden="true" />
                 New Markdown
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  clearCloudPrototypeDevAuth(window.localStorage);
+                  clearCachedCloudMarkdownDocumentListFromWindow();
+                  void clearCloudAppSession().finally(() => {
+                    window.location.reload();
+                  });
+                }}
+              >
+                <LogOut aria-hidden="true" />
+                Sign out
               </button>
             </>
           ) : null}
@@ -248,17 +259,24 @@ export function CloudMarkdownDocumentListView({
       </header>
 
       {createOpen ? (
-        <form className="cloud-dashboard-create" onSubmit={createDocument}>
-          <label>
-            <span>Title</span>
+        <>
+          <form className="cloud-new-notebook-form" onSubmit={createDocument}>
+            <label htmlFor="cloud-new-markdown-title">Document title</label>
             <input
+              id="cloud-new-markdown-title"
               value={createTitle}
               onChange={(event) => setCreateTitle(event.target.value)}
               maxLength={160}
               autoFocus
             />
-          </label>
-          <div className="cloud-dashboard-create-actions">
+            <button type="submit" disabled={createState === "starting"}>
+              {createState === "starting" ? (
+                <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+              ) : (
+                <Plus aria-hidden="true" />
+              )}
+              Create
+            </button>
             <button
               type="button"
               onClick={() => setCreateOpen(false)}
@@ -266,28 +284,23 @@ export function CloudMarkdownDocumentListView({
             >
               Cancel
             </button>
-            <button type="submit" disabled={createState === "starting"}>
-              {createState === "starting" ? (
-                <Loader2 aria-hidden="true" />
-              ) : (
-                <Plus aria-hidden="true" />
-              )}
-              Create
-            </button>
-          </div>
+          </form>
           {createError ? (
-            <p className="cloud-state" data-kind="error">
+            <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
               {createError}
-            </p>
+            </div>
           ) : null}
-        </form>
+        </>
       ) : null}
 
-      <section className="cloud-document-list" aria-label="Markdown documents">
+      <section
+        className="cloud-notebook-list-content cloud-document-list"
+        aria-label="Markdown documents"
+      >
         {listState.kind === "loading" ? (
-          <div className="cloud-state" data-kind="loading">
-            <Loader2 aria-hidden="true" />
-            Loading Markdown documents
+          <div className="cloud-notebook-list-state" data-kind="loading" role="status">
+            <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+            <span>Loading Markdown documents</span>
           </div>
         ) : null}
         {listState.kind === "signed_out" ? (
@@ -301,13 +314,15 @@ export function CloudMarkdownDocumentListView({
           />
         ) : null}
         {listState.kind === "error" ? (
-          <div className="cloud-state" data-kind="error">
-            {listState.message}
+          <div className="cloud-notebook-list-state" data-kind="error" role="alert">
+            <AlertCircle aria-hidden="true" />
+            <span>{listState.message}</span>
           </div>
         ) : null}
         {listState.kind === "ready" && sortedDocuments.length === 0 ? (
-          <div className="cloud-state" data-kind="empty">
-            No Markdown documents yet.
+          <div className="cloud-notebook-list-state" data-kind="empty">
+            <FileText aria-hidden="true" />
+            <span>No Markdown documents yet.</span>
           </div>
         ) : null}
         {sortedDocuments.map((document) => (
@@ -326,22 +341,6 @@ export function CloudMarkdownDocumentListView({
           </a>
         ))}
       </section>
-
-      {signedIn ? (
-        <button
-          type="button"
-          className="cloud-dashboard-secondary-action"
-          onClick={() => {
-            clearCloudPrototypeDevAuth(window.localStorage);
-            clearCachedCloudMarkdownDocumentListFromWindow();
-            void clearCloudAppSession().finally(() => {
-              window.location.reload();
-            });
-          }}
-        >
-          Sign out
-        </button>
-      ) : null}
     </main>
   );
 }
