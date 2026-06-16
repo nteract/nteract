@@ -112,7 +112,7 @@ export function projectMarkdownDocument(
     canRenderInHost,
     representation: projectMarkdownDocumentRepresentation({
       canEdit,
-      canRender: canRenderInHost,
+      canRender: true,
       mode,
       requestedRepresentation: input.requestedRepresentation,
     }),
@@ -141,8 +141,7 @@ export function projectMarkdownDocumentRepresentation({
     requestedRepresentation === "split"
       ? requestedRepresentation
       : defaultRepresentation;
-  const active: MarkdownDocumentRepresentation =
-    requested === "split" || (requested === "rendered" && !canRender) ? "source" : requested;
+  const active: MarkdownDocumentRepresentation = requested === "split" ? "source" : requested;
 
   return {
     active,

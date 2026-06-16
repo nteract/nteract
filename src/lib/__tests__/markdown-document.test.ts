@@ -169,6 +169,23 @@ describe("markdown document projection", () => {
     );
   });
 
+  it("keeps rendered representation available for empty documents", () => {
+    const projection = projectDoc({
+      id: "empty-doc",
+      title: "Empty",
+      body: "",
+      access: "owner",
+      requestedMode: "edit",
+      requestedRepresentation: "rendered",
+    });
+
+    expect(projection.markdownPlan).toBeNull();
+    expect(projection.representation.active).toBe("rendered");
+    expect(projection.representation.options.find((option) => option.id === "rendered")).toEqual(
+      expect.objectContaining({ disabled: false, title: "Show rendered Markdown" }),
+    );
+  });
+
   it("normalizes absent title and access", () => {
     const projection = projectDoc({
       id: "01KTMARKDOWNDOC",
