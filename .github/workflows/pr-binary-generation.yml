@@ -96,6 +96,8 @@ jobs:
       # Build wasm + renderer plugins (gitignored; runtimed embeds them).
       # Also handles node + pnpm + vp + pnpm install --frozen-lockfile setup.
       - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          include-mcp-widget: true
 
       - name: Build frontend
         run: pnpm build
@@ -143,12 +145,6 @@ jobs:
 
       - name: Generate icons
         run: cargo xtask icons
-
-      # Build MCP output widget HTML (needed by runt-mcp's include_str!).
-      # build-runtime-artifacts already ran the cargo xtask wasm chain
-      # earlier in this job; this only adds the small _output.html file.
-      - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build external binaries (Unix)
         if: runner.os != 'Windows'

@@ -5,9 +5,10 @@ description: >-
   them on every workflow run.
 
   Idempotent: pnpm install --frozen-lockfile / wasm-pack install /
-  cargo xtask artifacts ensure runtime,sift,renderer tolerate a re-run. Caller
-  is responsible for setting up Rust toolchain + rust-cache before invoking;
-  this action only adds Node, pnpm, wasm-pack, and runs the build.
+  cargo xtask artifacts ensure runtime,sift,renderer and optional mcp-widget
+  builds tolerate a re-run. Caller is responsible for setting up Rust toolchain
+  + rust-cache before invoking; this action only adds Node, pnpm, wasm-pack,
+  and runs the build.
 
   Pass skip-wasm: true when pre-built WASM artifacts have already been
   downloaded from an earlier job (the build-wasm pattern). The downloaded
@@ -28,6 +29,11 @@ inputs:
     description: >-
       Skip WASM + renderer-plugin builds. Use when pre-built artifacts
       have been downloaded from a build-wasm job.
+    required: false
+    default: "false"
+  include-mcp-widget:
+    description: >-
+      Also ensure the MCP output widget artifact used by runt-mcp's include_str!.
     required: false
     default: "false"
 
@@ -106,3 +112,8 @@ runs:
       if: inputs.skip-wasm != 'true'
       shell: bash
       run: cargo xtask artifacts ensure runtime,sift,renderer
+
+    - name: Build MCP output widget artifact
+      if: inputs.include-mcp-widget == 'true'
+      shell: bash
+      run: cargo xtask artifacts ensure mcp-widget

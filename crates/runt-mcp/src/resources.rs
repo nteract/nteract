@@ -19,7 +19,7 @@ const CELLS_MIME_TYPE: &str = "application/json";
 const NOTEBOOK_CONTEXT_PRIORITY: f32 = 0.8;
 
 /// The compiled output renderer HTML, built by `apps/mcp-app/build-html.js`.
-/// Build with: `cd apps/mcp-app && pnpm build`
+/// Build with: `cargo xtask artifacts ensure mcp-widget`
 /// The build script copies the file to `crates/runt-mcp/assets/_output.html`.
 const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
 

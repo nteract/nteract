@@ -1,9 +1,9 @@
 //! Ensure `assets/_output.html` exists so `include_str!` in `resources.rs`
 //! never fails during `cargo check` or `cargo build` in a fresh worktree.
 //!
-//! The real asset is built by `apps/mcp-app/build-html.js` (via `cargo xtask
-//! build` or `pnpm build` in `apps/mcp-app`). This build script only creates
-//! a minimal placeholder when the file is missing.
+//! The real asset is built by `apps/mcp-app/build-html.js` through
+//! `cargo xtask artifacts ensure mcp-widget`. This build script only creates a
+//! minimal placeholder when the file is missing.
 //!
 //! **Release builds refuse the placeholder** — shipping a stub instead of the
 //! real output renderer would be a silent regression.
@@ -22,7 +22,8 @@ fn main() {
         if is_release {
             panic!(
                 "assets/_output.html is missing — cannot build runt-mcp in release mode \
-                 without the real output renderer. Run `cargo xtask build` first."
+                 without the real output renderer. Run \
+                 `cargo xtask artifacts ensure mcp-widget` first."
             );
         }
         std::fs::create_dir_all("assets").ok();
