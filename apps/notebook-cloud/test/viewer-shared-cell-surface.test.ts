@@ -41,20 +41,26 @@ test("cloud notebook dashboard search input has stable form metadata", () => {
   assert.match(dashboardSourceText, /aria-label="Search notebooks"/);
 });
 
-test("cloud notebook list uses local auth copy in local mode", () => {
+test("cloud hosted document lists use shared signed-out auth chrome", () => {
   const listSourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
   const listSourceText = readFileSync(listSourcePath, "utf8");
+  const markdownListSourceText = readFileSync(
+    new URL("../viewer/markdown-document-list-view.tsx", import.meta.url),
+    "utf8",
+  );
+  const signedOutSourceText = readFileSync(
+    new URL("../viewer/cloud-hosted-document-signed-out.tsx", import.meta.url),
+    "utf8",
+  );
 
-  assert.match(listSourceText, /const localMode = Boolean\(authConfig\.localDev\)/);
-  assert.match(listSourceText, /localMode \? "LOCAL MODE" : "NTERACT"/);
-  assert.match(
-    listSourceText,
-    /localMode \? "Open local notebooks\." : "Bring computation to life\."/,
-  );
-  assert.match(
-    listSourceText,
-    /Use local auth to create notebooks and test the live room on this machine\./,
-  );
+  assert.match(listSourceText, /<CloudHostedDocumentSignedOutPanel/);
+  assert.match(markdownListSourceText, /<CloudHostedDocumentSignedOutPanel/);
+  assert.match(signedOutSourceText, /const localMode = Boolean\(authConfig\.localDev\)/);
+  assert.match(signedOutSourceText, /localMode \? "LOCAL MODE" : "NTERACT"/);
+  assert.match(listSourceText, /localTitle="Open local notebooks\."/);
+  assert.match(listSourceText, /cloudTitle="Bring computation to life\."/);
+  assert.match(markdownListSourceText, /localTitle="Open local Markdown\."/);
+  assert.match(markdownListSourceText, /cloudTitle="Write live Markdown\."/);
   assert.match(listSourceText, /return authConfig\.localDev \? "Local auth" : "Cloud preview"/);
   assert.match(
     listSourceText,

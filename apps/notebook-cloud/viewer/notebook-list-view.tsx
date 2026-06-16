@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   AlertCircle,
-  ArrowUpRight,
   BookOpen,
   FileText,
   FilePlus2,
   Loader2,
   LogOut,
   RotateCcw,
-  Sparkles,
 } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import {
@@ -46,8 +44,8 @@ import {
   useCloudAppSessionStatus,
   useCloudPrototypeAuth,
 } from "./use-cloud-auth";
-import { CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { preloadNotebookRoute, scheduleNotebookRoutePreload } from "./notebook-route-preload";
+import { CloudHostedDocumentSignedOutPanel } from "./cloud-hosted-document-signed-out";
 
 export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
@@ -402,7 +400,14 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
             <span>Loading notebooks</span>
           </div>
         ) : listState.kind === "signed_out" ? (
-          <CloudNotebookSignedOutPanel authConfig={authConfig} authState={authState} />
+          <CloudHostedDocumentSignedOutPanel
+            authConfig={authConfig}
+            authState={authState}
+            cloudTitle="Bring computation to life."
+            cloudDescription="Sign in to create live notebooks, share work with colleagues, and attach compute."
+            localTitle="Open local notebooks."
+            localDescription="Use local auth to create notebooks and test the live room on this machine."
+          />
         ) : listState.kind === "error" ? (
           <div className="cloud-notebook-list-state" data-kind="error" role="alert">
             <AlertCircle aria-hidden="true" />
@@ -435,41 +440,6 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
         )}
       </section>
     </main>
-  );
-}
-
-function CloudNotebookSignedOutPanel({
-  authConfig,
-  authState,
-}: {
-  authConfig: CloudViewerAuthConfig;
-  authState: CloudPrototypeAuthState;
-}) {
-  const localMode = Boolean(authConfig.localDev);
-  return (
-    <div className="cloud-notebook-signed-out" aria-labelledby="cloud-notebook-signed-out-title">
-      <div className="cloud-notebook-signed-out-copy">
-        <div className="cloud-notebook-signed-out-kicker">
-          <Sparkles aria-hidden="true" />
-          {localMode ? "LOCAL MODE" : "NTERACT"}
-        </div>
-        <h2 id="cloud-notebook-signed-out-title">
-          {localMode ? "Open local notebooks." : "Bring computation to life."}
-        </h2>
-        <p>
-          {localMode
-            ? "Use local auth to create notebooks and test the live room on this machine."
-            : "Sign in to create live notebooks, share work with colleagues, and attach compute."}
-        </p>
-      </div>
-      <div className="cloud-notebook-signed-out-actions">
-        <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
-        <a href="https://nteract.io/" target="_blank" rel="noreferrer">
-          Visit nteract.io
-          <ArrowUpRight aria-hidden="true" />
-        </a>
-      </div>
-    </div>
   );
 }
 

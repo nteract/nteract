@@ -8,6 +8,7 @@ import {
 } from "./collaborator-auth";
 import { clearCloudAppSession, establishCloudAppSession } from "./app-session";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
+import { CloudHostedDocumentSignedOutPanel } from "./cloud-hosted-document-signed-out";
 import { cloudResponseError } from "./cloud-response";
 import { loadCloudMarkdownDocumentListBootstrap } from "./cloud-viewer-config";
 import {
@@ -290,9 +291,14 @@ export function CloudMarkdownDocumentListView({
           </div>
         ) : null}
         {listState.kind === "signed_out" ? (
-          <div className="cloud-state" data-kind="empty">
-            Sign in to see Markdown documents.
-          </div>
+          <CloudHostedDocumentSignedOutPanel
+            authConfig={authConfig}
+            authState={authState}
+            cloudTitle="Write live Markdown."
+            cloudDescription="Sign in to create realtime Markdown documents, review drafts, and share work."
+            localTitle="Open local Markdown."
+            localDescription="Use local auth to create Markdown documents and test the live editor on this machine."
+          />
         ) : null}
         {listState.kind === "error" ? (
           <div className="cloud-state" data-kind="error">
