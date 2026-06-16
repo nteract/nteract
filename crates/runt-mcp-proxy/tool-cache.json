@@ -587,7 +587,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "List durable notebook comments for the active session.",
+    "description": "List notebook comments.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -619,13 +619,14 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a comment thread.",
+    "description": "Create a durable comment thread.",
     "inputSchema": {
       "$defs": {
         "CommentAnchorInput": {
           "oneOf": [
             {
               "additionalProperties": false,
+              "description": "Notebook-level thread not badged to a specific cell.",
               "properties": {
                 "kind": {
                   "const": "notebook",
@@ -641,6 +642,7 @@
               "additionalProperties": false,
               "properties": {
                 "cell_id": {
+                  "description": "Cell ID from the cells resource or notebook cell list.",
                   "type": "string"
                 },
                 "kind": {
@@ -649,6 +651,7 @@
                 },
                 "observed_cell_position": {
                   "default": null,
+                  "description": "Optional observed fractional cell position; omitted values are filled from the active notebook.",
                   "type": [
                     "string",
                     "null"
@@ -665,10 +668,12 @@
               "additionalProperties": false,
               "properties": {
                 "end_cell_id": {
+                  "description": "Last cell ID in the range.",
                   "type": "string"
                 },
                 "end_position": {
                   "default": null,
+                  "description": "Optional observed fractional position for end_cell_id; omitted values are filled from the active notebook.",
                   "type": [
                     "string",
                     "null"
@@ -679,10 +684,12 @@
                   "type": "string"
                 },
                 "start_cell_id": {
+                  "description": "First cell ID in the range.",
                   "type": "string"
                 },
                 "start_position": {
                   "default": null,
+                  "description": "Optional observed fractional position for start_cell_id; omitted values are filled from the active notebook.",
                   "type": [
                     "string",
                     "null"
@@ -700,20 +707,24 @@
               "additionalProperties": false,
               "properties": {
                 "cell_id": {
+                  "description": "Cell ID containing the source span.",
                   "type": "string"
                 },
                 "end_column": {
+                  "description": "Zero-based end column; must be after or equal to the start position.",
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
                 },
                 "end_line": {
+                  "description": "Zero-based end line.",
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
                 },
                 "exact_quote": {
                   "default": null,
+                  "description": "Optional exact selected source text, used for anchor repair.",
                   "type": [
                     "string",
                     "null"
@@ -725,23 +736,27 @@
                 },
                 "prefix_quote": {
                   "default": null,
+                  "description": "Optional source text before the exact quote, used for anchor repair.",
                   "type": [
                     "string",
                     "null"
                   ]
                 },
                 "start_column": {
+                  "description": "Zero-based start column.",
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
                 },
                 "start_line": {
+                  "description": "Zero-based start line.",
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
                 },
                 "suffix_quote": {
                   "default": null,
+                  "description": "Optional source text after the exact quote, used for anchor repair.",
                   "type": [
                     "string",
                     "null"
@@ -762,10 +777,12 @@
               "additionalProperties": false,
               "properties": {
                 "cell_id": {
+                  "description": "Cell ID whose output is being discussed.",
                   "type": "string"
                 },
                 "execution_id": {
                   "default": null,
+                  "description": "Optional execution_id from the cell/resource output metadata.",
                   "type": [
                     "string",
                     "null"
@@ -777,6 +794,7 @@
                 },
                 "output_id": {
                   "default": null,
+                  "description": "Optional output_id from the cell/resource output metadata.",
                   "type": [
                     "string",
                     "null"
@@ -826,7 +844,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Add a comment reply.",
+    "description": "Reply to a comment thread; resolved threads reopen.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -862,7 +880,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Mark a comment thread resolved.",
+    "description": "Resolve a comment thread through daemon authority.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -885,7 +903,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Reopen a comment thread.",
+    "description": "Reopen a comment thread through daemon authority.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

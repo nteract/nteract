@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Context;
 use comments_doc::{
@@ -21,6 +22,8 @@ use uuid::Uuid;
 const INDEX_FILE: &str = "index.json";
 const INDEX_VERSION: u32 = 1;
 pub(crate) const COMMENTS_DOC_ACTOR: &str = COMMENTS_DOC_DEFAULT_ACTOR;
+
+static INDEX_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct CommentsSidecarStore {
@@ -67,27 +70,27 @@ impl CommentsSidecarStore {
     }
 
     pub(crate) fn resolve_doc_id(&self, locator: &CommentsLocator) -> anyhow::Result<String> {
-        let mut index = self.load_index()?;
-        let (map, key, fallback) = match locator {
-            CommentsLocator::LocalPath(path) => (
-                &mut index.local_paths,
-                path.to_string_lossy().into_owned(),
-                local_path_comments_doc_id(path.to_string_lossy()),
-            ),
-            CommentsLocator::LocalRoom(uuid) => (
-                &mut index.local_rooms,
-                uuid.to_string(),
-                local_room_comments_doc_id(uuid.to_string()),
-            ),
-        };
+        self.with_index_mut(|index| {
+            let (map, key, fallback) = match locator {
+                CommentsLocator::LocalPath(path) => (
+                    &mut index.local_paths,
+                    path.to_string_lossy().into_owned(),
+                    local_path_comments_doc_id(path.to_string_lossy()),
+                ),
+                CommentsLocator::LocalRoom(uuid) => (
+                    &mut index.local_rooms,
+                    uuid.to_string(),
+                    local_room_comments_doc_id(uuid.to_string()),
+                ),
+            };
 
-        if let Some(existing) = map.get(&key) {
-            return Ok(existing.clone());
-        }
+            if let Some(existing) = map.get(&key) {
+                return Ok(existing.clone());
+            }
 
-        map.insert(key, fallback.clone());
-        self.save_index(&index)?;
-        Ok(fallback)
+            map.insert(key, fallback.clone());
+            Ok(fallback)
+        })
     }
 
     pub(crate) fn bind_doc_id_to_locator(
@@ -95,23 +98,24 @@ impl CommentsSidecarStore {
         locator: &CommentsLocator,
         comments_doc_id: &str,
     ) -> anyhow::Result<()> {
-        let mut index = self.load_index()?;
-        let (map, key) = match locator {
-            CommentsLocator::LocalPath(path) => {
-                (&mut index.local_paths, path.to_string_lossy().into_owned())
+        self.with_index_mut(|index| {
+            let (map, key) = match locator {
+                CommentsLocator::LocalPath(path) => {
+                    (&mut index.local_paths, path.to_string_lossy().into_owned())
+                }
+                CommentsLocator::LocalRoom(uuid) => (&mut index.local_rooms, uuid.to_string()),
+            };
+
+            if map
+                .get(&key)
+                .is_some_and(|existing| existing == comments_doc_id)
+            {
+                return Ok(());
             }
-            CommentsLocator::LocalRoom(uuid) => (&mut index.local_rooms, uuid.to_string()),
-        };
 
-        if map
-            .get(&key)
-            .is_some_and(|existing| existing == comments_doc_id)
-        {
-            return Ok(());
-        }
-
-        map.insert(key, comments_doc_id.to_string());
-        self.save_index(&index)
+            map.insert(key, comments_doc_id.to_string());
+            Ok(())
+        })
     }
 
     pub(crate) fn load_or_create(
@@ -178,6 +182,20 @@ impl CommentsSidecarStore {
         self.root.join(INDEX_FILE)
     }
 
+    fn with_index_mut<T>(
+        &self,
+        f: impl FnOnce(&mut CommentsIndex) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let lock = index_lock_for_root(&self.root)?;
+        let _guard = lock.lock().map_err(|_| {
+            anyhow::anyhow!("comments index lock poisoned for {}", self.root.display())
+        })?;
+        let mut index = self.load_index()?;
+        let result = f(&mut index)?;
+        self.save_index(&index)?;
+        Ok(result)
+    }
+
     fn load_index(&self) -> anyhow::Result<CommentsIndex> {
         let path = self.index_path();
         match std::fs::read(&path) {
@@ -204,6 +222,17 @@ impl CommentsSidecarStore {
         write_file_atomic(&path, &bytes)
             .with_context(|| format!("write comments index {}", path.display()))
     }
+}
+
+fn index_lock_for_root(root: &Path) -> anyhow::Result<Arc<Mutex<()>>> {
+    let locks = INDEX_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut locks = locks
+        .lock()
+        .map_err(|_| anyhow::anyhow!("comments index lock registry poisoned"))?;
+    Ok(locks
+        .entry(root.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
 }
 
 pub(crate) fn comments_locator_for_room(uuid: Uuid, path: Option<&Path>) -> CommentsLocator {
@@ -325,6 +354,54 @@ mod tests {
         assert_eq!(
             index.local_paths.get("/tmp/saved.ipynb"),
             Some(&comments_doc_id)
+        );
+    }
+
+    #[test]
+    fn concurrent_index_bindings_from_distinct_stores_preserve_aliases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("comments");
+        let store_a = CommentsSidecarStore::new(root.clone());
+        let store_b = CommentsSidecarStore::new(root.clone());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let thread_a = {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                store_a
+                    .bind_doc_id_to_locator(
+                        &CommentsLocator::LocalPath(PathBuf::from("/tmp/a.ipynb")),
+                        "comments:doc-a",
+                    )
+                    .unwrap();
+            })
+        };
+        let thread_b = {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                store_b
+                    .bind_doc_id_to_locator(
+                        &CommentsLocator::LocalPath(PathBuf::from("/tmp/b.ipynb")),
+                        "comments:doc-b",
+                    )
+                    .unwrap();
+            })
+        };
+
+        thread_a.join().unwrap();
+        thread_b.join().unwrap();
+
+        let store = CommentsSidecarStore::new(root);
+        let index = store.load_index().unwrap();
+        assert_eq!(
+            index.local_paths.get("/tmp/a.ipynb"),
+            Some(&"comments:doc-a".to_string())
+        );
+        assert_eq!(
+            index.local_paths.get("/tmp/b.ipynb"),
+            Some(&"comments:doc-b".to_string())
         );
     }
 

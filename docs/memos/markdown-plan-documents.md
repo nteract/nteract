@@ -163,9 +163,14 @@ local-first/authority-finalization model:
 - The projection layer computes comment indexes and badges from document heads;
   do not store a derived `anchor_index` in the comments document.
 - Anchors include `notebook`, `cell`, `cell_range`, `source_range`, and `output`.
-- MCP has landed `list_comments`, `create_comment_thread`, and
-  `reply_comment_thread` for active sessions plus
-  `nteract://notebooks/{notebook_id}/comments` as the durable read resource.
+- MCP has landed `list_comments`, `create_comment_thread`,
+  `reply_comment_thread`, `resolve_comment_thread`, and `reopen_comment_thread`
+  for active sessions plus durable read resources at
+  `nteract://notebooks/{notebook_id}/comments`,
+  `nteract://notebooks/{notebook_id}/cells/{cell_id}/comments`, and
+  `nteract://notebooks/{notebook_id}/comments/threads/{thread_id}`.
+  Accept/reject moderation exists as daemon authority requests but is not yet a
+  public MCP tool surface.
 - The UI plan is stable-DOM-safe markers, gutters, overlays, and panels.
 
 For Markdown Plan documents, the ADR needs either an amendment or a sibling ADR

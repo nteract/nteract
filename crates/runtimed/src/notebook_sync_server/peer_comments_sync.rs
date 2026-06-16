@@ -43,15 +43,26 @@ pub(super) async fn handle_comments_doc_frame(
     payload: &[u8],
     connection_identity: &RoomConnectionIdentity,
 ) -> anyhow::Result<bool> {
-    let mut message = sync::Message::decode(payload)
+    let message = sync::Message::decode(payload)
         .map_err(|e| anyhow::anyhow!("decode comments sync: {}", e))?;
     let has_client_changes = !message.changes.is_empty();
     if has_client_changes && !allows_comments_doc_write(connection_identity.scope()) {
         warn!(
-            "[notebook-sync] Stripping unauthorized CommentsDoc changes for scope {}",
+            "[notebook-sync] Ignoring unauthorized CommentsDoc changes for scope {}",
             connection_identity.scope()
         );
-        message.changes = sync::ChunkList::empty();
+        *comments_peer_state = sync::State::new();
+        let reply_encoded = room.comments.with_doc(|comments_doc| {
+            generate_comments_doc_sync_message(
+                comments_doc,
+                comments_peer_state,
+                "comments-unauthorized-reply",
+            )
+        })?;
+        if let Some(encoded) = reply_encoded {
+            writer.send_frame(NotebookFrameType::CommentsDocSync, encoded)?;
+        }
+        return Ok(true);
     }
     let has_client_changes = !message.changes.is_empty();
     let mut applied_changes = false;

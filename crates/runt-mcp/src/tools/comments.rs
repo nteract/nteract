@@ -67,37 +67,55 @@ pub struct ReopenCommentThreadParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommentAnchorInput {
+    /// Notebook-level thread not badged to a specific cell.
     Notebook,
     Cell {
+        /// Cell ID from the cells resource or notebook cell list.
         cell_id: String,
+        /// Optional observed fractional cell position; omitted values are filled from the active notebook.
         #[serde(default)]
         observed_cell_position: Option<String>,
     },
     CellRange {
+        /// First cell ID in the range.
         start_cell_id: String,
+        /// Last cell ID in the range.
         end_cell_id: String,
+        /// Optional observed fractional position for start_cell_id; omitted values are filled from the active notebook.
         #[serde(default)]
         start_position: Option<String>,
+        /// Optional observed fractional position for end_cell_id; omitted values are filled from the active notebook.
         #[serde(default)]
         end_position: Option<String>,
     },
     SourceRange {
+        /// Cell ID containing the source span.
         cell_id: String,
+        /// Zero-based start line.
         start_line: u64,
+        /// Zero-based start column.
         start_column: u64,
+        /// Zero-based end line.
         end_line: u64,
+        /// Zero-based end column; must be after or equal to the start position.
         end_column: u64,
+        /// Optional source text before the exact quote, used for anchor repair.
         #[serde(default)]
         prefix_quote: Option<String>,
+        /// Optional exact selected source text, used for anchor repair.
         #[serde(default)]
         exact_quote: Option<String>,
+        /// Optional source text after the exact quote, used for anchor repair.
         #[serde(default)]
         suffix_quote: Option<String>,
     },
     Output {
+        /// Cell ID whose output is being discussed.
         cell_id: String,
+        /// Optional execution_id from the cell/resource output metadata.
         #[serde(default)]
         execution_id: Option<String>,
+        /// Optional output_id from the cell/resource output metadata.
         #[serde(default)]
         output_id: Option<String>,
     },
@@ -148,6 +166,7 @@ impl CommentAnchorInput {
                 suffix_quote,
             } => {
                 assert_cell_exists(handle, &cell_id)?;
+                validate_source_range(start_line, start_column, end_line, end_column)?;
                 Ok(comments_doc::CommentAnchor::SourceRange {
                     cell_id,
                     start_line,
@@ -194,7 +213,10 @@ pub async fn list_comments(
         Ok(projection) => projection,
         Err(e) => return comments_tool_error("Comments are not ready", e),
     };
-    let threads = filter_threads(projection.threads, cell_id, include_resolved);
+    let threads: Vec<_> = filter_threads(projection.threads, cell_id, include_resolved)
+        .iter()
+        .map(|thread| crate::resources::comment_thread_value(handle.notebook_id(), thread))
+        .collect();
     let value = serde_json::json!({
         "notebook_id": handle.notebook_id(),
         "comments_doc_id": projection.comments_doc_id,
@@ -262,10 +284,8 @@ pub async fn create_comment_thread(
         Ok(projection) => projection,
         Err(e) => return comments_tool_error("Failed to read comments after create", e),
     };
-    let thread = projection
-        .threads
-        .into_iter()
-        .find(|thread| thread.id == created.thread_id);
+    let thread = projected_thread(&projection, &created.thread_id, "create")?;
+    let thread = crate::resources::comment_thread_value(handle.notebook_id(), &thread);
 
     let value = serde_json::json!({
         "notebook_id": handle.notebook_id(),
@@ -333,10 +353,8 @@ pub async fn reply_comment_thread(
         Ok(projection) => projection,
         Err(e) => return comments_tool_error("Failed to read comments after reply", e),
     };
-    let thread = projection
-        .threads
-        .into_iter()
-        .find(|thread| thread.id == replied.thread_id);
+    let thread = projected_thread(&projection, &replied.thread_id, "reply")?;
+    let thread = crate::resources::comment_thread_value(handle.notebook_id(), &thread);
 
     let value = serde_json::json!({
         "notebook_id": handle.notebook_id(),
@@ -437,10 +455,8 @@ async fn update_comment_thread_status(
         Ok(projection) => projection,
         Err(e) => return comments_tool_error("Failed to read comments after status update", e),
     };
-    let thread = projection
-        .threads
-        .into_iter()
-        .find(|thread| thread.id == thread_id);
+    let thread = projected_thread(&projection, thread_id, action.verb())?;
+    let thread = crate::resources::comment_thread_value(handle.notebook_id(), &thread);
 
     let value = serde_json::json!({
         "notebook_id": handle.notebook_id(),
@@ -497,6 +513,23 @@ fn required_body(request: &CallToolRequestParams) -> Result<&str, McpError> {
         return Err(McpError::invalid_params("body cannot be empty", None));
     }
     Ok(body)
+}
+
+fn validate_source_range(
+    start_line: u64,
+    start_column: u64,
+    end_line: u64,
+    end_column: u64,
+) -> Result<(), McpError> {
+    if start_line > end_line || (start_line == end_line && start_column > end_column) {
+        return Err(McpError::invalid_params(
+            format!(
+                "source_range start ({start_line}:{start_column}) must be before or equal to end ({end_line}:{end_column})"
+            ),
+            None,
+        ));
+    }
+    Ok(())
 }
 
 fn current_timestamp() -> String {
@@ -567,6 +600,26 @@ fn comments_tool_error(
     }
 }
 
+fn projected_thread(
+    projection: &comments_doc::CommentsProjection,
+    thread_id: &str,
+    action: &str,
+) -> Result<comments_doc::CommentThreadSnapshot, McpError> {
+    projection
+        .threads
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .cloned()
+        .ok_or_else(|| {
+            McpError::internal_error(
+                format!(
+                    "Comment thread {thread_id} was not visible after {action}; retry list_comments"
+                ),
+                None,
+            )
+        })
+}
+
 fn filter_threads(
     threads: Vec<comments_doc::CommentThreadSnapshot>,
     cell_id: Option<&str>,
@@ -626,6 +679,14 @@ mod tests {
         .expect("anchor parses");
 
         assert!(matches!(anchor, CommentAnchorInput::Cell { .. }));
+    }
+
+    #[test]
+    fn source_range_validation_rejects_inverted_spans() {
+        assert!(validate_source_range(10, 0, 9, 99).is_err());
+        assert!(validate_source_range(10, 8, 10, 7).is_err());
+        assert!(validate_source_range(10, 7, 10, 7).is_ok());
+        assert!(validate_source_range(10, 7, 11, 0).is_ok());
     }
 
     #[test]
@@ -705,6 +766,28 @@ mod tests {
         assert_eq!(
             last_message_id_in_thread(&projection, "thread-2"),
             Some("message-3".into())
+        );
+    }
+
+    #[test]
+    fn projected_thread_errors_when_mutation_result_is_not_visible() {
+        let projection = comments_doc::CommentsProjection {
+            comments_doc_id: "comments:test".into(),
+            threads: vec![thread_snapshot(
+                "thread-1",
+                comments_doc::CommentAnchor::Notebook,
+                vec![message_snapshot("message-1")],
+            )],
+        };
+
+        let found = projected_thread(&projection, "thread-1", "create").expect("thread visible");
+        assert_eq!(found.id, "thread-1");
+
+        let err = projected_thread(&projection, "thread-missing", "create")
+            .expect_err("missing thread should be an internal error");
+        assert!(
+            format!("{err}").contains("thread-missing"),
+            "error should name missing thread: {err}"
         );
     }
 

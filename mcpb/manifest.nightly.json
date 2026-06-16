@@ -129,23 +129,23 @@
       "name": "manage_dependencies"
     },
     {
-      "description": "List durable notebook comments for the active session.",
+      "description": "List notebook comments.",
       "name": "list_comments"
     },
     {
-      "description": "Create a comment thread.",
+      "description": "Create a durable comment thread.",
       "name": "create_comment_thread"
     },
     {
-      "description": "Add a comment reply.",
+      "description": "Reply to a comment thread; resolved threads reopen.",
       "name": "reply_comment_thread"
     },
     {
-      "description": "Mark a comment thread resolved.",
+      "description": "Resolve a comment thread through daemon authority.",
       "name": "resolve_comment_thread"
     },
     {
-      "description": "Reopen a comment thread.",
+      "description": "Reopen a comment thread through daemon authority.",
       "name": "reopen_comment_thread"
     },
     {

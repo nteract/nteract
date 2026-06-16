@@ -1478,7 +1478,10 @@ async fn test_comments_doc_sync_strips_runtime_peer_change() {
         "thread-runtime",
         "runtime peer comment",
     );
-    let (_reply_reader, reply_writer) = tokio::io::duplex(1024 * 1024);
+    let unauthorized_message =
+        automerge::sync::Message::decode(&payload).expect("runtime peer message decodes");
+    let unauthorized_heads = unauthorized_message.heads.clone();
+    let (mut reply_reader, reply_writer) = tokio::io::duplex(1024 * 1024);
     let (peer_writer, _writer_task) = super::peer_writer::spawn_peer_writer(
         reply_writer,
         "notebook".to_string(),
@@ -1506,6 +1509,70 @@ async fn test_comments_doc_sync_strips_runtime_peer_change() {
         "runtime_peer must not be able to mutate CommentsDoc"
     );
     assert!(!room.comments_store.doc_path(&room.comments_doc_id).exists());
+    assert_ne!(
+        server_peer_state.their_heads.as_ref(),
+        Some(&unauthorized_heads),
+        "daemon must not retain unauthorized client CommentsDoc heads"
+    );
+
+    let unauthorized_reply = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        notebook_protocol::connection::recv_typed_frame(&mut reply_reader),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .expect("clean comments sync reply after unauthorized change");
+    assert_eq!(
+        unauthorized_reply.frame_type,
+        notebook_protocol::connection::NotebookFrameType::CommentsDocSync
+    );
+
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(COMMENTS_DOC_ACTOR.as_bytes()));
+            doc.create_thread(
+                "thread-daemon",
+                "message-daemon",
+                &comments_doc::CommentAnchor::Notebook,
+                "daemon update after rejected runtime change",
+                None,
+                "2026-06-16T00:01:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let daemon_heads = room.comments.with_doc(|doc| Ok(doc.get_heads())).unwrap();
+
+    super::peer_comments_sync::forward_comments_doc_broadcast(
+        &room,
+        "runtime-peer",
+        &mut server_peer_state,
+        &peer_writer,
+        Ok(()),
+    )
+    .await
+    .unwrap();
+
+    let update = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        notebook_protocol::connection::recv_typed_frame(&mut reply_reader),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .expect("daemon comments sync update after rejected runtime change");
+    assert_eq!(
+        update.frame_type,
+        notebook_protocol::connection::NotebookFrameType::CommentsDocSync
+    );
+    let update_message =
+        automerge::sync::Message::decode(&update.payload).expect("daemon comments update decodes");
+    assert_eq!(
+        update_message.heads, daemon_heads,
+        "runtime peer should still receive later daemon CommentsDoc heads"
+    );
 }
 
 #[tokio::test]

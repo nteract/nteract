@@ -17,14 +17,13 @@ count.
 
 `CommentsDoc` is durable collaboration state with different authority,
 durability, attachment, fan-out, and publish policy from cells, outputs,
-widgets, or runtime lifecycle. It should sync over its own typed frame. The next
-available byte on current main is `COMMENTS_DOC_SYNC = 0x0a`; adding it is an
-exhaustive wire change, not only a constant. User-facing comment writes should
-still use Automerge for immediate local-first rendering: the client writes a
-tentative comment mutation into its local `CommentsDoc` replica, and the daemon
-or Cloud comments authority finalizes policy-bearing fields such as author
-identity, scope, resolve/delete state, and rejection status in the same
-document.
+widgets, or runtime lifecycle. It syncs over its own typed frame:
+`COMMENTS_DOC_SYNC = 0x0a`. Adding it is an exhaustive wire change, not only a
+constant. User-facing comment writes should still use Automerge for immediate
+local-first rendering: the client writes a tentative comment mutation into its
+local `CommentsDoc` replica, and the daemon or Cloud comments authority
+finalizes policy-bearing fields such as author identity, scope, resolve/delete
+state, and rejection status in the same document.
 Rendering must not wait for a request round trip. Pending comments are projected
 from local Automerge heads; daemon or Cloud writes are subsequent authoritative
 changes to the same objects.
@@ -56,10 +55,12 @@ nteract already follows the same shape:
 - `docs/adr/mcp-resource-addressing.md` keeps MCP read resources under the local
   `nteract://` namespace and explicitly separates them from room locators.
 - Current sync code treats frame types and document streams as explicit seams:
-  `crates/notebook-wire/src/lib.rs` now reserves `COMMENTS_DOC_SYNC = 0x0a`,
-  generated TypeScript constants and protocol tests pin that table, and both the
-  daemon and Cloud room host dispatch notebook/runtime/comms/comments streams
-  explicitly.
+  `crates/notebook-wire/src/lib.rs` assigns `COMMENTS_DOC_SYNC = 0x0a`, and
+  generated TypeScript constants and protocol tests pin that table. The local
+  daemon/notebook-sync/MCP path now materializes and dispatches comments sync.
+  Cloud and browser runtimed code pin the frame byte but keep comments
+  non-client-writable and unmaterialized until hosted comments authority and
+  checkpointing policy land.
 - `NotebookView` has a stable DOM-order invariant; comments cannot be rendered
   as extra cell rows that reorder existing cell DOM nodes.
 
@@ -212,8 +213,11 @@ ROOT/
         kind: Str
         ...anchor fields...
       position: Str                  # fractional order in the projection scope
+      thread_order_scope: Str        # denormalized anchor scope for insertion
+      status: Str                    # provisional open/resolved status
       mutation_state: Str            # "pending" | "accepted" | "rejected"
       created_at: Str
+      initial_message_id: Str
       authority_mutation_state: Str? # authority-written accepted/rejected
       authority_status: Str?         # authority-written open/resolved
       authority_anchor_json: Str?    # accepted anchor snapshot
@@ -456,12 +460,14 @@ Core seams:
     read resources on top of those helpers
   - future work: expose frontend/UI-facing comment observables and any direct
     `get_comments_for_cell` convenience needed by the app shell
-- `packages/runtimed/src/handle.ts` and `packages/runtimed/src/sync-engine.ts`
-  - extend `SyncableHandle`, `FlushDocKey`, flush/reply/cancel paths, delivery
-    tracking, observables, and tests for comments sync
-  - add `FrameEvent` variants for comments sync applied/error, including a
-    comments projection changeset instead of forcing UI code to rematerialize the
-    full document on every frame
+- `packages/runtimed/src/wire-constants.ts`,
+  `packages/runtimed/src/request-types.ts`, and protocol-contract tests
+  - generated TypeScript pins `COMMENTS_DOC_SYNC = 0x0a` and the daemon
+    authority request types used by local MCP clients
+  - future frontend/browser work should extend `SyncableHandle`, `FlushDocKey`,
+    flush/reply/cancel paths, delivery tracking, observables, and `FrameEvent`
+    variants for comments sync; the current browser path does not materialize
+    or dispatch comments updates to UI code
 - `crates/runtimed/src/notebook_sync_server/room.rs`
   - add a room-owned `comments` document handle
   - load/save it from the local comments sidecar store
@@ -542,20 +548,18 @@ The write flow:
    pending item, again from `CommentsDoc`.
 
 For v0, `mutation_state` models creation finalization for threads and messages.
-Body `Text` edits can still apply optimistically as content changes, but any
-`authority_edited_at` / `authority_edited_by_*` display fields remain untrusted
-until the authority writes them. Resolve, reopen, delete, and archive are policy
-transitions: they must either be written by the authority through request
+Acceptance/rejection snapshots the body, anchor, position, author, and timestamp
+into authority-authored fields, and trusted projection reads those snapshots.
+Later client-authored body edits remain Automerge content changes, but they do
+not alter accepted/rejected projections until a future edit-moderation operation
+is modeled and authority-finalized. Resolve, reopen, delete, and archive are
+policy transitions: they must either be written by the authority through request
 handling, or represented as pending operations until the authority writes
 `authority_status`, authority-authored timestamp, tombstone, and actor fields.
-The authority must not accept policy transitions by
-doing nothing, because that would make client-authored policy fields durable
-truth by projection. If body-edit moderation needs stronger UX later, add
-per-action pending operations; do not overload the object-level creation state.
-
-Acceptance finalizes policy and attribution fields for the creation mutation. It
-does not freeze body `Text`; later body edits are new content changes attributed
-through the validated change actor and still subject to edit/delete policy.
+The authority must not accept policy transitions by doing nothing, because that
+would make client-authored policy fields durable truth by projection. If
+body-edit moderation needs stronger UX later, add per-action pending operations;
+do not overload the object-level creation state.
 
 MCP tools and future UI commands are surfaces over the same state transition.
 Human UI actions should perform the local tentative mutation before any authority
@@ -624,7 +628,8 @@ Authorization policy for the first implementation:
 - content finalization: original author principal or owner.
 - resolve/reopen: editor or owner, through authority requests with observed
   comments heads.
-- edit body, delete message: original author principal, or owner as moderator.
+- edit body, delete message: future pending-operation work, not trusted v0
+  projection.
 - runtime_peer: no comment mutation.
 - reply to a resolved thread reopens it with host/daemon-stamped
   `authority_status = "open"` and `authority_reopened_*` fields while recording

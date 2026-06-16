@@ -421,6 +421,9 @@ fn notebook_session_response(mut response: serde_json::Value, notebook_id: &str)
     CallToolResult::success(vec![
         Content::text(serde_json::to_string_pretty(&response).unwrap_or_default()),
         Content::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+        Content::resource_link(crate::resources::notebook_comments_resource_link(
+            notebook_id,
+        )),
     ])
 }
 
@@ -1493,11 +1496,11 @@ mod tests {
     }
 
     #[test]
-    fn notebook_session_response_returns_text_json_and_cells_resource_link() {
+    fn notebook_session_response_returns_text_json_and_resource_links() {
         let result = notebook_session_response(serde_json::json!({"notebook_id": "nb 1"}), "nb 1");
 
         assert_eq!(result.is_error, Some(false));
-        assert_eq!(result.content.len(), 2);
+        assert_eq!(result.content.len(), 3);
 
         let text = result.content[0]
             .as_text()
@@ -1514,12 +1517,22 @@ mod tests {
             response["resources"]["cell_template"],
             "nteract://notebooks/nb%201/cells/{cell_id}"
         );
+        assert_eq!(
+            response["resources"]["comments"],
+            "nteract://notebooks/nb%201/comments"
+        );
 
         let link = result.content[1]
             .as_resource_link()
             .expect("cells resource link");
         assert_eq!(link.uri, "nteract://notebooks/nb%201/cells");
         assert_eq!(link.mime_type.as_deref(), Some("application/json"));
+
+        let comments_link = result.content[2]
+            .as_resource_link()
+            .expect("comments resource link");
+        assert_eq!(comments_link.uri, "nteract://notebooks/nb%201/comments");
+        assert_eq!(comments_link.mime_type.as_deref(), Some("application/json"));
 
         let value = serde_json::to_value(&result).expect("serialize session response");
         assert_eq!(
@@ -1529,6 +1542,10 @@ mod tests {
         assert_eq!(
             value["content"][1]["mimeType"],
             serde_json::json!("application/json")
+        );
+        assert_eq!(
+            value["content"][2]["type"],
+            serde_json::json!("resource_link")
         );
     }
 

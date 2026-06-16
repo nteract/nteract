@@ -711,7 +711,7 @@ fn comment_thread_json(
     .unwrap_or_else(|_| "{}".into()))
 }
 
-fn comment_thread_value(
+pub(crate) fn comment_thread_value(
     notebook_id: &str,
     thread: &comments_doc::CommentThreadSnapshot,
 ) -> serde_json::Value {

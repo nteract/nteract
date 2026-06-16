@@ -234,31 +234,31 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Comments --
         Tool::new(
             "list_comments",
-            "List durable notebook comments for the active session.",
+            "List notebook comments.",
             schema_for::<comments::ListCommentsParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "create_comment_thread",
-            "Create a comment thread.",
+            "Create a durable comment thread.",
             schema_for::<comments::CreateCommentThreadParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
         Tool::new(
             "reply_comment_thread",
-            "Add a comment reply.",
+            "Reply to a comment thread; resolved threads reopen.",
             schema_for::<comments::ReplyCommentThreadParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
         Tool::new(
             "resolve_comment_thread",
-            "Mark a comment thread resolved.",
+            "Resolve a comment thread through daemon authority.",
             schema_for::<comments::ResolveCommentThreadParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
         Tool::new(
             "reopen_comment_thread",
-            "Reopen a comment thread.",
+            "Reopen a comment thread through daemon authority.",
             schema_for::<comments::ReopenCommentThreadParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
