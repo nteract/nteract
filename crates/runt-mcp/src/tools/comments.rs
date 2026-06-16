@@ -244,7 +244,7 @@ pub async fn create_comment_thread(
         Some(thread_id) => Some(thread_id.to_string()),
         None => match default_after_thread_id(&handle, &anchor) {
             Ok(thread_id) => thread_id,
-            Err(e) => return comments_tool_error("Failed to inspect existing comments", e),
+            Err(e) => return comments_tool_error("Failed to inspect existing comments", *e),
         },
     };
     let thread_id = format!("thread-{}", uuid::Uuid::new_v4());
@@ -315,7 +315,7 @@ pub async fn reply_comment_thread(
         Some(message_id) => Some(message_id.to_string()),
         None => match default_after_message_id(&handle, thread_id) {
             Ok(message_id) => message_id,
-            Err(e) => return comments_tool_error("Failed to inspect existing comments", e),
+            Err(e) => return comments_tool_error("Failed to inspect existing comments", *e),
         },
     };
     let message_id = format!("message-{}", uuid::Uuid::new_v4());
@@ -539,16 +539,16 @@ fn current_timestamp() -> String {
 fn default_after_thread_id(
     handle: &notebook_sync::handle::DocHandle,
     anchor: &comments_doc::CommentAnchor,
-) -> Result<Option<String>, notebook_sync::SyncError> {
-    let projection = handle.get_comments_projection()?;
+) -> Result<Option<String>, Box<notebook_sync::SyncError>> {
+    let projection = handle.get_comments_projection().map_err(Box::new)?;
     Ok(last_thread_id_in_scope(&projection, anchor))
 }
 
 fn default_after_message_id(
     handle: &notebook_sync::handle::DocHandle,
     thread_id: &str,
-) -> Result<Option<String>, notebook_sync::SyncError> {
-    let projection = handle.get_comments_projection()?;
+) -> Result<Option<String>, Box<notebook_sync::SyncError>> {
+    let projection = handle.get_comments_projection().map_err(Box::new)?;
     Ok(last_message_id_in_thread(&projection, thread_id))
 }
 
@@ -560,8 +560,7 @@ fn last_thread_id_in_scope(
     projection
         .threads
         .iter()
-        .filter(|thread| thread.anchor.thread_order_scope() == scope)
-        .last()
+        .rfind(|thread| thread.anchor.thread_order_scope() == scope)
         .map(|thread| thread.id.clone())
 }
 
