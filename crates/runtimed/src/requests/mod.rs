@@ -279,6 +279,7 @@ pub(crate) async fn handle_notebook_request(
 
         NotebookRequest::RejectCommentThread {
             thread_id,
+            message_id,
             reason,
             observed_comments_heads,
         } => {
@@ -286,6 +287,7 @@ pub(crate) async fn handle_notebook_request(
                 room,
                 thread_id,
                 reason,
+                message_id,
                 observed_comments_heads,
                 submitter_actor_label,
                 submitter_scope,

@@ -73,6 +73,11 @@ pub(super) async fn handle_comments_doc_frame(
                             "reserved comment authority actor {COMMENTS_DOC_ACTOR}"
                         )));
                     }
+                    if preview.changed_authority_fields_since(&heads_before) {
+                        return Err(CommentsDocError::UnauthorizedActor(
+                            "client-authored comment authority fields".to_string(),
+                        ));
+                    }
                     connection_identity
                         .validate_actor_labels(actors.iter().map(std::string::String::as_str))
                         .map_err(|error| CommentsDocError::UnauthorizedActor(error.to_string()))?;

@@ -131,6 +131,7 @@ export type NotebookRequest =
   | {
       type: "reject_comment_thread";
       thread_id: string;
+      message_id: string;
       reason: string;
       observed_comments_heads: string[];
     }

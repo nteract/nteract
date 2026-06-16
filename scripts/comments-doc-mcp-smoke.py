@@ -427,6 +427,7 @@ async def run_pair_scenario(
 
     alice_body = "comments-smoke alice notebook note"
     bob_reply = "comments-smoke bob reply"
+    resolved_reply = "comments-smoke reply reopens resolved"
     cell_body = "comments-smoke alice cell note"
     concurrent_a = "comments-smoke concurrent alice"
     concurrent_b = "comments-smoke concurrent bob"
@@ -612,6 +613,83 @@ async def run_pair_scenario(
         fail(f"resolved thread missing actor label: {resolved_thread}")
     if not isinstance(resolved_thread.get("resolved_at"), str):
         fail(f"resolved thread missing resolved_at: {resolved_thread}")
+
+    resolved_reply_result = await call_json(
+        alice,
+        "alice",
+        "reply_comment_thread",
+        {"thread_id": created_thread_id, "body": resolved_reply},
+    )
+    assert_authority_accepted_message(
+        require_thread(resolved_reply_result, created_thread_id, "resolved reply result"),
+        resolved_reply,
+        "resolved reply result",
+    )
+    bob_after_resolved_reply, bob_resolved_reply_resource = await wait_for_comments(
+        bob,
+        "bob",
+        notebook_comments_uri,
+        lambda tool, resource: (
+            thread_status(tool, created_thread_id) == "open"
+            and thread_status(resource, created_thread_id) == "open"
+            and contains_thread_and_reply(tool, alice_body, resolved_reply)
+            and contains_thread_and_reply(resource, alice_body, resolved_reply)
+        ),
+        "reply reopened resolved notebook thread",
+    )
+    assert_authority_accepted_message(
+        require_thread(
+            bob_after_resolved_reply,
+            created_thread_id,
+            "bob list after resolved reply",
+        ),
+        resolved_reply,
+        "bob list after resolved reply",
+    )
+    assert_authority_accepted_message(
+        require_thread(
+            bob_resolved_reply_resource,
+            created_thread_id,
+            "bob resource after resolved reply",
+        ),
+        resolved_reply,
+        "bob resource after resolved reply",
+    )
+    auto_reopened_thread_resource = await read_resource_json(
+        bob,
+        "bob",
+        comment_thread_uri(notebook_id, created_thread_id),
+    )
+    auto_reopened_thread = require_thread(
+        auto_reopened_thread_resource,
+        created_thread_id,
+        "auto-reopened thread resource",
+    )
+    if auto_reopened_thread.get("status") != "open":
+        fail(f"reply did not reopen resolved thread: {auto_reopened_thread}")
+    if auto_reopened_thread.get("resolved_at") is not None:
+        fail(f"reply-reopened thread kept resolved_at: {auto_reopened_thread}")
+    if auto_reopened_thread.get("resolved_by_actor_label") is not None:
+        fail(f"reply-reopened thread kept resolved actor: {auto_reopened_thread}")
+    if auto_reopened_thread.get("resolved_by_authority") is not None:
+        fail(f"reply-reopened thread kept resolved authority: {auto_reopened_thread}")
+
+    await call_json(
+        bob,
+        "bob",
+        "resolve_comment_thread",
+        {"thread_id": created_thread_id},
+    )
+    await wait_for_comments(
+        alice,
+        "alice",
+        notebook_comments_uri,
+        lambda tool, resource: (
+            thread_status(tool, created_thread_id) == "resolved"
+            and thread_status(resource, created_thread_id) == "resolved"
+        ),
+        "bob resolved notebook thread again",
+    )
 
     await call_json(
         alice,
@@ -951,6 +1029,7 @@ async def smoke(args: argparse.Namespace) -> None:
                 {
                     "comments-smoke alice notebook note",
                     "comments-smoke bob reply",
+                    "comments-smoke reply reopens resolved",
                     "comments-smoke alice cell note",
                     "comments-smoke concurrent alice",
                     "comments-smoke concurrent bob",

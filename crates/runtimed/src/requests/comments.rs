@@ -59,6 +59,7 @@ pub(crate) async fn reject_thread(
     room: &NotebookRoom,
     thread_id: String,
     reason: String,
+    message_id: String,
     observed_comments_heads: Vec<String>,
     submitter_actor_label: Option<&str>,
     submitter_scope: ConnectionScope,
@@ -66,7 +67,7 @@ pub(crate) async fn reject_thread(
     finalize_thread_creation(
         room,
         thread_id,
-        None,
+        Some(message_id),
         observed_comments_heads,
         submitter_actor_label,
         submitter_scope,
@@ -216,10 +217,15 @@ fn finalize_thread_creation(
 
     let result = room.comments.with_doc(|doc| {
         let pending_author = match message_id.as_deref() {
-            Some(message_id) => {
-                doc.validate_pending_thread_creation(&thread_id, message_id, &observed_heads)?
+            Some(message_id) => doc.validate_pending_thread_creation(
+                &thread_id,
+                message_id,
+                &observed_heads,
+                &[COMMENTS_DOC_ACTOR],
+            )?,
+            None => {
+                doc.validate_pending_thread(&thread_id, &observed_heads, &[COMMENTS_DOC_ACTOR])?
             }
-            None => doc.validate_pending_thread(&thread_id, &observed_heads)?,
         };
         validate_finalizer_scope(&pending_author, submitter_actor_label, submitter_scope)?;
         doc.doc_mut()
@@ -238,7 +244,22 @@ fn finalize_thread_creation(
                 Ok(())
             }
             ThreadCreationFinalization::Reject { reason } => {
-                doc.reject_thread_creation(&thread_id, &reason)
+                doc.reject_thread_creation(
+                    &thread_id,
+                    &reason,
+                    &pending_author,
+                    COMMENTS_DOC_ACTOR,
+                )?;
+                if let Some(message_id) = message_id.as_deref() {
+                    doc.reject_message(
+                        &thread_id,
+                        message_id,
+                        &reason,
+                        &pending_author,
+                        COMMENTS_DOC_ACTOR,
+                    )?;
+                }
+                Ok(())
             }
         }
     });
@@ -295,18 +316,28 @@ fn finalize_message_creation(
     };
 
     let result = room.comments.with_doc(|doc| {
-        let pending_author =
-            doc.validate_pending_message_creation(&thread_id, &message_id, &observed_heads)?;
+        let pending_author = doc.validate_pending_message_creation(
+            &thread_id,
+            &message_id,
+            &observed_heads,
+            &[COMMENTS_DOC_ACTOR],
+        )?;
         validate_finalizer_scope(&pending_author, submitter_actor_label, submitter_scope)?;
         doc.doc_mut()
             .set_actor(ActorId::from(COMMENTS_DOC_ACTOR.as_bytes()));
         match finalization {
             MessageCreationFinalization::Accept => {
-                doc.accept_message(&thread_id, &message_id, &pending_author, COMMENTS_DOC_ACTOR)
+                doc.accept_message(&thread_id, &message_id, &pending_author, COMMENTS_DOC_ACTOR)?;
+                reopen_resolved_thread_for_reply(doc, &thread_id, &pending_author)?;
+                Ok(())
             }
-            MessageCreationFinalization::Reject { reason } => {
-                doc.reject_message(&thread_id, &message_id, &reason)
-            }
+            MessageCreationFinalization::Reject { reason } => doc.reject_message(
+                &thread_id,
+                &message_id,
+                &reason,
+                &pending_author,
+                COMMENTS_DOC_ACTOR,
+            ),
         }
     });
 
@@ -336,6 +367,22 @@ fn parse_observed_comments_heads(heads: &[String]) -> Result<Vec<ChangeHash>, St
                 .map_err(|_| "observed_comments_heads contained an invalid head".to_string())
         })
         .collect()
+}
+
+fn reopen_resolved_thread_for_reply(
+    doc: &mut comments_doc::CommentsDoc,
+    thread_id: &str,
+    actor_label: &str,
+) -> Result<(), comments_doc::CommentsDocError> {
+    let projection = doc.read_projection(&[COMMENTS_DOC_ACTOR], None)?;
+    let should_reopen = projection.threads.iter().any(|thread| {
+        thread.id == thread_id && thread.status == comments_doc::ProjectedThreadStatus::Resolved
+    });
+    if should_reopen {
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        doc.reopen_thread(thread_id, actor_label, COMMENTS_DOC_ACTOR, &timestamp)?;
+    }
+    Ok(())
 }
 
 fn validate_finalizer_scope(

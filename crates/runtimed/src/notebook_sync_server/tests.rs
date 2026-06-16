@@ -1,5 +1,5 @@
 use super::*;
-use automerge::{transaction::Transactable, ActorId, AutoCommit, ObjType};
+use automerge::{transaction::Transactable, ActorId, AutoCommit, ObjType, ReadDoc, Value, ROOT};
 use base64::Engine;
 use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
 use uuid::Uuid;
@@ -1579,6 +1579,51 @@ async fn test_comments_doc_sync_rejects_client_using_daemon_authority_actor() {
 }
 
 #[tokio::test]
+async fn test_comments_doc_sync_rejects_client_authored_authority_fields() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-forged-authority-field.ipynb");
+    let identity = RoomConnectionIdentity::local_with_scope(
+        Some("agent:comments-editor".to_string()),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await
+    .unwrap();
+    let mut server_peer_state = automerge::sync::State::new();
+    let payload = comments_sync_payload_with_authority_field_from_room(
+        &room,
+        &mut server_peer_state,
+        "agent:comments-editor",
+        "thread-forged-authority-field",
+        "forged authority field",
+    );
+    let (_reply_reader, reply_writer) = tokio::io::duplex(1024 * 1024);
+    let (peer_writer, _writer_task) = super::peer_writer::spawn_peer_writer(
+        reply_writer,
+        "notebook".to_string(),
+        "peer".to_string(),
+    );
+
+    let err = super::peer_comments_sync::handle_comments_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &peer_writer,
+        &payload,
+        &identity,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{err:#}").contains("client-authored comment authority fields"));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert!(projection.threads.is_empty());
+    assert!(!room.comments_store.doc_path(&room.comments_doc_id).exists());
+}
+
+#[tokio::test]
 async fn test_comment_status_request_resolves_reopens_and_persists_sidecar() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "comments-status.ipynb");
@@ -1767,6 +1812,191 @@ async fn test_comment_content_request_rejects_runtime_peer() {
 }
 
 #[tokio::test]
+async fn test_comment_content_request_rejects_replay_after_accept() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-accept-replay.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.create_thread(
+                "thread-replay",
+                "message-replay",
+                &comments_doc::CommentAnchor::Notebook,
+                "replay must not refinalize",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(&room);
+
+    let accepted = crate::requests::comments::accept_thread(
+        &room,
+        "thread-replay".to_string(),
+        "message-replay".to_string(),
+        observed_heads.clone(),
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(accepted, crate::protocol::NotebookResponse::Ok {}));
+
+    let replay = crate::requests::comments::reject_thread(
+        &room,
+        "thread-replay".to_string(),
+        "should not flip".to_string(),
+        "message-replay".to_string(),
+        observed_heads,
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(
+        replay,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].mutation_state,
+        comments_doc::ProjectedMutationState::Accepted
+    );
+}
+
+#[tokio::test]
+async fn test_comment_thread_reject_also_rejects_initial_message() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-reject-thread.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.create_thread(
+                "thread-reject",
+                "message-reject",
+                &comments_doc::CommentAnchor::Notebook,
+                "reject me",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(&room);
+
+    let rejected = crate::requests::comments::reject_thread(
+        &room,
+        "thread-reject".to_string(),
+        "not useful".to_string(),
+        "message-reject".to_string(),
+        observed_heads,
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(rejected, crate::protocol::NotebookResponse::Ok {}));
+
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    let thread = &projection.threads[0];
+    assert_eq!(
+        thread.mutation_state,
+        comments_doc::ProjectedMutationState::Rejected
+    );
+    assert_eq!(
+        thread.messages[0].mutation_state,
+        comments_doc::ProjectedMutationState::Rejected
+    );
+    assert_eq!(
+        thread.created_by_actor_label.as_deref(),
+        Some("agent:comments-editor")
+    );
+    assert_eq!(
+        thread.created_by_authority.as_deref(),
+        Some(COMMENTS_DOC_ACTOR)
+    );
+    assert_eq!(thread.rejection_reason.as_deref(), Some("not useful"));
+    assert_eq!(
+        thread.messages[0].created_by_actor_label.as_deref(),
+        Some("agent:comments-editor")
+    );
+    assert_eq!(
+        thread.messages[0].created_by_authority.as_deref(),
+        Some(COMMENTS_DOC_ACTOR)
+    );
+    assert_eq!(
+        thread.messages[0].rejection_reason.as_deref(),
+        Some("not useful")
+    );
+}
+
+#[tokio::test]
+async fn test_comment_thread_finalization_rejects_non_initial_message() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-wrong-initial-message.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.create_thread(
+                "thread-wrong-message",
+                "message-initial",
+                &comments_doc::CommentAnchor::Notebook,
+                "initial",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            doc.reply(
+                "thread-wrong-message",
+                "message-reply",
+                "reply",
+                Some("message-initial"),
+                "2026-06-16T00:01:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(&room);
+
+    let response = crate::requests::comments::accept_thread(
+        &room,
+        "thread-wrong-message".to_string(),
+        "message-reply".to_string(),
+        observed_heads,
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].mutation_state,
+        comments_doc::ProjectedMutationState::Pending
+    );
+    assert_eq!(
+        projection.threads[0].messages[0].mutation_state,
+        comments_doc::ProjectedMutationState::Pending
+    );
+}
+
+#[tokio::test]
 async fn test_comment_content_request_rejects_empty_observed_heads() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "comments-accept-empty-heads.ipynb");
@@ -1933,6 +2163,77 @@ async fn test_comment_content_owner_accepts_other_author_without_rewriting_autho
 }
 
 #[tokio::test]
+async fn test_comment_reply_to_resolved_thread_reopens_thread() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-reply-reopens.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut().set_actor(ActorId::from(b"agent:alice"));
+            doc.create_thread(
+                "thread-reply-reopens",
+                "message-original",
+                &comments_doc::CommentAnchor::Notebook,
+                "original",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            doc.doc_mut()
+                .set_actor(ActorId::from(COMMENTS_DOC_ACTOR.as_bytes()));
+            doc.accept_thread_creation("thread-reply-reopens", "agent:alice", COMMENTS_DOC_ACTOR)?;
+            doc.accept_message(
+                "thread-reply-reopens",
+                "message-original",
+                "agent:alice",
+                COMMENTS_DOC_ACTOR,
+            )?;
+            doc.resolve_thread(
+                "thread-reply-reopens",
+                "agent:alice",
+                COMMENTS_DOC_ACTOR,
+                "2026-06-16T00:01:00Z",
+            )?;
+            doc.doc_mut().set_actor(ActorId::from(b"agent:alice"));
+            doc.reply(
+                "thread-reply-reopens",
+                "message-reply",
+                "new reply",
+                None,
+                "2026-06-16T00:02:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(&room);
+
+    let accepted_reply = crate::requests::comments::accept_message(
+        &room,
+        "thread-reply-reopens".to_string(),
+        "message-reply".to_string(),
+        observed_heads,
+        Some("agent:alice"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(
+        accepted_reply,
+        crate::protocol::NotebookResponse::Ok {}
+    ));
+
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].status,
+        comments_doc::ProjectedThreadStatus::Open
+    );
+    assert!(projection.threads[0].resolved_at.is_none());
+    assert!(projection.threads[0].resolved_by_actor_label.is_none());
+    assert!(projection.threads[0].resolved_by_authority.is_none());
+}
+
+#[tokio::test]
 async fn test_comment_status_request_rejects_runtime_peer() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "comments-status-runtime.ipynb");
@@ -2017,6 +2318,65 @@ fn comments_sync_payload_from_room(
         .unwrap();
     client
         .generate_sync_message_recovering(&mut client_peer_state, "test-client-change")
+        .unwrap()
+        .expect("client comment sync message")
+        .encode()
+}
+
+fn comments_sync_payload_with_authority_field_from_room(
+    room: &NotebookRoom,
+    server_peer_state: &mut automerge::sync::State,
+    actor_label: &str,
+    thread_id: &str,
+    body: &str,
+) -> Vec<u8> {
+    let bytes = room.comments.with_doc(|doc| Ok(doc.save())).unwrap();
+    let mut client =
+        comments_doc::CommentsDoc::load_with_actor(&bytes, &room.comments_doc_id, actor_label)
+            .unwrap();
+    let mut client_peer_state = automerge::sync::State::new();
+    if let Some(initial) = room
+        .comments
+        .with_doc(|doc| {
+            doc.generate_sync_message_recovering(server_peer_state, "test-initial")
+                .map_err(Into::into)
+        })
+        .unwrap()
+    {
+        client
+            .receive_sync_message_with_changes_recovering(
+                &mut client_peer_state,
+                initial,
+                "test-initial-receive",
+            )
+            .unwrap();
+    }
+    client
+        .create_thread(
+            thread_id,
+            "message-1",
+            &comments_doc::CommentAnchor::Notebook,
+            body,
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+    let thread = {
+        let threads = match client.doc().get(&ROOT, "threads").unwrap() {
+            Some((Value::Object(ObjType::Map), obj)) => obj,
+            other => panic!("missing threads map: {other:?}"),
+        };
+        match client.doc().get(&threads, thread_id).unwrap() {
+            Some((Value::Object(ObjType::Map), obj)) => obj,
+            other => panic!("missing test thread: {other:?}"),
+        }
+    };
+    client
+        .doc_mut()
+        .put(&thread, "authority_mutation_state", "accepted")
+        .unwrap();
+    client
+        .generate_sync_message_recovering(&mut client_peer_state, "test-client-authority-field")
         .unwrap()
         .expect("client comment sync message")
         .encode()

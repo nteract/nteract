@@ -35,6 +35,10 @@ pub enum CommentsDocError {
         thread_id: String,
         message_id: String,
     },
+    #[error("comment is already authority-finalized: {0}")]
+    AlreadyFinalized(String),
+    #[error("observed comment content no longer matches current content: {0}")]
+    ObservedContentChanged(String),
     #[error("comment actor mismatch: expected {expected}, got {actual}")]
     ActorMismatch { expected: String, actual: String },
     #[error("unauthorized comment actor: {0}")]

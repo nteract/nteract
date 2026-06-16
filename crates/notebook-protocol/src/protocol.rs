@@ -633,6 +633,7 @@ pub enum NotebookRequest {
     /// Reject a pending durable comment thread through the daemon authority.
     RejectCommentThread {
         thread_id: String,
+        message_id: String,
         reason: String,
         observed_comments_heads: Vec<String>,
     },
@@ -1182,6 +1183,7 @@ mod tests {
             },
             NotebookRequest::RejectCommentThread {
                 thread_id: "thread-1".into(),
+                message_id: "message-1".into(),
                 reason: "duplicate".into(),
                 observed_comments_heads: vec!["abc".into()],
             },
@@ -1458,6 +1460,7 @@ mod tests {
                 serde_json::json!({
                     "action": "reject_comment_thread",
                     "thread_id": "thread-1",
+                    "message_id": "message-1",
                     "reason": "duplicate",
                     "observed_comments_heads": ["abc"],
                 }),

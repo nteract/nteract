@@ -3,8 +3,8 @@ use std::collections::HashSet;
 #[cfg(test)]
 use automerge::transaction::CommitOptions;
 use automerge::{
-    sync, sync::SyncDoc, transaction::Transactable, ActorId, AutoCommit, ObjId, ObjType, ReadDoc,
-    ScalarValue, Value, ROOT,
+    patches::PatchAction, sync, sync::SyncDoc, transaction::Transactable, ActorId, AutoCommit,
+    ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value, ROOT,
 };
 use automerge_recovery::{
     catch_automerge_panic, catch_automerge_result, is_recoverable_sync_error,
@@ -174,6 +174,14 @@ impl CommentsDoc {
         read_str(&self.doc, &ROOT, "comments_doc_id")
     }
 
+    pub fn changed_authority_fields_since(&mut self, heads: &[automerge::ChangeHash]) -> bool {
+        let current_heads = self.doc.get_heads();
+        self.doc
+            .diff(heads, &current_heads)
+            .iter()
+            .any(patch_touches_authority_field)
+    }
+
     pub fn notebook_ref(&self) -> Option<NotebookCommentRef> {
         automunge::read_json_value(&self.doc, &ROOT, "notebook_ref")
             .and_then(|value| serde_json::from_value(value).ok())
@@ -259,6 +267,7 @@ impl CommentsDoc {
         self.doc.put(&thread, "status", "open")?;
         self.doc.put(&thread, "mutation_state", "pending")?;
         self.doc.put(&thread, "created_at", created_at)?;
+        self.doc.put(&thread, "initial_message_id", message_id)?;
         let anchor_value = serde_json::to_value(anchor)?;
         automunge::put_json_at_key_batched(&mut self.doc, &thread, "anchor", &anchor_value)?;
         let messages = self.doc.put_object(&thread, "messages", ObjType::Map)?;
@@ -330,6 +339,8 @@ impl CommentsDoc {
         &mut self,
         thread_id: &str,
         reason: &str,
+        actor_label: &str,
+        authority: &str,
     ) -> Result<(), CommentsDocError> {
         let thread = self.thread_or_error(thread_id)?;
         if let Some(anchor) = self.read_anchor(&thread) {
@@ -347,6 +358,10 @@ impl CommentsDoc {
             .put(&thread, "authority_position", position.as_str())?;
         self.doc
             .put(&thread, "authority_created_at", created_at.as_str())?;
+        self.doc
+            .put(&thread, "authority_created_by_actor_label", actor_label)?;
+        self.doc
+            .put(&thread, "authority_created_by_authority", authority)?;
         self.doc
             .put(&thread, "authority_rejection_reason", reason)?;
         Ok(())
@@ -383,6 +398,8 @@ impl CommentsDoc {
         thread_id: &str,
         message_id: &str,
         reason: &str,
+        actor_label: &str,
+        authority: &str,
     ) -> Result<(), CommentsDocError> {
         let message = self.message_or_error(thread_id, message_id)?;
         let body = read_text_at_key(&self.doc, &message, "body").unwrap_or_default();
@@ -397,6 +414,10 @@ impl CommentsDoc {
         self.doc
             .put(&message, "authority_created_at", created_at.as_str())?;
         self.doc
+            .put(&message, "authority_created_by_actor_label", actor_label)?;
+        self.doc
+            .put(&message, "authority_created_by_authority", authority)?;
+        self.doc
             .put(&message, "authority_rejection_reason", reason)?;
         Ok(())
     }
@@ -406,9 +427,20 @@ impl CommentsDoc {
         thread_id: &str,
         message_id: &str,
         observed_heads: &[automerge::ChangeHash],
+        authority_actor_labels: &[&str],
     ) -> Result<String, CommentsDocError> {
-        let thread_actor = self.validate_pending_thread(thread_id, observed_heads)?;
+        let thread_actor =
+            self.validate_pending_thread(thread_id, observed_heads, authority_actor_labels)?;
+        let thread = self.thread_or_error(thread_id)?;
+        validate_initial_message_id(&self.doc, &thread, thread_id, message_id, observed_heads)?;
         let message = self.message_or_error(thread_id, message_id)?;
+        validate_not_authority_finalized(
+            &self.doc,
+            &message,
+            authority_actor_labels,
+            &format!("message {thread_id}/{message_id}"),
+        )?;
+        self.validate_message_content_matches_observed(thread_id, message_id, observed_heads)?;
         validate_pending_state(
             read_str(&self.doc, &message, "mutation_state"),
             CommentsDocError::MessageNotPending {
@@ -430,10 +462,18 @@ impl CommentsDoc {
         &mut self,
         thread_id: &str,
         observed_heads: &[automerge::ChangeHash],
+        authority_actor_labels: &[&str],
     ) -> Result<String, CommentsDocError> {
         self.validate_observed_heads(observed_heads)?;
         let thread = self.thread_or_error(thread_id)?;
         self.validate_thread_visible_at_heads(thread_id, observed_heads)?;
+        validate_not_authority_finalized(
+            &self.doc,
+            &thread,
+            authority_actor_labels,
+            &format!("thread {thread_id}"),
+        )?;
+        self.validate_thread_content_matches_observed(thread_id, &thread, observed_heads)?;
         validate_pending_state(
             read_str(&self.doc, &thread, "mutation_state"),
             CommentsDocError::ThreadNotPending(thread_id.to_string()),
@@ -446,10 +486,18 @@ impl CommentsDoc {
         thread_id: &str,
         message_id: &str,
         observed_heads: &[automerge::ChangeHash],
+        authority_actor_labels: &[&str],
     ) -> Result<String, CommentsDocError> {
         self.validate_observed_heads(observed_heads)?;
         let message = self.message_or_error(thread_id, message_id)?;
         self.validate_message_visible_at_heads(thread_id, message_id, observed_heads)?;
+        validate_not_authority_finalized(
+            &self.doc,
+            &message,
+            authority_actor_labels,
+            &format!("message {thread_id}/{message_id}"),
+        )?;
+        self.validate_message_content_matches_observed(thread_id, message_id, observed_heads)?;
         validate_pending_state(
             read_str(&self.doc, &message, "mutation_state"),
             CommentsDocError::MessageNotPending {
@@ -494,6 +542,87 @@ impl CommentsDoc {
         }
     }
 
+    fn validate_thread_content_matches_observed(
+        &self,
+        thread_id: &str,
+        thread: &ObjId,
+        observed_heads: &[automerge::ChangeHash],
+    ) -> Result<(), CommentsDocError> {
+        let current_anchor = self
+            .read_anchor(thread)
+            .ok_or_else(|| CommentsDocError::ThreadNotFound(thread_id.to_string()))?;
+        let observed_anchor = self
+            .read_anchor_at(thread, observed_heads)?
+            .ok_or_else(|| {
+                CommentsDocError::ObservedContentChanged(format!("thread {thread_id} anchor"))
+            })?;
+        if current_anchor != observed_anchor {
+            return Err(CommentsDocError::ObservedContentChanged(format!(
+                "thread {thread_id} anchor"
+            )));
+        }
+        validate_str_matches_observed(
+            &self.doc,
+            thread,
+            "position",
+            observed_heads,
+            &format!("thread {thread_id} position"),
+        )?;
+        validate_str_matches_observed(
+            &self.doc,
+            thread,
+            "created_at",
+            observed_heads,
+            &format!("thread {thread_id} created_at"),
+        )?;
+        validate_str_matches_observed(
+            &self.doc,
+            thread,
+            "mutation_state",
+            observed_heads,
+            &format!("thread {thread_id} mutation_state"),
+        )?;
+        Ok(())
+    }
+
+    fn validate_message_content_matches_observed(
+        &self,
+        thread_id: &str,
+        message_id: &str,
+        observed_heads: &[automerge::ChangeHash],
+    ) -> Result<(), CommentsDocError> {
+        let message = self.message_or_error(thread_id, message_id)?;
+        validate_str_matches_observed(
+            &self.doc,
+            &message,
+            "position",
+            observed_heads,
+            &format!("message {thread_id}/{message_id} position"),
+        )?;
+        validate_str_matches_observed(
+            &self.doc,
+            &message,
+            "created_at",
+            observed_heads,
+            &format!("message {thread_id}/{message_id} created_at"),
+        )?;
+        validate_str_matches_observed(
+            &self.doc,
+            &message,
+            "mutation_state",
+            observed_heads,
+            &format!("message {thread_id}/{message_id} mutation_state"),
+        )?;
+        validate_text_matches_observed(
+            &self.doc,
+            &message,
+            "body",
+            observed_heads,
+            &format!("message {thread_id}/{message_id} body"),
+        )?;
+        Ok(())
+    }
+
     fn validate_message_visible_at_heads(
         &self,
         thread_id: &str,
@@ -510,6 +639,20 @@ impl CommentsDoc {
                 "message {thread_id}/{message_id}"
             ))),
         }
+    }
+
+    fn read_anchor_at(
+        &self,
+        thread_obj: &ObjId,
+        observed_heads: &[automerge::ChangeHash],
+    ) -> Result<Option<CommentAnchor>, CommentsDocError> {
+        let Some((Value::Object(ObjType::Map), anchor_obj)) =
+            self.doc.get_at(thread_obj, "anchor", observed_heads)?
+        else {
+            return Ok(None);
+        };
+        let value = hydrate_to_json(self.doc.hydrate(anchor_obj, Some(observed_heads))?);
+        Ok(serde_json::from_value(value).ok())
     }
 
     fn validate_observed_heads(
@@ -1286,6 +1429,22 @@ fn validate_comments_doc_id(comments_doc_id: &str) -> Result<(), CommentsDocErro
     Ok(())
 }
 
+fn patch_touches_authority_field(patch: &automerge::Patch) -> bool {
+    let path_touches_authority = patch
+        .path
+        .iter()
+        .any(|(_, prop)| matches!(prop, Prop::Map(key) if key.starts_with("authority_")));
+    if path_touches_authority {
+        return true;
+    }
+    match &patch.action {
+        PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
+            key.starts_with("authority_")
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 fn scaffold_comments_doc_schema(doc: &mut AutoCommit) -> Result<(), CommentsDocError> {
     doc.put(
@@ -1325,6 +1484,49 @@ fn read_str<O: AsRef<ObjId>>(doc: &AutoCommit, obj: O, key: &str) -> Option<Stri
         .ok()
         .flatten()
         .and_then(|(value, _)| scalar_string(&value))
+}
+
+fn read_str_at(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    key: &str,
+    heads: &[automerge::ChangeHash],
+) -> Result<Option<String>, CommentsDocError> {
+    Ok(doc
+        .get_at(obj, key, heads)?
+        .and_then(|(value, _)| scalar_string(&value)))
+}
+
+fn validate_str_matches_observed(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    key: &str,
+    heads: &[automerge::ChangeHash],
+    context: &str,
+) -> Result<(), CommentsDocError> {
+    if read_str(doc, obj, key) == read_str_at(doc, obj, key, heads)? {
+        return Ok(());
+    }
+    Err(CommentsDocError::ObservedContentChanged(
+        context.to_string(),
+    ))
+}
+
+fn validate_text_matches_observed(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    key: &str,
+    heads: &[automerge::ChangeHash],
+    context: &str,
+) -> Result<(), CommentsDocError> {
+    let current = read_text_at_key(doc, obj, key);
+    let observed = read_text_at_key_at(doc, obj, key, heads)?;
+    if current == observed {
+        return Ok(());
+    }
+    Err(CommentsDocError::ObservedContentChanged(
+        context.to_string(),
+    ))
 }
 
 fn scalar_string(value: &Value<'_>) -> Option<String> {
@@ -1383,6 +1585,18 @@ fn read_text_at_key(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> 
     }
 }
 
+fn read_text_at_key_at(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    key: &str,
+    heads: &[automerge::ChangeHash],
+) -> Result<Option<String>, CommentsDocError> {
+    match doc.get_at(obj, key, heads)? {
+        Some((Value::Object(ObjType::Text), text_obj)) => Ok(Some(doc.text_at(&text_obj, heads)?)),
+        _ => Ok(None),
+    }
+}
+
 fn read_text_obj(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(obj, key).ok().flatten() {
         Some((Value::Object(ObjType::Text), text_obj)) => Some(text_obj),
@@ -1405,6 +1619,40 @@ fn validate_pending_state(
         return Ok(());
     }
     Err(error)
+}
+
+fn validate_not_authority_finalized(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    authority_actor_labels: &[&str],
+    context: &str,
+) -> Result<(), CommentsDocError> {
+    let authority_actors = authority_actor_set(authority_actor_labels);
+    let already_finalized = doc
+        .get_all(obj, "authority_mutation_state")?
+        .iter()
+        .any(|(_, op_id)| obj_id_authored_by_authority(op_id, &authority_actors));
+    if already_finalized {
+        return Err(CommentsDocError::AlreadyFinalized(context.to_string()));
+    }
+    Ok(())
+}
+
+fn validate_initial_message_id(
+    doc: &AutoCommit,
+    thread: &ObjId,
+    thread_id: &str,
+    message_id: &str,
+    observed_heads: &[automerge::ChangeHash],
+) -> Result<(), CommentsDocError> {
+    let current = read_str(doc, thread, "initial_message_id");
+    let observed = read_str_at(doc, thread, "initial_message_id", observed_heads)?;
+    if current.as_deref() == Some(message_id) && observed.as_deref() == Some(message_id) {
+        return Ok(());
+    }
+    Err(CommentsDocError::ObservedContentChanged(format!(
+        "thread {thread_id} initial_message_id"
+    )))
 }
 
 fn obj_actor_label(obj_id: &ObjId) -> Result<String, CommentsDocError> {
@@ -1432,6 +1680,50 @@ fn obj_id_authored_by_authority(obj_id: &ObjId, authority_actors: &HashSet<Actor
     match obj_id {
         ObjId::Id(_, actor, _) => authority_actors.contains(actor),
         _ => false,
+    }
+}
+
+fn hydrate_to_json(value: automerge::hydrate::Value) -> serde_json::Value {
+    match value {
+        automerge::hydrate::Value::Scalar(value) => scalar_to_json(value),
+        automerge::hydrate::Value::Map(map) => {
+            let mut object = serde_json::Map::new();
+            for (key, value) in map.iter() {
+                object.insert(key.clone(), hydrate_to_json(value.value.clone()));
+            }
+            serde_json::Value::Object(object)
+        }
+        automerge::hydrate::Value::List(list) => serde_json::Value::Array(
+            list.iter()
+                .map(|value| hydrate_to_json(value.value.clone()))
+                .collect(),
+        ),
+        automerge::hydrate::Value::Text(text) => serde_json::Value::String(text.to_string()),
+    }
+}
+
+fn scalar_to_json(value: ScalarValue) -> serde_json::Value {
+    match value {
+        ScalarValue::Bytes(bytes) => serde_json::Value::Array(
+            bytes
+                .into_iter()
+                .map(|byte| serde_json::Value::Number(byte.into()))
+                .collect(),
+        ),
+        ScalarValue::Str(value) => serde_json::Value::String(value.to_string()),
+        ScalarValue::Int(value) => serde_json::Value::Number(value.into()),
+        ScalarValue::Uint(value) => serde_json::Value::Number(value.into()),
+        ScalarValue::F64(value) => serde_json::Number::from_f64(value)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        ScalarValue::Counter(value) => serde_json::Value::Number(i64::from(&value).into()),
+        ScalarValue::Timestamp(value) => serde_json::Value::Number(value.into()),
+        ScalarValue::Boolean(value) => serde_json::Value::Bool(value),
+        ScalarValue::Unknown { type_code, bytes } => serde_json::json!({
+            "type_code": type_code,
+            "bytes": bytes,
+        }),
+        ScalarValue::Null => serde_json::Value::Null,
     }
 }
 
@@ -1862,14 +2154,23 @@ mod tests {
         )
         .unwrap();
         doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
-        doc.reject_thread_creation("thread-1", "off-topic").unwrap();
-        doc.reject_message("thread-1", "msg-1", "duplicates prior note")
+        doc.reject_thread_creation("thread-1", "off-topic", "local-user", "local_uid")
             .unwrap();
+        doc.reject_message(
+            "thread-1",
+            "msg-1",
+            "duplicates prior note",
+            "local-user",
+            "local_uid",
+        )
+        .unwrap();
 
         let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
         let thread = &projection.threads[0];
         assert_eq!(thread.mutation_state, ProjectedMutationState::Rejected);
         assert_eq!(thread.rejection_reason.as_deref(), Some("off-topic"));
+        assert_eq!(thread.created_by_actor_label.as_deref(), Some("local-user"));
+        assert_eq!(thread.created_by_authority.as_deref(), Some("local_uid"));
         assert_eq!(
             thread.messages[0].mutation_state,
             ProjectedMutationState::Rejected
@@ -1878,8 +2179,113 @@ mod tests {
             thread.messages[0].rejection_reason.as_deref(),
             Some("duplicates prior note")
         );
+        assert_eq!(
+            thread.messages[0].created_by_actor_label.as_deref(),
+            Some("local-user")
+        );
+        assert_eq!(
+            thread.messages[0].created_by_authority.as_deref(),
+            Some("local_uid")
+        );
         assert!(!thread.trusted);
         assert!(!thread.messages[0].trusted);
+    }
+
+    #[test]
+    fn pending_validation_rejects_body_changed_after_observed_heads() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+        doc.create_thread(
+            "thread-1",
+            "msg-1",
+            &cell_anchor("cell-a"),
+            "original body",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+        let observed_heads = doc.get_heads();
+        let message = doc.message_or_error("thread-1", "msg-1").unwrap();
+        let body = read_text_obj(doc.doc(), &message, "body").unwrap();
+        doc.doc_mut()
+            .splice_text(&body, 0, "original body".len() as isize, "changed body")
+            .unwrap();
+
+        let error = doc
+            .validate_pending_thread_creation("thread-1", "msg-1", &observed_heads, &[AUTHORITY])
+            .unwrap_err();
+        assert!(
+            matches!(error, CommentsDocError::ObservedContentChanged(_)),
+            "expected observed content change, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn pending_validation_rejects_shadowed_authority_finalization() {
+        let mut base = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+        base.create_thread(
+            "thread-1",
+            "msg-1",
+            &cell_anchor("cell-a"),
+            "already finalized",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+        let observed_heads = base.get_heads();
+        let bytes = base.save();
+        let mut authority =
+            CommentsDoc::load_with_actor(&bytes, DOC_ID, AUTHORITY).expect("authority branch");
+        let mut client =
+            CommentsDoc::load_with_actor(&bytes, DOC_ID, CLIENT).expect("client branch");
+
+        authority
+            .accept_thread_creation("thread-1", "local-user", "local_uid")
+            .unwrap();
+        let thread = client.thread_obj("thread-1").unwrap();
+        client
+            .doc_mut()
+            .put(&thread, "authority_mutation_state", "rejected")
+            .unwrap();
+        authority.doc_mut().merge(client.doc_mut()).unwrap();
+
+        let error = authority
+            .validate_pending_thread_creation("thread-1", "msg-1", &observed_heads, &[AUTHORITY])
+            .unwrap_err();
+        assert!(
+            matches!(error, CommentsDocError::AlreadyFinalized(_)),
+            "expected already finalized, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn pending_thread_creation_validation_requires_initial_message() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+        doc.create_thread(
+            "thread-1",
+            "msg-1",
+            &cell_anchor("cell-a"),
+            "initial",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+        doc.reply(
+            "thread-1",
+            "msg-2",
+            "same-author reply",
+            Some("msg-1"),
+            "2026-06-16T00:01:00Z",
+        )
+        .unwrap();
+        let observed_heads = doc.get_heads();
+
+        let error = doc
+            .validate_pending_thread_creation("thread-1", "msg-2", &observed_heads, &[AUTHORITY])
+            .unwrap_err();
+        assert!(
+            matches!(error, CommentsDocError::ObservedContentChanged(_)),
+            "expected wrong initial message rejection, got {error:?}"
+        );
     }
 
     #[test]
