@@ -7578,6 +7578,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "comments-doc",
  "dirs",
  "futures",
  "hex",

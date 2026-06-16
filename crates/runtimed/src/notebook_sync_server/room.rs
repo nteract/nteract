@@ -761,6 +761,13 @@ pub struct NotebookRoom {
     /// Per-notebook CommsDoc handle — widget comm state keyed by comm_id.
     /// RuntimeStateDoc remains the topology/membership source of truth.
     pub comms: runtime_doc::CommsDocHandle,
+    /// Per-notebook CommentsDoc handle — durable comment threads and replies.
+    /// Runtime peers must not mutate or authority-finalize this document.
+    pub comments: comments_doc::CommentsDocHandle,
+    /// Stable required comments document identity resolved by the sidecar store.
+    pub comments_doc_id: String,
+    /// Sidecar store used for CommentsDoc persistence.
+    pub comments_store: CommentsSidecarStore,
     /// Handle to the runtime agent subprocess that owns this notebook's kernel.
     /// Set by `LaunchKernel` or `auto_launch_kernel` when spawned.
     pub runtime_agent_handle: Arc<Mutex<Option<crate::runtime_agent_handle::RuntimeAgentHandle>>>,
@@ -962,6 +969,12 @@ impl NotebookRoom {
         let comms_doc = runtime_doc::CommsDoc::try_new()
             .map_err(|e| anyhow::anyhow!("create comms doc: {e}"))?;
         let comms = runtime_doc::CommsDocHandle::new(comms_doc, comms_changed_tx);
+        let comments_store = CommentsSidecarStore::for_notebook_docs_dir(docs_dir);
+        let comments_locator = comments_locator_for_room(id, path.as_deref());
+        let comments_ref = comments_ref_for_room(id, path.as_deref());
+        let (comments_doc_id, comments) = comments_store
+            .load_or_create(&comments_locator, &comments_ref)
+            .map_err(|e| anyhow::anyhow!("load comments doc: {e:#}"))?;
 
         // Seed path on the runtime-state doc so connecting peers see it via sync.
         if let Some(p) = path.as_ref() {
@@ -991,6 +1004,9 @@ impl NotebookRoom {
             trusted_packages,
             state,
             comms,
+            comments,
+            comments_doc_id,
+            comments_store,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
@@ -1079,6 +1095,12 @@ impl NotebookRoom {
         let (comms_changed_tx, _) = broadcast::channel(16);
         let comms =
             runtime_doc::CommsDocHandle::new(runtime_doc::CommsDoc::new(), comms_changed_tx);
+        let comments_store = CommentsSidecarStore::for_notebook_docs_dir(docs_dir);
+        let comments_locator = comments_locator_for_room(id, path.as_deref());
+        let comments_ref = comments_ref_for_room(id, path.as_deref());
+        let (comments_doc_id, comments) = comments_store
+            .load_or_create(&comments_locator, &comments_ref)
+            .expect("load comments document sidecar");
         if let Some(p) = path.as_ref() {
             let path_str = p.to_string_lossy().into_owned();
             let _ = state.with_doc(|sd| sd.set_path(Some(&path_str)));
@@ -1100,6 +1122,9 @@ impl NotebookRoom {
             trusted_packages,
             state,
             comms,
+            comments,
+            comments_doc_id,
+            comments_store,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),

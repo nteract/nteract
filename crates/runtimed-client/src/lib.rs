@@ -212,6 +212,11 @@ pub fn default_notebook_docs_dir() -> PathBuf {
     daemon_base_dir().join("notebook-docs")
 }
 
+/// Get the default directory for durable comments sidecar documents.
+pub fn default_comments_dir() -> PathBuf {
+    daemon_base_dir().join("comments")
+}
+
 /// Base directory for kernel IPC (Unix domain) socket files.
 ///
 /// Uses `/tmp/` to stay within the macOS 104-byte `sun_path` limit —

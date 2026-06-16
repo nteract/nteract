@@ -50,6 +50,7 @@ use runtime_doc::RuntimeStateDoc;
 mod attachments;
 mod blob_upload;
 mod catalog;
+mod comments_store;
 mod identity;
 mod load;
 mod metadata;
@@ -77,6 +78,7 @@ mod workstation_attachment;
 
 pub(crate) use attachments::*;
 pub(crate) use catalog::*;
+pub(crate) use comments_store::*;
 pub(crate) use identity::*;
 pub(crate) use load::*;
 pub(crate) use metadata::*;

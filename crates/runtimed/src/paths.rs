@@ -31,6 +31,12 @@ pub use runt_workspace::default_socket_path;
 /// Python bindings).
 pub use runtimed_client::default_cache_dir;
 
+/// Default directory for durable comments sidecar documents.
+///
+/// Re-exported from `runtimed_client` so daemon code uses the same
+/// `<daemon_base>/comments` convention as clients and diagnostics.
+pub use runtimed_client::default_comments_dir;
+
 /// Walk up from a pool env's `venv_path` to the top-level
 /// `runtimed-{uv,conda,pixi}-*` directory.
 ///

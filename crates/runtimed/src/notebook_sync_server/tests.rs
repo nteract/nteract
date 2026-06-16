@@ -1186,8 +1186,15 @@ fn test_room_with_path_and_store(
     let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
     let (comms_changed_tx, _) = broadcast::channel(16);
     let comms = runtime_doc::CommsDocHandle::new(runtime_doc::CommsDoc::new(), comms_changed_tx);
+    let comments_store = CommentsSidecarStore::for_notebook_docs_dir(tmp.path());
+    let room_id = uuid::Uuid::new_v4();
+    let comments_locator = comments_locator_for_room(room_id, Some(notebook_path.as_path()));
+    let comments_ref = comments_ref_for_room(room_id, Some(notebook_path.as_path()));
+    let (comments_doc_id, comments) = comments_store
+        .load_or_create(&comments_locator, &comments_ref)
+        .unwrap();
     let room = NotebookRoom {
-        id: uuid::Uuid::new_v4(),
+        id: room_id,
         doc: Arc::new(RwLock::new(doc)),
         broadcasts: RoomBroadcasts::default(),
         persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
@@ -1217,6 +1224,9 @@ fn test_room_with_path_and_store(
         trusted_packages,
         state,
         comms,
+        comments,
+        comments_doc_id,
+        comments_store,
         runtime_agent_handle: Arc::new(Mutex::new(None)),
         runtime_agent_env_path: Arc::new(RwLock::new(None)),
         runtime_agent_launched_config: Arc::new(RwLock::new(None)),
@@ -1275,6 +1285,91 @@ async fn test_new_fresh_seeds_local_workstation_attachment() {
         Some(tmp.path().to_string_lossy().as_ref())
     );
     assert_eq!(attachment.updated_at, None);
+}
+
+#[tokio::test]
+async fn test_new_fresh_seeds_comments_doc_identity() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("notebook-docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let notebook_path = tmp.path().join("comments.ipynb");
+    let room = NotebookRoom::new_fresh_with_trusted_packages(
+        Uuid::new_v4(),
+        Some(notebook_path.clone()),
+        &docs_dir,
+        test_blob_store(&tmp),
+        false,
+        test_trusted_packages(),
+    )
+    .unwrap();
+
+    let comments_doc_id = room.comments.read(|doc| doc.comments_doc_id()).unwrap();
+    assert_eq!(
+        comments_doc_id.as_deref(),
+        Some(room.comments_doc_id.as_str())
+    );
+    assert!(room.comments_doc_id.starts_with("comments:local-path:"));
+    assert_eq!(room.comments_store.root(), tmp.path().join("comments"));
+    assert!(room.comments_store.root().join("index.json").exists());
+    assert_eq!(
+        room.comments.read(|doc| doc.notebook_ref()).unwrap(),
+        Some(comments_doc::NotebookCommentRef::LocalPath {
+            canonical_path: notebook_path.to_string_lossy().into_owned()
+        })
+    );
+}
+
+#[tokio::test]
+async fn test_file_backed_room_reuses_comments_sidecar_by_path() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("notebook-docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let notebook_path = tmp.path().join("comments-reopen.ipynb");
+    let room_a = NotebookRoom::new_fresh_with_trusted_packages(
+        Uuid::new_v4(),
+        Some(notebook_path.clone()),
+        &docs_dir,
+        test_blob_store(&tmp),
+        false,
+        test_trusted_packages(),
+    )
+    .unwrap();
+    room_a
+        .comments
+        .with_doc(|doc| {
+            doc.create_thread(
+                "thread-1",
+                "message-1",
+                &comments_doc::CommentAnchor::Notebook,
+                "survives reopen",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let saved_path = room_a.comments_store.save_handle(&room_a.comments).unwrap();
+    assert!(saved_path.exists());
+    let comments_doc_id = room_a.comments_doc_id.clone();
+
+    let room_b = NotebookRoom::new_fresh_with_trusted_packages(
+        Uuid::new_v4(),
+        Some(notebook_path),
+        &docs_dir,
+        test_blob_store(&tmp),
+        false,
+        test_trusted_packages(),
+    )
+    .unwrap();
+
+    assert_eq!(room_b.comments_doc_id, comments_doc_id);
+    let projection = room_b
+        .comments
+        .read(|doc| doc.read_projection(&[], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(projection.threads.len(), 1);
+    assert_eq!(projection.threads[0].messages[0].body, "survives reopen");
 }
 
 #[test]
