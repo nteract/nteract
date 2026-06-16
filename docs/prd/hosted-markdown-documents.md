@@ -156,6 +156,13 @@ projection, editor, and authorization concepts across Cloud and Desktop.
    handshake only when local auth material can prove they belong to the same
    principal; otherwise it waits for the hosted room and must not let a stale
    seed overwrite newer live content.
+10. Document interaction mode and document representation are separate. The
+    shell-level `View` / `Edit` control describes whether the current principal
+    is reading or mutating the document. A Markdown-stage control may then
+    choose the representation of the same body, such as `Rendered`, `Source`,
+    or future side-by-side `Split`. Comments and rich editing must attach to
+    source ranges or projected block anchors from the same Automerge body, not
+    to a second stored rich-text document.
 
 ### Cloud Hosting
 
