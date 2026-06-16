@@ -2095,7 +2095,7 @@ describe("Worker artifact routes", () => {
       document_id: "markdown-share-email",
       subject_kind: "principal",
       subject: "user:dev:bob",
-      scope: "viewer",
+      scope: "editor",
       created_at: "2026-06-15T00:00:00.000Z",
       updated_at: "2026-06-15T00:00:00.000Z",
       created_by_actor_label: "user:dev:alice/browser:tab",
@@ -2170,7 +2170,7 @@ describe("Worker artifact routes", () => {
         (row) =>
           row.document_id === "markdown-share-email" &&
           row.subject === "user:dev:bob" &&
-          row.scope === "viewer",
+          (row.scope === "viewer" || row.scope === "editor"),
       ),
       false,
     );

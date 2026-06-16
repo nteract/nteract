@@ -4085,12 +4085,14 @@ async function routeMarkdownDocumentAcl(
   });
   if (request.method === "POST" && aclInput.sameEmailAliasSubjects?.length) {
     for (const aliasSubject of aclInput.sameEmailAliasSubjects) {
-      await revokeMarkdownDocumentAclRow(env, {
-        documentId,
-        subjectKind: "principal",
-        subject: aliasSubject,
-        scope: aclInput.scope,
-      });
+      for (const scope of ["viewer", "editor", "owner"] as const) {
+        await revokeMarkdownDocumentAclRow(env, {
+          documentId,
+          subjectKind: "principal",
+          subject: aliasSubject,
+          scope,
+        });
+      }
     }
   }
   cloudLog("info", "markdown_acl.grant.completed", {

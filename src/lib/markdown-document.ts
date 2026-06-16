@@ -103,7 +103,6 @@ export function projectMarkdownDocument(
     canRenderInHost,
     representation: projectMarkdownDocumentRepresentation({
       canEdit,
-      canRender: true,
       mode,
       requestedRepresentation: input.requestedRepresentation,
     }),
@@ -114,12 +113,10 @@ export function projectMarkdownDocument(
 
 export function projectMarkdownDocumentRepresentation({
   canEdit,
-  canRender,
   mode,
   requestedRepresentation,
 }: {
   canEdit: boolean;
-  canRender: boolean;
   mode: MarkdownDocumentMode;
   requestedRepresentation?: MarkdownDocumentRepresentation | null;
 }): MarkdownDocumentRepresentationProjection {
@@ -141,8 +138,8 @@ export function projectMarkdownDocumentRepresentation({
       {
         id: "rendered",
         label: "Rendered",
-        title: canRender ? "Show rendered Markdown" : "Rendered Markdown is not available yet",
-        disabled: !canRender,
+        title: "Show rendered Markdown",
+        disabled: false,
       },
       {
         id: "source",

@@ -2140,52 +2140,6 @@ body {
   }
 }
 
-.cloud-dashboard-shell {
-  display: grid;
-  align-content: start;
-  justify-items: center;
-  gap: 1rem;
-  min-height: 100vh;
-  padding: clamp(1rem, 4vw, 2rem);
-  background: var(--background);
-  color: var(--foreground);
-}
-
-.cloud-dashboard-header {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 1rem;
-  width: min(100%, 56rem);
-}
-
-.cloud-dashboard-header h1,
-.cloud-dashboard-header p {
-  margin: 0;
-}
-
-.cloud-dashboard-header h1 {
-  margin-top: 0.25rem;
-  font-size: clamp(2rem, 5vw, 3.5rem);
-  font-weight: 740;
-  letter-spacing: 0;
-  line-height: 1;
-}
-
-.cloud-dashboard-header p,
-.cloud-dashboard-eyebrow {
-  color: color-mix(in srgb, var(--foreground) 62%, transparent);
-  font-size: 0.875rem;
-  line-height: 1.35;
-}
-
-.cloud-dashboard-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
 .cloud-document-list {
   display: grid;
   gap: 0.5rem;
@@ -2232,75 +2186,6 @@ body {
   line-height: 1.25;
 }
 
-.cloud-dashboard-create {
-  display: grid;
-  gap: 0.75rem;
-  width: min(100%, 36rem);
-  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
-  border-radius: 8px;
-  padding: 0.875rem;
-  background: color-mix(in srgb, var(--background) 94%, var(--foreground) 6%);
-}
-
-.cloud-dashboard-create label {
-  display: grid;
-  gap: 0.25rem;
-  color: color-mix(in srgb, var(--foreground) 65%, transparent);
-  font-size: 0.75rem;
-}
-
-.cloud-dashboard-create input {
-  min-height: 2.25rem;
-  border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
-  border-radius: 6px;
-  padding: 0 0.625rem;
-  background: var(--background);
-  color: var(--foreground);
-  font: inherit;
-}
-
-.cloud-dashboard-create-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  justify-content: flex-end;
-}
-
-.cloud-dashboard-create-actions button,
-.cloud-dashboard-button,
-.cloud-dashboard-secondary-action {
-  display: inline-flex;
-  gap: 0.375rem;
-  align-items: center;
-  justify-content: center;
-  min-height: 2.25rem;
-  border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
-  border-radius: 6px;
-  padding: 0 0.75rem;
-  background: color-mix(in srgb, var(--background) 96%, var(--foreground) 4%);
-  color: var(--foreground);
-  font: inherit;
-  font-size: 0.8125rem;
-  font-weight: 620;
-  text-decoration: none;
-}
-
-.cloud-dashboard-create-actions button:hover,
-.cloud-dashboard-button:hover,
-.cloud-dashboard-secondary-action:hover {
-  background: color-mix(in srgb, var(--background) 88%, var(--foreground) 10%);
-}
-
-.cloud-dashboard-button svg,
-.cloud-dashboard-secondary-action svg {
-  width: 0.9375rem;
-  height: 0.9375rem;
-}
-
-.cloud-dashboard-secondary-action {
-  width: fit-content;
-}
-
 .cloud-markdown-shell {
   background: var(--background);
   color: var(--foreground);
@@ -2328,15 +2213,6 @@ body {
 }
 
 @media (max-width: 599.98px) {
-  .cloud-dashboard-header {
-    display: grid;
-    align-items: start;
-  }
-
-  .cloud-dashboard-actions {
-    justify-content: flex-start;
-  }
-
   .cloud-markdown-room-toolbar [data-slot="notebook-document-header-presence"] {
     flex-basis: auto;
     max-width: none;

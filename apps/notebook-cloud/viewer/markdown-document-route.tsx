@@ -41,6 +41,7 @@ import {
   projectCloudAccessRequestNotice,
   shouldFallbackCloudEditUrlToView,
   shouldLoadOwnCloudAccessRequest,
+  shouldUseCloudCatalogBootstrap,
 } from "./cloud-access-request-state";
 import {
   cloudBrowserCanUseAuthenticatedApi,
@@ -115,7 +116,6 @@ type RouteState =
       liveReady: boolean;
       scope: "owner" | "editor" | "viewer";
       connectionStatus: ConnectionStatus;
-      latestRevisionId: string | null;
     }
   | { kind: "error"; message: string };
 
@@ -212,7 +212,9 @@ export function MarkdownDocumentRoute({
             : initialMarkdownDocumentRouteState(config),
         );
         const catalogPromise = Promise.resolve(
-          markdownCatalogFromBootstrap(config) ?? fetchMarkdownCatalog(config, authState),
+          shouldUseCloudCatalogBootstrap({ catalogRefreshVersion })
+            ? (markdownCatalogFromBootstrap(config) ?? fetchMarkdownCatalog(config, authState))
+            : fetchMarkdownCatalog(config, authState),
         );
         const [catalog, liveSyncModule] = await Promise.all([
           catalogPromise,
@@ -220,7 +222,6 @@ export function MarkdownDocumentRoute({
         ]);
         if (disposed) return;
         const title = catalog.document.title?.trim() || "Untitled Markdown";
-        const latestRevisionId = catalog.document.latest_revision_id;
         if (liveSyncModule.shouldLoadMarkdownInstantPaintSnapshot(config)) {
           void liveSyncModule
             .loadMarkdownDocumentInstantPaintSnapshot({
@@ -245,7 +246,6 @@ export function MarkdownDocumentRoute({
                 scope: catalog.document.scope,
                 connectionStatus: connectionStatusRef.current,
                 liveReady: false,
-                latestRevisionId,
               });
             });
         }
@@ -278,7 +278,6 @@ export function MarkdownDocumentRoute({
               scope: catalog.document.scope,
               connectionStatus: connectionStatusRef.current,
               liveReady: true,
-              latestRevisionId,
             });
           },
         });
@@ -839,7 +838,6 @@ function initialMarkdownDocumentRouteState(config: CloudMarkdownDocumentConfig):
       liveReady: false,
       scope: bootstrap.scope,
       connectionStatus: "connecting",
-      latestRevisionId: bootstrap.latest_revision_id,
     };
   }
   return {
@@ -851,7 +849,6 @@ function initialMarkdownDocumentRouteState(config: CloudMarkdownDocumentConfig):
     liveReady: false,
     scope: "viewer",
     connectionStatus: "connecting",
-    latestRevisionId: null,
   };
 }
 

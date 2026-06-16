@@ -6,6 +6,7 @@ import {
   projectCloudAccessRequestTransition,
   shouldFallbackCloudEditUrlToView,
   shouldLoadOwnCloudAccessRequest,
+  shouldUseCloudCatalogBootstrap,
 } from "../viewer/cloud-access-request-state";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 
@@ -305,5 +306,10 @@ describe("cloud access-request state projection", () => {
       }),
       false,
     );
+  });
+
+  it("uses route bootstrap only before deliberate access refreshes", () => {
+    assert.equal(shouldUseCloudCatalogBootstrap({ catalogRefreshVersion: 0 }), true);
+    assert.equal(shouldUseCloudCatalogBootstrap({ catalogRefreshVersion: 1 }), false);
   });
 });

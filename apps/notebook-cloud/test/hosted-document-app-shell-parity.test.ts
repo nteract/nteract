@@ -55,6 +55,7 @@ describe("hosted document app-shell parity", () => {
   it("routes Markdown edit requests through the shared cloud edit chrome", () => {
     assert.match(markdownDocumentRouteSource, /CloudNotebookEditModeButton/);
     assert.match(markdownDocumentRouteSource, /shouldLoadOwnCloudAccessRequest/);
+    assert.match(markdownDocumentRouteSource, /shouldUseCloudCatalogBootstrap/);
     assert.match(markdownDocumentRouteSource, /projectCloudAccessRequestNotice/);
     assert.match(markdownDocumentRouteSource, /onRequestEditAccess=\{requestMarkdownEditAccess\}/);
     assert.doesNotMatch(markdownDocumentRouteSource, /<MarkdownDocumentModeToggle/);

@@ -42,6 +42,10 @@ export interface CloudEditModeFallbackProjectionInput {
   selectedMode: CloudNotebookUrlMode;
 }
 
+export interface CloudCatalogBootstrapProjectionInput {
+  catalogRefreshVersion: number;
+}
+
 const NO_CLOUD_ACCESS_REQUEST_TRANSITION: CloudAccessRequestTransition = Object.freeze({
   requestedScope: null,
   selectedMode: null,
@@ -131,6 +135,12 @@ export function shouldFallbackCloudEditUrlToView({
   return (
     selectedMode === "edit" && catalogResolved && !catalogGrantsDocumentEdit && !editAccessRequested
   );
+}
+
+export function shouldUseCloudCatalogBootstrap({
+  catalogRefreshVersion,
+}: CloudCatalogBootstrapProjectionInput): boolean {
+  return catalogRefreshVersion === 0;
 }
 
 export function projectCloudAccessRequestNotice({
