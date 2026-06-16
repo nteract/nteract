@@ -1,22 +1,28 @@
 .markdown-document-scroll {
+  --markdown-document-content-width: 52rem;
+  --markdown-document-content-block-padding: clamp(1.25rem, 4vw, 3rem);
+  --markdown-document-content-inline-padding: clamp(1.25rem, 4vw, 3rem);
   display: flex;
   flex: 1;
   flex-direction: column;
+  box-sizing: border-box;
   min-height: 0;
   overflow: auto;
+  padding: var(--markdown-document-content-block-padding)
+    var(--markdown-document-content-inline-padding);
   scroll-behavior: smooth;
 }
 
 .markdown-document-scroll[data-mode="view"] {
-  padding: clamp(1.25rem, 4vw, 3rem);
+  background: var(--background);
 }
 
 .markdown-document-scroll[data-mode="edit"] {
-  padding: 0;
+  background: var(--background);
 }
 
 .markdown-document-preview {
-  width: min(100%, 52rem);
+  width: min(100%, var(--markdown-document-content-width));
   margin: 0 auto;
 }
 
@@ -24,12 +30,14 @@
   display: flex;
   flex: 1;
   min-height: 100%;
-  width: 100%;
-  background: var(--background);
+  width: min(100%, var(--markdown-document-content-width));
+  margin: 0 auto;
+  background: transparent;
 }
 
 .markdown-document-editor .cm-editor {
   flex: 1;
+  margin-top: 0;
   min-height: 100%;
   width: 100%;
 }
@@ -40,7 +48,7 @@
 
 .markdown-document-editor .cm-content {
   min-height: 100%;
-  padding: clamp(1rem, 3vw, 2.5rem) clamp(1rem, 5vw, 4rem);
+  padding: 0;
 }
 
 .markdown-document-mode-toggle {
@@ -106,12 +114,9 @@
 }
 
 @media (max-width: 599.98px) {
-  .markdown-document-scroll[data-mode="view"] {
-    padding: 1rem;
-  }
-
-  .markdown-document-editor .cm-content {
-    padding: 1rem;
+  .markdown-document-scroll {
+    --markdown-document-content-block-padding: 1rem;
+    --markdown-document-content-inline-padding: 1rem;
   }
 
   .markdown-document-mode-toggle span {

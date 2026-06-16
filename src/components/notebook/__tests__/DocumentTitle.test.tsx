@@ -15,9 +15,11 @@ describe("DocumentTitle", () => {
       />,
     );
 
+    const titleNode = screen.getByText("Existing");
     fireEvent.click(screen.getByRole("button", { name: "Rename Existing" }));
 
     const editable = screen.getByRole("textbox", { name: "Document title" });
+    expect(editable).toBe(titleNode);
     expect(editable).toHaveAttribute("contenteditable", "true");
 
     editable.textContent = "Renamed";

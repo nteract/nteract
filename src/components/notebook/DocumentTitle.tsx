@@ -66,6 +66,7 @@ export function DocumentTitle({
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(renameTitle);
   const editableRef = useRef<HTMLSpanElement | null>(null);
+  const canShowRename = canRename && Boolean(onRename);
 
   useEffect(() => {
     if (!editing) {
@@ -150,66 +151,76 @@ export function DocumentTitle({
         </a>
       ) : null}
       <div className={cn("document-title", classNames?.title)} title={renameError ?? title.title}>
-        {editing ? (
-          <form className={cn("document-title-form", classNames?.form)} onSubmit={saveRename}>
-            <span
-              aria-label={inputAriaLabel}
-              aria-disabled={renameSaving}
-              contentEditable={!renameSaving}
-              data-name={inputName}
-              data-placeholder={placeholder}
-              onInput={updateDraftFromEditable}
-              onKeyDown={handleEditableKeyDown}
-              onPaste={handleEditablePaste}
-              ref={editableRef}
-              role="textbox"
-              spellCheck="true"
-              suppressContentEditableWarning
-            >
-              {draftTitle}
-            </span>
-            <button
-              type="submit"
-              disabled={renameSaving}
-              title="Save title"
-              aria-label="Save title"
-            >
-              {renameSaving ? (
-                <Loader2
-                  className={cn("document-title-spinner", classNames?.spinner)}
-                  aria-hidden="true"
-                />
+        <form
+          className={cn("document-title-form", classNames?.form)}
+          data-editing={editing ? "true" : "false"}
+          onSubmit={saveRename}
+        >
+          <span
+            aria-disabled={editing ? renameSaving : undefined}
+            aria-label={editing ? inputAriaLabel : undefined}
+            className={cn(!editing && classNames?.staticTitle)}
+            contentEditable={editing && !renameSaving}
+            data-name={editing ? inputName : undefined}
+            data-placeholder={placeholder}
+            data-slot="document-title-label"
+            onInput={editing ? updateDraftFromEditable : undefined}
+            onKeyDown={editing ? handleEditableKeyDown : undefined}
+            onPaste={editing ? handleEditablePaste : undefined}
+            ref={editableRef}
+            role={editing ? "textbox" : undefined}
+            spellCheck={editing ? "true" : undefined}
+            suppressContentEditableWarning
+          >
+            {editing ? draftTitle : title.label}
+          </span>
+          {canShowRename ? (
+            <span className="document-title-actions" data-slot="document-title-actions">
+              {editing ? (
+                <>
+                  <button
+                    type="submit"
+                    disabled={renameSaving}
+                    title="Save title"
+                    aria-label="Save title"
+                  >
+                    {renameSaving ? (
+                      <Loader2
+                        className={cn("document-title-spinner", classNames?.spinner)}
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Check aria-hidden="true" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={renameSaving}
+                    title="Cancel rename"
+                    aria-label="Cancel rename"
+                    onClick={cancelRename}
+                  >
+                    <X aria-hidden="true" />
+                  </button>
+                </>
               ) : (
-                <Check aria-hidden="true" />
+                <>
+                  <button
+                    type="button"
+                    className={cn("document-title-edit-button", classNames?.editButton)}
+                    disabled={renameSaving}
+                    title={renameButtonTitle}
+                    aria-label={`Rename ${title.label}`}
+                    onClick={() => setEditing(true)}
+                  >
+                    <PencilLine aria-hidden="true" />
+                  </button>
+                  <span className="document-title-action-placeholder" aria-hidden="true" />
+                </>
               )}
-            </button>
-            <button
-              type="button"
-              disabled={renameSaving}
-              title="Cancel rename"
-              aria-label="Cancel rename"
-              onClick={cancelRename}
-            >
-              <X aria-hidden="true" />
-            </button>
-          </form>
-        ) : (
-          <div className={cn("document-title-static", classNames?.staticTitle)}>
-            <span>{title.label}</span>
-            {canRename && onRename ? (
-              <button
-                type="button"
-                className={cn("document-title-edit-button", classNames?.editButton)}
-                disabled={renameSaving}
-                title={renameButtonTitle}
-                aria-label={`Rename ${title.label}`}
-                onClick={() => setEditing(true)}
-              >
-                <PencilLine aria-hidden="true" />
-              </button>
-            ) : null}
-          </div>
-        )}
+            </span>
+          ) : null}
+        </form>
         {renameError ? (
           <small className={cn("document-title-status", classNames?.status)} role="status">
             {renameError}

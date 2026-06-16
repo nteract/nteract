@@ -303,16 +303,18 @@ body {
   height: 1.125rem;
 }
 
-.cloud-notebook-title-static,
 .cloud-notebook-title-form {
-  display: flex;
+  --document-title-action-size: 1.625rem;
+  --document-title-action-gap: 0.25rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   min-width: 0;
   max-width: 100%;
   align-items: center;
   gap: 0.375rem;
 }
 
-.cloud-notebook-title span,
+.cloud-notebook-title [data-slot="document-title-label"],
 .cloud-notebook-title small {
   min-width: 0;
   overflow: hidden;
@@ -320,7 +322,13 @@ body {
   white-space: nowrap;
 }
 
-.cloud-notebook-title span {
+.cloud-notebook-title [data-slot="document-title-label"] {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.875rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0.1875rem 0.5rem;
   color: var(--foreground);
   font-size: 0.9375rem;
   font-weight: 650;
@@ -339,14 +347,23 @@ body {
   color: color-mix(in srgb, var(--destructive) 72%, var(--foreground) 28%);
 }
 
+.cloud-notebook-title [data-slot="document-title-actions"] {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--document-title-action-gap);
+  width: calc(var(--document-title-action-size) * 2 + var(--document-title-action-gap));
+}
+
 .cloud-notebook-title-edit-button,
 .cloud-notebook-title-form button {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 1.625rem;
-  height: 1.625rem;
+  width: var(--document-title-action-size);
+  height: var(--document-title-action-size);
   border: 0;
   border-radius: 6px;
   color: color-mix(in srgb, var(--foreground) 64%, transparent);
@@ -381,26 +398,23 @@ body {
 
 .cloud-notebook-title-form [contenteditable="true"],
 .cloud-notebook-title-form input {
-  min-width: 7rem;
-  width: min(18rem, 32vw);
-  max-width: min(100%, 32rem);
-  min-height: 1.875rem;
   border: 1px solid color-mix(in srgb, var(--foreground) 18%, transparent);
-  border-radius: 6px;
-  padding: 0.1875rem 0.5rem;
-  color: var(--foreground);
   background: color-mix(in srgb, var(--background) 94%, var(--foreground) 6%);
-  font-size: 0.875rem;
-  font-weight: 600;
-  line-height: 1.35;
   overflow: hidden;
   text-overflow: clip;
-  white-space: normal;
+  white-space: nowrap;
 }
 
 .cloud-notebook-title-form [contenteditable="true"]:empty::before {
   content: attr(data-placeholder);
   color: color-mix(in srgb, var(--foreground) 42%, transparent);
+}
+
+.cloud-notebook-title-action-placeholder {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: var(--document-title-action-size);
+  height: var(--document-title-action-size);
 }
 
 .cloud-notebook-title-spinner {
@@ -535,11 +549,6 @@ body {
     gap: 0.5rem;
   }
 
-  .cloud-notebook-title-form input {
-    min-width: 6rem;
-    width: min(12rem, 28vw);
-  }
-
   .cloud-notebook-title small {
     display: none;
   }
@@ -557,18 +566,14 @@ body {
   }
 
   .cloud-notebook-title-form {
+    --document-title-action-size: 1.5rem;
     gap: 0.25rem;
-  }
-
-  .cloud-notebook-title-form input {
-    min-width: 5.5rem;
-    width: min(9rem, 34vw);
   }
 
   .cloud-notebook-title-edit-button,
   .cloud-notebook-title-form button {
-    width: 1.5rem;
-    height: 1.5rem;
+    width: var(--document-title-action-size);
+    height: var(--document-title-action-size);
   }
 
   .cloud-room-toolbar [data-slot="notebook-document-header-controls"] {
