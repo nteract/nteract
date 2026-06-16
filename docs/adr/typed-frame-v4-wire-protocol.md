@@ -324,34 +324,21 @@ The phase fields are deliberately ordered so a later snapshot never represents l
 
 ## Open Questions
 
-1. ~~**TS-Rust size-limit drift.**~~ **Resolved** by punchlist WP-3. New Rust contract test `frame_size_limits_match_typescript` parses the TS table and compares cap+warn per type against `notebook_wire::frame_size_limits`. Any Rust cap change that forgets the TS side now fails CI. The deeper fix is WP-12: expose the table through `runtimed-wasm` (or ts-rs codegen) so the mirror — and the contract test — disappear entirely.
+1. **`Request` cap of 16 MiB feels high.** It exists because `SendComm` envelopes carry widget buffers that JSON-expand ~4x from binary. A 4 MiB widget buffer becomes ~16 MiB on the wire. Moving widget buffers off the `Request` channel and onto `PutBlob` (with comm IDs that reference the resulting blob hash) would let `Request` drop to ~1 MiB. Tracked as a follow-up.
 
-2. ~~**AGENTS.md drift on `Handshake::Blob`.**~~ **Resolved by punchlist
-   WP-1.** Blob uploads ride the `NotebookSync` channel as `PUT_BLOB` (`0x08`)
-   frames; blob downloads go over the daemon's HTTP server. The wire AGENTS
-   guide now calls out that there is no Blob handshake variant.
+2. **`Response` cap of 64 MiB is the largest single allocation in the protocol.** `DocBytes`, `HistoryResult`, and large completion replies live here. If a runaway response triggers the cap, the connection drops and the room re-syncs from scratch. There is no streaming path for large responses today; everything is one frame. A future improvement would be a streaming response framing (multiple `Response` frames with the same id, terminated by an end marker).
 
-3. ~~**Presence size cap is duplicated.**~~ **Resolved** by punchlist WP-2: the wire-layer cap was reduced from 1 MiB to 4 KiB to match `notebook-doc::presence::MAX_PRESENCE_FRAME_SIZE`. Two layers still hold the constant but the values agree, and the WP-3 contract test (next stack PR) prevents drift.
+3. **Forward-compat is daemon-to-client only.** A v5 daemon can send a v4 client an unknown frame type and the v4 client will skip it. The opposite direction is closed by the preamble check. If we ever want client-side frame extensions (e.g., a future browser client that emits a new frame type the daemon doesn't recognize), we need a separate capability-negotiation step or a relaxed preamble policy. Not v4.
 
-4. **`Request` cap of 16 MiB feels high.** It exists because `SendComm` envelopes carry widget buffers that JSON-expand ~4x from binary. A 4 MiB widget buffer becomes ~16 MiB on the wire. Moving widget buffers off the `Request` channel and onto `PutBlob` (with comm IDs that reference the resulting blob hash) would let `Request` drop to ~1 MiB. Tracked as a follow-up.
+4. **Untyped framing for handshake and capability response is load-bearing legacy.** Pool, SettingsSync, the handshake JSON, and the post-handshake capability JSON all use the untyped framing. Migrating them to typed frames would require a v5 protocol bump. Worth doing as part of a future hosted-room WebSocket transport, where the URL path can carry the channel and the framing can be consistent.
 
-5. **`Response` cap of 64 MiB is the largest single allocation in the protocol.** `DocBytes`, `HistoryResult`, and large completion replies live here. If a runaway response triggers the cap, the connection drops and the room re-syncs from scratch. There is no streaming path for large responses today; everything is one frame. A future improvement would be a streaming response framing (multiple `Response` frames with the same id, terminated by an end marker).
+5. **Idle-peer timeout is the only liveness check.** There is no application-layer heartbeat on typed-frame connections. Presence has heartbeats (`PresenceMessage::Heartbeat`) but those are room-level, not connection-level. A peer that stops sending Presence but keeps sending Automerge sync will not be detected as orphaned. Worth considering an explicit `SessionControl::Ping` for v5.
 
-6. **Forward-compat is daemon-to-client only.** A v5 daemon can send a v4 client an unknown frame type and the v4 client will skip it. The opposite direction is closed by the preamble check. If we ever want client-side frame extensions (e.g., a future browser client that emits a new frame type the daemon doesn't recognize), we need a separate capability-negotiation step or a relaxed preamble policy. Not v4.
+6. **No wire-level signature or MAC.** The identity ADR mandates server-side per-frame actor validation against `AuthenticatedConnection.principal`, but the bytes themselves carry no cryptographic binding. A trusted intermediary (Tauri relay) could rewrite an outbound frame's payload before forwarding. v1 inherits the same-UID trust model from the Unix socket; hosted rooms will inherit the TLS trust model from the WebSocket. Change-level signed authorship (Keyhive direction) is the eventual fix.
 
-7. **Untyped framing for handshake and capability response is load-bearing legacy.** Pool, SettingsSync, the handshake JSON, and the post-handshake capability JSON all use the untyped framing. Migrating them to typed frames would require a v5 protocol bump. Worth doing as part of a future hosted-room WebSocket transport, where the URL path can carry the channel and the framing can be consistent.
+7. **Runtime-agent reuses Request/Response type bytes.** `0x01`/`0x02` carry either `NotebookRequestEnvelope`/`NotebookResponseEnvelope` or `RuntimeAgentRequestEnvelope`/`RuntimeAgentResponseEnvelope` depending on which connection it is. There is no way to tell them apart from the type byte alone; the handshake variant determines the payload shape. A misrouted frame (e.g., a buggy proxy that crosses the streams) would deserialize incorrectly. Worth either a distinct type-byte block for runtime-agent traffic or an explicit `kind` field in the envelope.
 
-8. **Idle-peer timeout is the only liveness check.** There is no application-layer heartbeat on typed-frame connections. Presence has heartbeats (`PresenceMessage::Heartbeat`) but those are room-level, not connection-level. A peer that stops sending Presence but keeps sending Automerge sync will not be detected as orphaned. Worth considering an explicit `SessionControl::Ping` for v5.
-
-9. **No wire-level signature or MAC.** The identity ADR mandates server-side per-frame actor validation against `AuthenticatedConnection.principal`, but the bytes themselves carry no cryptographic binding. A trusted intermediary (Tauri relay) could rewrite an outbound frame's payload before forwarding. v1 inherits the same-UID trust model from the Unix socket; hosted rooms will inherit the TLS trust model from the WebSocket. Change-level signed authorship (Keyhive direction) is the eventual fix.
-
-10. **Runtime-agent reuses Request/Response type bytes.** `0x01`/`0x02` carry either `NotebookRequestEnvelope`/`NotebookResponseEnvelope` or `RuntimeAgentRequestEnvelope`/`RuntimeAgentResponseEnvelope` depending on which connection it is. There is no way to tell them apart from the type byte alone; the handshake variant determines the payload shape. A misrouted frame (e.g., a buggy proxy that crosses the streams) would deserialize incorrectly. Worth either a distinct type-byte block for runtime-agent traffic or an explicit `kind` field in the envelope.
-
-## Tracked follow-ups (from the retired cleanup punchlist)
-
-These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
-retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
-to implement; **Design** = needs a decision in this ADR before code moves.
+## Open Follow-ups
 
 - **WP-4** (Design; `crates/notebook-protocol/`, `crates/runtimed/`): `0x01`/`0x02` frame IDs are reused with different envelopes between `RuntimeAgent` and `NotebookSync` channels. Distinguishable only by handshake variant; a misrouted frame deserializes incorrectly with no protocol-level detection.
 - **WP-8** (Design; `crates/notebook-protocol/`): `ProtocolCapabilities.protocol_version: Option<u32>` is set, defaults to `Some(PROTOCOL_VERSION)`, but no client reads it differently from the preamble byte. Possibly vestigial.

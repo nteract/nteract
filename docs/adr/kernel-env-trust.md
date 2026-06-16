@@ -279,7 +279,7 @@ If Claude later asks `manage_dependencies(add=["requests"])`, the same MCP-level
 ## Open Questions
 
 1. **Per-version approval.** Today the allowlist is keyed by package *name*. Approving `pandas` covers every version, including future malicious releases. Pinning approval to a version range or a wheel hash is a stronger model but adds significant UX cost (every minor bump re-prompts). Tracked but not decided.
-2. **Revocation surface.** v1 has no UI for removing rows from the allowlist. "Untrust this package" requires editing SQLite manually. A management surface (probably under settings) is on the punchlist.
+2. **Revocation surface.** v1 has no UI for removing rows from the allowlist. "Untrust this package" requires editing SQLite manually. A management surface (probably under settings) remains an open follow-up.
 3. **Source attribution for PyPI.** Conda channels are tracked as their own identity; PyPI does not have an equivalent in `extract_trust_info`. If a user starts publishing notebooks that pull from a custom PyPI index (`--index-url`), today the index is not part of the trust identity. The deps would still be name-checked, but the index switch would be invisible. Probably wants a `pypi-index` ecosystem alongside `conda-channel` and `pixi-channel`.
 4. **Cross-machine trust sync.** A power-user setup (laptop + desktop + cloud workspace) wants to share an allowlist across machines. The natural shape is a synced settings entry: "trusted packages" as a user-scoped synced doc, with the local SQLite as a cache. Out of scope for v1; tracked.
 5. **Identity-scoped trust.** This ADR treats trust as a per-machine question. A future overlay could scope trust to identity: "I have approved `pandas` for myself, but not for an MCP agent acting on my behalf." Pairs with the operator suffix in the identity model. Not v1.
@@ -287,10 +287,6 @@ If Claude later asks `manage_dependencies(add=["requests"])`, the same MCP-level
 7. **Pre-resolution preview.** The user approves names, but the daemon resolves and installs full transitive trees. Showing the resolved tree before install (so the dialog can warn about surprise transitives) is a UX direction that needs solver cooperation.
 8. **Channel ordering.** `conda_channels` is treated as a set today: approving `[conda-forge, defaults]` is the same as `[defaults, conda-forge]`. Channel order affects which copy of a package wins, which is a separate supply-chain decision the current model does not capture.
 
-## Tracked follow-ups (from the retired cleanup punchlist)
-
-These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
-retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
-to implement; **Design** = needs a decision in this ADR before code moves.
+## Open Follow-ups
 
 - **MSL-2** (Design; `crates/runtimed/src/daemon.rs:1436-1450`): `seed_defaults` seeds startup base packages into `pypi` and `conda` only — not into the channel ecosystems (`conda-channel`, `pixi-channel`). A user with a notebook on a non-default channel will see all channel approvals as fresh prompts even after several uses.

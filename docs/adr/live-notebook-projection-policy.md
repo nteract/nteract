@@ -59,8 +59,7 @@ subscription helper and passes each `CellChangeset` into the shared
 `materializeChangeset` projection path with a cloud-provided blob resolver. Full
 live-cell materialization remains for bootstrap and fallback cases, while
 routine source, metadata, execution, and output updates flow through the same
-narrow stores as desktop. The cleanup item is marked complete in
-the retired cleanup punchlist as `LNP-1` (done in #3491).
+narrow stores as desktop.
 
 ## Consequences
 

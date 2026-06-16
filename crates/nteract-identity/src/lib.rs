@@ -405,7 +405,7 @@ impl ConnectionScope {
     /// Differs from [`Self::allows_blob_upload`] by allowing editors: local
     /// same-UID editor peers upload document-scoped attachments today, and the
     /// hosted editor exclusion exists only until reference-path validation
-    /// lands (HCA-3). Viewers are denied on both topologies (punchlist BS-12).
+    /// lands (HCA-3). Viewers are denied on both topologies.
     /// When HCA-3 stage 2 ships, hosted converges on this predicate and the
     /// two collapse into one.
     pub const fn allows_local_blob_upload(self) -> bool {

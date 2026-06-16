@@ -394,9 +394,10 @@ export type BlobDurability = "durable" | "ephemeral";
 /// `ConnectionScope` method it mirrors.
 type ScopeCapabilityRow = (&'static str, &'static str, fn(ConnectionScope) -> bool);
 
-/// Capability predicates exported to TypeScript, each row generated from the
-/// corresponding `ConnectionScope` method so the hosted room and the daemon
-/// evaluate the same lattice (punchlist HCA-2 / BS-12).
+/// Capability predicates exported to TypeScript for hosted room connections.
+/// Local daemon connections share the same scope model, but use a local-only
+/// blob-upload predicate so same-UID editor attachments keep working until
+/// hosted editor uploads ship with reference-path validation.
 const SCOPE_CAPABILITIES: &[ScopeCapabilityRow] = &[
     (
         "allowsNotebookWrite",
@@ -410,7 +411,7 @@ const SCOPE_CAPABILITIES: &[ScopeCapabilityRow] = &[
     ),
     (
         "allowsBlobUpload",
-        "upload blobs (PUT_BLOB frames and multipart upload requests)",
+        "upload blobs on hosted room connections (PUT_BLOB frames and multipart upload requests)",
         ConnectionScope::allows_blob_upload,
     ),
     (

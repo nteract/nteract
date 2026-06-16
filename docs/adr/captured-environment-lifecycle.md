@@ -58,8 +58,7 @@ This distinction is load-bearing. A missing dir is ambiguous and must preserve t
 The resolution helper must therefore be typed. A plan that detects `Partial` only inside `acquire_prewarmed_env_with_capture()` is insufficient if the source-resolution layer never routes partial dirs to `uv:prewarmed` or `conda:prewarmed`.
 
 Implementation note: this is the intended architecture, not the current state
-of every code path. The cleanup punchlist tracks the remaining boolean-path
-implementation gap as CEL-1.
+of every code path. CEL-1 tracks the remaining boolean-path implementation gap.
 
 ## Decision 3: The happy path stays cheap
 
@@ -218,10 +217,6 @@ The #1969 implementation plan should be updated before coding:
 - keep retry lifecycle in a progressing state until final success/error;
 - add focused tests for UV and Conda disk states, including broken symlink behavior when feasible.
 
-## Tracked follow-ups (from the retired cleanup punchlist)
+## Open Follow-ups
 
-These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
-retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
-to implement; **Design** = needs a decision in this ADR before code moves.
-
-- **KE-1** (RefreshDefaults }` request for manual recovery and defaults refresh.; Design): Captured env has no user-initiated rebuild/reset surface. Daemon lifecycle owns automatic repair, but lacks a `ResetNotebookEnvironment { RebuildSame
+- **KE-1** (Design; reset/rebuild request path): Captured env has no user-initiated rebuild/reset surface. Daemon lifecycle owns automatic repair, but lacks a `ResetNotebookEnvironment { RebuildSame | RefreshDefaults }` request for manual recovery and defaults refresh.

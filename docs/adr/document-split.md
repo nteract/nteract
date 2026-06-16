@@ -342,11 +342,7 @@ The split was designed for the desktop topology (one daemon per user, same-UID t
 - `crates/runtimed/src/daemon.rs:4419-4422` - the comment that records "RuntimeStateDoc is not persisted."
 - `docs/adr/identity-and-trust.md` - the trust scopes that the document split makes expressible.
 
-## Tracked follow-ups (from the retired cleanup punchlist)
-
-These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
-retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
-to implement; **Design** = needs a decision in this ADR before code moves.
+## Open Follow-ups
 
 - **3D-1** (Targeted PR; `crates/notebook-doc/`, frontend reader): `cells[cell_id].execution_count` lives in **both** `NotebookDoc` (legacy JSON-string) and `RuntimeStateDoc.executions[execution_id].execution_count` (live i64). Frontend consults live first, falls back to legacy. Two sources of truth for one number.
 - **3D-2** (Targeted PR; `crates/runtime-state/` (move to `NotebookDoc` or use `.ipynb` mtime)): `last_saved` lives in `RuntimeStateDoc`, which does not persist. A reopened room has no record of its last save time.

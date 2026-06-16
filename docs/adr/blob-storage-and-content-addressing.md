@@ -305,7 +305,7 @@ stay disk-only. **Eviction is insertion-order FIFO, not LRU**: `get` does not
 refresh recency (`blob_store.rs:174-176`), and `evict_to_cap`
 (`blob_store.rs:191-201`) pops from the front of the insertion order. A
 high-traffic durable blob accessed many times still falls out first if it
-was inserted earliest. The cleanup punchlist names this naming inconsistency.
+was inserted earliest.
 
 Garbage collection is a daemon-level mark-and-sweep that runs every 30 minutes
 (`daemon.rs::ghost_room_reaper_loop` adjacent loop, search for
@@ -477,36 +477,18 @@ elsewhere, some are surfaced here for the first time.
    ref or misses one is silently a data-loss bug at the next sweep. Worth
    considering a debug-mode ref-source map (hash -> Vec<(room_id, ref_kind)>)
    that the sweep can dump on demand.
-2. ~~**No backend abstraction.**~~ **Resolved: no `BlobBackend` trait.**
-   The hosted path shipped on R2 inside the cloud Worker without touching
-   `BlobStore`; the daemon keeps the local filesystem store as its source of
-   truth. Convergence lives at the contract layer - bare sha256 keys,
-   host-neutral `ContentRef`s, the `BlobResolver` read indirection, and the
-   upload protocol - not at a Rust storage trait. The storage/read-authority
-   separation stands either way: backends store bytes, `BlobResolver` decides
-   how an authorized viewer obtains them. Reopen only if the daemon itself
-   ever needs to target object storage directly. Punchlist BS-6 is closed on
-   this decision.
-3. ~~**Authenticated blob HTTP.**~~ **Resolved as a boundary, not a
-   feature.** The loopback blob server is permanently a single-user desktop
-   surface. It must never be bound beyond loopback or exposed to remote peers
-   or multi-OS-user nodes; any remote or multi-user read goes through a
-   room-authorized resolver (the hosted `/api/n/:id/blobs/:hash` route today,
-   capability URLs for private notebooks per punchlist HCA-6).
-   `test_blob_server_binds_loopback_only` pins the binding. Punchlist BS-5 is
-   closed on this decision.
-4. **Per-blob ACL.** A room ACL today gates *connect*; once a peer is
+2. **Per-blob ACL.** A room ACL today gates *connect*; once a peer is
    authenticated it can `GET` any blob in the store regardless of which room
    the blob belongs to. This is correct for single-user desktop and acceptable
    for the cloud layer because the cloud blob origin is per-notebook, but it
    means a desktop daemon serving an authenticated remote peer leaks any
    guessed hash. Hash unguessability is the only mitigation.
-5. **Inline threshold tuning.** 1 KiB is one number applied uniformly. Text
+3. **Inline threshold tuning.** 1 KiB is one number applied uniformly. Text
    outputs cluster near the threshold often enough (long traceback strings,
    pandas reprs) that a value-aware threshold (e.g., higher for
    `text/plain` traceback, lower for `application/json`) might cut sync
    bandwidth materially. No data captured to drive that choice.
-6. **Publish ref collectors must stay schema-complete.** The publish boundary
+4. **Publish ref collectors must stay schema-complete.** The publish boundary
    now walks saved snapshot documents and rejects hosted revisions when
    materialized render refs are missing from the destination blob store. The
    remaining risk is schema drift: every new ref shape in `RuntimeStateDoc`
@@ -514,7 +496,7 @@ elsewhere, some are surfaced here for the first time.
    must be added to the publisher, hosted validator, and GC inventory together.
    Desktop save still does not have a separate publish boundary; the room either
    has the blobs or it does not.
-7. **MIME mutation on re-put.** A repeat put with the same bytes but a
+5. **MIME mutation on re-put.** A repeat put with the same bytes but a
    different `media_type` overwrites the sidecar (`put_disk` fast path).
    That is intentional for the `application/json` -> `text/javascript`
    case but means any peer with write access can rewrite the served
@@ -527,25 +509,13 @@ elsewhere, some are surfaced here for the first time.
    `Content-Type` from the reference layer's `media_type` instead of object
    metadata remains the preference if reads move off the Worker route
    (signed-URL direction, hosted-output-origin-isolation HCA-6).
-8. ~~**No `Content-Length`-bounded streaming on the read path.**~~ **Resolved**
-   by punchlist BS-1. `BlobStore::open_reader` returns either an in-memory
-   `Bytes` (memory-layer hit) or an open `tokio::fs::File` (disk-only).
-   `GET /blob/<hash>` now wraps the disk variant in
-   `StreamBody<ReaderStream<File>>`, so a 100 MiB output is streamed off
-   the OS page cache instead of allocated into Rust heap per fetch.
-   `Content-Length` is taken from the reader's reported size.
-9. **Multipart upload TTL and sweep timing.** `MULTIPART_UPLOAD_TTL` is 1
-   hour and the registry only sweeps when a new Create/Complete/Abort entry
-   arrives. A daemon that goes idle with stale staging dirs on disk does
-   not reclaim them until the next upload. Not a correctness bug; a "we
-   never bothered cleaning up" gap. Punchlist BS-3.
-10. **`MAX_BLOB_SIZE = 100 MiB` only gates `BlobStore::put()`.** The
+6. **`MAX_BLOB_SIZE = 100 MiB` only gates `BlobStore::put()`.** The
     multipart finalize path validates against the caller's declared
     `expected_size` and the per-peer 256 MiB staging budget; it does not
     enforce a 100 MiB ceiling on the completed blob. A peer could
     multipart-upload a 200 MiB blob. Either intentional (multipart is the
     escape hatch above 100 MiB) or an undocumented bypass.
-11. **Frontend blob-fetch retry policy is invisible from the daemon side.**
+7. **Frontend blob-fetch retry policy is invisible from the daemon side.**
     `packages/runtimed/src/sync-engine.ts:107-140, :165-183` retries text
     blob fetches with `[100, 300, 1000]` ms backoff and gives up immediately
     on 4xx. The daemon does not know about this policy; a renderer that
@@ -573,15 +543,11 @@ elsewhere, some are surfaced here for the first time.
   artifacts, the matching cloud resolver.
 - `docs/adr/identity-and-trust.md` - room-level auth that gates the
   socket the `PUT_BLOB` frame rides on.
-- `docs/audits/runtime-peer-and-blob-authority-audit.md` - hosted
-  scope-gating and reference-authority audit for `PutBlob` and runtime peers.
+- `docs/audits/runtime-peer-and-blob-authority-audit.md` - hosted/local
+  upload-scope and reference-authority audit for `PutBlob` and runtime peers.
 
-## Tracked follow-ups (from the retired cleanup punchlist)
+## Open Follow-ups
 
-These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
-retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
-to implement; **Design** = needs a decision in this ADR before code moves.
-
-- **BS-9** (Design; `crates/runtimed/src/blob_upload.rs` finalize path): `MAX_BLOB_SIZE = 100 MiB` only gates the in-process `BlobStore::put()` API. The multipart finalize path validates against the caller's `expected_size` and the per-peer 256 MiB staging budget but does not enforce a 100 MiB ceiling on the completed blob. A peer can multipart-upload a 200 MiB blob today.
+- **BS-9** (Design; `crates/runtimed/src/notebook_sync_server/blob_upload.rs` finalize path): `MAX_BLOB_SIZE = 100 MiB` only gates the in-process `BlobStore::put()` API. The multipart finalize path validates against the caller's `expected_size` and the per-peer 256 MiB staging budget but does not enforce a 100 MiB ceiling on the completed blob. A peer can multipart-upload a 200 MiB blob today.
 - **BS-10** (Design; `output_store.rs:62-89`): Save-to-`.ipynb` externalizes Arrow IPC and Parquet only via `BLOB_REF_MIME`; every other binary MIME is base64-inlined in the saved file. A user opening the saved `.ipynb` outside nteract gets self-contained binary for non-Arrow/Parquet but broken refs for the rest unless they keep the colocated blob store.
 - **BS-14** (Targeted PR; `apps/notebook-cloud/src/index.ts`, `crates/runtimed/src/daemon.rs`, `crates/runtimed-wasm/`): The hosted publish validator (TS, walks the materialized render projection via `collectSnapshotBlobRefs`) and the daemon GC mark (Rust, `collect_blob_refs_for_gc`) are two independent blob-ref inventories. A ref shape added to one and not the other is either a broken publish or a silent GC data-loss bug. Converge on one ref-walk exported from `runtimed-wasm`, or pin both walks against shared fixtures covering every ref shape (outputs, comms, attachments, resolved_assets, Arrow manifest children).

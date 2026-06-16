@@ -248,7 +248,7 @@ requests and writes queued execution entries with cell source provenance into
 `RuntimeStateDoc`, which the runtime peer consumes through normal sync. What
 remains for workstations is target selection: how the active runtime peer is
 chosen for accepted executions, and how readiness/disconnect gates the
-dispatch (punchlist 3D-7).
+dispatch (3D-7).
 
 Kernel lifecycle and widget requests should follow the same split, but they do
 not all have the same reply contract. `InterruptExecution` and `SendComm` are

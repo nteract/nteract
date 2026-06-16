@@ -28,23 +28,6 @@ concerns.
 
 ## Active Checklist
 
-- [x] Remove cloud-to-desktop app imports for headless projection/store/reset
-      behavior. Cloud may keep the intentional component bridge through
-      `notebook-surface` while shared component packaging is still app-owned,
-      but headless store/projection helpers should live in shared modules.
-      Runtime-state reads/writes now import from
-      `src/components/notebook/state/runtime-state.ts`; runtime/output store
-      projection and reset now import from
-      `src/components/notebook/state/runtime-store-projection.ts`. Projection
-      lifecycle, pool state, frame bus, cursor dispatch, CRDT bridge,
-      controller, and cell-id helpers now also import from shared modules.
-- [x] Make output identity strict for modern cloud/runtime paths: missing
-      `output_id` values now render as invariant errors instead of receiving
-      `cloud-output:*` positional IDs in the cloud resolver.
-- [x] Move host-neutral projection lifecycle helpers into shared
-      notebook/runtimed modules. The cloud `notebook-view-store-bridge` is
-      gone; Cloud calls shared projection lifecycle functions directly and
-      keeps only host-owned timing decisions.
 - [ ] Finish shared-store convergence for interaction,
       runtime/workstation status, and output cache identity. Each fact should
       have one projection owner and host-local write authority. Desktop focus
@@ -52,24 +35,9 @@ concerns.
       raster output waypoints from the execution/output stores. Remaining work
       should keep pushing cross-cell derived views toward those stores instead
       of per-host React copies.
-- [x] Deduplicate shell/runtime/workstation projection facts while keeping host
-      authority local. Shared helpers should project facts, not own callbacks,
-      credentials, ACLs, launch, or attach policy. Workstation selection,
-      launch readiness, toolbar intent, busy id, and panel status now flow
-      through the shared `projectNotebookWorkstationSurface` projection while
-      Cloud keeps fetch, pairing, default, attach, and ACL policy local.
 - [ ] Extract reusable RxJS projection-store patterns only after concrete
       duplicated stores prove the shape. Avoid generic factories that hide
       simple store logic without reducing real coupling.
-- [x] Add import guard tests so Cloud cannot depend on Desktop app internals
-      for shared headless behavior. The guard no longer allows
-      `notebook-surface-stores` and asserts runtime/output projection helpers
-      come from shared state rather than the desktop surface import. It also
-      rejects controller, cell-id, presence, CRDT, cursor, frame-bus, pool, and
-      projection lifecycle helpers from the temporary desktop surface barrel.
-- [ ] Keep durable docs updated as boundaries become real decisions. Amend this
-      checklist for execution status; amend ADRs only when the boundary becomes
-      durable architecture.
 
 ## Host-Owned Boundaries
 

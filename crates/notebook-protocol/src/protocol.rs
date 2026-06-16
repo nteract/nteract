@@ -272,8 +272,9 @@ pub enum BlobUploadErrorKind {
     FinalHashMismatch,
     OverPeerBudget,
     SessionExpired,
-    /// The connection's scope does not allow blob uploads
-    /// (`ConnectionScope::allows_blob_upload`).
+    /// The connection's scope does not allow blob uploads for this topology
+    /// (`ConnectionScope::allows_blob_upload` on hosted rooms,
+    /// `ConnectionScope::allows_local_blob_upload` on local daemon peers).
     Forbidden,
     Io {
         message: String,

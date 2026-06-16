@@ -158,8 +158,7 @@ validation exists, hosted rooms deny editor uploads entirely. That is the
 shipped policy: `allowsBlobUpload` permits only `runtime_peer` and `owner`,
 enforced at both the `PUT_BLOB` frame prefilter and the HTTP upload route.
 Editor upload and reference-path validation ship together in one change set,
-or not at all. Tracked as `HCA-3` in
-the "Tracked follow-ups" section below.
+or not at all. Tracked as `HCA-3` in the "Open Follow-ups" section below.
 
 The provider gives a maximum capability set for the credential. The ACL gives
 one or more room grants. A connection also has a requested role. Anonymous
@@ -479,11 +478,7 @@ enforce equivalent access.
    the next connection attempt. `identity-and-trust.md` defers general
    revocation, but hosted ACL mutation makes the decision visible earlier.
 
-## Tracked follow-ups (from the retired cleanup punchlist)
-
-These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
-retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
-to implement; **Design** = needs a decision in this ADR before code moves.
+## Open Follow-ups
 
 - **HCA-1** (Targeted PR; `apps/notebook-cloud/src/identity.ts`, `apps/notebook-cloud/test/identity.test.ts`, `docs/runbooks/hosted-direct-oidc-demo-runbook.md`): Mixed hosted credentials are documented as reject-by-default in `hosted-credential-transport.md`, but the current notebook-cloud prototype still needs complete mixed-credential rejection coverage. The direct-OIDC implementation should reject mixed identity-bearing credentials unless a deployment proves they are one credential.
 - **HCA-3** (Targeted PR; `apps/notebook-cloud/src/identity.ts`, `docs/adr/hosted-room-authorization.md`): **Decided** as the staged policy, recorded in `hosted-room-authorization.md` Decision 3: editors cannot upload blobs until server-side reference-path validation lands; the two ship together in one change set. Stage 1 is already enforced uniformly (`identity.ts::allowsBlobUpload` permits only `runtime_peer`/`owner`, checked at both the `PUT_BLOB` frame prefilter and the HTTP upload route). The remaining row is the stage-2 Targeted PR: editor upload plus reference-path validation together.

@@ -979,38 +979,20 @@ bridge wraps upstream, and subduction writes under its own
 our snapshot envelope degrades into a bootstrap cache. Cheap alignment
 moves when the time comes:
 
-1. ~~Optional `saveBatch(entries)` on `StorageAdapter` (upstream's exact
-   extension; sequential-save fallback) with crash-ordered writes
-   (blobs → metadata → id-marker: a crash leaves invisible orphans, never a
-   visible-but-incomplete record).~~ **Adopted** (#3585 slice 1) — see the
-   storage-layer section above.
-2. Replace PR 7's incremental chunks with the automerge 3.3 fragments API
+1. Replace PR 7's incremental chunks with the automerge 3.3 fragments API
    (`getFragmentMetadata`/`bundleFragmentMetadata` via new `NotebookHandle`
    WASM exports) once it reaches a stable tag — core-driven, deterministic
    compaction. The chunk key scheme was designed for this: fragment bundles
    slot in as new records under the same `[notebookId, "chunks", ...]`
    prefix (unknown sub-keys are already ignored, never deleted, by every
    read path), so the swap needs no migration.
-3. ~~Operational patterns worth stealing regardless: per-doc heal-retry
-   with an exhaustion signal, and "confirmation is just another sync"
-   idempotence~~ — landed as PR 8's resync heal loop (NotebookDoc only;
-   RuntimeStateDoc/Comms adoption of the per-doc-keyed scheduler is open
-   follow-up).
 
 ## Out of scope (recorded, no PR planned)
 
 - Offline *authoring* before the first `cloud_room_ready` of a session
   (needs an actor-label strategy that does not depend on the server
   handshake, e.g. locally-minted operator nonces).
-- ~~Incremental chunk persistence + compaction~~ — landed as PR 7's
-  chunked store (`save_since_heads` WASM export over automerge's stable
-  `save_after(heads)`).
 - Desktop adoption of the persistence module for remote-attached notebooks.
-- ~~Multi-tab write coordination~~ — closed by PR 7: content-addressed
-  chunks make concurrent writers structurally safe, and the
-  BroadcastChannel bridge converges live tabs through sync rather than
-  write ordering. The legacy envelope record is no longer written for the
-  NotebookDoc, so its last-write-wins hazard window is gone with it.
 - Cross-tab catch-up replay. The bridge carries deltas forward from arm
   time only (no replay protocol on the channel); divergence that predates
   both tabs heals through the room or through the shared chunk store on

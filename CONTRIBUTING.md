@@ -2,8 +2,8 @@
 
 ## 1. Computer setup
 
-- **macOS** — see [docs/mac_setup.md](docs/mac_setup.md)
-- Other environments: TBD
+- **macOS** - see [docs/mac_setup.md](docs/mac_setup.md)
+- **Linux** - see the Linux development dependencies in [README.md](README.md)
 
 ## 2. Build commands
 

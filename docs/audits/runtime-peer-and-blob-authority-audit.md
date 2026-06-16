@@ -1,6 +1,6 @@
 # Runtime Peer Contract and Blob Authority Audit
 
-**Status:** Draft, 2026-05-24.
+**Status:** Audit, updated 2026-06-16.
 
 ## Context
 
@@ -88,7 +88,7 @@ local client/daemon -> room host or bridge <-> remote daemon(runtime_peer)
    room-scoped request handling or `RuntimeStateDoc` transitions. They should
    not reach around the room host to a runtime-agent socket.
 
-### Required follow-ups
+### Current follow-ups
 
 - Keep `RuntimeAgent` documentation explicitly local-daemon scoped.
 - Treat `runtime_peer` sidecars as normal authenticated room connections.
@@ -130,11 +130,12 @@ document path that later references the content hash.
   and the HTTP upload route. Editor uploads stay denied until reference-path
   validation ships with them (staged policy recorded in
   `../adr/hosted-room-authorization.md` Decision 3).
-- The local notebook peer loop still enqueues `PutBlob` frames without a
-  scope check, and multipart request handling is intercepted before generic
-  request dispatch with no scope annotation. That is acceptable for the
-  current local same-UID daemon path because local connections authenticate
-  as owner; punchlist BS-12 tracks daemon parity with the hosted gate.
+- The local daemon now gates both one-shot `PutBlob` frames and multipart blob
+  upload requests before they reach storage. The local gate denies viewers and
+  permits local editor/runtime-peer uploads because same-UID editor peers still
+  need document-scoped attachments, while runtime peers upload output blobs.
+  This intentionally differs from hosted rooms until hosted editor uploads ship
+  with reference-path validation.
 - Hosted publish now validates reachability: a snapshot revision is rejected
   with `424 missing_blobs` when any materialized render ref is missing from
   the destination blob store, before any D1 revision row is recorded.
@@ -149,12 +150,13 @@ document path that later references the content hash.
 
 1. **Upload and reference are separate authorization gates.** A scoped peer may
    be allowed to upload bytes but still forbidden to reference them from a
-   particular document path. The decisive check is the later `NotebookDoc` or
-   `RuntimeStateDoc` mutation, not the blob frame alone.
-2. **Hosted rooms need an explicit upload gate.** `viewer` must not be able to
-   send `PutBlob` or multipart upload requests. `editor` and `runtime_peer`
-   should be allowed only because they have a later path where an authorized
-   reference can appear.
+   particular document path. The decisive check is the later `NotebookDoc`,
+   `RuntimeStateDoc`, or `CommsDoc` mutation, not the blob frame alone.
+2. **Upload entry points need explicit gates.** `viewer` must not be able to
+   send `PutBlob` or multipart upload requests. Local daemon and hosted room
+   gates now both reject viewer uploads, while hosted rooms deliberately keep
+   the stricter `runtime_peer`/`owner` upload surface until editor
+   reference-path validation exists.
 3. **Hosted rooms need reference-path validation.** `runtime_peer` can point at
    uploaded blobs only from runtime/output state. `editor` can point at blobs
    only from notebook fields and mutable widget state in `CommsDoc`. Owner
@@ -170,16 +172,14 @@ document path that later references the content hash.
    prove viewer-or-better access to the room or issue a short-lived signed URL
    with equivalent authority.
 
-### Required follow-ups
+### Current follow-ups
 
-- Add scope annotations for `PutBlob` and multipart upload request variants
-  in the daemon peer loop (punchlist BS-12). The hosted room host already
-  gates uploads by scope.
-- Keep the shared `RuntimeStateDoc` write policy in the hosted room host and
-  daemon paths. `editor` and `owner` must remain limited to existing widget
-  comm state, while `runtime_peer` remains the explicit writer for runtime
-  lifecycle, execution progress, output, and comm topology state. Execution
-  intent creation still belongs to the room-host request path
+- Keep the shared runtime document write policy in the hosted room host and
+  daemon paths. `RuntimeStateDoc` remains runtime-peer writable for lifecycle,
+  execution progress, output, and comm topology state. Mutable widget state
+  writes belong in `CommsDoc`, where editor/owner authority can be scoped to
+  existing widget comm state. Execution intent creation still belongs to the
+  room-host request path
   (`ExecuteCell`/`RunAllCells`) so a runtime peer cannot enqueue work by syncing
   a forged execution entry.
   Future blob-reference validation should build on that policy rather than
@@ -187,12 +187,13 @@ document path that later references the content hash.
 - Keep `BlobBackend` storage concerns separate from `BlobResolver` read
   authority. The former stores bytes; the latter decides how an authorized
   viewer obtains them.
-- ~~Add publish-time reachability validation: a snapshot revision should not
-  advance until every reachable blob ref exists in the destination backend.~~
-  Done: `validateSnapshotPair` HEAD-checks every materialized render ref and
-  fails the publish before recording a revision. The residual risk is
-  schema drift between the publish walk and the daemon GC walk (punchlist
-  BS-14).
+- Ship hosted editor uploads only with server-side reference-path validation.
+  Until then, hosted editor uploads remain denied even though local editor
+  uploads are allowed for same-UID document attachment flows.
+- Keep the publish reachability walk and daemon GC walk aligned as blob-bearing
+  schemas evolve. Hosted publish already HEAD-checks every materialized render
+  ref before recording a revision; the residual risk is schema drift between
+  that walk and garbage collection.
 
 ## Summary
 
@@ -202,10 +203,10 @@ load-bearing:
 1. Cross-machine compute attaches at daemon or room-host boundaries. The
    `RuntimeAgent` socket remains local to the daemon that owns the kernel.
 2. Blob transfer is subordinate to room authorization. Bytes become meaningful
-   only when an authorized `NotebookDoc` or `RuntimeStateDoc` mutation references
-   their content hash.
+   only when an authorized `NotebookDoc`, `RuntimeStateDoc`, or `CommsDoc`
+   mutation references their content hash.
 
-The high-value implementation work is therefore not a larger remote-runtime
-design yet. It is scope-gating and path-validation: make the hosted room host
-prove that every write-bearing frame, request, and blob reference is legal for
-the connection scope that submitted it.
+The high-value remaining work is not a larger remote-runtime design. Upload
+scope gates are in place; the remaining authority work is reference-path
+validation, room-scoped reads, and keeping blob-reference walks aligned as
+schemas evolve.
