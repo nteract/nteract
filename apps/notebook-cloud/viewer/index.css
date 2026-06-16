@@ -335,6 +335,14 @@ body {
   line-height: 1.15;
 }
 
+.cloud-notebook-title [data-slot="document-title-label"][data-renameable="true"] {
+  cursor: text;
+}
+
+.cloud-notebook-title [data-slot="document-title-label"][data-renameable="true"]:hover {
+  background: color-mix(in srgb, var(--background) 88%, var(--foreground) 8%);
+}
+
 .cloud-notebook-title small {
   margin-top: 0.125rem;
   color: color-mix(in srgb, var(--foreground) 58%, transparent);

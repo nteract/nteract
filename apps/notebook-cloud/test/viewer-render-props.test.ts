@@ -517,7 +517,7 @@ test("Markdown documents keep interaction mode and representation controls in sh
   assert.match(markdownRouteText, /<NotebookDocumentToolbar[\s\S]*reserveCommandToolbar/);
   assert.match(
     markdownRouteText,
-    /<MarkdownDocumentModeToggle[\s\S]*onModeChange=\{onModeChange\}/,
+    /editControls=\{[\s\S]*<CloudNotebookEditModeButton[\s\S]*onModeChange=\{onModeChange\}/,
   );
   assert.match(
     markdownRouteText,
@@ -548,7 +548,7 @@ test("Markdown documents trust app sessions before surfacing sign-in chrome", ()
   assert.match(markdownListText, /canFetchCatalog: canFetchDocumentList/);
   assert.match(markdownListText, /showSignIn/);
   assert.match(markdownListText, /\{showSignIn \? \([\s\S]*<CloudNotebookSignInButton/);
-  assert.match(markdownRouteText, /hasAppSession: Boolean\(appSessionStatus\.session\)/);
+  assert.match(markdownRouteText, /const hasAppSession = Boolean\(appSessionStatus\.session\)/);
   assert.match(
     markdownRouteText,
     /hasAppSession \|\| authState\.mode === "dev" \|\| authState\.mode === "oidc"/,
@@ -589,10 +589,7 @@ test("Markdown document sharing uses email-first collaborator input", () => {
   assert.match(markdownSharingText, /type="email"/);
   assert.match(markdownSharingText, /autoComplete="email"/);
   assert.match(markdownSharingText, /normalizeShareInviteEmail\(inviteEmail\)/);
-  assert.match(
-    markdownSharingText,
-    /JSON\.stringify\(\{[\s\S]*subject_kind: "principal",[\s\S]*email,[\s\S]*scope,[\s\S]*\}\)/,
-  );
+  assert.match(markdownSharingText, /JSON\.stringify\(\{ email, scope \}\)/);
   assert.doesNotMatch(markdownSharingText, /cloud-markdown-share-principal/);
   assert.doesNotMatch(markdownSharingText, /user:anaconda/);
 });

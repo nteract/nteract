@@ -292,12 +292,12 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: exactPath("/n", "/n/"),
     methods: ["GET", "HEAD"],
-    handler: (_match, request, env) => notebookListViewer(request, env),
+    handler: (_match, request, env, ctx) => notebookListViewer(request, env, ctx),
   },
   {
     match: exactPath("/m", "/m/"),
     methods: ["GET", "HEAD"],
-    handler: (_match, request, env) => markdownDocumentListViewer(request, env),
+    handler: (_match, request, env, ctx) => markdownDocumentListViewer(request, env, ctx),
   },
   {
     match: exactPath("/oidc"),
@@ -5948,12 +5948,16 @@ function rootNotebookListRedirect(request: Request): Response {
   return Response.redirect(url.toString(), 302);
 }
 
-async function notebookListViewer(request: Request, env: Env): Promise<Response> {
+async function notebookListViewer(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
   if (request.method === "HEAD") {
     return viewerShellHead(env);
   }
 
-  const bootstrap = await notebookListBootstrap(request, env);
+  const bootstrap = await notebookListBootstrap(request, env, ctx);
   const resourceHints = notebookListBootstrapHasNotebooks(bootstrap)
     ? {
         notebookRouteAssets: await notebookRouteAssetNames(env),
@@ -5976,12 +5980,16 @@ async function notebookListViewer(request: Request, env: Env): Promise<Response>
   );
 }
 
-async function markdownDocumentListViewer(request: Request, env: Env): Promise<Response> {
+async function markdownDocumentListViewer(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
   if (request.method === "HEAD") {
     return viewerShellHead(env);
   }
 
-  const bootstrap = await markdownDocumentListBootstrap(request, env);
+  const bootstrap = await markdownDocumentListBootstrap(request, env, ctx);
   return responseForRequestMethod(
     request,
     viewerShell(
@@ -6350,6 +6358,7 @@ function viewerShell(
 async function notebookListBootstrap(
   request: Request,
   env: Env,
+  ctx: ExecutionContext,
 ): Promise<Record<string, unknown> | null> {
   if (!env.DB) {
     return null;
@@ -6358,7 +6367,7 @@ async function notebookListBootstrap(
   if (!session) {
     return null;
   }
-  await syncStoredAppSessionProfile(env, session);
+  scheduleStoredAppSessionProfileSync(env, ctx, session);
   const notebooks = await listNotebooksForPrincipal(
     env,
     session.principal,
@@ -6375,6 +6384,7 @@ async function notebookListBootstrap(
 async function markdownDocumentListBootstrap(
   request: Request,
   env: Env,
+  ctx: ExecutionContext,
 ): Promise<Record<string, unknown> | null> {
   if (!env.DB) {
     return null;
@@ -6383,7 +6393,7 @@ async function markdownDocumentListBootstrap(
   if (!session) {
     return null;
   }
-  await syncStoredAppSessionProfile(env, session);
+  scheduleStoredAppSessionProfileSync(env, ctx, session);
   const documents = await listMarkdownDocumentsForPrincipal(
     env,
     session.principal,
@@ -6395,6 +6405,14 @@ async function markdownDocumentListBootstrap(
     documents: markdownDocumentListResponseRows(request, documents, env),
     saved_at: new Date().toISOString(),
   };
+}
+
+function scheduleStoredAppSessionProfileSync(
+  env: Env,
+  ctx: ExecutionContext,
+  session: CloudAppSession,
+): void {
+  ctx.waitUntil(syncStoredAppSessionProfile(env, session));
 }
 
 function notebookListBootstrapHasNotebooks(bootstrap: Record<string, unknown> | null): boolean {

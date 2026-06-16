@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 const notebookListSource = readViewerModule("notebook-list-view.tsx");
 const markdownListSource = readViewerModule("markdown-document-list-view.tsx");
 const markdownDocumentRouteSource = readViewerModule("markdown-document-route.tsx");
+const workerSource = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
 
 describe("hosted document app-shell parity", () => {
   it("uses the shared auth projection for notebook and Markdown catalog authority", () => {
@@ -59,6 +60,19 @@ describe("hosted document app-shell parity", () => {
     assert.match(markdownDocumentRouteSource, /projectCloudAccessRequestNotice/);
     assert.match(markdownDocumentRouteSource, /onRequestEditAccess=\{requestMarkdownEditAccess\}/);
     assert.doesNotMatch(markdownDocumentRouteSource, /<MarkdownDocumentModeToggle/);
+  });
+
+  it("keeps dashboard profile sync off the first HTML response path", () => {
+    assert.match(workerSource, /function scheduleStoredAppSessionProfileSync/);
+    assert.match(workerSource, /ctx\.waitUntil\(syncStoredAppSessionProfile\(env, session\)\)/);
+    assert.match(
+      workerSource,
+      /async function notebookListBootstrap\([\s\S]*scheduleStoredAppSessionProfileSync\(env, ctx, session\);[\s\S]*listNotebooksForPrincipal/,
+    );
+    assert.match(
+      workerSource,
+      /async function markdownDocumentListBootstrap\([\s\S]*scheduleStoredAppSessionProfileSync\(env, ctx, session\);[\s\S]*listMarkdownDocumentsForPrincipal/,
+    );
   });
 });
 

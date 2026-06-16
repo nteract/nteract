@@ -4,7 +4,6 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
-  type FormEvent,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -83,21 +82,39 @@ export function DocumentTitle({
     placeCaretAtEnd(editable);
   }, [editing]);
 
+  const beginEditing = () => {
+    if (!canShowRename || renameSaving) {
+      return;
+    }
+    setDraftTitle(renameTitle);
+    setEditing(true);
+  };
+
   const commitRename = (titleDraft = draftTitle) => {
     if (!onRename || renameSaving) {
       return;
     }
-    void Promise.resolve(onRename(normalizeTitleDraft(titleDraft)))
-      .then((saved) => {
-        if (saved) {
+    try {
+      const result = onRename(normalizeTitleDraft(titleDraft));
+      if (typeof result === "boolean") {
+        if (result) {
           setEditing(false);
         }
-      })
-      .catch(() => {});
+        return;
+      }
+      void result
+        .then((saved) => {
+          if (saved) {
+            setEditing(false);
+          }
+        })
+        .catch(() => {});
+    } catch {
+      // The host owns rename error state; keep editing so the user can retry.
+    }
   };
 
-  const saveRename = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const saveRename = () => {
     commitRename(updateDraftFromEditable());
   };
 
@@ -131,6 +148,13 @@ export function DocumentTitle({
     }
   };
 
+  const handleStaticTitleKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      beginEditing();
+    }
+  };
+
   const handleEditablePaste = (event: ClipboardEvent<HTMLSpanElement>) => {
     event.preventDefault();
     const text = normalizeTitleDraft(event.clipboardData.getData("text/plain"));
@@ -151,10 +175,9 @@ export function DocumentTitle({
         </a>
       ) : null}
       <div className={cn("document-title", classNames?.title)} title={renameError ?? title.title}>
-        <form
+        <div
           className={cn("document-title-form", classNames?.form)}
           data-editing={editing ? "true" : "false"}
-          onSubmit={saveRename}
         >
           <span
             aria-disabled={editing && renameSaving ? true : undefined}
@@ -163,14 +186,17 @@ export function DocumentTitle({
             contentEditable={editing && !renameSaving}
             data-name={editing ? inputName : undefined}
             data-placeholder={placeholder}
+            data-renameable={!editing && canShowRename ? "true" : undefined}
             data-slot="document-title-label"
+            onClick={!editing && canShowRename ? beginEditing : undefined}
             onInput={editing ? updateDraftFromEditable : undefined}
-            onKeyDown={editing ? handleEditableKeyDown : undefined}
+            onKeyDown={editing ? handleEditableKeyDown : handleStaticTitleKeyDown}
             onPaste={editing ? handleEditablePaste : undefined}
             ref={editableRef}
-            role={editing ? "textbox" : undefined}
+            role={editing ? "textbox" : canShowRename ? "button" : undefined}
             spellCheck={editing ? "true" : undefined}
             suppressContentEditableWarning
+            tabIndex={editing || canShowRename ? 0 : undefined}
           >
             {editing ? draftTitle : title.label}
           </span>
@@ -179,10 +205,11 @@ export function DocumentTitle({
               {editing ? (
                 <>
                   <button
-                    type="submit"
+                    type="button"
                     disabled={renameSaving}
                     title="Save title"
                     aria-label="Save title"
+                    onClick={saveRename}
                   >
                     {renameSaving ? (
                       <Loader2
@@ -211,7 +238,7 @@ export function DocumentTitle({
                     disabled={renameSaving}
                     title={renameButtonTitle}
                     aria-label={`Rename ${title.label}`}
-                    onClick={() => setEditing(true)}
+                    onClick={beginEditing}
                   >
                     <PencilLine aria-hidden="true" />
                   </button>
@@ -220,7 +247,7 @@ export function DocumentTitle({
               )}
             </span>
           ) : null}
-        </form>
+        </div>
         {renameError ? (
           <small className={cn("document-title-status", classNames?.status)} role="status">
             {renameError}

@@ -495,55 +495,72 @@ export function MarkdownDocumentRoute({
   ]);
 
   const saveMarkdownDocumentTitle = useCallback(
-    async (nextTitle: string): Promise<boolean> => {
+    (nextTitle: string): boolean => {
       if (routeState.kind !== "ready" || routeState.scope === "viewer" || markdownTitleSaving) {
         return false;
       }
 
-      try {
-        setMarkdownTitleSaving(true);
+      const displayTitle = nextTitle.trim() || "Untitled Markdown";
+      if (routeState.title === displayTitle) {
         setMarkdownTitleError(null);
-        const response = await fetchWithCloudPrototypeAuth(
-          new URL(config.catalogEndpoint, window.location.origin).href,
-          {
-            method: "PATCH",
-            headers: {
-              Accept: "application/json",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ title: nextTitle.trim() || null }),
-          },
-          authState.mode === "dev" ? { ...authState, requestedScope: "editor" } : authState,
-        );
-        if (!response.ok) {
-          throw await cloudResponseError(response, "Unable to rename Markdown document");
-        }
-        const body = (await response.json()) as MarkdownDocumentMetadataUpdateResponse;
-        if (body.ok !== true || body.document_id !== config.documentId) {
-          throw new Error("Unable to rename Markdown document: response shape was invalid");
-        }
-        const displayTitle = body.title?.trim() || "Untitled Markdown";
-        syncControllerRef.current?.editTitle(displayTitle);
-        setRouteState((current) =>
-          current.kind === "ready" ? { ...current, title: displayTitle } : current,
-        );
-        if (body.viewer_url) {
-          const nextHref = cloudDocumentUrlAfterRename({
-            currentHref: window.location.href,
-            routePrefix: "/m",
-            viewerUrl: body.viewer_url,
-          });
-          if (nextHref !== window.location.href) {
-            window.history.replaceState(window.history.state, "", nextHref);
-          }
-        }
         return true;
-      } catch (error) {
-        setMarkdownTitleError(error instanceof Error ? error.message : String(error));
-        return false;
-      } finally {
-        setMarkdownTitleSaving(false);
       }
+
+      setMarkdownTitleError(null);
+      syncControllerRef.current?.editTitle(displayTitle);
+      setRouteState((current) =>
+        current.kind === "ready" ? { ...current, title: displayTitle } : current,
+      );
+
+      setMarkdownTitleSaving(true);
+      void (async () => {
+        try {
+          const response = await fetchWithCloudPrototypeAuth(
+            new URL(config.catalogEndpoint, window.location.origin).href,
+            {
+              method: "PATCH",
+              headers: {
+                Accept: "application/json",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                title: displayTitle === "Untitled Markdown" ? null : displayTitle,
+              }),
+            },
+            authState.mode === "dev" ? { ...authState, requestedScope: "editor" } : authState,
+          );
+          if (!response.ok) {
+            throw await cloudResponseError(response, "Unable to rename Markdown document");
+          }
+          const body = (await response.json()) as MarkdownDocumentMetadataUpdateResponse;
+          if (body.ok !== true || body.document_id !== config.documentId) {
+            throw new Error("Unable to rename Markdown document: response shape was invalid");
+          }
+          const serverTitle = body.title?.trim() || "Untitled Markdown";
+          if (serverTitle !== displayTitle) {
+            syncControllerRef.current?.editTitle(serverTitle);
+          }
+          setRouteState((current) =>
+            current.kind === "ready" ? { ...current, title: serverTitle } : current,
+          );
+          if (body.viewer_url) {
+            const nextHref = cloudDocumentUrlAfterRename({
+              currentHref: window.location.href,
+              routePrefix: "/m",
+              viewerUrl: body.viewer_url,
+            });
+            if (nextHref !== window.location.href) {
+              window.history.replaceState(window.history.state, "", nextHref);
+            }
+          }
+        } catch (error) {
+          setMarkdownTitleError(error instanceof Error ? error.message : String(error));
+        } finally {
+          setMarkdownTitleSaving(false);
+        }
+      })();
+
+      return true;
     },
     [authState, config.catalogEndpoint, config.documentId, markdownTitleSaving, routeState],
   );
