@@ -283,7 +283,6 @@ export function MarkdownDocumentRoute({
       access: routeState.scope,
       requestedMode: mode,
       requestedRepresentation,
-      publishedRevisionId: routeState.latestRevisionId,
       updatedAt: null,
     });
   }, [config.documentId, mode, requestedRepresentation, routeState]);

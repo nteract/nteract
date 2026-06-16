@@ -44,6 +44,12 @@ describe("hosted document app-shell parity", () => {
     assert.doesNotMatch(markdownListSource, /Search notebooks/);
     assert.doesNotMatch(markdownListSource, /recent work/i);
   });
+
+  it("keeps Markdown sharing copy active instead of publish-version oriented", () => {
+    assert.match(markdownListSource, /Draft, review, and share Markdown without compute\./);
+    assert.doesNotMatch(markdownListSource, /publish Markdown/i);
+    assert.doesNotMatch(markdownListSource, /public version/i);
+  });
 });
 
 function readViewerModule(name: string): string {

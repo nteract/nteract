@@ -15,7 +15,6 @@ export interface MarkdownDocumentSnapshot {
   title: string;
   body: string;
   access: MarkdownDocumentAccessLevel;
-  publishedRevisionId?: string | null;
   updatedAt?: string | null;
 }
 
@@ -27,7 +26,6 @@ export interface MarkdownDocumentProjectionInput {
   access?: MarkdownDocumentAccessLevel | null;
   requestedMode?: MarkdownDocumentMode | null;
   requestedRepresentation?: MarkdownDocumentRepresentation | null;
-  publishedRevisionId?: string | null;
   updatedAt?: string | null;
 }
 
@@ -70,9 +68,6 @@ export interface MarkdownDocumentProjection {
   mode: MarkdownDocumentMode;
   canEdit: boolean;
   canShare: boolean;
-  canPublish: boolean;
-  isPublished: boolean;
-  publishedRevisionId: string | null;
   updatedAt: string | null;
   markdownPlan: MarkdownProjectionPlan | null;
   canRenderInHost: boolean;
@@ -91,7 +86,6 @@ export function projectMarkdownDocument(
   const markdownPlan = input.markdownPlan
     ? resolveMarkdownProjection(input.markdownPlan, body)
     : projectMarkdownPlan(body);
-  const publishedRevisionId = input.publishedRevisionId ?? null;
   const canRenderInHost = canRenderMarkdownProjectionInHost(markdownPlan);
 
   const outlineItems = markdownPlan ? projectMarkdownDocumentOutline(markdownPlan) : [];
@@ -104,9 +98,6 @@ export function projectMarkdownDocument(
     mode,
     canEdit,
     canShare: access === "owner",
-    canPublish: access === "owner",
-    isPublished: publishedRevisionId !== null,
-    publishedRevisionId,
     updatedAt: input.updatedAt ?? null,
     markdownPlan,
     canRenderInHost,

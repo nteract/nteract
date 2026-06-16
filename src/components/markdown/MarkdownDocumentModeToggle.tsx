@@ -1,4 +1,5 @@
-import { BookOpen, Code2, Columns2, PencilLine } from "lucide-react";
+import { BookOpen, Code2, Columns2 } from "lucide-react";
+import { NotebookEditModeButton } from "@/components/notebook/NotebookEditModeButton";
 import type {
   MarkdownDocumentMode,
   MarkdownDocumentRepresentation,
@@ -20,40 +21,28 @@ export function MarkdownDocumentModeToggle({
   className,
 }: MarkdownDocumentModeToggleProps) {
   return (
-    <div
+    <NotebookEditModeButton
+      ariaLabel="Markdown document mode"
       className={cn("markdown-document-mode-toggle", className)}
-      role="group"
-      aria-label="Markdown document mode"
-      data-slot="markdown-document-mode-toggle"
-    >
-      <button
-        type="button"
-        aria-pressed={mode === "view"}
-        title="View Markdown"
-        onClick={() => {
-          if (mode !== "view") {
-            onModeChange("view");
-          }
-        }}
-      >
-        <BookOpen aria-hidden="true" />
-        <span>View</span>
-      </button>
-      <button
-        type="button"
-        aria-pressed={mode === "edit"}
-        disabled={!canEdit}
-        title={canEdit ? "Edit Markdown" : "Editing requires edit access"}
-        onClick={() => {
-          if (canEdit && mode !== "edit") {
-            onModeChange("edit");
-          }
-        }}
-      >
-        <PencilLine aria-hidden="true" />
-        <span>Edit</span>
-      </button>
-    </div>
+      dataSlot="markdown-document-mode-toggle"
+      editDisabled={!canEdit}
+      editActiveTitle="Editing Markdown"
+      editLabel="Edit"
+      editTitle={canEdit ? "Edit Markdown" : "Editing requires edit access"}
+      mode={mode}
+      state={mode === "edit" && canEdit ? "editing" : "viewing"}
+      variant="segmented"
+      viewSegmentLabel="View"
+      viewTitle="View Markdown"
+      onModeChange={(nextMode) => {
+        if (nextMode === "edit" && !canEdit) {
+          return;
+        }
+        if (nextMode !== mode) {
+          onModeChange(nextMode);
+        }
+      }}
+    />
   );
 }
 

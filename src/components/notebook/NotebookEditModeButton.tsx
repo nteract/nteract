@@ -9,24 +9,38 @@ export interface NotebookEditModeButtonProps {
   mode: NotebookEditMode;
   state: NotebookEditModeState;
   onModeChange: (mode: NotebookEditMode) => void;
+  ariaLabel?: string;
+  dataSlot?: string;
   disabled?: boolean;
+  editDisabled?: boolean;
+  editActiveTitle?: string;
   editLabel?: string;
   editTitle?: string;
   requestedEditLabel?: string;
   requestedEditTitle?: string;
+  viewLabel?: string;
+  viewSegmentLabel?: string;
+  viewTitle?: string;
   variant?: "button" | "segmented";
   className?: string;
 }
 
 export function NotebookEditModeButton({
+  ariaLabel = "Notebook interaction mode",
   className,
+  dataSlot = "notebook-edit-mode-button",
   disabled = false,
+  editDisabled = false,
+  editActiveTitle = "Editing notebook",
   editLabel: editLabelProp,
   editTitle = "Switch to edit mode",
   mode,
   onModeChange,
   requestedEditLabel = "Request sent",
   requestedEditTitle = "Edit access requested",
+  viewLabel = "View",
+  viewSegmentLabel = "Viewing",
+  viewTitle = "View notebook",
   state,
   variant = "button",
 }: NotebookEditModeButtonProps) {
@@ -51,8 +65,8 @@ export function NotebookEditModeButton({
           className,
         )}
         role="group"
-        aria-label="Notebook interaction mode"
-        data-slot="notebook-edit-mode-button"
+        aria-label={ariaLabel}
+        data-slot={dataSlot}
         data-state={state}
         data-variant={variant}
       >
@@ -64,7 +78,7 @@ export function NotebookEditModeButton({
             mode === "view" && "bg-background text-foreground shadow-sm",
           )}
           disabled={disabled}
-          title="View notebook"
+          title={viewTitle}
           onClick={() => {
             if (mode !== "view") {
               onModeChange("view");
@@ -73,7 +87,7 @@ export function NotebookEditModeButton({
         >
           <BookOpen className="size-3.5 shrink-0" aria-hidden="true" />
           <span className="sr-only sm:not-sr-only sm:min-w-0 sm:truncate sm:leading-none">
-            Viewing
+            {viewSegmentLabel}
           </span>
         </button>
         <button
@@ -86,13 +100,9 @@ export function NotebookEditModeButton({
                 ? "bg-background text-emerald-700 shadow-sm dark:text-emerald-300"
                 : "bg-background text-amber-700 shadow-sm dark:text-amber-300"),
           )}
-          disabled={disabled}
+          disabled={disabled || editDisabled}
           title={
-            state === "editing"
-              ? "Editing notebook"
-              : requestedEdit
-                ? requestedEditTitle
-                : editTitle
+            state === "editing" ? editActiveTitle : requestedEdit ? requestedEditTitle : editTitle
           }
           onClick={() => {
             if (mode !== "edit") {
@@ -123,10 +133,10 @@ export function NotebookEditModeButton({
         state === "requested" && "border-ring/50 text-foreground",
         className,
       )}
-      data-slot="notebook-edit-mode-button"
+      data-slot={dataSlot}
       data-state={state}
       data-variant={variant}
-      disabled={disabled}
+      disabled={disabled || (editDisabled && !requestingEdit)}
       title={title}
       onClick={() => onModeChange(nextMode)}
     >
@@ -135,7 +145,7 @@ export function NotebookEditModeButton({
       ) : (
         <Pencil className="size-4 shrink-0" aria-hidden="true" />
       )}
-      <span className="min-w-0 truncate leading-none">{label}</span>
+      <span className="min-w-0 truncate leading-none">{requestingEdit ? viewLabel : label}</span>
     </button>
   );
 }

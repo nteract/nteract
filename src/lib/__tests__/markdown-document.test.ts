@@ -74,7 +74,6 @@ describe("markdown document projection", () => {
       mode: "edit",
       canEdit: true,
       canShare: false,
-      canPublish: false,
     });
     expect(projection).not.toHaveProperty("runtime");
     expect(projection).not.toHaveProperty("workstation");
@@ -108,7 +107,8 @@ describe("markdown document projection", () => {
     expect(projection.mode).toBe("view");
     expect(projection.canEdit).toBe(false);
     expect(projection.canShare).toBe(false);
-    expect(projection.canPublish).toBe(false);
+    expect(projection).not.toHaveProperty("canPublish");
+    expect(projection).not.toHaveProperty("isPublished");
   });
 
   it("defaults editors to source representation in edit mode", () => {

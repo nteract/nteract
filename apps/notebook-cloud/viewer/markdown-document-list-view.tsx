@@ -214,7 +214,7 @@ export function CloudMarkdownDocumentListView({
           <h1>Documents</h1>
           <p>
             {signedIn
-              ? "Draft, review, and publish Markdown without compute."
+              ? "Draft, review, and share Markdown without compute."
               : "Sign in to open Markdown documents."}
           </p>
         </div>
