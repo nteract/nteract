@@ -440,6 +440,47 @@ export async function getPrincipalProfiles(
   return profiles;
 }
 
+export async function getPrincipalProfilesForVerifiedEmail(
+  env: Env,
+  email: string,
+): Promise<PrincipalProfileRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  const normalizedEmail = normalizeInviteEmail(email);
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT principal,
+            provider,
+            provider_subject,
+            email_normalized,
+            email_verified,
+            display_name,
+            avatar_url,
+            first_seen_at,
+            last_seen_at,
+            raw_claims_json
+       FROM principal_profiles
+      WHERE email_normalized = ?
+        AND email_verified = 1
+      ORDER BY last_seen_at DESC`,
+  )
+    .bind(normalizedEmail)
+    .all<PrincipalProfileRow>();
+  return rows.results ?? [];
+}
+
+export async function getPreferredPrincipalProfileForVerifiedEmail(
+  env: Env,
+  email: string,
+): Promise<PrincipalProfileRow | null> {
+  const profiles = await getPrincipalProfilesForVerifiedEmail(env, email);
+  return (
+    profiles.find((profile) => profile.principal.startsWith("account:")) ?? profiles[0] ?? null
+  );
+}
+
 export async function createPendingNotebookInvite(
   env: Env,
   input: PendingNotebookInviteInput,

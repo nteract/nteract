@@ -561,6 +561,25 @@ test("Markdown documents trust app sessions before surfacing sign-in chrome", ()
   );
 });
 
+test("Markdown document sharing uses email-first collaborator input", () => {
+  const markdownSharingText = readFileSync(
+    new URL("../viewer/markdown-sharing-controls.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(markdownSharingText, /Share by email/);
+  assert.match(markdownSharingText, /id="cloud-markdown-share-email"/);
+  assert.match(markdownSharingText, /type="email"/);
+  assert.match(markdownSharingText, /autoComplete="email"/);
+  assert.match(markdownSharingText, /normalizeShareInviteEmail\(inviteEmail\)/);
+  assert.match(
+    markdownSharingText,
+    /JSON\.stringify\(\{[\s\S]*subject_kind: "principal",[\s\S]*email,[\s\S]*scope,[\s\S]*\}\)/,
+  );
+  assert.doesNotMatch(markdownSharingText, /cloud-markdown-share-principal/);
+  assert.doesNotMatch(markdownSharingText, /user:anaconda/);
+});
+
 test("cloud notebook shell keeps the rail and toolbar outside the cell scroller", () => {
   const sourcePath = new URL("../viewer/index.css", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

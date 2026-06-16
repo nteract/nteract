@@ -1992,6 +1992,170 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("lets Markdown document owners grant access by known verified email", async () => {
+    const env = fakeEnv();
+    const accountPrincipal = await canonicalAccountPrincipalForProfile({
+      provider: "dev",
+      principalNamespace: "user:dev",
+      email: "bob@example.com",
+      emailVerified: true,
+    });
+    assert.ok(accountPrincipal);
+    env.DB.markdownDocuments.set("markdown-share-email", {
+      id: "markdown-share-email",
+      owner_principal: "user:dev:alice",
+      title: "Shared Markdown",
+      body_doc_id: "markdown-share-email",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: null,
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-share-email",
+      subject_kind: "principal",
+      subject: "user:dev:alice",
+      scope: "owner",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-share-email",
+      subject_kind: "principal",
+      subject: "user:dev:bob",
+      scope: "viewer",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+    env.DB.profiles.set("user:dev:bob", {
+      principal: "user:dev:bob",
+      provider: "dev",
+      provider_subject: "bob",
+      email_normalized: "bob@example.com",
+      email_verified: 1,
+      display_name: "Bob Example",
+      avatar_url: null,
+      first_seen_at: "2026-06-15T00:00:00.000Z",
+      last_seen_at: "2026-06-15T00:00:00.000Z",
+      raw_claims_json: null,
+    });
+    env.DB.profiles.set(accountPrincipal, {
+      principal: accountPrincipal,
+      provider: "dev",
+      provider_subject: null,
+      email_normalized: "bob@example.com",
+      email_verified: 1,
+      display_name: "Bob Example",
+      avatar_url: null,
+      first_seen_at: "2026-06-15T00:00:00.000Z",
+      last_seen_at: "2026-06-15T00:00:01.000Z",
+      raw_claims_json: null,
+    });
+    env.DB.accountLinks.set("user:dev:bob", {
+      transport_principal: "user:dev:bob",
+      canonical_principal: accountPrincipal,
+      provider: "dev",
+      email_normalized: "bob@example.com",
+      first_seen_at: "2026-06-15T00:00:00.000Z",
+      last_seen_at: "2026-06-15T00:00:00.000Z",
+    });
+
+    const grant = await markdownAclRequest(
+      env,
+      "POST",
+      {
+        subject_kind: "principal",
+        email: " Bob@Example.COM ",
+        scope: "viewer",
+      },
+      "markdown-share-email",
+    );
+
+    assert.equal(grant.status, 201);
+    const body = (await grant.json()) as {
+      acl: Array<StorageMarkdownDocumentAclRow & { display: Record<string, unknown> }>;
+    };
+    const bobRow = body.acl.find((row) => row.subject === accountPrincipal);
+    assert.equal(bobRow?.scope, "viewer");
+    assert.equal(bobRow?.display.email, "bob@example.com");
+    assert.equal(bobRow?.display.label, "Bob Example");
+    assert.equal(
+      body.acl.some((row) => row.subject === "user:dev:bob"),
+      false,
+    );
+    assert.equal(
+      env.DB.markdownDocumentAcl.some(
+        (row) =>
+          row.document_id === "markdown-share-email" &&
+          row.subject === accountPrincipal &&
+          row.scope === "viewer",
+      ),
+      true,
+    );
+    assert.equal(
+      env.DB.markdownDocumentAcl.some(
+        (row) =>
+          row.document_id === "markdown-share-email" &&
+          row.subject === "user:dev:bob" &&
+          row.scope === "viewer",
+      ),
+      false,
+    );
+
+    const bobCatalog = await worker.fetch(
+      new Request(
+        "http://localhost/api/m/markdown-share-email?user=bob&operator=desktop:b&scope=viewer",
+      ),
+      env,
+      fakeContext(),
+    );
+    assert.equal(bobCatalog.status, 200);
+  });
+
+  it("rejects Markdown document email grants for unknown recipients", async () => {
+    const env = fakeEnv();
+    env.DB.markdownDocuments.set("markdown-share-email-miss", {
+      id: "markdown-share-email-miss",
+      owner_principal: "user:dev:alice",
+      title: "Shared Markdown",
+      body_doc_id: "markdown-share-email-miss",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: null,
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-share-email-miss",
+      subject_kind: "principal",
+      subject: "user:dev:alice",
+      scope: "owner",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+
+    const grant = await markdownAclRequest(
+      env,
+      "POST",
+      {
+        subject_kind: "principal",
+        email: "missing@example.com",
+        scope: "viewer",
+      },
+      "markdown-share-email-miss",
+    );
+
+    assert.equal(grant.status, 404);
+    assert.deepEqual(await grant.json(), {
+      error:
+        "Markdown document email sharing currently requires the recipient to have signed in once.",
+    });
+    assert.equal(
+      env.DB.markdownDocumentAcl.some((row) => row.subject === "missing@example.com"),
+      false,
+    );
+  });
+
   it("rejects runtime peer ACL rows for Markdown documents", async () => {
     const env = fakeEnv();
     env.DB.markdownDocuments.set("markdown-no-runtime", {

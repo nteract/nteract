@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Link2, Share2, Trash2, UserRound } from "lucide-react";
+import { Link2, Mail, Share2, Trash2, UserRound } from "lucide-react";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 import { cloudResponseError } from "./cloud-response";
 import {
@@ -7,6 +7,7 @@ import {
   type CloudMarkdownDocumentAclRow,
   type CloudMarkdownShareScope,
 } from "./markdown-sharing";
+import { normalizeShareInviteEmail } from "./sharing-client";
 
 interface MarkdownSharingControlsProps {
   aclEndpoint: string;
@@ -27,7 +28,7 @@ export function MarkdownSharingControls({
   const [loadState, setLoadState] = useState<MarkdownSharingLoadState>("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [messageKind, setMessageKind] = useState<MarkdownSharingMessageKind>("info");
-  const [principal, setPrincipal] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
   const [scope, setScope] = useState<Exclude<CloudMarkdownShareScope, "owner">>("viewer");
   const [formError, setFormError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -101,9 +102,9 @@ export function MarkdownSharingControls({
     if (submitLockRef.current) {
       return;
     }
-    const subject = principal.trim();
-    if (!subject) {
-      setFormError("Enter a principal.");
+    const email = normalizeShareInviteEmail(inviteEmail);
+    if (!email) {
+      setFormError("Enter a valid email address.");
       return;
     }
 
@@ -122,7 +123,7 @@ export function MarkdownSharingControls({
           },
           body: JSON.stringify({
             subject_kind: "principal",
-            subject,
+            email,
             scope,
           }),
         },
@@ -131,9 +132,9 @@ export function MarkdownSharingControls({
       if (!response.ok) {
         throw await cloudResponseError(response, "Unable to grant document access");
       }
-      setPrincipal("");
+      setInviteEmail("");
       setMessageKind("info");
-      setMessage(`Access granted to ${subject}.`);
+      setMessage(`Access granted to ${email}.`);
       await loadSharingState({ preserveMessage: true });
     } catch (error) {
       setFormError(error instanceof Error ? error.message : String(error));
@@ -191,7 +192,7 @@ export function MarkdownSharingControls({
         <header>
           <div>
             <h2>Share document</h2>
-            <p>Grant document access to another nteract principal.</p>
+            <p>Invite people and manage document access.</p>
           </div>
           <button type="button" aria-label="Copy document link" onClick={() => void copyLink()}>
             <Link2 aria-hidden="true" />
@@ -201,17 +202,17 @@ export function MarkdownSharingControls({
         </header>
 
         <form className="cloud-share-invite" onSubmit={submitAccess}>
-          <label htmlFor="cloud-markdown-share-principal">
-            <span>Principal</span>
+          <label htmlFor="cloud-markdown-share-email">
+            <span>Share by email</span>
             <input
-              id="cloud-markdown-share-principal"
-              name="share-principal"
-              type="text"
-              value={principal}
-              placeholder="user:anaconda:..."
-              autoComplete="off"
+              id="cloud-markdown-share-email"
+              name="share-email"
+              type="email"
+              value={inviteEmail}
+              placeholder="name@example.com"
+              autoComplete="email"
               onChange={(event) => {
-                setPrincipal(event.target.value);
+                setInviteEmail(event.target.value);
                 setFormError(null);
               }}
             />
@@ -230,9 +231,12 @@ export function MarkdownSharingControls({
               <option value="editor">Can edit</option>
             </select>
           </label>
-          <button type="submit" disabled={!principal.trim() || busyAction === "grant"}>
-            <UserRound aria-hidden="true" />
-            Grant
+          <button
+            type="submit"
+            disabled={normalizeShareInviteEmail(inviteEmail) === null || busyAction === "grant"}
+          >
+            <Mail aria-hidden="true" />
+            Share
           </button>
           {formError ? (
             <div className="cloud-auth-form-error" role="alert">

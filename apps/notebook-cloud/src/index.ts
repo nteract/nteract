@@ -116,6 +116,7 @@ import {
   createPendingNotebookInvite,
   getPrincipalProfile,
   getPrincipalProfiles,
+  getPrincipalProfilesForVerifiedEmail,
   listNotebookInvites,
   resolveNotebookInvitesForLogin,
   revokePendingNotebookInvite,
@@ -3917,7 +3918,7 @@ async function routeMarkdownDocumentAcl(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const aclInput = await parseMarkdownDocumentAclInput(request);
+  const aclInput = await parseMarkdownDocumentAclInput(request, env);
   if (aclInput instanceof Response) {
     return aclInput;
   }
@@ -3961,6 +3962,16 @@ async function routeMarkdownDocumentAcl(
     scope: aclInput.scope,
     actorLabel: identity.actorLabel,
   });
+  if (request.method === "POST" && aclInput.sameEmailAliasSubjects?.length) {
+    for (const aliasSubject of aclInput.sameEmailAliasSubjects) {
+      await revokeMarkdownDocumentAclRow(env, {
+        documentId,
+        subjectKind: "principal",
+        subject: aliasSubject,
+        scope: aclInput.scope,
+      });
+    }
+  }
   cloudLog("info", "markdown_acl.grant.completed", {
     document_id: documentId,
     principal: identity.principal,
@@ -4745,6 +4756,7 @@ interface NotebookAclPayload {
   subject_kind?: unknown;
   subjectKind?: unknown;
   subject?: unknown;
+  email?: unknown;
   scope?: unknown;
 }
 
@@ -4758,6 +4770,7 @@ interface ParsedMarkdownDocumentAclInput {
   subject_kind: MarkdownDocumentAclRow["subject_kind"];
   subject: string;
   scope: MarkdownDocumentAclRow["scope"];
+  sameEmailAliasSubjects?: string[];
 }
 
 async function parseNotebookAclInput(request: Request): Promise<ParsedNotebookAclInput | Response> {
@@ -4823,15 +4836,105 @@ async function parseNotebookAclInput(request: Request): Promise<ParsedNotebookAc
 
 async function parseMarkdownDocumentAclInput(
   request: Request,
+  env: Env,
 ): Promise<ParsedMarkdownDocumentAclInput | Response> {
-  const input = await parseNotebookAclInput(request);
-  if (input instanceof Response) {
-    return input;
+  let payload: NotebookAclPayload;
+  try {
+    payload = (await request.json()) as NotebookAclPayload;
+  } catch {
+    return json({ error: "ACL mutation body must be JSON" }, 400);
   }
-  if (input.scope === "runtime_peer") {
+
+  const subjectKind = stringField(payload.subject_kind ?? payload.subjectKind, "subject_kind");
+  if (subjectKind instanceof Response) {
+    return subjectKind;
+  }
+  if (subjectKind !== "principal" && subjectKind !== "public") {
+    return json({ error: "subject_kind must be 'principal' or 'public'" }, 400);
+  }
+
+  const scopeValue = stringField(payload.scope, "scope");
+  if (scopeValue instanceof Response) {
+    return scopeValue;
+  }
+  if (scopeValue === "runtime_peer") {
     return json({ error: "Markdown document ACL scope cannot be runtime_peer" }, 400);
   }
-  return input as ParsedMarkdownDocumentAclInput;
+  if (scopeValue !== "viewer" && scopeValue !== "editor" && scopeValue !== "owner") {
+    return json({ error: "Markdown document ACL scope must be viewer, editor, or owner" }, 400);
+  }
+
+  if (subjectKind === "public") {
+    const subject = stringField(payload.subject, "subject");
+    if (subject instanceof Response) {
+      return subject;
+    }
+    if (subject !== "anonymous") {
+      return json({ error: "public ACL rows must use subject 'anonymous'" }, 400);
+    }
+    if (scopeValue !== "viewer") {
+      return json({ error: "public ACL rows may only grant viewer scope" }, 400);
+    }
+    return {
+      subject_kind: subjectKind,
+      subject,
+      scope: scopeValue,
+    };
+  }
+
+  const email = optionalStringField(payload.email, "email");
+  if (email instanceof Response) {
+    return email;
+  }
+  if (email) {
+    let normalizedEmail: string;
+    try {
+      normalizedEmail = normalizeInviteEmail(email);
+    } catch (error) {
+      return json({ error: errorMessage(error) }, 400);
+    }
+    const profiles = await getPrincipalProfilesForVerifiedEmail(env, normalizedEmail);
+    const profile =
+      profiles.find((candidate) => candidate.principal.startsWith("account:")) ??
+      profiles[0] ??
+      null;
+    if (!profile) {
+      return json(
+        {
+          error:
+            "Markdown document email sharing currently requires the recipient to have signed in once.",
+        },
+        404,
+      );
+    }
+    return {
+      subject_kind: subjectKind,
+      subject: profile.principal,
+      scope: scopeValue,
+      sameEmailAliasSubjects: profiles
+        .map((candidate) => candidate.principal)
+        .filter((principal) => principal !== profile.principal),
+    };
+  }
+
+  const subject = stringField(payload.subject, "subject");
+  if (subject instanceof Response) {
+    return subject;
+  }
+  try {
+    validatePrincipal(subject);
+  } catch (error) {
+    return json({ error: errorMessage(error) }, 400);
+  }
+  if (subject === "system" || subject.startsWith("anonymous:")) {
+    return json({ error: "principal ACL rows cannot target system or anonymous principals" }, 400);
+  }
+
+  return {
+    subject_kind: subjectKind,
+    subject,
+    scope: scopeValue,
+  };
 }
 
 function stringField(value: unknown, fieldName: string): string | Response {
