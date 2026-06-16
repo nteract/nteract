@@ -736,6 +736,12 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --verbose
 
+      - name: Run kernel-launch network tests (nono attestation)
+        # Exercises the real GitHub download + Sigstore attestation path for nono.
+        # Unix-only: nono has no Windows native build, and the sigstore-verify
+        # deps are only compiled on unix targets.
+        run: cargo test -p kernel-launch --verbose -- --ignored nono
+
   linux-runtimed-node:
     name: Linux runtimed-node
     needs: [changes]

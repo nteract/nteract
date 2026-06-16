@@ -3,7 +3,7 @@
 //! This crate provides the core kernel launching functionality used by both
 //! the Tauri notebook app and the runtimed daemon. It includes:
 //!
-//! - Tool bootstrapping (deno, uv, ruff, pixi) via GitHub downloads
+//! - Tool bootstrapping (deno, uv, ruff, pixi, nono) via GitHub downloads
 //! - Environment creation (UV/Conda)
 //! - Kernel process spawning
 //!
@@ -17,6 +17,10 @@
 //! let deno = tools::get_deno_path().await?;
 //! let uv = tools::get_uv_path().await?;
 //! let ruff = tools::get_ruff_path().await?;
+//!
+//! // Unix only (macOS and Linux):
+//! #[cfg(unix)]
+//! let nono = tools::get_nono_path().await?;
 //! ```
 
 // Allow `expect()` and `unwrap()` in tests
@@ -26,3 +30,7 @@ pub mod tools;
 
 // Re-export commonly used items
 pub use tools::{get_deno_path, get_ruff_path, get_uv_path, BootstrappedTool};
+
+// nono is Unix-only; re-export conditionally so callers get the same cfg guard.
+#[cfg(unix)]
+pub use tools::get_nono_path;
