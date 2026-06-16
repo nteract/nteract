@@ -122,6 +122,31 @@ export type NotebookRequest =
   | { type: "approve_project_environment"; project_file_path?: string | null }
   | { type: "resolve_comment_thread"; thread_id: string }
   | { type: "reopen_comment_thread"; thread_id: string }
+  | {
+      type: "accept_comment_thread";
+      thread_id: string;
+      message_id: string;
+      observed_comments_heads: string[];
+    }
+  | {
+      type: "reject_comment_thread";
+      thread_id: string;
+      reason: string;
+      observed_comments_heads: string[];
+    }
+  | {
+      type: "accept_comment_message";
+      thread_id: string;
+      message_id: string;
+      observed_comments_heads: string[];
+    }
+  | {
+      type: "reject_comment_message";
+      thread_id: string;
+      message_id: string;
+      reason: string;
+      observed_comments_heads: string[];
+    }
   | { type: "get_doc_bytes" }
   | {
       type: "create_blob_upload";

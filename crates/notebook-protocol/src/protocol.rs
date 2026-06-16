@@ -623,6 +623,35 @@ pub enum NotebookRequest {
     /// Reopen a durable comment thread through the daemon authority.
     ReopenCommentThread { thread_id: String },
 
+    /// Accept a pending durable comment thread through the daemon authority.
+    AcceptCommentThread {
+        thread_id: String,
+        message_id: String,
+        observed_comments_heads: Vec<String>,
+    },
+
+    /// Reject a pending durable comment thread through the daemon authority.
+    RejectCommentThread {
+        thread_id: String,
+        reason: String,
+        observed_comments_heads: Vec<String>,
+    },
+
+    /// Accept a pending durable comment message through the daemon authority.
+    AcceptCommentMessage {
+        thread_id: String,
+        message_id: String,
+        observed_comments_heads: Vec<String>,
+    },
+
+    /// Reject a pending durable comment message through the daemon authority.
+    RejectCommentMessage {
+        thread_id: String,
+        message_id: String,
+        reason: String,
+        observed_comments_heads: Vec<String>,
+    },
+
     /// Get the full Automerge document bytes from the daemon's canonical doc.
     /// Used by the frontend to bootstrap its WASM Automerge peer.
     GetDocBytes {},
@@ -1146,6 +1175,27 @@ mod tests {
             NotebookRequest::ReopenCommentThread {
                 thread_id: "thread-1".into(),
             },
+            NotebookRequest::AcceptCommentThread {
+                thread_id: "thread-1".into(),
+                message_id: "message-1".into(),
+                observed_comments_heads: vec!["abc".into()],
+            },
+            NotebookRequest::RejectCommentThread {
+                thread_id: "thread-1".into(),
+                reason: "duplicate".into(),
+                observed_comments_heads: vec!["abc".into()],
+            },
+            NotebookRequest::AcceptCommentMessage {
+                thread_id: "thread-1".into(),
+                message_id: "message-1".into(),
+                observed_comments_heads: vec!["abc".into()],
+            },
+            NotebookRequest::RejectCommentMessage {
+                thread_id: "thread-1".into(),
+                message_id: "message-1".into(),
+                reason: "duplicate".into(),
+                observed_comments_heads: vec!["abc".into()],
+            },
         ];
 
         for request in cases {
@@ -1392,6 +1442,43 @@ mod tests {
                 serde_json::json!({
                     "action": "reopen_comment_thread",
                     "thread_id": "thread-1",
+                }),
+            ),
+            (
+                "accept_comment_thread",
+                serde_json::json!({
+                    "action": "accept_comment_thread",
+                    "thread_id": "thread-1",
+                    "message_id": "message-1",
+                    "observed_comments_heads": ["abc"],
+                }),
+            ),
+            (
+                "reject_comment_thread",
+                serde_json::json!({
+                    "action": "reject_comment_thread",
+                    "thread_id": "thread-1",
+                    "reason": "duplicate",
+                    "observed_comments_heads": ["abc"],
+                }),
+            ),
+            (
+                "accept_comment_message",
+                serde_json::json!({
+                    "action": "accept_comment_message",
+                    "thread_id": "thread-1",
+                    "message_id": "message-1",
+                    "observed_comments_heads": ["abc"],
+                }),
+            ),
+            (
+                "reject_comment_message",
+                serde_json::json!({
+                    "action": "reject_comment_message",
+                    "thread_id": "thread-1",
+                    "message_id": "message-1",
+                    "reason": "duplicate",
+                    "observed_comments_heads": ["abc"],
                 }),
             ),
             (

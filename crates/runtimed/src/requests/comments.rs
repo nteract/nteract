@@ -1,6 +1,6 @@
 //! `NotebookRequest` handlers for daemon-authoritative comment transitions.
 
-use automerge::ActorId;
+use automerge::{ActorId, ChangeHash};
 use nteract_identity::ConnectionScope;
 
 use crate::notebook_sync_server::{NotebookRoom, COMMENTS_DOC_ACTOR};
@@ -36,10 +36,97 @@ pub(crate) async fn reopen_thread(
     )
 }
 
+pub(crate) async fn accept_thread(
+    room: &NotebookRoom,
+    thread_id: String,
+    message_id: String,
+    observed_comments_heads: Vec<String>,
+    submitter_actor_label: Option<&str>,
+    submitter_scope: ConnectionScope,
+) -> NotebookResponse {
+    finalize_thread_creation(
+        room,
+        thread_id,
+        Some(message_id),
+        observed_comments_heads,
+        submitter_actor_label,
+        submitter_scope,
+        ThreadCreationFinalization::Accept,
+    )
+}
+
+pub(crate) async fn reject_thread(
+    room: &NotebookRoom,
+    thread_id: String,
+    reason: String,
+    observed_comments_heads: Vec<String>,
+    submitter_actor_label: Option<&str>,
+    submitter_scope: ConnectionScope,
+) -> NotebookResponse {
+    finalize_thread_creation(
+        room,
+        thread_id,
+        None,
+        observed_comments_heads,
+        submitter_actor_label,
+        submitter_scope,
+        ThreadCreationFinalization::Reject { reason },
+    )
+}
+
+pub(crate) async fn accept_message(
+    room: &NotebookRoom,
+    thread_id: String,
+    message_id: String,
+    observed_comments_heads: Vec<String>,
+    submitter_actor_label: Option<&str>,
+    submitter_scope: ConnectionScope,
+) -> NotebookResponse {
+    finalize_message_creation(
+        room,
+        thread_id,
+        message_id,
+        observed_comments_heads,
+        submitter_actor_label,
+        submitter_scope,
+        MessageCreationFinalization::Accept,
+    )
+}
+
+pub(crate) async fn reject_message(
+    room: &NotebookRoom,
+    thread_id: String,
+    message_id: String,
+    reason: String,
+    observed_comments_heads: Vec<String>,
+    submitter_actor_label: Option<&str>,
+    submitter_scope: ConnectionScope,
+) -> NotebookResponse {
+    finalize_message_creation(
+        room,
+        thread_id,
+        message_id,
+        observed_comments_heads,
+        submitter_actor_label,
+        submitter_scope,
+        MessageCreationFinalization::Reject { reason },
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ThreadStatusTransition {
     Resolve,
     Reopen,
+}
+
+enum ThreadCreationFinalization {
+    Accept,
+    Reject { reason: String },
+}
+
+enum MessageCreationFinalization {
+    Accept,
+    Reject { reason: String },
 }
 
 fn set_thread_status(
@@ -55,10 +142,8 @@ fn set_thread_status(
         };
     }
 
-    if thread_id.trim().is_empty() {
-        return NotebookResponse::Error {
-            error: "thread_id cannot be empty".to_string(),
-        };
+    if let Err(error) = validate_non_empty("thread_id", &thread_id) {
+        return NotebookResponse::Error { error };
     }
 
     let actor_label = submitter_actor_label.unwrap_or("unknown");
@@ -91,7 +176,193 @@ fn set_thread_status(
     NotebookResponse::Ok {}
 }
 
+fn finalize_thread_creation(
+    room: &NotebookRoom,
+    thread_id: String,
+    message_id: Option<String>,
+    observed_comments_heads: Vec<String>,
+    submitter_actor_label: Option<&str>,
+    submitter_scope: ConnectionScope,
+    finalization: ThreadCreationFinalization,
+) -> NotebookResponse {
+    if !allows_comment_content_finalization(submitter_scope) {
+        return NotebookResponse::Error {
+            error: format!("{submitter_scope} cannot finalize comment thread creation"),
+        };
+    }
+
+    if let Err(error) = validate_non_empty("thread_id", &thread_id) {
+        return NotebookResponse::Error { error };
+    }
+    if let Some(message_id) = &message_id {
+        if let Err(error) = validate_non_empty("message_id", message_id) {
+            return NotebookResponse::Error { error };
+        }
+    }
+    if let ThreadCreationFinalization::Reject { reason } = &finalization {
+        if let Err(error) = validate_non_empty("reason", reason) {
+            return NotebookResponse::Error { error };
+        }
+    }
+    let Some(submitter_actor_label) = submitter_actor_label else {
+        return NotebookResponse::Error {
+            error: "comment finalization requires an authenticated actor label".to_string(),
+        };
+    };
+    let observed_heads = match parse_observed_comments_heads(&observed_comments_heads) {
+        Ok(heads) => heads,
+        Err(error) => return NotebookResponse::Error { error },
+    };
+
+    let result = room.comments.with_doc(|doc| {
+        let pending_author = match message_id.as_deref() {
+            Some(message_id) => {
+                doc.validate_pending_thread_creation(&thread_id, message_id, &observed_heads)?
+            }
+            None => doc.validate_pending_thread(&thread_id, &observed_heads)?,
+        };
+        validate_finalizer_scope(&pending_author, submitter_actor_label, submitter_scope)?;
+        doc.doc_mut()
+            .set_actor(ActorId::from(COMMENTS_DOC_ACTOR.as_bytes()));
+        match finalization {
+            ThreadCreationFinalization::Accept => {
+                doc.accept_thread_creation(&thread_id, &pending_author, COMMENTS_DOC_ACTOR)?;
+                if let Some(message_id) = message_id.as_deref() {
+                    doc.accept_message(
+                        &thread_id,
+                        message_id,
+                        &pending_author,
+                        COMMENTS_DOC_ACTOR,
+                    )?;
+                }
+                Ok(())
+            }
+            ThreadCreationFinalization::Reject { reason } => {
+                doc.reject_thread_creation(&thread_id, &reason)
+            }
+        }
+    });
+
+    if let Err(error) = result {
+        return NotebookResponse::Error {
+            error: format!("Failed to finalize comment thread creation: {error}"),
+        };
+    }
+
+    if let Err(error) = room.comments_store.save_handle(&room.comments) {
+        return NotebookResponse::Error {
+            error: format!("Failed to persist comment thread finalization: {error:#}"),
+        };
+    }
+
+    NotebookResponse::Ok {}
+}
+
+fn finalize_message_creation(
+    room: &NotebookRoom,
+    thread_id: String,
+    message_id: String,
+    observed_comments_heads: Vec<String>,
+    submitter_actor_label: Option<&str>,
+    submitter_scope: ConnectionScope,
+    finalization: MessageCreationFinalization,
+) -> NotebookResponse {
+    if !allows_comment_content_finalization(submitter_scope) {
+        return NotebookResponse::Error {
+            error: format!("{submitter_scope} cannot finalize comment message creation"),
+        };
+    }
+
+    if let Err(error) = validate_non_empty("thread_id", &thread_id) {
+        return NotebookResponse::Error { error };
+    }
+    if let Err(error) = validate_non_empty("message_id", &message_id) {
+        return NotebookResponse::Error { error };
+    }
+    if let MessageCreationFinalization::Reject { reason } = &finalization {
+        if let Err(error) = validate_non_empty("reason", reason) {
+            return NotebookResponse::Error { error };
+        }
+    }
+    let Some(submitter_actor_label) = submitter_actor_label else {
+        return NotebookResponse::Error {
+            error: "comment finalization requires an authenticated actor label".to_string(),
+        };
+    };
+    let observed_heads = match parse_observed_comments_heads(&observed_comments_heads) {
+        Ok(heads) => heads,
+        Err(error) => return NotebookResponse::Error { error },
+    };
+
+    let result = room.comments.with_doc(|doc| {
+        let pending_author =
+            doc.validate_pending_message_creation(&thread_id, &message_id, &observed_heads)?;
+        validate_finalizer_scope(&pending_author, submitter_actor_label, submitter_scope)?;
+        doc.doc_mut()
+            .set_actor(ActorId::from(COMMENTS_DOC_ACTOR.as_bytes()));
+        match finalization {
+            MessageCreationFinalization::Accept => {
+                doc.accept_message(&thread_id, &message_id, &pending_author, COMMENTS_DOC_ACTOR)
+            }
+            MessageCreationFinalization::Reject { reason } => {
+                doc.reject_message(&thread_id, &message_id, &reason)
+            }
+        }
+    });
+
+    if let Err(error) = result {
+        return NotebookResponse::Error {
+            error: format!("Failed to finalize comment message creation: {error}"),
+        };
+    }
+
+    if let Err(error) = room.comments_store.save_handle(&room.comments) {
+        return NotebookResponse::Error {
+            error: format!("Failed to persist comment message finalization: {error:#}"),
+        };
+    }
+
+    NotebookResponse::Ok {}
+}
+
+fn parse_observed_comments_heads(heads: &[String]) -> Result<Vec<ChangeHash>, String> {
+    if heads.is_empty() {
+        return Err("observed_comments_heads cannot be empty".to_string());
+    }
+    heads
+        .iter()
+        .map(|head| {
+            head.parse::<ChangeHash>()
+                .map_err(|_| "observed_comments_heads contained an invalid head".to_string())
+        })
+        .collect()
+}
+
+fn validate_finalizer_scope(
+    pending_author: &str,
+    submitter_actor_label: &str,
+    submitter_scope: ConnectionScope,
+) -> Result<(), comments_doc::CommentsDocError> {
+    if submitter_scope == ConnectionScope::Owner || pending_author == submitter_actor_label {
+        return Ok(());
+    }
+    Err(comments_doc::CommentsDocError::UnauthorizedActor(format!(
+        "{submitter_actor_label} cannot finalize comment content authored by {pending_author}"
+    )))
+}
+
+fn validate_non_empty(field: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{field} cannot be empty"));
+    }
+    Ok(())
+}
+
 fn allows_comment_status_transition(scope: ConnectionScope) -> bool {
+    matches!(scope, ConnectionScope::Editor | ConnectionScope::Owner)
+}
+
+fn allows_comment_content_finalization(scope: ConnectionScope) -> bool {
     matches!(scope, ConnectionScope::Editor | ConnectionScope::Owner)
 }
 
@@ -107,5 +378,17 @@ mod tests {
             ConnectionScope::RuntimePeer
         ));
         assert!(allows_comment_status_transition(ConnectionScope::Owner));
+    }
+
+    #[test]
+    fn comment_content_finalization_scope_excludes_viewer_and_runtime_peer() {
+        assert!(!allows_comment_content_finalization(
+            ConnectionScope::Viewer
+        ));
+        assert!(allows_comment_content_finalization(ConnectionScope::Editor));
+        assert!(!allows_comment_content_finalization(
+            ConnectionScope::RuntimePeer
+        ));
+        assert!(allows_comment_content_finalization(ConnectionScope::Owner));
     }
 }

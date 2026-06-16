@@ -1648,6 +1648,291 @@ async fn test_comment_status_request_resolves_reopens_and_persists_sidecar() {
 }
 
 #[tokio::test]
+async fn test_comment_content_request_accepts_thread_message_and_persists_sidecar() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-accept.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.create_thread(
+                "thread-accept",
+                "message-accept",
+                &comments_doc::CommentAnchor::Notebook,
+                "please review",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(&room);
+
+    let accepted_thread = crate::requests::comments::accept_thread(
+        &room,
+        "thread-accept".to_string(),
+        "message-accept".to_string(),
+        observed_heads,
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(
+        accepted_thread,
+        crate::protocol::NotebookResponse::Ok {}
+    ));
+    let persisted = std::fs::read(room.comments_store.doc_path(&room.comments_doc_id)).unwrap();
+    let persisted_doc = comments_doc::CommentsDoc::load(&persisted, &room.comments_doc_id).unwrap();
+    let persisted_projection = persisted_doc
+        .read_projection(&[COMMENTS_DOC_ACTOR], None)
+        .unwrap();
+    let thread = &persisted_projection.threads[0];
+    assert_eq!(
+        thread.mutation_state,
+        comments_doc::ProjectedMutationState::Accepted
+    );
+    assert!(thread.trusted);
+    assert_eq!(
+        thread.created_by_actor_label.as_deref(),
+        Some("agent:comments-editor")
+    );
+    assert_eq!(
+        thread.created_by_authority.as_deref(),
+        Some(COMMENTS_DOC_ACTOR)
+    );
+    let message = &thread.messages[0];
+    assert_eq!(
+        message.mutation_state,
+        comments_doc::ProjectedMutationState::Accepted
+    );
+    assert!(message.trusted);
+    assert_eq!(
+        message.created_by_actor_label.as_deref(),
+        Some("agent:comments-editor")
+    );
+    assert_eq!(
+        message.created_by_authority.as_deref(),
+        Some(COMMENTS_DOC_ACTOR)
+    );
+}
+
+#[tokio::test]
+async fn test_comment_content_request_rejects_runtime_peer() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-accept-runtime.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.create_thread(
+                "thread-runtime-accept",
+                "message-runtime-accept",
+                &comments_doc::CommentAnchor::Notebook,
+                "runtime peer must not accept",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(&room);
+
+    let response = crate::requests::comments::accept_thread(
+        &room,
+        "thread-runtime-accept".to_string(),
+        "message-runtime-accept".to_string(),
+        observed_heads,
+        Some("agent:runtime-peer"),
+        nteract_identity::ConnectionScope::RuntimePeer,
+    )
+    .await;
+
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].mutation_state,
+        comments_doc::ProjectedMutationState::Pending
+    );
+    assert!(
+        !projection.threads[0].trusted,
+        "runtime peer must not authority-finalize CommentsDoc content"
+    );
+}
+
+#[tokio::test]
+async fn test_comment_content_request_rejects_empty_observed_heads() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-accept-empty-heads.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.create_thread(
+                "thread-empty-heads",
+                "message-empty-heads",
+                &comments_doc::CommentAnchor::Notebook,
+                "empty heads must not accept",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let response = crate::requests::comments::accept_thread(
+        &room,
+        "thread-empty-heads".to_string(),
+        "message-empty-heads".to_string(),
+        Vec::new(),
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+}
+
+#[tokio::test]
+async fn test_comment_content_request_rejects_stale_observed_heads() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-accept-stale-heads.ipynb");
+    let stale_heads = comments_heads_hex(&room);
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.create_thread(
+                "thread-stale-heads",
+                "message-stale-heads",
+                &comments_doc::CommentAnchor::Notebook,
+                "stale heads must not accept",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let response = crate::requests::comments::accept_thread(
+        &room,
+        "thread-stale-heads".to_string(),
+        "message-stale-heads".to_string(),
+        stale_heads,
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+}
+
+#[tokio::test]
+async fn test_comment_content_request_rejects_editor_accepting_other_author() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-accept-other-editor.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut().set_actor(ActorId::from(b"agent:alice"));
+            doc.create_thread(
+                "thread-alice",
+                "message-alice",
+                &comments_doc::CommentAnchor::Notebook,
+                "alice pending",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(&room);
+
+    let response = crate::requests::comments::accept_thread(
+        &room,
+        "thread-alice".to_string(),
+        "message-alice".to_string(),
+        observed_heads,
+        Some("agent:bob"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].mutation_state,
+        comments_doc::ProjectedMutationState::Pending
+    );
+}
+
+#[tokio::test]
+async fn test_comment_content_owner_accepts_other_author_without_rewriting_author() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-owner-accept.ipynb");
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut().set_actor(ActorId::from(b"agent:alice"));
+            doc.create_thread(
+                "thread-owner",
+                "message-owner",
+                &comments_doc::CommentAnchor::Notebook,
+                "alice pending for owner",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(&room);
+
+    let response = crate::requests::comments::accept_thread(
+        &room,
+        "thread-owner".to_string(),
+        "message-owner".to_string(),
+        observed_heads,
+        Some("agent:owner"),
+        nteract_identity::ConnectionScope::Owner,
+    )
+    .await;
+
+    assert!(matches!(response, crate::protocol::NotebookResponse::Ok {}));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].created_by_actor_label.as_deref(),
+        Some("agent:alice")
+    );
+    assert_eq!(
+        projection.threads[0].messages[0]
+            .created_by_actor_label
+            .as_deref(),
+        Some("agent:alice")
+    );
+}
+
+#[tokio::test]
 async fn test_comment_status_request_rejects_runtime_peer() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "comments-status-runtime.ipynb");
@@ -1735,6 +2020,18 @@ fn comments_sync_payload_from_room(
         .unwrap()
         .expect("client comment sync message")
         .encode()
+}
+
+fn comments_heads_hex(room: &NotebookRoom) -> Vec<String> {
+    room.comments
+        .with_doc(|doc| {
+            Ok(doc
+                .get_heads()
+                .into_iter()
+                .map(|head| head.to_string())
+                .collect())
+        })
+        .unwrap()
 }
 
 #[test]

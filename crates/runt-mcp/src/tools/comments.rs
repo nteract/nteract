@@ -205,7 +205,7 @@ pub async fn list_comments(
     comments_resource_json_success(value, handle.notebook_id())
 }
 
-/// Create a pending comment thread.
+/// Create a comment thread.
 pub async fn create_comment_thread(
     server: &NteractMcp,
     request: &CallToolRequestParams,
@@ -239,7 +239,25 @@ pub async fn create_comment_thread(
         Ok(created) => created,
         Err(e) => return comments_tool_error("Failed to create comment thread", e),
     };
+    let observed_comments_heads = match handle.current_comments_heads_hex() {
+        Ok(heads) => heads,
+        Err(e) => return comments_tool_error("Failed to capture comment heads after create", e),
+    };
     confirm_comments_sync(&handle, "create_comment_thread").await?;
+    if let Err(error) = send_comment_authority_request(
+        &handle,
+        NotebookRequest::AcceptCommentThread {
+            thread_id: created.thread_id.clone(),
+            message_id: created.message_id.clone(),
+            observed_comments_heads,
+        },
+        "accept comment thread",
+    )
+    .await
+    {
+        return tool_error(&error);
+    }
+    confirm_comments_sync(&handle, "create_comment_thread authority accept").await?;
     let projection = match handle.get_comments_projection() {
         Ok(projection) => projection,
         Err(e) => return comments_tool_error("Failed to read comments after create", e),
@@ -260,7 +278,7 @@ pub async fn create_comment_thread(
     comments_resource_json_success(value, handle.notebook_id())
 }
 
-/// Add a pending reply to a comment thread.
+/// Add a reply to a comment thread.
 pub async fn reply_comment_thread(
     server: &NteractMcp,
     request: &CallToolRequestParams,
@@ -292,7 +310,25 @@ pub async fn reply_comment_thread(
         Ok(replied) => replied,
         Err(e) => return comments_tool_error("Failed to reply to comment thread", e),
     };
+    let observed_comments_heads = match handle.current_comments_heads_hex() {
+        Ok(heads) => heads,
+        Err(e) => return comments_tool_error("Failed to capture comment heads after reply", e),
+    };
     confirm_comments_sync(&handle, "reply_comment_thread").await?;
+    if let Err(error) = send_comment_authority_request(
+        &handle,
+        NotebookRequest::AcceptCommentMessage {
+            thread_id: replied.thread_id.clone(),
+            message_id: replied.message_id.clone(),
+            observed_comments_heads,
+        },
+        "accept comment reply",
+    )
+    .await
+    {
+        return tool_error(&error);
+    }
+    confirm_comments_sync(&handle, "reply_comment_thread authority accept").await?;
     let projection = match handle.get_comments_projection() {
         Ok(projection) => projection,
         Err(e) => return comments_tool_error("Failed to read comments after reply", e),
@@ -404,6 +440,25 @@ async fn update_comment_thread_status(
         "resources": crate::resources::notebook_resources_json(handle.notebook_id()),
     });
     comments_resource_json_success(value, handle.notebook_id())
+}
+
+async fn send_comment_authority_request(
+    handle: &notebook_sync::handle::DocHandle,
+    request: NotebookRequest,
+    action: &str,
+) -> Result<(), String> {
+    match handle.send_request(request).await {
+        Ok(NotebookResponse::Ok {}) => Ok(()),
+        Ok(NotebookResponse::Error { error }) => Err(format!(
+            "Failed to {action} through daemon authority: {error}"
+        )),
+        Ok(other) => Err(format!(
+            "Failed to {action} through daemon authority: unexpected daemon response {other:?}"
+        )),
+        Err(error) => Err(format!(
+            "Failed to {action} through daemon authority: {error}"
+        )),
+    }
 }
 
 fn required_anchor(request: &CallToolRequestParams) -> Result<CommentAnchorInput, McpError> {

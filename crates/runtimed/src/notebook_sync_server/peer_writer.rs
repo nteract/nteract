@@ -492,7 +492,11 @@ fn request_required_scope(
         | NotebookRequest::ApproveTrust { .. }
         | NotebookRequest::ApproveProjectEnvironment { .. } => RequestRequiredScope::Owner,
         NotebookRequest::ResolveCommentThread { .. }
-        | NotebookRequest::ReopenCommentThread { .. } => RequestRequiredScope::CommentsWrite,
+        | NotebookRequest::ReopenCommentThread { .. }
+        | NotebookRequest::AcceptCommentThread { .. }
+        | NotebookRequest::RejectCommentThread { .. }
+        | NotebookRequest::AcceptCommentMessage { .. }
+        | NotebookRequest::RejectCommentMessage { .. } => RequestRequiredScope::CommentsWrite,
         NotebookRequest::SendComm { .. }
         | NotebookRequest::CloneAsEphemeral { .. }
         | NotebookRequest::GetDocBytes {} => RequestRequiredScope::NotebookWrite,

@@ -401,6 +401,65 @@ impl CommentsDoc {
         Ok(())
     }
 
+    pub fn validate_pending_thread_creation(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        observed_heads: &[automerge::ChangeHash],
+    ) -> Result<String, CommentsDocError> {
+        let thread_actor = self.validate_pending_thread(thread_id, observed_heads)?;
+        let message = self.message_or_error(thread_id, message_id)?;
+        validate_pending_state(
+            read_str(&self.doc, &message, "mutation_state"),
+            CommentsDocError::MessageNotPending {
+                thread_id: thread_id.to_string(),
+                message_id: message_id.to_string(),
+            },
+        )?;
+        let message_actor = obj_actor_label(&message)?;
+        if thread_actor != message_actor {
+            return Err(CommentsDocError::ActorMismatch {
+                expected: thread_actor,
+                actual: message_actor,
+            });
+        }
+        Ok(thread_actor)
+    }
+
+    pub fn validate_pending_thread(
+        &mut self,
+        thread_id: &str,
+        observed_heads: &[automerge::ChangeHash],
+    ) -> Result<String, CommentsDocError> {
+        self.validate_observed_heads(observed_heads)?;
+        let thread = self.thread_or_error(thread_id)?;
+        self.validate_thread_visible_at_heads(thread_id, observed_heads)?;
+        validate_pending_state(
+            read_str(&self.doc, &thread, "mutation_state"),
+            CommentsDocError::ThreadNotPending(thread_id.to_string()),
+        )?;
+        obj_actor_label(&thread)
+    }
+
+    pub fn validate_pending_message_creation(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        observed_heads: &[automerge::ChangeHash],
+    ) -> Result<String, CommentsDocError> {
+        self.validate_observed_heads(observed_heads)?;
+        let message = self.message_or_error(thread_id, message_id)?;
+        self.validate_message_visible_at_heads(thread_id, message_id, observed_heads)?;
+        validate_pending_state(
+            read_str(&self.doc, &message, "mutation_state"),
+            CommentsDocError::MessageNotPending {
+                thread_id: thread_id.to_string(),
+                message_id: message_id.to_string(),
+            },
+        )?;
+        obj_actor_label(&message)
+    }
+
     pub fn resolve_thread(
         &mut self,
         thread_id: &str,
@@ -416,6 +475,52 @@ impl CommentsDoc {
             .put(&thread, "authority_resolved_by_actor_label", actor_label)?;
         self.doc
             .put(&thread, "authority_resolved_by_authority", authority)?;
+        Ok(())
+    }
+
+    fn validate_thread_visible_at_heads(
+        &self,
+        thread_id: &str,
+        observed_heads: &[automerge::ChangeHash],
+    ) -> Result<(), CommentsDocError> {
+        let threads = self
+            .get_map("threads")
+            .ok_or(CommentsDocError::MissingScaffold("threads"))?;
+        match self.doc.get_at(&threads, thread_id, observed_heads)? {
+            Some((Value::Object(ObjType::Map), _)) => Ok(()),
+            _ => Err(CommentsDocError::ObservedHeadNotFound(format!(
+                "thread {thread_id}"
+            ))),
+        }
+    }
+
+    fn validate_message_visible_at_heads(
+        &self,
+        thread_id: &str,
+        message_id: &str,
+        observed_heads: &[automerge::ChangeHash],
+    ) -> Result<(), CommentsDocError> {
+        let thread = self.thread_or_error(thread_id)?;
+        let messages = self
+            .messages_obj(&thread)
+            .ok_or(CommentsDocError::MissingScaffold("messages"))?;
+        match self.doc.get_at(&messages, message_id, observed_heads)? {
+            Some((Value::Object(ObjType::Map), _)) => Ok(()),
+            _ => Err(CommentsDocError::ObservedHeadNotFound(format!(
+                "message {thread_id}/{message_id}"
+            ))),
+        }
+    }
+
+    fn validate_observed_heads(
+        &mut self,
+        observed_heads: &[automerge::ChangeHash],
+    ) -> Result<(), CommentsDocError> {
+        for head in observed_heads {
+            if self.doc.get_change_by_hash(head).is_none() {
+                return Err(CommentsDocError::ObservedHeadNotFound(head.to_string()));
+            }
+        }
         Ok(())
     }
 
@@ -1290,6 +1395,37 @@ fn authority_actor_set(authority_actor_labels: &[&str]) -> HashSet<ActorId> {
         .iter()
         .map(|label| ActorId::from(label.as_bytes()))
         .collect()
+}
+
+fn validate_pending_state(
+    state: Option<String>,
+    error: CommentsDocError,
+) -> Result<(), CommentsDocError> {
+    if state.as_deref() == Some("pending") {
+        return Ok(());
+    }
+    Err(error)
+}
+
+fn obj_actor_label(obj_id: &ObjId) -> Result<String, CommentsDocError> {
+    let Some(actual) = obj_actor_id(obj_id) else {
+        return Err(CommentsDocError::ActorMismatch {
+            expected: "<comment actor>".to_string(),
+            actual: "<root>".to_string(),
+        });
+    };
+    Ok(actor_label_from_id(actual))
+}
+
+fn actor_label_from_id(actor: &ActorId) -> String {
+    String::from_utf8(actor.to_bytes().to_vec()).unwrap_or_else(|_| actor.to_hex_string())
+}
+
+fn obj_actor_id(obj_id: &ObjId) -> Option<&ActorId> {
+    match obj_id {
+        ObjId::Id(_, actor, _) => Some(actor),
+        _ => None,
+    }
 }
 
 fn obj_id_authored_by_authority(obj_id: &ObjId, authority_actors: &HashSet<ActorId>) -> bool {

@@ -133,11 +133,11 @@
       "name": "list_comments"
     },
     {
-      "description": "Create a pending comment thread.",
+      "description": "Create a comment thread.",
       "name": "create_comment_thread"
     },
     {
-      "description": "Reply to a comment thread.",
+      "description": "Add a comment reply.",
       "name": "reply_comment_thread"
     },
     {

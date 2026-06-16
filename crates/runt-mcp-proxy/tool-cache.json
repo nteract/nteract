@@ -619,7 +619,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a pending comment thread.",
+    "description": "Create a comment thread.",
     "inputSchema": {
       "$defs": {
         "CommentAnchorInput": {
@@ -826,7 +826,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Reply to a comment thread.",
+    "description": "Add a comment reply.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

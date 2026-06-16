@@ -804,6 +804,17 @@ impl DocHandle {
             .collect())
     }
 
+    /// Get current durable CommentsDoc heads as protocol hex strings.
+    pub fn current_comments_heads_hex(&self) -> Result<Vec<String>, SyncError> {
+        let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        Ok(state
+            .comments_doc
+            .get_heads()
+            .into_iter()
+            .map(|head| hex::encode(head.as_ref()))
+            .collect())
+    }
+
     /// Save the current local `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`,
     /// and `CommentsDoc` replicas.
     ///

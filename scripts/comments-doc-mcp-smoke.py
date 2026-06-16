@@ -66,6 +66,7 @@ CELL_SUMMARY_RE = re.compile(r"\bcell\s+([A-Za-z0-9_.:-]+)\s+\(")
 COMMENT_SYNC_TIMEOUT_SECS = 20
 DAEMON_READY_TIMEOUT_SECS = 30
 BASE_EXCEPTION_GROUP = getattr(builtins, "BaseExceptionGroup", None)
+COMMENTS_AUTHORITY = "runtimed:comments"
 
 
 class SmokeFailure(RuntimeError):
@@ -267,6 +268,60 @@ def thread_status(payload: dict[str, Any], thread_id: str) -> str | None:
     return status if isinstance(status, str) else None
 
 
+def require_thread(
+    payload: dict[str, Any],
+    thread_id: str,
+    context: str,
+) -> dict[str, Any]:
+    thread = thread_by_id(payload, thread_id)
+    if not thread:
+        fail(f"{context} did not include thread {thread_id}: {payload}")
+    return thread
+
+
+def require_message_by_body(
+    thread: dict[str, Any],
+    body: str,
+    context: str,
+) -> dict[str, Any]:
+    for message in thread.get("messages", []):
+        if isinstance(message, dict) and message.get("body") == body:
+            return message
+    fail(f"{context} did not include message body {body!r}: {thread}")
+
+
+def assert_authority_accepted_thread(
+    payload: dict[str, Any],
+    thread_id: str,
+    body: str,
+    context: str,
+) -> None:
+    thread = require_thread(payload, thread_id, context)
+    if thread.get("status") != "open":
+        fail(f"{context} thread status was not open: {thread}")
+    if thread.get("mutation_state") != "accepted" or thread.get("trusted") is not True:
+        fail(f"{context} thread was not authority-accepted/trusted: {thread}")
+    if thread.get("created_by_authority") != COMMENTS_AUTHORITY:
+        fail(f"{context} thread authority mismatch: {thread}")
+    if not isinstance(thread.get("created_by_actor_label"), str):
+        fail(f"{context} thread missing actor label: {thread}")
+    assert_authority_accepted_message(thread, body, context)
+
+
+def assert_authority_accepted_message(
+    thread: dict[str, Any],
+    body: str,
+    context: str,
+) -> None:
+    message = require_message_by_body(thread, body, context)
+    if message.get("mutation_state") != "accepted" or message.get("trusted") is not True:
+        fail(f"{context} message was not authority-accepted/trusted: {message}")
+    if message.get("created_by_authority") != COMMENTS_AUTHORITY:
+        fail(f"{context} message authority mismatch: {message}")
+    if not isinstance(message.get("created_by_actor_label"), str):
+        fail(f"{context} message missing actor label: {message}")
+
+
 def iter_threads(payload: dict[str, Any]) -> list[dict[str, Any]]:
     threads = [thread for thread in payload.get("threads", []) if isinstance(thread, dict)]
     thread = payload.get("thread")
@@ -385,8 +440,14 @@ async def run_pair_scenario(
     created_thread_id = created.get("thread_id")
     if not isinstance(created_thread_id, str) or not created_thread_id:
         fail(f"create_comment_thread did not return thread_id: {created}")
+    assert_authority_accepted_thread(
+        created,
+        created_thread_id,
+        alice_body,
+        "alice create result",
+    )
 
-    await wait_for_comments(
+    bob_seen, bob_resource = await wait_for_comments(
         bob,
         "bob",
         notebook_comments_uri,
@@ -395,14 +456,31 @@ async def run_pair_scenario(
         ),
         "alice notebook thread",
     )
+    assert_authority_accepted_thread(
+        bob_seen,
+        created_thread_id,
+        alice_body,
+        "bob list after alice create",
+    )
+    assert_authority_accepted_thread(
+        bob_resource,
+        created_thread_id,
+        alice_body,
+        "bob resource after alice create",
+    )
 
-    await call_json(
+    replied = await call_json(
         bob,
         "bob",
         "reply_comment_thread",
         {"thread_id": created_thread_id, "body": bob_reply},
     )
-    await wait_for_comments(
+    assert_authority_accepted_message(
+        require_thread(replied, created_thread_id, "bob reply result"),
+        bob_reply,
+        "bob reply result",
+    )
+    alice_seen, alice_resource = await wait_for_comments(
         alice,
         "alice",
         notebook_comments_uri,
@@ -412,6 +490,16 @@ async def run_pair_scenario(
         ),
         "bob reply",
     )
+    assert_authority_accepted_message(
+        require_thread(alice_seen, created_thread_id, "alice list after bob reply"),
+        bob_reply,
+        "alice list after bob reply",
+    )
+    assert_authority_accepted_message(
+        require_thread(alice_resource, created_thread_id, "alice resource after bob reply"),
+        bob_reply,
+        "alice resource after bob reply",
+    )
     created_thread_resource = await read_resource_json(
         alice,
         "alice",
@@ -419,6 +507,17 @@ async def run_pair_scenario(
     )
     if not contains_thread_and_reply(created_thread_resource, alice_body, bob_reply):
         fail(f"thread resource did not include notebook thread reply: {created_thread_resource}")
+    assert_authority_accepted_thread(
+        created_thread_resource,
+        created_thread_id,
+        alice_body,
+        "created thread resource",
+    )
+    assert_authority_accepted_message(
+        require_thread(created_thread_resource, created_thread_id, "created thread resource"),
+        bob_reply,
+        "created thread resource",
+    )
 
     cell_created = await call_json(
         alice,
@@ -429,16 +528,34 @@ async def run_pair_scenario(
     cell_thread_id = cell_created.get("thread_id")
     if not isinstance(cell_thread_id, str) or not cell_thread_id:
         fail(f"cell create did not return thread_id: {cell_created}")
+    assert_authority_accepted_thread(
+        cell_created,
+        cell_thread_id,
+        cell_body,
+        "cell create result",
+    )
     filtered = await call_json(alice, "alice", "list_comments", {"cell_id": cell_id})
     matching = thread_with_body(filtered, cell_body)
     if not matching:
         fail(f"cell-filtered list did not include cell thread: {filtered}")
+    assert_authority_accepted_thread(
+        filtered,
+        cell_thread_id,
+        cell_body,
+        "cell-filtered list",
+    )
     badge_cell_ids = matching.get("badge_cell_ids")
     if cell_id not in badge_cell_ids:
         fail(f"cell thread did not badge {cell_id}: {matching}")
     cell_resource = await read_resource_json(alice, "alice", cell_resource_uri)
     if not contains_message(cell_resource, cell_body):
         fail(f"cell comments resource did not include cell thread: {cell_resource}")
+    assert_authority_accepted_thread(
+        cell_resource,
+        cell_thread_id,
+        cell_body,
+        "cell comments resource",
+    )
     cell_thread_resource = await read_resource_json(
         bob,
         "bob",
@@ -446,6 +563,12 @@ async def run_pair_scenario(
     )
     if not contains_message(cell_thread_resource, cell_body):
         fail(f"cell thread resource did not include cell message: {cell_thread_resource}")
+    assert_authority_accepted_thread(
+        cell_thread_resource,
+        cell_thread_id,
+        cell_body,
+        "cell thread resource",
+    )
 
     await call_json(
         bob,
@@ -478,6 +601,17 @@ async def run_pair_scenario(
     )
     if thread_status(resolved_thread_resource, created_thread_id) != "resolved":
         fail(f"thread resource did not show resolved status: {resolved_thread_resource}")
+    resolved_thread = require_thread(
+        resolved_thread_resource,
+        created_thread_id,
+        "resolved thread resource",
+    )
+    if resolved_thread.get("resolved_by_authority") != COMMENTS_AUTHORITY:
+        fail(f"resolved thread authority mismatch: {resolved_thread}")
+    if not isinstance(resolved_thread.get("resolved_by_actor_label"), str):
+        fail(f"resolved thread missing actor label: {resolved_thread}")
+    if not isinstance(resolved_thread.get("resolved_at"), str):
+        fail(f"resolved thread missing resolved_at: {resolved_thread}")
 
     await call_json(
         alice,
@@ -495,6 +629,22 @@ async def run_pair_scenario(
         ),
         "alice reopened notebook thread",
     )
+    reopened_thread_resource = await read_resource_json(
+        bob,
+        "bob",
+        comment_thread_uri(notebook_id, created_thread_id),
+    )
+    reopened_thread = require_thread(
+        reopened_thread_resource,
+        created_thread_id,
+        "reopened thread resource",
+    )
+    if reopened_thread.get("resolved_at") is not None:
+        fail(f"reopened thread kept resolved_at: {reopened_thread}")
+    if reopened_thread.get("resolved_by_actor_label") is not None:
+        fail(f"reopened thread kept resolved actor: {reopened_thread}")
+    if reopened_thread.get("resolved_by_authority") is not None:
+        fail(f"reopened thread kept resolved authority: {reopened_thread}")
 
     concurrent_results = await asyncio.gather(
         call_json(
@@ -517,6 +667,13 @@ async def run_pair_scenario(
     }
     if len(expected_concurrent_ids) != 2:
         fail(f"concurrent create did not return two thread ids: {concurrent_results}")
+    for result, body in zip(concurrent_results, [concurrent_a, concurrent_b], strict=True):
+        assert_authority_accepted_thread(
+            result,
+            result["thread_id"],
+            body,
+            "concurrent create result",
+        )
 
     alice_final, _ = await wait_for_comments(
         alice,
@@ -540,6 +697,24 @@ async def run_pair_scenario(
     )
     if thread_ids(alice_final) != thread_ids(bob_final):
         fail(f"alice/bob final thread ids diverged: {alice_final} vs {bob_final}")
+    for thread_id, body in [
+        (created_thread_id, alice_body),
+        (cell_thread_id, cell_body),
+        *[
+            (result["thread_id"], body)
+            for result, body in zip(
+                concurrent_results,
+                [concurrent_a, concurrent_b],
+                strict=True,
+            )
+        ],
+    ]:
+        assert_authority_accepted_thread(
+            bob_final,
+            thread_id,
+            body,
+            "bob final comments",
+        )
 
     log(
         "user-test friction: comments require polling; tool results are JSON text plus "
@@ -558,6 +733,7 @@ async def run_persistence_check(
     expected_comments_doc_id: str,
     expected_bodies: set[str],
     reopened_thread_id: str,
+    reopened_body: str,
 ) -> None:
     async with mcp_session("charlie", runt, socket) as charlie:
         connected = await call_json(
@@ -589,6 +765,21 @@ async def run_persistence_check(
                 "comments_doc_id changed after restart: "
                 f"expected {expected_comments_doc_id}, got {comments.get('comments_doc_id')}"
             )
+        for body in sorted(expected_bodies):
+            thread = thread_with_body(comments, body)
+            if not thread:
+                fail(f"persisted comments missing body {body!r}: {comments}")
+            assert_authority_accepted_message(
+                thread,
+                body,
+                "persisted comments",
+            )
+        assert_authority_accepted_thread(
+            comments,
+            reopened_thread_id,
+            reopened_body,
+            "persisted reopened thread",
+        )
         thread_resource = await read_resource_json(
             charlie,
             "charlie",
@@ -596,6 +787,12 @@ async def run_persistence_check(
         )
         if thread_status(thread_resource, reopened_thread_id) != "open":
             fail(f"thread resource did not persist reopened status: {thread_resource}")
+        assert_authority_accepted_thread(
+            thread_resource,
+            reopened_thread_id,
+            reopened_body,
+            "persisted reopened thread resource",
+        )
 
 
 def env_for_socket(socket: Path | None) -> dict[str, str] | None:
@@ -759,6 +956,7 @@ async def smoke(args: argparse.Namespace) -> None:
                     "comments-smoke concurrent bob",
                 },
                 reopened_thread_id,
+                "comments-smoke alice notebook note",
             )
 
         log("ALL PASSES GREEN")

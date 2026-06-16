@@ -149,6 +149,10 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::ApproveProjectEnvironment { .. } => "ApproveProjectEnvironment",
         NotebookRequest::ResolveCommentThread { .. } => "ResolveCommentThread",
         NotebookRequest::ReopenCommentThread { .. } => "ReopenCommentThread",
+        NotebookRequest::AcceptCommentThread { .. } => "AcceptCommentThread",
+        NotebookRequest::RejectCommentThread { .. } => "RejectCommentThread",
+        NotebookRequest::AcceptCommentMessage { .. } => "AcceptCommentMessage",
+        NotebookRequest::RejectCommentMessage { .. } => "RejectCommentMessage",
         NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
         NotebookRequest::CreateBlobUpload { .. } => "CreateBlobUpload",
         NotebookRequest::CompleteBlobUpload { .. } => "CompleteBlobUpload",
@@ -255,6 +259,72 @@ pub(crate) async fn handle_notebook_request(
 
         NotebookRequest::ReopenCommentThread { thread_id } => {
             comments::reopen_thread(room, thread_id, submitter_actor_label, submitter_scope).await
+        }
+
+        NotebookRequest::AcceptCommentThread {
+            thread_id,
+            message_id,
+            observed_comments_heads,
+        } => {
+            comments::accept_thread(
+                room,
+                thread_id,
+                message_id,
+                observed_comments_heads,
+                submitter_actor_label,
+                submitter_scope,
+            )
+            .await
+        }
+
+        NotebookRequest::RejectCommentThread {
+            thread_id,
+            reason,
+            observed_comments_heads,
+        } => {
+            comments::reject_thread(
+                room,
+                thread_id,
+                reason,
+                observed_comments_heads,
+                submitter_actor_label,
+                submitter_scope,
+            )
+            .await
+        }
+
+        NotebookRequest::AcceptCommentMessage {
+            thread_id,
+            message_id,
+            observed_comments_heads,
+        } => {
+            comments::accept_message(
+                room,
+                thread_id,
+                message_id,
+                observed_comments_heads,
+                submitter_actor_label,
+                submitter_scope,
+            )
+            .await
+        }
+
+        NotebookRequest::RejectCommentMessage {
+            thread_id,
+            message_id,
+            reason,
+            observed_comments_heads,
+        } => {
+            comments::reject_message(
+                room,
+                thread_id,
+                message_id,
+                reason,
+                observed_comments_heads,
+                submitter_actor_label,
+                submitter_scope,
+            )
+            .await
         }
 
         NotebookRequest::GetDocBytes {} => get_doc_bytes::handle(room).await,

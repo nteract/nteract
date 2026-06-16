@@ -240,13 +240,13 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "create_comment_thread",
-            "Create a pending comment thread.",
+            "Create a comment thread.",
             schema_for::<comments::CreateCommentThreadParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
         Tool::new(
             "reply_comment_thread",
-            "Reply to a comment thread.",
+            "Add a comment reply.",
             schema_for::<comments::ReplyCommentThreadParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),

@@ -26,6 +26,17 @@ pub enum CommentsDocError {
         thread_id: String,
         message_id: String,
     },
+    #[error("observed comment head not found: {0}")]
+    ObservedHeadNotFound(String),
+    #[error("comment thread is not pending: {0}")]
+    ThreadNotPending(String),
+    #[error("comment message is not pending: {thread_id}/{message_id}")]
+    MessageNotPending {
+        thread_id: String,
+        message_id: String,
+    },
+    #[error("comment actor mismatch: expected {expected}, got {actual}")]
+    ActorMismatch { expected: String, actual: String },
     #[error("unauthorized comment actor: {0}")]
     UnauthorizedActor(String),
     #[error("after_thread_id not found: {0}")]
