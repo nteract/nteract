@@ -305,10 +305,6 @@ These are the architectural gaps surfaced while writing this ADR. None block the
 - `crates/mcp-supervisor/src/main.rs` - `DevMode` enum and `NTERACT_DEV_MODE` parsing.
 - `.agents/skills/mcp-session-lifecycle/SKILL.md` - the operating rules; this ADR is the why.
 
-## Tracked follow-ups (from the retired cleanup punchlist)
-
-These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
-retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
-to implement; **Design** = needs a decision in this ADR before code moves.
+## Open Follow-ups
 
 - **MSL-4** (Design; `crates/runt-mcp-proxy/src/proxy.rs`): When a dev worktree daemon's socket path changes (worktree switch in isolated mode, manual relocation), `mcp-supervisor` compares daemon versions across child restart but not socket paths. The `McpProxy.last_notebook_id` from the old daemon is meaningless in the new daemon's room space; rejoin fails with `SessionDropReason::Evicted` and the agent sees a confusing trail.

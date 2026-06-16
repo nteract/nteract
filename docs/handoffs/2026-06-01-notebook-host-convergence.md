@@ -1,7 +1,7 @@
 # Handoff: Notebook Host Convergence + Document-Model Hardening
 
 **Date:** 2026-06-01
-**Why this exists:** the work was done in a Codex worktree (`~/.codex/worktrees/a2f3/desktop`). Resume here on `~/projects/nteract` (`main`), which already has the merged code below. Pick up the two design threads in the second half of this doc - they are not yet started.
+**Why this exists:** the work was done in a Codex worktree (`~/.codex/worktrees/a2f3/desktop`). This is a historical transfer note; the code referenced below has merged, and the live status block supersedes the original handoff wording.
 
 ## Current status (2026-06-15)
 

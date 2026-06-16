@@ -116,8 +116,8 @@ These entries define the center of gravity for the system:
 2. Use `Accepted` only when the decision is ready to guide future code review.
 3. Use ADRs for durable technical decisions, rejected alternatives, invariants,
    and compatibility boundaries.
-4. Record architectural smells in the owning ADR's "Tracked follow-ups" section
+4. Record architectural smells in the owning ADR's "Open Follow-ups" section
    instead of hiding them in prose-only open questions.
 5. When a tracked follow-up lands, remove its bullet from the ADR's
-   "Tracked follow-ups" section in the same patch, recording the evidence in
+   "Open Follow-ups" section in the same patch, recording the evidence in
    the relevant decision text if it changed one.

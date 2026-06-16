@@ -609,10 +609,11 @@ export function parseScope(value: string): ConnectionScope {
   throw new Error(`unknown connection scope: ${value}`);
 }
 
-// Capability predicates re-exported from the generated lattice
-// (`packages/runtimed/src/scope-capabilities.ts`); the daemon enforces the
-// same predicates from `nteract_identity::ConnectionScope`, so the hosted
-// room and the daemon cannot drift (punchlist HCA-2 / BS-12).
+// Capability predicates re-exported from the generated hosted-room lattice
+// (`packages/runtimed/src/scope-capabilities.ts`). The daemon shares the same
+// scope model but uses a local-only blob-upload predicate so same-UID editor
+// attachments can keep working until hosted editor uploads ship with
+// reference-path validation.
 export {
   allowsBlobUpload,
   allowsExecutionRequestSubmit,

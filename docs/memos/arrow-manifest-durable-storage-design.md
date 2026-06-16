@@ -239,14 +239,9 @@ Add tests before changing broad behavior:
 - No attempt to make saved notebooks portable across machines without copying
   the nteract blob store.
 
-## PR Split
+## Remaining Work
 
-The first implementation PR should land the save/load transforms, active-room
-GC collection, and characterization tests. It should not add the output asset
-index yet. That keeps the first PR focused on the manifest storage contract
-and makes the remaining closed-room retention gap explicit.
-
-The next PR should add the notebook-owned output asset index and move the
-characterization test from "documented gap" to "protected after save." No code
-path should imply closed-room output blobs are protected unless that index
-exists.
+Save/load transforms, active-room GC collection, and characterization coverage
+have landed. The remaining closed-room retention gap is the notebook-owned
+output asset index. No code path should imply closed-room output blobs are
+protected unless that index exists.

@@ -101,32 +101,7 @@ Each item removes a second source of truth. None is unit-testable for its
 runtime timing; each needs a hosted/desktop browser smoke (focus, run-all,
 output focus, reconnect) before merge.
 
-1. ~~**NotebookView output-focus → shared store.**~~ **Done** in #3533. The
-   `outputFocusedCellId` `useState` moved to
-   `src/components/notebook/state/output-focus-store.ts` (direct-emit
-   pattern; `setOutputFocusedCellId` / `clearOutputFocusedCellId` with the
-   conditional-clear preserving the old functional-updater race guard). The
-   dismissal policy (focus-follows-selection, Esc, click-outside,
-   removed-cell cleanup) stays in `NotebookView`.
-
-2. ~~**Cloud `workstationAttachment` → shared runtime-state store.**~~ **Done**
-   in the runtime-state RxJS projection pass. The shared store is now
-   `RuntimeStateStore` (`packages/runtimed/src/runtime-state-store.ts`), whose
-   `workstation$` projection dedups by
-   `notebookShellWorkstationAttachmentCacheKey` — the same equality the old
-   `workstationAttachmentKeyRef` enforced, but shared by every subscriber.
-   The session's `useState` shadow, its key ref, and all per-site clears are
-   deleted; disconnect/room-change sites call `resetRuntimeState()` and the
-   projection emits null through the same pipeline. Both hosts consume
-   `useWorkstationAttachment()` from the shared runtime-state module.
-
-3. ~~**Rail/outline chrome (`activeRailPanel`, `railCollapsed`,
-   `selectedOutlineItemId`) → shared `rail-ui-state` store.**~~ **Done** in
-   the rail-ui-state pass. The store removes the duplicated host `useState`
-   declarations and keeps the shared outline selection/focus coupling in
-   `useOutlineSelection`, now backed by the same external store.
-
-4. **Finish cloud access/share projection extraction.** The first access/share
+1. **Finish cloud access/share projection extraction.** The first access/share
    facts pass centralizes catalog access, selected vs effective interaction
    mode, own edit-request status, edit-link fallback, live-room connect policy,
    share ledger rows, public-link state, and panel loading/copy/invite readiness.
@@ -137,7 +112,7 @@ output focus, reconnect) before merge.
    receive already-negotiated room/document facts, not know what an OIDC invite,
    public ACL row, or copied `?mode=edit` URL means.
 
-5. **Cloud connection facts (`connectionScope`/`PeerId`/`ActorLabel`/`Error`).**
+2. **Cloud connection facts (`connectionScope`/`PeerId`/`ActorLabel`/`Error`).**
    Keep in the session hook. Only promote to a shared store if a *shared* component
    (not just the cloud-local capabilities deriver) needs to subscribe.
 

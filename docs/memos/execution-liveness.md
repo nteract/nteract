@@ -13,7 +13,7 @@ Neighbors:
 
 ## Context
 
-The cleanup punchlist's EP-3 row originally read:
+The original EP-3 follow-up read:
 
 > No daemon-side execution watchdog. A panic or task drop occurs between the
 > final output write and `set_execution_done`, the execution stays in `running`
@@ -32,7 +32,7 @@ nteract is a notebook environment. The canonical thing users do in notebook envi
 
 The desktop app is structured around this pattern. nteract's notebook rooms are daemon-owned, not window-owned: closing the window does not stop the kernel, and reconnecting reattaches to the same execution stream. That property is a feature, not an accident, and a watchdog that force-completes "long-running" executions destroys it.
 
-So the punchlist framing was right about the symptom — sometimes the daemon's view of an execution diverges from kernel reality — but wrong about the cause. Elapsed time is not the signal. **State divergence is.**
+So the original framing was right about the symptom — sometimes the daemon's view of an execution diverges from kernel reality — but wrong about the cause. Elapsed time is not the signal. **State divergence is.**
 
 ## What divergence actually looks like
 
@@ -138,4 +138,4 @@ Option 1 is the cleanest. The runtime agent already owns `pending_executions`, t
 
 This document doesn't commit to a decision. It commits to a *frame*: divergence detection, not time-based watchdogging. The shape of the actual detector — placement, thresholds, recovery policy — is worth designing with telemetry from real use, not from this memo alone.
 
-When a real implementation lands, an ADR can record what we picked and why. Until then this memo is the load-bearing context for "EP-3 in the cleanup punchlist is not a wall-clock watchdog PR."
+When a real implementation lands, an ADR can record what we picked and why. Until then this memo is the load-bearing context for "EP-3 is not a wall-clock watchdog PR."

@@ -62,7 +62,7 @@ The bridge's responsibilities, in source order:
 - `outputIdChanges$` -> `applyOutputChangeset` (async; logged and swallowed on failure to keep the stream alive).
 - `poolState$` -> `setPoolState`.
 
-Cleanup is one `Subscription.unsubscribe()`. The bridge sets a `stopped` flag before tearing down. `materializeChangeset` checks it before writing to a store; `applyOutputChangeset`'s subscription does **not** check `stopped` (`notebook-sync-store-bridge.ts:163`) — punchlist FSB-1 tracks adding either the guard or a structured retry. The hook's `useEffect` cleanup also calls `handleHost.clear()` (`useAutomergeNotebook.ts:326, :350`, `notebook-handle-host.ts:107, :121`), which nulls and frees the WASM handle. A subsequent re-mount creates a fresh peer, not a reused one.
+Cleanup is one `Subscription.unsubscribe()`. The bridge sets a `stopped` flag before tearing down. `materializeChangeset` checks it before writing to a store; `applyOutputChangeset`'s subscription does **not** check `stopped` (`notebook-sync-store-bridge.ts:163`) — FSB-1 tracks adding either the guard or a structured retry. The hook's `useEffect` cleanup also calls `handleHost.clear()` (`useAutomergeNotebook.ts:326, :350`, `notebook-handle-host.ts:107, :121`), which nulls and frees the WASM handle. A subsequent re-mount creates a fresh peer, not a reused one.
 
 ### Why not just `useEffect` in the hook
 

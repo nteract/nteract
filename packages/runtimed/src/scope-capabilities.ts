@@ -41,7 +41,7 @@ export function allowsRuntimeStateWrite(scope: ConnectionScope): boolean {
   return scope === "runtime_peer";
 }
 
-/** Whether this scope can upload blobs (PUT_BLOB frames and multipart upload requests). */
+/** Whether this scope can upload blobs on hosted room connections (PUT_BLOB frames and multipart upload requests). */
 export function allowsBlobUpload(scope: ConnectionScope): boolean {
   return scope === "runtime_peer" || scope === "owner";
 }
