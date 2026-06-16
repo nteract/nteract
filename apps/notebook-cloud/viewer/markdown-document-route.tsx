@@ -15,7 +15,6 @@ import {
 } from "@/components/notebook/capabilities";
 import { NotebookOutlinePanel } from "@/components/notebook-rail/NotebookRail";
 import { Rail, RAIL_TAKEOVER_STAGE_CLASS_NAME } from "@/components/rail";
-import { MarkdownDocumentModeToggle } from "@/components/markdown/MarkdownDocumentModeToggle";
 import { MarkdownDocumentRepresentationToolbar } from "@/components/markdown/MarkdownDocumentModeToggle";
 import {
   projectMarkdownDocument,
@@ -37,8 +36,20 @@ import {
 import { cloudNotebookTitleClassNames } from "./cloud-notebook-title";
 import { markdownConnectionCopy } from "./markdown-document-connection-copy";
 import type { CloudMarkdownDocumentConfig, CloudViewerAuthConfig } from "./cloud-viewer-types";
-import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
+import { CloudNotebookEditModeButton } from "./cloud-edit-mode-button";
+import {
+  projectCloudAccessRequestNotice,
+  shouldFallbackCloudEditUrlToView,
+  shouldLoadOwnCloudAccessRequest,
+} from "./cloud-access-request-state";
+import {
+  cloudBrowserCanUseAuthenticatedApi,
+  fetchWithCloudPrototypeAuth,
+  type CloudPrototypeAuthState,
+} from "./collaborator-auth";
+import { cloudBrowserApiAuthStateForFetch } from "./session-auth-stability";
 import type { MarkdownDocumentLiveSyncController } from "./markdown-document-live-sync";
+import type { CloudMarkdownAccessRequest } from "./markdown-sharing";
 import { MarkdownSharingControls } from "./markdown-sharing-controls";
 import {
   useCloudAppSessionBridge,
@@ -53,6 +64,8 @@ type MarkdownDocumentLiveSyncModule = typeof import("./markdown-document-live-sy
 const MarkdownCodeMirrorEditor = lazy(() =>
   loadMarkdownEditorModule().then((module) => ({ default: module.CodeMirrorEditor })),
 );
+
+const MARKDOWN_ACCESS_REQUEST_POLL_INTERVAL_MS = 5_000;
 
 let markdownEditorModulePromise: Promise<MarkdownEditorModule> | null = null;
 let markdownDocumentLiveSyncModulePromise: Promise<MarkdownDocumentLiveSyncModule> | null = null;
@@ -114,10 +127,25 @@ export function MarkdownDocumentRoute({
   config: CloudMarkdownDocumentConfig;
 }) {
   const appSessionStatus = useCloudAppSessionStatus(config.session ?? null);
+  const hasAppSession = Boolean(appSessionStatus.session);
   const { authState } = useCloudPrototypeAuth(authConfig, {
     appSessionRefreshFallback: true,
     appSessionLoading: appSessionStatus.status === "loading",
     appSession: appSessionStatus.session,
+  });
+  const browserApiAuthState = useMemo(
+    () => cloudBrowserApiAuthStateForFetch(authState),
+    [
+      authState.mode,
+      authState.mode === "dev" ? authState.token : null,
+      authState.mode === "dev" ? authState.user : null,
+      authState.mode === "dev" ? authState.requestedScope : null,
+      authState.mode === "dev" ? authState.problem : null,
+    ],
+  );
+  const canUseAuthenticatedCloudApi = cloudBrowserCanUseAuthenticatedApi({
+    authState,
+    hasAppSession,
   });
   useCloudAppSessionBridge(
     authState,
@@ -134,10 +162,17 @@ export function MarkdownDocumentRoute({
   const [railCollapsed, setRailCollapsed] = useState(initialMarkdownRailCollapsed);
   const [markdownTitleSaving, setMarkdownTitleSaving] = useState(false);
   const [markdownTitleError, setMarkdownTitleError] = useState<string | null>(null);
+  const [latestAccessRequest, setLatestAccessRequest] = useState<CloudMarkdownAccessRequest | null>(
+    null,
+  );
+  const [accessRequestError, setAccessRequestError] = useState<string | null>(null);
+  const [editAccessRequestedByUser, setEditAccessRequestedByUser] = useState(false);
+  const [catalogRefreshVersion, setCatalogRefreshVersion] = useState(0);
   const syncControllerRef = useRef<MarkdownDocumentLiveSyncController | null>(null);
   const editorRef = useRef<CodeMirrorEditorRef | null>(null);
   const connectionStatusRef = useRef<ConnectionStatus>("connecting");
   const liveSnapshotSeenRef = useRef(false);
+  const accessApprovalRefreshRef = useRef<string | null>(null);
 
   useEffect(() => {
     loadSupplementalViewerCss();
@@ -269,7 +304,7 @@ export function MarkdownDocumentRoute({
         syncControllerRef.current = null;
       }
     };
-  }, [appSessionStatus.session, authState, config]);
+  }, [appSessionStatus.session, authState, catalogRefreshVersion, config]);
 
   const projection = useMemo<MarkdownDocumentProjection | null>(() => {
     if (routeState.kind !== "ready") {
@@ -294,6 +329,171 @@ export function MarkdownDocumentRoute({
     }
     document.title = markdownDocumentBrowserTitle(routeTitle);
   }, [routeTitle]);
+
+  const catalogResolved = routeState.kind === "ready";
+  const routeAccessScope = routeState.kind === "ready" ? routeState.scope : null;
+  const catalogGrantsDocumentEdit = routeAccessScope === "editor" || routeAccessScope === "owner";
+  const effectiveAccessRequest = catalogGrantsDocumentEdit ? null : latestAccessRequest;
+  const shouldLoadOwnEditAccessRequest = shouldLoadOwnCloudAccessRequest({
+    canUseAuthenticatedCloudApi,
+    catalogGrantsDocumentEdit,
+    connectionScope: routeAccessScope,
+    editAccessRequested: editAccessRequestedByUser,
+    hasBrowserAppIdentity: canUseAuthenticatedCloudApi,
+    selectedMode: mode,
+  });
+
+  useEffect(() => {
+    if (
+      shouldFallbackCloudEditUrlToView({
+        catalogGrantsDocumentEdit,
+        catalogResolved,
+        editAccessRequested: editAccessRequestedByUser,
+        selectedMode: mode,
+      })
+    ) {
+      setMode("view");
+    }
+  }, [catalogGrantsDocumentEdit, catalogResolved, editAccessRequestedByUser, mode]);
+
+  const applyLatestAccessRequest = useCallback(
+    (request: CloudMarkdownAccessRequest | null) => {
+      setLatestAccessRequest(request);
+      if (
+        request?.status === "approved" &&
+        routeAccessScope === "viewer" &&
+        accessApprovalRefreshRef.current !== request.id
+      ) {
+        accessApprovalRefreshRef.current = request.id;
+        setCatalogRefreshVersion((version) => version + 1);
+      }
+    },
+    [routeAccessScope],
+  );
+
+  const loadOwnAccessRequest = useCallback(
+    async (options?: { signal?: AbortSignal }) => {
+      if (!shouldLoadOwnEditAccessRequest) {
+        return;
+      }
+
+      try {
+        const response = await fetchWithCloudPrototypeAuth(
+          config.accessRequestsEndpoint,
+          { headers: { Accept: "application/json" }, signal: options?.signal },
+          browserApiAuthState,
+        );
+        if (options?.signal?.aborted || !response.ok) {
+          return;
+        }
+        const body = (await response.json()) as {
+          access_requests?: CloudMarkdownAccessRequest[];
+        };
+        setAccessRequestError(null);
+        applyLatestAccessRequest(
+          Array.isArray(body.access_requests) ? (body.access_requests[0] ?? null) : null,
+        );
+      } catch {
+        return;
+      }
+    },
+    [
+      applyLatestAccessRequest,
+      browserApiAuthState,
+      config.accessRequestsEndpoint,
+      shouldLoadOwnEditAccessRequest,
+    ],
+  );
+
+  useEffect(() => {
+    if (!shouldLoadOwnEditAccessRequest) {
+      setLatestAccessRequest(null);
+      return;
+    }
+    const controller = new AbortController();
+    void loadOwnAccessRequest({ signal: controller.signal });
+    return () => controller.abort();
+  }, [loadOwnAccessRequest, shouldLoadOwnEditAccessRequest]);
+
+  useEffect(() => {
+    if (effectiveAccessRequest?.status !== "pending" || !shouldLoadOwnEditAccessRequest) {
+      return;
+    }
+
+    const controller = new AbortController();
+    let pollInFlight = false;
+    const poll = () => {
+      if (pollInFlight) {
+        return;
+      }
+      pollInFlight = true;
+      void loadOwnAccessRequest({ signal: controller.signal }).finally(() => {
+        pollInFlight = false;
+      });
+    };
+    const intervalId = window.setInterval(poll, MARKDOWN_ACCESS_REQUEST_POLL_INTERVAL_MS);
+    const handleVisibilityChange = () => {
+      poll();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      controller.abort();
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [effectiveAccessRequest?.status, loadOwnAccessRequest, shouldLoadOwnEditAccessRequest]);
+
+  const requestMarkdownEditAccess = useCallback(() => {
+    void (async () => {
+      setMode("edit");
+      setEditAccessRequestedByUser(true);
+      setAccessRequestError(null);
+      try {
+        const response = await fetchWithCloudPrototypeAuth(
+          config.accessRequestsEndpoint,
+          {
+            method: "POST",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ scope: "editor" }),
+          },
+          browserApiAuthState,
+        );
+        if (!response.ok) {
+          throw await cloudResponseError(response, "Unable to request edit access");
+        }
+        const body = (await response.json()) as {
+          access_request?: CloudMarkdownAccessRequest | null;
+          access_status?: string;
+        };
+        if (body.access_status === "granted") {
+          applyLatestAccessRequest({
+            id: "already-granted",
+            document_id: config.documentId,
+            requester_principal: "",
+            scope: "editor",
+            status: "approved",
+            requested_by_actor_label: "",
+            resolved_by_actor_label: null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            resolved_at: new Date().toISOString(),
+          });
+          return;
+        }
+        applyLatestAccessRequest(body.access_request ?? null);
+      } catch (error) {
+        setAccessRequestError(error instanceof Error ? error.message : String(error));
+      }
+    })();
+  }, [
+    applyLatestAccessRequest,
+    browserApiAuthState,
+    config.accessRequestsEndpoint,
+    config.documentId,
+  ]);
 
   const saveMarkdownDocumentTitle = useCallback(
     async (nextTitle: string): Promise<boolean> => {
@@ -421,14 +621,22 @@ export function MarkdownDocumentRoute({
   const canManageSharing =
     projection.canShare && config.hostCapabilities?.canManageSharing !== false;
   const activeMode = projection.mode;
+  const editAccessPending = mode === "edit" && effectiveAccessRequest?.status === "pending";
+  const accessRequestNotice = projectCloudAccessRequestNotice({
+    documentLabel: "document",
+    error: accessRequestError,
+    request: effectiveAccessRequest,
+    selectedMode: mode,
+  });
   const markdownTitle = markdownDocumentTitleDisplay(projection.title);
   const shellCapabilities = markdownDocumentShellCapabilities({
     access: routeState.scope,
     authState,
-    hasAppSession: Boolean(appSessionStatus.session),
+    hasAppSession,
     canEdit,
     canManageSharing,
-    mode: activeMode,
+    mode,
+    accessPending: editAccessPending,
   });
   const connectionCopy = markdownConnectionCopy(routeState.connectionStatus, routeState.bodyReady);
   const publicLink =
@@ -503,11 +711,15 @@ export function MarkdownDocumentRoute({
           }}
         />
       }
-      utilityControls={
-        <MarkdownDocumentModeToggle
-          mode={activeMode}
-          canEdit={canEdit}
+      editControls={
+        <CloudNotebookEditModeButton
+          authState={authState}
+          hasAppSession={hasAppSession}
+          interaction={shellCapabilities.interaction ?? null}
+          accessLevel={shellCapabilities.access.level}
+          accessPending={editAccessPending}
           onModeChange={onModeChange}
+          onRequestEditAccess={requestMarkdownEditAccess}
         />
       }
       commandToolbar={{
@@ -523,6 +735,8 @@ export function MarkdownDocumentRoute({
         canManageSharing ? (
           <MarkdownSharingControls
             aclEndpoint={config.aclEndpoint}
+            invitesEndpoint={config.invitesEndpoint}
+            accessRequestsEndpoint={config.accessRequestsEndpoint}
             authState={authState}
             publicLink={publicLink}
           />
@@ -530,13 +744,21 @@ export function MarkdownDocumentRoute({
       }
     />
   );
-  const notices = connectionCopy ? (
-    <NotebookNoticeStack>
-      <NotebookNotice tone="warning" title="Sync">
-        {connectionCopy}
-      </NotebookNotice>
-    </NotebookNoticeStack>
-  ) : null;
+  const notices =
+    connectionCopy || accessRequestNotice ? (
+      <NotebookNoticeStack>
+        {accessRequestNotice ? (
+          <NotebookNotice tone={accessRequestNotice.tone} title={accessRequestNotice.title}>
+            {accessRequestNotice.message}
+          </NotebookNotice>
+        ) : null}
+        {connectionCopy ? (
+          <NotebookNotice tone="warning" title="Sync">
+            {connectionCopy}
+          </NotebookNotice>
+        ) : null}
+      </NotebookNoticeStack>
+    ) : null;
 
   return (
     <NotebookDocumentShell
@@ -675,6 +897,7 @@ function markdownDocumentBrowserTitle(title: string): string {
 }
 
 function markdownDocumentShellCapabilities({
+  accessPending,
   access,
   authState,
   hasAppSession,
@@ -682,6 +905,7 @@ function markdownDocumentShellCapabilities({
   canManageSharing,
   mode,
 }: {
+  accessPending: boolean;
   access: MarkdownDocumentAccessLevel;
   authState: CloudPrototypeAuthState;
   hasAppSession: boolean;
@@ -693,12 +917,13 @@ function markdownDocumentShellCapabilities({
     hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
   const wantsEditMode = mode === "edit";
   const canEditMarkdown = wantsEditMode && canEdit;
+  const canRequestEdit = canUseAuthenticatedIdentity;
   return projectNotebookShellCapabilities({
     interaction: {
       selectedMode: wantsEditMode ? "edit" : "view",
       activeMode: canEditMarkdown ? "edit" : "view",
-      state: wantsEditMode ? (canEditMarkdown ? "editing" : "requested") : "viewing",
-      canRequestEdit: false,
+      state: accessPending ? "requested" : wantsEditMode && canEditMarkdown ? "editing" : "viewing",
+      canRequestEdit,
       canEditMarkdown,
       canEditCells: false,
       canEditStructure: false,

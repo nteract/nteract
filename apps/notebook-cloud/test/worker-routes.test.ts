@@ -44,8 +44,13 @@ import {
   markdownDocumentSnapshotKey,
   runtimeStateSnapshotKey,
   snapshotKey,
+  type MarkdownDocumentAccessRequestRow,
 } from "../src/storage.ts";
-import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
+import type {
+  PendingMarkdownDocumentInviteRow,
+  PendingNotebookInviteRow,
+  PrincipalProfileRow,
+} from "../src/sharing-storage.ts";
 import { canonicalAccountPrincipalForProfile } from "../src/sharing-storage.ts";
 import type {
   MarkdownDocumentAclRow as StorageMarkdownDocumentAclRow,
@@ -824,6 +829,73 @@ describe("Worker artifact routes", () => {
       env.DB.acl.some(
         (row) =>
           row.notebook_id === "cookie-list-invited" &&
+          row.subject_kind === "principal" &&
+          row.subject === accountPrincipal &&
+          row.scope === "editor",
+      ),
+    );
+  });
+
+  it("resolves post-login pending invites for app-session Markdown document list APIs", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "cookie-markdown-invite-list-user",
+      email: "cookie-markdown-invite-list@example.test",
+      extraPayload: { email_verified: true },
+      name: "Cookie Markdown Invite List User",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+    env.DB.markdownDocuments.set("cookie-markdown-list-invited", {
+      id: "cookie-markdown-list-invited",
+      owner_principal: "user:dev:alice",
+      title: "Cookie Markdown Invited",
+      body_doc_id: "cookie-markdown-list-invited-body",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: null,
+    });
+    seedPendingMarkdownInvite(env, {
+      id: "invite-cookie-markdown-list",
+      documentId: "cookie-markdown-list-invited",
+      email: "cookie-markdown-invite-list@example.test",
+      providerHint: null,
+      scope: "editor",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/m", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      documents: Array<{ document_id: string; scope: StorageMarkdownDocumentAclRow["scope"] }>;
+    };
+    assert.deepEqual(
+      body.documents.map((document) => [document.document_id, document.scope]),
+      [["cookie-markdown-list-invited", "editor"]],
+    );
+    const accountPrincipal = await canonicalAccountPrincipalForProfile({
+      provider: "oidc",
+      principalNamespace: "user:anaconda",
+      email: "cookie-markdown-invite-list@example.test",
+      emailVerified: true,
+    });
+    assert.ok(accountPrincipal);
+    assert.equal(
+      env.DB.markdownDocumentInvites.get("invite-cookie-markdown-list")?.status,
+      "accepted",
+    );
+    assert.ok(
+      env.DB.markdownDocumentAcl.some(
+        (row) =>
+          row.document_id === "cookie-markdown-list-invited" &&
           row.subject_kind === "principal" &&
           row.subject === accountPrincipal &&
           row.scope === "editor",
@@ -2113,6 +2185,56 @@ describe("Worker artifact routes", () => {
     assert.equal(bobCatalog.status, 200);
   });
 
+  it("lets Markdown document owners create and revoke pending email invites", async () => {
+    const env = fakeEnv();
+    env.DB.markdownDocuments.set("markdown-invite-demo", {
+      id: "markdown-invite-demo",
+      owner_principal: "user:dev:alice",
+      title: "Shared Markdown",
+      body_doc_id: "markdown-invite-demo-body",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: null,
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-invite-demo",
+      subject_kind: "principal",
+      subject: "user:dev:alice",
+      scope: "owner",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+
+    const create = await markdownInviteRequest(env, "POST", {
+      email: "future-reader@example.com",
+      scope: "viewer",
+    });
+
+    assert.equal(create.status, 201);
+    assert.equal(env.DB.markdownDocumentInvites.size, 1);
+    const createBody = (await create.json()) as {
+      invite: { email: string; document_id: string; status: string };
+    };
+    assert.equal(createBody.invite.document_id, "markdown-invite-demo");
+    assert.equal(createBody.invite.email, "future-reader@example.com");
+    assert.equal(createBody.invite.status, "pending");
+
+    const list = await markdownInviteRequest(env, "GET", undefined);
+    assert.equal(list.status, 200);
+    const listBody = (await list.json()) as {
+      invites: Array<{ id: string; email: string; status: string }>;
+    };
+    assert.deepEqual(
+      listBody.invites.map((invite) => [invite.email, invite.status]),
+      [["future-reader@example.com", "pending"]],
+    );
+
+    const revoke = await markdownInviteItemRequest(env, "DELETE", listBody.invites[0].id);
+    assert.equal(revoke.status, 200);
+    assert.equal(env.DB.markdownDocumentInvites.get(listBody.invites[0].id)?.status, "revoked");
+  });
+
   it("rejects Markdown document email grants for unknown recipients", async () => {
     const env = fakeEnv();
     env.DB.markdownDocuments.set("markdown-share-email-miss", {
@@ -2153,6 +2275,115 @@ describe("Worker artifact routes", () => {
     assert.equal(
       env.DB.markdownDocumentAcl.some((row) => row.subject === "missing@example.com"),
       false,
+    );
+  });
+
+  it("lets Markdown viewers request edit access and owners approve it", async () => {
+    const env = fakeEnv();
+    env.DB.markdownDocuments.set("markdown-access-request-demo", {
+      id: "markdown-access-request-demo",
+      owner_principal: "user:dev:alice",
+      title: "Shared Markdown",
+      body_doc_id: "markdown-access-request-demo-body",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: null,
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-access-request-demo",
+      subject_kind: "principal",
+      subject: "user:dev:alice",
+      scope: "owner",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-access-request-demo",
+      subject_kind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+    env.DB.profiles.set("user:dev:bob", {
+      principal: "user:dev:bob",
+      provider: "dev",
+      provider_subject: "bob",
+      email_normalized: "bob@example.com",
+      email_verified: 1,
+      display_name: "Bob Example",
+      avatar_url: null,
+      first_seen_at: "2026-06-15T00:00:00.000Z",
+      last_seen_at: "2026-06-15T00:00:00.000Z",
+      raw_claims_json: null,
+    });
+
+    const create = await markdownAccessRequestsRequest(
+      env,
+      "POST",
+      "markdown-access-request-demo",
+      undefined,
+      {
+        "X-User": "bob",
+        "X-Operator": "browser:tab",
+        "X-Scope": "viewer",
+      },
+    );
+
+    assert.equal(create.status, 201);
+    assert.equal(env.DB.markdownDocumentAccessRequests.size, 1);
+    const createBody = (await create.json()) as {
+      access_status: string;
+      access_request: { id: string; status: string; requester_principal: string };
+    };
+    assert.equal(createBody.access_status, "pending");
+    assert.equal(createBody.access_request.requester_principal, "user:dev:bob");
+
+    const ownerList = await markdownAccessRequestsRequest(
+      env,
+      "GET",
+      "markdown-access-request-demo",
+    );
+    assert.equal(ownerList.status, 200);
+    const ownerBody = (await ownerList.json()) as {
+      access_requests: Array<Record<string, unknown>>;
+    };
+    assert.deepEqual(
+      ownerBody.access_requests.map((row) => [row.status, row.display]),
+      [
+        [
+          "pending",
+          {
+            kind: "principal",
+            label: "Bob Example",
+            principal: "user:dev:bob",
+            email: "bob@example.com",
+          },
+        ],
+      ],
+    );
+
+    const approve = await markdownAccessRequestItemRequest(
+      env,
+      "POST",
+      "markdown-access-request-demo",
+      createBody.access_request.id,
+      "approve",
+    );
+    assert.equal(approve.status, 200);
+    assert.equal(
+      env.DB.markdownDocumentAccessRequests.get(createBody.access_request.id)?.status,
+      "approved",
+    );
+    assert.ok(
+      env.DB.markdownDocumentAcl.some(
+        (row) =>
+          row.document_id === "markdown-access-request-demo" &&
+          row.subject === "user:dev:bob" &&
+          row.scope === "editor",
+      ),
     );
   });
 
@@ -6501,6 +6732,57 @@ async function inviteItemRequest(
   );
 }
 
+async function markdownInviteRequest(
+  env: FakeEnv,
+  method: "GET" | "POST",
+  body: Record<string, unknown> | undefined,
+  documentId = "markdown-invite-demo",
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  const init: RequestInit = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "X-User": "alice",
+      "X-Operator": "desktop:test",
+      "X-Scope": "owner",
+      ...headers,
+    },
+  };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+
+  return worker.fetch(
+    new Request(new URL(`/api/m/${documentId}/invites`, "http://localhost"), init),
+    env,
+    fakeContext(),
+  );
+}
+
+async function markdownInviteItemRequest(
+  env: FakeEnv,
+  method: "DELETE",
+  inviteId: string,
+  documentId = "markdown-invite-demo",
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return worker.fetch(
+    new Request(new URL(`/api/m/${documentId}/invites/${inviteId}`, "http://localhost"), {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "X-User": "alice",
+        "X-Operator": "desktop:test",
+        "X-Scope": "owner",
+        ...headers,
+      },
+    }),
+    env,
+    fakeContext(),
+  );
+}
+
 async function accessRequestsRequest(
   env: FakeEnv,
   method: "GET" | "POST",
@@ -6529,6 +6811,34 @@ async function accessRequestsRequest(
   );
 }
 
+async function markdownAccessRequestsRequest(
+  env: FakeEnv,
+  method: "GET" | "POST",
+  documentId: string,
+  body: Record<string, unknown> | undefined = undefined,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  const init: RequestInit = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "X-User": "alice",
+      "X-Operator": "desktop:test",
+      "X-Scope": "owner",
+      ...headers,
+    },
+  };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+
+  return worker.fetch(
+    new Request(new URL(`/api/m/${documentId}/access-requests`, "http://localhost"), init),
+    env,
+    fakeContext(),
+  );
+}
+
 async function accessRequestItemRequest(
   env: FakeEnv,
   method: "POST",
@@ -6539,6 +6849,31 @@ async function accessRequestItemRequest(
 ): Promise<Response> {
   return worker.fetch(
     new Request(new URL(`/api/n/${notebookId}/access-requests/${requestId}`, "http://localhost"), {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "X-User": "alice",
+        "X-Operator": "desktop:test",
+        "X-Scope": "owner",
+        ...headers,
+      },
+      body: JSON.stringify({ action }),
+    }),
+    env,
+    fakeContext(),
+  );
+}
+
+async function markdownAccessRequestItemRequest(
+  env: FakeEnv,
+  method: "POST",
+  documentId: string,
+  requestId: string,
+  action: "approve" | "deny" | "dismiss",
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return worker.fetch(
+    new Request(new URL(`/api/m/${documentId}/access-requests/${requestId}`, "http://localhost"), {
       method,
       headers: {
         "Content-Type": "application/json",
@@ -6702,6 +7037,34 @@ function seedPendingInvite(
   env.DB.invites.set(input.id, {
     id: input.id,
     notebook_id: input.notebookId,
+    email_normalized: input.email,
+    provider_hint: input.providerHint,
+    scope: input.scope,
+    status: "pending",
+    invited_by_actor_label: "user:oidc:alice/browser:tab",
+    accepted_by_principal: null,
+    token_hash: null,
+    created_at: "2026-05-22T00:00:00.000Z",
+    expires_at: null,
+    accepted_at: null,
+    revoked_at: null,
+    revoked_by_actor_label: null,
+  });
+}
+
+function seedPendingMarkdownInvite(
+  env: FakeEnv,
+  input: {
+    id: string;
+    documentId: string;
+    email: string;
+    providerHint: string | null;
+    scope: PendingMarkdownDocumentInviteRow["scope"];
+  },
+): void {
+  env.DB.markdownDocumentInvites.set(input.id, {
+    id: input.id,
+    document_id: input.documentId,
     email_normalized: input.email,
     provider_hint: input.providerHint,
     scope: input.scope,
@@ -7054,7 +7417,9 @@ class FakeD1 implements D1Database {
   readonly profiles = new Map<string, PrincipalProfileRow>();
   readonly accountLinks = new Map<string, PrincipalAccountLinkRow>();
   readonly invites = new Map<string, PendingNotebookInviteRow>();
+  readonly markdownDocumentInvites = new Map<string, PendingMarkdownDocumentInviteRow>();
   readonly accessRequests = new Map<string, NotebookAccessRequestRow>();
+  readonly markdownDocumentAccessRequests = new Map<string, MarkdownDocumentAccessRequestRow>();
   readonly workstations = new Map<string, WorkstationRow>();
   readonly workstationDefaults = new Map<string, string>();
   readonly workstationAttachJobs = new Map<string, WorkstationAttachJobRow>();
@@ -7179,6 +7544,85 @@ class FakeD1Statement implements D1PreparedStatement {
           created_by_actor_label: actorLabel,
         });
       }
+    } else if (
+      this.query.includes("INSERT INTO markdown_document_acl") &&
+      this.query.includes("FROM markdown_document_invites")
+    ) {
+      const [
+        subject,
+        createdAt,
+        updatedAt,
+        actorLabel,
+        inviteId,
+        acceptedByPrincipal,
+        acceptedAt,
+        email,
+        providerHint,
+        now,
+      ] = this.values as [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string | null,
+        string,
+      ];
+      const invite = this.db.markdownDocumentInvites.get(inviteId);
+      if (
+        invite &&
+        invite.status === "accepted" &&
+        invite.accepted_by_principal === acceptedByPrincipal &&
+        invite.accepted_at === acceptedAt &&
+        invite.email_normalized === email &&
+        (invite.provider_hint === providerHint || invite.provider_hint === null) &&
+        (!invite.expires_at || Date.parse(invite.expires_at) > Date.parse(now)) &&
+        this.db.markdownDocuments.has(invite.document_id)
+      ) {
+        this.insertMarkdownDocumentAclIfMissing({
+          document_id: invite.document_id,
+          subject_kind: "principal",
+          subject,
+          scope: invite.scope,
+          created_at: createdAt,
+          updated_at: updatedAt,
+          created_by_actor_label: actorLabel,
+        });
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
+    } else if (
+      this.query.includes("INSERT INTO markdown_document_acl") &&
+      this.query.includes("FROM markdown_document_access_requests")
+    ) {
+      const [createdAt, updatedAt, actorLabel, documentId, requestId] = this.values as [
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      const accessRequest = this.db.markdownDocumentAccessRequests.get(requestId);
+      if (
+        accessRequest &&
+        accessRequest.document_id === documentId &&
+        accessRequest.status === "pending"
+      ) {
+        this.insertMarkdownDocumentAclIfMissing({
+          document_id: documentId,
+          subject_kind: "principal",
+          subject: accessRequest.requester_principal,
+          scope: accessRequest.scope,
+          created_at: createdAt,
+          updated_at: updatedAt,
+          created_by_actor_label: actorLabel,
+        });
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT INTO markdown_document_acl")) {
       const [documentId, subjectKind, subject, scope, createdAt, updatedAt, actorLabel] = this
         .values as [
@@ -7218,6 +7662,124 @@ class FakeD1Statement implements D1PreparedStatement {
       );
       this.db.markdownDocumentAcl.splice(0, this.db.markdownDocumentAcl.length, ...retained);
       return okResult(undefined, { changes: countBefore - retained.length });
+    } else if (this.query.includes("INSERT INTO markdown_document_invites")) {
+      const [
+        id,
+        documentId,
+        emailNormalized,
+        providerHint,
+        scope,
+        actorLabel,
+        tokenHash,
+        createdAt,
+        expiresAt,
+      ] = this.values as [
+        string,
+        string,
+        string,
+        string | null,
+        PendingMarkdownDocumentInviteRow["scope"],
+        string,
+        string | null,
+        string,
+        string | null,
+      ];
+      const duplicate = [...this.db.markdownDocumentInvites.values()].find(
+        (invite) =>
+          invite.document_id === documentId &&
+          invite.email_normalized === emailNormalized &&
+          invite.provider_hint === providerHint &&
+          invite.scope === scope &&
+          invite.status === "pending",
+      );
+      if (duplicate) {
+        throw new Error(
+          "D1_ERROR: UNIQUE constraint failed: markdown_document_invites pending invite",
+        );
+      }
+      this.db.markdownDocumentInvites.set(id, {
+        id,
+        document_id: documentId,
+        email_normalized: emailNormalized,
+        provider_hint: providerHint,
+        scope,
+        status: "pending",
+        invited_by_actor_label: actorLabel,
+        accepted_by_principal: null,
+        token_hash: tokenHash,
+        created_at: createdAt,
+        expires_at: expiresAt,
+        accepted_at: null,
+        revoked_at: null,
+        revoked_by_actor_label: null,
+      });
+    } else if (
+      this.query.includes("UPDATE markdown_document_invites") &&
+      this.query.includes("revoked_by_actor_label")
+    ) {
+      const [revokedAt, revokedByActorLabel, documentId, inviteId] = this.values as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      const invite = this.db.markdownDocumentInvites.get(inviteId);
+      if (invite && invite.document_id === documentId && invite.status === "pending") {
+        invite.status = "revoked";
+        invite.revoked_at = revokedAt;
+        invite.revoked_by_actor_label = revokedByActorLabel;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
+    } else if (this.query.includes("INSERT INTO markdown_document_access_requests")) {
+      const [id, documentId, requesterPrincipal, actorLabel, createdAt, updatedAt] = this
+        .values as [string, string, string, string, string, string];
+      const duplicate = [...this.db.markdownDocumentAccessRequests.values()].find(
+        (accessRequest) =>
+          accessRequest.document_id === documentId &&
+          accessRequest.requester_principal === requesterPrincipal &&
+          accessRequest.scope === "editor" &&
+          accessRequest.status === "pending",
+      );
+      if (duplicate) {
+        throw new Error(
+          "D1_ERROR: UNIQUE constraint failed: markdown_document_access_requests pending request",
+        );
+      }
+      this.db.markdownDocumentAccessRequests.set(id, {
+        id,
+        document_id: documentId,
+        requester_principal: requesterPrincipal,
+        scope: "editor",
+        status: "pending",
+        requested_by_actor_label: actorLabel,
+        resolved_by_actor_label: null,
+        created_at: createdAt,
+        updated_at: updatedAt,
+        resolved_at: null,
+      });
+    } else if (this.query.includes("UPDATE markdown_document_access_requests")) {
+      const [status, actorLabel, resolvedAt, updatedAt, documentId, requestId] = this.values as [
+        MarkdownDocumentAccessRequestRow["status"],
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      const accessRequest = this.db.markdownDocumentAccessRequests.get(requestId);
+      if (
+        accessRequest &&
+        accessRequest.document_id === documentId &&
+        accessRequest.status === "pending"
+      ) {
+        accessRequest.status = status;
+        accessRequest.resolved_by_actor_label = actorLabel;
+        accessRequest.resolved_at = resolvedAt;
+        accessRequest.updated_at = updatedAt;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT OR IGNORE INTO notebook_acl")) {
       if (this.query.includes("'principal'") && this.query.includes("owner_principal")) {
         for (const notebook of this.db.notebooks.values()) {
@@ -8073,6 +8635,30 @@ class FakeD1Statement implements D1PreparedStatement {
         first_seen_at: existing?.first_seen_at ?? firstSeenAt,
         last_seen_at: lastSeenAt,
       });
+    } else if (this.query.includes("UPDATE markdown_document_invites")) {
+      const [principal, acceptedAt, inviteId, email, providerHint, now] = this.values as [
+        string,
+        string,
+        string,
+        string,
+        string | null,
+        string,
+      ];
+      const invite = this.db.markdownDocumentInvites.get(inviteId);
+      if (
+        invite &&
+        invite.status === "pending" &&
+        invite.email_normalized === email &&
+        (invite.provider_hint === providerHint || invite.provider_hint === null) &&
+        (!invite.expires_at || Date.parse(invite.expires_at) > Date.parse(now)) &&
+        this.db.markdownDocuments.has(invite.document_id)
+      ) {
+        invite.status = "accepted";
+        invite.accepted_by_principal = principal;
+        invite.accepted_at = acceptedAt;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("UPDATE notebook_invites")) {
       const [principal, acceptedAt, inviteId, email, providerHint, now] = this.values as [
         string,
@@ -8132,6 +8718,31 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async first<T = unknown>(): Promise<T | null> {
+    if (this.query.includes("FROM markdown_document_access_requests")) {
+      if (this.query.includes("requester_principal = ?")) {
+        const [documentId, requesterPrincipal] = this.values as [string, string];
+        return (
+          ([...this.db.markdownDocumentAccessRequests.values()]
+            .filter(
+              (accessRequest) =>
+                accessRequest.document_id === documentId &&
+                accessRequest.requester_principal === requesterPrincipal &&
+                (!this.query.includes("status = 'pending'") || accessRequest.status === "pending"),
+            )
+            .sort(
+              (left, right) =>
+                right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id),
+            )[0] as T | undefined) ?? null
+        );
+      }
+      const [documentId, requestId] = this.values as [string, string];
+      return (
+        ([...this.db.markdownDocumentAccessRequests.values()].find(
+          (accessRequest) =>
+            accessRequest.document_id === documentId && accessRequest.id === requestId,
+        ) as T | undefined) ?? null
+      );
+    }
     if (this.query.includes("FROM notebook_access_requests")) {
       if (this.query.includes("requester_principal = ?")) {
         const [notebookId, requesterPrincipal] = this.values as [string, string];
@@ -8223,6 +8834,30 @@ class FakeD1Statement implements D1PreparedStatement {
       return job?.owner_principal === ownerPrincipal && job.workstation_id === workstationId
         ? (job as T)
         : null;
+    }
+    if (this.query.includes("FROM markdown_document_invites")) {
+      if (this.query.includes("WHERE document_id = ?")) {
+        const [documentId, email, scope, providerHint] = this.values as [
+          string,
+          string,
+          PendingMarkdownDocumentInviteRow["scope"],
+          string | null,
+          string | null,
+        ];
+        return (
+          ([...this.db.markdownDocumentInvites.values()].find(
+            (invite) =>
+              invite.document_id === documentId &&
+              invite.email_normalized === email &&
+              invite.scope === scope &&
+              invite.status === "pending" &&
+              invite.provider_hint === providerHint,
+          ) as T | undefined) ?? null
+        );
+      }
+      return (
+        (this.db.markdownDocumentInvites.get(this.values[0] as string) as T | undefined) ?? null
+      );
     }
     if (this.query.includes("FROM notebook_invites")) {
       if (this.query.includes("WHERE notebook_id = ?")) {
@@ -8339,6 +8974,35 @@ class FakeD1Statement implements D1PreparedStatement {
         [...this.db.profiles.values()].filter((profile) =>
           principals.has(profile.principal),
         ) as T[],
+      );
+    }
+    if (this.query.includes("FROM markdown_document_access_requests")) {
+      const documentId = this.values[0] as string;
+      const limit = typeof this.values[1] === "number" ? this.values[1] : Number.POSITIVE_INFINITY;
+      return okResult(
+        [...this.db.markdownDocumentAccessRequests.values()]
+          .filter((accessRequest) => accessRequest.document_id === documentId)
+          .sort(
+            (left, right) =>
+              right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id),
+          )
+          .slice(0, limit) as T[],
+      );
+    }
+    if (
+      this.query.includes("FROM markdown_document_invites") &&
+      this.query.includes("WHERE document_id = ?")
+    ) {
+      const documentId = this.values[0] as string;
+      const limit = typeof this.values[1] === "number" ? this.values[1] : Number.POSITIVE_INFINITY;
+      return okResult(
+        [...this.db.markdownDocumentInvites.values()]
+          .filter((invite) => invite.document_id === documentId)
+          .sort(
+            (left, right) =>
+              right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id),
+          )
+          .slice(0, limit) as T[],
       );
     }
     if (
@@ -8565,6 +9229,18 @@ class FakeD1Statement implements D1PreparedStatement {
       const [email, provider, now] = this.values as [string, string, string];
       return okResult(
         Array.from(this.db.invites.values()).filter(
+          (invite) =>
+            invite.email_normalized === email &&
+            invite.status === "pending" &&
+            (invite.provider_hint === provider || invite.provider_hint === null) &&
+            (!invite.expires_at || Date.parse(invite.expires_at) > Date.parse(now)),
+        ) as T[],
+      );
+    }
+    if (this.query.includes("FROM markdown_document_invites")) {
+      const [email, provider, now] = this.values as [string, string, string];
+      return okResult(
+        Array.from(this.db.markdownDocumentInvites.values()).filter(
           (invite) =>
             invite.email_normalized === email &&
             invite.status === "pending" &&

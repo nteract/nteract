@@ -184,6 +184,23 @@ describe("cloud access-request state projection", () => {
     );
   });
 
+  it("can project edit-request copy for non-notebook hosted documents", () => {
+    assert.deepEqual(
+      projectCloudAccessRequestNotice({
+        documentLabel: "document",
+        error: null,
+        request: { status: "denied" },
+        selectedMode: "edit",
+      }),
+      {
+        kind: "denied",
+        tone: "warning",
+        title: "Edit request denied.",
+        message: "The document stays in view mode.",
+      },
+    );
+  });
+
   it("loads own edit-request state only for explicit editable viewer intent", () => {
     assert.equal(
       shouldLoadOwnCloudAccessRequest({

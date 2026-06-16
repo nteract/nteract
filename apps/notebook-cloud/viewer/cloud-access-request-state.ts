@@ -134,10 +134,12 @@ export function shouldFallbackCloudEditUrlToView({
 }
 
 export function projectCloudAccessRequestNotice({
+  documentLabel = "notebook",
   error,
   request,
   selectedMode,
 }: {
+  documentLabel?: string;
   error: string | null;
   request: Pick<CloudNotebookAccessRequest, "status"> | null;
   selectedMode: CloudNotebookUrlMode;
@@ -178,7 +180,7 @@ export function projectCloudAccessRequestNotice({
       kind: "denied",
       tone: "warning",
       title: "Edit request denied.",
-      message: "The notebook stays in view mode.",
+      message: `The ${documentLabel} stays in view mode.`,
     };
   }
 

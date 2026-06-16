@@ -76,6 +76,8 @@ import {
   type ListedNotebookRow,
   type MarkdownDocumentCatalog,
   type MarkdownDocumentAclRow,
+  type MarkdownDocumentAccessRequestRow,
+  type MarkdownDocumentAccessRequestStatus,
   type MarkdownDocumentScope,
   type NotebookAclRow,
   type NotebookAccessRequestRow,
@@ -117,10 +119,16 @@ import {
   getPrincipalProfile,
   getPrincipalProfiles,
   getPrincipalProfilesForVerifiedEmail,
+  createPendingMarkdownDocumentInvite,
   listNotebookInvites,
+  listMarkdownDocumentInvites,
+  resolveMarkdownDocumentInvitesForLogin,
   resolveNotebookInvitesForLogin,
+  revokePendingMarkdownDocumentInvite,
   revokePendingNotebookInvite,
+  type ListedPendingMarkdownDocumentInviteRow,
   type ListedPendingNotebookInviteRow,
+  type PendingMarkdownDocumentInviteRow,
   type PendingNotebookInviteRow,
   type PrincipalProfileRow,
 } from "./sharing-storage.ts";
@@ -132,8 +140,12 @@ import {
 } from "./sharing.ts";
 import {
   createNotebookAccessRequest,
+  createMarkdownDocumentAccessRequest,
+  getLatestMarkdownDocumentAccessRequestForRequester,
   getLatestNotebookAccessRequestForRequester,
+  listMarkdownDocumentAccessRequests,
   listNotebookAccessRequests,
+  resolveMarkdownDocumentAccessRequest,
   resolveNotebookAccessRequest,
 } from "./access-requests-storage.ts";
 import {
@@ -444,6 +456,28 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: routePath("/api/m/:documentId/acl", { trailingSlash: "optional" }),
     handler: ({ params }, request, env) =>
       routeMarkdownDocumentAcl(request, env, params.documentId),
+  },
+  {
+    match: routePath("/api/m/:documentId/invites", { trailingSlash: "optional" }),
+    handler: ({ params }, request, env) =>
+      routeMarkdownDocumentInvites(request, env, params.documentId),
+  },
+  {
+    match: routePath("/api/m/:documentId/invites/:inviteId", { trailingSlash: "optional" }),
+    handler: ({ params }, request, env) =>
+      routeMarkdownDocumentInvite(request, env, params.documentId, params.inviteId),
+  },
+  {
+    match: routePath("/api/m/:documentId/access-requests", { trailingSlash: "optional" }),
+    handler: ({ params }, request, env) =>
+      routeMarkdownDocumentAccessRequests(request, env, params.documentId),
+  },
+  {
+    match: routePath("/api/m/:documentId/access-requests/:accessRequestId", {
+      trailingSlash: "optional",
+    }),
+    handler: ({ params }, request, env) =>
+      routeMarkdownDocumentAccessRequest(request, env, params.documentId, params.accessRequestId),
   },
   {
     match: routePath("/api/n/:notebookId/acl", { trailingSlash: "optional" }),
@@ -3650,6 +3684,12 @@ async function parseAccessRequestResolutionStatus(
   }
 }
 
+async function parseMarkdownAccessRequestResolutionStatus(
+  request: Request,
+): Promise<Exclude<MarkdownDocumentAccessRequestStatus, "pending"> | Response> {
+  return parseAccessRequestResolutionStatus(request);
+}
+
 async function accessRequestResponseRows(
   env: Env,
   rows: NotebookAccessRequestRow[],
@@ -3689,6 +3729,45 @@ function accessRequestResponse(
   };
 }
 
+async function markdownAccessRequestResponseRows(
+  env: Env,
+  rows: MarkdownDocumentAccessRequestRow[],
+): Promise<Array<Record<string, unknown>>> {
+  const principals = rows.map((row) => row.requester_principal);
+  const profilesByPrincipal = new Map(
+    (await getPrincipalProfiles(env, principals)).map((profile) => [profile.principal, profile]),
+  );
+  return rows.map((row) =>
+    markdownAccessRequestResponse(row, profilesByPrincipal.get(row.requester_principal)),
+  );
+}
+
+function markdownAccessRequestResponse(
+  row: MarkdownDocumentAccessRequestRow,
+  profile?: PrincipalProfileRow,
+): Record<string, unknown> {
+  return {
+    id: row.id,
+    document_id: row.document_id,
+    requester_principal: row.requester_principal,
+    scope: row.scope,
+    status: row.status,
+    requested_by_actor_label: row.requested_by_actor_label,
+    resolved_by_actor_label: row.resolved_by_actor_label,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    resolved_at: row.resolved_at,
+    display: profile
+      ? shareTargetDisplay({ profile: principalProfileFromRow(profile) })
+      : {
+          kind: "principal",
+          label: row.requester_principal,
+          principal: row.requester_principal,
+          email: null,
+        },
+  };
+}
+
 async function tryAuthorizeNotebookAccess(
   env: Env,
   notebookId: string,
@@ -3704,6 +3783,28 @@ async function tryAuthorizeNotebookAccess(
     };
   } catch (error) {
     if (error instanceof AuthorizationError) {
+      return { ok: false, error };
+    }
+    throw error;
+  }
+}
+
+async function tryAuthorizeMarkdownDocumentAccess(
+  env: Env,
+  documentId: string,
+  identity: AuthenticatedConnection,
+  requestedScope: MarkdownDocumentScope,
+): Promise<
+  | { ok: true; identity: AuthenticatedConnection & { scope: MarkdownDocumentScope } }
+  | { ok: false; error: MarkdownAuthorizationError }
+> {
+  try {
+    return {
+      ok: true,
+      identity: await authorizeMarkdownDocumentAccess(env, documentId, identity, requestedScope),
+    };
+  } catch (error) {
+    if (error instanceof MarkdownAuthorizationError) {
       return { ok: false, error };
     }
     throw error;
@@ -3772,6 +3873,26 @@ async function parsePendingInviteInput(
     provider_hint: normalizedProviderHint,
     scope: scopeValue,
     expires_at: expiresAt,
+  };
+}
+
+function markdownInviteResponse(
+  row: PendingMarkdownDocumentInviteRow | ListedPendingMarkdownDocumentInviteRow,
+): Record<string, unknown> {
+  return {
+    id: row.id,
+    document_id: row.document_id,
+    email: row.email_normalized,
+    provider_hint: row.provider_hint,
+    scope: row.scope,
+    status: row.status,
+    invited_by_actor_label: row.invited_by_actor_label,
+    accepted_by_principal: row.accepted_by_principal,
+    created_at: row.created_at,
+    expires_at: row.expires_at,
+    accepted_at: row.accepted_at,
+    revoked_at: row.revoked_at,
+    revoked_by_actor_label: row.revoked_by_actor_label,
   };
 }
 
@@ -3990,6 +4111,312 @@ async function routeMarkdownDocumentAcl(
     },
     201,
   );
+}
+
+async function routeMarkdownDocumentInvites(
+  request: Request,
+  env: Env,
+  documentId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "POST") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
+  }
+
+  const identity = await authenticateAndAuthorizeMarkdownOrAppSessionOrResponse(
+    request,
+    env,
+    documentId,
+    "owner",
+  );
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  if (request.method === "GET") {
+    return json({
+      document_id: documentId,
+      invites: (await listMarkdownDocumentInvites(env, documentId)).map(markdownInviteResponse),
+    });
+  }
+
+  if (request.method !== "POST") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const inviteInput = await parsePendingInviteInput(request);
+  if (inviteInput instanceof Response) {
+    return inviteInput;
+  }
+
+  const invite = await createPendingMarkdownDocumentInvite(env, {
+    documentId,
+    email: inviteInput.email,
+    providerHint: inviteInput.provider_hint,
+    scope: inviteInput.scope,
+    expiresAt: inviteInput.expires_at,
+    actorLabel: identity.actorLabel,
+  });
+
+  if (!invite) {
+    return json({ error: "invite was not created" }, 500);
+  }
+
+  cloudLog("info", "markdown_invite.create.completed", {
+    document_id: documentId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    invite_id: invite.id,
+    invite_scope: invite.scope,
+    provider_hint: invite.provider_hint,
+    counter: "markdown_invite_creates",
+    counter_delta: 1,
+  });
+
+  return json(
+    {
+      ok: true,
+      document_id: documentId,
+      invite: markdownInviteResponse(invite),
+    },
+    201,
+  );
+}
+
+async function routeMarkdownDocumentInvite(
+  request: Request,
+  env: Env,
+  documentId: string,
+  inviteId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "DELETE") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
+  }
+
+  const identity = await authenticateAndAuthorizeMarkdownOrAppSessionOrResponse(
+    request,
+    env,
+    documentId,
+    "owner",
+  );
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  if (request.method !== "DELETE") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const revoked = await revokePendingMarkdownDocumentInvite(env, {
+    documentId,
+    inviteId,
+    actorLabel: identity.actorLabel,
+  });
+  if (!revoked) {
+    return json({ error: "pending invite not found" }, 404);
+  }
+
+  cloudLog("info", "markdown_invite.revoke.completed", {
+    document_id: documentId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    invite_id: inviteId,
+    counter: "markdown_invite_revocations",
+    counter_delta: 1,
+  });
+
+  return json({
+    ok: true,
+    document_id: documentId,
+    invites: (await listMarkdownDocumentInvites(env, documentId)).map(markdownInviteResponse),
+  });
+}
+
+async function routeMarkdownDocumentAccessRequests(
+  request: Request,
+  env: Env,
+  documentId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "POST") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
+  }
+
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "viewer");
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  if (request.method === "GET") {
+    const owner = await tryAuthorizeMarkdownDocumentAccess(env, documentId, identity, "owner");
+    if (owner.ok) {
+      return json({
+        document_id: documentId,
+        access_requests: await markdownAccessRequestResponseRows(
+          env,
+          await listMarkdownDocumentAccessRequests(env, documentId),
+        ),
+      });
+    }
+
+    if (isAnonymousViewer(identity)) {
+      return json({ error: "sign in to view access requests" }, 401);
+    }
+
+    const viewer = await tryAuthorizeMarkdownDocumentAccess(env, documentId, identity, "viewer");
+    if (!viewer.ok) {
+      return json({ error: viewer.error.message }, viewer.error.status);
+    }
+
+    const latest = await getLatestMarkdownDocumentAccessRequestForRequester(env, {
+      documentId,
+      requesterPrincipal: identity.principal,
+    });
+    return json({
+      document_id: documentId,
+      access_requests: latest ? [markdownAccessRequestResponse(latest)] : [],
+    });
+  }
+
+  if (request.method !== "POST") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to request edit access" }, 401);
+  }
+
+  const viewer = await tryAuthorizeMarkdownDocumentAccess(env, documentId, identity, "viewer");
+  if (!viewer.ok) {
+    return json({ error: viewer.error.message }, viewer.error.status);
+  }
+
+  const editor = await tryAuthorizeMarkdownDocumentAccess(env, documentId, identity, "editor");
+  if (editor.ok) {
+    return json({
+      ok: true,
+      document_id: documentId,
+      access_status: "granted",
+      access_request: null,
+    });
+  }
+
+  const accessRequestResult = await createMarkdownDocumentAccessRequest(env, {
+    documentId,
+    requesterPrincipal: identity.principal,
+    actorLabel: identity.actorLabel,
+  });
+  if (!accessRequestResult) {
+    return json({ error: "access request was not created" }, 500);
+  }
+  const accessRequest = accessRequestResult.request;
+
+  if (accessRequestResult.created) {
+    cloudLog("info", "markdown_access_request.create.completed", {
+      document_id: documentId,
+      principal: identity.principal,
+      actor_label: identity.actorLabel,
+      access_request_id: accessRequest.id,
+      counter: "markdown_access_request_creates",
+      counter_delta: 1,
+    });
+  }
+
+  return json(
+    {
+      ok: true,
+      document_id: documentId,
+      access_status: accessRequest.status,
+      access_request: markdownAccessRequestResponse(accessRequest),
+    },
+    accessRequestResult.created ? 201 : 200,
+  );
+}
+
+async function routeMarkdownDocumentAccessRequest(
+  request: Request,
+  env: Env,
+  documentId: string,
+  requestId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "POST") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
+  }
+
+  const identity = await authenticateAndAuthorizeMarkdownOrAppSessionOrResponse(
+    request,
+    env,
+    documentId,
+    "owner",
+  );
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  if (request.method !== "POST") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const status = await parseMarkdownAccessRequestResolutionStatus(request);
+  if (status instanceof Response) {
+    return status;
+  }
+
+  const resolved = await resolveMarkdownDocumentAccessRequest(env, {
+    documentId,
+    requestId,
+    status,
+    actorLabel: identity.actorLabel,
+  });
+  if (!resolved) {
+    return json({ error: "pending access request not found" }, 404);
+  }
+
+  cloudLog("info", "markdown_access_request.resolve.completed", {
+    document_id: documentId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    access_request_id: requestId,
+    access_request_status: resolved.status,
+    counter: "markdown_access_request_resolutions",
+    counter_delta: 1,
+  });
+
+  return json({
+    ok: true,
+    document_id: documentId,
+    access_request: markdownAccessRequestResponse(resolved),
+    access_requests: await markdownAccessRequestResponseRows(
+      env,
+      await listMarkdownDocumentAccessRequests(env, documentId),
+    ),
+  });
 }
 
 async function routeNotebookAcl(request: Request, env: Env, notebookId: string): Promise<Response> {
@@ -5126,19 +5553,22 @@ async function syncAuthenticatedProfile(
     // trusted to return only server-verified account emails. If that backend
     // contract changes, API-key email claims must stop feeding invite
     // resolution and account canonicalization.
-    const resolution = await resolveNotebookInvitesForLogin(env, {
+    const loginProfile = {
       ...profile,
       principalNamespace: identity.metadata.principalNamespace,
       emailVerified:
         identity.metadata.provider === "anaconda-api-key"
           ? Boolean(identity.metadata.email)
           : identity.metadata.emailVerified === true,
-    });
+    };
+    const notebookResolution = await resolveNotebookInvitesForLogin(env, loginProfile);
+    const markdownResolution = await resolveMarkdownDocumentInvitesForLogin(env, loginProfile);
     logInviteResolutionCompleted({
       principal: identity.principal,
       provider: identity.metadata.provider,
-      acceptedInviteCount: resolution.acceptedInvites.length,
-      aclGrantCount: resolution.aclGrants.length,
+      acceptedInviteCount:
+        notebookResolution.acceptedInvites.length + markdownResolution.acceptedInvites.length,
+      aclGrantCount: notebookResolution.aclGrants.length + markdownResolution.aclGrants.length,
     });
   } catch (error) {
     cloudLog("warn", "profile.sync.failed", {
@@ -5167,19 +5597,22 @@ async function syncStoredAppSessionProfile(env: Env, session: CloudAppSession): 
       return;
     }
 
-    const resolution = await resolveNotebookInvitesForLogin(env, {
+    const loginProfile = {
       principal: session.principal,
       provider: profile.provider,
       principalNamespace: session.principalNamespace,
       email: profile.email_normalized,
       emailVerified: true,
       displayName: session.displayName ?? profile.display_name,
-    });
+    };
+    const notebookResolution = await resolveNotebookInvitesForLogin(env, loginProfile);
+    const markdownResolution = await resolveMarkdownDocumentInvitesForLogin(env, loginProfile);
     logInviteResolutionCompleted({
       principal: session.principal,
       provider: profile.provider,
-      acceptedInviteCount: resolution.acceptedInvites.length,
-      aclGrantCount: resolution.aclGrants.length,
+      acceptedInviteCount:
+        notebookResolution.acceptedInvites.length + markdownResolution.acceptedInvites.length,
+      aclGrantCount: notebookResolution.aclGrants.length + markdownResolution.aclGrants.length,
     });
   } catch (error) {
     cloudLog("warn", "profile.sync.failed", {
@@ -5597,6 +6030,8 @@ async function markdownDocumentViewer(
     documentId,
     catalogEndpoint: documentApiBasePath,
     aclEndpoint: `${documentApiBasePath}/acl`,
+    invitesEndpoint: `${documentApiBasePath}/invites`,
+    accessRequestsEndpoint: `${documentApiBasePath}/access-requests`,
     snapshotBasePath: `${documentApiBasePath}/snapshots/`,
     syncEndpoint: `/m/${encodeURIComponent(documentId)}/sync`,
     hostCapabilities: {

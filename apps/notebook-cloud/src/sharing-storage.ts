@@ -68,6 +68,28 @@ export interface PendingNotebookInviteRow {
 
 export type ListedPendingNotebookInviteRow = Omit<PendingNotebookInviteRow, "token_hash">;
 
+export interface PendingMarkdownDocumentInviteRow {
+  id: string;
+  document_id: string;
+  email_normalized: string;
+  provider_hint: string | null;
+  scope: PendingNotebookInvite["scope"];
+  status: PendingNotebookInvite["status"];
+  invited_by_actor_label: string;
+  accepted_by_principal: string | null;
+  token_hash: string | null;
+  created_at: string;
+  expires_at: string | null;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  revoked_by_actor_label: string | null;
+}
+
+export type ListedPendingMarkdownDocumentInviteRow = Omit<
+  PendingMarkdownDocumentInviteRow,
+  "token_hash"
+>;
+
 export interface PendingNotebookInviteInput {
   id?: string;
   notebookId: string;
@@ -80,7 +102,20 @@ export interface PendingNotebookInviteInput {
   timestamp?: string;
 }
 
+export interface PendingMarkdownDocumentInviteInput {
+  id?: string;
+  documentId: string;
+  email: string;
+  providerHint?: string | null;
+  scope: PendingNotebookInvite["scope"];
+  actorLabel: string;
+  expiresAt?: string | null;
+  tokenHash?: string | null;
+  timestamp?: string;
+}
+
 const NOTEBOOK_INVITE_LIST_LIMIT = 200;
+const MARKDOWN_DOCUMENT_INVITE_LIST_LIMIT = 200;
 
 export async function upsertPrincipalProfile(
   env: Env,
@@ -645,6 +680,170 @@ export async function revokePendingNotebookInvite(
   return d1Changes(result) > 0;
 }
 
+export async function createPendingMarkdownDocumentInvite(
+  env: Env,
+  input: PendingMarkdownDocumentInviteInput,
+): Promise<PendingMarkdownDocumentInviteRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const inviteId = input.id ?? crypto.randomUUID();
+  const timestamp = input.timestamp ?? new Date().toISOString();
+  const providerHint = normalizeProviderHint(input.providerHint ?? null);
+  const scope = normalizeInviteScope(input.scope);
+  const email = normalizeInviteEmail(input.email);
+  const expiresAt = normalizeInviteExpiresAt(input.expiresAt ?? null);
+  const existing = await getExistingPendingMarkdownDocumentInvite(env, {
+    documentId: input.documentId,
+    email,
+    providerHint,
+    scope,
+  });
+  if (existing) {
+    return existing;
+  }
+
+  try {
+    await env.DB.prepare(
+      `INSERT INTO markdown_document_invites (
+       id,
+       document_id,
+       email_normalized,
+       provider_hint,
+       scope,
+       status,
+       invited_by_actor_label,
+       token_hash,
+       created_at,
+       expires_at
+     ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+    )
+      .bind(
+        inviteId,
+        input.documentId,
+        email,
+        providerHint,
+        scope,
+        input.actorLabel,
+        input.tokenHash ?? null,
+        timestamp,
+        expiresAt,
+      )
+      .run();
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+    const raced = await getExistingPendingMarkdownDocumentInvite(env, {
+      documentId: input.documentId,
+      email,
+      providerHint,
+      scope,
+    });
+    if (raced) {
+      return raced;
+    }
+    throw error;
+  }
+
+  return await getPendingMarkdownDocumentInvite(env, inviteId);
+}
+
+export async function getPendingMarkdownDocumentInvite(
+  env: Env,
+  inviteId: string,
+): Promise<PendingMarkdownDocumentInviteRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  return await env.DB.prepare(
+    `SELECT id,
+            document_id,
+            email_normalized,
+            provider_hint,
+            scope,
+            status,
+            invited_by_actor_label,
+            accepted_by_principal,
+            token_hash,
+            created_at,
+            expires_at,
+            accepted_at,
+            revoked_at,
+            revoked_by_actor_label
+       FROM markdown_document_invites
+       WHERE id = ?`,
+  )
+    .bind(inviteId)
+    .first<PendingMarkdownDocumentInviteRow>();
+}
+
+export async function listMarkdownDocumentInvites(
+  env: Env,
+  documentId: string,
+): Promise<ListedPendingMarkdownDocumentInviteRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT id,
+            document_id,
+            email_normalized,
+            provider_hint,
+            scope,
+            status,
+            invited_by_actor_label,
+            accepted_by_principal,
+            created_at,
+            expires_at,
+            accepted_at,
+            revoked_at,
+            revoked_by_actor_label
+       FROM markdown_document_invites
+       WHERE document_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
+  )
+    .bind(documentId, MARKDOWN_DOCUMENT_INVITE_LIST_LIMIT)
+    .all<ListedPendingMarkdownDocumentInviteRow>();
+  return rows.results ?? [];
+}
+
+export async function revokePendingMarkdownDocumentInvite(
+  env: Env,
+  input: {
+    documentId: string;
+    inviteId: string;
+    actorLabel: string;
+    timestamp?: string;
+  },
+): Promise<boolean> {
+  if (!env.DB) {
+    return false;
+  }
+
+  await ensureCatalogSchema(env);
+  const timestamp = input.timestamp ?? new Date().toISOString();
+  const result = await env.DB.prepare(
+    `UPDATE markdown_document_invites
+        SET status = 'revoked',
+            revoked_at = ?,
+            revoked_by_actor_label = ?
+      WHERE document_id = ?
+        AND id = ?
+        AND status = 'pending'`,
+  )
+    .bind(timestamp, input.actorLabel, input.documentId, input.inviteId)
+    .run();
+  return d1Changes(result) > 0;
+}
+
 async function getExistingPendingNotebookInvite(
   env: Env,
   input: {
@@ -681,6 +880,44 @@ async function getExistingPendingNotebookInvite(
     )
     .bind(input.notebookId, input.email, input.scope, input.providerHint, input.providerHint)
     .first<PendingNotebookInviteRow>();
+}
+
+async function getExistingPendingMarkdownDocumentInvite(
+  env: Env,
+  input: {
+    documentId: string;
+    email: string;
+    providerHint: string | null;
+    scope: PendingNotebookInvite["scope"];
+  },
+): Promise<PendingMarkdownDocumentInviteRow | null> {
+  return await env
+    .DB!.prepare(
+      `SELECT id,
+              document_id,
+              email_normalized,
+              provider_hint,
+              scope,
+              status,
+              invited_by_actor_label,
+              accepted_by_principal,
+              token_hash,
+              created_at,
+              expires_at,
+              accepted_at,
+              revoked_at,
+              revoked_by_actor_label
+         FROM markdown_document_invites
+        WHERE document_id = ?
+          AND email_normalized = ?
+          AND scope = ?
+          AND status = 'pending'
+          AND ((provider_hint IS NULL AND ? IS NULL) OR provider_hint = ?)
+        ORDER BY created_at
+        LIMIT 1`,
+    )
+    .bind(input.documentId, input.email, input.scope, input.providerHint, input.providerHint)
+    .first<PendingMarkdownDocumentInviteRow>();
 }
 
 export async function getPendingNotebookInvitesForLogin(
@@ -724,6 +961,49 @@ export async function getPendingNotebookInvitesForLogin(
     .bind(email, provider, now)
     .all<PendingNotebookInviteRow>();
   return (rows.results ?? []).map(pendingInviteFromRow);
+}
+
+export async function getPendingMarkdownDocumentInvitesForLogin(
+  env: Env,
+  login: Pick<AuthenticatedLoginProfile, "provider" | "email" | "emailVerified">,
+  now = new Date().toISOString(),
+): Promise<PendingNotebookInvite[]> {
+  if (!env.DB || !login.emailVerified) {
+    return [];
+  }
+
+  const email = normalizeMaybeInviteEmail(login.email);
+  if (!email) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const provider = normalizeRequiredProvider(login.provider);
+  const rows = await env.DB.prepare(
+    `SELECT id,
+            document_id,
+            email_normalized,
+            provider_hint,
+            scope,
+            status,
+            invited_by_actor_label,
+            accepted_by_principal,
+            token_hash,
+            created_at,
+            expires_at,
+            accepted_at,
+            revoked_at,
+            revoked_by_actor_label
+       FROM markdown_document_invites
+       WHERE email_normalized = ?
+         AND status = 'pending'
+         AND (provider_hint = ? OR provider_hint IS NULL)
+         AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch(?))
+       ORDER BY created_at`,
+  )
+    .bind(email, provider, now)
+    .all<PendingMarkdownDocumentInviteRow>();
+  return (rows.results ?? []).map(pendingMarkdownDocumentInviteFromRow);
 }
 
 export async function resolveNotebookInvitesForLogin(
@@ -807,6 +1087,87 @@ export async function resolveNotebookInvitesForLogin(
   return { ...resolutionWithProfile, acceptedInvites, aclGrants };
 }
 
+export async function resolveMarkdownDocumentInvitesForLogin(
+  env: Env,
+  login: AuthenticatedLoginProfile,
+  now = new Date().toISOString(),
+): Promise<InviteResolution> {
+  // Trust boundary: callers must pass identity-provider verified claims.
+  // Invite acceptance is derived from login.email plus login.emailVerified.
+  const account = await upsertPrincipalProfileWithAccount(env, {
+    principal: login.principal,
+    provider: login.provider,
+    principalNamespace: login.principalNamespace,
+    email: login.email,
+    emailVerified: login.emailVerified,
+    displayName: login.displayName,
+    timestamp: now,
+  });
+
+  const invites = await getPendingMarkdownDocumentInvitesForLogin(env, login, now);
+  const resolution = resolvePendingInvitesForLogin({
+    invites,
+    login,
+    aclSubject: account.canonicalPrincipal ?? login.principal,
+    now,
+  });
+  const resolutionWithProfile = {
+    ...resolution,
+    profile: profileFromRow(account.profile) ?? resolution.profile,
+  };
+  if (!env.DB || resolution.aclGrants.length === 0) {
+    return resolutionWithProfile;
+  }
+
+  const operations: {
+    invite: PendingNotebookInvite;
+    grant: InviteResolution["aclGrants"][number];
+    insertAcl: D1PreparedStatement;
+    acceptInvite: D1PreparedStatement;
+  }[] = [];
+  for (const grant of resolution.aclGrants) {
+    const invite = resolution.acceptedInvites.find((candidate) => candidate.id === grant.inviteId);
+    if (!invite) {
+      continue;
+    }
+    operations.push({
+      invite,
+      grant,
+      insertAcl: markdownInviteAclInsert(env, grant, invite, now),
+      acceptInvite: markdownInviteAcceptedUpdate(env, grant, invite, now),
+    });
+  }
+  if (operations.length === 0) {
+    return resolutionWithProfile;
+  }
+
+  const results = await env.DB.batch(
+    operations.flatMap((operation) => [operation.acceptInvite, operation.insertAcl]),
+  );
+  const acceptedInvites: PendingNotebookInvite[] = [];
+  const aclGrants: InviteResolution["aclGrants"] = [];
+  for (let index = 0; index < operations.length; index += 1) {
+    const acceptInviteResult = results[index * 2];
+    const insertAclResult = results[index * 2 + 1];
+    if (
+      !acceptInviteResult ||
+      !insertAclResult ||
+      d1Changes(acceptInviteResult) === 0 ||
+      d1Changes(insertAclResult) === 0
+    ) {
+      continue;
+    }
+    acceptedInvites.push({
+      ...operations[index].invite,
+      status: "accepted",
+      acceptedByPrincipal: login.principal,
+      acceptedAt: now,
+    });
+    aclGrants.push(operations[index].grant);
+  }
+  return { ...resolutionWithProfile, acceptedInvites, aclGrants };
+}
+
 function inviteAclInsert(
   env: Env,
   grant: InviteResolution["aclGrants"][number],
@@ -837,6 +1198,52 @@ function inviteAclInsert(
           SELECT 1 FROM notebooks WHERE notebooks.id = notebook_invites.notebook_id
         )
      ON CONFLICT(notebook_id, subject_kind, subject, scope) DO UPDATE SET
+       updated_at = excluded.updated_at`,
+    )
+    .bind(
+      grant.subject,
+      timestamp,
+      timestamp,
+      grant.actorLabel,
+      invite.id,
+      grant.acceptedByPrincipal,
+      timestamp,
+      normalizeInviteEmail(invite.email),
+      normalizeProviderHint(invite.providerHint),
+      timestamp,
+    );
+}
+
+function markdownInviteAclInsert(
+  env: Env,
+  grant: InviteResolution["aclGrants"][number],
+  invite: PendingNotebookInvite,
+  timestamp: string,
+): D1PreparedStatement {
+  return env
+    .DB!.prepare(
+      `INSERT INTO markdown_document_acl (
+       document_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+     )
+     SELECT document_id, 'principal', ?, scope, ?, ?, ?
+       FROM markdown_document_invites
+      WHERE id = ?
+        AND status = 'accepted'
+        AND accepted_by_principal = ?
+        AND accepted_at = ?
+        AND email_normalized = ?
+        AND (provider_hint = ? OR provider_hint IS NULL)
+        AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch(?))
+        AND EXISTS (
+          SELECT 1 FROM markdown_documents WHERE markdown_documents.id = markdown_document_invites.document_id
+        )
+     ON CONFLICT(document_id, subject_kind, subject, scope) DO UPDATE SET
        updated_at = excluded.updated_at`,
     )
     .bind(
@@ -884,10 +1291,59 @@ function inviteAcceptedUpdate(
     );
 }
 
+function markdownInviteAcceptedUpdate(
+  env: Env,
+  grant: InviteResolution["aclGrants"][number],
+  invite: PendingNotebookInvite,
+  timestamp: string,
+): D1PreparedStatement {
+  return env
+    .DB!.prepare(
+      `UPDATE markdown_document_invites
+          SET status = 'accepted',
+              accepted_by_principal = ?,
+              accepted_at = ?
+        WHERE id = ?
+          AND status = 'pending'
+          AND email_normalized = ?
+          AND (provider_hint = ? OR provider_hint IS NULL)
+          AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch(?))
+          AND EXISTS (
+            SELECT 1 FROM markdown_documents WHERE markdown_documents.id = markdown_document_invites.document_id
+          )`,
+    )
+    .bind(
+      grant.acceptedByPrincipal,
+      timestamp,
+      invite.id,
+      normalizeInviteEmail(invite.email),
+      normalizeProviderHint(invite.providerHint),
+      timestamp,
+    );
+}
+
 function pendingInviteFromRow(row: PendingNotebookInviteRow): PendingNotebookInvite {
   return {
     id: row.id,
     notebookId: row.notebook_id,
+    email: row.email_normalized,
+    providerHint: row.provider_hint,
+    scope: row.scope,
+    status: row.status,
+    createdByActorLabel: row.invited_by_actor_label,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    acceptedByPrincipal: row.accepted_by_principal,
+    acceptedAt: row.accepted_at,
+  };
+}
+
+function pendingMarkdownDocumentInviteFromRow(
+  row: PendingMarkdownDocumentInviteRow,
+): PendingNotebookInvite {
+  return {
+    id: row.id,
+    notebookId: row.document_id,
     email: row.email_normalized,
     providerHint: row.provider_hint,
     scope: row.scope,

@@ -417,6 +417,9 @@ describe("HTML script serialization", () => {
     assert.match(html, /"documentKind":"markdown"/);
     assert.match(html, /"documentId":"doc-123"/);
     assert.match(html, /"catalogEndpoint":"\/api\/m\/doc-123"/);
+    assert.match(html, /"aclEndpoint":"\/api\/m\/doc-123\/acl"/);
+    assert.match(html, /"invitesEndpoint":"\/api\/m\/doc-123\/invites"/);
+    assert.match(html, /"accessRequestsEndpoint":"\/api\/m\/doc-123\/access-requests"/);
     assert.match(html, /"snapshotBasePath":"\/api\/m\/doc-123\/snapshots\/"/);
     assert.match(html, /"syncEndpoint":"\/m\/doc-123\/sync"/);
     assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.js"/);

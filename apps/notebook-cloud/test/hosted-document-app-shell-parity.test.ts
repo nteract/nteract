@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 
 const notebookListSource = readViewerModule("notebook-list-view.tsx");
 const markdownListSource = readViewerModule("markdown-document-list-view.tsx");
+const markdownDocumentRouteSource = readViewerModule("markdown-document-route.tsx");
 
 describe("hosted document app-shell parity", () => {
   it("uses the shared auth projection for notebook and Markdown catalog authority", () => {
@@ -49,6 +50,14 @@ describe("hosted document app-shell parity", () => {
     assert.match(markdownListSource, /Draft, review, and share Markdown without compute\./);
     assert.doesNotMatch(markdownListSource, /publish Markdown/i);
     assert.doesNotMatch(markdownListSource, /public version/i);
+  });
+
+  it("routes Markdown edit requests through the shared cloud edit chrome", () => {
+    assert.match(markdownDocumentRouteSource, /CloudNotebookEditModeButton/);
+    assert.match(markdownDocumentRouteSource, /shouldLoadOwnCloudAccessRequest/);
+    assert.match(markdownDocumentRouteSource, /projectCloudAccessRequestNotice/);
+    assert.match(markdownDocumentRouteSource, /onRequestEditAccess=\{requestMarkdownEditAccess\}/);
+    assert.doesNotMatch(markdownDocumentRouteSource, /<MarkdownDocumentModeToggle/);
   });
 });
 
