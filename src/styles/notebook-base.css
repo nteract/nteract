@@ -1,4 +1,5 @@
 @import "./notebook-tokens.css";
+@import "./markdown-document.css";
 
 /* Fallback: apply dark theme when system prefers dark and no explicit light class */
 @media (prefers-color-scheme: dark) {

@@ -85,8 +85,8 @@ projection, editor, and authorization concepts across Cloud and Desktop.
 |------|---------|
 | Markdown document | A first-class nteract document whose source of truth is Markdown text plus document metadata and optional artifact references. |
 | MarkdownDoc | The shared logical document model for Markdown source, metadata, artifact references, and future comments identity. |
-| Rendered view | A zen reading view derived from Markdown projection. It has no cell rows and no runtime controls. |
-| Source view | A CodeMirror-backed Markdown editor for the same document body. |
+| View mode | A zen reading view derived from Markdown projection. It has no cell rows and no runtime controls. |
+| Edit mode | A CodeMirror-backed Markdown editor for the same document body. |
 | Outline | A projection of headings from the current Markdown body. |
 | Published revision | A stable, read-only hosted snapshot of a Markdown document. |
 | Artifact reference | A durable reference from Markdown source or metadata to an attached output, component, image, or asset. |
@@ -95,11 +95,11 @@ projection, editor, and authorization concepts across Cloud and Desktop.
 
 | Scenario | Expected behavior |
 |----------|-------------------|
-| Cloud owner creates a doc | Owner opens the hosted dashboard, creates a Markdown document, edits source, sees rendered view and outline update, and can rename/share/publish without compute UI. |
-| Cloud editor | Editor can open an invited Markdown document, edit body/title if allowed, and see the same projected rendered view. |
+| Cloud owner creates a doc | Owner opens the hosted dashboard, creates a Markdown document, edits Markdown text, sees view mode and outline update, and can rename/share/publish without compute UI. |
+| Cloud editor | Editor can open an invited Markdown document, edit body/title if allowed, and see the same projected view mode. |
 | Cloud viewer | Viewer can read the rendered document and inspect safe source where product allows, but cannot mutate body, sharing, or publish state. |
 | Public published reader | Anonymous or signed-out reader can view only explicitly published/public content. Private body, comments, and collaborator identity do not leak through metadata. |
-| Desktop local author | User opens a `.md` file and gets the same source/rendered/outline shell, backed by local file sync rather than hosted ACLs. |
+| Desktop local author | User opens a `.md` file and gets the same edit/view/outline shell, backed by local file sync rather than hosted ACLs. |
 | Agent collaborator | An authorized local or hosted agent can read and update Markdown source through the same document model as the UI, with principal/operator attribution when available. |
 
 ## Requirements
@@ -132,13 +132,13 @@ projection, editor, and authorization concepts across Cloud and Desktop.
 
 ### Editing And Rendering
 
-1. Source editing uses the shared CodeMirror editor stack and Markdown language
+1. Edit mode uses the shared CodeMirror editor stack and Markdown language
    support.
-2. Rendered view uses the shared Markdown projection and
+2. View mode uses the shared Markdown projection and
    `ProjectedMarkdownView` typography where host-safe.
-3. Source and rendered modes operate on the same body value. Switching modes
+3. Edit and view modes operate on the same body value. Switching modes
    must not remount the entire app shell unnecessarily.
-4. Source edits from CodeMirror are translated into MarkdownDoc body splices,
+4. Edits from CodeMirror are translated into MarkdownDoc body splices,
    matching the existing notebook source-edit path. The UI must not diff and
    replace the entire body on each keystroke.
 5. The outline is derived from projected headings and updates when the body

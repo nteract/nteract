@@ -64,14 +64,14 @@ describe("markdown document projection", () => {
       title: "Research note",
       body: "# Research\n\nBody",
       access: "editor",
-      requestedMode: "source",
+      requestedMode: "edit",
     });
 
     expect(projection).toMatchObject({
       id: "01KTMD",
       title: "Research note",
       access: "editor",
-      mode: "source",
+      mode: "edit",
       canEdit: true,
       canShare: false,
       canPublish: false,
@@ -96,16 +96,16 @@ describe("markdown document projection", () => {
     ]);
   });
 
-  it("forces read mode for viewers", () => {
+  it("forces view mode for viewers", () => {
     const projection = projectDoc({
       id: "viewer-doc",
       title: "Shared",
       body: "# Shared",
       access: "viewer",
-      requestedMode: "source",
+      requestedMode: "edit",
     });
 
-    expect(projection.mode).toBe("read");
+    expect(projection.mode).toBe("view");
     expect(projection.canEdit).toBe(false);
     expect(projection.canShare).toBe(false);
     expect(projection.canPublish).toBe(false);

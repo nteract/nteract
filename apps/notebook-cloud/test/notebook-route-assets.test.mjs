@@ -39,7 +39,6 @@ describe("notebook route asset manifest", () => {
     const assetsUrl = pathToFileURL(`${dir}/`);
 
     await writeFile(new URL("notebook-route-abc123.js", assetsUrl), "");
-    await writeFile(new URL("notebook-route-abc123.css", assetsUrl), "");
     await writeFile(new URL("katex.min-jkl012.js", assetsUrl), "");
     await writeFile(new URL("katex-mno345.css", assetsUrl), "");
 
@@ -48,6 +47,23 @@ describe("notebook route asset manifest", () => {
 
     assert.deepEqual(written, manifest);
     assert.deepEqual(written, {
+      modulepreload: ["notebook-route-abc123.js", "katex.min-jkl012.js"],
+      stylepreload: ["katex-mno345.css"],
+    });
+  });
+
+  it("keeps a split notebook-route stylesheet optional but preloaded when present", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "notebook-cloud-route-manifest-css-"));
+    const assetsUrl = pathToFileURL(`${dir}/`);
+
+    await writeFile(new URL("notebook-route-abc123.js", assetsUrl), "");
+    await writeFile(new URL("notebook-route-abc123.css", assetsUrl), "");
+    await writeFile(new URL("katex.min-jkl012.js", assetsUrl), "");
+    await writeFile(new URL("katex-mno345.css", assetsUrl), "");
+
+    const { manifest } = await writeNotebookRouteAssetsManifest(assetsUrl);
+
+    assert.deepEqual(manifest, {
       modulepreload: ["notebook-route-abc123.js", "katex.min-jkl012.js"],
       stylepreload: ["notebook-route-abc123.css", "katex-mno345.css"],
     });
@@ -62,7 +78,7 @@ describe("notebook route asset manifest", () => {
 
     await assert.rejects(
       writeNotebookRouteAssetsManifest(assetsUrl),
-      /missing required route preload assets: notebook-route\.js, katex\.min\.js, notebook-route\.css, katex\.css/,
+      /missing required route preload assets: notebook-route\.js, katex\.min\.js, katex\.css/,
     );
   });
 });

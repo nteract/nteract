@@ -33,7 +33,8 @@ const tokenPath =
   process.env.NOTEBOOK_CLOUD_OIDC_TOKEN_PATH ??
   `${os.homedir()}/token.preview.json`;
 
-const editableMarkdownEditorSelector = ".cloud-markdown-editor .cm-content[contenteditable='true']";
+const editableMarkdownEditorSelector =
+  ".markdown-document-editor .cm-content[contenteditable='true']";
 const smokeTitle = `Markdown smoke ${new Date().toISOString()}`;
 const smokeMarker = `markdown-smoke-marker-${Date.now()}`;
 const smokeBody = `# Markdown smoke
@@ -105,14 +106,14 @@ async function main() {
     const documentUrl = page.url();
     checks.push("markdown_document_created");
 
-    await timed(timingsMs, "source_editor_ready", async () => {
-      await page.getByRole("button", { name: "Source" }).waitFor({ timeout: timeoutMs });
+    await timed(timingsMs, "edit_editor_ready", async () => {
+      await page.getByRole("button", { name: "Edit" }).waitFor({ timeout: timeoutMs });
       await page.locator(editableMarkdownEditorSelector).first().waitFor({
         state: "visible",
         timeout: timeoutMs,
       });
     });
-    checks.push("source_editor_ready");
+    checks.push("edit_editor_ready");
 
     await timed(timingsMs, "edit_source", () => replaceMarkdownSource(page, smokeBody));
     await timed(timingsMs, "outline_updated", async () => {
@@ -135,15 +136,15 @@ async function main() {
     });
     checks.push("outline_navigates_mono_source_editor");
 
-    await timed(timingsMs, "read_mode_rendered", async () => {
-      await page.getByRole("button", { name: "Read" }).click({ timeout: timeoutMs });
-      const preview = page.locator(".cloud-markdown-preview").first();
+    await timed(timingsMs, "view_mode_rendered", async () => {
+      await page.getByRole("button", { name: "View" }).click({ timeout: timeoutMs });
+      const preview = page.locator(".markdown-document-preview").first();
       await preview
         .getByRole("heading", { name: "Markdown smoke" })
         .waitFor({ timeout: timeoutMs });
-      await waitForPageText(page, smokeMarker, "read mode");
+      await waitForPageText(page, smokeMarker, "view mode");
     });
-    checks.push("read_mode_rendered_from_markdown_projection");
+    checks.push("view_mode_rendered_from_markdown_projection");
 
     await timed(timingsMs, "responsive_layout", () => assertResponsiveMarkdownRoute(page));
     checks.push("responsive_layout_no_document_overflow");
@@ -179,8 +180,8 @@ async function main() {
       if (response.status() !== 201) {
         throw new Error(`Markdown publish returned HTTP ${response.status()}`);
       }
-      await waitForPageText(page, "Public link updated.", "publish notice");
-      await page.getByRole("button", { name: "Publish update" }).waitFor({
+      await waitForPageText(page, "Public version saved.", "publish notice");
+      await page.getByRole("button", { name: "Update public version" }).waitFor({
         timeout: timeoutMs,
       });
     });

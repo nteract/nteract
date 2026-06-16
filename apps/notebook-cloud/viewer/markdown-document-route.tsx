@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Eye, FileText, Globe2, Loader2, PencilLine } from "lucide-react";
+import { Globe2, House, ListTree, Loader2 } from "lucide-react";
 import type { EditorView } from "@codemirror/view";
 import type { ConnectionStatus, NotebookOutlineItem } from "runtimed";
 import {
@@ -8,8 +8,23 @@ import {
   type CodeMirrorEditorRef,
 } from "@/components/editor/codemirror-editor";
 import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
+import {
+  NotebookDocumentShell,
+  NotebookDocumentToolbar,
+  NotebookNotice,
+  NotebookNoticeStack,
+  projectNotebookShellCapabilities,
+  type NotebookShellCapabilities,
+} from "@/components/notebook";
 import { NotebookOutlinePanel } from "@/components/notebook-rail/NotebookRail";
-import { projectMarkdownDocument, type MarkdownDocumentProjection } from "@/lib/markdown-document";
+import { Rail, RAIL_TAKEOVER_STAGE_CLASS_NAME } from "@/components/rail";
+import { MarkdownDocumentModeToggle } from "@/components/markdown/MarkdownDocumentModeToggle";
+import {
+  projectMarkdownDocument,
+  type MarkdownDocumentMode,
+  type MarkdownDocumentProjection,
+} from "@/lib/markdown-document";
+import { cn } from "@/lib/utils";
 import { cloudResponseError } from "./cloud-response";
 import type { CloudMarkdownDocumentConfig, CloudViewerAuthConfig } from "./cloud-viewer-types";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
@@ -40,6 +55,12 @@ type PublishStatus =
   | { kind: "publishing"; message: string }
   | { kind: "published"; message: string; revisionId: string }
   | { kind: "error"; message: string };
+
+type MarkdownDocumentAccessLevel = "owner" | "editor" | "viewer";
+
+type MarkdownRailPanelId = "outline";
+
+const MARKDOWN_RAIL_ITEMS = [{ id: "outline" as const, label: "Outline", icon: ListTree }];
 
 type RouteState =
   | { kind: "loading" }
@@ -74,7 +95,8 @@ export function MarkdownDocumentRoute({
     appSessionStatus.refreshAppSessionStatus,
   );
   const [routeState, setRouteState] = useState<RouteState>({ kind: "loading" });
-  const [mode, setMode] = useState<"source" | "read">("source");
+  const [mode, setMode] = useState<MarkdownDocumentMode>("edit");
+  const [railCollapsed, setRailCollapsed] = useState(initialMarkdownRailCollapsed);
   const [publishStatus, setPublishStatus] = useState<PublishStatus>({
     kind: "idle",
     message: null,
@@ -83,6 +105,23 @@ export function MarkdownDocumentRoute({
   const editorRef = useRef<CodeMirrorEditorRef | null>(null);
   const connectionStatusRef = useRef<ConnectionStatus>("connecting");
   const latestRevisionIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const media = window.matchMedia("(max-width: 599.98px)");
+    const collapseForNarrowViewport = () => {
+      if (media.matches) {
+        setRailCollapsed(true);
+      }
+    };
+    collapseForNarrowViewport();
+    media.addEventListener("change", collapseForNarrowViewport);
+    return () => {
+      media.removeEventListener("change", collapseForNarrowViewport);
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -180,9 +219,10 @@ export function MarkdownDocumentRoute({
       });
       return;
     }
+    const hadPublicVersion = latestRevisionIdRef.current !== null;
     setPublishStatus({
       kind: "publishing",
-      message: "Publishing Markdown document...",
+      message: hadPublicVersion ? "Updating public version..." : "Publishing Markdown document...",
     });
     try {
       const snapshot = await controller.publishSnapshot();
@@ -192,7 +232,7 @@ export function MarkdownDocumentRoute({
       );
       setPublishStatus({
         kind: "published",
-        message: "Public link updated.",
+        message: hadPublicVersion ? "Public version updated." : "Public version saved.",
         revisionId: snapshot.revisionId,
       });
     } catch (error) {
@@ -204,7 +244,7 @@ export function MarkdownDocumentRoute({
   }, [routeState.kind]);
 
   useEffect(() => {
-    if (routeState.kind !== "ready" || mode !== "source") {
+    if (routeState.kind !== "ready" || mode !== "edit") {
       return;
     }
     const editor = editorRef.current?.getEditor();
@@ -246,119 +286,274 @@ export function MarkdownDocumentRoute({
   const canManageSharing =
     projection.canShare && config.hostCapabilities?.canManageSharing !== false;
   const canPublish = projection.canPublish && config.hostCapabilities?.canPublish !== false;
+  const activeMode = projection.mode;
+  const shellCapabilities = markdownDocumentShellCapabilities({
+    access: routeState.scope,
+    authState,
+    canEdit,
+    canManageSharing,
+    mode: activeMode,
+  });
   const connectionCopy = markdownConnectionCopy(routeState.connectionStatus, routeState.bodyReady);
   const publicLink =
     typeof window === "undefined" ? "" : `${window.location.origin}${window.location.pathname}`;
   const publishCopy = publishStatus.message;
-
-  return (
-    <main className="cloud-markdown-shell">
-      <header className="cloud-markdown-toolbar">
-        <a href="/m" aria-label="Open Markdown documents" className="cloud-markdown-home-link">
-          <ArrowLeft aria-hidden="true" />
-        </a>
-        <div>
-          <p className="cloud-dashboard-eyebrow">Markdown</p>
-          <h1>{projection.title}</h1>
-        </div>
-        <div className="cloud-markdown-toolbar-actions">
-          {canManageSharing ? (
+  const markdownOutline = (
+    <NotebookOutlinePanel
+      items={markdownOutlineItems(projection)}
+      ariaLabel="Document outline"
+      emptyMessage="Add Markdown headings to structure this document. They will appear here."
+      getItemHref={(item) => item.href}
+      onNavigateItem={(item, href) => {
+        if (
+          activeMode === "edit" &&
+          canEdit &&
+          scrollEditorToMarkdownOutlineItem(
+            editorRef.current?.getEditor() ?? null,
+            projection.outlineItems,
+            item.id,
+          )
+        ) {
+          window.history.replaceState(null, "", href);
+          return true;
+        }
+        window.location.hash = href;
+        return true;
+      }}
+    />
+  );
+  const rail = (
+    <Rail<MarkdownRailPanelId>
+      activePanelId="outline"
+      collapsed={railCollapsed}
+      items={MARKDOWN_RAIL_ITEMS}
+      panelEyebrow="Markdown"
+      panelTitle="Outline"
+      panelClassName="w-[clamp(18rem,22vw,20rem)] min-w-72"
+      className="cloud-notebook-rail cloud-markdown-rail"
+      dataTestId="markdown-document-rail"
+      panelSlot="notebook-rail-panel"
+      panelTitleRowSlot="notebook-rail-panel-title-row"
+      onActivePanelChange={() => setRailCollapsed(false)}
+      onCollapsedChange={setRailCollapsed}
+    >
+      {markdownOutline}
+    </Rail>
+  );
+  const toolbar = (
+    <NotebookDocumentToolbar
+      capabilities={shellCapabilities}
+      frameClassName="z-20"
+      headerClassName="cloud-room-toolbar cloud-markdown-room-toolbar"
+      presence={<MarkdownDocumentTitle title={projection.title} access={projection.access} />}
+      utilityControls={
+        <MarkdownDocumentModeToggle mode={activeMode} canEdit={canEdit} onModeChange={setMode} />
+      }
+      sharingControls={
+        canManageSharing ? (
+          <>
             <MarkdownSharingControls
               aclEndpoint={config.aclEndpoint}
               authState={authState}
               publicLink={publicLink}
             />
-          ) : null}
-          {canPublish ? (
-            <button
-              type="button"
-              disabled={publishStatus.kind === "publishing" || !routeState.bodyReady}
-              onClick={() => void publishMarkdownDocumentSnapshot()}
-            >
-              {publishStatus.kind === "publishing" ? (
-                <Loader2 aria-hidden="true" />
-              ) : (
-                <Globe2 aria-hidden="true" />
-              )}
-              {projection.isPublished ? "Publish update" : "Publish"}
-            </button>
-          ) : null}
-          <button type="button" aria-pressed={mode === "read"} onClick={() => setMode("read")}>
-            <Eye aria-hidden="true" />
-            Read
-          </button>
-          <button
-            type="button"
-            aria-pressed={mode === "source"}
-            disabled={!canEdit}
-            onClick={() => setMode("source")}
-          >
-            <PencilLine aria-hidden="true" />
-            Source
-          </button>
-        </div>
-      </header>
-      {connectionCopy ? <div className="cloud-markdown-notice">{connectionCopy}</div> : null}
-      {publishCopy ? (
-        <div className="cloud-markdown-notice" data-kind={publishStatus.kind}>
-          {publishCopy}
-        </div>
-      ) : null}
-      <div className="cloud-markdown-workspace">
-        <aside className="cloud-markdown-rail">
-          <div className="cloud-markdown-rail-title">
-            <FileText aria-hidden="true" />
-            Outline
-          </div>
-          <NotebookOutlinePanel
-            items={markdownOutlineItems(projection)}
-            ariaLabel="Document outline"
-            emptyMessage="Add Markdown headings to structure this document. They will appear here."
-            getItemHref={(item) => item.href}
-            onNavigateItem={(item, href) => {
-              if (
-                mode === "source" &&
-                canEdit &&
-                scrollEditorToMarkdownOutlineItem(
-                  editorRef.current?.getEditor() ?? null,
-                  projection.outlineItems,
-                  item.id,
-                )
-              ) {
-                window.history.replaceState(null, "", href);
-                return true;
-              }
-              window.location.hash = href;
-              return true;
-            }}
-          />
-        </aside>
-        <section className="cloud-markdown-stage">
-          {mode === "source" && canEdit ? (
-            <CodeMirrorEditor
-              ref={editorRef}
-              key={config.documentId}
-              initialValue={projection.body}
-              language="markdown"
-              lineWrapping
-              className="cloud-markdown-editor"
-              onValueChange={onEditorValueChange}
-            />
-          ) : projection.markdownPlan ? (
-            <ProjectedMarkdownView
-              plan={projection.markdownPlan}
-              className="cloud-markdown-preview"
-              headingAnchors={projection.headingAnchors}
-            />
-          ) : (
-            <div className="cloud-state" data-kind="empty">
-              {routeState.bodyReady ? "Nothing to render yet." : "Syncing Markdown document body."}
-            </div>
-          )}
-        </section>
-      </div>
-    </main>
+            {canPublish ? (
+              <button
+                type="button"
+                className="markdown-document-toolbar-action"
+                disabled={publishStatus.kind === "publishing" || !routeState.bodyReady}
+                onClick={() => void publishMarkdownDocumentSnapshot()}
+              >
+                {publishStatus.kind === "publishing" ? (
+                  <Loader2 aria-hidden="true" />
+                ) : (
+                  <Globe2 aria-hidden="true" />
+                )}
+                <span>{projection.isPublished ? "Update public version" : "Publish"}</span>
+              </button>
+            ) : null}
+          </>
+        ) : null
+      }
+    />
   );
+  const notices =
+    connectionCopy || publishCopy ? (
+      <NotebookNoticeStack>
+        {connectionCopy ? (
+          <NotebookNotice tone="warning" title="Sync">
+            {connectionCopy}
+          </NotebookNotice>
+        ) : null}
+        {publishCopy ? (
+          <NotebookNotice tone={publishNoticeTone(publishStatus.kind)} title="Markdown">
+            {publishCopy}
+          </NotebookNotice>
+        ) : null}
+      </NotebookNoticeStack>
+    ) : null;
+
+  return (
+    <NotebookDocumentShell
+      rootElement="main"
+      className="cloud-notebook-shell cloud-markdown-shell"
+      toolbar={toolbar}
+      rail={rail}
+      notices={notices}
+      noticesClassName="cloud-notebook-notices cloud-markdown-notices"
+      stageClassName={cn(
+        "cloud-notebook-stage cloud-markdown-stage",
+        !railCollapsed && RAIL_TAKEOVER_STAGE_CLASS_NAME,
+      )}
+      stageLabel="Markdown document"
+      capabilities={shellCapabilities}
+    >
+      <div className="markdown-document-scroll" data-mode={activeMode}>
+        {activeMode === "edit" && canEdit ? (
+          <CodeMirrorEditor
+            ref={editorRef}
+            key={config.documentId}
+            initialValue={projection.body}
+            language="markdown"
+            lineWrapping
+            className="markdown-document-editor"
+            onValueChange={onEditorValueChange}
+          />
+        ) : projection.markdownPlan ? (
+          <ProjectedMarkdownView
+            plan={projection.markdownPlan}
+            className="markdown-document-preview"
+            headingAnchors={projection.headingAnchors}
+          />
+        ) : (
+          <div className="cloud-state" data-kind="empty">
+            {routeState.bodyReady ? "Nothing to render yet." : "Syncing Markdown document body."}
+          </div>
+        )}
+      </div>
+    </NotebookDocumentShell>
+  );
+}
+
+function initialMarkdownRailCollapsed(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(max-width: 599.98px)").matches;
+}
+
+function MarkdownDocumentTitle({
+  title,
+  access,
+}: {
+  title: string;
+  access: MarkdownDocumentProjection["access"];
+}) {
+  return (
+    <div className="cloud-notebook-title-group cloud-markdown-title-group">
+      <a
+        className="cloud-notebook-home-link"
+        href="/m"
+        aria-label="Open Markdown documents"
+        title="Markdown documents"
+      >
+        <House aria-hidden="true" />
+      </a>
+      <div className="cloud-notebook-title" title={title}>
+        <div className="cloud-notebook-title-static">
+          <span>{title}</span>
+        </div>
+        <small>{markdownTitleDetail(access)}</small>
+      </div>
+    </div>
+  );
+}
+
+function markdownDocumentShellCapabilities({
+  access,
+  authState,
+  canEdit,
+  canManageSharing,
+  mode,
+}: {
+  access: MarkdownDocumentAccessLevel;
+  authState: CloudPrototypeAuthState;
+  canEdit: boolean;
+  canManageSharing: boolean;
+  mode: MarkdownDocumentMode;
+}): NotebookShellCapabilities {
+  const canUseAuthenticatedIdentity = authState.mode === "dev" || authState.mode === "oidc";
+  const wantsEditMode = mode === "edit";
+  const canEditMarkdown = wantsEditMode && canEdit;
+  return projectNotebookShellCapabilities({
+    interaction: {
+      selectedMode: wantsEditMode ? "edit" : "view",
+      activeMode: canEditMarkdown ? "edit" : "view",
+      state: wantsEditMode ? (canEditMarkdown ? "editing" : "requested") : "viewing",
+      canRequestEdit: false,
+      canEditMarkdown,
+      canEditCells: false,
+      canEditStructure: false,
+    },
+    access: {
+      level: access,
+      source: "cloud",
+      isPublic: false,
+      actorLabel: null,
+      identityLabel: null,
+    },
+    auth: {
+      canSignIn: !canUseAuthenticatedIdentity,
+      canUseAuthenticatedIdentity,
+      needsAttention: authState.mode === "invalid" || authState.mode === "oidc_expired",
+    },
+    runtime: {
+      canWriteRuntimeState: false,
+      connected: false,
+      executionAvailable: false,
+      source: "cloud",
+      actorLabel: null,
+      identityLabel: null,
+      target: null,
+    },
+    controls: {
+      canToggleCode: false,
+    },
+    execution: {
+      available: false,
+      canSubmit: false,
+    },
+    packages: {
+      canView: false,
+      canManage: false,
+    },
+    sharing: {
+      canManage: canManageSharing,
+      requiresAuthenticatedIdentity: true,
+      requiredAccessLevels: ["owner"],
+      requiredSources: ["cloud"],
+    },
+  });
+}
+
+function markdownTitleDetail(access: MarkdownDocumentProjection["access"]): string {
+  if (access === "owner") {
+    return "Markdown document";
+  }
+  if (access === "editor") {
+    return "Markdown document · Editor";
+  }
+  if (access === "viewer") {
+    return "Markdown document · Viewer";
+  }
+  return "Markdown document";
+}
+
+function publishNoticeTone(kind: PublishStatus["kind"]) {
+  if (kind === "published") {
+    return "success";
+  }
+  if (kind === "error") {
+    return "error";
+  }
+  return "info";
 }
 
 async function fetchMarkdownCatalog(

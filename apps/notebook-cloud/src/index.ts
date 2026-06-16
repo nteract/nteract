@@ -2848,6 +2848,7 @@ async function routeSnapshot(
   }
   const runtimeKey = runtimeStateSnapshotKey(runtimeStateDocId, runtimeHeadsHash);
   const commsKey = commsHeadsHash ? commsDocSnapshotKey(runtimeStateDocId, commsHeadsHash) : null;
+  const existingSnapshot = await env.NOTEBOOK_SNAPSHOTS.head(key);
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
@@ -2915,7 +2916,9 @@ async function routeSnapshot(
       publishPublic: true,
     });
   } catch (error) {
-    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    if (!existingSnapshot) {
+      await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    }
     throw error;
   }
 
@@ -2988,6 +2991,7 @@ async function routeMarkdownDocumentSnapshot(
     return json(validation.body, validation.status);
   }
 
+  const snapshotAlreadyExisted = (await env.NOTEBOOK_SNAPSHOTS.head(key)) !== null;
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
@@ -3009,7 +3013,9 @@ async function routeMarkdownDocumentSnapshot(
       publishPublic: true,
     });
   } catch (error) {
-    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    if (!snapshotAlreadyExisted) {
+      await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    }
     throw error;
   }
 

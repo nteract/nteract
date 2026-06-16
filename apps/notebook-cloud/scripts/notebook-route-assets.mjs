@@ -12,7 +12,11 @@ const MODULE_PRELOAD_STEMS = [
 ];
 const STYLE_PRELOAD_STEMS = ["notebook-route", "katex"];
 const REQUIRED_MODULE_PRELOAD_STEMS = ["notebook-route", "katex.min"];
-const REQUIRED_STYLE_PRELOAD_STEMS = ["notebook-route", "katex"];
+// Route CSS is optional here because Vite may fold route-owned styles into the
+// primary notebook-cloud-viewer.css asset. That primary stylesheet is guarded by
+// viewer-css-assets.mjs; if Vite splits notebook-route.css again, we still
+// collect and preload it through STYLE_PRELOAD_STEMS.
+const REQUIRED_STYLE_PRELOAD_STEMS = ["katex"];
 
 export async function collectNotebookRouteAssets(
   assetsDirUrl,

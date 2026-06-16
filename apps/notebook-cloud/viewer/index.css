@@ -2203,8 +2203,7 @@ body {
 
 .cloud-dashboard-create-actions button,
 .cloud-dashboard-button,
-.cloud-dashboard-secondary-action,
-.cloud-markdown-toolbar-actions > button {
+.cloud-dashboard-secondary-action {
   display: inline-flex;
   gap: 0.375rem;
   align-items: center;
@@ -2225,138 +2224,38 @@ body {
 }
 
 .cloud-markdown-shell {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  min-height: 100vh;
   background: var(--background);
   color: var(--foreground);
 }
 
-.cloud-markdown-toolbar {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 0.75rem;
-  align-items: center;
-  border-bottom: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
-  padding: 0.75rem 1rem;
+.cloud-markdown-room-toolbar [data-slot="notebook-document-header-presence"] {
+  flex-basis: min(28rem, 48vw);
+  max-width: min(42rem, 52vw);
 }
 
-.cloud-markdown-toolbar h1,
-.cloud-markdown-toolbar p {
-  margin: 0;
-}
-
-.cloud-markdown-toolbar h1 {
-  overflow: hidden;
-  font-size: 1rem;
-  font-weight: 700;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cloud-markdown-home-link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
-  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
-  border-radius: 6px;
-  color: inherit;
-}
-
-.cloud-markdown-toolbar-actions {
-  display: inline-flex;
-  gap: 0.375rem;
-}
-
-.cloud-markdown-toolbar-actions > button[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--foreground) 28%, transparent);
-  background: color-mix(in srgb, var(--foreground) 9%, var(--background));
-}
-
-.cloud-markdown-notice {
-  border-bottom: 1px solid color-mix(in srgb, #b45309 18%, transparent);
-  padding: 0.5rem 1rem;
-  color: color-mix(in srgb, #92400e 78%, var(--foreground));
-  background: color-mix(in srgb, #f59e0b 8%, var(--background));
-  font-size: 0.8125rem;
-  line-height: 1.4;
-}
-
-.cloud-markdown-notice[data-kind="published"] {
-  border-bottom-color: color-mix(in srgb, #047857 18%, transparent);
-  color: color-mix(in srgb, #047857 72%, var(--foreground));
-  background: color-mix(in srgb, #10b981 7%, var(--background));
-}
-
-.cloud-markdown-notice[data-kind="error"] {
-  border-bottom-color: color-mix(in srgb, #b91c1c 20%, transparent);
-  color: color-mix(in srgb, #b91c1c 78%, var(--foreground));
-  background: color-mix(in srgb, #ef4444 7%, var(--background));
-}
-
-.cloud-markdown-workspace {
-  display: grid;
-  grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
-  min-height: 0;
+.cloud-markdown-title-group {
+  max-width: min(42rem, 56vw);
 }
 
 .cloud-markdown-rail {
-  min-height: 0;
-  border-right: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
-  padding: 0.75rem;
-  overflow: auto;
+  height: 100%;
 }
 
-.cloud-markdown-rail-title {
-  display: flex;
-  gap: 0.375rem;
-  align-items: center;
-  margin-bottom: 0.5rem;
-  color: color-mix(in srgb, var(--foreground) 62%, transparent);
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
+.cloud-markdown-notices {
+  --cloud-notice-height: 3rem;
 }
 
 .cloud-markdown-stage {
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-  padding: clamp(1rem, 3vw, 2rem);
-}
-
-.cloud-markdown-editor,
-.cloud-markdown-preview {
-  width: min(100%, 52rem);
-  margin: 0 auto;
-}
-
-.cloud-markdown-editor {
-  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
-  border-radius: 8px;
   overflow: hidden;
 }
 
-@media (max-width: 760px) {
-  .cloud-markdown-toolbar {
-    grid-template-columns: auto minmax(0, 1fr);
+@media (max-width: 599.98px) {
+  .cloud-markdown-room-toolbar [data-slot="notebook-document-header-presence"] {
+    flex-basis: auto;
+    max-width: none;
   }
 
-  .cloud-markdown-toolbar-actions {
-    grid-column: 1 / -1;
-    justify-self: start;
-  }
-
-  .cloud-markdown-workspace {
-    grid-template-columns: 1fr;
-  }
-
-  .cloud-markdown-rail {
-    max-height: 14rem;
-    border-right: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+  .cloud-markdown-title-group {
+    max-width: none;
   }
 }

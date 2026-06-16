@@ -1991,6 +1991,65 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(new Uint8Array(await anonymousRead.arrayBuffer()), snapshotBytes);
   });
 
+  it("preserves an existing Markdown snapshot object if revision recording fails", async () => {
+    const env = fakeEnv();
+    env.DB.markdownDocuments.set("markdown-publish-existing", {
+      id: "markdown-publish-existing",
+      owner_principal: "user:dev:alice",
+      title: "Existing Markdown",
+      body_doc_id: "markdown-publish-existing",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      latest_revision_id: "previous-revision",
+    });
+    env.DB.markdownDocumentAcl.push({
+      document_id: "markdown-publish-existing",
+      subject_kind: "principal",
+      subject: "user:dev:alice",
+      scope: "owner",
+      created_at: "2026-06-15T00:00:00.000Z",
+      updated_at: "2026-06-15T00:00:00.000Z",
+      created_by_actor_label: "user:dev:alice/browser:tab",
+    });
+
+    const handle = MarkdownHandle.create(
+      "markdown-publish-existing",
+      "Existing Markdown",
+      "user:dev:alice/browser:test",
+    );
+    handle.replace_body_for_import("# Existing Markdown\n\nAlready published.");
+    const snapshotBytes = handle.save();
+    const bodyHeadsHash = await markdownTestHeadsDigest(handle.get_heads_hex());
+    handle.free();
+
+    const key = markdownDocumentSnapshotKey("markdown-publish-existing", bodyHeadsHash);
+    await env.NOTEBOOK_SNAPSHOTS.put(key, snapshotBytes, {
+      httpMetadata: {
+        contentType: "application/x-automerge",
+        cacheControl: "public, max-age=31536000, immutable",
+      },
+      customMetadata: {
+        document_id: "markdown-publish-existing",
+        body_heads_hash: bodyHeadsHash,
+      },
+    });
+    assert.equal((await env.NOTEBOOK_SNAPSHOTS.head(key)) !== null, true);
+    env.DB.failNextBatch = new Error("forced revision failure");
+
+    await assert.rejects(
+      ownerPut(env, `/api/m/markdown-publish-existing/snapshots/${bodyHeadsHash}`, snapshotBytes),
+      /forced revision failure/,
+    );
+
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.has(key), true);
+    assert.deepEqual(env.NOTEBOOK_SNAPSHOTS.headKeys.slice(-1), [key]);
+    assert.equal(
+      env.DB.markdownDocuments.get("markdown-publish-existing")?.latest_revision_id,
+      "previous-revision",
+    );
+    assert.equal(env.DB.markdownDocumentRevisions.length, 0);
+  });
+
   it("routes hosted Markdown document sync through the Markdown room binding", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "markdown-ws-user" });
     let forwardedRequest: Request | undefined;
@@ -6724,6 +6783,7 @@ class FakeD1 implements D1Database {
   readonly workstationCredentials = new Map<string, WorkstationCredentialRow>();
   readonly batchSizes: number[] = [];
   afterBlockedOwnerDelete?: () => void;
+  failNextBatch?: Error;
 
   prepare(query: string): D1PreparedStatement {
     return new FakeD1Statement(this, query);
@@ -6735,6 +6795,11 @@ class FakeD1 implements D1Database {
 
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
     this.batchSizes.push(statements.length);
+    if (this.failNextBatch) {
+      const error = this.failNextBatch;
+      this.failNextBatch = undefined;
+      throw error;
+    }
     const results: D1Result<T>[] = [];
     for (const statement of statements) {
       results.push(await statement.run<T>());
@@ -8281,6 +8346,7 @@ function okResult<T = unknown>(results?: T[], meta: Record<string, unknown> = {}
 class FakeR2Bucket implements R2Bucket {
   readonly objects = new Map<string, FakeR2Object>();
   readonly getKeys: string[] = [];
+  readonly headKeys: string[] = [];
 
   async get(key: string): Promise<R2ObjectBody | null> {
     this.getKeys.push(key);
@@ -8288,6 +8354,7 @@ class FakeR2Bucket implements R2Bucket {
   }
 
   async head(key: string): Promise<R2Object | null> {
+    this.headKeys.push(key);
     return this.objects.get(key) ?? null;
   }
 

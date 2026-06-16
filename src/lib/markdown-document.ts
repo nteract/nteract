@@ -6,7 +6,7 @@ import {
 } from "./markdown-projection";
 
 export type MarkdownDocumentAccessLevel = "owner" | "editor" | "viewer" | "none";
-export type MarkdownDocumentMode = "read" | "source";
+export type MarkdownDocumentMode = "view" | "edit";
 
 export interface MarkdownDocumentSnapshot {
   id: string;
@@ -69,7 +69,7 @@ export function projectMarkdownDocument(
   const access = normalizeMarkdownDocumentAccess(input.access);
   const body = input.body ?? "";
   const canEdit = access === "owner" || access === "editor";
-  const mode = canEdit ? (input.requestedMode ?? "read") : "read";
+  const mode = canEdit ? (input.requestedMode ?? "view") : "view";
   const markdownPlan = projectMarkdownPlan(body);
   const publishedRevisionId = input.publishedRevisionId ?? null;
 
