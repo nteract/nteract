@@ -543,12 +543,10 @@ test("Markdown documents trust app sessions before surfacing sign-in chrome", ()
 
   assert.match(
     markdownListText,
-    /const appSessionLoading = appSessionStatus\.status === "loading"/,
+    /projectHostedDocumentAuthState\(authState, \{[\s\S]*appSession: appSessionStatus\.session,[\s\S]*appSessionLoading: appSessionStatus\.status === "loading"/,
   );
-  assert.match(
-    markdownListText,
-    /shouldShowCloudHeaderSignIn\(authState, \{[\s\S]*appSessionLoading,[\s\S]*hasAppSession,[\s\S]*\}\)/,
-  );
+  assert.match(markdownListText, /canFetchCatalog: canFetchDocumentList/);
+  assert.match(markdownListText, /showSignIn/);
   assert.match(markdownListText, /\{showSignIn \? \([\s\S]*<CloudNotebookSignInButton/);
   assert.match(markdownRouteText, /hasAppSession: Boolean\(appSessionStatus\.session\)/);
   assert.match(

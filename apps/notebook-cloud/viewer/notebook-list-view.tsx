@@ -34,6 +34,7 @@ import {
   projectCloudNotebookDashboard,
   type CloudNotebookListItem,
 } from "./notebook-dashboard";
+import { projectHostedDocumentAuthState } from "./hosted-document-auth";
 import {
   clearCachedCloudNotebookList,
   readCachedCloudNotebookList,
@@ -76,11 +77,16 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   const [renameState, setRenameState] = useState<CloudNotebookRenameState | null>(null);
   const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
-  const hasExplicitAuth = authState.mode === "dev" || authState.mode === "oidc";
-  const hasAppSession = Boolean(appSessionStatus.session);
-  const signedIn = hasExplicitAuth || hasAppSession;
-  const canFetchNotebookList = authState.mode === "dev" || hasAppSession;
-  const waitingForAppSession = authState.mode === "oidc" && !hasAppSession;
+  const hostedAuth = projectHostedDocumentAuthState(authState, {
+    appSession: appSessionStatus.session,
+    appSessionLoading: appSessionStatus.status === "loading",
+  });
+  const {
+    canFetchCatalog: canFetchNotebookList,
+    hasAppSession,
+    signedIn,
+    waitingForAppSession,
+  } = hostedAuth;
   const dashboardModel = useMemo(
     () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
     [listState],

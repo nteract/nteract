@@ -4,7 +4,6 @@ import { useTheme } from "@/hooks/useTheme";
 import {
   clearCloudPrototypeDevAuth,
   fetchWithCloudPrototypeAuth,
-  shouldShowCloudHeaderSignIn,
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
 import { clearCloudAppSession, establishCloudAppSession } from "./app-session";
@@ -18,6 +17,7 @@ import {
   isCloudMarkdownDocumentListItem,
   type CloudMarkdownDocumentListItem,
 } from "./markdown-document-dashboard";
+import { projectHostedDocumentAuthState } from "./hosted-document-auth";
 import type {
   CloudMarkdownDocumentCreateResponse,
   CloudMarkdownDocumentListBootstrap,
@@ -66,16 +66,17 @@ export function CloudMarkdownDocumentListView({
   const [createTitle, setCreateTitle] = useState(() => defaultMarkdownDocumentTitle());
   const [createState, setCreateState] = useState<"idle" | "starting">("idle");
   const [createError, setCreateError] = useState<string | null>(null);
-  const hasExplicitAuth = authState.mode === "dev" || authState.mode === "oidc";
-  const hasAppSession = Boolean(appSessionStatus.session);
-  const signedIn = hasExplicitAuth || hasAppSession;
-  const canFetchDocumentList = authState.mode === "dev" || hasAppSession;
-  const appSessionLoading = appSessionStatus.status === "loading";
-  const waitingForAppSession = appSessionLoading || (authState.mode === "oidc" && !hasAppSession);
-  const showSignIn = shouldShowCloudHeaderSignIn(authState, {
-    appSessionLoading,
-    hasAppSession,
+  const hostedAuth = projectHostedDocumentAuthState(authState, {
+    appSession: appSessionStatus.session,
+    appSessionLoading: appSessionStatus.status === "loading",
   });
+  const {
+    canFetchCatalog: canFetchDocumentList,
+    hasAppSession,
+    showSignIn,
+    signedIn,
+    waitingForAppSession,
+  } = hostedAuth;
   const documents = listState.kind === "ready" ? listState.documents : [];
 
   useEffect(() => {

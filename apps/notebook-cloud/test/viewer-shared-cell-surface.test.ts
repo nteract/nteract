@@ -735,8 +735,9 @@ test("cloud notebook list waits for app-session cookies before catalog fetches",
 
   assert.match(
     sourceText,
-    /const canFetchNotebookList = authState\.mode === "dev" \|\| hasAppSession;/,
+    /projectHostedDocumentAuthState\(authState, \{[\s\S]*appSession: appSessionStatus\.session,[\s\S]*appSessionLoading: appSessionStatus\.status === "loading"/,
   );
+  assert.match(sourceText, /canFetchCatalog: canFetchNotebookList/);
   assert.match(
     sourceText,
     /if \(!canFetchNotebookList\) \{[\s\S]*if \(waitingForAppSession\) \{[\s\S]*\{ kind: "loading" \}[\s\S]*return;/,
