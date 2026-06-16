@@ -63,6 +63,12 @@ const MARKDOWN_PERSISTENCE_SAVE_DELAY_MS = 500;
 const MARKDOWN_INSTANT_PAINT_READ_TIMEOUT_MS = 2_000;
 const MARKDOWN_INSTANT_PAINT_ACTOR_LABEL = "system:markdown-instant-paint/browser:local";
 
+export function shouldLoadMarkdownInstantPaintSnapshot(config: {
+  bootstrap?: { render_seed?: { body?: unknown } | null } | null;
+}): boolean {
+  return typeof config.bootstrap?.render_seed?.body !== "string";
+}
+
 export async function loadMarkdownDocumentInstantPaintSnapshot({
   authState,
   config,

@@ -186,32 +186,34 @@ export function MarkdownDocumentRoute({
         if (disposed) return;
         const title = catalog.document.title?.trim() || "Untitled Markdown";
         const latestRevisionId = catalog.document.latest_revision_id;
-        void liveSyncModule
-          .loadMarkdownDocumentInstantPaintSnapshot({
-            authState,
-            config,
-            appSession: appSessionStatus.session,
-            title,
-            onError: (error) => {
-              console.warn("[notebook-cloud] Markdown instant paint failed", error);
-            },
-          })
-          .then((snapshot) => {
-            if (!snapshot || disposed || liveSnapshotSeenRef.current) {
-              return;
-            }
-            setRouteState({
-              kind: "ready",
-              title: snapshot.title,
-              body: snapshot.body,
-              bodyReady: snapshot.bodyReady,
-              markdownPlan: null,
-              scope: catalog.document.scope,
-              connectionStatus: connectionStatusRef.current,
-              liveReady: false,
-              latestRevisionId,
+        if (liveSyncModule.shouldLoadMarkdownInstantPaintSnapshot(config)) {
+          void liveSyncModule
+            .loadMarkdownDocumentInstantPaintSnapshot({
+              authState,
+              config,
+              appSession: appSessionStatus.session,
+              title,
+              onError: (error) => {
+                console.warn("[notebook-cloud] Markdown instant paint failed", error);
+              },
+            })
+            .then((snapshot) => {
+              if (!snapshot || disposed || liveSnapshotSeenRef.current) {
+                return;
+              }
+              setRouteState({
+                kind: "ready",
+                title: snapshot.title,
+                body: snapshot.body,
+                bodyReady: snapshot.bodyReady,
+                markdownPlan: null,
+                scope: catalog.document.scope,
+                connectionStatus: connectionStatusRef.current,
+                liveReady: false,
+                latestRevisionId,
+              });
             });
-          });
+        }
         controller = await liveSyncModule.startMarkdownDocumentLiveSync({
           authState,
           config,

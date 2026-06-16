@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { markdownConnectionCopy } from "../viewer/markdown-document-connection-copy";
-import { selectMarkdownInstantPaintRecord } from "../viewer/markdown-document-live-sync";
+import {
+  selectMarkdownInstantPaintRecord,
+  shouldLoadMarkdownInstantPaintSnapshot,
+} from "../viewer/markdown-document-live-sync";
 
 describe("Markdown document route connection copy", () => {
   it("keeps seeded content stable while live sync connects", () => {
@@ -25,6 +28,28 @@ describe("Markdown document route connection copy", () => {
 });
 
 describe("Markdown document instant paint persistence selection", () => {
+  it("does not let local instant paint displace a server body seed", () => {
+    assert.equal(
+      shouldLoadMarkdownInstantPaintSnapshot({
+        bootstrap: {
+          render_seed: {
+            body: "server body",
+          },
+        },
+      }),
+      false,
+    );
+    assert.equal(shouldLoadMarkdownInstantPaintSnapshot({ bootstrap: null }), true);
+    assert.equal(
+      shouldLoadMarkdownInstantPaintSnapshot({
+        bootstrap: {
+          render_seed: null,
+        },
+      }),
+      true,
+    );
+  });
+
   it("selects only same-principal Markdown document snapshots", () => {
     const selected = selectMarkdownInstantPaintRecord(
       [
