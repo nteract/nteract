@@ -20,11 +20,16 @@ import type { CloudViewerAuthConfig, ViewerRuntimeState } from "./cloud-viewer-t
 import { cloudNotebookRouteTitleFromPathname } from "./cloud-notebook-title-state";
 import { CloudHomeView } from "./home-view";
 import { CloudMarkdownDocumentListView } from "./markdown-document-list-view";
-import { MarkdownDocumentRoute } from "./markdown-document-route";
 import { CloudNotebookListView } from "./notebook-list-view";
 import { loadNotebookRouteModule } from "./notebook-route-preload";
 import { OidcCallbackView } from "./oidc-callback-view";
 import "./index.css";
+
+const MarkdownDocumentRoute = lazy(() =>
+  import("./markdown-document-route").then((module) => ({
+    default: module.MarkdownDocumentRoute,
+  })),
+);
 
 const NotebookRoute = lazy(() =>
   loadNotebookRouteModule().then((module) => ({ default: module.NotebookRoute })),
@@ -83,7 +88,20 @@ function App() {
     if (!markdownConfig) {
       return <ViewerStartupError message="Unable to start Markdown document: missing config" />;
     }
-    return <MarkdownDocumentRoute config={markdownConfig} authConfig={authConfig} />;
+    return (
+      <Suspense
+        fallback={
+          <ViewerStartupLoading
+            title={markdownDocumentStartupTitle(markdownConfig)}
+            status="Loading"
+            homeHref="/m"
+            homeAriaLabel="Open Markdown documents"
+          />
+        }
+      >
+        <MarkdownDocumentRoute config={markdownConfig} authConfig={authConfig} />
+      </Suspense>
+    );
   }
 
   if (!runtimeState) {
@@ -119,19 +137,29 @@ function ViewerStartupError({ message }: { message: string }) {
   );
 }
 
-function ViewerStartupLoading({ title }: { title: string }) {
+function ViewerStartupLoading({
+  homeAriaLabel = "Open notebooks dashboard",
+  homeHref = "/n",
+  status = "Opening notebook",
+  title,
+}: {
+  homeAriaLabel?: string;
+  homeHref?: string;
+  status?: string;
+  title: string;
+}) {
   return (
     <main className="cloud-startup-shell" aria-busy="true">
       <header className="cloud-startup-toolbar">
         <div className="cloud-notebook-title-group">
-          <a className="cloud-notebook-home-link" href="/n" aria-label="Open notebooks dashboard">
+          <a className="cloud-notebook-home-link" href={homeHref} aria-label={homeAriaLabel}>
             <House aria-hidden="true" />
           </a>
           <div className="cloud-notebook-title">
             <h1 className="cloud-startup-title">{title}</h1>
             <p className="cloud-startup-status" role="status">
               <Loader2 aria-hidden="true" />
-              Opening notebook
+              {status}
             </p>
           </div>
         </div>
@@ -156,6 +184,12 @@ function ViewerStartupLoading({ title }: { title: string }) {
       </div>
     </main>
   );
+}
+
+function markdownDocumentStartupTitle(
+  config: ReturnType<typeof loadMarkdownDocumentConfig> | null,
+): string {
+  return config?.bootstrap?.title?.trim() || "Markdown document";
 }
 
 createRoot(requireElement("#root")).render(

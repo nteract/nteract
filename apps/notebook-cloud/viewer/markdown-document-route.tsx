@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { House, ListTree } from "lucide-react";
 import type { EditorView } from "@codemirror/view";
 import type { ConnectionStatus, NotebookOutlineItem } from "runtimed";
 import { notebookRouteSegmentTitle } from "../src/notebook-route-title";
-import {
-  CodeMirrorEditor,
-  externalChangeAnnotation,
-  type CodeMirrorEditorRef,
-} from "@/components/editor/codemirror-editor";
+import type { CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
 import {
   NotebookDocumentShell,
@@ -35,16 +31,34 @@ import {
 import { cloudNotebookTitleClassNames } from "./cloud-notebook-title";
 import type { CloudMarkdownDocumentConfig, CloudViewerAuthConfig } from "./cloud-viewer-types";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
-import {
-  startMarkdownDocumentLiveSync,
-  type MarkdownDocumentLiveSyncController,
-} from "./markdown-document-live-sync";
+import type { MarkdownDocumentLiveSyncController } from "./markdown-document-live-sync";
 import { MarkdownSharingControls } from "./markdown-sharing-controls";
 import {
   useCloudAppSessionBridge,
   useCloudAppSessionStatus,
   useCloudPrototypeAuth,
 } from "./use-cloud-auth";
+import { loadSupplementalViewerCss } from "./supplemental-css";
+
+type MarkdownEditorModule = typeof import("@/components/editor/codemirror-editor");
+type MarkdownDocumentLiveSyncModule = typeof import("./markdown-document-live-sync");
+
+const MarkdownCodeMirrorEditor = lazy(() =>
+  loadMarkdownEditorModule().then((module) => ({ default: module.CodeMirrorEditor })),
+);
+
+let markdownEditorModulePromise: Promise<MarkdownEditorModule> | null = null;
+let markdownDocumentLiveSyncModulePromise: Promise<MarkdownDocumentLiveSyncModule> | null = null;
+
+function loadMarkdownEditorModule(): Promise<MarkdownEditorModule> {
+  markdownEditorModulePromise ??= import("@/components/editor/codemirror-editor");
+  return markdownEditorModulePromise;
+}
+
+function loadMarkdownDocumentLiveSyncModule(): Promise<MarkdownDocumentLiveSyncModule> {
+  markdownDocumentLiveSyncModulePromise ??= import("./markdown-document-live-sync");
+  return markdownDocumentLiveSyncModulePromise;
+}
 
 interface MarkdownCatalogResponse {
   document: {
@@ -114,6 +128,10 @@ export function MarkdownDocumentRoute({
   const connectionStatusRef = useRef<ConnectionStatus>("connecting");
 
   useEffect(() => {
+    loadSupplementalViewerCss();
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
@@ -141,12 +159,17 @@ export function MarkdownDocumentRoute({
             ? { ...current, bodyReady: false, connectionStatus: "connecting" }
             : initialMarkdownDocumentRouteState(config),
         );
-        const catalog =
-          markdownCatalogFromBootstrap(config) ?? (await fetchMarkdownCatalog(config, authState));
+        const catalogPromise = Promise.resolve(
+          markdownCatalogFromBootstrap(config) ?? fetchMarkdownCatalog(config, authState),
+        );
+        const [catalog, liveSyncModule] = await Promise.all([
+          catalogPromise,
+          loadMarkdownDocumentLiveSyncModule(),
+        ]);
         if (disposed) return;
         const title = catalog.document.title?.trim() || "Untitled Markdown";
         const latestRevisionId = catalog.document.latest_revision_id;
-        controller = await startMarkdownDocumentLiveSync({
+        controller = await liveSyncModule.startMarkdownDocumentLiveSync({
           authState,
           config,
           appSession: appSessionStatus.session,
@@ -293,10 +316,19 @@ export function MarkdownDocumentRoute({
     if (currentBody === routeState.body) {
       return;
     }
-    editor.dispatch({
-      changes: { from: 0, to: editor.state.doc.length, insert: routeState.body },
-      annotations: externalChangeAnnotation.of(true),
+    let cancelled = false;
+    void loadMarkdownEditorModule().then(({ externalChangeAnnotation }) => {
+      if (cancelled || editorRef.current?.getEditor() !== editor) {
+        return;
+      }
+      editor.dispatch({
+        changes: { from: 0, to: editor.state.doc.length, insert: routeState.body },
+        annotations: externalChangeAnnotation.of(true),
+      });
     });
+    return () => {
+      cancelled = true;
+    };
   }, [mode, routeState]);
 
   if (routeState.kind === "error" || !projection) {
@@ -432,15 +464,23 @@ export function MarkdownDocumentRoute({
     >
       <div className="markdown-document-scroll" data-mode={activeMode}>
         {activeMode === "edit" && canEdit ? (
-          <CodeMirrorEditor
-            ref={editorRef}
-            key={config.documentId}
-            initialValue={projection.body}
-            language="markdown"
-            lineWrapping
-            className="markdown-document-editor"
-            onValueChange={onEditorValueChange}
-          />
+          <Suspense
+            fallback={
+              <div className="cloud-state markdown-document-editor" data-kind="loading">
+                Loading editor.
+              </div>
+            }
+          >
+            <MarkdownCodeMirrorEditor
+              ref={editorRef}
+              key={config.documentId}
+              initialValue={projection.body}
+              language="markdown"
+              lineWrapping
+              className="markdown-document-editor"
+              onValueChange={onEditorValueChange}
+            />
+          </Suspense>
         ) : projection.markdownPlan ? (
           <ProjectedMarkdownView
             plan={projection.markdownPlan}

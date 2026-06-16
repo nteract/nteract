@@ -181,6 +181,8 @@ const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/renderer-assets/";
 const DEFAULT_RUNTIMED_WASM_BASE_PATH = "/assets/";
 const VIEWER_RUNTIME_WASM_ASSET_MANIFEST_PATH = "/assets/runtime-wasm-assets.json";
 const VIEWER_NOTEBOOK_ROUTE_ASSET_MANIFEST_PATH = "/assets/notebook-route-assets.json";
+const VIEWER_MARKDOWN_DOCUMENT_ROUTE_ASSET_MANIFEST_PATH =
+  "/assets/markdown-document-route-assets.json";
 const VIEWER_RUNTIMED_WASM_MODULE_NAME = "runtimed_wasm.js";
 const VIEWER_RUNTIMED_WASM_NAME = "runtimed_wasm_bg.wasm";
 const VIEWER_RENDERER_SIDECAR_MANIFEST_PATH = "/assets/renderer-sidecar-assets.json";
@@ -224,6 +226,10 @@ interface RendererSidecarAssetNames {
 }
 
 const notebookRouteAssetNamesCache = new WeakMap<
+  WorkerAssets,
+  Promise<ViewerNotebookRouteAssets>
+>();
+const markdownDocumentRouteAssetNamesCache = new WeakMap<
   WorkerAssets,
   Promise<ViewerNotebookRouteAssets>
 >();
@@ -5468,7 +5474,7 @@ async function markdownDocumentViewer(
     routeTitleSegment,
   );
   const runtimeWasmAssetsPromise = runtimeWasmAssetNames(env);
-  const routeAssetsPromise = notebookRouteAssetNames(env);
+  const routeAssetsPromise = markdownDocumentRouteAssetNames(env);
   const sessionPromise = readCloudAppSession(env, request).catch(() => null);
   const bootstrapPromise = sessionPromise.then((session) =>
     markdownDocumentViewerBootstrap(env, documentId, session),
@@ -5500,6 +5506,7 @@ async function markdownDocumentViewer(
     request,
     viewerShell(shellMetadata, env, authConfigForRequest(request, env), config, null, {
       notebookRouteAssets: routeAssets,
+      notebookRouteStyleHint: "prefetch",
       runtimedWasmModulePath: config.runtimedWasmModulePath,
       runtimedWasmPath: config.runtimedWasmPath,
     }),
@@ -5936,13 +5943,41 @@ async function notebookRouteAssetNames(env: Env): Promise<ViewerNotebookRouteAss
   return cached;
 }
 
+async function markdownDocumentRouteAssetNames(env: Env): Promise<ViewerNotebookRouteAssets> {
+  const assets = env.ASSETS;
+  if (!assets) {
+    return defaultNotebookRouteAssetNames();
+  }
+
+  let cached = markdownDocumentRouteAssetNamesCache.get(assets);
+  if (!cached) {
+    cached = readViewerRouteAssetNames(
+      assets,
+      VIEWER_MARKDOWN_DOCUMENT_ROUTE_ASSET_MANIFEST_PATH,
+      "viewer.markdown_document_route_manifest",
+    );
+    markdownDocumentRouteAssetNamesCache.set(assets, cached);
+  }
+  return cached;
+}
+
 async function readNotebookRouteAssetNames(
   assets: WorkerAssets,
 ): Promise<ViewerNotebookRouteAssets> {
+  return readViewerRouteAssetNames(
+    assets,
+    VIEWER_NOTEBOOK_ROUTE_ASSET_MANIFEST_PATH,
+    "viewer.notebook_route_manifest",
+  );
+}
+
+async function readViewerRouteAssetNames(
+  assets: WorkerAssets,
+  manifestPath: string,
+  logEventPrefix: string,
+): Promise<ViewerNotebookRouteAssets> {
   try {
-    const manifestRequest = new Request(
-      `https://notebook-cloud.local${VIEWER_NOTEBOOK_ROUTE_ASSET_MANIFEST_PATH}`,
-    );
+    const manifestRequest = new Request(`https://notebook-cloud.local${manifestPath}`);
     const response = await assets.fetch(manifestRequest);
     if (!response.ok) {
       return defaultNotebookRouteAssetNames();
@@ -5951,12 +5986,12 @@ async function readNotebookRouteAssetNames(
     if (isNotebookRouteAssetManifest(manifest)) {
       return manifest;
     }
-    cloudLog("warn", "viewer.notebook_route_manifest.invalid", {
-      manifest_path: VIEWER_NOTEBOOK_ROUTE_ASSET_MANIFEST_PATH,
+    cloudLog("warn", `${logEventPrefix}.invalid`, {
+      manifest_path: manifestPath,
     });
   } catch (error) {
-    cloudLog("warn", "viewer.notebook_route_manifest.failed", {
-      manifest_path: VIEWER_NOTEBOOK_ROUTE_ASSET_MANIFEST_PATH,
+    cloudLog("warn", `${logEventPrefix}.failed`, {
+      manifest_path: manifestPath,
       error: errorMessage(error),
     });
   }

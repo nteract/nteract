@@ -380,14 +380,14 @@ describe("HTML script serialization", () => {
       fakeEnv({
         ASSETS: fakeViewerAssetManifests(
           {
-            notebookRoute: {
+            markdownDocumentRoute: {
               modulepreload: [
-                "notebook-route.0123456789abcdef.js",
+                "markdown-document-route.0123456789abcdef.js",
+                "markdown-projection.0123456789abcdef.js",
                 "MarkdownText.0123456789abcdef.js",
-                "markdown.0123456789abcdef.js",
                 "katex.min.0123456789abcdef.js",
               ],
-              stylepreload: ["notebook-route.0123456789abcdef.css", "katex.0123456789abcdef.css"],
+              stylepreload: ["katex.0123456789abcdef.css"],
             },
           },
           seenPaths,
@@ -398,14 +398,22 @@ describe("HTML script serialization", () => {
     const html = await response.text();
 
     assert.equal(response.status, 200);
-    assert.ok(seenPaths.includes("/assets/notebook-route-assets.json"));
+    assert.ok(seenPaths.includes("/assets/markdown-document-route-assets.json"));
+    assert.ok(!seenPaths.includes("/assets/notebook-route-assets.json"));
     assert.match(html, /<title>nteract Markdown: Research Plan<\/title>/);
-    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-route\.0123456789abcdef\.js"/);
+    assert.match(
+      html,
+      /rel="modulepreload" href="\/assets\/markdown-document-route\.0123456789abcdef\.js"/,
+    );
+    assert.match(
+      html,
+      /rel="modulepreload" href="\/assets\/markdown-projection\.0123456789abcdef\.js"/,
+    );
     assert.match(html, /rel="modulepreload" href="\/assets\/MarkdownText\.0123456789abcdef\.js"/);
-    assert.match(html, /rel="modulepreload" href="\/assets\/markdown\.0123456789abcdef\.js"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/katex\.min\.0123456789abcdef\.js"/);
-    assert.match(html, /rel="stylesheet" href="\/assets\/notebook-route\.0123456789abcdef\.css"/);
-    assert.match(html, /rel="stylesheet" href="\/assets\/katex\.0123456789abcdef\.css"/);
+    assert.match(html, /rel="prefetch" href="\/assets\/katex\.0123456789abcdef\.css" as="style"/);
+    assert.doesNotMatch(html, /rel="stylesheet" href="\/assets\/katex\.0123456789abcdef\.css"/);
+    assert.doesNotMatch(html, /notebook-route\.0123456789abcdef/);
     assert.match(html, /"documentKind":"markdown"/);
     assert.match(html, /"documentId":"doc-123"/);
     assert.match(html, /"catalogEndpoint":"\/api\/m\/doc-123"/);
@@ -674,6 +682,9 @@ function fakeEnv(overrides: Partial<Env> = {}): Env {
 function fakeViewerAssetManifests(
   manifests: {
     notebookRoute?: { modulepreload: string[]; stylepreload: string[] } | Record<string, unknown>;
+    markdownDocumentRoute?:
+      | { modulepreload: string[]; stylepreload: string[] }
+      | Record<string, unknown>;
     runtimeWasm?: { module: string; wasm: string };
     rendererSidecar?: { js: string; css: string; siftWasm: string } | Record<string, unknown>;
   },
@@ -695,6 +706,14 @@ function fakeViewerAssetManifests(
       }
       if (manifests.notebookRoute && pathname === "/assets/notebook-route-assets.json") {
         return new Response(JSON.stringify(manifests.notebookRoute), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (
+        manifests.markdownDocumentRoute &&
+        pathname === "/assets/markdown-document-route-assets.json"
+      ) {
+        return new Response(JSON.stringify(manifests.markdownDocumentRoute), {
           headers: { "Content-Type": "application/json" },
         });
       }

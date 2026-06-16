@@ -3,7 +3,10 @@ import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { copyRendererSidecarAssets } from "./renderer-sidecar-assets.mjs";
 import { copyRuntimeWasmAssets } from "./runtime-wasm-assets.mjs";
-import { writeNotebookRouteAssetsManifest } from "./notebook-route-assets.mjs";
+import {
+  writeMarkdownDocumentRouteAssetsManifest,
+  writeNotebookRouteAssetsManifest,
+} from "./notebook-route-assets.mjs";
 import { writeViewerCssManifest } from "./viewer-css-assets.mjs";
 
 const siftWasmUrl = new URL("../../../crates/sift-wasm/pkg/sift_wasm_bg.wasm", import.meta.url);
@@ -57,6 +60,8 @@ const { manifest, manifestUrl } = await writeViewerCssManifest(
 );
 const { manifest: notebookRouteManifest, manifestUrl: notebookRouteManifestUrl } =
   await writeNotebookRouteAssetsManifest(new URL("../dist/assets/", import.meta.url));
+const { manifest: markdownDocumentRouteManifest, manifestUrl: markdownDocumentRouteManifestUrl } =
+  await writeMarkdownDocumentRouteAssetsManifest(new URL("../dist/assets/", import.meta.url));
 
 for (const copy of rendererSidecarAssets.copies) {
   console.log(`copied ${fileURLToPath(copy.sourceUrl)} -> ${fileURLToPath(copy.outputUrl)}`);
@@ -75,6 +80,10 @@ console.log(`wrote viewer CSS manifest ${fileURLToPath(manifestUrl)}`);
 console.log(`viewer CSS assets: ${JSON.stringify(manifest)}`);
 console.log(`wrote notebook route asset manifest ${fileURLToPath(notebookRouteManifestUrl)}`);
 console.log(`notebook route assets: ${JSON.stringify(notebookRouteManifest)}`);
+console.log(
+  `wrote Markdown document route asset manifest ${fileURLToPath(markdownDocumentRouteManifestUrl)}`,
+);
+console.log(`Markdown document route assets: ${JSON.stringify(markdownDocumentRouteManifest)}`);
 
 async function assertExists(url) {
   try {

@@ -489,6 +489,15 @@ test("cloud viewer defers supplemental CSS loading until the notebook surface mo
     sourceText,
     /function CloudNotebookProviders[\s\S]*useEffect\(\(\) => \{\s*loadSupplementalViewerCss\(\);\s*\}, \[\]\);/,
   );
+
+  const markdownRouteText = readFileSync(
+    new URL("../viewer/markdown-document-route.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    markdownRouteText,
+    /useEffect\(\(\) => \{\s*loadSupplementalViewerCss\(\);\s*\}, \[\]\);/,
+  );
 });
 
 test("cloud notebook shell keeps the rail and toolbar outside the cell scroller", () => {
