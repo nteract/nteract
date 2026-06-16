@@ -257,7 +257,8 @@ where
             .with_identity(
                 connection_identity.actor_label().as_str(),
                 connection_identity.scope().as_str(),
-            );
+            )
+            .with_comments_doc_id(room.comments_doc_id.clone());
         if typed_capabilities {
             connection::send_typed_bootstrap_frame(
                 &mut writer,

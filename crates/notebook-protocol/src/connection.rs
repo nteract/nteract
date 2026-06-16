@@ -325,6 +325,7 @@ mod tests {
                 put_blob: None,
                 actor_label: None,
                 connection_scope: None,
+                comments_doc_id: None,
             }
         }
 
@@ -412,12 +413,27 @@ mod tests {
         assert!(json.contains(r#""actor_label":"local:kyle/desktop:7f3a""#));
         assert!(json.contains(r#""connection_scope":"owner""#));
 
+        // With CommentsDoc identity metadata.
+        let info = NotebookConnectionInfo {
+            capabilities: capabilities(None, None)
+                .with_comments_doc_id("comments:local-path:abc123"),
+            notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            cell_count: 5,
+            needs_trust_approval: false,
+            error: None,
+            ephemeral: false,
+            notebook_path: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains(r#""comments_doc_id":"comments:local-path:abc123""#));
+
         // Backward compat: deserialize without notebook_path
         let old_json = r#"{"protocol":"v2","notebook_id":"abc","cell_count":1,"needs_trust_approval":false,"ephemeral":false}"#;
         let info: NotebookConnectionInfo = serde_json::from_str(old_json).unwrap();
         assert!(info.notebook_path.is_none());
         assert!(info.capabilities.actor_label.is_none());
         assert!(info.capabilities.connection_scope.is_none());
+        assert!(info.capabilities.comments_doc_id.is_none());
     }
 
     #[test]
@@ -437,7 +453,8 @@ mod tests {
     async fn typed_bootstrap_roundtrips_over_session_control_frame() {
         let info = NotebookConnectionInfo {
             capabilities: ProtocolCapabilities::v4(Some("0.1.0+abc123".into()))
-                .with_identity("local:kyle/desktop:7f3a", "owner"),
+                .with_identity("local:kyle/desktop:7f3a", "owner")
+                .with_comments_doc_id("comments:local-path:abc123"),
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             cell_count: 5,
             needs_trust_approval: false,
@@ -464,6 +481,10 @@ mod tests {
                 assert_eq!(
                     decoded_info.capabilities.actor_label.as_deref(),
                     Some("local:kyle/desktop:7f3a")
+                );
+                assert_eq!(
+                    decoded_info.capabilities.comments_doc_id.as_deref(),
+                    Some("comments:local-path:abc123")
                 );
             }
             ConnectionBootstrap::ProtocolCapabilities { .. } => {

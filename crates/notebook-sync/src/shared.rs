@@ -64,7 +64,19 @@ pub struct SharedDocState {
 impl SharedDocState {
     /// Create a new shared state with the given document and notebook ID.
     pub fn try_new(doc: AutoCommit, notebook_id: String) -> Result<Self, SyncError> {
-        let comments_identity = comments_identity_for_notebook_id(&notebook_id);
+        Self::try_new_with_comments_doc_id(doc, notebook_id, None)
+    }
+
+    /// Create a new shared state, optionally seeding CommentsDoc from the
+    /// daemon-advertised identity.
+    pub fn try_new_with_comments_doc_id(
+        doc: AutoCommit,
+        notebook_id: String,
+        comments_doc_id: Option<String>,
+    ) -> Result<Self, SyncError> {
+        let derived_comments_identity = comments_identity_for_notebook_id(&notebook_id);
+        let comments_doc_id =
+            comments_doc_id.unwrap_or_else(|| derived_comments_identity.comments_doc_id.clone());
         Ok(Self {
             doc,
             peer_state: sync::State::new(),
@@ -74,7 +86,7 @@ impl SharedDocState {
             state_peer_state: sync::State::new(),
             comms_doc: CommsDoc::try_new_empty()?,
             comms_peer_state: sync::State::new(),
-            comments_doc: CommentsDoc::try_new_sync_target(&comments_identity.comments_doc_id)?,
+            comments_doc: CommentsDoc::try_new_sync_target(&comments_doc_id)?,
             comments_peer_state: sync::State::new(),
             #[cfg(test)]
             panic_on_next_doc_sync: false,
@@ -444,6 +456,25 @@ mod tests {
         assert_eq!(
             state.comments_doc.comments_doc_id().as_deref(),
             Some(expected_doc_id.as_str())
+        );
+        assert!(!state.comments_doc.is_materialized());
+        assert_eq!(state.comments_doc.notebook_ref(), None);
+    }
+
+    #[test]
+    fn shared_state_uses_daemon_advertised_comments_doc_identity() {
+        let room_id = "b98a5f0c-c4bb-4d44-8ab4-7e369da72401";
+        let path_doc_id = comments_doc::local_path_comments_doc_id("/tmp/file-backed.ipynb");
+        let state = SharedDocState::try_new_with_comments_doc_id(
+            AutoCommit::new(),
+            room_id.to_string(),
+            Some(path_doc_id.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.comments_doc.comments_doc_id().as_deref(),
+            Some(path_doc_id.as_str())
         );
         assert!(!state.comments_doc.is_materialized());
         assert_eq!(state.comments_doc.notebook_ref(), None);

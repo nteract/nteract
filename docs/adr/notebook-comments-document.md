@@ -439,6 +439,10 @@ Core seams:
 - `crates/notebook-sync/src/shared.rs`
   - local client sync now owns a `CommentsDoc` sync target plus
     `comments_peer_state`
+  - local clients seed that target from daemon-advertised
+    `ProtocolCapabilities.comments_doc_id`; file-backed rooms use a UUID
+    `notebook_id` on the wire but a path-derived `comments_doc_id` for the
+    sidecar
   - it receives/generates comments sync frames after daemon materialization
 - `crates/notebook-sync/src/sync_task.rs`
   - dispatch inbound `CommentsDocSync`

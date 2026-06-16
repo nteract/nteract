@@ -212,13 +212,20 @@ pub async fn connect_with_options(
     let peer_state = sync::State::new();
 
     // Build the shared state and channels
-    build_and_spawn(doc, peer_state, notebook_id, reader, writer)
-        .await
-        .map(|(handle, broadcast_rx)| ConnectResult {
-            handle,
-            broadcast_rx,
-            initial_metadata,
-        })
+    build_and_spawn(
+        doc,
+        peer_state,
+        notebook_id,
+        caps.comments_doc_id.clone(),
+        reader,
+        writer,
+    )
+    .await
+    .map(|(handle, broadcast_rx)| ConnectResult {
+        handle,
+        broadcast_rx,
+        initial_metadata,
+    })
 }
 
 /// Connect and open an existing notebook file.
@@ -266,13 +273,20 @@ pub async fn connect_open(
     let doc = bootstrap.into_inner();
     let peer_state = sync::State::new();
 
-    build_and_spawn(doc, peer_state, notebook_id, reader, writer)
-        .await
-        .map(|(handle, broadcast_rx)| OpenResult {
-            handle,
-            broadcast_rx,
-            info,
-        })
+    build_and_spawn(
+        doc,
+        peer_state,
+        notebook_id,
+        info.capabilities.comments_doc_id.clone(),
+        reader,
+        writer,
+    )
+    .await
+    .map(|(handle, broadcast_rx)| OpenResult {
+        handle,
+        broadcast_rx,
+        info,
+    })
 }
 
 /// Connect and create a new notebook.
@@ -386,13 +400,20 @@ async fn connect_create_inner(
     let doc = bootstrap.into_inner();
     let peer_state = sync::State::new();
 
-    build_and_spawn(doc, peer_state, notebook_id, reader, writer)
-        .await
-        .map(|(handle, broadcast_rx)| CreateResult {
-            handle,
-            broadcast_rx,
-            info,
-        })
+    build_and_spawn(
+        doc,
+        peer_state,
+        notebook_id,
+        info.capabilities.comments_doc_id.clone(),
+        reader,
+        writer,
+    )
+    .await
+    .map(|(handle, broadcast_rx)| CreateResult {
+        handle,
+        broadcast_rx,
+        info,
+    })
 }
 
 /// Connect to a notebook room over already-authenticated typed-frame halves.
@@ -418,7 +439,7 @@ where
     let doc = bootstrap.into_inner();
     let peer_state = sync::State::new();
 
-    build_and_spawn_frame_io(doc, peer_state, notebook_id, source, sink)
+    build_and_spawn_frame_io(doc, peer_state, notebook_id, None, source, sink)
         .await
         .map(|(handle, broadcast_rx)| ConnectResult {
             handle,
@@ -439,6 +460,7 @@ async fn build_and_spawn<R, W>(
     doc: AutoCommit,
     peer_state: sync::State,
     notebook_id: String,
+    comments_doc_id: Option<String>,
     reader: R,
     writer: W,
 ) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
@@ -447,7 +469,7 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let (handle, task_config, broadcast_rx) =
-        build_sync_task_state(doc, peer_state, notebook_id.clone())?;
+        build_sync_task_state(doc, peer_state, notebook_id.clone(), comments_doc_id)?;
 
     let notebook_id_for_task = notebook_id;
     tokio::spawn(async move {
@@ -469,6 +491,7 @@ async fn build_and_spawn_frame_io<S, W>(
     doc: AutoCommit,
     peer_state: sync::State,
     notebook_id: String,
+    comments_doc_id: Option<String>,
     source: S,
     sink: W,
 ) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
@@ -477,7 +500,7 @@ where
     W: FrameSink + Send + 'static,
 {
     let (handle, task_config, broadcast_rx) =
-        build_sync_task_state(doc, peer_state, notebook_id.clone())?;
+        build_sync_task_state(doc, peer_state, notebook_id.clone(), comments_doc_id)?;
 
     let notebook_id_for_task = notebook_id;
     tokio::spawn(async move {
@@ -499,6 +522,7 @@ fn build_sync_task_state(
     doc: AutoCommit,
     peer_state: sync::State,
     notebook_id: String,
+    comments_doc_id: Option<String>,
 ) -> Result<
     (
         DocHandle,
@@ -507,7 +531,8 @@ fn build_sync_task_state(
     ),
     SyncError,
 > {
-    let mut shared_state = SharedDocState::try_new(doc, notebook_id.clone())?;
+    let mut shared_state =
+        SharedDocState::try_new_with_comments_doc_id(doc, notebook_id.clone(), comments_doc_id)?;
     shared_state.peer_state = peer_state;
 
     let shared = Arc::new(Mutex::new(shared_state));

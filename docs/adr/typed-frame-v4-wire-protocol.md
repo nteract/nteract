@@ -91,6 +91,15 @@ channels explicitly drop `CommentsDocSync` instead of participating. Hosted
 cloud currently keeps the frame known but not client-writable until its room
 materializer and policy handler are implemented.
 
+Clients must seed their local `CommentsDoc` sync target from the daemon's
+advertised `ProtocolCapabilities.comments_doc_id` (flattened into
+`NotebookConnectionInfo` for `OpenNotebook` and `CreateNotebook`), not from the
+wire `notebook_id`. File-backed rooms expose a UUID as `notebook_id` while their
+local comments sidecar is keyed by `comments:local-path:<sha256(canonical_path)>`.
+Deriving `comments:local-room:<uuid>` in that case makes the first
+`CommentsDocSync` frame look like an identity conflict and tears down the sync
+task.
+
 ### Direction is policy, not encoding
 
 Direction is enforced by the room peer loop and by the relay, not by anything intrinsic to the type byte:

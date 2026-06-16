@@ -3085,7 +3085,8 @@ impl Daemon {
                 .with_identity(
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
-                ),
+                )
+                .with_comments_doc_id(room.comments_doc_id.clone()),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
@@ -3318,7 +3319,8 @@ impl Daemon {
                 .with_identity(
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
-                ),
+                )
+                .with_comments_doc_id(room.comments_doc_id.clone()),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,

@@ -156,6 +156,14 @@ pub struct ProtocolCapabilities {
     /// room hosts still enforce scope server-side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_scope: Option<String>,
+    /// Durable CommentsDoc identity for this notebook room.
+    ///
+    /// File-backed rooms use a path-derived CommentsDoc ID while the wire
+    /// notebook_id is the room UUID, so clients must seed their local side-doc
+    /// sync target from the daemon-provided identity instead of deriving it
+    /// from notebook_id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comments_doc_id: Option<String>,
 }
 
 impl ProtocolCapabilities {
@@ -175,6 +183,7 @@ impl ProtocolCapabilities {
             }),
             actor_label: None,
             connection_scope: None,
+            comments_doc_id: None,
         }
     }
 
@@ -186,6 +195,12 @@ impl ProtocolCapabilities {
     ) -> Self {
         self.actor_label = Some(actor_label.into());
         self.connection_scope = Some(connection_scope.into());
+        self
+    }
+
+    /// Attach the per-room CommentsDoc identity advertised by the daemon.
+    pub fn with_comments_doc_id(mut self, comments_doc_id: impl Into<String>) -> Self {
+        self.comments_doc_id = Some(comments_doc_id.into());
         self
     }
 }
