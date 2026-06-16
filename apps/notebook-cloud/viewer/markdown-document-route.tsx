@@ -34,6 +34,7 @@ import {
   replaceCloudNotebookModeInCurrentUrl,
 } from "./cloud-notebook-mode";
 import { cloudNotebookTitleClassNames } from "./cloud-notebook-title";
+import { markdownConnectionCopy } from "./markdown-document-connection-copy";
 import type { CloudMarkdownDocumentConfig, CloudViewerAuthConfig } from "./cloud-viewer-types";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 import type { MarkdownDocumentLiveSyncController } from "./markdown-document-live-sync";
@@ -750,20 +751,4 @@ function scrollEditorToMarkdownOutlineItem(
     scrollIntoView: true,
   });
   return true;
-}
-
-function markdownConnectionCopy(status: ConnectionStatus, bodyReady: boolean): string | null {
-  if (!bodyReady) {
-    return "Syncing Markdown document body.";
-  }
-  switch (status) {
-    case "connecting":
-      return "Connecting to the live Markdown document.";
-    case "reconnecting":
-      return "Reconnecting to the live Markdown document.";
-    case "offline":
-      return "Markdown document is offline. Local changes will wait for reconnection.";
-    case "online":
-      return null;
-  }
 }
