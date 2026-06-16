@@ -1534,6 +1534,51 @@ async fn test_comments_doc_sync_rejects_mismatched_actor_label() {
 }
 
 #[tokio::test]
+async fn test_comments_doc_sync_rejects_client_using_daemon_authority_actor() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-reserved-authority.ipynb");
+    let identity = RoomConnectionIdentity::local_with_scope(
+        Some("agent:comments-editor".to_string()),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await
+    .unwrap();
+    let mut server_peer_state = automerge::sync::State::new();
+    let payload = comments_sync_payload_from_room(
+        &room,
+        &mut server_peer_state,
+        COMMENTS_DOC_ACTOR,
+        "thread-forged-authority",
+        "forged authority comment",
+    );
+    let (_reply_reader, reply_writer) = tokio::io::duplex(1024 * 1024);
+    let (peer_writer, _writer_task) = super::peer_writer::spawn_peer_writer(
+        reply_writer,
+        "notebook".to_string(),
+        "peer".to_string(),
+    );
+
+    let err = super::peer_comments_sync::handle_comments_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &peer_writer,
+        &payload,
+        &identity,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{err:#}").contains("reserved comment authority actor"));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert!(projection.threads.is_empty());
+    assert!(!room.comments_store.doc_path(&room.comments_doc_id).exists());
+}
+
+#[tokio::test]
 async fn test_comment_status_request_resolves_reopens_and_persists_sidecar() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "comments-status.ipynb");

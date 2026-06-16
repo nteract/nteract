@@ -11,7 +11,7 @@ use notebook_doc::diff::extract_change_actors;
 use notebook_protocol::connection::{self, NotebookFrameType};
 
 use super::peer_writer::PeerWriter;
-use super::{NotebookRoom, RoomConnectionIdentity};
+use super::{NotebookRoom, RoomConnectionIdentity, COMMENTS_DOC_ACTOR};
 
 pub(super) async fn send_initial_comments_doc_sync<W>(
     writer: &mut W,
@@ -68,6 +68,11 @@ pub(super) async fn handle_comments_doc_frame(
             ) {
                 Ok(true) => {
                     let actors = extract_change_actors(preview.doc_mut(), &heads_before);
+                    if actors.iter().any(|actor| actor == COMMENTS_DOC_ACTOR) {
+                        return Err(CommentsDocError::UnauthorizedActor(format!(
+                            "reserved comment authority actor {COMMENTS_DOC_ACTOR}"
+                        )));
+                    }
                     connection_identity
                         .validate_actor_labels(actors.iter().map(std::string::String::as_str))
                         .map_err(|error| CommentsDocError::UnauthorizedActor(error.to_string()))?;
