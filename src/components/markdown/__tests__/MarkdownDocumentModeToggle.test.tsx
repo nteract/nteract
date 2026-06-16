@@ -1,6 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { MarkdownDocumentModeToggle } from "../MarkdownDocumentModeToggle";
+import {
+  MarkdownDocumentModeToggle,
+  MarkdownDocumentRepresentationToolbar,
+} from "../MarkdownDocumentModeToggle";
 
 describe("MarkdownDocumentModeToggle", () => {
   it("switches from view to edit when editing is available", () => {
@@ -41,5 +44,76 @@ describe("MarkdownDocumentModeToggle", () => {
     fireEvent.click(editButton);
 
     expect(onModeChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("MarkdownDocumentRepresentationToolbar", () => {
+  const options = [
+    {
+      id: "rendered" as const,
+      label: "Rendered",
+      title: "Show rendered Markdown",
+      disabled: false,
+    },
+    {
+      id: "source" as const,
+      label: "Source",
+      title: "Inspect Markdown source",
+      disabled: false,
+    },
+    {
+      id: "split" as const,
+      label: "Split",
+      title: "Side-by-side source and rendered Markdown is planned",
+      disabled: true,
+    },
+  ];
+
+  it("switches Markdown body representation", () => {
+    const onRepresentationChange = vi.fn();
+
+    render(
+      <MarkdownDocumentRepresentationToolbar
+        active="rendered"
+        options={options}
+        onRepresentationChange={onRepresentationChange}
+      />,
+    );
+
+    expect(screen.getByRole("group", { name: "Markdown representation" })).toHaveAttribute(
+      "data-slot",
+      "markdown-document-representation-toolbar",
+    );
+    expect(screen.getByRole("button", { name: "Rendered" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+
+    expect(onRepresentationChange).toHaveBeenCalledWith("source");
+  });
+
+  it("leaves planned split mode disabled", () => {
+    const onRepresentationChange = vi.fn();
+
+    render(
+      <MarkdownDocumentRepresentationToolbar
+        active="source"
+        options={options}
+        onRepresentationChange={onRepresentationChange}
+      />,
+    );
+
+    const splitButton = screen.getByRole("button", { name: "Split" });
+    expect(splitButton).toBeDisabled();
+    expect(splitButton).toHaveAttribute(
+      "title",
+      "Side-by-side source and rendered Markdown is planned",
+    );
+
+    fireEvent.click(splitButton);
+
+    expect(onRepresentationChange).not.toHaveBeenCalled();
   });
 });

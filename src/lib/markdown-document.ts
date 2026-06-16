@@ -8,6 +8,7 @@ import {
 
 export type MarkdownDocumentAccessLevel = "owner" | "editor" | "viewer" | "none";
 export type MarkdownDocumentMode = "view" | "edit";
+export type MarkdownDocumentRepresentation = "rendered" | "source" | "split";
 
 export interface MarkdownDocumentSnapshot {
   id: string;
@@ -25,8 +26,22 @@ export interface MarkdownDocumentProjectionInput {
   markdownPlan?: MarkdownProjectionPlan | null;
   access?: MarkdownDocumentAccessLevel | null;
   requestedMode?: MarkdownDocumentMode | null;
+  requestedRepresentation?: MarkdownDocumentRepresentation | null;
   publishedRevisionId?: string | null;
   updatedAt?: string | null;
+}
+
+export interface MarkdownDocumentRepresentationOption {
+  id: MarkdownDocumentRepresentation;
+  label: string;
+  title: string;
+  disabled: boolean;
+}
+
+export interface MarkdownDocumentRepresentationProjection {
+  active: MarkdownDocumentRepresentation;
+  sourceEditable: boolean;
+  options: readonly MarkdownDocumentRepresentationOption[];
 }
 
 export interface MarkdownDocumentOutlineItem {
@@ -61,6 +76,7 @@ export interface MarkdownDocumentProjection {
   updatedAt: string | null;
   markdownPlan: MarkdownProjectionPlan | null;
   canRenderInHost: boolean;
+  representation: MarkdownDocumentRepresentationProjection;
   outlineItems: readonly MarkdownDocumentOutlineItem[];
   headingAnchors: readonly MarkdownDocumentHeadingAnchor[];
 }
@@ -76,6 +92,7 @@ export function projectMarkdownDocument(
     ? resolveMarkdownProjection(input.markdownPlan, body)
     : projectMarkdownPlan(body);
   const publishedRevisionId = input.publishedRevisionId ?? null;
+  const canRenderInHost = canRenderMarkdownProjectionInHost(markdownPlan);
 
   const outlineItems = markdownPlan ? projectMarkdownDocumentOutline(markdownPlan) : [];
 
@@ -92,9 +109,64 @@ export function projectMarkdownDocument(
     publishedRevisionId,
     updatedAt: input.updatedAt ?? null,
     markdownPlan,
-    canRenderInHost: canRenderMarkdownProjectionInHost(markdownPlan),
+    canRenderInHost,
+    representation: projectMarkdownDocumentRepresentation({
+      canEdit,
+      canRender: canRenderInHost,
+      mode,
+      requestedRepresentation: input.requestedRepresentation,
+    }),
     outlineItems,
     headingAnchors: markdownDocumentHeadingAnchors(outlineItems),
+  };
+}
+
+export function projectMarkdownDocumentRepresentation({
+  canEdit,
+  canRender,
+  mode,
+  requestedRepresentation,
+}: {
+  canEdit: boolean;
+  canRender: boolean;
+  mode: MarkdownDocumentMode;
+  requestedRepresentation?: MarkdownDocumentRepresentation | null;
+}): MarkdownDocumentRepresentationProjection {
+  const sourceEditable = canEdit && mode === "edit";
+  const defaultRepresentation: MarkdownDocumentRepresentation =
+    mode === "edit" && sourceEditable ? "source" : "rendered";
+  const requested =
+    requestedRepresentation === "source" ||
+    requestedRepresentation === "rendered" ||
+    requestedRepresentation === "split"
+      ? requestedRepresentation
+      : defaultRepresentation;
+  const active: MarkdownDocumentRepresentation =
+    requested === "split" || (requested === "rendered" && !canRender) ? "source" : requested;
+
+  return {
+    active,
+    sourceEditable,
+    options: [
+      {
+        id: "rendered",
+        label: "Rendered",
+        title: canRender ? "Show rendered Markdown" : "Rendered Markdown is not available yet",
+        disabled: !canRender,
+      },
+      {
+        id: "source",
+        label: "Source",
+        title: sourceEditable ? "Edit Markdown source" : "Inspect Markdown source",
+        disabled: false,
+      },
+      {
+        id: "split",
+        label: "Split",
+        title: "Side-by-side source and rendered Markdown is planned",
+        disabled: true,
+      },
+    ],
   };
 }
 

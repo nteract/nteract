@@ -52,7 +52,8 @@
   padding: 0;
 }
 
-.markdown-document-mode-toggle {
+.markdown-document-mode-toggle,
+.markdown-document-representation-toolbar {
   display: inline-flex;
   align-items: center;
   min-width: 0;
@@ -66,7 +67,13 @@
   font-size: 0.75rem;
 }
 
-.markdown-document-mode-toggle button {
+.markdown-document-representation-toolbar {
+  align-self: flex-start;
+  margin-bottom: clamp(0.75rem, 2vw, 1.25rem);
+}
+
+.markdown-document-mode-toggle button,
+.markdown-document-representation-toolbar button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -84,7 +91,8 @@
     color 120ms ease;
 }
 
-.markdown-document-mode-toggle button[aria-pressed="true"] {
+.markdown-document-mode-toggle button[aria-pressed="true"],
+.markdown-document-representation-toolbar button[aria-pressed="true"] {
   background: var(--background);
   color: var(--foreground);
   box-shadow: 0 1px 2px color-mix(in srgb, #000 9%, transparent);
@@ -94,21 +102,25 @@
   color: color-mix(in srgb, #047857 82%, var(--foreground));
 }
 
-.markdown-document-mode-toggle button:hover:not(:disabled) {
+.markdown-document-mode-toggle button:hover:not(:disabled),
+.markdown-document-representation-toolbar button:hover:not(:disabled) {
   color: var(--foreground);
 }
 
-.markdown-document-mode-toggle button:disabled {
+.markdown-document-mode-toggle button:disabled,
+.markdown-document-representation-toolbar button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
 
-.markdown-document-mode-toggle button:focus-visible {
+.markdown-document-mode-toggle button:focus-visible,
+.markdown-document-representation-toolbar button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--ring) 70%, transparent);
   outline-offset: 2px;
 }
 
-.markdown-document-mode-toggle svg {
+.markdown-document-mode-toggle svg,
+.markdown-document-representation-toolbar svg {
   width: 0.875rem;
   height: 0.875rem;
   flex: 0 0 auto;
@@ -120,7 +132,8 @@
     --markdown-document-content-inline-padding: 1rem;
   }
 
-  .markdown-document-mode-toggle span {
+  .markdown-document-mode-toggle span,
+  .markdown-document-representation-toolbar span {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -131,11 +144,13 @@
     border: 0;
   }
 
-  .markdown-document-mode-toggle {
+  .markdown-document-mode-toggle,
+  .markdown-document-representation-toolbar {
     max-width: none;
   }
 
-  .markdown-document-mode-toggle button {
+  .markdown-document-mode-toggle button,
+  .markdown-document-representation-toolbar button {
     width: 2rem;
     padding-inline: 0;
   }

@@ -17,10 +17,12 @@ import {
 import { NotebookOutlinePanel } from "@/components/notebook-rail/NotebookRail";
 import { Rail, RAIL_TAKEOVER_STAGE_CLASS_NAME } from "@/components/rail";
 import { MarkdownDocumentModeToggle } from "@/components/markdown/MarkdownDocumentModeToggle";
+import { MarkdownDocumentRepresentationToolbar } from "@/components/markdown/MarkdownDocumentModeToggle";
 import {
   projectMarkdownDocument,
   type MarkdownDocumentMode,
   type MarkdownDocumentProjection,
+  type MarkdownDocumentRepresentation,
 } from "@/lib/markdown-document";
 import type { MarkdownProjectionPlan } from "@/lib/markdown-projection";
 import { cn } from "@/lib/utils";
@@ -128,6 +130,8 @@ export function MarkdownDocumentRoute({
     initialMarkdownDocumentRouteState(config),
   );
   const [mode, setMode] = useState<MarkdownDocumentMode>(initialMarkdownDocumentMode);
+  const [requestedRepresentation, setRequestedRepresentation] =
+    useState<MarkdownDocumentRepresentation | null>(null);
   const [railCollapsed, setRailCollapsed] = useState(initialMarkdownRailCollapsed);
   const [markdownTitleSaving, setMarkdownTitleSaving] = useState(false);
   const [markdownTitleError, setMarkdownTitleError] = useState<string | null>(null);
@@ -277,10 +281,11 @@ export function MarkdownDocumentRoute({
       markdownPlan: routeState.markdownPlan,
       access: routeState.scope,
       requestedMode: mode,
+      requestedRepresentation,
       publishedRevisionId: routeState.latestRevisionId,
       updatedAt: null,
     });
-  }, [config.documentId, mode, routeState]);
+  }, [config.documentId, mode, requestedRepresentation, routeState]);
   const routeTitle = routeState.kind === "ready" ? routeState.title : null;
 
   useEffect(() => {
@@ -350,10 +355,18 @@ export function MarkdownDocumentRoute({
 
   const onModeChange = useCallback((nextMode: MarkdownDocumentMode) => {
     setMode(nextMode);
+    setRequestedRepresentation(null);
   }, []);
 
+  const onRepresentationChange = useCallback(
+    (nextRepresentation: MarkdownDocumentRepresentation) => {
+      setRequestedRepresentation(nextRepresentation);
+    },
+    [],
+  );
+
   useEffect(() => {
-    if (routeState.kind !== "ready" || mode !== "edit") {
+    if (routeState.kind !== "ready" || projection?.representation.active !== "source") {
       return;
     }
     const editor = editorRef.current?.getEditor();
@@ -377,7 +390,7 @@ export function MarkdownDocumentRoute({
     return () => {
       cancelled = true;
     };
-  }, [mode, routeState]);
+  }, [projection?.representation.active, routeState]);
 
   if (routeState.kind === "error" || !projection) {
     return (
@@ -390,6 +403,8 @@ export function MarkdownDocumentRoute({
   }
 
   const canEdit = projection.canEdit && routeState.liveReady;
+  const activeRepresentation = projection.representation.active;
+  const sourceEditable = canEdit && projection.representation.sourceEditable;
   const canManageSharing =
     projection.canShare && config.hostCapabilities?.canManageSharing !== false;
   const activeMode = projection.mode;
@@ -515,8 +530,17 @@ export function MarkdownDocumentRoute({
       stageLabel="Markdown document"
       capabilities={shellCapabilities}
     >
-      <div className="markdown-document-scroll" data-mode={activeMode}>
-        {activeMode === "edit" && canEdit ? (
+      <div
+        className="markdown-document-scroll"
+        data-mode={activeMode}
+        data-representation={activeRepresentation}
+      >
+        <MarkdownDocumentRepresentationToolbar
+          active={activeRepresentation}
+          options={projection.representation.options}
+          onRepresentationChange={onRepresentationChange}
+        />
+        {activeRepresentation === "source" ? (
           <Suspense
             fallback={
               <div className="cloud-state markdown-document-editor" data-kind="loading">
@@ -530,8 +554,9 @@ export function MarkdownDocumentRoute({
               initialValue={projection.body}
               language="markdown"
               lineWrapping
+              readOnly={!sourceEditable}
               className="markdown-document-editor"
-              onValueChange={onEditorValueChange}
+              onValueChange={sourceEditable ? onEditorValueChange : undefined}
             />
           </Suspense>
         ) : projection.markdownPlan ? (

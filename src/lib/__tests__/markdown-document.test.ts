@@ -111,6 +111,64 @@ describe("markdown document projection", () => {
     expect(projection.canPublish).toBe(false);
   });
 
+  it("defaults editors to source representation in edit mode", () => {
+    const projection = projectDoc({
+      id: "editable-doc",
+      title: "Editable",
+      body: "# Editable",
+      access: "owner",
+      requestedMode: "edit",
+    });
+
+    expect(projection.representation).toMatchObject({
+      active: "source",
+      sourceEditable: true,
+    });
+    expect(projection.representation.options).toEqual([
+      expect.objectContaining({ id: "rendered", disabled: false }),
+      expect.objectContaining({ id: "source", disabled: false, title: "Edit Markdown source" }),
+      expect.objectContaining({ id: "split", disabled: true }),
+    ]);
+  });
+
+  it("allows read-only source inspection without edit authority", () => {
+    const projection = projectDoc({
+      id: "viewer-source-doc",
+      title: "Shared",
+      body: "# Shared",
+      access: "viewer",
+      requestedRepresentation: "source",
+    });
+
+    expect(projection.mode).toBe("view");
+    expect(projection.representation).toMatchObject({
+      active: "source",
+      sourceEditable: false,
+    });
+    expect(projection.representation.options.find((option) => option.id === "source")).toEqual(
+      expect.objectContaining({ title: "Inspect Markdown source", disabled: false }),
+    );
+  });
+
+  it("keeps split visible but inactive until side-by-side editing is implemented", () => {
+    const projection = projectDoc({
+      id: "split-doc",
+      title: "Split",
+      body: "# Split",
+      access: "editor",
+      requestedMode: "edit",
+      requestedRepresentation: "split",
+    });
+
+    expect(projection.representation.active).toBe("source");
+    expect(projection.representation.options.find((option) => option.id === "split")).toEqual(
+      expect.objectContaining({
+        disabled: true,
+        title: "Side-by-side source and rendered Markdown is planned",
+      }),
+    );
+  });
+
   it("normalizes absent title and access", () => {
     const projection = projectDoc({
       id: "01KTMARKDOWNDOC",

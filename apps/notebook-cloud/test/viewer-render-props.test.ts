@@ -519,6 +519,10 @@ test("Markdown documents honor the URL mode before loading the source editor", (
     markdownRouteText,
     /<MarkdownDocumentModeToggle[\s\S]*onModeChange=\{onModeChange\}/,
   );
+  assert.match(
+    markdownRouteText,
+    /<MarkdownDocumentRepresentationToolbar[\s\S]*onRepresentationChange=\{onRepresentationChange\}/,
+  );
   assert.doesNotMatch(markdownRouteText, /NotebookDocumentToolbar/);
   assert.doesNotMatch(
     markdownRouteText,
