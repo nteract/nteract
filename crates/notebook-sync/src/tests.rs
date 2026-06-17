@@ -29,7 +29,10 @@ mod tests {
         // Use NotebookDoc::new() to get a properly initialized doc with schema
         let nd = notebook_doc::NotebookDoc::new("test-notebook");
         let doc = nd.into_inner();
-        let shared = Arc::new(Mutex::new(SharedDocState::new(doc, "test-notebook".into())));
+        let shared = Arc::new(Mutex::new(SharedDocState::new_for_test(
+            doc,
+            "test-notebook".into(),
+        )));
 
         let initial_snapshot = NotebookSnapshot::empty();
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
@@ -63,7 +66,10 @@ mod tests {
         // Use NotebookDoc::new() to get a properly initialized doc with schema
         let nd = notebook_doc::NotebookDoc::new("test-notebook");
         let doc = nd.into_inner();
-        let shared = Arc::new(Mutex::new(SharedDocState::new(doc, "test-notebook".into())));
+        let shared = Arc::new(Mutex::new(SharedDocState::new_for_test(
+            doc,
+            "test-notebook".into(),
+        )));
 
         let initial_snapshot = NotebookSnapshot::empty();
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
@@ -406,14 +412,14 @@ mod tests {
     #[test]
     fn test_shared_doc_state_new() {
         let doc = AutoCommit::new();
-        let state = SharedDocState::new(doc, "test-id".into());
+        let state = SharedDocState::new_for_test(doc, "test-id".into());
         assert_eq!(state.notebook_id(), "test-id");
     }
 
     #[test]
     fn test_shared_doc_state_sync_message_empty_doc() {
         let doc = AutoCommit::new();
-        let mut state = SharedDocState::new(doc, "test-id".into());
+        let mut state = SharedDocState::new_for_test(doc, "test-id".into());
 
         // A fresh doc with no changes should have no sync message for a fresh peer
         // (both are empty, nothing to sync)
@@ -747,7 +753,7 @@ mod tests {
     ) {
         let nd = notebook_doc::NotebookDoc::new("test-notebook");
         let doc = nd.into_inner();
-        let mut st = SharedDocState::new(doc, "test-notebook".into());
+        let mut st = SharedDocState::new_for_test(doc, "test-notebook".into());
         // Replace the unscaffolded RuntimeStateDoc with a fully initialized
         // one so tests can write into the `executions` map directly.
         st.state_doc = runtime_doc::RuntimeStateDoc::new_with_actor("runtimed-sync-test");

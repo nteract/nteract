@@ -15,7 +15,7 @@ pub mod typosquat;
 extern crate runtimed_client as runtimed;
 pub use runtimed::runtime::Runtime;
 
-use notebook_protocol::connection::LaunchSpec;
+use notebook_protocol::connection::{LaunchSpec, ProtocolCapabilities};
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveErrorKind};
 use notebook_sync::RelayHandle;
 
@@ -432,9 +432,33 @@ struct DaemonReadyPayload {
     /// Server-enforced scope for this connection.
     connection_scope: Option<String>,
     /// Required CommentsDoc identity resolved by the daemon for this room.
-    comments_doc_id: Option<String>,
+    comments_doc_id: String,
     /// Daemon-side actor trusted to finalize comment policy fields.
-    comments_authority_actor_label: Option<String>,
+    comments_authority_actor_label: String,
+}
+
+fn required_comments_ready_capabilities(
+    caps: &ProtocolCapabilities,
+) -> Result<(String, String), String> {
+    let comments_doc_id = caps
+        .comments_doc_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "daemon did not advertise required comments_doc_id".to_string())?;
+    let comments_authority_actor_label = caps
+        .comments_authority_actor_label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "daemon did not advertise required comments_authority_actor_label".to_string()
+        })?;
+
+    Ok((
+        comments_doc_id.to_string(),
+        comments_authority_actor_label.to_string(),
+    ))
 }
 
 /// How to connect a new window to the daemon.
@@ -609,6 +633,8 @@ async fn initialize_notebook_sync_open(
         *id = info.notebook_id.clone();
     }
 
+    let (comments_doc_id, comments_authority_actor_label) =
+        required_comments_ready_capabilities(&info.capabilities)?;
     let ready_payload = DaemonReadyPayload {
         notebook_id: info.notebook_id.clone(),
         relay_generation: current_generation,
@@ -619,8 +645,8 @@ async fn initialize_notebook_sync_open(
         runtime: None,
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
-        comments_doc_id: info.capabilities.comments_doc_id.clone(),
-        comments_authority_actor_label: info.capabilities.comments_authority_actor_label.clone(),
+        comments_doc_id,
+        comments_authority_actor_label,
     };
 
     setup_sync_receivers(
@@ -691,6 +717,8 @@ async fn initialize_notebook_sync_create(
         *id = info.notebook_id.clone();
     }
 
+    let (comments_doc_id, comments_authority_actor_label) =
+        required_comments_ready_capabilities(&info.capabilities)?;
     let ready_payload = DaemonReadyPayload {
         notebook_id: info.notebook_id.clone(),
         relay_generation: current_generation,
@@ -701,8 +729,8 @@ async fn initialize_notebook_sync_create(
         runtime: Some(runtime),
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
-        comments_doc_id: info.capabilities.comments_doc_id.clone(),
-        comments_authority_actor_label: info.capabilities.comments_authority_actor_label.clone(),
+        comments_doc_id,
+        comments_authority_actor_label,
     };
 
     setup_sync_receivers(
@@ -762,6 +790,8 @@ async fn initialize_notebook_sync_attach(
         *id = notebook_id.clone();
     }
 
+    let (comments_doc_id, comments_authority_actor_label) =
+        required_comments_ready_capabilities(&capabilities)?;
     // `connect_relay` does not return a NotebookConnectionInfo — the frontend
     // receives the true cell_count via the initial Automerge sync. Populate
     // the payload with sensible defaults for an ephemeral clone.
@@ -775,8 +805,8 @@ async fn initialize_notebook_sync_attach(
         runtime: Some(runtime),
         actor_label: capabilities.actor_label.clone(),
         connection_scope: capabilities.connection_scope.clone(),
-        comments_doc_id: capabilities.comments_doc_id.clone(),
-        comments_authority_actor_label: capabilities.comments_authority_actor_label.clone(),
+        comments_doc_id,
+        comments_authority_actor_label,
     };
 
     setup_sync_receivers(

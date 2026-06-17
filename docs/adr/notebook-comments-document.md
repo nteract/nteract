@@ -458,16 +458,16 @@ Core seams:
   - expose comments projection, current comment heads, and create/reply
     mutation helpers through the local handle; MCP builds list/create/reply and
     read resources on top of those helpers
-  - future work: expose frontend/UI-facing comment observables and any direct
-    `get_comments_for_cell` convenience needed by the app shell
+  - frontend/UI-facing observables live in the WASM/frontend layer; direct
+    `get_comments_for_cell` convenience remains future only if the app shell
+    needs it
 - `packages/runtimed/src/wire-constants.ts`,
   `packages/runtimed/src/request-types.ts`, and protocol-contract tests
   - generated TypeScript pins `COMMENTS_DOC_SYNC = 0x0a` and the daemon
     authority request types used by local MCP clients
-  - future frontend/browser work should extend `SyncableHandle`, `FlushDocKey`,
+  - browser/local desktop paths now extend `SyncableHandle`, `FlushDocKey`,
     flush/reply/cancel paths, delivery tracking, observables, and `FrameEvent`
-    variants for comments sync; the current browser path does not materialize
-    or dispatch comments updates to UI code
+    variants for comments sync so the UI can materialize comment projections
 - `crates/runtimed/src/notebook_sync_server/room.rs`
   - add a room-owned `comments` document handle
   - load/save it from the local comments sidecar store
@@ -798,20 +798,24 @@ sidecar or future lightweight doc, not in the shared durable `CommentsDoc`.
 ## UI Plan
 
 Build the first UI as a shared notebook component, not a cloud-only overlay.
+The local desktop/browser prototype now consumes the WASM comments projection,
+renders cell-level comment affordances, opens focused thread popovers, exposes an
+all-comments rail, and lets selected source prose/code create source-range
+anchors with quoted snippets. Inline source highlights, output-anchor markers,
+stale/deleted-anchor treatment, and hosted parity remain follow-up work.
 
 Placement:
 
-- Add a comments projection hook that materializes `CommentsDoc` into
-  `commentsByCellId`, `notebookThreads`, `staleThreads`, and counts.
-- Pass a comment marker into existing `rightGutterContent` next to delete/hide
-  controls. `CellContainer` already has a right action overlay and `data-cell-id`
-  markers.
-- Use a popover for the focused thread and a right-side comments panel for all
-  threads.
+- Materialize `CommentsDoc` into `commentsByCellId`, `notebookThreads`,
+  `staleThreads`, and counts through a comments projection hook.
+- Pass comment markers into existing cell chrome instead of adding cell-like
+  siblings. `CellContainer` already has a right action overlay and
+  `data-cell-id` markers.
+- Use popovers for focused threads and a comments rail/panel for all threads.
 - For cell-range anchors, draw a parent-owned overlay by measuring
   `[data-cell-id]` elements. Do not insert extra rows into `NotebookView`.
-- For source-range anchors, v0 can show a cell marker plus a quoted snippet in
-  the popover. A later CodeMirror extension can render inline highlights.
+- For source-range anchors, keep the selection button and quoted snippet path;
+  a later CodeMirror extension can render inline highlights.
 - For output anchors, place markers in `outputRightGutterContent` so the comment
   tracks the output row, not the code row.
 
@@ -947,8 +951,12 @@ Phase 2: local sync and MCP
 
 Phase 3: UI prototype
 
-- Render cell comment markers in the existing right gutter.
-- Add a popover thread view and an all-comments panel.
+- Render cell comment markers in the existing cell chrome. (Landed for the
+  local desktop/browser prototype.)
+- Add a popover thread view and an all-comments rail/panel. (Landed for the
+  local desktop/browser prototype.)
+- Add selected source prose/code comment affordances with source-range anchors
+  and quoted snippets. (Landed.)
 - Include stale/deleted-anchor handling.
 - Render stamped authorship plus derived `last_writer_actor_label` for edit
   attribution, with a visible mismatch/unknown state for imported or raw changes.

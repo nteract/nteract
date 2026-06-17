@@ -161,10 +161,13 @@ pub struct ProtocolCapabilities {
     /// File-backed rooms use a path-derived CommentsDoc ID while the wire
     /// notebook_id is the room UUID, so clients must seed their local side-doc
     /// sync target from the daemon-provided identity instead of deriving it
-    /// from notebook_id.
+    /// from notebook_id. Serialized as optional for legacy/error bootstrap
+    /// decoding, but required on successful v4 notebook connections.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comments_doc_id: Option<String>,
-    /// Actor label whose CommentsDoc authority fields are trusted.
+    /// Actor label whose CommentsDoc authority fields are trusted. Serialized
+    /// as optional for legacy/error bootstrap decoding, but required on
+    /// successful v4 notebook connections.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comments_authority_actor_label: Option<String>,
 }
@@ -238,9 +241,9 @@ pub struct NotebookConnectionInfo {
     /// Shared protocol and capability metadata.
     #[serde(flatten)]
     pub capabilities: ProtocolCapabilities,
-    /// Notebook identifier derived by the daemon.
-    /// For existing files: canonical path.
-    /// For new notebooks: generated UUID (env_id).
+    /// Notebook room identifier derived by the daemon. File-backed notebooks
+    /// use the daemon room UUID here; the on-disk path, when known, is carried
+    /// separately in `notebook_path`.
     pub notebook_id: String,
     /// Number of cells in the notebook (for progress indication).
     pub cell_count: usize,

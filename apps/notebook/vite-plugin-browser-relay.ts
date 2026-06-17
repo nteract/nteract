@@ -235,6 +235,14 @@ function parseNotebookConnectionInfo(frame: Buffer): NotebookConnectionInfoJson 
   return info;
 }
 
+function requireDaemonField(value: string | undefined, fieldName: string): string {
+  const normalized = value?.trim();
+  if (!normalized) {
+    throw new Error(`daemon did not advertise required ${fieldName}`);
+  }
+  return normalized;
+}
+
 function control(ws: WebSocket, value: unknown): void {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(value));
 }
@@ -310,9 +318,14 @@ async function handleRelayConnection(
     if (info.error) throw new Error(info.error);
     const actorLabel = info.actor_label ?? info.capabilities?.actor_label;
     const connectionScope = info.connection_scope ?? info.capabilities?.connection_scope;
-    const commentsDocId = info.comments_doc_id ?? info.capabilities?.comments_doc_id;
-    const commentsAuthorityActorLabel =
-      info.comments_authority_actor_label ?? info.capabilities?.comments_authority_actor_label;
+    const commentsDocId = requireDaemonField(
+      info.comments_doc_id ?? info.capabilities?.comments_doc_id,
+      "comments_doc_id",
+    );
+    const commentsAuthorityActorLabel = requireDaemonField(
+      info.comments_authority_actor_label ?? info.capabilities?.comments_authority_actor_label,
+      "comments_authority_actor_label",
+    );
 
     const daemonInfoJson = readDaemonInfo(socketPath);
     control(ws, {

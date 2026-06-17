@@ -64,10 +64,10 @@ collection payloads, then read directly. This avoids unbounded resource lists
 for notebooks with hundreds or thousands of cells.
 
 Comment resources follow the same bounded-list rule. The notebook-level comments
-resource is small enough to list for connected or parked notebooks; future
-cell-scoped or thread-scoped comment resources should be discoverable through
-templates and the projected comments payload instead of expanding every thread
-into `resources/list`.
+resource is small enough to list for connected or parked notebooks. Cell-scoped
+and thread-scoped comment resources are discoverable through templates and the
+projected comments payload instead of expanding every thread into
+`resources/list`.
 
 ## Decision 3: Output resources are execution-aware
 
@@ -173,9 +173,9 @@ Subscriptions should start with coarse resources:
 - `nteract://notebooks/{notebook_id}/comments`
 
 Output subscriptions should wait until output resource paths exist. Cell- or
-thread-scoped comment subscriptions should likewise wait until those resources
-exist; coarse comments subscription can notify the notebook-level comments
-resource.
+thread-scoped comment subscriptions should be a separate follow-up from the
+initial resource implementation; coarse comments subscription can notify the
+notebook-level comments resource.
 
 ## Non-Goals
 

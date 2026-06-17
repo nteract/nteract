@@ -279,7 +279,7 @@ mod tests {
 
     fn make_handle() -> (DocHandle, watch::Sender<RuntimeState>) {
         let nd = notebook_doc::NotebookDoc::new("test-notebook");
-        let shared = Arc::new(Mutex::new(SharedDocState::new(
+        let shared = Arc::new(Mutex::new(SharedDocState::new_for_test(
             nd.into_inner(),
             "test-notebook".into(),
         )));

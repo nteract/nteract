@@ -87,9 +87,9 @@ export interface DaemonReadyPayload {
   /** Server-enforced connection scope for this room connection. */
   connection_scope?: string;
   /** Required CommentsDoc identity resolved by the daemon for this room. */
-  comments_doc_id?: string;
+  comments_doc_id: string;
   /** Daemon-side actor trusted to finalize comment policy fields. */
-  comments_authority_actor_label?: string;
+  comments_authority_actor_label: string;
 }
 
 export interface DaemonProgressPayload {

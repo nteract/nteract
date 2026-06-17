@@ -201,6 +201,8 @@ pub async fn connect_with_options(
     // legacy untyped JSON frame.
     let caps = recv_typed_capabilities(&mut reader).await?;
     check_daemon_protocol_version(&caps);
+    let comments_caps =
+        required_comments_capabilities(&caps, "NotebookSync protocol capabilities")?;
 
     // Start from the standard notebook skeleton so the background sync task
     // owns the entire bootstrap from the first post-handshake frame onward.
@@ -216,8 +218,8 @@ pub async fn connect_with_options(
         doc,
         peer_state,
         notebook_id,
-        caps.comments_doc_id.clone(),
-        caps.comments_authority_actor_label.clone(),
+        comments_caps.comments_doc_id,
+        Some(comments_caps.comments_authority_actor_label),
         reader,
         writer,
     )
@@ -261,6 +263,8 @@ pub async fn connect_open(
     if let Some(ref error) = info.error {
         return Err(SyncError::Protocol(error.clone()));
     }
+    let comments_caps =
+        required_comments_capabilities(&info.capabilities, "OpenNotebook connection info")?;
 
     let notebook_id = info.notebook_id.clone();
 
@@ -278,8 +282,8 @@ pub async fn connect_open(
         doc,
         peer_state,
         notebook_id,
-        info.capabilities.comments_doc_id.clone(),
-        info.capabilities.comments_authority_actor_label.clone(),
+        comments_caps.comments_doc_id,
+        Some(comments_caps.comments_authority_actor_label),
         reader,
         writer,
     )
@@ -389,6 +393,8 @@ async fn connect_create_inner(
     if let Some(ref error) = info.error {
         return Err(SyncError::Protocol(error.clone()));
     }
+    let comments_caps =
+        required_comments_capabilities(&info.capabilities, "CreateNotebook connection info")?;
 
     let notebook_id = info.notebook_id.clone();
 
@@ -406,8 +412,8 @@ async fn connect_create_inner(
         doc,
         peer_state,
         notebook_id,
-        info.capabilities.comments_doc_id.clone(),
-        info.capabilities.comments_authority_actor_label.clone(),
+        comments_caps.comments_doc_id,
+        Some(comments_caps.comments_authority_actor_label),
         reader,
         writer,
     )
@@ -441,14 +447,23 @@ where
     );
     let doc = bootstrap.into_inner();
     let peer_state = sync::State::new();
+    let comments_doc_id = comments_doc::local_room_comments_doc_id(notebook_id.clone());
 
-    build_and_spawn_frame_io(doc, peer_state, notebook_id, None, None, source, sink)
-        .await
-        .map(|(handle, broadcast_rx)| ConnectResult {
-            handle,
-            broadcast_rx,
-            initial_metadata: None,
-        })
+    build_and_spawn_frame_io(
+        doc,
+        peer_state,
+        notebook_id,
+        comments_doc_id,
+        None,
+        source,
+        sink,
+    )
+    .await
+    .map(|(handle, broadcast_rx)| ConnectResult {
+        handle,
+        broadcast_rx,
+        initial_metadata: None,
+    })
 }
 
 // =========================================================================
@@ -463,7 +478,7 @@ async fn build_and_spawn<R, W>(
     doc: AutoCommit,
     peer_state: sync::State,
     notebook_id: String,
-    comments_doc_id: Option<String>,
+    comments_doc_id: String,
     comments_authority_actor_label: Option<String>,
     reader: R,
     writer: W,
@@ -500,7 +515,7 @@ async fn build_and_spawn_frame_io<S, W>(
     doc: AutoCommit,
     peer_state: sync::State,
     notebook_id: String,
-    comments_doc_id: Option<String>,
+    comments_doc_id: String,
     comments_authority_actor_label: Option<String>,
     source: S,
     sink: W,
@@ -537,7 +552,7 @@ fn build_sync_task_state(
     doc: AutoCommit,
     peer_state: sync::State,
     notebook_id: String,
-    comments_doc_id: Option<String>,
+    comments_doc_id: String,
     comments_authority_actor_label: Option<String>,
 ) -> Result<
     (
@@ -650,6 +665,7 @@ pub async fn connect_open_relay_with_operator(
     if let Some(ref error) = info.error {
         return Err(SyncError::Protocol(error.clone()));
     }
+    required_comments_capabilities(&info.capabilities, "OpenNotebook relay connection info")?;
 
     let notebook_id = info.notebook_id.clone();
     info!(
@@ -738,6 +754,7 @@ pub async fn connect_create_relay_with_operator(
     if let Some(ref error) = info.error {
         return Err(SyncError::Protocol(error.clone()));
     }
+    required_comments_capabilities(&info.capabilities, "CreateNotebook relay connection info")?;
 
     let notebook_id = info.notebook_id.clone();
     info!(
@@ -792,6 +809,7 @@ pub async fn connect_relay_with_operator(
 
     let caps = recv_typed_capabilities(&mut reader).await?;
     check_daemon_protocol_version(&caps);
+    required_comments_capabilities(&caps, "NotebookSync relay protocol capabilities")?;
 
     info!(
         "[relay] Connected to {} (relay mode, no initial sync)",
@@ -821,6 +839,43 @@ fn operator_from_actor_label(actor_label: &str) -> Option<String> {
         None if !actor_label.is_empty() => Some(actor_label.to_string()),
         _ => None,
     }
+}
+
+#[derive(Debug)]
+struct RequiredCommentsCapabilities {
+    comments_doc_id: String,
+    comments_authority_actor_label: String,
+}
+
+fn required_comments_capabilities(
+    caps: &ProtocolCapabilities,
+    context: &str,
+) -> Result<RequiredCommentsCapabilities, SyncError> {
+    let comments_doc_id = caps
+        .comments_doc_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SyncError::Protocol(format!(
+                "{context}: daemon did not advertise required comments_doc_id"
+            ))
+        })?;
+    let comments_authority_actor_label = caps
+        .comments_authority_actor_label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SyncError::Protocol(format!(
+                "{context}: daemon did not advertise required comments_authority_actor_label"
+            ))
+        })?;
+
+    Ok(RequiredCommentsCapabilities {
+        comments_doc_id: comments_doc_id.to_string(),
+        comments_authority_actor_label: comments_authority_actor_label.to_string(),
+    })
 }
 
 /// Spawn a relay task and return the handle.
@@ -929,6 +984,47 @@ fn check_daemon_protocol_version(caps: &ProtocolCapabilities) {
 #[cfg(test)]
 mod bootstrap_tests {
     use super::*;
+
+    fn comments_capabilities() -> ProtocolCapabilities {
+        ProtocolCapabilities::v4(Some("2.5.2+comments".into()))
+            .with_identity("local:kyle/desktop:test", "owner")
+            .with_comments_doc_id("comments:local-room:nb-1")
+            .with_comments_authority_actor_label(comments_doc::COMMENTS_DOC_DEFAULT_ACTOR)
+    }
+
+    #[test]
+    fn required_comments_capabilities_accepts_complete_capabilities() {
+        let caps = comments_capabilities();
+        let comments = required_comments_capabilities(&caps, "test").unwrap();
+
+        assert_eq!(comments.comments_doc_id, "comments:local-room:nb-1");
+        assert_eq!(
+            comments.comments_authority_actor_label,
+            comments_doc::COMMENTS_DOC_DEFAULT_ACTOR
+        );
+    }
+
+    #[test]
+    fn required_comments_capabilities_rejects_missing_comments_doc_id() {
+        let mut caps = comments_capabilities();
+        caps.comments_doc_id = None;
+
+        let err = required_comments_capabilities(&caps, "test").unwrap_err();
+
+        assert!(matches!(err, SyncError::Protocol(message) if message.contains("comments_doc_id")));
+    }
+
+    #[test]
+    fn required_comments_capabilities_rejects_missing_comments_authority() {
+        let mut caps = comments_capabilities();
+        caps.comments_authority_actor_label = Some(" ".to_string());
+
+        let err = required_comments_capabilities(&caps, "test").unwrap_err();
+
+        assert!(
+            matches!(err, SyncError::Protocol(message) if message.contains("comments_authority_actor_label"))
+        );
+    }
 
     #[tokio::test]
     async fn recv_typed_capabilities_accepts_legacy_json_frame() {

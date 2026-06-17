@@ -40,6 +40,14 @@ function createReadySource() {
   };
 }
 
+function readyPayload(overrides: Partial<DaemonReadyPayload> = {}): DaemonReadyPayload {
+  return {
+    comments_doc_id: "comments:local-room:nb-1",
+    comments_authority_actor_label: "runtimed:comments",
+    ...overrides,
+  };
+}
+
 function createHostedHandle(): HostedNotebookHandle {
   return {
     free: vi.fn(),
@@ -84,7 +92,7 @@ describe("startRelayBootstrapCoordinator", () => {
 
     const coordinator = startCoordinator({
       onReady: (cb) => {
-        cb({ notebook_id: "nb-1", relay_generation: 7 });
+        cb(readyPayload({ notebook_id: "nb-1", relay_generation: 7 }));
         return vi.fn();
       },
       bootstrap,
@@ -96,7 +104,7 @@ describe("startRelayBootstrapCoordinator", () => {
     expect(bootstrap).toHaveBeenCalledTimes(1);
     expect(bootstrap.mock.calls[0][1]).toEqual({
       kind: "ready",
-      payload: { notebook_id: "nb-1", relay_generation: 7 },
+      payload: readyPayload({ notebook_id: "nb-1", relay_generation: 7 }),
     });
     expect(notifyRelayReady).toHaveBeenCalledWith(7);
 
@@ -124,7 +132,7 @@ describe("startRelayBootstrapCoordinator", () => {
       notifyRelayReady,
     });
 
-    ready.emit({ notebook_id: "nb-1", relay_generation: 7 });
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 7 }));
     await flushMicrotasks();
 
     expect(prepareRelay).toHaveBeenCalledWith(7);
@@ -153,14 +161,14 @@ describe("startRelayBootstrapCoordinator", () => {
       onBootstrapError,
     });
 
-    ready.emit({ notebook_id: "nb-1", relay_generation: 7 });
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 7 }));
     await flushMicrotasks();
 
     expect(bootstrap).not.toHaveBeenCalled();
     expect(notifyRelayReady).not.toHaveBeenCalled();
     expect(onBootstrapError).toHaveBeenCalledWith(error, {
       kind: "ready",
-      payload: { notebook_id: "nb-1", relay_generation: 7 },
+      payload: readyPayload({ notebook_id: "nb-1", relay_generation: 7 }),
     });
 
     coordinator.stop();
@@ -191,11 +199,13 @@ describe("startRelayBootstrapCoordinator", () => {
       notifyRelayReady,
     });
 
-    ready.emit({
-      notebook_id: "nb-1",
-      relay_generation: 8,
-      actor_label: authoritativeActor,
-    });
+    ready.emit(
+      readyPayload({
+        notebook_id: "nb-1",
+        relay_generation: 8,
+        actor_label: authoritativeActor,
+      }),
+    );
     await flushMicrotasks();
     await flushMicrotasks();
 
@@ -226,18 +236,18 @@ describe("startRelayBootstrapCoordinator", () => {
       notifyRelayReady,
     });
 
-    ready.emit({ notebook_id: "nb-1", relay_generation: 1 });
-    ready.emit({ notebook_id: "nb-1", relay_generation: 2 });
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 1 }));
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 2 }));
 
     expect(bootstraps).toHaveLength(2);
     expect(bootstraps[0].trigger).toEqual({
       kind: "ready",
-      payload: { notebook_id: "nb-1", relay_generation: 1 },
+      payload: readyPayload({ notebook_id: "nb-1", relay_generation: 1 }),
     });
     expect(bootstraps[0].isCancelled()).toBe(true);
     expect(bootstraps[1].trigger).toEqual({
       kind: "ready",
-      payload: { notebook_id: "nb-1", relay_generation: 2 },
+      payload: readyPayload({ notebook_id: "nb-1", relay_generation: 2 }),
     });
 
     bootstraps[0].resolve(true);
@@ -261,13 +271,13 @@ describe("startRelayBootstrapCoordinator", () => {
       notifyRelayReady,
     });
 
-    ready.emit({ notebook_id: "nb-1", relay_generation: 5 });
-    ready.emit({ notebook_id: "nb-1", relay_generation: 5 });
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 5 }));
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 5 }));
 
     expect(bootstrap).toHaveBeenCalledTimes(1);
     expect(bootstrap.mock.calls[0][1]).toEqual({
       kind: "ready",
-      payload: { notebook_id: "nb-1", relay_generation: 5 },
+      payload: readyPayload({ notebook_id: "nb-1", relay_generation: 5 }),
     });
 
     coordinator.stop();
@@ -284,13 +294,13 @@ describe("startRelayBootstrapCoordinator", () => {
       notifyRelayReady,
     });
 
-    ready.emit({ notebook_id: "nb-1", relay_generation: 2 });
-    ready.emit({ notebook_id: "nb-1", relay_generation: 1 });
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 2 }));
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 1 }));
 
     expect(bootstrap).toHaveBeenCalledTimes(1);
     expect(bootstrap.mock.calls[0][1]).toEqual({
       kind: "ready",
-      payload: { notebook_id: "nb-1", relay_generation: 2 },
+      payload: readyPayload({ notebook_id: "nb-1", relay_generation: 2 }),
     });
 
     coordinator.stop();
@@ -309,10 +319,10 @@ describe("startRelayBootstrapCoordinator", () => {
       onMissingGeneration,
     });
 
-    ready.emit({ notebook_id: "nb-1" });
+    ready.emit(readyPayload({ notebook_id: "nb-1" }));
     await flushMicrotasks();
 
-    expect(onMissingGeneration).toHaveBeenCalledWith({ notebook_id: "nb-1" });
+    expect(onMissingGeneration).toHaveBeenCalledWith(readyPayload({ notebook_id: "nb-1" }));
     expect(bootstrap).not.toHaveBeenCalled();
     expect(notifyRelayReady).not.toHaveBeenCalled();
 
@@ -333,7 +343,7 @@ describe("startRelayBootstrapCoordinator", () => {
       onMissingGeneration,
     });
 
-    ready.emit({ notebook_id: "nb-1" });
+    ready.emit(readyPayload({ notebook_id: "nb-1" }));
     await flushMicrotasks();
 
     expect(onMissingGeneration).not.toHaveBeenCalled();
@@ -355,9 +365,9 @@ describe("startRelayBootstrapCoordinator", () => {
       notifyRelayReady,
     });
 
-    ready.emit({ notebook_id: "nb-1" });
+    ready.emit(readyPayload({ notebook_id: "nb-1" }));
     await flushMicrotasks();
-    ready.emit({ notebook_id: "nb-1" });
+    ready.emit(readyPayload({ notebook_id: "nb-1" }));
     await flushMicrotasks();
 
     expect(bootstrap).toHaveBeenCalledTimes(2);
@@ -385,14 +395,14 @@ describe("startRelayBootstrapCoordinator", () => {
       onBootstrapError,
     });
 
-    ready.emit({ notebook_id: "nb-1", relay_generation: 6 });
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 6 }));
     await flushMicrotasks();
 
     expect(bootstrap).not.toHaveBeenCalled();
     expect(notifyRelayReady).not.toHaveBeenCalled();
     expect(onBootstrapError).toHaveBeenCalledWith(error, {
       kind: "ready",
-      payload: { notebook_id: "nb-1", relay_generation: 6 },
+      payload: readyPayload({ notebook_id: "nb-1", relay_generation: 6 }),
     });
 
     coordinator.stop();
@@ -413,13 +423,13 @@ describe("startRelayBootstrapCoordinator", () => {
       onBootstrapError,
     });
 
-    ready.emit({ notebook_id: "nb-1", relay_generation: 3 });
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 3 }));
     await flushMicrotasks();
 
     expect(notifyRelayReady).not.toHaveBeenCalled();
     expect(onBootstrapError).toHaveBeenCalledWith(error, {
       kind: "ready",
-      payload: { notebook_id: "nb-1", relay_generation: 3 },
+      payload: readyPayload({ notebook_id: "nb-1", relay_generation: 3 }),
     });
 
     coordinator.stop();
@@ -444,10 +454,10 @@ describe("startRelayBootstrapCoordinator", () => {
       notifyRelayReady,
     });
 
-    ready.emit({ notebook_id: "nb-1", relay_generation: 4 });
+    ready.emit(readyPayload({ notebook_id: "nb-1", relay_generation: 4 }));
     expect(bootstraps.at(-1)?.trigger).toEqual({
       kind: "ready",
-      payload: { notebook_id: "nb-1", relay_generation: 4 },
+      payload: readyPayload({ notebook_id: "nb-1", relay_generation: 4 }),
     });
 
     coordinator.stop();

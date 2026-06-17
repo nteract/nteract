@@ -65,17 +65,11 @@ pub struct SharedDocState {
 }
 
 impl SharedDocState {
-    /// Create a new shared state with the given document and notebook ID.
-    pub fn try_new(doc: AutoCommit, notebook_id: String) -> Result<Self, SyncError> {
-        Self::try_new_with_comments_doc_identity(doc, notebook_id, None, None)
-    }
-
-    /// Create a new shared state, optionally seeding CommentsDoc from the
-    /// daemon-advertised identity and trusted authority actor.
+    /// Create a new shared state with the daemon-advertised CommentsDoc identity.
     pub fn try_new_with_comments_doc_id(
         doc: AutoCommit,
         notebook_id: String,
-        comments_doc_id: Option<String>,
+        comments_doc_id: String,
     ) -> Result<Self, SyncError> {
         Self::try_new_with_comments_doc_identity(doc, notebook_id, comments_doc_id, None)
     }
@@ -83,12 +77,9 @@ impl SharedDocState {
     pub fn try_new_with_comments_doc_identity(
         doc: AutoCommit,
         notebook_id: String,
-        comments_doc_id: Option<String>,
+        comments_doc_id: String,
         comments_authority_actor_label: Option<String>,
     ) -> Result<Self, SyncError> {
-        let derived_comments_identity = comments_identity_for_notebook_id(&notebook_id);
-        let comments_doc_id =
-            comments_doc_id.unwrap_or_else(|| derived_comments_identity.comments_doc_id.clone());
         let comments_authority_actor_labels = comments_authority_actor_label
             .into_iter()
             .filter(|label| !label.trim().is_empty())
@@ -112,9 +103,15 @@ impl SharedDocState {
         })
     }
 
-    pub fn new(doc: AutoCommit, notebook_id: String) -> Self {
-        Self::try_new(doc, notebook_id)
+    pub fn new(doc: AutoCommit, notebook_id: String, comments_doc_id: String) -> Self {
+        Self::try_new_with_comments_doc_id(doc, notebook_id, comments_doc_id)
             .unwrap_or_else(|err| panic!("create bootstrap runtime state doc: {err}"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(doc: AutoCommit, notebook_id: String) -> Self {
+        let comments_identity = comments_identity_for_notebook_id(&notebook_id);
+        Self::new(doc, notebook_id, comments_identity.comments_doc_id)
     }
 
     /// Get a reference to the notebook ID.
@@ -401,6 +398,7 @@ impl SharedDocState {
     }
 }
 
+#[cfg(test)]
 fn comments_identity_for_notebook_id(notebook_id: &str) -> comments_doc::LocalCommentsIdentity {
     if uuid::Uuid::parse_str(notebook_id).is_ok() {
         comments_doc::local_room_comments_identity(notebook_id.to_string())
@@ -421,7 +419,7 @@ mod tests {
 
     #[test]
     fn rebuild_state_doc_preserves_state_and_restarts_sync_handshake() {
-        let mut state = SharedDocState::new(AutoCommit::new(), "test-notebook".into());
+        let mut state = SharedDocState::new_for_test(AutoCommit::new(), "test-notebook".into());
         state
             .state_doc
             .create_execution_with_source("exec-1", "x = 1", 1)
@@ -451,8 +449,10 @@ mod tests {
 
     #[test]
     fn shared_state_seeds_comments_doc_from_local_path_identity() {
-        let state =
-            SharedDocState::new(AutoCommit::new(), "/tmp/example-notebook.ipynb".to_string());
+        let state = SharedDocState::new_for_test(
+            AutoCommit::new(),
+            "/tmp/example-notebook.ipynb".to_string(),
+        );
         let expected_doc_id =
             comments_doc::local_path_comments_doc_id("/tmp/example-notebook.ipynb");
 
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn shared_state_seeds_comments_doc_from_room_uuid_identity() {
         let room_id = "b98a5f0c-c4bb-4d44-8ab4-7e369da72401";
-        let state = SharedDocState::new(AutoCommit::new(), room_id.to_string());
+        let state = SharedDocState::new_for_test(AutoCommit::new(), room_id.to_string());
         let expected_doc_id = comments_doc::local_room_comments_doc_id(room_id);
 
         assert_eq!(
@@ -485,7 +485,7 @@ mod tests {
         let state = SharedDocState::try_new_with_comments_doc_id(
             AutoCommit::new(),
             room_id.to_string(),
-            Some(path_doc_id.clone()),
+            path_doc_id.clone(),
         )
         .unwrap();
 
@@ -500,10 +500,11 @@ mod tests {
     #[test]
     fn shared_state_stores_daemon_advertised_comments_authority_actor() {
         let room_id = "b98a5f0c-c4bb-4d44-8ab4-7e369da72401";
+        let comments_doc_id = comments_doc::local_room_comments_doc_id(room_id);
         let state = SharedDocState::try_new_with_comments_doc_identity(
             AutoCommit::new(),
             room_id.to_string(),
-            None,
+            comments_doc_id,
             Some(comments_doc::COMMENTS_DOC_DEFAULT_ACTOR.to_string()),
         )
         .unwrap();
@@ -511,6 +512,23 @@ mod tests {
         assert_eq!(
             state.comments_authority_actor_labels,
             vec![comments_doc::COMMENTS_DOC_DEFAULT_ACTOR.to_string()]
+        );
+    }
+
+    #[test]
+    fn shared_state_rejects_missing_comments_doc_identity() {
+        let err = match SharedDocState::try_new_with_comments_doc_id(
+            AutoCommit::new(),
+            "test-notebook".to_string(),
+            String::new(),
+        ) {
+            Ok(_) => panic!("empty comments_doc_id should fail CommentsDoc setup"),
+            Err(err) => err,
+        };
+
+        assert!(
+            matches!(err, SyncError::CommentsDoc(_)),
+            "empty comments_doc_id should fail CommentsDoc setup: {err}"
         );
     }
 }

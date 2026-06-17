@@ -1373,7 +1373,7 @@ mod tests {
     use tokio::time::timeout;
 
     fn test_handle_and_config() -> (crate::DocHandle, SyncTaskConfig) {
-        let shared = Arc::new(Mutex::new(SharedDocState::new(
+        let shared = Arc::new(Mutex::new(SharedDocState::new_for_test(
             notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
             "test-notebook".into(),
         )));
@@ -1625,7 +1625,7 @@ mod tests {
             state.panic_on_next_doc_sync_for_test();
         }
 
-        let mut daemon_state = SharedDocState::new(
+        let mut daemon_state = SharedDocState::new_for_test(
             notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
             "test-notebook".into(),
         );
@@ -1666,7 +1666,7 @@ mod tests {
             state.panic_on_next_state_sync_for_test();
         }
 
-        let mut daemon_state = SharedDocState::new(
+        let mut daemon_state = SharedDocState::new_for_test(
             notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
             "test-notebook".into(),
         );
@@ -1799,7 +1799,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_marks_status_disconnected_on_exit() {
-        let shared = Arc::new(Mutex::new(SharedDocState::new(
+        let shared = Arc::new(Mutex::new(SharedDocState::new_for_test(
             notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
             "test-notebook".into(),
         )));
@@ -1862,7 +1862,8 @@ mod tests {
         let daemon = tokio::spawn(async move {
             let mut reader = connection::FramedReader::spawn(BufReader::new(server_read), 64);
             let mut writer = BufWriter::new(server_write);
-            let mut daemon_state = SharedDocState::new(AutoCommit::new(), "test-notebook".into());
+            let mut daemon_state =
+                SharedDocState::new_for_test(AutoCommit::new(), "test-notebook".into());
 
             loop {
                 let frame = timeout(Duration::from_secs(15), reader.recv())
@@ -1940,7 +1941,7 @@ mod tests {
         let daemon = tokio::spawn(async move {
             let mut reader = connection::FramedReader::spawn(BufReader::new(server_read), 128);
             let mut writer = BufWriter::new(server_write);
-            let mut daemon_state = SharedDocState::new(
+            let mut daemon_state = SharedDocState::new_for_test(
                 notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
                 "test-notebook".into(),
             );
