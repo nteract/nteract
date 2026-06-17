@@ -91,8 +91,8 @@ test.describe("notebook comments rail", () => {
     if (!threadId) throw new Error("Accepted comment thread id not found");
 
     const replyBody = `Desktop reply ${crypto.randomUUID()}`;
-    await panel.getByLabel(`Reply to ${threadId}`).fill(replyBody);
-    await panel.getByRole("button", { name: "Reply" }).click();
+    await panel.getByRole("textbox", { name: "Reply to Document comment 1" }).fill(replyBody);
+    await panel.getByRole("button", { name: "Submit reply to Document comment 1" }).click();
     await expect(panel.getByText(replyBody)).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(async () => hasAcceptedComment(await mcp!.listComments(), replyBody), {
@@ -100,11 +100,11 @@ test.describe("notebook comments rail", () => {
       })
       .toBe(true);
 
-    await expect(panel.getByRole("button", { name: "Resolve" })).toBeEnabled({
+    await expect(panel.getByRole("button", { name: "Resolve Document comment 1" })).toBeEnabled({
       timeout: 30_000,
     });
-    await panel.getByRole("button", { name: "Resolve" }).click();
-    await expect(panel.getByRole("button", { name: "Reopen" })).toBeVisible({
+    await panel.getByRole("button", { name: "Resolve Document comment 1" }).click();
+    await expect(panel.getByRole("button", { name: "Reopen Document comment 1" })).toBeVisible({
       timeout: 120_000,
     });
     await expect
@@ -117,8 +117,8 @@ test.describe("notebook comments rail", () => {
       )
       .toBe("resolved");
 
-    await panel.getByRole("button", { name: "Reopen" }).click();
-    await expect(panel.getByRole("button", { name: "Resolve" })).toBeVisible({
+    await panel.getByRole("button", { name: "Reopen Document comment 1" }).click();
+    await expect(panel.getByRole("button", { name: "Resolve Document comment 1" })).toBeVisible({
       timeout: 120_000,
     });
     await expect

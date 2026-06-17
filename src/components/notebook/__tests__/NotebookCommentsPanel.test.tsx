@@ -57,11 +57,13 @@ describe("NotebookCommentsPanel", () => {
         projection={null}
         readOnly
         statusMessage="Comments sync unavailable."
+        errorMessage="Comment request failed."
       />,
     );
 
-    expect(screen.getByText("Comments sync unavailable.")).toBeVisible();
-    expect(screen.getByText("No comments yet.")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Comments sync unavailable.");
+    expect(screen.getByRole("alert")).toHaveTextContent("Comment request failed.");
+    expect(screen.queryByText("No comments yet.")).not.toBeInTheDocument();
     expect(screen.getByLabelText("New document comment")).toBeDisabled();
   });
 
@@ -98,18 +100,19 @@ describe("NotebookCommentsPanel", () => {
 
     expect(screen.getByText("Check the framing before publishing.")).toBeVisible();
     expect(screen.getByText("alice")).toBeVisible();
-    expect(screen.queryByText("Cell-scoped comment")).not.toBeInTheDocument();
+    expect(screen.getByText("Cell comment 2")).toBeVisible();
+    expect(screen.getByText("Cell-scoped comment")).toBeVisible();
 
-    fireEvent.change(screen.getByLabelText("Reply to thread-1"), {
+    fireEvent.change(screen.getByLabelText("Reply to Document comment 1"), {
       target: { value: "Looks ready locally" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit reply to Document comment 1" }));
 
     await waitFor(() =>
       expect(onReplyThread).toHaveBeenCalledWith("thread-1", "Looks ready locally"),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resolve Document comment 1" }));
     expect(onResolveThread).toHaveBeenCalledWith("thread-1");
   });
 
@@ -149,7 +152,7 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Reopen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reopen Document comment 1" }));
     expect(onReopenThread).toHaveBeenCalledWith("thread-1");
   });
 
@@ -165,7 +168,7 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    const resolve = screen.getByRole("button", { name: "Resolve" });
+    const resolve = screen.getByRole("button", { name: "Resolve Document comment 1" });
     expect(resolve).toBeDisabled();
     fireEvent.click(resolve);
     expect(onResolveThread).not.toHaveBeenCalled();

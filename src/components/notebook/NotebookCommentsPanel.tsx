@@ -24,7 +24,7 @@ export function NotebookCommentsPanel({
   onResolveThread,
   onReopenThread,
 }: NotebookCommentsPanelProps) {
-  const threads = (projection?.threads ?? []).filter((thread) => thread.anchor.kind === "notebook");
+  const threads = projection?.threads ?? [];
   const canCreate = !readOnly && Boolean(onCreateThread);
   const canReply = !readOnly && Boolean(onReplyThread);
   const canUpdateStatus = !readOnly && (Boolean(onResolveThread) || Boolean(onReopenThread));
@@ -32,12 +32,18 @@ export function NotebookCommentsPanel({
   return (
     <section className="flex min-h-0 flex-col gap-3" data-testid="notebook-comments-panel">
       {statusMessage ? (
-        <div className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
+        <div
+          className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground"
+          role="status"
+        >
           {statusMessage}
         </div>
       ) : null}
       {errorMessage ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div
+          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+          role="alert"
+        >
           {errorMessage}
         </div>
       ) : null}
@@ -51,17 +57,18 @@ export function NotebookCommentsPanel({
         onSubmit={onCreateThread}
       />
 
-      {threads.length === 0 ? (
+      {projection && threads.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
           <MessageSquare className="size-4" aria-hidden="true" />
           <span>No comments yet.</span>
         </div>
       ) : (
         <ol className="space-y-3">
-          {threads.map((thread) => (
+          {threads.map((thread, index) => (
             <CommentThreadItem
               key={thread.id}
               thread={thread}
+              threadLabel={`${anchorLabel(thread)} comment ${index + 1}`}
               canReply={canReply}
               canUpdateStatus={canUpdateStatus}
               onReplyThread={onReplyThread}
@@ -77,6 +84,7 @@ export function NotebookCommentsPanel({
 
 function CommentThreadItem({
   thread,
+  threadLabel,
   canReply,
   canUpdateStatus,
   onReplyThread,
@@ -84,6 +92,7 @@ function CommentThreadItem({
   onReopenThread,
 }: {
   thread: CommentThreadSnapshot;
+  threadLabel: string;
   canReply: boolean;
   canUpdateStatus: boolean;
   onReplyThread?: (threadId: string, body: string) => void | Promise<void>;
@@ -98,12 +107,14 @@ function CommentThreadItem({
           label: "Reopen",
           icon: RotateCcw,
           onClick: () => onReopenThread?.(thread.id),
+          ariaLabel: `Reopen ${threadLabel}`,
           disabled: !statusActionEnabled || !onReopenThread,
         }
       : {
           label: "Resolve",
           icon: CheckCircle2,
           onClick: () => onResolveThread?.(thread.id),
+          ariaLabel: `Resolve ${threadLabel}`,
           disabled: !statusActionEnabled || !onResolveThread,
         };
   const StatusIcon = statusAction.icon;
@@ -122,7 +133,7 @@ function CommentThreadItem({
       <div className="space-y-3 p-3">
         <div className="flex min-w-0 items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="text-xs font-medium text-muted-foreground">{anchorLabel(thread)}</div>
+            <div className="text-xs font-medium text-muted-foreground">{threadLabel}</div>
             <div className="mt-1 flex flex-wrap gap-1.5">
               <CommentBadge state={thread.status} />
               {thread.mutation_state !== "accepted" ? (
@@ -140,6 +151,7 @@ function CommentThreadItem({
             type="button"
             onClick={handleStatusAction}
             disabled={statusAction.disabled || statusSubmitting}
+            aria-label={statusAction.ariaLabel}
             className="inline-flex min-h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             <StatusIcon className="size-3.5" aria-hidden="true" />
@@ -154,7 +166,8 @@ function CommentThreadItem({
         </div>
 
         <CommentComposer
-          ariaLabel={`Reply to ${thread.id}`}
+          ariaLabel={`Reply to ${threadLabel}`}
+          buttonAriaLabel={`Submit reply to ${threadLabel}`}
           buttonLabel="Reply"
           icon="send"
           disabled={!canReply}
@@ -188,6 +201,7 @@ function CommentMessage({ message }: { message: CommentMessageSnapshot }) {
 
 function CommentComposer({
   ariaLabel,
+  buttonAriaLabel,
   buttonLabel,
   icon,
   disabled,
@@ -195,6 +209,7 @@ function CommentComposer({
   onSubmit,
 }: {
   ariaLabel: string;
+  buttonAriaLabel?: string;
   buttonLabel: string;
   icon: "plus" | "send";
   disabled: boolean;
@@ -237,6 +252,7 @@ function CommentComposer({
         <button
           type="submit"
           disabled={disabled || submitting || body.trim().length === 0}
+          aria-label={buttonAriaLabel}
           className="inline-flex min-h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Icon className="size-3.5" aria-hidden="true" />
@@ -264,13 +280,13 @@ function CommentBadge({ state, compact = false }: { state: string; compact?: boo
 function anchorLabel(thread: CommentThreadSnapshot): string {
   switch (thread.anchor.kind) {
     case "cell":
-      return `Cell ${thread.anchor.cell_id}`;
+      return "Cell";
     case "cell_range":
-      return `Cells ${thread.anchor.start_cell_id} to ${thread.anchor.end_cell_id}`;
+      return "Cell range";
     case "source_range":
-      return `Source ${thread.anchor.cell_id}`;
+      return "Source";
     case "output":
-      return `Output ${thread.anchor.cell_id}`;
+      return "Output";
     case "notebook":
     default:
       return "Document";
