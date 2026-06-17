@@ -67,10 +67,9 @@ test.describe("notebook comments rail", () => {
 
     const body = `Desktop comments rail ${crypto.randomUUID()}`;
     await panel.getByLabel("New document comment").fill(body);
-    await panel.getByRole("button", { name: "New" }).click();
+    await panel.getByRole("button", { name: "Add comment" }).click();
 
     await expect(panel.getByText(body)).toBeVisible({ timeout: 30_000 });
-    await expect(panel.getByText("Accepted").first()).toBeVisible({ timeout: 120_000 });
     await expect
       .poll(async () => hasAcceptedComment(await mcp!.listComments(), body), {
         timeout: 120_000,

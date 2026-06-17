@@ -44,7 +44,7 @@ export function NotebookCommentsPanel({
 
       <CommentComposer
         ariaLabel="New document comment"
-        buttonLabel="New"
+        buttonLabel="Add comment"
         icon="plus"
         disabled={!canCreate}
         placeholder="Add a document comment"
@@ -125,7 +125,9 @@ function CommentThreadItem({
             <div className="text-xs font-medium text-muted-foreground">{anchorLabel(thread)}</div>
             <div className="mt-1 flex flex-wrap gap-1.5">
               <CommentBadge state={thread.status} />
-              <CommentBadge state={thread.mutation_state} />
+              {thread.mutation_state !== "accepted" ? (
+                <CommentBadge state={thread.mutation_state} />
+              ) : null}
             </div>
           </div>
           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
@@ -171,8 +173,14 @@ function CommentMessage({ message }: { message: CommentMessageSnapshot }) {
         {message.body}
       </p>
       <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
-        <CommentBadge state={message.mutation_state} compact />
-        {message.created_by_actor_label ? <span>{message.created_by_actor_label}</span> : null}
+        {message.mutation_state !== "accepted" ? (
+          <CommentBadge state={message.mutation_state} compact />
+        ) : null}
+        {message.created_by_actor_label ? (
+          <span title={message.created_by_actor_label}>
+            {formatActorLabel(message.created_by_actor_label)}
+          </span>
+        ) : null}
       </div>
     </article>
   );
@@ -272,6 +280,27 @@ function anchorLabel(thread: CommentThreadSnapshot): string {
 function formatStateLabel(state: string): string {
   if (state.length === 0) return state;
   return state.charAt(0).toUpperCase() + state.slice(1).replace(/_/g, " ");
+}
+
+function formatActorLabel(actorLabel: string): string {
+  if (actorLabel.startsWith("local:")) {
+    const localLabel = actorLabel.slice("local:".length);
+    const [principal, operator] = localLabel.split("/", 2);
+    if (operator?.startsWith("desktop:")) {
+      return principal ? `${principal} desktop` : "Local desktop";
+    }
+    if (operator?.startsWith("agent:")) {
+      const agentName = operator.split(":")[1];
+      return agentName ? `${principal} ${agentName}` : principal;
+    }
+    return principal || "Local";
+  }
+
+  if (actorLabel.startsWith("agent:nteract-mcp:")) {
+    return "nteract MCP";
+  }
+
+  return actorLabel;
 }
 
 function stateToneClassName(state: string): string {

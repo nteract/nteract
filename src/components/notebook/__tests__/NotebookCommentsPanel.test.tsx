@@ -77,7 +77,7 @@ describe("NotebookCommentsPanel", () => {
     fireEvent.change(screen.getByLabelText("New document comment"), {
       target: { value: "Add this to the review notes" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
 
     await waitFor(() =>
       expect(onCreateThread).toHaveBeenCalledWith("Add this to the review notes"),
@@ -111,6 +111,30 @@ describe("NotebookCommentsPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
     expect(onResolveThread).toHaveBeenCalledWith("thread-1");
+  });
+
+  it("formats local actor labels without exposing the raw durable id", () => {
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [
+            {
+              ...projection.threads[0],
+              messages: [
+                {
+                  ...projection.threads[0].messages[0],
+                  created_by_actor_label: "local:ubuntu/desktop:d47eea7d",
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("ubuntu desktop")).toBeVisible();
+    expect(screen.queryByText("local:ubuntu/desktop:d47eea7d")).not.toBeInTheDocument();
   });
 
   it("reopens resolved threads", () => {
