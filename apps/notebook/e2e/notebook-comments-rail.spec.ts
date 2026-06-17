@@ -34,6 +34,10 @@ interface CommentsListResult {
   threads?: CommentThread[];
 }
 
+interface CommentThreadResourceResult {
+  thread?: CommentThread;
+}
+
 function hasAcceptedComment(result: unknown, body: string): boolean {
   return Boolean(acceptedThreadWithMessage(result, body));
 }
@@ -165,6 +169,126 @@ test.describe("notebook comments rail", () => {
         },
       )
       .toBe("open");
+  });
+
+  test("creates and updates cell comments through MCP tools and resources", async ({ page }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+
+    mcp = await McpPeer.start();
+    await mcp.connectNotebook(notebookId);
+
+    const cellId = await mcp.createCell("answer = 42");
+    const body = `MCP cell comment ${crypto.randomUUID()}`;
+    const created = (await mcp.createCommentThread(body, {
+      kind: "cell",
+      cell_id: cellId,
+    })) as { thread_id?: string };
+    const threadId = created.thread_id;
+    if (!threadId) throw new Error("MCP create_comment_thread did not return a thread_id");
+
+    await expect
+      .poll(() => mcp!.listComments({ cellId }), {
+        timeout: 120_000,
+      })
+      .toMatchObject({
+        threads: expect.arrayContaining([
+          expect.objectContaining({
+            id: threadId,
+            status: "open",
+            mutation_state: "accepted",
+            badge_cell_ids: expect.arrayContaining([cellId]),
+            messages: expect.arrayContaining([
+              expect.objectContaining({
+                body,
+                mutation_state: "accepted",
+              }),
+            ]),
+          }),
+        ]),
+      });
+
+    const commentsResource = (await mcp.readResourceJson(
+      `nteract://notebooks/${notebookId}/comments`,
+    )) as CommentsListResult;
+    expect(acceptedThreadWithMessage(commentsResource, body)?.id).toBe(threadId);
+
+    const cellCommentsResource = (await mcp.readResourceJson(
+      `nteract://notebooks/${notebookId}/cells/${cellId}/comments`,
+    )) as CommentsListResult;
+    expect(acceptedThreadWithMessage(cellCommentsResource, body)?.id).toBe(threadId);
+
+    const threadResource = (await mcp.readResourceJson(
+      `nteract://notebooks/${notebookId}/comments/threads/${threadId}`,
+    )) as CommentThreadResourceResult;
+    expect(threadResource.thread).toMatchObject({
+      id: threadId,
+      status: "open",
+      mutation_state: "accepted",
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          body,
+          mutation_state: "accepted",
+        }),
+      ]),
+    });
+
+    const replyBody = `MCP reply ${crypto.randomUUID()}`;
+    await mcp.replyCommentThread(threadId, replyBody);
+    await expect
+      .poll(() => mcp!.listComments({ cellId }), {
+        timeout: 120_000,
+      })
+      .toMatchObject({
+        threads: expect.arrayContaining([
+          expect.objectContaining({
+            id: threadId,
+            messages: expect.arrayContaining([
+              expect.objectContaining({
+                body: replyBody,
+                mutation_state: "accepted",
+              }),
+            ]),
+          }),
+        ]),
+      });
+
+    await mcp.resolveCommentThread(threadId);
+    await expect
+      .poll(
+        async () =>
+          acceptedThreadStatus(await mcp!.listComments({ includeResolved: true }), threadId),
+        {
+          timeout: 120_000,
+        },
+      )
+      .toBe("resolved");
+    const resolvedThreadResource = (await mcp.readResourceJson(
+      `nteract://notebooks/${notebookId}/comments/threads/${threadId}`,
+    )) as CommentThreadResourceResult;
+    expect(resolvedThreadResource.thread?.status).toBe("resolved");
+
+    await mcp.reopenCommentThread(threadId);
+    await expect
+      .poll(
+        async () =>
+          acceptedThreadStatus(await mcp!.listComments({ includeResolved: true }), threadId),
+        {
+          timeout: 120_000,
+        },
+      )
+      .toBe("open");
+    const reopenedThreadResource = (await mcp.readResourceJson(
+      `nteract://notebooks/${notebookId}/comments/threads/${threadId}`,
+    )) as CommentThreadResourceResult;
+    expect(reopenedThreadResource.thread).toMatchObject({
+      id: threadId,
+      status: "open",
+      messages: expect.arrayContaining([
+        expect.objectContaining({ body }),
+        expect.objectContaining({ body: replyBody }),
+      ]),
+    });
   });
 
   test("creates selected source comments in Desktop and exposes source anchors through MCP", async ({

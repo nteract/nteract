@@ -2349,6 +2349,177 @@ async fn test_comment_content_request_accepts_thread_message_and_persists_sideca
 }
 
 #[tokio::test]
+async fn test_comment_request_lifecycle_reopens_from_comments_sidecar_by_doc_id() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "comments-lifecycle.ipynb");
+    let cell_position = {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-commented", "code").unwrap();
+        doc.update_source("cell-commented", "value = 1").unwrap();
+        doc.get_cell_position("cell-commented")
+            .expect("cell position should exist")
+    };
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.create_thread(
+                "thread-lifecycle",
+                "message-lifecycle",
+                &comments_doc::CommentAnchor::Cell {
+                    cell_id: "cell-commented".into(),
+                    observed_cell_position: Some(cell_position),
+                },
+                "please review this cell",
+                None,
+                "2026-06-16T00:00:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(&room);
+
+    let runtime_attempt = crate::requests::comments::accept_thread(
+        &room,
+        "thread-lifecycle".to_string(),
+        "message-lifecycle".to_string(),
+        observed_heads.clone(),
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::RuntimePeer,
+    )
+    .await;
+    match runtime_attempt {
+        crate::protocol::NotebookResponse::Error { error } => {
+            assert!(error.contains("cannot finalize comment thread creation"));
+        }
+        other => panic!("runtime peer must not finalize comment thread, got {other:?}"),
+    }
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].mutation_state,
+        comments_doc::ProjectedMutationState::Pending
+    );
+    assert!(!projection.threads[0].trusted);
+
+    let accepted_thread = crate::requests::comments::accept_thread(
+        &room,
+        "thread-lifecycle".to_string(),
+        "message-lifecycle".to_string(),
+        observed_heads,
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(
+        accepted_thread,
+        crate::protocol::NotebookResponse::Ok {}
+    ));
+
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.reply(
+                "thread-lifecycle",
+                "message-reply-lifecycle",
+                "reply survives reopen",
+                Some("message-lifecycle"),
+                "2026-06-16T00:01:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let reply_heads = comments_heads_hex(&room);
+    let accepted_reply = crate::requests::comments::accept_message(
+        &room,
+        "thread-lifecycle".to_string(),
+        "message-reply-lifecycle".to_string(),
+        reply_heads,
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(
+        accepted_reply,
+        crate::protocol::NotebookResponse::Ok {}
+    ));
+
+    let resolved = crate::requests::comments::resolve_thread(
+        &room,
+        "thread-lifecycle".to_string(),
+        comments_heads_hex(&room),
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(resolved, crate::protocol::NotebookResponse::Ok {}));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].status,
+        comments_doc::ProjectedThreadStatus::Resolved
+    );
+
+    let reopened_status = crate::requests::comments::reopen_thread(
+        &room,
+        "thread-lifecycle".to_string(),
+        comments_heads_hex(&room),
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(
+        reopened_status,
+        crate::protocol::NotebookResponse::Ok {}
+    ));
+
+    let comments_doc_id = room.comments_doc_id.clone();
+    let sidecar_path = room.comments_store.doc_path(&comments_doc_id);
+    assert!(
+        sidecar_path.exists(),
+        "authority requests should persist the CommentsDoc sidecar"
+    );
+    let reopened_room = NotebookRoom::new_fresh_with_trusted_packages(
+        Uuid::new_v4(),
+        Some(notebook_path),
+        tmp.path(),
+        test_blob_store(&tmp),
+        false,
+        test_trusted_packages(),
+    )
+    .unwrap();
+    assert_eq!(reopened_room.comments_doc_id, comments_doc_id);
+    let projection = reopened_room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(projection.threads.len(), 1);
+    let thread = &projection.threads[0];
+    assert_eq!(thread.id, "thread-lifecycle");
+    assert_eq!(thread.status, comments_doc::ProjectedThreadStatus::Open);
+    assert_eq!(
+        thread.mutation_state,
+        comments_doc::ProjectedMutationState::Accepted
+    );
+    assert!(thread.trusted);
+    assert_eq!(thread.badge_cell_ids, vec!["cell-commented".to_string()]);
+    assert_eq!(thread.messages.len(), 2);
+    assert_eq!(thread.messages[0].body, "please review this cell");
+    assert_eq!(thread.messages[1].body, "reply survives reopen");
+    assert!(thread.messages.iter().all(|message| {
+        message.mutation_state == comments_doc::ProjectedMutationState::Accepted && message.trusted
+    }));
+}
+
+#[tokio::test]
 async fn test_comment_content_request_rejects_runtime_peer() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "comments-accept-runtime.ipynb");

@@ -83,6 +83,15 @@ export class McpPeer {
     return match[1];
   }
 
+  async readResourceJson(uri: string): Promise<unknown> {
+    const result = (await this.request("resources/read", { uri })) as {
+      contents?: Array<{ type?: string; text?: string }>;
+    };
+    const text = result.contents?.find((item) => item.text !== undefined)?.text;
+    if (!text) throw new Error(`Resource ${uri} did not return JSON text`);
+    return JSON.parse(text);
+  }
+
   async listComments(args: { cellId?: string; includeResolved?: boolean } = {}): Promise<unknown> {
     return await this.callToolJson("list_comments", {
       ...(args.cellId !== undefined ? { cell_id: args.cellId } : {}),
