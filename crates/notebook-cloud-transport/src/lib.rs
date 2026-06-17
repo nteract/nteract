@@ -302,6 +302,37 @@ fn cloud_frame_rejection_error(payload: &[u8]) -> Option<std::io::Error> {
     ))
 }
 
+fn is_recoverable_cloud_frame_rejection_error(error: &std::io::Error) -> bool {
+    if error.kind() != std::io::ErrorKind::PermissionDenied {
+        return false;
+    }
+
+    let message = error.to_string();
+    if !message.starts_with("cloud room rejected frame:") {
+        return false;
+    }
+    let sync_frame = [
+        "frame_type=0 ",
+        "frame_type=5 ",
+        "frame_type=9 ",
+        "frame_type=automerge_sync ",
+        "frame_type=runtime_state_sync ",
+        "frame_type=comms_doc_sync ",
+        "frame_type=AUTOMERGE_SYNC ",
+        "frame_type=RUNTIME_STATE_SYNC ",
+        "frame_type=COMMS_DOC_SYNC ",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle));
+    if !sync_frame {
+        return false;
+    }
+
+    message.contains("recursive use of an object detected which would lead to unsafe aliasing")
+        || message.contains("PatchLogMismatch")
+        || message.contains("patch logs cannot be shared between documents")
+}
+
 fn terminal_cloud_close_error(code: Option<u16>, reason: &str) -> Option<std::io::Error> {
     let reason = reason.trim();
     let terminal_by_reason = matches!(
@@ -742,6 +773,9 @@ impl FrameTransport for CloudWsFrameTransport {
     }
 
     fn stream_error_is_recoverable(&self, error: &std::io::Error) -> bool {
+        if is_recoverable_cloud_frame_rejection_error(error) {
+            return true;
+        }
         error.kind() != std::io::ErrorKind::PermissionDenied
     }
 
@@ -877,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn cloud_frame_rejection_error_is_non_recoverable_shape() {
+    fn cloud_frame_rejection_error_surfaces_rejection_reason() {
         let payload = serde_json::to_vec(&serde_json::json!({
             "type": "cloud_frame_rejected",
             "frame_type": 5,
@@ -895,6 +929,39 @@ mod tests {
         }))
         .unwrap();
         assert!(cloud_frame_rejection_error(&accepted).is_none());
+    }
+
+    #[test]
+    fn sync_frame_rejection_from_automerge_boundary_is_recoverable() {
+        let transport = CloudWsFrameTransport::new(test_config());
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "type": "cloud_frame_rejected",
+            "frame_type": 5,
+            "reason": "room host rejected runtime_state_sync frame: Error: recursive use of an object detected which would lead to unsafe aliasing in rust",
+        }))
+        .unwrap();
+        let error = cloud_frame_rejection_error(&payload).expect("rejection becomes an error");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            transport.stream_error_is_recoverable(&error),
+            "sync divergence rejections should reconnect instead of killing the runtime peer",
+        );
+    }
+
+    #[test]
+    fn authz_frame_rejection_remains_terminal() {
+        let transport = CloudWsFrameTransport::new(test_config());
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "type": "cloud_frame_rejected",
+            "frame_type": 5,
+            "reason": "actor label must be '<principal>/<operator>'",
+        }))
+        .unwrap();
+        let error = cloud_frame_rejection_error(&payload).expect("rejection becomes an error");
+        assert!(
+            !transport.stream_error_is_recoverable(&error),
+            "permission and authority rejects should still stop the runtime peer",
+        );
     }
 
     #[test]

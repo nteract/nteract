@@ -1345,6 +1345,106 @@ describe("RoomMaterializer", () => {
     assert.deepEqual([...(await state.storage.list({ prefix: "room-host:" })).keys()], []);
   });
 
+  it("recovers from a checkpoint host that fails while receiving a peer sync frame", async () => {
+    const state = fakeState();
+    const checkpointSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "checkpoint-cell",
+      "Unreachable checkpoint edit\n",
+    );
+    const publishedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "published-cell",
+      "Recovered published snapshot after receive\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(checkpointSnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(checkpointSnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 4,
+        notebook_heads: checkpointSnapshot.notebookHeads,
+        runtime_state_heads: checkpointSnapshot.runtimeStateHeads,
+        saved_at: "2026-05-28T00:00:00.000Z",
+        published_revision_id: "revision-current",
+        published_notebook_heads: publishedSnapshot.notebookHeads,
+        published_runtime_state_heads: publishedSnapshot.runtimeStateHeads,
+      }),
+    ]);
+
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-current",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: publishedSnapshot.notebookBytes,
+      runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+    });
+
+    const materializer = new RoomMaterializer("demo", state, env);
+    const checkpointHost = await (
+      materializer as unknown as {
+        loadHost(): Promise<{
+          receive_peer_frame: (
+            peerId: string,
+            principal: string,
+            actorLabel: string,
+            connectionScope: string,
+            canWriteAllNotebookChanges: boolean,
+            encoded: Uint8Array,
+          ) => unknown;
+        }>;
+      }
+    ).loadHost();
+    checkpointHost.receive_peer_frame = () => {
+      throw new Error("recursive use of an object detected which would lead to unsafe aliasing");
+    };
+
+    const peer = {
+      id: "peer-viewer",
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+      ),
+    };
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+
+    let result = await materializer.receiveFrame(peer, {
+      type: FrameType.AUTOMERGE_SYNC,
+      payload: new Uint8Array([1, 2, 3]),
+    });
+    for (let round = 0; round < 8; round += 1) {
+      const replies = applyOutboundToClient(result.outbound, peer.id, viewer);
+      if (replies.length === 0) {
+        break;
+      }
+      const outbound = [];
+      for (const reply of replies) {
+        const next = await materializer.receiveFrame(peer, {
+          type: FrameType.AUTOMERGE_SYNC,
+          payload: reply.slice(1),
+        });
+        outbound.push(...next.outbound);
+      }
+      result = {
+        changed: false,
+        notebook_changed: false,
+        runtime_state_changed: false,
+        outbound,
+      };
+    }
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["published-cell", "Recovered published snapshot after receive\n"]],
+    );
+    assert.deepEqual([...(await state.storage.list({ prefix: "room-host:" })).keys()], []);
+  });
+
   it("recovers from a published snapshot when stale checkpoint cleanup is over quota", async () => {
     const state = fakeState();
     const checkpointSnapshot = await createNotebookRoomSnapshot(
