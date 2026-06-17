@@ -100,7 +100,11 @@ function CommentThreadItem({
   onReopenThread?: (threadId: string) => void | Promise<void>;
 }) {
   const [statusSubmitting, setStatusSubmitting] = useState(false);
-  const statusActionEnabled = canUpdateStatus && thread.mutation_state === "accepted";
+  const hasUnsettledMessages = thread.messages.some(
+    (message) => message.mutation_state === "pending" || message.mutation_state === "unverified",
+  );
+  const statusActionEnabled =
+    canUpdateStatus && thread.mutation_state === "accepted" && !hasUnsettledMessages;
   const statusAction =
     thread.status === "resolved"
       ? {
@@ -141,7 +145,12 @@ function CommentThreadItem({
               ) : null}
             </div>
           </div>
-          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          <span
+            aria-label={`${thread.messages.length} ${
+              thread.messages.length === 1 ? "message" : "messages"
+            }`}
+            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+          >
             {thread.messages.length}
           </span>
         </div>
@@ -228,9 +237,8 @@ function CommentComposer({
     setSubmitting(true);
     try {
       await onSubmit(trimmed);
-    } catch (error) {
+    } catch {
       setBody(trimmed);
-      throw error;
     } finally {
       setSubmitting(false);
     }

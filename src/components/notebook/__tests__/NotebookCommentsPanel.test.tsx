@@ -117,6 +117,30 @@ describe("NotebookCommentsPanel", () => {
     await waitFor(() => expect(screen.getByLabelText("New document comment")).toBeEnabled());
   });
 
+  it("restores submitted text when a comment request fails", async () => {
+    const onCreateThread = vi.fn(() => Promise.reject(new Error("sync failed")));
+    render(
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [] }}
+        onCreateThread={onCreateThread}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("New document comment"), {
+      target: { value: "Keep this draft if submit fails" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+
+    await waitFor(() =>
+      expect(onCreateThread).toHaveBeenCalledWith("Keep this draft if submit fails"),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("New document comment")).toHaveValue(
+        "Keep this draft if submit fails",
+      ),
+    );
+  });
+
   it("renders threads and submits replies", async () => {
     const onReplyThread = vi.fn();
     const onResolveThread = vi.fn();
@@ -132,6 +156,7 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByText("alice")).toBeVisible();
     expect(screen.getByText("Cell comment 2")).toBeVisible();
     expect(screen.getByText("Cell-scoped comment")).toBeVisible();
+    expect(screen.getAllByLabelText("1 message")).toHaveLength(2);
 
     fireEvent.change(screen.getByLabelText("Reply to Document comment 1"), {
       target: { value: "Looks ready locally" },
@@ -144,6 +169,39 @@ describe("NotebookCommentsPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Resolve Document comment 1" }));
     expect(onResolveThread).toHaveBeenCalledWith("thread-1");
+  });
+
+  it("does not allow status actions while a reply is pending", () => {
+    const onResolveThread = vi.fn();
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [
+            {
+              ...projection.threads[0],
+              messages: [
+                ...projection.threads[0].messages,
+                {
+                  id: "message-pending",
+                  position: "81",
+                  body: "Still syncing",
+                  mutation_state: "pending",
+                  trusted: false,
+                  created_at: "2026-06-16T00:01:00.000Z",
+                },
+              ],
+            },
+          ],
+        }}
+        onResolveThread={onResolveThread}
+      />,
+    );
+
+    const resolve = screen.getByRole("button", { name: "Resolve Document comment 1" });
+    expect(resolve).toBeDisabled();
+    fireEvent.click(resolve);
+    expect(onResolveThread).not.toHaveBeenCalled();
   });
 
   it("formats local actor labels without exposing the raw durable id", () => {

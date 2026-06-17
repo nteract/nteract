@@ -582,13 +582,16 @@ function AppContent() {
       : canMutateComments
         ? null
         : "Read-only connection.";
+  const failCommentAction = useCallback((message: string): never => {
+    setCommentsError(message);
+    throw new Error(message);
+  }, []);
 
   const handleCreateDocumentComment = useCallback(
     async (body: string) => {
       const handle = getHandle();
       if (!handle?.create_comment_thread) {
-        setCommentsError("Comments sync unavailable.");
-        return;
+        failCommentAction("Comments sync unavailable.");
       }
       setCommentsError(null);
       const projection = refreshCommentsProjection() ?? commentsProjection;
@@ -608,14 +611,12 @@ function AppContent() {
         );
         const observedCommentsHeads = handle.get_comments_doc_heads_hex?.() ?? [];
         if (observedCommentsHeads.length === 0) {
-          setCommentsError("Comment heads unavailable after create.");
-          return;
+          failCommentAction("Comment heads unavailable after create.");
         }
         refreshCommentsProjection();
         const synced = await flushSync();
         if (!synced) {
-          setCommentsError("Failed to sync comment before authority accept.");
-          return;
+          failCommentAction("Failed to sync comment before authority accept.");
         }
         const response = await notebookClient.acceptCommentThread(
           threadId,
@@ -624,16 +625,18 @@ function AppContent() {
         );
         const authorityError = commentAuthorityError(response, "accept comment thread");
         if (authorityError) {
-          setCommentsError(authorityError);
-          return;
+          failCommentAction(authorityError);
         }
         triggerSync();
       } catch (error) {
-        setCommentsError(error instanceof Error ? error.message : "Create comment failed.");
+        const message = error instanceof Error ? error.message : "Create comment failed.";
+        setCommentsError(message);
+        throw error instanceof Error ? error : new Error(message);
       }
     },
     [
       commentsProjection,
+      failCommentAction,
       flushSync,
       getHandle,
       notebookClient,
@@ -646,8 +649,7 @@ function AppContent() {
     async (threadId: string, body: string) => {
       const handle = getHandle();
       if (!handle?.reply_comment_thread) {
-        setCommentsError("Comments sync unavailable.");
-        return;
+        failCommentAction("Comments sync unavailable.");
       }
       setCommentsError(null);
       const projection = refreshCommentsProjection() ?? commentsProjection;
@@ -664,14 +666,12 @@ function AppContent() {
         );
         const observedCommentsHeads = handle.get_comments_doc_heads_hex?.() ?? [];
         if (observedCommentsHeads.length === 0) {
-          setCommentsError("Comment heads unavailable after reply.");
-          return;
+          failCommentAction("Comment heads unavailable after reply.");
         }
         refreshCommentsProjection();
         const synced = await flushSync();
         if (!synced) {
-          setCommentsError("Failed to sync reply before authority accept.");
-          return;
+          failCommentAction("Failed to sync reply before authority accept.");
         }
         const response = await notebookClient.acceptCommentMessage(
           threadId,
@@ -680,16 +680,18 @@ function AppContent() {
         );
         const authorityError = commentAuthorityError(response, "accept comment reply");
         if (authorityError) {
-          setCommentsError(authorityError);
-          return;
+          failCommentAction(authorityError);
         }
         triggerSync();
       } catch (error) {
-        setCommentsError(error instanceof Error ? error.message : "Reply failed.");
+        const message = error instanceof Error ? error.message : "Reply failed.";
+        setCommentsError(message);
+        throw error instanceof Error ? error : new Error(message);
       }
     },
     [
       commentsProjection,
+      failCommentAction,
       flushSync,
       getHandle,
       notebookClient,
