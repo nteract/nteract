@@ -258,7 +258,7 @@ describe("NotebookCommentsPanel", () => {
 
     expect(screen.getByText("Check the framing before publishing.")).toBeVisible();
     expect(screen.getByText("alice")).toBeVisible();
-    expect(screen.getByText("Cell comment 2")).toBeVisible();
+    expect(screen.getByText("Cell comment 1")).toBeVisible();
     expect(screen.getByText("Cell-scoped comment")).toBeVisible();
     expect(screen.getAllByLabelText("1 message")).toHaveLength(2);
 
@@ -276,31 +276,34 @@ describe("NotebookCommentsPanel", () => {
   });
 
   it("renders source excerpts on source range threads", () => {
+    const onFocusThreadAnchor = vi.fn();
+    const sourceThread = {
+      ...projection.threads[0],
+      id: "thread-source",
+      anchor: {
+        kind: "source_range" as const,
+        cell_id: "cell-1",
+        start_line: 2,
+        start_column: 0,
+        end_line: 2,
+        end_column: 14,
+        exact_quote: "important_call()",
+      },
+    };
     render(
       <NotebookCommentsPanel
         projection={{
           ...projection,
-          threads: [
-            {
-              ...projection.threads[0],
-              id: "thread-source",
-              anchor: {
-                kind: "source_range",
-                cell_id: "cell-1",
-                start_line: 2,
-                start_column: 0,
-                end_line: 2,
-                end_column: 14,
-                exact_quote: "important_call()",
-              },
-            },
-          ],
+          threads: [sourceThread],
         }}
+        onFocusThreadAnchor={onFocusThreadAnchor}
       />,
     );
 
     expect(screen.getByText("Source comment 1")).toBeVisible();
     expect(screen.getByTestId("comment-thread-source-quote")).toHaveTextContent("important_call()");
+    fireEvent.click(screen.getByRole("button", { name: "Show cell for Source comment 1" }));
+    expect(onFocusThreadAnchor).toHaveBeenCalledWith(sourceThread);
   });
 
   it("does not allow status actions while a reply is pending", () => {

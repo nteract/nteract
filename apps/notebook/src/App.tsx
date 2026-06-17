@@ -7,6 +7,7 @@ import {
   type NotebookResponse,
   type NotebookOutlineItem,
   type CommentAnchor,
+  type CommentThreadSnapshot,
   type CommentsProjection,
   putBlob,
   type SessionStatus,
@@ -184,6 +185,36 @@ function sourceRangeAnchorMatchesCurrentCell(anchor: CommentAnchor): boolean {
   const to = sourceOffsetFromPoint(cell.source, anchor.end_line, anchor.end_column);
   if (from === null || to === null || from > to) return false;
   return cell.source.slice(from, to) === anchor.exact_quote;
+}
+
+function commentThreadTargetCellId(thread: CommentThreadSnapshot): string | null {
+  switch (thread.anchor.kind) {
+    case "cell":
+    case "source_range":
+    case "output":
+      return thread.anchor.cell_id;
+    case "cell_range":
+      return thread.anchor.start_cell_id;
+    case "notebook":
+    default:
+      return thread.badge_cell_ids[0] ?? null;
+  }
+}
+
+function focusCommentTargetCell(cellId: string): void {
+  if (typeof document === "undefined") return;
+
+  const escapedCellId = CSS.escape(cellId);
+  const cellElement = document.querySelector(
+    `[data-slot="cell-container"][data-cell-id="${escapedCellId}"], [data-cell-id="${escapedCellId}"][data-cell-type]`,
+  );
+  if (!(cellElement instanceof HTMLElement)) return;
+
+  cellElement.scrollIntoView({ block: "center", behavior: "smooth" });
+  const editor = cellElement.querySelector('.cm-content[contenteditable="true"]');
+  if (editor instanceof HTMLElement) {
+    window.requestAnimationFrame(() => editor.focus());
+  }
 }
 
 function focusActiveRailButtonWhenStageIsHidden(
@@ -990,6 +1021,21 @@ function AppContent() {
     setFocusedCellId(cellId);
     flushCellUIState();
   }, []);
+  const handleFocusCommentThreadAnchor = useCallback(
+    (thread: CommentThreadSnapshot) => {
+      const cellId = commentThreadTargetCellId(thread);
+      if (!cellId) return;
+
+      focusCellInStore(cellId);
+      focusCommentTargetCell(cellId);
+
+      const takeoverQuery = window.matchMedia?.(NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY);
+      if (takeoverQuery?.matches) {
+        setNotebookRailCollapsed(true);
+      }
+    },
+    [focusCellInStore],
+  );
   const handleNotebookViewFocus = useCallback(() => {}, []);
 
   const getOutlineStatusLabel = useOutlineStatusLabel();
@@ -1773,6 +1819,7 @@ function AppContent() {
                   onReplyThread={canMutateComments ? handleReplyCommentThread : undefined}
                   onResolveThread={canMutateComments ? handleResolveCommentThread : undefined}
                   onReopenThread={canMutateComments ? handleReopenCommentThread : undefined}
+                  onFocusThreadAnchor={handleFocusCommentThreadAnchor}
                 />
               }
               packagesPanel={

@@ -1,4 +1,4 @@
-import { CheckCircle2, MessageSquare, Plus, RotateCcw, Send, X } from "lucide-react";
+import { CheckCircle2, LocateFixed, MessageSquare, Plus, RotateCcw, Send, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type {
   CommentAnchor,
@@ -24,6 +24,7 @@ export interface NotebookCommentsPanelProps {
   onReplyThread?: (threadId: string, body: string) => void | Promise<void>;
   onResolveThread?: (threadId: string) => void | Promise<void>;
   onReopenThread?: (threadId: string) => void | Promise<void>;
+  onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
 }
 
 export function NotebookCommentsPanel({
@@ -37,8 +38,10 @@ export function NotebookCommentsPanel({
   onReplyThread,
   onResolveThread,
   onReopenThread,
+  onFocusThreadAnchor,
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
+  const labeledThreads = labelCommentThreads(threads);
   const canCreate = !readOnly && Boolean(onCreateThread);
   const canReply = !readOnly && Boolean(onReplyThread);
   const canUpdateStatus = !readOnly && (Boolean(onResolveThread) || Boolean(onReopenThread));
@@ -91,16 +94,17 @@ export function NotebookCommentsPanel({
         </div>
       ) : (
         <ol className="space-y-3">
-          {threads.map((thread, index) => (
+          {labeledThreads.map(({ thread, threadLabel }) => (
             <CommentThreadItem
               key={thread.id}
               thread={thread}
-              threadLabel={`${anchorLabel(thread)} comment ${index + 1}`}
+              threadLabel={threadLabel}
               canReply={canReply}
               canUpdateStatus={canUpdateStatus}
               onReplyThread={onReplyThread}
               onResolveThread={onResolveThread}
               onReopenThread={onReopenThread}
+              onFocusThreadAnchor={onFocusThreadAnchor}
             />
           ))}
         </ol>
@@ -158,6 +162,7 @@ function CommentThreadItem({
   onReplyThread,
   onResolveThread,
   onReopenThread,
+  onFocusThreadAnchor,
 }: {
   thread: CommentThreadSnapshot;
   threadLabel: string;
@@ -166,6 +171,7 @@ function CommentThreadItem({
   onReplyThread?: (threadId: string, body: string) => void | Promise<void>;
   onResolveThread?: (threadId: string) => void | Promise<void>;
   onReopenThread?: (threadId: string) => void | Promise<void>;
+  onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
 }) {
   const [statusSubmitting, setStatusSubmitting] = useState(false);
   const hasUnsettledMessages = thread.messages.some(
@@ -225,7 +231,18 @@ function CommentThreadItem({
 
         <CommentAnchorQuote quote={sourceQuoteFromAnchor(thread.anchor)} />
 
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          {commentThreadTargetCellId(thread) && onFocusThreadAnchor ? (
+            <button
+              type="button"
+              onClick={() => onFocusThreadAnchor(thread)}
+              aria-label={`Show cell for ${threadLabel}`}
+              className="inline-flex min-h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              <LocateFixed className="size-3.5" aria-hidden="true" />
+              Show cell
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={handleStatusAction}
@@ -429,6 +446,35 @@ function anchorLabelForDraft(anchor: CommentAnchor): string {
 
 function sourceQuoteFromAnchor(anchor: CommentAnchor): string | null {
   return anchor.kind === "source_range" ? (anchor.exact_quote ?? null) : null;
+}
+
+function commentThreadTargetCellId(thread: CommentThreadSnapshot): string | null {
+  switch (thread.anchor.kind) {
+    case "cell":
+    case "source_range":
+    case "output":
+      return thread.anchor.cell_id;
+    case "cell_range":
+      return thread.anchor.start_cell_id;
+    case "notebook":
+    default:
+      return thread.badge_cell_ids[0] ?? null;
+  }
+}
+
+function labelCommentThreads(
+  threads: readonly CommentThreadSnapshot[],
+): Array<{ thread: CommentThreadSnapshot; threadLabel: string }> {
+  const counts = new Map<string, number>();
+  return threads.map((thread) => {
+    const label = anchorLabel(thread);
+    const count = (counts.get(label) ?? 0) + 1;
+    counts.set(label, count);
+    return {
+      thread,
+      threadLabel: `${label} comment ${count}`,
+    };
+  });
 }
 
 function draftAutoFocusKey(target: NotebookCommentDraftTarget): string {
