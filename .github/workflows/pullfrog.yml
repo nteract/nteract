@@ -32,4 +32,4 @@ jobs:
         env:
           PULLFROG_AGENT: opencode
           AWS_REGION: us-east-1
-          BEDROCK_MODEL_ID: us.anthropic.claude-opus-4-8
+          BEDROCK_MODEL_ID: zai.glm-5

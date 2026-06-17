@@ -177,7 +177,13 @@ def test_run_doctor_uses_opencode(monkeypatch) -> None:
     result = asyncio.run(run_doctor(config))
 
     assert result == "OK."
-    assert calls == [("Reply exactly OK.", None, config)]
+    assert calls == [
+        (
+            "This is an automated smoke test. Reply with exactly OK and no other text.",
+            None,
+            config,
+        )
+    ]
 
 
 def test_build_opencode_env_writes_read_only_config(monkeypatch, tmp_path: Path) -> None:
@@ -263,17 +269,20 @@ def test_run_opencode_falls_back_to_direct_bedrock_when_empty(monkeypatch, tmp_p
         async def communicate(self, *args: bytes) -> tuple[bytes, bytes]:
             calls.append(("communicate", self.command, args))
             if self.command[0] == "aws":
-                response_path = Path(self.command[-1])
-                response_path.write_text(
+                return (
                     json.dumps(
                         {
-                            "id": "msg-direct",
-                            "content": [{"type": "text", "text": "DIRECT_OK"}],
-                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                            "output": {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": [{"text": "DIRECT_OK"}],
+                                }
+                            },
+                            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
                         }
-                    )
+                    ).encode(),
+                    b"",
                 )
-                return b"{}", b""
             return (
                 b'{"type":"step_finish","sessionID":"ses-empty","part":{"type":"step-finish","cost":0}}\n',
                 b"",
@@ -285,32 +294,33 @@ def test_run_opencode_falls_back_to_direct_bedrock_when_empty(monkeypatch, tmp_p
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     config = ReviewerConfig(
-        model="amazon-bedrock/us.anthropic.claude-opus-4-8",
+        model="amazon-bedrock/zai.glm-5",
         aws_region="us-east-1",
     )
 
     result = asyncio.run(agent.run_opencode("prompt", cwd=tmp_path, config=config))
 
     assert result.text == "DIRECT_OK"
-    assert result.session_id == "msg-direct"
+    assert result.session_id == "ses-empty"
     assert result.raw_metadata == {
         "fallback": {
             "reason": agent.DIRECT_BEDROCK_FALLBACK_REASON,
             "from": "opencode",
-            "to": "aws bedrock-runtime invoke-model",
+            "to": "aws bedrock-runtime converse",
             "opencode_session_id": "ses-empty",
-            "bedrock_model_id": "us.anthropic.claude-opus-4-8",
+            "bedrock_model_id": "zai.glm-5",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
         }
     }
     aws_command = calls[2][1]
     assert aws_command[:5] == (
         "aws",
         "bedrock-runtime",
-        "invoke-model",
+        "converse",
         "--region",
         "us-east-1",
     )
-    assert "us.anthropic.claude-opus-4-8" in aws_command
+    assert "zai.glm-5" in aws_command
 
 
 def test_run_opencode_reports_direct_bedrock_failure_reason(monkeypatch, tmp_path: Path) -> None:
@@ -332,14 +342,14 @@ def test_run_opencode_reports_direct_bedrock_failure_reason(monkeypatch, tmp_pat
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     config = ReviewerConfig(
-        model="amazon-bedrock/us.anthropic.claude-opus-4-8",
+        model="amazon-bedrock/zai.glm-5",
         aws_region="us-east-1",
     )
 
     with pytest.raises(RuntimeError) as exc_info:
         asyncio.run(agent.run_opencode("prompt", cwd=tmp_path, config=config))
 
-    assert "direct Bedrock invoke exited with status 1: AccessDeniedException" in str(
+    assert "direct Bedrock converse exited with status 1: AccessDeniedException" in str(
         exc_info.value
     )
     assert "fallback reason: opencode produced empty text output" in str(exc_info.value)
@@ -350,20 +360,21 @@ def test_run_bedrock_direct_rejects_malformed_response(monkeypatch) -> None:
         returncode = 0
 
         async def communicate(self) -> tuple[bytes, bytes]:
-            return b"{}", b""
+            return (
+                json.dumps({"output": {"message": {"content": [{"toolUse": {}}]}}}).encode(),
+                b"",
+            )
 
     async def fake_create_subprocess_exec(*command: str, **kwargs: object) -> FakeProcess:
-        response_path = Path(command[-1])
-        response_path.write_text(json.dumps({"content": [{"type": "tool_use"}]}))
         return FakeProcess()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     config = ReviewerConfig(
-        model="amazon-bedrock/us.anthropic.claude-opus-4-8",
+        model="amazon-bedrock/zai.glm-5",
         aws_region="us-east-1",
     )
 
-    with pytest.raises(RuntimeError, match="direct Bedrock invoke returned no text content"):
+    with pytest.raises(RuntimeError, match="direct Bedrock converse returned no text content"):
         asyncio.run(
             agent.run_bedrock_direct(
                 "prompt",
@@ -395,12 +406,12 @@ def test_run_bedrock_direct_times_out_and_kills_process(monkeypatch) -> None:
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     config = ReviewerConfig(
-        model="amazon-bedrock/us.anthropic.claude-opus-4-8",
+        model="amazon-bedrock/zai.glm-5",
         aws_region="us-east-1",
         timeout_seconds=0.01,
     )
 
-    with pytest.raises(RuntimeError, match="direct Bedrock invoke timed out after 0.0 seconds"):
+    with pytest.raises(RuntimeError, match="direct Bedrock converse timed out after 0.0 seconds"):
         asyncio.run(
             agent.run_bedrock_direct(
                 "prompt",

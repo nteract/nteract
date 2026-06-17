@@ -257,34 +257,34 @@ async def run_bedrock_direct(
     model_id = config.model.removeprefix("amazon-bedrock/")
     with tempfile.TemporaryDirectory(prefix="pr-review-bedrock-") as temp_dir:
         temp_path = Path(temp_dir)
-        request_path = temp_path / "request.json"
-        response_path = temp_path / "response.json"
-        request_path.write_text(
+        messages_path = temp_path / "messages.json"
+        inference_config_path = temp_path / "inference-config.json"
+        messages_path.write_text(
             json.dumps(
-                {
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 4096,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [{"type": "text", "text": prompt}],
-                        }
-                    ],
-                }
+                [
+                    {
+                        "role": "user",
+                        "content": [{"text": prompt}],
+                    }
+                ]
             )
             + "\n"
         )
+        inference_config_path.write_text(json.dumps({"maxTokens": 4096}) + "\n")
         command = [
             "aws",
             "bedrock-runtime",
-            "invoke-model",
+            "converse",
             "--region",
             config.aws_region,
             "--model-id",
             model_id,
-            "--body",
-            f"fileb://{request_path}",
-            str(response_path),
+            "--messages",
+            f"file://{messages_path}",
+            "--inference-config",
+            f"file://{inference_config_path}",
+            "--output",
+            "json",
         ]
         proc = await asyncio.create_subprocess_exec(
             *command,
@@ -294,64 +294,59 @@ async def run_bedrock_direct(
         stdout_bytes, stderr_bytes = await communicate_with_timeout(
             proc,
             timeout_seconds=config.effective_timeout_seconds(),
-            timeout_label="direct Bedrock invoke",
+            timeout_label="direct Bedrock converse",
         )
         stdout = stdout_bytes.decode("utf-8", errors="replace")
         stderr = stderr_bytes.decode("utf-8", errors="replace")
         if proc.returncode != 0:
             raise RuntimeError(
-                f"direct Bedrock invoke exited with status {proc.returncode}: "
+                f"direct Bedrock converse exited with status {proc.returncode}: "
                 f"{stderr.strip() or stdout.strip()} "
                 f"(fallback reason: {fallback_reason})"
             )
         try:
-            response = json.loads(response_path.read_text())
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                "direct Bedrock invoke succeeded but did not create a response file "
-                f"(fallback reason: {fallback_reason})"
-            ) from exc
+            response = json.loads(stdout)
         except json.JSONDecodeError as exc:
             raise RuntimeError(
-                f"direct Bedrock invoke returned invalid JSON (fallback reason: {fallback_reason})"
+                "direct Bedrock converse returned invalid JSON "
+                f"(fallback reason: {fallback_reason})"
             ) from exc
         if not isinstance(response, dict):
             raise RuntimeError(
-                "direct Bedrock invoke response JSON was not an object "
+                "direct Bedrock converse response JSON was not an object "
                 f"(fallback reason: {fallback_reason})"
             )
-        content = response.get("content")
+        output = response.get("output")
+        message = output.get("message") if isinstance(output, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, list):
             raise RuntimeError(
-                "direct Bedrock invoke response did not include a content list "
+                "direct Bedrock converse response did not include message content "
                 f"(fallback reason: {fallback_reason})"
             )
         text = "".join(
             item["text"]
             for item in content
-            if isinstance(item, dict)
-            and item.get("type") == "text"
-            and isinstance(item.get("text"), str)
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
         ).strip()
         if not text:
             raise RuntimeError(
-                "direct Bedrock invoke returned no text content "
+                "direct Bedrock converse returned no text content "
                 f"(fallback reason: {fallback_reason})"
             )
         usage = response.get("usage")
-        cost_usd = 0.0 if isinstance(usage, dict) else None
-        session_id = response.get("id") if isinstance(response.get("id"), str) else None
         return OpencodeRunResult(
             text=text,
-            session_id=session_id,
-            cost_usd=cost_usd,
+            session_id=opencode_session_id,
+            cost_usd=None,
             raw_metadata={
                 "fallback": {
                     "reason": fallback_reason,
                     "from": "opencode",
-                    "to": "aws bedrock-runtime invoke-model",
+                    "to": "aws bedrock-runtime converse",
                     "opencode_session_id": opencode_session_id,
                     "bedrock_model_id": model_id,
+                    "usage": usage if isinstance(usage, dict) else None,
                 }
             },
         )
@@ -442,5 +437,9 @@ async def run_architecture_review(
 
 
 async def run_doctor(config: ReviewerConfig) -> str:
-    run = await run_opencode("Reply exactly OK.", cwd=None, config=config)
+    run = await run_opencode(
+        "This is an automated smoke test. Reply with exactly OK and no other text.",
+        cwd=None,
+        config=config,
+    )
     return run.text
