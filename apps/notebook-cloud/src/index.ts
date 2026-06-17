@@ -1766,7 +1766,7 @@ async function routeWorkstationEvents(
 
   const stub = workstationEventsStub(env, ownerPrincipal, workstationId);
   const response = await stub.fetch(new Request("https://workstation-events.internal/stream"));
-  return withCors(response);
+  return withCors(new Response(response.body, response));
 }
 
 async function routeWorkstationAttachJobs(
