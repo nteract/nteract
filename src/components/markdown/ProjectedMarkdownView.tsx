@@ -249,9 +249,8 @@ function ProjectedMarkdownBlock({
       <p
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(
-          "group/markdown-comment relative",
+          "group/markdown-comment",
           markdownParagraphClassName,
-          canComment && "pr-8",
           activeBlockId === block.blockId && sourceActiveBlockClass,
         )}
       >
@@ -280,7 +279,7 @@ function ProjectedMarkdownBlock({
                 event.stopPropagation();
               }
             }}
-            className="absolute right-0 top-0 inline-flex h-6 w-6 items-center justify-center rounded-md border bg-background text-muted-foreground opacity-0 shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 group-hover/markdown-comment:opacity-100 group-focus-within/markdown-comment:opacity-100"
+            className="ml-1.5 inline-flex h-5 w-5 items-center justify-center rounded-md border bg-background align-middle text-muted-foreground opacity-0 transition-colors hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 group-hover/markdown-comment:opacity-100 group-focus-within/markdown-comment:opacity-100"
           >
             <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
