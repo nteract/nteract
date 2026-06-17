@@ -392,6 +392,69 @@ test.describe("notebook comments rail", () => {
     ).not.toBeNull();
   });
 
+  test("creates rendered markdown paragraph comments from keyboard in Desktop", async ({
+    page,
+  }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+
+    mcp = await McpPeer.start();
+    await mcp.connectNotebook(notebookId);
+
+    const exactQuote = "This rendered prose should be keyboard commentable from preview.";
+    const markdownSource = `## Review plan\n\n${exactQuote}\n\n`;
+    const markdownCell = await ensureMarkdownCell(page);
+    await setCellSource(markdownCell, markdownSource);
+    const markdownCellId = await markdownCell.getAttribute("data-cell-id");
+    if (!markdownCellId) throw new Error("Markdown cell id not found");
+
+    const renderButton = markdownCell.getByLabel("View rendered markdown");
+    if (await renderButton.isVisible()) {
+      await renderButton.click();
+    }
+    await expect(
+      markdownCell.locator('[data-slot="projected-markdown-output"]').getByText(exactQuote),
+    ).toBeVisible({ timeout: 30_000 });
+
+    const commentButton = markdownCell.getByRole("button", {
+      name: "Comment on rendered paragraph",
+    });
+    await commentButton.focus();
+    await page.keyboard.press("Enter");
+
+    const panel = page.getByTestId("notebook-comments-panel");
+    await expect(panel.getByTestId("comment-draft-target")).toContainText(exactQuote);
+    await expect(panel.getByLabel("New source comment")).toBeFocused();
+
+    const body = `Keyboard rendered markdown comment ${crypto.randomUUID()}`;
+    await panel.getByLabel("New source comment").fill(body);
+    await panel.getByRole("button", { name: "Add comment" }).click();
+
+    await expect(commentMessage(panel, body)).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(() => mcp!.listComments({ cellId: markdownCellId }), {
+        timeout: 120_000,
+      })
+      .toMatchObject({
+        threads: expect.arrayContaining([
+          expect.objectContaining({
+            mutation_state: "accepted",
+            anchor: expect.objectContaining({
+              kind: "source_range",
+              cell_id: markdownCellId,
+              exact_quote: exactQuote,
+            }),
+            messages: expect.arrayContaining([
+              expect.objectContaining({
+                body,
+                mutation_state: "accepted",
+              }),
+            ]),
+          }),
+        ]),
+      });
+  });
+
   test("creates selected source comments in Desktop and exposes source anchors through MCP", async ({
     page,
   }) => {

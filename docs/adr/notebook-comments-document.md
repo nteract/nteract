@@ -1,6 +1,6 @@
 # Notebook Comments Document
 
-**Status:** Draft, 2026-06-07. Updated 2026-06-16.
+**Status:** Draft, 2026-06-07. Updated 2026-06-17.
 
 This ADR proposes a comment system for nteract notebooks that works in local
 desktop rooms and Cloud hosted rooms, lets humans and agents participate through
@@ -1014,19 +1014,28 @@ Phase 5: portable identity
 
 ## Minimal Spike Definition
 
-A useful first spike is:
+A useful first local/MCP spike is:
 
-1. `CommentsDoc` crate/module with create/reply/resolve and fractional ordering.
+1. `CommentsDoc` crate/module with create/reply/resolve/reopen,
+   `source_range` anchors, fractional ordering, required `comments_doc_id`,
+   sync helpers, and authority-aware projection.
 2. Local daemon sidecar load/save keyed by `comments_doc_id`, with canonical path
-   used only as the v0 resolver/index input.
+   used only as the v0 resolver/index input, plus local `CommentsDocSync` for
+   editor/owner clients and explicit runtime-peer/runtime-agent denial.
 3. `list_comments`, `create_comment_thread`, `reply_comment_thread`,
    `resolve_comment_thread`, and `reopen_comment_thread` MCP tools plus
-   `nteract://` comment read resources.
-4. Notebook UI markers for cell-level comments only.
-5. Pending client-authored comments live in `CommentsDoc`; authority finalization
-   is required before treating author/scope fields as durable truth. No
-   source-range inline highlights, delete/edit tools, UI markers, or public
-   publish.
+   `nteract://` comment read resources for notebook, cell, and thread views.
+4. A shared local comments rail that supports document comments, displays
+   document/cell/source threads, creates selected source comments from
+   CodeMirror and host-rendered Markdown prose, focuses the composer on draft
+   creation, and preserves stable cell DOM order.
+5. Pending client-authored comments live in `CommentsDoc`; authority
+   finalization is required before treating author/scope/status fields as
+   durable truth.
 
 That spike proves the storage identity, CRDT shape, author stamping, agent API,
-and stable-DOM-safe UI without committing to the hardest anchoring problem.
+local desktop product loop, MCP resource shape, and stable-DOM-safe UI. It
+deliberately stops before hosted Cloud materialization, public publish,
+delete/edit tools, per-actor read/unread state, body markers, focused popovers,
+inline source highlights, output-anchor markers, and stale/deleted-anchor
+treatment.

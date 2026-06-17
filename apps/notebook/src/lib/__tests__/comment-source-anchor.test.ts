@@ -8,7 +8,10 @@ import {
   sourcePointFromOffset,
   sourcePointFromStringOffset,
 } from "../comment-source-anchor";
-import { sourceRangeAnchorFromRenderedMarkdownSelection } from "../rendered-markdown-source-comment";
+import {
+  sourceRangeAnchorFromRenderedMarkdownRuns,
+  sourceRangeAnchorFromRenderedMarkdownSelection,
+} from "../rendered-markdown-source-comment";
 
 let view: EditorView | null = null;
 
@@ -166,5 +169,43 @@ describe("comment-source-anchor", () => {
     ).toBeNull();
 
     root.remove();
+  });
+
+  it("maps rendered markdown runs back to keyboard-created source_range anchors", () => {
+    expect(
+      sourceRangeAnchorFromRenderedMarkdownRuns("cell-1", "plain prose", [
+        {
+          blockId: "p0",
+          inlineId: "r0",
+          listItemIndex: null,
+          renderedText: "plain prose",
+          renderedTextUtf16: [0, 11],
+          semantic: "text",
+          sourceSpanByte: [0, 11],
+          sourceSpanUtf16: [0, 11],
+        },
+      ]),
+    ).toMatchObject({
+      kind: "source_range",
+      cell_id: "cell-1",
+      exact_quote: "plain prose",
+    });
+  });
+
+  it("rejects rendered markdown runs when hidden source markup changes selected text", () => {
+    expect(
+      sourceRangeAnchorFromRenderedMarkdownRuns("cell-1", "**bold**", [
+        {
+          blockId: "p0",
+          inlineId: "r0",
+          listItemIndex: null,
+          renderedText: "bold",
+          renderedTextUtf16: [0, 4],
+          semantic: "strong",
+          sourceSpanByte: [0, 8],
+          sourceSpanUtf16: [0, 8],
+        },
+      ]),
+    ).toBeNull();
   });
 });

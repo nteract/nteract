@@ -54,7 +54,10 @@ import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
 import { toggleMarkdownTaskMarker } from "../lib/markdown-task-source";
 import { presenceSenderExtension } from "../lib/presence-sender";
-import { sourceRangeAnchorFromRenderedMarkdownSelection } from "../lib/rendered-markdown-source-comment";
+import {
+  sourceRangeAnchorFromRenderedMarkdownRuns,
+  sourceRangeAnchorFromRenderedMarkdownSelection,
+} from "../lib/rendered-markdown-source-comment";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import type { SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
 import type { MarkdownCell as MarkdownCellType } from "../types";
@@ -502,6 +505,32 @@ export const MarkdownCell = memo(function MarkdownCell({
     onCreateSourceComment,
     previewSource,
   ]);
+
+  const sourceRangeAnchorFromRenderedRuns = useCallback(
+    (runs: readonly MarkdownProjectionRun[]) => {
+      if (!canCommentOnRenderedMarkdown) return null;
+      return sourceRangeAnchorFromRenderedMarkdownRuns(cell.id, previewSource, runs);
+    },
+    [canCommentOnRenderedMarkdown, cell.id, previewSource],
+  );
+
+  const canCommentOnRenderedRuns = useCallback(
+    (runs: readonly MarkdownProjectionRun[]) => sourceRangeAnchorFromRenderedRuns(runs) !== null,
+    [sourceRangeAnchorFromRenderedRuns],
+  );
+
+  const handleRenderedRunsComment = useCallback(
+    (runs: readonly MarkdownProjectionRun[]) => {
+      const anchor = sourceRangeAnchorFromRenderedRuns(runs);
+      if (!anchor || !onCreateSourceComment) return;
+      onCreateSourceComment(anchor);
+      if (typeof window !== "undefined") {
+        window.getSelection()?.removeAllRanges();
+      }
+      clearRenderedSourceCommentTarget();
+    },
+    [clearRenderedSourceCommentTarget, onCreateSourceComment, sourceRangeAnchorFromRenderedRuns],
+  );
 
   const handleRenderedSourceCommentClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
@@ -997,6 +1026,10 @@ export const MarkdownCell = memo(function MarkdownCell({
                 plan={markdownProjection}
                 headingAnchors={headingAnchors}
                 onLinkClick={handleLinkClick}
+                canCommentOnRuns={
+                  canCommentOnRenderedMarkdown ? canCommentOnRenderedRuns : undefined
+                }
+                onCommentRuns={canCommentOnRenderedMarkdown ? handleRenderedRunsComment : undefined}
                 onTaskCheckedChange={
                   readOnly || !onUpdateSource ? undefined : handleTaskCheckedChange
                 }

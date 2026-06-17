@@ -2,6 +2,7 @@ import {
   sourceRangeAnchorFromOffsets,
   type SourceRangeCommentAnchor,
 } from "./comment-source-anchor";
+import type { MarkdownProjectionRun } from "./markdown-projection";
 
 export const MARKDOWN_SOURCE_RUN_SELECTOR = "[data-markdown-source-run='true']";
 
@@ -40,6 +41,24 @@ export function sourceRangeAnchorFromRenderedMarkdownSelection(
   const to = sourceOffsetForRenderedPoint(end, "end");
   if (from === null || to === null) return null;
 
+  const anchor = sourceRangeAnchorFromOffsets(cellId, source, from, to);
+  if (!anchor || anchor.exact_quote !== selectedText) return null;
+  return anchor;
+}
+
+export function sourceRangeAnchorFromRenderedMarkdownRuns(
+  cellId: string,
+  source: string,
+  runs: readonly MarkdownProjectionRun[],
+): SourceRangeCommentAnchor | null {
+  const visibleRuns = [...runs]
+    .filter((run) => run.renderedText.trim().length > 0)
+    .sort((left, right) => left.renderedTextUtf16[0] - right.renderedTextUtf16[0]);
+  if (visibleRuns.length === 0) return null;
+
+  const from = Math.min(...visibleRuns.map((run) => run.sourceSpanUtf16[0]));
+  const to = Math.max(...visibleRuns.map((run) => run.sourceSpanUtf16[1]));
+  const selectedText = visibleRuns.map((run) => run.renderedText).join("");
   const anchor = sourceRangeAnchorFromOffsets(cellId, source, from, to);
   if (!anchor || anchor.exact_quote !== selectedText) return null;
   return anchor;

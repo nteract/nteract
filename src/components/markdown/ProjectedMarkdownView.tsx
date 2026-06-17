@@ -1,5 +1,6 @@
 import { type CSSProperties, type ReactNode } from "react";
 import katex from "katex";
+import { MessageSquarePlus } from "lucide-react";
 import type {
   MarkdownProjectionBlock,
   MarkdownProjectionPlan,
@@ -51,6 +52,8 @@ interface ProjectedMarkdownViewProps {
   activeSourcePosition?: number;
   colorTheme?: "classic" | "cream";
   headingAnchors?: readonly MarkdownHeadingAnchor[];
+  canCommentOnRuns?: (runs: readonly MarkdownProjectionRun[]) => boolean;
+  onCommentRuns?: (runs: readonly MarkdownProjectionRun[]) => void;
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }
@@ -60,7 +63,9 @@ export function ProjectedMarkdownView({
   className,
   activeSourcePosition,
   colorTheme: colorThemeOverride,
+  canCommentOnRuns,
   headingAnchors = [],
+  onCommentRuns,
   onLinkClick,
   onTaskCheckedChange,
 }: ProjectedMarkdownViewProps) {
@@ -95,6 +100,8 @@ export function ProjectedMarkdownView({
           colorTheme={colorTheme}
           isDark={isDark}
           runs={runsByBlock.get(block.blockId) ?? []}
+          canCommentOnRuns={canCommentOnRuns}
+          onCommentRuns={onCommentRuns}
           onLinkClick={onLinkClick}
           onTaskCheckedChange={onTaskCheckedChange}
         />
@@ -111,6 +118,8 @@ interface ProjectedMarkdownBlockProps {
   colorTheme: "classic" | "cream";
   isDark: boolean;
   runs: MarkdownProjectionRun[];
+  canCommentOnRuns?: (runs: readonly MarkdownProjectionRun[]) => boolean;
+  onCommentRuns?: (runs: readonly MarkdownProjectionRun[]) => void;
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }
@@ -123,6 +132,8 @@ function ProjectedMarkdownBlock({
   colorTheme,
   isDark,
   runs,
+  canCommentOnRuns,
+  onCommentRuns,
   onLinkClick,
   onTaskCheckedChange,
 }: ProjectedMarkdownBlockProps) {
@@ -233,15 +244,47 @@ function ProjectedMarkdownBlock({
       );
     }
 
+    const canComment = Boolean(canCommentOnRuns?.(runs) && onCommentRuns);
     return (
       <p
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(
+          "group/markdown-comment relative",
           markdownParagraphClassName,
+          canComment && "pr-8",
           activeBlockId === block.blockId && sourceActiveBlockClass,
         )}
       >
         {renderRuns(runs, onLinkClick, activeInlineId)}
+        {canComment ? (
+          <button
+            type="button"
+            aria-label="Comment on rendered paragraph"
+            title="Comment on rendered paragraph"
+            data-testid="markdown-block-comment-button"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCommentRuns?.(runs);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.stopPropagation();
+              }
+            }}
+            className="absolute right-0 top-0 inline-flex h-6 w-6 items-center justify-center rounded-md border bg-background text-muted-foreground opacity-0 shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 group-hover/markdown-comment:opacity-100 group-focus-within/markdown-comment:opacity-100"
+          >
+            <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        ) : null}
       </p>
     );
   }
