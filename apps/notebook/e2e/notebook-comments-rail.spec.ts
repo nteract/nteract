@@ -202,6 +202,25 @@ test.describe("notebook comments rail", () => {
         },
       )
       .toBe("open");
+
+    await page.reload();
+    await expect(page.getByTestId("notebook-toolbar")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("[data-notebook-synced]")).toHaveAttribute(
+      "data-notebook-synced",
+      "true",
+      { timeout: 30_000 },
+    );
+    await expect(page.locator("[data-session-ready]")).toHaveAttribute(
+      "data-session-ready",
+      "true",
+      {
+        timeout: 120_000,
+      },
+    );
+    await page.getByLabel("Comments").click();
+    await expect(commentMessage(page.getByTestId("notebook-comments-panel"), body)).toBeVisible({
+      timeout: 30_000,
+    });
   });
 
   test("creates and updates cell comments through MCP tools and resources", async ({ page }) => {
@@ -473,6 +492,10 @@ test.describe("notebook comments rail", () => {
 
     const from = source.indexOf(exactQuote);
     await selectCellSourceRange(cell, from, from + exactQuote.length);
+    await expect(page.getByRole("button", { name: "Comment on selected source" })).toHaveAttribute(
+      "title",
+      "Comment on selected source (Ctrl/⌘+Alt+M)",
+    );
     await page.keyboard.press("Control+Alt+M");
 
     const panel = page.getByTestId("notebook-comments-panel");
@@ -588,5 +611,36 @@ test.describe("notebook comments rail", () => {
           }),
         ]),
       });
+  });
+
+  test("preserves a selected source draft when the source changes before submit", async ({
+    page,
+  }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+
+    const source = "alpha = 1\nbeta = alpha + 1\nprint(beta)\n";
+    const exactQuote = "beta = alpha + 1";
+    const changedSource = source.replace(exactQuote, "beta = alpha + 2");
+    const cell = await ensureCodeCell(page);
+    await setCellSource(cell, source);
+
+    const from = source.indexOf(exactQuote);
+    await selectCellSourceRange(cell, from, from + exactQuote.length);
+    await page.getByRole("button", { name: "Comment on selected source" }).click();
+
+    const panel = page.getByTestId("notebook-comments-panel");
+    await expect(panel.getByTestId("comment-draft-target")).toContainText(exactQuote);
+
+    const body = `Stale source draft ${crypto.randomUUID()}`;
+    await panel.getByLabel("New source comment").fill(body);
+    await setCellSource(cell, changedSource);
+    await panel.getByRole("button", { name: "Add comment" }).click();
+
+    await expect(panel.getByRole("alert")).toContainText(
+      "Selected source changed. Select the text again before commenting.",
+    );
+    await expect(panel.getByTestId("comment-draft-target")).toContainText(exactQuote);
+    await expect(panel.getByLabel("New source comment")).toHaveValue(body);
   });
 });

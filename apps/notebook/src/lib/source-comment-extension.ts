@@ -86,7 +86,7 @@ function sourceCommentTooltips(
         button.type = "button";
         button.className = "cm-source-comment-button";
         button.textContent = "Comment";
-        button.title = "Comment on selected source";
+        button.title = "Comment on selected source (Ctrl/⌘+Alt+M)";
         button.setAttribute("aria-label", "Comment on selected source");
         button.setAttribute("data-testid", "source-comment-button");
         button.addEventListener("mousedown", (event) => {
