@@ -296,7 +296,7 @@ async fn finalize_thread_creation(
                     doc.reject_message(
                         &thread_id,
                         message_id,
-                        &reason,
+                        reason,
                         &pending_author,
                         COMMENTS_DOC_ACTOR,
                     )?;
