@@ -41,9 +41,13 @@ interface NotebookConnectionInfoJson {
   runtime?: string;
   actor_label?: string;
   connection_scope?: string;
+  comments_doc_id?: string;
+  comments_authority_actor_label?: string;
   capabilities?: {
     actor_label?: string;
     connection_scope?: string;
+    comments_doc_id?: string;
+    comments_authority_actor_label?: string;
   };
 }
 
@@ -306,6 +310,9 @@ async function handleRelayConnection(
     if (info.error) throw new Error(info.error);
     const actorLabel = info.actor_label ?? info.capabilities?.actor_label;
     const connectionScope = info.connection_scope ?? info.capabilities?.connection_scope;
+    const commentsDocId = info.comments_doc_id ?? info.capabilities?.comments_doc_id;
+    const commentsAuthorityActorLabel =
+      info.comments_authority_actor_label ?? info.capabilities?.comments_authority_actor_label;
 
     const daemonInfoJson = readDaemonInfo(socketPath);
     control(ws, {
@@ -319,6 +326,8 @@ async function handleRelayConnection(
         runtime: info.runtime,
         actor_label: actorLabel,
         connection_scope: connectionScope,
+        comments_doc_id: commentsDocId,
+        comments_authority_actor_label: commentsAuthorityActorLabel,
       },
       blob_port: daemonInfoJson?.blob_port ?? null,
       daemon: daemonInfoJson

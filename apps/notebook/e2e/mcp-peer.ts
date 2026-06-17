@@ -83,6 +83,24 @@ export class McpPeer {
     return match[1];
   }
 
+  async listComments(args: { cellId?: string; includeResolved?: boolean } = {}): Promise<unknown> {
+    return await this.callToolJson("list_comments", {
+      ...(args.cellId !== undefined ? { cell_id: args.cellId } : {}),
+      ...(args.includeResolved !== undefined ? { include_resolved: args.includeResolved } : {}),
+    });
+  }
+
+  async createCommentThread(
+    body: string,
+    anchor: Record<string, unknown> = { kind: "notebook" },
+  ): Promise<unknown> {
+    return await this.callToolJson("create_comment_thread", { anchor, body });
+  }
+
+  async replyCommentThread(threadId: string, body: string): Promise<unknown> {
+    return await this.callToolJson("reply_comment_thread", { thread_id: threadId, body });
+  }
+
   async setCell(cellId: string, source: string, andRun = false): Promise<unknown> {
     return await this.callToolJson("set_cell", {
       cell_id: cellId,
