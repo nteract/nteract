@@ -41,7 +41,9 @@ import { logNotebookIsolatedDiagnostic } from "../lib/isolated-diagnostics";
 import { useCellOutputs } from "@/components/notebook/state/output-store";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
+import { sourceCommentExtension } from "../lib/source-comment-extension";
 import { tabCompletionKeymap } from "../lib/tab-completion";
+import type { SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
 import type { CodeCell as CodeCellType, JupyterOutput } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 import { HistorySearchDialog } from "./HistorySearchDialog";
@@ -96,6 +98,7 @@ interface CodeCellProps {
   rightGutterContent?: ReactNode;
   readOnly?: boolean;
   canExecute?: boolean;
+  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor) => void;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFrameUntilVisible?: boolean;
   deferredOutputIsolatedFrameRootMargin?: string;
@@ -347,6 +350,7 @@ export const CodeCell = memo(function CodeCell({
   rightGutterContent,
   readOnly = false,
   canExecute = !readOnly,
+  onCreateSourceComment,
   outputHostContext,
   deferOutputIsolatedFrameUntilVisible = false,
   deferredOutputIsolatedFrameRootMargin,
@@ -603,6 +607,11 @@ export const CodeCell = memo(function CodeCell({
     ];
   }, [cell.id, presence]);
 
+  const sourceCommentExt = useMemo(() => {
+    if (!onCreateSourceComment || readOnly) return [];
+    return [sourceCommentExtension(cell.id, onCreateSourceComment)];
+  }, [cell.id, onCreateSourceComment, readOnly]);
+
   // CodeMirror extensions: CRDT bridge + kernel completion + tab completion + search highlighting + remote cursors + presence sender
   const editorExtensions = useMemo(
     () => [
@@ -613,6 +622,7 @@ export const CodeCell = memo(function CodeCell({
       ...remoteCursorsExt,
       ...textAttributionExt,
       ...presenceSenderExt,
+      ...sourceCommentExt,
     ],
     [
       crdtBridgeExt,
@@ -622,6 +632,7 @@ export const CodeCell = memo(function CodeCell({
       remoteCursorsExt,
       textAttributionExt,
       presenceSenderExt,
+      sourceCommentExt,
     ],
   );
 

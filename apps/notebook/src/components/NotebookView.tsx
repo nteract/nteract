@@ -43,6 +43,7 @@ import {
   useOutputFocusedCellId,
 } from "@/components/notebook/state/output-focus-store";
 import { logger } from "../lib/logger";
+import type { SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
 import { useOutputProjectionFailures } from "@/components/notebook/state/runtime-store-projection";
 import { computeCanMutateCells } from "@/components/notebook/mutation-gate";
 import {
@@ -84,6 +85,7 @@ export interface NotebookViewProps {
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
+  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor) => void;
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFramesUntilVisible?: boolean;
@@ -360,6 +362,7 @@ function NotebookViewContent({
   onReportOutputMatchCount,
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
+  onCreateSourceComment,
   markdownHeadingAnchorsByCellId,
   outputHostContext,
   deferOutputIsolatedFramesUntilVisible = false,
@@ -934,6 +937,7 @@ function NotebookViewContent({
             rightGutterContent={rightGutterContent}
             readOnly={!canEditCodeCellSources}
             canExecute={canExecuteCells}
+            onCreateSourceComment={onCreateSourceComment}
             outputHostContext={outputHostContext}
             deferOutputIsolatedFrameUntilVisible={deferOutputIsolatedFramesUntilVisible}
             deferredOutputIsolatedFrameRootMargin={deferredOutputIsolatedFrameRootMargin}
@@ -1007,6 +1011,7 @@ function NotebookViewContent({
             rightGutterContent={rightGutterContent}
             headingAnchors={markdownHeadingAnchorsByCellId?.get(cell.id)}
             readOnly={!canEditMarkdownSources}
+            onCreateSourceComment={onCreateSourceComment}
             outputHostContext={outputHostContext}
           />
         );
@@ -1029,6 +1034,7 @@ function NotebookViewContent({
           isDragging={isDragging}
           rightGutterContent={rightGutterContent}
           readOnly={!canEditCodeCellSources}
+          onCreateSourceComment={onCreateSourceComment}
         />
       );
     },
@@ -1044,6 +1050,7 @@ function NotebookViewContent({
       onReportOutputMatchCount,
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
+      onCreateSourceComment,
       markdownHeadingAnchorsByCellId,
       canEditCodeCellSources,
       canEditMarkdownSources,

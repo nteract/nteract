@@ -53,6 +53,8 @@ import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
 import { toggleMarkdownTaskMarker } from "../lib/markdown-task-source";
 import { presenceSenderExtension } from "../lib/presence-sender";
+import { sourceCommentExtension } from "../lib/source-comment-extension";
+import type { SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
 import type { MarkdownCell as MarkdownCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
@@ -135,6 +137,7 @@ interface MarkdownCellProps {
   rightGutterContent?: ReactNode;
   headingAnchors?: readonly MarkdownHeadingAnchor[];
   readOnly?: boolean;
+  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor) => void;
   outputHostContext?: NteractEmbedHostContextPatch;
 }
 
@@ -152,6 +155,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   rightGutterContent,
   headingAnchors = EMPTY_HEADING_ANCHORS,
   readOnly = false,
+  onCreateSourceComment,
   outputHostContext,
 }: MarkdownCellProps) {
   const isFocused = useIsCellFocused(cell.id);
@@ -676,6 +680,11 @@ export const MarkdownCell = memo(function MarkdownCell({
     ];
   }, [cell.id, presence]);
 
+  const sourceCommentExt = useMemo(() => {
+    if (!onCreateSourceComment || readOnly) return [];
+    return [sourceCommentExtension(cell.id, onCreateSourceComment)];
+  }, [cell.id, onCreateSourceComment, readOnly]);
+
   // Search highlight extension for edit mode + remote cursors + presence sender
   const searchExtensions = useMemo(
     () => [
@@ -683,8 +692,9 @@ export const MarkdownCell = memo(function MarkdownCell({
       ...remoteCursorsExt,
       ...textAttributionExt,
       ...presenceSenderExt,
+      ...sourceCommentExt,
     ],
-    [searchQuery, remoteCursorsExt, textAttributionExt, presenceSenderExt],
+    [searchQuery, remoteCursorsExt, textAttributionExt, presenceSenderExt, sourceCommentExt],
   );
   const editorExtensions = useMemo(
     () => [crdtBridgeExt, ...searchExtensions],

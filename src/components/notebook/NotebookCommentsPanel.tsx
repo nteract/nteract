@@ -1,13 +1,25 @@
-import { CheckCircle2, MessageSquare, Plus, RotateCcw, Send } from "lucide-react";
+import { CheckCircle2, MessageSquare, Plus, RotateCcw, Send, X } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import type { CommentMessageSnapshot, CommentThreadSnapshot, CommentsProjection } from "runtimed";
+import type {
+  CommentAnchor,
+  CommentMessageSnapshot,
+  CommentThreadSnapshot,
+  CommentsProjection,
+} from "runtimed";
 import { cn } from "@/lib/utils";
+
+export interface NotebookCommentDraftTarget {
+  anchor: CommentAnchor;
+  quote?: string | null;
+}
 
 export interface NotebookCommentsPanelProps {
   projection: CommentsProjection | null;
   readOnly?: boolean;
+  draftTarget?: NotebookCommentDraftTarget | null;
   statusMessage?: string | null;
   errorMessage?: string | null;
+  onClearDraftTarget?: () => void;
   onCreateThread?: (body: string) => void | Promise<void>;
   onReplyThread?: (threadId: string, body: string) => void | Promise<void>;
   onResolveThread?: (threadId: string) => void | Promise<void>;
@@ -17,8 +29,10 @@ export interface NotebookCommentsPanelProps {
 export function NotebookCommentsPanel({
   projection,
   readOnly = false,
+  draftTarget = null,
   statusMessage = null,
   errorMessage = null,
+  onClearDraftTarget,
   onCreateThread,
   onReplyThread,
   onResolveThread,
@@ -48,12 +62,24 @@ export function NotebookCommentsPanel({
         </div>
       ) : null}
 
+      {draftTarget ? (
+        <CommentDraftTargetView target={draftTarget} onClear={onClearDraftTarget} />
+      ) : null}
+
       <CommentComposer
-        ariaLabel="New document comment"
+        ariaLabel={
+          draftTarget
+            ? `New ${anchorLabelForDraft(draftTarget.anchor)} comment`
+            : "New document comment"
+        }
         buttonLabel="Add comment"
         icon="plus"
         disabled={!canCreate}
-        placeholder="Add a document comment"
+        placeholder={
+          draftTarget
+            ? `Add a ${anchorLabelForDraft(draftTarget.anchor)} comment`
+            : "Add a document comment"
+        }
         onSubmit={onCreateThread}
       />
 
@@ -79,6 +105,47 @@ export function NotebookCommentsPanel({
         </ol>
       )}
     </section>
+  );
+}
+
+function CommentDraftTargetView({
+  target,
+  onClear,
+}: {
+  target: NotebookCommentDraftTarget;
+  onClear?: () => void;
+}) {
+  const quote = formatQuotePreview(target.quote ?? sourceQuoteFromAnchor(target.anchor));
+
+  return (
+    <div
+      className="rounded-md border bg-muted/25 px-3 py-2 text-sm"
+      data-testid="comment-draft-target"
+    >
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-muted-foreground">
+            {formatStateLabel(anchorLabelForDraft(target.anchor))} selection
+          </div>
+          {quote ? (
+            <blockquote className="mt-1 max-h-24 overflow-hidden whitespace-pre-wrap break-words border-l-2 border-border pl-2 text-xs leading-5 text-foreground">
+              {quote}
+            </blockquote>
+          ) : null}
+        </div>
+        {onClear ? (
+          <button
+            type="button"
+            aria-label="Use document target"
+            title="Use document target"
+            onClick={onClear}
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <X className="size-3.5" aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -155,6 +222,8 @@ function CommentThreadItem({
           </span>
         </div>
 
+        <CommentAnchorQuote quote={sourceQuoteFromAnchor(thread.anchor)} />
+
         <div className="flex justify-end">
           <button
             type="button"
@@ -205,6 +274,20 @@ function CommentMessage({ message }: { message: CommentMessageSnapshot }) {
         ) : null}
       </div>
     </article>
+  );
+}
+
+function CommentAnchorQuote({ quote }: { quote: string | null }) {
+  const preview = formatQuotePreview(quote);
+  if (!preview) return null;
+
+  return (
+    <blockquote
+      className="max-h-24 overflow-hidden whitespace-pre-wrap break-words border-l-2 border-border pl-2 text-xs leading-5 text-foreground"
+      data-testid="comment-thread-source-quote"
+    >
+      {preview}
+    </blockquote>
   );
 }
 
@@ -302,6 +385,33 @@ function anchorLabel(thread: CommentThreadSnapshot): string {
     default:
       return "Document";
   }
+}
+
+function anchorLabelForDraft(anchor: CommentAnchor): string {
+  switch (anchor.kind) {
+    case "source_range":
+      return "source";
+    case "cell":
+      return "cell";
+    case "cell_range":
+      return "cell range";
+    case "output":
+      return "output";
+    case "notebook":
+    default:
+      return "document";
+  }
+}
+
+function sourceQuoteFromAnchor(anchor: CommentAnchor): string | null {
+  return anchor.kind === "source_range" ? (anchor.exact_quote ?? null) : null;
+}
+
+function formatQuotePreview(quote: string | null | undefined): string | null {
+  if (!quote) return null;
+  const trimmed = quote.trim();
+  if (trimmed.length <= 240) return trimmed;
+  return `${trimmed.slice(0, 237)}...`;
 }
 
 function formatStateLabel(state: string): string {

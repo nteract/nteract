@@ -110,6 +110,31 @@ export async function setCellSource(cell: Locator, source: string) {
   }, source);
 }
 
+export async function selectCellSourceRange(cell: Locator, from: number, to: number) {
+  await cell.locator('.cm-content[contenteditable="true"]').evaluate(
+    (node, range) => {
+      const content = node as HTMLElement & {
+        cmTile?: {
+          view?: {
+            dispatch: (transaction: unknown) => void;
+            focus: () => void;
+          };
+        };
+      };
+      const editor = content.cmTile?.view;
+      if (!editor) throw new Error("No CodeMirror view found");
+      editor.dispatch({
+        selection: {
+          anchor: range.from,
+          head: range.to,
+        },
+      });
+      editor.focus();
+    },
+    { from, to },
+  );
+}
+
 export async function getCellSource(cell: Locator): Promise<string> {
   return await cell.locator('.cm-content[contenteditable="true"]').evaluate((node) => {
     const content = node as HTMLElement & {

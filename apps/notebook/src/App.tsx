@@ -6,6 +6,7 @@ import {
   type ExecuteCellOptions,
   type NotebookResponse,
   type NotebookOutlineItem,
+  type CommentAnchor,
   type CommentsProjection,
   putBlob,
   type SessionStatus,
@@ -46,6 +47,7 @@ import {
   KernelLaunchErrorBanner,
   NotebookConnectionIdentity,
   NotebookCommentsPanel,
+  type NotebookCommentDraftTarget,
   NotebookDocumentRail,
   NotebookDocumentShell,
   PoolErrorBanner,
@@ -138,6 +140,50 @@ function commentAuthorityError(response: NotebookResponse, action: string): stri
   if (response.result === "ok") return null;
   if (response.result === "error") return `Failed to ${action}: ${response.error}`;
   return `Failed to ${action}: unexpected daemon response ${response.result}`;
+}
+
+function commentAnchorThreadOrderScope(anchor: CommentAnchor): string {
+  switch (anchor.kind) {
+    case "cell":
+    case "source_range":
+      return `cell:${anchor.cell_id}`;
+    case "output":
+      return `output:${anchor.cell_id}:${anchor.execution_id ?? ""}:${anchor.output_id ?? ""}`;
+    case "cell_range":
+      return `cell_range:${anchor.start_cell_id}:${anchor.end_cell_id}`;
+    case "notebook":
+    default:
+      return "notebook";
+  }
+}
+
+function sourceOffsetFromPoint(source: string, line: number, column: number): number | null {
+  if (!Number.isInteger(line) || !Number.isInteger(column) || line < 0 || column < 0) {
+    return null;
+  }
+
+  let lineStart = 0;
+  for (let currentLine = 0; currentLine < line; currentLine += 1) {
+    const newlineIndex = source.indexOf("\n", lineStart);
+    if (newlineIndex === -1) return null;
+    lineStart = newlineIndex + 1;
+  }
+
+  const nextNewlineIndex = source.indexOf("\n", lineStart);
+  const lineEnd = nextNewlineIndex === -1 ? source.length : nextNewlineIndex;
+  const offset = lineStart + column;
+  return offset <= lineEnd ? offset : null;
+}
+
+function sourceRangeAnchorMatchesCurrentCell(anchor: CommentAnchor): boolean {
+  if (anchor.kind !== "source_range" || !anchor.exact_quote) return true;
+  const cell = getNotebookCellsSnapshot().find((candidate) => candidate.id === anchor.cell_id);
+  if (!cell) return false;
+
+  const from = sourceOffsetFromPoint(cell.source, anchor.start_line, anchor.start_column);
+  const to = sourceOffsetFromPoint(cell.source, anchor.end_line, anchor.end_column);
+  if (from === null || to === null || from > to) return false;
+  return cell.source.slice(from, to) === anchor.exact_quote;
 }
 
 function focusActiveRailButtonWhenStageIsHidden(
@@ -335,6 +381,9 @@ function AppContent() {
   const sessionReady = sessionStatus?.runtime_state === "ready";
   const [commentsProjection, setCommentsProjection] = useState<CommentsProjection | null>(null);
   const [commentsError, setCommentsError] = useState<string | null>(null);
+  const [commentDraftTarget, setCommentDraftTarget] = useState<NotebookCommentDraftTarget | null>(
+    null,
+  );
 
   const refreshCommentsProjection = useCallback(() => {
     const projection = getHandle()?.get_comments_projection?.();
@@ -587,24 +636,32 @@ function AppContent() {
     throw new Error(message);
   }, []);
 
-  const handleCreateDocumentComment = useCallback(
-    async (body: string) => {
+  useEffect(() => {
+    if (!canMutateComments) {
+      setCommentDraftTarget(null);
+    }
+  }, [canMutateComments]);
+
+  const handleCreateCommentThread = useCallback(
+    async (anchor: CommentAnchor, body: string) => {
       const handle = getHandle();
       if (!handle || !handle.create_comment_thread || !handle.get_comments_doc_heads_hex) {
         return failCommentAction("Comments sync unavailable.");
       }
       setCommentsError(null);
       const projection = refreshCommentsProjection() ?? commentsProjection;
+      const orderScope = commentAnchorThreadOrderScope(anchor);
       const afterThreadId =
-        projection?.threads.filter((thread) => thread.anchor.kind === "notebook").at(-1)?.id ??
-        null;
+        projection?.threads
+          .filter((thread) => commentAnchorThreadOrderScope(thread.anchor) === orderScope)
+          .at(-1)?.id ?? null;
       try {
         const threadId = createLocalCommentEntityId("thread");
         const messageId = createLocalCommentEntityId("message");
         handle.create_comment_thread(
           threadId,
           messageId,
-          { kind: "notebook" },
+          anchor,
           body,
           afterThreadId,
           new Date().toISOString(),
@@ -644,6 +701,39 @@ function AppContent() {
       triggerSync,
     ],
   );
+
+  const handleCreateDocumentComment = useCallback(
+    (body: string) => handleCreateCommentThread({ kind: "notebook" }, body),
+    [handleCreateCommentThread],
+  );
+
+  const handleCreatePanelComment = useCallback(
+    async (body: string) => {
+      if (!commentDraftTarget) {
+        await handleCreateDocumentComment(body);
+        return;
+      }
+      if (!sourceRangeAnchorMatchesCurrentCell(commentDraftTarget.anchor)) {
+        failCommentAction("Selected source changed. Select the text again before commenting.");
+      }
+      await handleCreateCommentThread(commentDraftTarget.anchor, body);
+      setCommentDraftTarget(null);
+    },
+    [commentDraftTarget, failCommentAction, handleCreateCommentThread, handleCreateDocumentComment],
+  );
+
+  const handleCreateSourceCommentDraft = useCallback((anchor: CommentAnchor) => {
+    setCommentsError(null);
+    setCommentDraftTarget({
+      anchor,
+      quote: anchor.kind === "source_range" ? (anchor.exact_quote ?? null) : null,
+    });
+    openNotebookRailPanel("comments");
+  }, []);
+
+  const handleClearCommentDraftTarget = useCallback(() => {
+    setCommentDraftTarget(null);
+  }, []);
 
   const handleReplyCommentThread = useCallback(
     async (threadId: string, body: string) => {
@@ -1672,9 +1762,13 @@ function AppContent() {
                 <NotebookCommentsPanel
                   projection={commentsProjection}
                   readOnly={!canMutateComments}
+                  draftTarget={canMutateComments ? commentDraftTarget : null}
                   statusMessage={commentsPanelStatus}
                   errorMessage={commentsError}
-                  onCreateThread={canMutateComments ? handleCreateDocumentComment : undefined}
+                  onClearDraftTarget={
+                    commentDraftTarget ? handleClearCommentDraftTarget : undefined
+                  }
+                  onCreateThread={canMutateComments ? handleCreatePanelComment : undefined}
                   onReplyThread={canMutateComments ? handleReplyCommentThread : undefined}
                   onResolveThread={canMutateComments ? handleResolveCommentThread : undefined}
                   onReopenThread={canMutateComments ? handleReopenCommentThread : undefined}
@@ -1832,6 +1926,9 @@ function AppContent() {
                 onReportOutputMatchCount={globalFind.reportOutputMatchCount}
                 onSetCellSourceHidden={setCellSourceHidden}
                 onSetCellOutputsHidden={setCellOutputsHidden}
+                onCreateSourceComment={
+                  canMutateComments ? handleCreateSourceCommentDraft : undefined
+                }
                 markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
               />
             </CrdtBridgeProvider>

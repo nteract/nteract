@@ -87,6 +87,85 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByLabelText("New document comment")).toHaveValue("");
   });
 
+  it("submits a selected source draft comment", async () => {
+    const onCreateThread = vi.fn();
+    const onClearDraftTarget = vi.fn();
+    render(
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [] }}
+        draftTarget={{
+          anchor: {
+            kind: "source_range",
+            cell_id: "cell-1",
+            start_line: 1,
+            start_column: 0,
+            end_line: 1,
+            end_column: 4,
+            exact_quote: "beta",
+          },
+          quote: "beta",
+        }}
+        onClearDraftTarget={onClearDraftTarget}
+        onCreateThread={onCreateThread}
+      />,
+    );
+
+    expect(screen.getByTestId("comment-draft-target")).toHaveTextContent("Source selection");
+    expect(screen.getByTestId("comment-draft-target")).toHaveTextContent("beta");
+
+    fireEvent.change(screen.getByLabelText("New source comment"), {
+      target: { value: "This line needs a note" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+
+    await waitFor(() => expect(onCreateThread).toHaveBeenCalledWith("This line needs a note"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Use document target" }));
+    expect(onClearDraftTarget).toHaveBeenCalled();
+  });
+
+  it("preserves draft text when changing a source draft back to document", async () => {
+    const onCreateThread = vi.fn();
+    const onClearDraftTarget = vi.fn();
+    const draftTarget = {
+      anchor: {
+        kind: "source_range" as const,
+        cell_id: "cell-1",
+        start_line: 1,
+        start_column: 0,
+        end_line: 1,
+        end_column: 4,
+        exact_quote: "beta",
+      },
+      quote: "beta",
+    };
+    const renderPanel = (target: typeof draftTarget | null) => (
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [] }}
+        draftTarget={target}
+        onClearDraftTarget={onClearDraftTarget}
+        onCreateThread={onCreateThread}
+      />
+    );
+    const { rerender } = render(renderPanel(draftTarget));
+
+    fireEvent.change(screen.getByLabelText("New source comment"), {
+      target: { value: "Keep this body while retargeting" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use document target" }));
+    expect(onClearDraftTarget).toHaveBeenCalled();
+
+    rerender(renderPanel(null));
+    expect(screen.getByLabelText("New document comment")).toHaveValue(
+      "Keep this body while retargeting",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+    await waitFor(() =>
+      expect(onCreateThread).toHaveBeenCalledWith("Keep this body while retargeting"),
+    );
+  });
+
   it("clears submitted text while a comment request is in flight", async () => {
     let resolveCreate: (() => void) | null = null;
     const onCreateThread = vi.fn(
@@ -169,6 +248,34 @@ describe("NotebookCommentsPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Resolve Document comment 1" }));
     expect(onResolveThread).toHaveBeenCalledWith("thread-1");
+  });
+
+  it("renders source excerpts on source range threads", () => {
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [
+            {
+              ...projection.threads[0],
+              id: "thread-source",
+              anchor: {
+                kind: "source_range",
+                cell_id: "cell-1",
+                start_line: 2,
+                start_column: 0,
+                end_line: 2,
+                end_column: 14,
+                exact_quote: "important_call()",
+              },
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Source comment 1")).toBeVisible();
+    expect(screen.getByTestId("comment-thread-source-quote")).toHaveTextContent("important_call()");
   });
 
   it("does not allow status actions while a reply is pending", () => {
