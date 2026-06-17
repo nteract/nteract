@@ -1402,6 +1402,8 @@ jobs:
           VERSION_SUFFIX: ${{ inputs.version_suffix }}
           COMMIT_SHA: ${{ github.sha }}
           RELEASE_INTRO: ${{ inputs.release_intro }}
+          RELEASE_REPO: ${{ github.repository }}
+          TAG_NAME: v${{ needs.compute-version.outputs.version }}
         run: |
           CLI_NAME="runt"
           DAEMON_NAME="runtimed"
@@ -1411,6 +1413,7 @@ jobs:
             DAEMON_NAME="runtimed-nightly"
             MCP_NAME="nteract-mcp-nightly"
           fi
+          INSTALLER_URL="https://github.com/${RELEASE_REPO}/releases/download/${TAG_NAME}/install-linux-release"
           {
             echo "$RELEASE_INTRO"
             echo ''
@@ -1433,12 +1436,26 @@ jobs:
             echo ''
             echo "macOS and Windows builds are signed. macOS builds are also notarized. Linux AppImage: \`chmod +x\` and run. DEB/RPM packages are not currently supported because runtimed is a per-user daemon managed by the app and CLI, not by system package-manager scripts."
             echo ''
-            echo "For Linux shell installs, download \`install-linux-release\` from this release or run:"
+            echo "For Linux/macOS shell installs, run the installer pinned to this release:"
             echo ''
             echo '```bash'
-            echo 'curl -fsSL https://sh.nteract.io | bash'
+            echo "curl -fsSL ${INSTALLER_URL} | bash"
             echo '```'
             echo ''
+            echo 'Headless workstation install:'
+            echo ''
+            echo '```bash'
+            echo "curl -fsSL ${INSTALLER_URL} | bash -s -- --headless"
+            echo '```'
+            echo ''
+            if [ "$VERSION_SUFFIX" != "nightly" ]; then
+              echo 'Latest stable shortcut:'
+              echo ''
+              echo '```bash'
+              echo 'curl -fsSL https://sh.nteract.io | bash'
+              echo '```'
+              echo ''
+            fi
             echo 'This release includes auto-update support. Existing installations will be notified of this update automatically.'
             echo ''
             echo "## ${CLI_NAME} (CLI)"

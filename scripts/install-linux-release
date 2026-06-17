@@ -102,6 +102,8 @@ case "$(uname -s):$(uname -m)" in
 esac
 
 REPO="nteract/nteract"
+# release-common.yml stamps these in the uploaded release asset so a copied
+# release installer with no args installs the exact channel and tag it came from.
 DEFAULT_CHANNEL="stable"
 DEFAULT_TAG=""
 CHANNEL="$DEFAULT_CHANNEL"
