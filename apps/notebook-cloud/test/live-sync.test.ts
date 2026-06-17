@@ -120,6 +120,14 @@ describe("cloud live sync", () => {
         FrameType.COMMS_DOC_SYNC,
         "room host rejected COMMS_DOC_SYNC frame: [cloud-room-comms-receive-sync] automerge operation failed: patch logs cannot be shared between documents; this probably means a PatchLog created for one document was reused with another",
       ],
+      [
+        FrameType.RUNTIME_STATE_SYNC,
+        "room host rejected RUNTIME_STATE_SYNC frame: Error: recursive use of an object detected which would lead to unsafe aliasing in rust",
+      ],
+      [
+        FrameType.COMMS_DOC_SYNC,
+        "room host rejected COMMS_DOC_SYNC frame: Error: recursive use of an object detected which would lead to unsafe aliasing in rust",
+      ],
     ] as const) {
       assert.equal(
         isRecoverableCloudFrameRejection({

@@ -101,6 +101,27 @@ export class RoomMaterializer {
   }
 
   async receiveFrame(peer: RoomPeer, frame: TypedFrame): Promise<RoomHostFrameResult> {
+    try {
+      return await this.receiveFrameWithCurrentHost(peer, frame);
+    } catch (error) {
+      if (!shouldRecoverReceiveFrame(frame, error)) {
+        throw error;
+      }
+      const recovered = await this.recoverHostFromLatestPublishedSnapshot(
+        `receive_${frameTypeNameForRecovery(frame.type)}`,
+        error,
+      );
+      if (!recovered) {
+        throw error;
+      }
+      return this.syncPeerWithCurrentHost(peer);
+    }
+  }
+
+  private async receiveFrameWithCurrentHost(
+    peer: RoomPeer,
+    frame: TypedFrame,
+  ): Promise<RoomHostFrameResult> {
     const canWriteAllNotebookChanges = peer.identity.scope === "owner";
     const encoded = encodeTypedFrame(frame.type, frame.payload);
     return this.withHost((host) =>
@@ -568,6 +589,42 @@ function stableRoomKey(value: string): string {
     hash = BigInt.asUintN(64, hash * 0x100000001b3n);
   }
   return hash.toString(16).padStart(16, "0");
+}
+
+function shouldRecoverReceiveFrame(frame: TypedFrame, error: unknown): boolean {
+  if (!isMaterializedSyncFrameForRecovery(frame.type)) {
+    return false;
+  }
+  return isRecoverableAutomergeSyncBoundaryError(errorMessage(error));
+}
+
+function isMaterializedSyncFrameForRecovery(type: FrameTypeValue): boolean {
+  return (
+    type === FrameType.AUTOMERGE_SYNC ||
+    type === FrameType.RUNTIME_STATE_SYNC ||
+    type === FrameType.COMMS_DOC_SYNC
+  );
+}
+
+function isRecoverableAutomergeSyncBoundaryError(message: string): boolean {
+  return (
+    /recursive use of an object detected which would lead to unsafe aliasing/i.test(message) ||
+    /\bPatchLogMismatch\b/i.test(message) ||
+    /patch logs cannot be shared between documents/i.test(message)
+  );
+}
+
+function frameTypeNameForRecovery(type: FrameTypeValue): string {
+  switch (type) {
+    case FrameType.AUTOMERGE_SYNC:
+      return "notebook_sync";
+    case FrameType.RUNTIME_STATE_SYNC:
+      return "runtime_state_sync";
+    case FrameType.COMMS_DOC_SYNC:
+      return "comms_doc_sync";
+    default:
+      return `frame_${type}`;
+  }
 }
 
 export function isMaterializedSyncFrame(type: FrameTypeValue): boolean {
