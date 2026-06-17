@@ -308,6 +308,31 @@ def assert_authority_accepted_thread(
     assert_authority_accepted_message(thread, body, context)
 
 
+def assert_source_range_anchor(
+    payload: dict[str, Any],
+    thread_id: str,
+    cell_id: str,
+    exact_quote: str,
+    context: str,
+) -> None:
+    thread = require_thread(payload, thread_id, context)
+    anchor = thread.get("anchor")
+    if not isinstance(anchor, dict):
+        fail(f"{context} thread missing anchor: {thread}")
+    expected = {
+        "kind": "source_range",
+        "cell_id": cell_id,
+        "start_line": 1,
+        "start_column": 0,
+        "end_line": 1,
+        "end_column": len(exact_quote),
+        "exact_quote": exact_quote,
+    }
+    for key, value in expected.items():
+        if anchor.get(key) != value:
+            fail(f"{context} source anchor {key} mismatch: expected {value!r}, got {anchor}")
+
+
 def assert_authority_accepted_message(
     thread: dict[str, Any],
     body: str,
@@ -429,6 +454,7 @@ async def run_pair_scenario(
     bob_reply = "comments-smoke bob reply"
     resolved_reply = "comments-smoke reply reopens resolved"
     cell_body = "comments-smoke alice cell note"
+    source_body = "comments-smoke alice source note"
     concurrent_a = "comments-smoke concurrent alice"
     concurrent_b = "comments-smoke concurrent bob"
 
@@ -569,6 +595,96 @@ async def run_pair_scenario(
         cell_thread_id,
         cell_body,
         "cell thread resource",
+    )
+
+    source_quote = "1 + 1"
+    source_created = await call_json(
+        alice,
+        "alice",
+        "create_comment_thread",
+        {
+            "anchor": {
+                "kind": "source_range",
+                "cell_id": cell_id,
+                "start_line": 1,
+                "start_column": 0,
+                "end_line": 1,
+                "end_column": len(source_quote),
+                "exact_quote": source_quote,
+                "prefix_quote": "# comments smoke cell\n",
+                "suffix_quote": "\n",
+            },
+            "body": source_body,
+        },
+    )
+    source_thread_id = source_created.get("thread_id")
+    if not isinstance(source_thread_id, str) or not source_thread_id:
+        fail(f"source create did not return thread_id: {source_created}")
+    assert_authority_accepted_thread(
+        source_created,
+        source_thread_id,
+        source_body,
+        "source create result",
+    )
+    assert_source_range_anchor(
+        source_created,
+        source_thread_id,
+        cell_id,
+        source_quote,
+        "source create result",
+    )
+    source_filtered, source_resource = await wait_for_comments(
+        bob,
+        "bob",
+        cell_resource_uri,
+        lambda tool, resource: (
+            contains_message(tool, source_body) and contains_message(resource, source_body)
+        ),
+        "alice source-range cell thread",
+    )
+    assert_authority_accepted_thread(
+        source_filtered,
+        source_thread_id,
+        source_body,
+        "source filtered list",
+    )
+    assert_source_range_anchor(
+        source_filtered,
+        source_thread_id,
+        cell_id,
+        source_quote,
+        "source filtered list",
+    )
+    assert_authority_accepted_thread(
+        source_resource,
+        source_thread_id,
+        source_body,
+        "source cell resource",
+    )
+    assert_source_range_anchor(
+        source_resource,
+        source_thread_id,
+        cell_id,
+        source_quote,
+        "source cell resource",
+    )
+    source_thread_resource = await read_resource_json(
+        alice,
+        "alice",
+        comment_thread_uri(notebook_id, source_thread_id),
+    )
+    assert_authority_accepted_thread(
+        source_thread_resource,
+        source_thread_id,
+        source_body,
+        "source thread resource",
+    )
+    assert_source_range_anchor(
+        source_thread_resource,
+        source_thread_id,
+        cell_id,
+        source_quote,
+        "source thread resource",
     )
 
     await call_json(
@@ -778,6 +894,7 @@ async def run_pair_scenario(
     for thread_id, body in [
         (created_thread_id, alice_body),
         (cell_thread_id, cell_body),
+        (source_thread_id, source_body),
         *[
             (result["thread_id"], body)
             for result, body in zip(
@@ -1031,6 +1148,7 @@ async def smoke(args: argparse.Namespace) -> None:
                     "comments-smoke bob reply",
                     "comments-smoke reply reopens resolved",
                     "comments-smoke alice cell note",
+                    "comments-smoke alice source note",
                     "comments-smoke concurrent alice",
                     "comments-smoke concurrent bob",
                 },
