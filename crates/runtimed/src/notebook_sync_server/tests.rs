@@ -1647,13 +1647,22 @@ async fn test_runtime_agent_channel_drops_comments_doc_sync_and_scope_cannot_fin
     .await
     .unwrap();
 
+    tokio::io::AsyncWriteExt::shutdown(&mut client_writer)
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), handler)
+        .await
+        .expect("runtime agent handler should exit after client close")
+        .expect("runtime agent handler should not panic");
     let no_comments_reply = tokio::time::timeout(
-        std::time::Duration::from_millis(200),
+        std::time::Duration::from_secs(2),
         notebook_protocol::connection::recv_typed_frame(&mut client_reader),
     )
-    .await;
+    .await
+    .expect("runtime agent writer should close after handler exits")
+    .unwrap();
     assert!(
-        no_comments_reply.is_err(),
+        no_comments_reply.is_none(),
         "runtime agent CommentsDocSync frames must be dropped without negotiation"
     );
     let projection = room
@@ -1748,16 +1757,6 @@ async fn test_runtime_agent_channel_drops_comments_doc_sync_and_scope_cannot_fin
         comments_doc::ProjectedThreadStatus::Open
     );
     assert!(projection.threads[0].resolved_by_authority.is_none());
-
-    tokio::io::AsyncWriteExt::shutdown(&mut client_writer)
-        .await
-        .unwrap();
-    drop(client_writer);
-    drop(client_reader);
-    tokio::time::timeout(std::time::Duration::from_secs(2), handler)
-        .await
-        .expect("runtime agent handler should exit after client close")
-        .expect("runtime agent handler should not panic");
 }
 
 #[tokio::test]
@@ -1848,6 +1847,58 @@ async fn test_comments_doc_sync_rejects_client_using_daemon_authority_actor() {
         .unwrap();
     assert!(projection.threads.is_empty());
     assert!(!room.comments_store.doc_path(&room.comments_doc_id).exists());
+}
+
+#[tokio::test]
+async fn test_comments_doc_sync_accepts_editor_v2_multi_change_payload() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-editor-v2-multi-change.ipynb");
+    let identity = RoomConnectionIdentity::local_with_scope(
+        Some("agent:comments-editor".to_string()),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await
+    .unwrap();
+    let mut server_peer_state = automerge::sync::State::new();
+    let payload = comments_sync_v2_multi_change_payload_from_room(
+        &room,
+        &mut server_peer_state,
+        identity.actor_label().as_str(),
+    );
+    let (_reply_reader, reply_writer) = tokio::io::duplex(1024 * 1024);
+    let (peer_writer, _writer_task) = super::peer_writer::spawn_peer_writer(
+        reply_writer,
+        "notebook".to_string(),
+        "peer".to_string(),
+    );
+
+    let handled = super::peer_comments_sync::handle_comments_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &peer_writer,
+        &payload,
+        &identity,
+    )
+    .await
+    .unwrap();
+
+    assert!(handled);
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[], None))
+        .unwrap()
+        .unwrap();
+    let mut bodies: Vec<&str> = projection
+        .threads
+        .iter()
+        .map(|thread| thread.messages[0].body.as_str())
+        .collect();
+    bodies.sort_unstable();
+    assert_eq!(
+        bodies,
+        vec!["first v2 editor comment", "second v2 editor comment"]
+    );
+    assert!(room.comments_store.doc_path(&room.comments_doc_id).exists());
 }
 
 #[tokio::test]
@@ -2724,6 +2775,65 @@ fn comments_sync_payload_from_room(
         .unwrap()
         .expect("client comment sync message")
         .encode()
+}
+
+fn comments_sync_v2_multi_change_payload_from_room(
+    room: &NotebookRoom,
+    server_peer_state: &mut automerge::sync::State,
+    actor_label: &str,
+) -> Vec<u8> {
+    let bytes = room.comments.with_doc(|doc| Ok(doc.save())).unwrap();
+    let mut client =
+        comments_doc::CommentsDoc::load_with_actor(&bytes, &room.comments_doc_id, actor_label)
+            .unwrap();
+    let mut client_peer_state = automerge::sync::State::new();
+    if let Some(initial) = room
+        .comments
+        .with_doc(|doc| {
+            doc.generate_sync_message_recovering(server_peer_state, "test-v2-initial")
+                .map_err(Into::into)
+        })
+        .unwrap()
+    {
+        client
+            .receive_sync_message_with_changes_recovering(
+                &mut client_peer_state,
+                initial,
+                "test-v2-initial-receive",
+            )
+            .unwrap();
+    }
+    client
+        .create_thread(
+            "thread-v2-editor-1",
+            "message-v2-editor-1",
+            &comments_doc::CommentAnchor::Notebook,
+            "first v2 editor comment",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+    client
+        .create_thread(
+            "thread-v2-editor-2",
+            "message-v2-editor-2",
+            &comments_doc::CommentAnchor::Notebook,
+            "second v2 editor comment",
+            None,
+            "2026-06-16T00:00:01Z",
+        )
+        .unwrap();
+    client_peer_state.their_capabilities = Some(vec![automerge::sync::Capability::MessageV2]);
+    let message = client
+        .generate_sync_message_recovering(&mut client_peer_state, "test-client-v2-multi-change")
+        .unwrap()
+        .expect("client v2 comments sync message");
+    assert_eq!(
+        message.changes.iter().count(),
+        1,
+        "test fixture should exercise a V2 combined sync change chunk"
+    );
+    message.encode()
 }
 
 fn comments_sync_payload_with_authority_field_from_room(

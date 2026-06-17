@@ -45,15 +45,6 @@ pub(super) async fn handle_comments_doc_frame(
     let message = sync::Message::decode(payload)
         .map_err(|e| anyhow::anyhow!("decode comments sync: {}", e))?;
     let has_client_changes = !message.changes.is_empty();
-    let incoming_actor_labels: Vec<String> = message
-        .changes
-        .iter()
-        .map(|change| {
-            automerge::Change::from_bytes(change.to_vec())
-                .map(|change| notebook_doc::actor_label_from_id(change.actor_id()))
-                .map_err(|e| anyhow::anyhow!("decode comments sync change: {e}"))
-        })
-        .collect::<anyhow::Result<_>>()?;
     if has_client_changes && !allows_comments_doc_write(connection_identity.scope()) {
         warn!(
             "[notebook-sync] Ignoring unauthorized CommentsDoc changes for scope {}",
@@ -77,20 +68,9 @@ pub(super) async fn handle_comments_doc_frame(
 
     let reply_encoded = room.comments.with_doc(|comments_doc| {
         if has_client_changes {
-            if incoming_actor_labels
-                .iter()
-                .any(|actor| actor == COMMENTS_DOC_ACTOR)
-            {
-                return Err(CommentsDocError::UnauthorizedActor(format!(
-                    "reserved comment authority actor {COMMENTS_DOC_ACTOR}"
-                )));
-            }
-            connection_identity
-                .validate_actor_labels(incoming_actor_labels.iter().map(String::as_str))
-                .map_err(|error| CommentsDocError::UnauthorizedActor(error.to_string()))?;
-
             let heads_before = comments_doc.get_heads();
-            let mut preview = CommentsDoc::from_doc(comments_doc.doc().clone())?;
+            let mut preview_base = comments_doc.doc().clone();
+            let mut preview = CommentsDoc::from_doc(preview_base.clone())?;
             let mut preview_peer_state = comments_peer_state.clone();
             match preview.receive_sync_message_with_changes_recovering(
                 &mut preview_peer_state,
@@ -98,6 +78,19 @@ pub(super) async fn handle_comments_doc_frame(
                 "comments-auth-preview",
             ) {
                 Ok(true) => {
+                    let actors: std::collections::BTreeSet<String> = preview_base
+                        .get_changes_added(preview.doc_mut())
+                        .into_iter()
+                        .map(|change| notebook_doc::actor_label_from_id(change.actor_id()))
+                        .collect();
+                    if actors.iter().any(|actor| actor == COMMENTS_DOC_ACTOR) {
+                        return Err(CommentsDocError::UnauthorizedActor(format!(
+                            "reserved comment authority actor {COMMENTS_DOC_ACTOR}"
+                        )));
+                    }
+                    connection_identity
+                        .validate_actor_labels(actors.iter().map(String::as_str))
+                        .map_err(|error| CommentsDocError::UnauthorizedActor(error.to_string()))?;
                     if preview.changed_authority_fields_since(&heads_before) {
                         return Err(CommentsDocError::UnauthorizedActor(
                             "client-authored comment authority fields".to_string(),
