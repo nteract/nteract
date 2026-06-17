@@ -5,6 +5,7 @@ export interface AppSessionEnvironment {
 }
 
 export interface CloudAppSession {
+  cacheKey: string;
   displayName?: string;
   expiresAt: number;
   issuedAt: number;
@@ -20,6 +21,7 @@ interface CloudAppSessionPayload {
   ns: string;
   principal: string;
   provider: "oidc";
+  sid?: string;
   v: 1;
 }
 
@@ -50,6 +52,7 @@ export async function createCloudAppSessionCookie(
     ns: identity.metadata.principalNamespace,
     iat: nowSeconds,
     exp: nowSeconds + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
+    sid: crypto.randomUUID(),
     ...(displayName ? { display_name: displayName } : {}),
   };
   const value = await signCloudAppSession(env, payload);
@@ -81,8 +84,29 @@ export async function readCloudAppSession(
     principalNamespace: payload.ns,
     issuedAt: payload.iat,
     expiresAt: payload.exp,
+    cacheKey: await appSessionCacheKey(env, payload),
     ...(payload.display_name ? { displayName: payload.display_name } : {}),
   };
+}
+
+async function appSessionCacheKey(
+  env: AppSessionEnvironment,
+  payload: CloudAppSessionPayload,
+): Promise<string> {
+  const signature = await hmacSha256(
+    env,
+    [
+      "app-session-cache",
+      "v1",
+      payload.provider,
+      payload.ns,
+      payload.principal,
+      String(payload.iat),
+      String(payload.exp),
+      payload.sid ?? "legacy",
+    ].join(":"),
+  );
+  return base64UrlEncodeBytes(signature);
 }
 
 async function signCloudAppSession(
@@ -178,6 +202,7 @@ function isCloudAppSessionPayload(value: unknown): value is CloudAppSessionPaylo
     typeof payload.ns === "string" &&
     Number.isFinite(payload.iat) &&
     Number.isFinite(payload.exp) &&
+    (payload.sid === undefined || typeof payload.sid === "string") &&
     (payload.display_name === undefined || typeof payload.display_name === "string")
   );
 }

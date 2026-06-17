@@ -5,6 +5,7 @@ import {
   useState,
   type ClipboardEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
 } from "react";
 import { Check, Loader2, PencilLine, X } from "lucide-react";
@@ -33,6 +34,7 @@ export interface DocumentTitleProps {
   homeAriaLabel?: string;
   homeHref?: string;
   homeIcon?: ReactNode;
+  onHomeClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
   homeTitle?: string;
   inputAriaLabel?: string;
   inputName?: string;
@@ -51,6 +53,7 @@ export function DocumentTitle({
   homeAriaLabel = "Open documents",
   homeHref,
   homeIcon,
+  onHomeClick,
   homeTitle = "Documents",
   inputAriaLabel = "Document title",
   inputName = "document-title",
@@ -170,6 +173,7 @@ export function DocumentTitle({
           href={homeHref}
           aria-label={homeAriaLabel}
           title={homeTitle}
+          onClick={onHomeClick}
         >
           {homeIcon}
         </a>

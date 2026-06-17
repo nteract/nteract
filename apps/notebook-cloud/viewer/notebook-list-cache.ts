@@ -7,6 +7,7 @@ import {
   type HostedDocumentListCacheStorage,
 } from "./hosted-document-list-cache";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
+import type { CloudAppSession } from "./app-session";
 import { isCloudNotebookListItem, type CloudNotebookListItem } from "./notebook-dashboard";
 
 export const CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY =
@@ -18,18 +19,33 @@ export type CloudNotebookListCacheStorage = HostedDocumentListCacheStorage;
 export function readCachedCloudNotebookList(
   storage: Pick<CloudNotebookListCacheStorage, "getItem">,
   authState: CloudPrototypeAuthState,
+  appSession?: CloudAppSession | null,
   now = Date.now(),
 ): CloudNotebookListItem[] | null {
-  return readCachedHostedDocumentList(storage, authState, cloudNotebookListCacheConfig(), now);
+  return readCachedHostedDocumentList(
+    storage,
+    authState,
+    appSession,
+    cloudNotebookListCacheConfig(),
+    now,
+  );
 }
 
 export function writeCachedCloudNotebookList(
   storage: Pick<CloudNotebookListCacheStorage, "setItem">,
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null | undefined,
   notebooks: CloudNotebookListItem[],
   now = Date.now(),
 ): void {
-  writeCachedHostedDocumentList(storage, authState, notebooks, cloudNotebookListCacheConfig(), now);
+  writeCachedHostedDocumentList(
+    storage,
+    authState,
+    appSession,
+    notebooks,
+    cloudNotebookListCacheConfig(),
+    now,
+  );
 }
 
 export function clearCachedCloudNotebookList(
@@ -38,8 +54,11 @@ export function clearCachedCloudNotebookList(
   clearCachedHostedDocumentList(storage, CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY);
 }
 
-export function cloudNotebookListCacheAuthKey(authState: CloudPrototypeAuthState): string | null {
-  return cloudHostedDocumentListCacheAuthKey(authState);
+export function cloudNotebookListCacheAuthKey(
+  authState: CloudPrototypeAuthState,
+  appSession?: CloudAppSession | null,
+): string | null {
+  return cloudHostedDocumentListCacheAuthKey(authState, appSession);
 }
 
 function cloudNotebookListCacheConfig() {

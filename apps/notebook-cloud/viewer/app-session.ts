@@ -4,6 +4,7 @@ import type { CloudOidcTokenState } from "./oidc-auth";
 export const CLOUD_APP_SESSION_ENDPOINT = "/api/auth/session";
 
 export interface CloudAppSession {
+  cache_key: string;
   provider: "oidc";
   expires_at: number;
 }
@@ -92,8 +93,12 @@ export function isCloudAppSession(value: unknown): value is CloudAppSession {
   const candidate = value as Partial<CloudAppSession>;
   return (
     candidate.provider === "oidc" &&
+    typeof candidate.cache_key === "string" &&
+    candidate.cache_key.length > 0 &&
     Number.isFinite(candidate.expires_at) &&
-    Object.keys(candidate).every((key) => key === "provider" || key === "expires_at")
+    Object.keys(candidate).every(
+      (key) => key === "provider" || key === "expires_at" || key === "cache_key",
+    )
   );
 }
 

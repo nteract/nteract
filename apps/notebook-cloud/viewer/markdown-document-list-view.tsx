@@ -6,7 +6,11 @@ import {
   fetchWithCloudPrototypeAuth,
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
-import { clearCloudAppSession, establishCloudAppSession } from "./app-session";
+import {
+  clearCloudAppSession,
+  establishCloudAppSession,
+  type CloudAppSession,
+} from "./app-session";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { CloudHostedDocumentSignedOutPanel } from "./cloud-hosted-document-signed-out";
 import { cloudResponseError } from "./cloud-response";
@@ -65,7 +69,7 @@ export function CloudMarkdownDocumentListView({
     appSessionStatus.refreshAppSessionStatus,
   );
   const [listState, setListState] = useState<MarkdownDocumentListState>(() =>
-    initialMarkdownDocumentListState(authState, bootstrap),
+    initialMarkdownDocumentListState(authState, bootstrap, appSessionStatus.session),
   );
   const [refreshIndex, setRefreshIndex] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
@@ -90,7 +94,15 @@ export function CloudMarkdownDocumentListView({
   }, [resolvedTheme]);
 
   useEffect(() => {
-    const seededDocuments = cloudMarkdownDocumentListSeedFromBootstrapOrCache(authState, bootstrap);
+    document.title = "nteract Markdown documents";
+  }, []);
+
+  useEffect(() => {
+    const seededDocuments = cloudMarkdownDocumentListSeedFromBootstrapOrCache(
+      authState,
+      bootstrap,
+      appSessionStatus.session,
+    );
     if (!canFetchDocumentList) {
       if (waitingForAppSession) {
         setListState(
@@ -103,7 +115,11 @@ export function CloudMarkdownDocumentListView({
       return;
     }
     if (refreshIndex === 0 && bootstrap) {
-      writeCachedCloudMarkdownDocumentListToWindow(authState, bootstrap.documents);
+      writeCachedCloudMarkdownDocumentListToWindow(
+        authState,
+        appSessionStatus.session,
+        bootstrap.documents,
+      );
       setListState({ kind: "ready", documents: bootstrap.documents });
       return;
     }
@@ -123,7 +139,11 @@ export function CloudMarkdownDocumentListView({
         if (!isCloudMarkdownDocumentListResponse(body)) {
           throw new Error("Unable to list Markdown documents: response shape was invalid");
         }
-        writeCachedCloudMarkdownDocumentListToWindow(authState, body.documents);
+        writeCachedCloudMarkdownDocumentListToWindow(
+          authState,
+          appSessionStatus.session,
+          body.documents,
+        );
         setListState({ kind: "ready", documents: body.documents });
         setBootstrap({
           kind: "markdown-document-list",
@@ -140,7 +160,14 @@ export function CloudMarkdownDocumentListView({
     })();
 
     return () => controller.abort();
-  }, [authState, bootstrap, canFetchDocumentList, refreshIndex, waitingForAppSession]);
+  }, [
+    appSessionStatus.session,
+    authState,
+    bootstrap,
+    canFetchDocumentList,
+    refreshIndex,
+    waitingForAppSession,
+  ]);
 
   const refreshList = () => {
     if (authState.mode === "oidc" && authState.token) {
@@ -348,8 +375,13 @@ export function CloudMarkdownDocumentListView({
 function initialMarkdownDocumentListState(
   authState: CloudPrototypeAuthState,
   bootstrap: CloudMarkdownDocumentListBootstrap | null,
+  appSession: CloudAppSession | null,
 ): MarkdownDocumentListState {
-  const seededDocuments = cloudMarkdownDocumentListSeedFromBootstrapOrCache(authState, bootstrap);
+  const seededDocuments = cloudMarkdownDocumentListSeedFromBootstrapOrCache(
+    authState,
+    bootstrap,
+    appSession,
+  );
   return seededDocuments ? { kind: "ready", documents: seededDocuments } : { kind: "loading" };
 }
 
@@ -357,6 +389,13 @@ function fetchMarkdownDocumentList(
   authState: CloudPrototypeAuthState,
   signal: AbortSignal,
 ): Promise<Response> {
+  if (authState.mode !== "dev" && authState.mode !== "oidc") {
+    return fetch(markdownDocumentListEndpoint(), {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  }
   return fetchWithCloudPrototypeAuth(
     markdownDocumentListEndpoint(),
     { headers: { Accept: "application/json" }, signal },
@@ -382,26 +421,31 @@ function cloudAuthWithScope(
 function cloudMarkdownDocumentListSeedFromBootstrapOrCache(
   authState: CloudPrototypeAuthState,
   bootstrap: CloudMarkdownDocumentListBootstrap | null,
+  appSession: CloudAppSession | null,
 ): CloudMarkdownDocumentListItem[] | null {
-  return bootstrap?.documents ?? readCachedCloudMarkdownDocumentListFromWindow(authState);
+  return (
+    bootstrap?.documents ?? readCachedCloudMarkdownDocumentListFromWindow(authState, appSession)
+  );
 }
 
 function readCachedCloudMarkdownDocumentListFromWindow(
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null,
 ): CloudMarkdownDocumentListItem[] | null {
   const storage = cloudMarkdownDocumentListCacheStorage();
-  return storage ? readCachedCloudMarkdownDocumentList(storage, authState) : null;
+  return storage ? readCachedCloudMarkdownDocumentList(storage, authState, appSession) : null;
 }
 
 function writeCachedCloudMarkdownDocumentListToWindow(
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null,
   documents: CloudMarkdownDocumentListItem[],
 ): void {
   const storage = cloudMarkdownDocumentListCacheStorage();
   if (!storage) {
     return;
   }
-  writeCachedCloudMarkdownDocumentList(storage, authState, documents);
+  writeCachedCloudMarkdownDocumentList(storage, authState, appSession, documents);
 }
 
 function clearCachedCloudMarkdownDocumentListFromWindow(): void {

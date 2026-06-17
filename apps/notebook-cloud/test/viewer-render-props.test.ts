@@ -578,6 +578,32 @@ test("Markdown document list reuses the hosted document catalog cache pattern", 
   assert.match(markdownCacheText, /itemsKey: "documents"/);
 });
 
+test("Markdown document home link can return to /m without a full document navigation", () => {
+  const markdownRouteText = readFileSync(
+    new URL("../viewer/markdown-document-route.tsx", import.meta.url),
+    "utf8",
+  );
+  const markdownListText = readFileSync(
+    new URL("../viewer/markdown-document-list-view.tsx", import.meta.url),
+    "utf8",
+  );
+  const notebookListText = readFileSync(
+    new URL("../viewer/notebook-list-view.tsx", import.meta.url),
+    "utf8",
+  );
+  const indexText = readFileSync(new URL("../viewer/index.tsx", import.meta.url), "utf8");
+
+  assert.ok(markdownRouteText.includes('homeHref="/m"'));
+  assert.ok(markdownRouteText.includes("onHomeClick={navigateToMarkdownDashboard}"));
+  assert.ok(markdownRouteText.includes("shouldHandleCloudViewerLinkClick(event)"));
+  assert.ok(markdownRouteText.includes('navigateCloudViewer("/m")'));
+  assert.ok(markdownListText.includes('document.title = "nteract Markdown documents"'));
+  assert.ok(notebookListText.includes('document.title = "nteract cloud notebooks"'));
+  assert.match(indexText, /CLOUD_VIEWER_ROUTE_CHANGE_EVENT/);
+  assert.match(indexText, /window\.addEventListener\("popstate", updateLocation\)/);
+  assert.match(indexText, /setLocationHref\(window\.location\.href\)/);
+});
+
 test("Markdown document sharing uses email-first collaborator input", () => {
   const markdownSharingText = readFileSync(
     new URL("../viewer/markdown-sharing-controls.tsx", import.meta.url),

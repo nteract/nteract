@@ -719,7 +719,7 @@ test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange
   );
   assert.match(
     routeSourceText,
-    /\[authState, bootstrap, canFetchNotebookList, refreshIndex, waitingForAppSession\]/,
+    /\[\s*appSessionStatus\.session,\s*authState,\s*bootstrap,\s*canFetchNotebookList,\s*refreshIndex,\s*waitingForAppSession,\s*\]/,
   );
 });
 
@@ -727,7 +727,8 @@ test("cloud notebook list refresh re-establishes app sessions before listing not
   const routeSourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
   const routeSourceText = readFileSync(routeSourcePath, "utf8");
 
-  assert.match(routeSourceText, /import \{ clearCloudAppSession, establishCloudAppSession \}/);
+  assert.match(routeSourceText, /clearCloudAppSession/);
+  assert.match(routeSourceText, /establishCloudAppSession/);
   assert.match(
     routeSourceText,
     /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*establishCloudAppSession\(authState\)[\s\S]*appSessionStatus\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
@@ -761,16 +762,16 @@ test("cloud notebook list trusts server bootstrap on initial app-session paint",
 
   assert.match(
     sourceText,
-    /const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache\(authState, bootstrap\);/,
+    /const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache\(\s*authState,\s*bootstrap,\s*appSessionStatus\.session,\s*\);/,
   );
   assert.match(
     sourceText,
-    /if \(refreshIndex === 0 && bootstrap\) \{[\s\S]*writeCachedCloudNotebookListToWindow\(authState, bootstrap\.notebooks\);[\s\S]*setListState\(\{ kind: "ready", notebooks: bootstrap\.notebooks \}\);[\s\S]*return;/,
+    /if \(refreshIndex === 0 && bootstrap\) \{[\s\S]*writeCachedCloudNotebookListToWindow\(\s*authState,\s*appSessionStatus\.session,\s*bootstrap\.notebooks,\s*\);[\s\S]*setListState\(\{ kind: "ready", notebooks: bootstrap\.notebooks \}\);[\s\S]*return;/,
     "fresh notebook-home bootstrap should satisfy the initial render without an immediate duplicate /api/n fetch",
   );
   assert.match(
     sourceText,
-    /return bootstrap\?\.notebooks \?\? readCachedCloudNotebookListFromWindow\(authState\);/,
+    /return bootstrap\?\.notebooks \?\? readCachedCloudNotebookListFromWindow\(authState, appSession\);/,
     "server bootstrap should beat stale sessionStorage cache when both are present",
   );
 });

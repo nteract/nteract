@@ -1,4 +1,5 @@
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
+import type { CloudAppSession } from "./app-session";
 
 export const CLOUD_HOSTED_DOCUMENT_LIST_CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -23,10 +24,11 @@ interface CachedHostedDocumentList {
 export function readCachedHostedDocumentList<T>(
   storage: Pick<HostedDocumentListCacheStorage, "getItem">,
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null | undefined,
   config: HostedDocumentListCacheConfig<T>,
   now = Date.now(),
 ): T[] | null {
-  const authKey = cloudHostedDocumentListCacheAuthKey(authState);
+  const authKey = cloudHostedDocumentListCacheAuthKey(authState, appSession);
   if (!authKey) {
     return null;
   }
@@ -60,11 +62,12 @@ export function readCachedHostedDocumentList<T>(
 export function writeCachedHostedDocumentList<T>(
   storage: Pick<HostedDocumentListCacheStorage, "setItem">,
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null | undefined,
   items: T[],
   config: HostedDocumentListCacheConfig<T>,
   now = Date.now(),
 ): void {
-  const authKey = cloudHostedDocumentListCacheAuthKey(authState);
+  const authKey = cloudHostedDocumentListCacheAuthKey(authState, appSession);
   if (!authKey) {
     return;
   }
@@ -88,7 +91,11 @@ export function clearCachedHostedDocumentList(
 
 export function cloudHostedDocumentListCacheAuthKey(
   authState: CloudPrototypeAuthState,
+  appSession?: CloudAppSession | null,
 ): string | null {
+  if (appSession?.cache_key) {
+    return `app-session:${appSession.cache_key}`;
+  }
   if (authState.mode === "oidc" && authState.oidcClaims?.sub) {
     return `oidc:${authState.oidcClaims.sub}`;
   }

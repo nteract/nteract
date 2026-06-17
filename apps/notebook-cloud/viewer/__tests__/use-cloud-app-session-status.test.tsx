@@ -29,6 +29,7 @@ describe("useCloudAppSessionStatus", () => {
   const session = (overrides: Partial<CloudAppSession> = {}): CloudAppSession => ({
     provider: "oidc",
     expires_at: 4_000_000_000,
+    cache_key: "cache-a",
     ...overrides,
   });
 

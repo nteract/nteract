@@ -45,14 +45,16 @@ describe("cloud app session cookies", () => {
       2_100,
     );
 
-    assert.deepEqual(session, {
-      provider: "oidc",
-      principal: "user:anaconda:subject-a",
-      principalNamespace: "user:anaconda",
-      issuedAt: 2_000,
-      expiresAt: 2_000 + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
-      displayName: "OIDC User",
-    });
+    assert.ok(session);
+    assert.equal(session.provider, "oidc");
+    assert.equal(session.principal, "user:anaconda:subject-a");
+    assert.equal(session.principalNamespace, "user:anaconda");
+    assert.equal(session.issuedAt, 2_000);
+    assert.equal(session.expiresAt, 2_000 + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS);
+    assert.equal(session.displayName, "OIDC User");
+    assert.equal(typeof session.cacheKey, "string");
+    assert.ok(session.cacheKey.length > 20);
+    assert.doesNotMatch(session.cacheKey, /subject-a|anaconda|user@example\.test|OIDC User/);
   });
 
   it("caps the display name signed into the cookie", async () => {

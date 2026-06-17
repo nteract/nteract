@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BookOpen, House, Loader2 } from "lucide-react";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -19,6 +19,7 @@ import {
 import type { CloudViewerAuthConfig, ViewerRuntimeState } from "./cloud-viewer-types";
 import { cloudNotebookRouteTitleFromPathname } from "./cloud-notebook-title-state";
 import { CloudHomeView } from "./home-view";
+import { CLOUD_VIEWER_ROUTE_CHANGE_EVENT } from "./cloud-viewer-navigation";
 import { CloudMarkdownDocumentListView } from "./markdown-document-list-view";
 import { CloudNotebookListView } from "./notebook-list-view";
 import { loadNotebookRouteModule } from "./notebook-route-preload";
@@ -53,38 +54,53 @@ setOpenUrlHost({
 installDocumentThemeSync();
 
 function App() {
+  const [locationHref, setLocationHref] = useState(() => window.location.href);
+  const pathname = new URL(locationHref).pathname;
   const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());
   const [runtimeState] = useState<ViewerRuntimeState | null>(() =>
-    isOidcCallbackPath() || isHomePath() || isNotebookListPath() || isMarkdownDocumentListPath()
+    isOidcCallbackPath(pathname) ||
+    isHomePath(pathname) ||
+    isNotebookListPath(pathname) ||
+    isMarkdownDocumentListPath(pathname)
       ? null
-      : isMarkdownDocumentRoutePath()
+      : isMarkdownDocumentRoutePath(pathname)
         ? null
         : loadViewerRuntime(),
   );
   const [markdownConfig] = useState(() =>
-    isMarkdownDocumentRoutePath() ? loadMarkdownDocumentConfig() : null,
+    isMarkdownDocumentRoutePath(pathname) ? loadMarkdownDocumentConfig() : null,
   );
 
-  if (isHomePath()) {
+  useEffect(() => {
+    const updateLocation = () => setLocationHref(window.location.href);
+    window.addEventListener("popstate", updateLocation);
+    window.addEventListener(CLOUD_VIEWER_ROUTE_CHANGE_EVENT, updateLocation);
+    return () => {
+      window.removeEventListener("popstate", updateLocation);
+      window.removeEventListener(CLOUD_VIEWER_ROUTE_CHANGE_EVENT, updateLocation);
+    };
+  }, []);
+
+  if (isHomePath(pathname)) {
     // The Worker currently redirects / and /index.html to /n. Keep this route
     // mounted for the temporary redirect's rollback path and future home-page
     // experiments that may serve the viewer shell directly again.
     return <CloudHomeView authConfig={authConfig} />;
   }
 
-  if (isNotebookListPath()) {
+  if (isNotebookListPath(pathname)) {
     return <CloudNotebookListView authConfig={authConfig} />;
   }
 
-  if (isMarkdownDocumentListPath()) {
+  if (isMarkdownDocumentListPath(pathname)) {
     return <CloudMarkdownDocumentListView authConfig={authConfig} />;
   }
 
-  if (isOidcCallbackPath()) {
+  if (isOidcCallbackPath(pathname)) {
     return <OidcCallbackView authConfig={authConfig} />;
   }
 
-  if (isMarkdownDocumentRoutePath()) {
+  if (isMarkdownDocumentRoutePath(pathname)) {
     if (!markdownConfig) {
       return <ViewerStartupError message="Unable to start Markdown document: missing config" />;
     }

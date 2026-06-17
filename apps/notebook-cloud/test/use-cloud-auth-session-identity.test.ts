@@ -17,6 +17,7 @@ describe("cloud app session identity stability", () => {
   const session = (overrides: Partial<CloudAppSession> = {}): CloudAppSession => ({
     provider: "oidc",
     expires_at: 1_750_000_000,
+    cache_key: "cache-a",
     ...overrides,
   });
 
@@ -32,6 +33,7 @@ describe("cloud app session identity stability", () => {
       assert.equal(cloudAppSessionsEqual(a, null), false);
       assert.equal(cloudAppSessionsEqual(null, a), false);
       assert.equal(cloudAppSessionsEqual(a, session({ expires_at: 1_750_000_001 })), false);
+      assert.equal(cloudAppSessionsEqual(a, session({ cache_key: "cache-b" })), false);
     });
   });
 

@@ -6,7 +6,7 @@ import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth.ts";
 describe("hosted document auth projection", () => {
   it("lets app-session cookies drive catalog access when localStorage auth is stale", () => {
     const projection = projectHostedDocumentAuthState(authState("oidc_expired"), {
-      appSession: { provider: "oidc", expires_at: 4_102_444_800 },
+      appSession: { provider: "oidc", expires_at: 4_102_444_800, cache_key: "cache-a" },
     });
 
     assert.equal(projection.hasAppSession, true);

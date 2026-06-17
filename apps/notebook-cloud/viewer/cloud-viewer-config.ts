@@ -224,25 +224,25 @@ export function loadCloudMarkdownDocumentListBootstrap(): CloudMarkdownDocumentL
   return null;
 }
 
-export function isOidcCallbackPath(): boolean {
-  return window.location.pathname.replace(/\/+$/, "") === "/oidc";
+export function isOidcCallbackPath(pathname = window.location.pathname): boolean {
+  return pathname.replace(/\/+$/, "") === "/oidc";
 }
 
-export function isHomePath(): boolean {
-  const pathname = window.location.pathname.replace(/\/+$/, "");
-  return pathname === "" || pathname === "/index.html";
+export function isHomePath(pathname = window.location.pathname): boolean {
+  const normalized = pathname.replace(/\/+$/, "");
+  return normalized === "" || normalized === "/index.html";
 }
 
-export function isNotebookListPath(): boolean {
-  return window.location.pathname.replace(/\/+$/, "") === "/n";
+export function isNotebookListPath(pathname = window.location.pathname): boolean {
+  return pathname.replace(/\/+$/, "") === "/n";
 }
 
-export function isMarkdownDocumentListPath(): boolean {
-  return window.location.pathname.replace(/\/+$/, "") === "/m";
+export function isMarkdownDocumentListPath(pathname = window.location.pathname): boolean {
+  return pathname.replace(/\/+$/, "") === "/m";
 }
 
-export function isMarkdownDocumentRoutePath(): boolean {
-  return /^\/m\/[^/]+(?:\/.*)?\/?$/.test(window.location.pathname);
+export function isMarkdownDocumentRoutePath(pathname = window.location.pathname): boolean {
+  return /^\/m\/[^/]+(?:\/.*)?\/?$/.test(pathname);
 }
 
 function isCloudMarkdownDocumentBootstrap(value: unknown): value is CloudMarkdownDocumentBootstrap {

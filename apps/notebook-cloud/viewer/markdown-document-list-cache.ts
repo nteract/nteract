@@ -6,6 +6,7 @@ import {
   type HostedDocumentListCacheStorage,
 } from "./hosted-document-list-cache";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
+import type { CloudAppSession } from "./app-session";
 import {
   isCloudMarkdownDocumentListItem,
   type CloudMarkdownDocumentListItem,
@@ -20,11 +21,13 @@ export type CloudMarkdownDocumentListCacheStorage = HostedDocumentListCacheStora
 export function readCachedCloudMarkdownDocumentList(
   storage: Pick<CloudMarkdownDocumentListCacheStorage, "getItem">,
   authState: CloudPrototypeAuthState,
+  appSession?: CloudAppSession | null,
   now = Date.now(),
 ): CloudMarkdownDocumentListItem[] | null {
   return readCachedHostedDocumentList(
     storage,
     authState,
+    appSession,
     cloudMarkdownDocumentListCacheConfig(),
     now,
   );
@@ -33,12 +36,14 @@ export function readCachedCloudMarkdownDocumentList(
 export function writeCachedCloudMarkdownDocumentList(
   storage: Pick<CloudMarkdownDocumentListCacheStorage, "setItem">,
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null | undefined,
   documents: CloudMarkdownDocumentListItem[],
   now = Date.now(),
 ): void {
   writeCachedHostedDocumentList(
     storage,
     authState,
+    appSession,
     documents,
     cloudMarkdownDocumentListCacheConfig(),
     now,

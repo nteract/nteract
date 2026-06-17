@@ -1,4 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
 import { House, ListTree } from "lucide-react";
 import type { EditorView } from "@codemirror/view";
 import type { ConnectionStatus, NotebookOutlineItem } from "runtimed";
@@ -58,6 +67,7 @@ import {
   useCloudPrototypeAuth,
 } from "./use-cloud-auth";
 import { loadSupplementalViewerCss } from "./supplemental-css";
+import { navigateCloudViewer, shouldHandleCloudViewerLinkClick } from "./cloud-viewer-navigation";
 
 type MarkdownEditorModule = typeof import("@/components/editor/codemirror-editor");
 type MarkdownDocumentLiveSyncModule = typeof import("./markdown-document-live-sync");
@@ -580,6 +590,13 @@ export function MarkdownDocumentRoute({
     },
     [],
   );
+  const navigateToMarkdownDashboard = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
+    if (!shouldHandleCloudViewerLinkClick(event)) {
+      return;
+    }
+    event.preventDefault();
+    navigateCloudViewer("/m");
+  }, []);
   const bodyReadyForEditorPreload = routeState.kind === "ready" && routeState.bodyReady;
 
   useEffect(() => {
@@ -714,6 +731,7 @@ export function MarkdownDocumentRoute({
           renameError={markdownTitleError}
           onRename={saveMarkdownDocumentTitle}
           homeHref="/m"
+          onHomeClick={navigateToMarkdownDashboard}
           homeAriaLabel="Open Markdown documents"
           homeTitle="Markdown documents"
           homeIcon={<House aria-hidden="true" />}
