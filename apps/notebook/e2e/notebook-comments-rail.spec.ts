@@ -345,6 +345,9 @@ test.describe("notebook comments rail", () => {
       acceptedSourceThreadWithMessage(await mcp.listComments({ cellId }), body, exactQuote),
     ).not.toBeNull();
 
+    await panel.getByRole("button", { name: "Show cell for Source comment 1" }).click();
+    await expect(page.getByTestId("source-comment-button")).toHaveCount(0);
+
     const markdownSource = "## Plan\n\n- check source comments\n";
     const markdownQuote = "- check source comments";
     const markdownCell = await ensureMarkdownCell(page);

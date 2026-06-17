@@ -108,7 +108,10 @@ function requestSourceComment(
 ): boolean {
   const anchor = sourceRangeAnchorFromSelection(cellId, view);
   if (!anchor) return false;
+
+  const head = view.state.selection.main.head;
   onCreateSourceComment(anchor);
+  view.dispatch({ selection: { anchor: head, head } });
   return true;
 }
 
