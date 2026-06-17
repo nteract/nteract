@@ -186,7 +186,8 @@ Published notebook snapshots:
 - If comments are published, they are a frozen read-only projection at publish
   heads, not a live comments sync subscription.
 - Published attribution may need redaction or coarsening because
-  `created_by_actor_label` and display names can expose internal reviewers.
+  `authority_created_by_actor_label` and display names can expose internal
+  reviewers.
 
 That means the v0 local path sidecar is intentionally an adapter detail. The
 portable model is still "one comments doc attached to one notebook room," with a
