@@ -177,7 +177,8 @@ Published notebook snapshots:
 - If comments are published, they are a frozen read-only projection at publish
   heads, not a live comments sync subscription.
 - Published attribution may need redaction or coarsening because
-  `created_by_actor_label` and display names can expose internal reviewers.
+  `authority_created_by_actor_label` and display names can expose internal
+  reviewers.
 
 That means the v0 local path sidecar is intentionally an adapter detail. The
 portable model is still "one comments doc attached to one notebook room," with a
@@ -690,8 +691,8 @@ The repo already has the pieces for this pattern:
 ```text
 CommentProjection/
   threads/{thread_id}/messages/{message_id}/
-    created_by_actor_label          # durable, host/daemon-stamped or imported
-    created_by_authority
+    authority_created_by_actor_label # durable, host/daemon-stamped or imported
+    authority_created_by_authority
     last_writer_actor_label         # derived from validated Automerge actor
     last_writer_authority           # "validated_change_actor" | "unknown"
     attribution_mismatch: Bool      # stamped field disagrees with actor evidence
@@ -830,9 +831,9 @@ Clone:
 - If a future clone operation opts into comments, replay comments as fresh
   mutations into the new `CommentsDoc`. Never byte-fork the source comments doc,
   because that would share Automerge history and actor lineage across rooms.
-- Imported clone comments should carry `created_by_authority = "imported"`.
-  Output-anchored comments should be dropped or hard-marked stale because clone
-  has no source outputs.
+- Imported clone comments should carry an imported-authority label in
+  `authority_created_by_authority`. Output-anchored comments should be dropped
+  or hard-marked stale because clone has no source outputs.
 
 Local-to-Cloud promotion or import:
 
@@ -842,7 +843,8 @@ Local-to-Cloud promotion or import:
   the source local principal to an authenticated Cloud principal.
 - Import must not carry raw local Automerge actor history into the hosted room.
   Either replay imported comments as fresh destination-space changes or store
-  them as sanitized projection data with `created_by_authority = "imported"`.
+  them as sanitized projection data with an imported-authority label in
+  `authority_created_by_authority`.
 
 Published snapshots:
 
