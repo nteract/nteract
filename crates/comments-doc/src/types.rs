@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const MAX_SOURCE_COMMENT_QUOTE_BYTES: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NotebookCommentRef {
@@ -100,6 +102,131 @@ impl CommentAnchor {
     }
 }
 
+pub fn validate_comment_anchor(anchor: &CommentAnchor) -> Result<(), String> {
+    let CommentAnchor::SourceRange {
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+        prefix_quote,
+        exact_quote,
+        suffix_quote,
+        ..
+    } = anchor
+    else {
+        return Ok(());
+    };
+
+    validate_source_range_order(*start_line, *start_column, *end_line, *end_column)?;
+    validate_source_quote_bound("prefix_quote", prefix_quote.as_deref())?;
+    validate_source_quote_bound("exact_quote", exact_quote.as_deref())?;
+    validate_source_quote_bound("suffix_quote", suffix_quote.as_deref())?;
+    Ok(())
+}
+
+pub fn validate_source_range_anchor_against_source(
+    anchor: &CommentAnchor,
+    source: &str,
+) -> Result<(), String> {
+    validate_comment_anchor(anchor)?;
+
+    let CommentAnchor::SourceRange {
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+        exact_quote,
+        ..
+    } = anchor
+    else {
+        return Ok(());
+    };
+
+    let start = source_byte_offset_from_utf16_point(source, *start_line, *start_column)?;
+    let end = source_byte_offset_from_utf16_point(source, *end_line, *end_column)?;
+    if start > end {
+        return Err(format!(
+            "source_range start ({start_line}:{start_column}) must be before or equal to end ({end_line}:{end_column})"
+        ));
+    }
+
+    if let Some(exact_quote) = exact_quote {
+        let current = &source[start..end];
+        if current != exact_quote {
+            return Err("source_range exact_quote does not match current cell source".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_source_range_order(
+    start_line: u64,
+    start_column: u64,
+    end_line: u64,
+    end_column: u64,
+) -> Result<(), String> {
+    if start_line > end_line || (start_line == end_line && start_column > end_column) {
+        return Err(format!(
+            "source_range start ({start_line}:{start_column}) must be before or equal to end ({end_line}:{end_column})"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_source_quote_bound(field: &str, quote: Option<&str>) -> Result<(), String> {
+    let Some(quote) = quote else {
+        return Ok(());
+    };
+    if quote.len() > MAX_SOURCE_COMMENT_QUOTE_BYTES {
+        return Err(format!(
+            "source_range {field} exceeds {MAX_SOURCE_COMMENT_QUOTE_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn source_byte_offset_from_utf16_point(
+    source: &str,
+    line: u64,
+    column: u64,
+) -> Result<usize, String> {
+    let mut line_start = 0;
+    for _ in 0..line {
+        let Some(relative_newline) = source[line_start..].find('\n') else {
+            return Err(format!(
+                "source_range line {line} is outside current cell source"
+            ));
+        };
+        line_start += relative_newline + 1;
+    }
+
+    let line_end = source[line_start..]
+        .find('\n')
+        .map(|relative_newline| line_start + relative_newline)
+        .unwrap_or(source.len());
+    let line_text = &source[line_start..line_end];
+    let mut utf16_offset = 0_u64;
+    for (byte_offset, ch) in line_text.char_indices() {
+        if utf16_offset == column {
+            return Ok(line_start + byte_offset);
+        }
+        utf16_offset += ch.len_utf16() as u64;
+        if utf16_offset > column {
+            return Err(format!(
+                "source_range column {column} is outside a UTF-16 character boundary"
+            ));
+        }
+    }
+    if utf16_offset == column {
+        return Ok(line_end);
+    }
+
+    Err(format!(
+        "source_range column {column} is outside current cell source line"
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommentMessageSnapshot {
     pub id: String,
@@ -183,4 +310,58 @@ fn sorted_unique<const N: usize>(values: [String; N]) -> Vec<String> {
     values.sort();
     values.dedup();
     values
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_source_range_exact_quote_against_current_source() {
+        let anchor = CommentAnchor::SourceRange {
+            cell_id: "cell-1".into(),
+            start_line: 1,
+            start_column: 0,
+            end_line: 1,
+            end_column: 4,
+            prefix_quote: None,
+            exact_quote: Some("beta".into()),
+            suffix_quote: None,
+        };
+
+        assert!(validate_source_range_anchor_against_source(&anchor, "alpha\nbeta\n").is_ok());
+        assert!(validate_source_range_anchor_against_source(&anchor, "alpha\ngamma\n").is_err());
+    }
+
+    #[test]
+    fn validates_source_range_columns_as_utf16_offsets() {
+        let anchor = CommentAnchor::SourceRange {
+            cell_id: "cell-1".into(),
+            start_line: 0,
+            start_column: 2,
+            end_line: 0,
+            end_column: 3,
+            prefix_quote: None,
+            exact_quote: Some("x".into()),
+            suffix_quote: None,
+        };
+
+        assert!(validate_source_range_anchor_against_source(&anchor, "🙂x\n").is_ok());
+    }
+
+    #[test]
+    fn rejects_source_quotes_over_storage_bound() {
+        let anchor = CommentAnchor::SourceRange {
+            cell_id: "cell-1".into(),
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 0,
+            prefix_quote: None,
+            exact_quote: Some("x".repeat(MAX_SOURCE_COMMENT_QUOTE_BYTES + 1)),
+            suffix_quote: None,
+        };
+
+        assert!(validate_comment_anchor(&anchor).is_err());
+    }
 }

@@ -57,6 +57,7 @@ pub(crate) async fn accept_thread(
         submitter_scope,
         ThreadCreationFinalization::Accept,
     )
+    .await
 }
 
 pub(crate) async fn reject_thread(
@@ -77,6 +78,7 @@ pub(crate) async fn reject_thread(
         submitter_scope,
         ThreadCreationFinalization::Reject { reason },
     )
+    .await
 }
 
 pub(crate) async fn accept_message(
@@ -201,7 +203,7 @@ fn set_thread_status(
     NotebookResponse::Ok {}
 }
 
-fn finalize_thread_creation(
+async fn finalize_thread_creation(
     room: &NotebookRoom,
     thread_id: String,
     message_id: Option<String>,
@@ -239,7 +241,8 @@ fn finalize_thread_creation(
         Err(error) => return NotebookResponse::Error { error },
     };
 
-    let result = room.comments.with_doc(|doc| {
+    let finalize = |doc: &mut comments_doc::CommentsDoc,
+                    notebook_doc: Option<&notebook_doc::NotebookDoc>| {
         let pending_author = match message_id.as_deref() {
             Some(message_id) => doc.validate_pending_thread_creation(
                 &thread_id,
@@ -252,9 +255,24 @@ fn finalize_thread_creation(
             }
         };
         validate_finalizer_scope(&pending_author, submitter_actor_label, submitter_scope)?;
+        if matches!(&finalization, ThreadCreationFinalization::Accept) {
+            let projection = doc.read_projection(&[COMMENTS_DOC_ACTOR], None)?;
+            let anchor = projection
+                .threads
+                .iter()
+                .find(|thread| thread.id == thread_id)
+                .map(|thread| &thread.anchor)
+                .ok_or_else(|| comments_doc::CommentsDocError::ThreadNotFound(thread_id.clone()))?;
+            let Some(notebook_doc) = notebook_doc else {
+                return Err(comments_doc::CommentsDocError::InvalidAnchor(
+                    "notebook document unavailable for source_range validation".to_string(),
+                ));
+            };
+            validate_thread_anchor_against_notebook_doc(notebook_doc, anchor)?;
+        }
         doc.doc_mut()
             .set_actor(ActorId::from(COMMENTS_DOC_ACTOR.as_bytes()));
-        match finalization {
+        match &finalization {
             ThreadCreationFinalization::Accept => {
                 doc.accept_thread_creation(&thread_id, &pending_author, COMMENTS_DOC_ACTOR)?;
                 if let Some(message_id) = message_id.as_deref() {
@@ -270,7 +288,7 @@ fn finalize_thread_creation(
             ThreadCreationFinalization::Reject { reason } => {
                 doc.reject_thread_creation(
                     &thread_id,
-                    &reason,
+                    reason,
                     &pending_author,
                     COMMENTS_DOC_ACTOR,
                 )?;
@@ -286,7 +304,15 @@ fn finalize_thread_creation(
                 Ok(())
             }
         }
-    });
+    };
+
+    let result = if matches!(&finalization, ThreadCreationFinalization::Accept) {
+        let notebook_doc = room.doc.read().await;
+        room.comments
+            .with_doc(|doc| finalize(doc, Some(&notebook_doc)))
+    } else {
+        room.comments.with_doc(|doc| finalize(doc, None))
+    };
 
     if let Err(error) = result {
         return NotebookResponse::Error {
@@ -422,6 +448,26 @@ fn validate_finalizer_scope(
     )))
 }
 
+fn validate_thread_anchor_against_notebook_doc(
+    notebook_doc: &notebook_doc::NotebookDoc,
+    anchor: &comments_doc::CommentAnchor,
+) -> Result<(), comments_doc::CommentsDocError> {
+    comments_doc::validate_comment_anchor(anchor)
+        .map_err(comments_doc::CommentsDocError::InvalidAnchor)?;
+
+    if let comments_doc::CommentAnchor::SourceRange { cell_id, .. } = anchor {
+        let source = notebook_doc.get_cell_source(cell_id).ok_or_else(|| {
+            comments_doc::CommentsDocError::InvalidAnchor(format!(
+                "source_range cell not found: {cell_id}"
+            ))
+        })?;
+        comments_doc::validate_source_range_anchor_against_source(anchor, &source)
+            .map_err(comments_doc::CommentsDocError::InvalidAnchor)?;
+    }
+
+    Ok(())
+}
+
 fn validate_non_empty(field: &str, value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("{field} cannot be empty"));
@@ -461,5 +507,44 @@ mod tests {
             ConnectionScope::RuntimePeer
         ));
         assert!(allows_comment_content_finalization(ConnectionScope::Owner));
+    }
+
+    #[test]
+    fn source_range_authority_validation_rejects_stale_exact_quote() {
+        let mut notebook = notebook_doc::NotebookDoc::new("notebook-1");
+        notebook.add_cell(0, "cell-1", "code").unwrap();
+        notebook.update_source("cell-1", "alpha\nbeta\n").unwrap();
+        let anchor = comments_doc::CommentAnchor::SourceRange {
+            cell_id: "cell-1".into(),
+            start_line: 1,
+            start_column: 0,
+            end_line: 1,
+            end_column: 4,
+            prefix_quote: None,
+            exact_quote: Some("beta".into()),
+            suffix_quote: None,
+        };
+
+        assert!(validate_thread_anchor_against_notebook_doc(&notebook, &anchor).is_ok());
+
+        notebook.update_source("cell-1", "alpha\ngamma\n").unwrap();
+        assert!(validate_thread_anchor_against_notebook_doc(&notebook, &anchor).is_err());
+    }
+
+    #[test]
+    fn source_range_authority_validation_rejects_missing_cell() {
+        let notebook = notebook_doc::NotebookDoc::new("notebook-1");
+        let anchor = comments_doc::CommentAnchor::SourceRange {
+            cell_id: "missing".into(),
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 0,
+            prefix_quote: None,
+            exact_quote: Some(String::new()),
+            suffix_quote: None,
+        };
+
+        assert!(validate_thread_anchor_against_notebook_doc(&notebook, &anchor).is_err());
     }
 }

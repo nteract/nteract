@@ -715,6 +715,7 @@ function AppContent() {
       }
       if (!sourceRangeAnchorMatchesCurrentCell(commentDraftTarget.anchor)) {
         failCommentAction("Selected source changed. Select the text again before commenting.");
+        return;
       }
       await handleCreateCommentThread(commentDraftTarget.anchor, body);
       setCommentDraftTarget(null);

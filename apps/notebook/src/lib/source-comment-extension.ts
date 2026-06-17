@@ -1,5 +1,5 @@
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
-import { EditorView, showTooltip, type Tooltip } from "@codemirror/view";
+import { EditorView, keymap, showTooltip, type Tooltip } from "@codemirror/view";
 import {
   MAX_SOURCE_COMMENT_EXACT_QUOTE_CHARS,
   sourceRangeAnchorFromSelection,
@@ -52,7 +52,16 @@ export function sourceCommentExtension(
     });
   });
 
-  return [sourceCommentTheme, tooltipField, focusSync];
+  const shortcut = keymap.of([
+    {
+      key: "Mod-Alt-m",
+      run(view) {
+        return requestSourceComment(cellId, view, onCreateSourceComment);
+      },
+    },
+  ]);
+
+  return [sourceCommentTheme, tooltipField, focusSync, shortcut];
 }
 
 function sourceCommentTooltips(
@@ -84,14 +93,23 @@ function sourceCommentTooltips(
         });
         button.addEventListener("click", (event) => {
           event.preventDefault();
-          const anchor = sourceRangeAnchorFromSelection(cellId, view);
-          if (!anchor) return;
-          onCreateSourceComment(anchor);
+          requestSourceComment(cellId, view, onCreateSourceComment);
         });
         return { dom: button };
       },
     },
   ];
+}
+
+function requestSourceComment(
+  cellId: string,
+  view: EditorView,
+  onCreateSourceComment: SourceCommentRequestHandler,
+): boolean {
+  const anchor = sourceRangeAnchorFromSelection(cellId, view);
+  if (!anchor) return false;
+  onCreateSourceComment(anchor);
+  return true;
 }
 
 const sourceCommentTheme = EditorView.baseTheme({

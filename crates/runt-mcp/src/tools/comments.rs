@@ -166,8 +166,7 @@ impl CommentAnchorInput {
                 suffix_quote,
             } => {
                 assert_cell_exists(handle, &cell_id)?;
-                validate_source_range(start_line, start_column, end_line, end_column)?;
-                Ok(comments_doc::CommentAnchor::SourceRange {
+                let anchor = comments_doc::CommentAnchor::SourceRange {
                     cell_id,
                     start_line,
                     start_column,
@@ -176,7 +175,9 @@ impl CommentAnchorInput {
                     prefix_quote,
                     exact_quote,
                     suffix_quote,
-                })
+                };
+                validate_anchor_for_create(&anchor)?;
+                Ok(anchor)
             }
             Self::Output {
                 cell_id,
@@ -515,21 +516,9 @@ fn required_body(request: &CallToolRequestParams) -> Result<&str, McpError> {
     Ok(body)
 }
 
-fn validate_source_range(
-    start_line: u64,
-    start_column: u64,
-    end_line: u64,
-    end_column: u64,
-) -> Result<(), McpError> {
-    if start_line > end_line || (start_line == end_line && start_column > end_column) {
-        return Err(McpError::invalid_params(
-            format!(
-                "source_range start ({start_line}:{start_column}) must be before or equal to end ({end_line}:{end_column})"
-            ),
-            None,
-        ));
-    }
-    Ok(())
+fn validate_anchor_for_create(anchor: &comments_doc::CommentAnchor) -> Result<(), McpError> {
+    comments_doc::validate_comment_anchor(anchor)
+        .map_err(|error| McpError::invalid_params(error, None))
 }
 
 fn current_timestamp() -> String {
@@ -682,10 +671,23 @@ mod tests {
 
     #[test]
     fn source_range_validation_rejects_inverted_spans() {
-        assert!(validate_source_range(10, 0, 9, 99).is_err());
-        assert!(validate_source_range(10, 8, 10, 7).is_err());
-        assert!(validate_source_range(10, 7, 10, 7).is_ok());
-        assert!(validate_source_range(10, 7, 11, 0).is_ok());
+        assert!(validate_anchor_for_create(&source_anchor(10, 0, 9, 99, Some("quote"))).is_err());
+        assert!(validate_anchor_for_create(&source_anchor(10, 8, 10, 7, Some("quote"))).is_err());
+        assert!(validate_anchor_for_create(&source_anchor(10, 7, 10, 7, Some(""))).is_ok());
+        assert!(validate_anchor_for_create(&source_anchor(10, 7, 11, 0, Some("quote"))).is_ok());
+    }
+
+    #[test]
+    fn source_range_validation_rejects_oversized_quotes() {
+        let anchor = source_anchor(
+            0,
+            0,
+            0,
+            0,
+            Some(&"x".repeat(comments_doc::MAX_SOURCE_COMMENT_QUOTE_BYTES + 1)),
+        );
+
+        assert!(validate_anchor_for_create(&anchor).is_err());
     }
 
     #[test]
@@ -825,6 +827,25 @@ mod tests {
             created_by_actor_label: None,
             created_by_authority: None,
             rejection_reason: None,
+        }
+    }
+
+    fn source_anchor(
+        start_line: u64,
+        start_column: u64,
+        end_line: u64,
+        end_column: u64,
+        exact_quote: Option<&str>,
+    ) -> comments_doc::CommentAnchor {
+        comments_doc::CommentAnchor::SourceRange {
+            cell_id: "cell-1".into(),
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+            prefix_quote: None,
+            exact_quote: exact_quote.map(str::to_string),
+            suffix_quote: None,
         }
     }
 }

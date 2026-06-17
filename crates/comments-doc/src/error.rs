@@ -57,6 +57,8 @@ pub enum CommentsDocError {
     AfterMessageNotFound(String),
     #[error("invalid comment position: {0}")]
     InvalidPosition(String),
+    #[error("invalid comment anchor: {0}")]
+    InvalidAnchor(String),
     #[error("automerge: {0}")]
     Automerge(#[from] AutomergeError),
     #[error("automerge recovery: {0}")]

@@ -1,5 +1,5 @@
 import { CheckCircle2, MessageSquare, Plus, RotateCcw, Send, X } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type {
   CommentAnchor,
   CommentMessageSnapshot,
@@ -75,6 +75,7 @@ export function NotebookCommentsPanel({
         buttonLabel="Add comment"
         icon="plus"
         disabled={!canCreate}
+        autoFocusKey={draftTarget ? draftAutoFocusKey(draftTarget) : null}
         placeholder={
           draftTarget
             ? `Add a ${anchorLabelForDraft(draftTarget.anchor)} comment`
@@ -297,6 +298,7 @@ function CommentComposer({
   buttonLabel,
   icon,
   disabled,
+  autoFocusKey = null,
   placeholder,
   onSubmit,
 }: {
@@ -305,12 +307,33 @@ function CommentComposer({
   buttonLabel: string;
   icon: "plus" | "send";
   disabled: boolean;
+  autoFocusKey?: string | null;
   placeholder: string;
   onSubmit?: (body: string) => void | Promise<void>;
 }) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const Icon = icon === "plus" ? Plus : Send;
+
+  useEffect(() => {
+    if (!autoFocusKey || disabled) return;
+    let cancelled = false;
+    const focus = () => {
+      if (!cancelled) textareaRef.current?.focus();
+    };
+    if (typeof window !== "undefined" && window.requestAnimationFrame) {
+      const frame = window.requestAnimationFrame(focus);
+      return () => {
+        cancelled = true;
+        window.cancelAnimationFrame(frame);
+      };
+    }
+    focus();
+    return () => {
+      cancelled = true;
+    };
+  }, [autoFocusKey, disabled]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -330,6 +353,7 @@ function CommentComposer({
   return (
     <form className="space-y-2" onSubmit={handleSubmit}>
       <textarea
+        ref={textareaRef}
         aria-label={ariaLabel}
         value={body}
         disabled={disabled || submitting}
@@ -407,11 +431,31 @@ function sourceQuoteFromAnchor(anchor: CommentAnchor): string | null {
   return anchor.kind === "source_range" ? (anchor.exact_quote ?? null) : null;
 }
 
+function draftAutoFocusKey(target: NotebookCommentDraftTarget): string {
+  return `${draftAnchorKey(target.anchor)}:${target.quote ?? ""}`;
+}
+
+function draftAnchorKey(anchor: CommentAnchor): string {
+  switch (anchor.kind) {
+    case "cell":
+      return `cell:${anchor.cell_id}`;
+    case "source_range":
+      return `source:${anchor.cell_id}:${anchor.start_line}:${anchor.start_column}:${anchor.end_line}:${anchor.end_column}`;
+    case "output":
+      return `output:${anchor.cell_id}:${anchor.execution_id ?? ""}:${anchor.output_id ?? ""}`;
+    case "cell_range":
+      return `cell_range:${anchor.start_cell_id}:${anchor.end_cell_id}`;
+    case "notebook":
+    default:
+      return "notebook";
+  }
+}
+
 function formatQuotePreview(quote: string | null | undefined): string | null {
   if (!quote) return null;
-  const trimmed = quote.trim();
-  if (trimmed.length <= 240) return trimmed;
-  return `${trimmed.slice(0, 237)}...`;
+  if (quote.trim().length === 0) return null;
+  if (quote.length <= 240) return quote;
+  return `${quote.slice(0, 237)}...`;
 }
 
 function formatStateLabel(state: string): string {

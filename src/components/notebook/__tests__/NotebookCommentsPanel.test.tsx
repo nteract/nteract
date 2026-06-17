@@ -112,6 +112,7 @@ describe("NotebookCommentsPanel", () => {
 
     expect(screen.getByTestId("comment-draft-target")).toHaveTextContent("Source selection");
     expect(screen.getByTestId("comment-draft-target")).toHaveTextContent("beta");
+    await waitFor(() => expect(screen.getByLabelText("New source comment")).toHaveFocus());
 
     fireEvent.change(screen.getByLabelText("New source comment"), {
       target: { value: "This line needs a note" },
@@ -122,6 +123,30 @@ describe("NotebookCommentsPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Use document target" }));
     expect(onClearDraftTarget).toHaveBeenCalled();
+  });
+
+  it("preserves leading whitespace in selected source previews", () => {
+    render(
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [] }}
+        draftTarget={{
+          anchor: {
+            kind: "source_range",
+            cell_id: "cell-1",
+            start_line: 1,
+            start_column: 0,
+            end_line: 1,
+            end_column: 8,
+            exact_quote: "    beta",
+          },
+          quote: "    beta",
+        }}
+        onCreateThread={vi.fn()}
+      />,
+    );
+
+    const quote = screen.getByTestId("comment-draft-target").querySelector("blockquote");
+    expect(quote?.textContent).toBe("    beta");
   });
 
   it("preserves draft text when changing a source draft back to document", async () => {

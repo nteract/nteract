@@ -5,6 +5,7 @@ import {
   openNotebookRoom,
   selectCellSourceRange,
   setCellSource,
+  waitForCellSourceContaining,
 } from "./helpers";
 import { McpPeer } from "./mcp-peer";
 
@@ -184,10 +185,11 @@ test.describe("notebook comments rail", () => {
 
     const from = source.indexOf(exactQuote);
     await selectCellSourceRange(cell, from, from + exactQuote.length);
-    await page.getByRole("button", { name: "Comment on selected source" }).click();
+    await page.keyboard.press("Control+Alt+M");
 
     const panel = page.getByTestId("notebook-comments-panel");
     await expect(panel.getByTestId("comment-draft-target")).toContainText(exactQuote);
+    await expect(panel.getByLabel("New source comment")).toBeFocused();
 
     const body = `Selected source comment ${crypto.randomUUID()}`;
     await panel.getByLabel("New source comment").fill(body);
@@ -252,6 +254,45 @@ test.describe("notebook comments rail", () => {
               end_line: 2,
               end_column: markdownQuote.length,
               exact_quote: markdownQuote,
+            }),
+          }),
+        ]),
+      });
+
+    const rawSource = "metadata:\n  owner: local-agent\n  status: draft\n";
+    const rawQuote = "  owner: local-agent";
+    const rawCellId = await mcp.createCell(rawSource, "raw");
+    const rawCell = page.locator(`[data-cell-id="${rawCellId}"][data-cell-type="raw"]`);
+    await expect(rawCell).toBeVisible({ timeout: 30_000 });
+    await waitForCellSourceContaining(rawCell, rawQuote);
+
+    const rawFrom = rawSource.indexOf(rawQuote);
+    await selectCellSourceRange(rawCell, rawFrom, rawFrom + rawQuote.length);
+    await page.getByRole("button", { name: "Comment on selected source" }).click();
+    await expect(panel.getByTestId("comment-draft-target")).toContainText(rawQuote);
+    await expect(panel.getByLabel("New source comment")).toBeFocused();
+
+    const rawBody = `Selected raw source comment ${crypto.randomUUID()}`;
+    await panel.getByLabel("New source comment").fill(rawBody);
+    await panel.getByRole("button", { name: "Add comment" }).click();
+
+    await expect(panel.getByText(rawBody)).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(() => mcp!.listComments({ cellId: rawCellId }), {
+        timeout: 120_000,
+      })
+      .toMatchObject({
+        threads: expect.arrayContaining([
+          expect.objectContaining({
+            mutation_state: "accepted",
+            anchor: expect.objectContaining({
+              kind: "source_range",
+              cell_id: rawCellId,
+              start_line: 1,
+              start_column: 0,
+              end_line: 1,
+              end_column: rawQuote.length,
+              exact_quote: rawQuote,
             }),
           }),
         ]),
