@@ -224,10 +224,13 @@ function CommentComposer({
     event.preventDefault();
     const trimmed = body.trim();
     if (!trimmed || disabled || !onSubmit) return;
+    setBody("");
     setSubmitting(true);
     try {
       await onSubmit(trimmed);
-      setBody("");
+    } catch (error) {
+      setBody(trimmed);
+      throw error;
     } finally {
       setSubmitting(false);
     }

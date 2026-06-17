@@ -87,6 +87,36 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByLabelText("New document comment")).toHaveValue("");
   });
 
+  it("clears submitted text while a comment request is in flight", async () => {
+    let resolveCreate: (() => void) | null = null;
+    const onCreateThread = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    render(
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [] }}
+        onCreateThread={onCreateThread}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("New document comment"), {
+      target: { value: "Do not leave duplicate text in the composer" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+
+    await waitFor(() =>
+      expect(onCreateThread).toHaveBeenCalledWith("Do not leave duplicate text in the composer"),
+    );
+    expect(screen.getByLabelText("New document comment")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Add comment" })).toBeDisabled();
+
+    resolveCreate?.();
+    await waitFor(() => expect(screen.getByLabelText("New document comment")).toBeEnabled());
+  });
+
   it("renders threads and submits replies", async () => {
     const onReplyThread = vi.fn();
     const onResolveThread = vi.fn();
