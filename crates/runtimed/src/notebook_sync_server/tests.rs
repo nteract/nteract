@@ -1478,9 +1478,16 @@ async fn test_comments_doc_sync_strips_runtime_peer_change() {
         "thread-runtime",
         "runtime peer comment",
     );
-    let unauthorized_message =
-        automerge::sync::Message::decode(&payload).expect("runtime peer message decodes");
-    let unauthorized_heads = unauthorized_message.heads.clone();
+    let mut observer_peer_state = automerge::sync::State::new();
+    let mut observer = {
+        let bytes = room.comments.with_doc(|doc| Ok(doc.save())).unwrap();
+        comments_doc::CommentsDoc::load_with_actor(
+            &bytes,
+            &room.comments_doc_id,
+            "agent:comments-observer",
+        )
+        .unwrap()
+    };
     let (mut reply_reader, reply_writer) = tokio::io::duplex(1024 * 1024);
     let (peer_writer, _writer_task) = super::peer_writer::spawn_peer_writer(
         reply_writer,
@@ -1509,11 +1516,6 @@ async fn test_comments_doc_sync_strips_runtime_peer_change() {
         "runtime_peer must not be able to mutate CommentsDoc"
     );
     assert!(!room.comments_store.doc_path(&room.comments_doc_id).exists());
-    assert_ne!(
-        server_peer_state.their_heads.as_ref(),
-        Some(&unauthorized_heads),
-        "daemon must not retain unauthorized client CommentsDoc heads"
-    );
 
     let unauthorized_reply = tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -1526,6 +1528,20 @@ async fn test_comments_doc_sync_strips_runtime_peer_change() {
     assert_eq!(
         unauthorized_reply.frame_type,
         notebook_protocol::connection::NotebookFrameType::CommentsDocSync
+    );
+    let unauthorized_reply_message = automerge::sync::Message::decode(&unauthorized_reply.payload)
+        .expect("unauthorized comments reply decodes");
+    observer
+        .receive_sync_message_with_changes_recovering(
+            &mut observer_peer_state,
+            unauthorized_reply_message,
+            "test-unauthorized-comments-reply-observer",
+        )
+        .unwrap();
+    let observer_projection = observer.read_projection(&[], None).unwrap();
+    assert!(
+        observer_projection.threads.is_empty(),
+        "unauthorized runtime peer changes must not be replayed to clients"
     );
 
     room.comments
