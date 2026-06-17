@@ -226,6 +226,44 @@ export class NotebookClient {
     }
   }
 
+  /** Ask the daemon comments authority to accept a locally-created thread. */
+  async acceptCommentThread(
+    threadId: string,
+    messageId: string,
+    observedCommentsHeads: string[],
+  ): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({
+        type: "accept_comment_thread",
+        thread_id: threadId,
+        message_id: messageId,
+        observed_comments_heads: observedCommentsHeads,
+      });
+    } catch (e) {
+      this.log.error("[notebook-client] Accept comment thread failed:", e);
+      throw e;
+    }
+  }
+
+  /** Ask the daemon comments authority to accept a locally-created reply. */
+  async acceptCommentMessage(
+    threadId: string,
+    messageId: string,
+    observedCommentsHeads: string[],
+  ): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({
+        type: "accept_comment_message",
+        thread_id: threadId,
+        message_id: messageId,
+        observed_comments_heads: observedCommentsHeads,
+      });
+    } catch (e) {
+      this.log.error("[notebook-client] Accept comment message failed:", e);
+      throw e;
+    }
+  }
+
   /** Run all code cells (daemon reads from synced doc). */
   async runAllCells(options: RunAllCellsOptions = {}): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Running all cells");

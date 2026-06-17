@@ -1,0 +1,105 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { NotebookCommentsPanel } from "../NotebookCommentsPanel";
+import type { CommentsProjection } from "runtimed";
+
+const projection: CommentsProjection = {
+  comments_doc_id: "comments:local-room:notebook-1",
+  threads: [
+    {
+      id: "thread-1",
+      anchor: { kind: "notebook" },
+      position: "80",
+      status: "open",
+      mutation_state: "accepted",
+      trusted: true,
+      messages: [
+        {
+          id: "message-1",
+          position: "80",
+          body: "Check the framing before publishing.",
+          mutation_state: "accepted",
+          trusted: true,
+          created_at: "2026-06-16T00:00:00.000Z",
+          created_by_actor_label: "alice",
+        },
+      ],
+      badge_cell_ids: [],
+      created_at: "2026-06-16T00:00:00.000Z",
+    },
+    {
+      id: "thread-cell",
+      anchor: { kind: "cell", cell_id: "cell-1" },
+      position: "80",
+      status: "open",
+      mutation_state: "accepted",
+      trusted: true,
+      messages: [
+        {
+          id: "message-cell",
+          position: "80",
+          body: "Cell-scoped comment",
+          mutation_state: "accepted",
+          trusted: true,
+          created_at: "2026-06-16T00:00:00.000Z",
+        },
+      ],
+      badge_cell_ids: ["cell-1"],
+      created_at: "2026-06-16T00:00:00.000Z",
+    },
+  ],
+};
+
+describe("NotebookCommentsPanel", () => {
+  it("renders the unavailable state with disabled composer", () => {
+    render(
+      <NotebookCommentsPanel
+        projection={null}
+        readOnly
+        statusMessage="Comments sync unavailable."
+      />,
+    );
+
+    expect(screen.getByText("Comments sync unavailable.")).toBeVisible();
+    expect(screen.getByText("No comments yet.")).toBeVisible();
+    expect(screen.getByLabelText("New document comment")).toBeDisabled();
+  });
+
+  it("submits a new document comment", async () => {
+    const onCreateThread = vi.fn();
+    render(
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [] }}
+        onCreateThread={onCreateThread}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("New document comment"), {
+      target: { value: "Add this to the review notes" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+
+    await waitFor(() =>
+      expect(onCreateThread).toHaveBeenCalledWith("Add this to the review notes"),
+    );
+    expect(screen.getByLabelText("New document comment")).toHaveValue("");
+  });
+
+  it("renders threads and submits replies", async () => {
+    const onReplyThread = vi.fn();
+    render(<NotebookCommentsPanel projection={projection} onReplyThread={onReplyThread} />);
+
+    expect(screen.getByText("Check the framing before publishing.")).toBeVisible();
+    expect(screen.getByText("alice")).toBeVisible();
+    expect(screen.queryByText("Cell-scoped comment")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Reply to thread-1"), {
+      target: { value: "Looks ready locally" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+
+    await waitFor(() =>
+      expect(onReplyThread).toHaveBeenCalledWith("thread-1", "Looks ready locally"),
+    );
+  });
+});

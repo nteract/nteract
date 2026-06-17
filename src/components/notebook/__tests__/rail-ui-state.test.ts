@@ -38,10 +38,24 @@ describe("notebook rail UI state", () => {
       selectedOutlineItemId: "intro:heading:0",
     });
 
+    openNotebookRailPanel("comments");
+    expect(getNotebookRailUiState()).toEqual({
+      activePanelId: "comments",
+      collapsed: false,
+      selectedOutlineItemId: "intro:heading:0",
+    });
+
+    toggleNotebookRailPanel("comments");
+    expect(getNotebookRailUiState()).toEqual({
+      activePanelId: "comments",
+      collapsed: true,
+      selectedOutlineItemId: "intro:heading:0",
+    });
+
     toggleNotebookRailPanel("packages");
     expect(getNotebookRailUiState()).toEqual({
       activePanelId: "packages",
-      collapsed: true,
+      collapsed: false,
       selectedOutlineItemId: "intro:heading:0",
     });
 

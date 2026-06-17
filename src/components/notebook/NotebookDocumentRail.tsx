@@ -12,6 +12,7 @@ export interface NotebookDocumentRailProps {
   selectedOutlineItemId?: string | null;
   selectedOutlineCellId?: string | null;
   packagesPanel: ReactNode;
+  commentsPanel?: ReactNode;
   workstationsPanel?: ReactNode;
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
@@ -29,6 +30,7 @@ export function NotebookDocumentRail({
   selectedOutlineItemId = null,
   selectedOutlineCellId = null,
   packagesPanel,
+  commentsPanel,
   workstationsPanel,
   onActivePanelChange,
   onCollapsedChange,
@@ -46,6 +48,7 @@ export function NotebookDocumentRail({
       selectedOutlineItemId={selectedOutlineItemId}
       selectedOutlineCellId={selectedOutlineCellId}
       packagesPanel={packagesPanel}
+      commentsPanel={commentsPanel}
       workstationsPanel={workstationsPanel}
       onActivePanelChange={onActivePanelChange}
       onCollapsedChange={onCollapsedChange}

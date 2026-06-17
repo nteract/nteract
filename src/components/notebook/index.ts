@@ -218,6 +218,7 @@ export {
   type NotebookWorkstationsPanelProps,
 } from "./NotebookWorkstationsPanel";
 export { NotebookDocumentRail, type NotebookDocumentRailProps } from "./NotebookDocumentRail";
+export { NotebookCommentsPanel, type NotebookCommentsPanelProps } from "./NotebookCommentsPanel";
 export { NotebookReadOnlyView, type NotebookReadOnlyViewProps } from "./NotebookReadOnlyView";
 export {
   PresenceValueProvider,

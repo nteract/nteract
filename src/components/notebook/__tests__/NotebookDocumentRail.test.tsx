@@ -93,4 +93,21 @@ describe("NotebookDocumentRail", () => {
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();
     expect(screen.getByText("Runtime target")).toBeVisible();
   });
+
+  it("forwards the host comments panel", () => {
+    render(
+      <NotebookDocumentRail
+        viewModel={viewModel}
+        activePanelId="comments"
+        collapsed={false}
+        packagesPanel={<p>Package details</p>}
+        commentsPanel={<p>Comment threads</p>}
+        onActivePanelChange={() => {}}
+        onCollapsedChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Comments" })).toBeVisible();
+    expect(screen.getByText("Comment threads")).toBeVisible();
+  });
 });

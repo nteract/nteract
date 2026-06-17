@@ -126,6 +126,59 @@ describe("NotebookRail", () => {
     expect(screen.queryByRole("button", { name: "Workstations" })).not.toBeInTheDocument();
   });
 
+  it("does not show the comments rail item until the host supplies a panel", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Comments" })).not.toBeInTheDocument();
+  });
+
+  it("switches to the host-provided comments panel", () => {
+    const onActivePanelChange = vi.fn();
+    const onCollapsedChange = vi.fn();
+
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        commentsPanel={<div data-testid="host-comments-content">comment threads</div>}
+        onActivePanelChange={onActivePanelChange}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Comments" }));
+    expect(onActivePanelChange).toHaveBeenCalledWith("comments");
+    expect(onCollapsedChange).toHaveBeenCalledWith(false);
+  });
+
+  it("renders the active comments panel title and host content", () => {
+    render(
+      <NotebookRail
+        activePanelId="comments"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        commentsPanel={<div data-testid="host-comments-content">comment threads</div>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Comments" })).toBeVisible();
+    expect(screen.getByTestId("host-comments-content")).toHaveTextContent("comment threads");
+  });
+
   it("switches to the host-provided workstations panel", () => {
     const onActivePanelChange = vi.fn();
     const onCollapsedChange = vi.fn();

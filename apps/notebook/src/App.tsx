@@ -6,6 +6,7 @@ import {
   type ExecuteCellOptions,
   type NotebookResponse,
   type NotebookOutlineItem,
+  type CommentsProjection,
   putBlob,
   type SessionStatus,
 } from "runtimed";
@@ -44,6 +45,7 @@ import {
   EnvBuildDecisionDialog,
   KernelLaunchErrorBanner,
   NotebookConnectionIdentity,
+  NotebookCommentsPanel,
   NotebookDocumentRail,
   NotebookDocumentShell,
   PoolErrorBanner,
@@ -119,6 +121,24 @@ export type MimeBundle = Record<string, unknown>;
  * Set by AppContent when daemon kernel is initialized.
  */
 let daemonCommSender: ((message: unknown) => Promise<void>) | null = null;
+let localCommentIdCounter = 0;
+
+function createLocalCommentEntityId(prefix: "thread" | "message"): string {
+  const randomId = globalThis.crypto?.randomUUID?.();
+  if (randomId) return `comment-${prefix}-${randomId}`;
+  localCommentIdCounter += 1;
+  return `comment-${prefix}-${localCommentIdCounter.toString(36)}`;
+}
+
+function canConnectionScopeMutateComments(connectionScope: string | null): boolean {
+  return connectionScope === null || connectionScope === "editor" || connectionScope === "owner";
+}
+
+function commentAuthorityError(response: NotebookResponse, action: string): string | null {
+  if (response.result === "ok") return null;
+  if (response.result === "error") return `Failed to ${action}: ${response.error}`;
+  return `Failed to ${action}: unexpected daemon response ${response.result}`;
+}
 
 function focusActiveRailButtonWhenStageIsHidden(
   railCollapsed: boolean,
@@ -313,6 +333,28 @@ function AppContent() {
   // `useObservable` seeds with `null` until the engine emits.
   const sessionStatus = useObservable<SessionStatus | null>(sessionStatus$, null);
   const sessionReady = sessionStatus?.runtime_state === "ready";
+  const [commentsProjection, setCommentsProjection] = useState<CommentsProjection | null>(null);
+  const [commentsError, setCommentsError] = useState<string | null>(null);
+
+  const refreshCommentsProjection = useCallback(() => {
+    const projection = getHandle()?.get_comments_projection?.();
+    const nextProjection =
+      projection && typeof projection === "object" ? (projection as CommentsProjection) : null;
+    setCommentsProjection(nextProjection);
+    return nextProjection;
+  }, [getHandle]);
+
+  useEffect(() => {
+    refreshCommentsProjection();
+    const engine = getEngine();
+    if (!engine) return;
+    const sub = engine.commentsProjection$.subscribe((projection) => {
+      setCommentsProjection(projection);
+      setCommentsError(null);
+    });
+    return () => sub.unsubscribe();
+  }, [getEngine, refreshCommentsProjection, sessionStatus?.notebook_doc]);
+
   // Global find (Cmd+F)
   const globalFind = useGlobalFind(cellIds);
 
@@ -530,6 +572,129 @@ function AppContent() {
       runtimeState.path,
       sessionReady,
       statusKey,
+    ],
+  );
+  const canMutateComments =
+    Boolean(commentsProjection) && canConnectionScopeMutateComments(connectionScope);
+  const commentsPanelStatus =
+    commentsProjection === null
+      ? "Comments sync unavailable."
+      : canMutateComments
+        ? null
+        : "Read-only connection.";
+
+  const handleCreateDocumentComment = useCallback(
+    async (body: string) => {
+      const handle = getHandle();
+      if (!handle?.create_comment_thread) {
+        setCommentsError("Comments sync unavailable.");
+        return;
+      }
+      setCommentsError(null);
+      const projection = refreshCommentsProjection() ?? commentsProjection;
+      const afterThreadId =
+        projection?.threads.filter((thread) => thread.anchor.kind === "notebook").at(-1)?.id ??
+        null;
+      try {
+        const threadId = createLocalCommentEntityId("thread");
+        const messageId = createLocalCommentEntityId("message");
+        handle.create_comment_thread(
+          threadId,
+          messageId,
+          { kind: "notebook" },
+          body,
+          afterThreadId,
+          new Date().toISOString(),
+        );
+        const observedCommentsHeads = handle.get_comments_doc_heads_hex?.() ?? [];
+        if (observedCommentsHeads.length === 0) {
+          setCommentsError("Comment heads unavailable after create.");
+          return;
+        }
+        refreshCommentsProjection();
+        const synced = await flushSync();
+        if (!synced) {
+          setCommentsError("Failed to sync comment before authority accept.");
+          return;
+        }
+        const response = await notebookClient.acceptCommentThread(
+          threadId,
+          messageId,
+          observedCommentsHeads,
+        );
+        const authorityError = commentAuthorityError(response, "accept comment thread");
+        if (authorityError) {
+          setCommentsError(authorityError);
+          return;
+        }
+        triggerSync();
+      } catch (error) {
+        setCommentsError(error instanceof Error ? error.message : "Create comment failed.");
+      }
+    },
+    [
+      commentsProjection,
+      flushSync,
+      getHandle,
+      notebookClient,
+      refreshCommentsProjection,
+      triggerSync,
+    ],
+  );
+
+  const handleReplyCommentThread = useCallback(
+    async (threadId: string, body: string) => {
+      const handle = getHandle();
+      if (!handle?.reply_comment_thread) {
+        setCommentsError("Comments sync unavailable.");
+        return;
+      }
+      setCommentsError(null);
+      const projection = refreshCommentsProjection() ?? commentsProjection;
+      const afterMessageId =
+        projection?.threads.find((thread) => thread.id === threadId)?.messages.at(-1)?.id ?? null;
+      try {
+        const messageId = createLocalCommentEntityId("message");
+        handle.reply_comment_thread(
+          threadId,
+          messageId,
+          body,
+          afterMessageId,
+          new Date().toISOString(),
+        );
+        const observedCommentsHeads = handle.get_comments_doc_heads_hex?.() ?? [];
+        if (observedCommentsHeads.length === 0) {
+          setCommentsError("Comment heads unavailable after reply.");
+          return;
+        }
+        refreshCommentsProjection();
+        const synced = await flushSync();
+        if (!synced) {
+          setCommentsError("Failed to sync reply before authority accept.");
+          return;
+        }
+        const response = await notebookClient.acceptCommentMessage(
+          threadId,
+          messageId,
+          observedCommentsHeads,
+        );
+        const authorityError = commentAuthorityError(response, "accept comment reply");
+        if (authorityError) {
+          setCommentsError(authorityError);
+          return;
+        }
+        triggerSync();
+      } catch (error) {
+        setCommentsError(error instanceof Error ? error.message : "Reply failed.");
+      }
+    },
+    [
+      commentsProjection,
+      flushSync,
+      getHandle,
+      notebookClient,
+      refreshCommentsProjection,
+      triggerSync,
     ],
   );
 
@@ -1457,6 +1622,16 @@ function AppContent() {
               onCollapsedChange={setNotebookRailCollapsed}
               onSelectOutlineItem={handleSelectOutlineItem}
               onNavigateOutlineItem={handleNavigateOutlineItem}
+              commentsPanel={
+                <NotebookCommentsPanel
+                  projection={commentsProjection}
+                  readOnly={!canMutateComments}
+                  statusMessage={commentsPanelStatus}
+                  errorMessage={commentsError}
+                  onCreateThread={canMutateComments ? handleCreateDocumentComment : undefined}
+                  onReplyThread={canMutateComments ? handleReplyCommentThread : undefined}
+                />
+              }
               packagesPanel={
                 <NotebookPackagesPanel readOnly={!shellCapabilities.canManagePackages}>
                   {runtime === "python" && hasUvDependencies && hasCondaDependencies && (
