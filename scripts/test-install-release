@@ -59,6 +59,16 @@ make_linux_fixtures() {
   echo "fake appimage" > "$dir/nteract-stable-linux-x64.AppImage"
 }
 
+make_nightly_linux_fixtures() {
+  local dir="$1"
+  local log="$2"
+  mkdir -p "$dir"
+  make_fake_tool "$dir/runt-nightly-linux-x64" "$log"
+  make_fake_tool "$dir/runtimed-nightly-linux-x64" "$log"
+  make_fake_tool "$dir/nteract-mcp-nightly-linux-x64" "$log"
+  echo "fake nightly appimage" > "$dir/nteract-nightly-linux-x64.AppImage"
+}
+
 make_darwin_fixtures() {
   local dir="$1"
   local log="$2"
@@ -93,14 +103,16 @@ run_installer() {
   local home="$1"
   shift
   mkdir -p "$home"
-  HOME="$home" XDG_DATA_HOME="" bash "$INSTALLER" "$@"
+  HOME="$home" XDG_DATA_HOME="" bash "${INSTALLER_UNDER_TEST:-$INSTALLER}" "$@"
 }
 
 note "linux desktop install"
 LINUX_HOME="$WORK/linux-home"
 LINUX_LOG="$WORK/linux-calls.log"
 make_linux_fixtures "$WORK/linux-assets" "$LINUX_LOG"
-run_installer "$LINUX_HOME" --from-dir "$WORK/linux-assets" --no-start > "$WORK/linux-out.log"
+make_uname_shim "$WORK/shim-linux" "Linux" "x86_64"
+PATH="$WORK/shim-linux:$PATH" run_installer "$LINUX_HOME" \
+  --from-dir "$WORK/linux-assets" --no-start > "$WORK/linux-out.log"
 PREFIX="$LINUX_HOME/.local/share/nteract/stable"
 assert_file "$PREFIX/nteract.AppImage"
 assert_link "$LINUX_HOME/.local/bin/runt" "$PREFIX/bin/runt"
@@ -108,6 +120,26 @@ assert_link "$LINUX_HOME/.local/bin/runtimed" "$PREFIX/bin/runtimed"
 assert_link "$LINUX_HOME/.local/bin/nteract-mcp" "$PREFIX/bin/nteract-mcp"
 assert_link "$LINUX_HOME/.local/bin/nteract" "$PREFIX/nteract.AppImage"
 grep -q "runt daemon doctor --fix --no-start" "$LINUX_LOG" || fail "linux: daemon doctor --fix --no-start not invoked"
+
+note "linux nightly desktop install"
+NIGHTLY_HOME="$WORK/nightly-home"
+NIGHTLY_LOG="$WORK/nightly-calls.log"
+make_nightly_linux_fixtures "$WORK/nightly-assets" "$NIGHTLY_LOG"
+STAMPED_NIGHTLY_INSTALLER="$WORK/install-linux-release-nightly"
+sed \
+  -e 's/^DEFAULT_CHANNEL="stable"$/DEFAULT_CHANNEL="nightly"/' \
+  -e 's/^DEFAULT_TAG=""$/DEFAULT_TAG="v9.9.9-nightly.202601010101"/' \
+  "$INSTALLER" > "$STAMPED_NIGHTLY_INSTALLER"
+chmod 0755 "$STAMPED_NIGHTLY_INSTALLER"
+INSTALLER_UNDER_TEST="$STAMPED_NIGHTLY_INSTALLER" PATH="$WORK/shim-linux:$PATH" \
+  run_installer "$NIGHTLY_HOME" --from-dir "$WORK/nightly-assets" --no-start > "$WORK/nightly-out.log"
+NIGHTLY_PREFIX="$NIGHTLY_HOME/.local/share/nteract/nightly"
+assert_file "$NIGHTLY_PREFIX/nteract-nightly.AppImage"
+assert_link "$NIGHTLY_HOME/.local/bin/runt-nightly" "$NIGHTLY_PREFIX/bin/runt-nightly"
+assert_link "$NIGHTLY_HOME/.local/bin/runtimed-nightly" "$NIGHTLY_PREFIX/bin/runtimed-nightly"
+assert_link "$NIGHTLY_HOME/.local/bin/nteract-mcp-nightly" "$NIGHTLY_PREFIX/bin/nteract-mcp-nightly"
+assert_link "$NIGHTLY_HOME/.local/bin/nteract-nightly" "$NIGHTLY_PREFIX/nteract-nightly.AppImage"
+grep -q "runt-nightly daemon doctor --fix --no-start" "$NIGHTLY_LOG" || fail "nightly: daemon doctor --fix --no-start not invoked"
 
 note "darwin desktop install (explicit --applications-dir)"
 DARWIN_HOME="$WORK/darwin-home"
