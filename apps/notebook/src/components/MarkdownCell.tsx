@@ -59,7 +59,12 @@ import {
   sourceRangeAnchorFromRenderedMarkdownSelection,
 } from "../lib/rendered-markdown-source-comment";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
-import type { SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
+import {
+  selectionRectFromDomRect,
+  selectionRectFromDomSelection,
+  type SourceCommentSelectionRect,
+  type SourceRangeCommentAnchor,
+} from "../lib/comment-source-anchor";
 import type { MarkdownCell as MarkdownCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
@@ -142,7 +147,10 @@ interface MarkdownCellProps {
   rightGutterContent?: ReactNode;
   headingAnchors?: readonly MarkdownHeadingAnchor[];
   readOnly?: boolean;
-  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor) => void;
+  onCreateSourceComment?: (
+    anchor: SourceRangeCommentAnchor,
+    rect: SourceCommentSelectionRect | null,
+  ) => void;
   outputHostContext?: NteractEmbedHostContextPatch;
 }
 
@@ -494,7 +502,8 @@ export const MarkdownCell = memo(function MarkdownCell({
     );
 
     if (!anchor) return false;
-    onCreateSourceComment(anchor);
+    const rect = selectionRectFromDomSelection(window.getSelection());
+    onCreateSourceComment(anchor, rect);
     window.getSelection()?.removeAllRanges();
     clearRenderedSourceCommentTarget();
     return true;
@@ -523,7 +532,9 @@ export const MarkdownCell = memo(function MarkdownCell({
     (runs: readonly MarkdownProjectionRun[]) => {
       const anchor = sourceRangeAnchorFromRenderedRuns(runs);
       if (!anchor || !onCreateSourceComment) return;
-      onCreateSourceComment(anchor);
+      const rect =
+        typeof window !== "undefined" ? selectionRectFromDomSelection(window.getSelection()) : null;
+      onCreateSourceComment(anchor, rect);
       if (typeof window !== "undefined") {
         window.getSelection()?.removeAllRanges();
       }
@@ -539,7 +550,11 @@ export const MarkdownCell = memo(function MarkdownCell({
       if (requestRenderedSourceComment()) return;
       const anchor = renderedSourceCommentTarget?.anchor;
       if (!anchor || !onCreateSourceComment) return;
-      onCreateSourceComment(anchor);
+      const rect =
+        selectionRectFromDomSelection(
+          typeof window !== "undefined" ? window.getSelection() : null,
+        ) ?? selectionRectFromDomRect(event.currentTarget.getBoundingClientRect());
+      onCreateSourceComment(anchor, rect);
       if (typeof window !== "undefined") {
         window.getSelection()?.removeAllRanges();
       }

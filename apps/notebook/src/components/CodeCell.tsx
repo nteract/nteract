@@ -43,7 +43,10 @@ import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import { tabCompletionKeymap } from "../lib/tab-completion";
-import type { SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
+import type {
+  SourceCommentSelectionRect,
+  SourceRangeCommentAnchor,
+} from "../lib/comment-source-anchor";
 import type { CodeCell as CodeCellType, JupyterOutput } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 import { HistorySearchDialog } from "./HistorySearchDialog";
@@ -98,7 +101,10 @@ interface CodeCellProps {
   rightGutterContent?: ReactNode;
   readOnly?: boolean;
   canExecute?: boolean;
-  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor) => void;
+  onCreateSourceComment?: (
+    anchor: SourceRangeCommentAnchor,
+    rect: SourceCommentSelectionRect | null,
+  ) => void;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFrameUntilVisible?: boolean;
   deferredOutputIsolatedFrameRootMargin?: string;

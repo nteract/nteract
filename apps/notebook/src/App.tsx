@@ -57,12 +57,17 @@ import {
   UntrustedBanner,
 } from "@/components/notebook";
 import { GlobalFindBar } from "@/components/search";
+import type {
+  SourceCommentSelectionRect,
+  SourceRangeCommentAnchor,
+} from "./lib/comment-source-anchor";
 import { createDesktopConnectionStatusSource } from "./lib/desktop-connection-status";
 import {
   CondaDependencyPanel as CondaDependencyHeader,
   DenoDependencyPanel as DenoDependencyHeader,
   UvDependencyPanel as DependencyHeader,
 } from "@/components/environment";
+import { InlineCommentComposer } from "./components/InlineCommentComposer";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
@@ -418,6 +423,10 @@ function AppContent() {
   const [commentDraftTarget, setCommentDraftTarget] = useState<NotebookCommentDraftTarget | null>(
     null,
   );
+  const [sourceCommentRequest, setSourceCommentRequest] = useState<{
+    anchor: SourceRangeCommentAnchor;
+    rect: SourceCommentSelectionRect;
+  } | null>(null);
 
   const refreshCommentsProjection = useCallback(() => {
     const projection = getHandle()?.get_comments_projection?.();
@@ -673,6 +682,7 @@ function AppContent() {
   useEffect(() => {
     if (!canMutateComments) {
       setCommentDraftTarget(null);
+      setSourceCommentRequest(null);
     }
   }, [canMutateComments]);
 
@@ -757,13 +767,38 @@ function AppContent() {
     [commentDraftTarget, failCommentAction, handleCreateCommentThread, handleCreateDocumentComment],
   );
 
-  const handleCreateSourceCommentDraft = useCallback((anchor: CommentAnchor) => {
-    setCommentsError(null);
-    setCommentDraftTarget({
-      anchor,
-      quote: anchor.kind === "source_range" ? (anchor.exact_quote ?? null) : null,
-    });
-    openNotebookRailPanel("comments");
+  const handleRequestSourceComment = useCallback(
+    (anchor: SourceRangeCommentAnchor, rect: SourceCommentSelectionRect | null) => {
+      setCommentsError(null);
+      if (rect) {
+        // Compose right next to the selection, Google Docs style.
+        setSourceCommentRequest({ anchor, rect });
+        return;
+      }
+      // No selection geometry (rare): fall back to the rail draft composer.
+      setSourceCommentRequest(null);
+      setCommentDraftTarget({ anchor, quote: anchor.exact_quote ?? null });
+      openNotebookRailPanel("comments");
+    },
+    [],
+  );
+
+  const handleSubmitSourceComment = useCallback(
+    async (body: string) => {
+      if (!sourceCommentRequest) return;
+      if (!sourceRangeAnchorMatchesCurrentCell(sourceCommentRequest.anchor)) {
+        setSourceCommentRequest(null);
+        setCommentsError("Selected source changed. Select the text again before commenting.");
+        return;
+      }
+      await handleCreateCommentThread(sourceCommentRequest.anchor, body);
+      setSourceCommentRequest(null);
+    },
+    [sourceCommentRequest, handleCreateCommentThread],
+  );
+
+  const handleCancelSourceComment = useCallback(() => {
+    setSourceCommentRequest(null);
   }, []);
 
   const handleClearCommentDraftTarget = useCallback(() => {
@@ -1978,15 +2013,22 @@ function AppContent() {
                 onReportOutputMatchCount={globalFind.reportOutputMatchCount}
                 onSetCellSourceHidden={setCellSourceHidden}
                 onSetCellOutputsHidden={setCellOutputsHidden}
-                onCreateSourceComment={
-                  canMutateComments ? handleCreateSourceCommentDraft : undefined
-                }
+                onCreateSourceComment={canMutateComments ? handleRequestSourceComment : undefined}
                 markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
               />
             </CrdtBridgeProvider>
           </div>
         </NotebookDocumentShell>
       </div>
+      {sourceCommentRequest ? (
+        <InlineCommentComposer
+          rect={sourceCommentRequest.rect}
+          quote={sourceCommentRequest.anchor.exact_quote}
+          disabled={!canMutateComments}
+          onSubmit={handleSubmitSourceComment}
+          onCancel={handleCancelSourceComment}
+        />
+      ) : null}
     </PresenceProvider>
   );
 }

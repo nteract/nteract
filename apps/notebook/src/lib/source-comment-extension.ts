@@ -2,11 +2,16 @@ import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, keymap, showTooltip, type Tooltip } from "@codemirror/view";
 import {
   MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES,
+  selectionRectFromView,
   sourceRangeAnchorFromSelection,
+  type SourceCommentSelectionRect,
   type SourceRangeCommentAnchor,
 } from "./comment-source-anchor";
 
-export type SourceCommentRequestHandler = (anchor: SourceRangeCommentAnchor) => void;
+export type SourceCommentRequestHandler = (
+  anchor: SourceRangeCommentAnchor,
+  rect: SourceCommentSelectionRect | null,
+) => void;
 
 const setSourceCommentFocusEffect = StateEffect.define<boolean>();
 const utf8Encoder = new TextEncoder();
@@ -110,9 +115,9 @@ function requestSourceComment(
   const anchor = sourceRangeAnchorFromSelection(cellId, view);
   if (!anchor) return false;
 
-  const head = view.state.selection.main.head;
-  onCreateSourceComment(anchor);
-  view.dispatch({ selection: { anchor: head, head } });
+  // Keep the selection in place so the highlighted run stays visible while the
+  // inline composer is open, mirroring Google Docs. The composer owns dismissal.
+  onCreateSourceComment(anchor, selectionRectFromView(view));
   return true;
 }
 

@@ -43,7 +43,10 @@ import {
   useOutputFocusedCellId,
 } from "@/components/notebook/state/output-focus-store";
 import { logger } from "../lib/logger";
-import type { SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
+import type {
+  SourceCommentSelectionRect,
+  SourceRangeCommentAnchor,
+} from "../lib/comment-source-anchor";
 import { useOutputProjectionFailures } from "@/components/notebook/state/runtime-store-projection";
 import { computeCanMutateCells } from "@/components/notebook/mutation-gate";
 import {
@@ -85,7 +88,10 @@ export interface NotebookViewProps {
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
-  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor) => void;
+  onCreateSourceComment?: (
+    anchor: SourceRangeCommentAnchor,
+    rect: SourceCommentSelectionRect | null,
+  ) => void;
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFramesUntilVisible?: boolean;

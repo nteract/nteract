@@ -19,7 +19,10 @@ import { detectRawFormat } from "../lib/detect-raw-format";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
-import type { SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
+import type {
+  SourceCommentSelectionRect,
+  SourceRangeCommentAnchor,
+} from "../lib/comment-source-anchor";
 import type { RawCell as RawCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
@@ -38,7 +41,10 @@ interface RawCellProps {
   /** Content for the right gutter (e.g., delete button) */
   rightGutterContent?: ReactNode;
   readOnly?: boolean;
-  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor) => void;
+  onCreateSourceComment?: (
+    anchor: SourceRangeCommentAnchor,
+    rect: SourceCommentSelectionRect | null,
+  ) => void;
 }
 
 export const RawCell = memo(function RawCell({

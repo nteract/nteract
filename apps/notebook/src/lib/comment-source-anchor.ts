@@ -4,6 +4,18 @@ import type { CommentAnchor } from "runtimed";
 
 export type SourceRangeCommentAnchor = Extract<CommentAnchor, { kind: "source_range" }>;
 
+/**
+ * Viewport-space rectangle bounding a comment-worthy selection. Used to anchor
+ * the inline comment composer next to the text the comment is about, the same
+ * way Google Docs floats its composer beside the selection.
+ */
+export interface SourceCommentSelectionRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 const DEFAULT_CONTEXT_CHARS = 40;
 export const MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES = 4096;
 const utf8Encoder = new TextEncoder();
@@ -40,6 +52,48 @@ export function sourceRangeAnchorFromSelection(
     contextChars,
     maxExactQuoteBytes,
   );
+}
+
+/**
+ * Bounding rectangle of the current selection in viewport coordinates, or null
+ * when the selection is empty or off-screen. Spans the full selection so the
+ * composer can anchor to the whole highlighted run, not just the caret.
+ */
+export function selectionRectFromView(view: EditorView): SourceCommentSelectionRect | null {
+  const selection = view.state.selection.main;
+  const from = Math.min(selection.anchor, selection.head);
+  const to = Math.max(selection.anchor, selection.head);
+  if (from === to) return null;
+
+  const startCoords = view.coordsAtPos(from);
+  const endCoords = view.coordsAtPos(to);
+  if (!startCoords || !endCoords) return null;
+
+  return {
+    left: Math.min(startCoords.left, endCoords.left),
+    top: Math.min(startCoords.top, endCoords.top),
+    right: Math.max(startCoords.right, endCoords.right),
+    bottom: Math.max(startCoords.bottom, endCoords.bottom),
+  };
+}
+
+/**
+ * Bounding rectangle of a DOM selection in viewport coordinates, or null when
+ * the selection is empty or has no geometry. Used by the rendered-markdown
+ * comment path, which selects in HTML rather than a CodeMirror editor.
+ */
+export function selectionRectFromDomSelection(
+  selection: Selection | null,
+): SourceCommentSelectionRect | null {
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+  const rect = selection.getRangeAt(0).getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return null;
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+}
+
+/** Convert a DOM rect (e.g. from an element) to a selection rect. */
+export function selectionRectFromDomRect(rect: DOMRect): SourceCommentSelectionRect {
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 }
 
 export function sourcePointFromStringOffset(source: string, offset: number): SourcePoint {
