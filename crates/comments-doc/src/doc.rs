@@ -15,8 +15,9 @@ use loro_fractional_index::FractionalIndex;
 
 use crate::error::CommentsDocError;
 use crate::types::{
-    CommentAnchor, CommentCreated, CommentMessageSnapshot, CommentReplied, CommentThreadSnapshot,
-    CommentsProjection, NotebookCommentRef, ProjectedMutationState, ProjectedThreadStatus,
+    validate_comment_anchor, CommentAnchor, CommentCreated, CommentMessageSnapshot, CommentReplied,
+    CommentThreadSnapshot, CommentsProjection, NotebookCommentRef, ProjectedMutationState,
+    ProjectedThreadStatus,
 };
 
 #[cfg(test)]
@@ -254,6 +255,7 @@ impl CommentsDoc {
         after_thread_id: Option<&str>,
         created_at: &str,
     ) -> Result<CommentCreated, CommentsDocError> {
+        validate_comment_anchor(anchor).map_err(CommentsDocError::InvalidAnchor)?;
         if self.thread_obj(thread_id).is_some() {
             return Err(CommentsDocError::ThreadAlreadyExists(thread_id.to_string()));
         }
@@ -1823,6 +1825,25 @@ mod tests {
         }
     }
 
+    fn source_anchor(
+        start_line: u64,
+        start_column: u64,
+        end_line: u64,
+        end_column: u64,
+        exact_quote: Option<&str>,
+    ) -> CommentAnchor {
+        CommentAnchor::SourceRange {
+            cell_id: "cell-a".to_string(),
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+            prefix_quote: None,
+            exact_quote: exact_quote.map(str::to_string),
+            suffix_quote: None,
+        }
+    }
+
     fn accepted_thread_doc() -> CommentsDoc {
         let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
         doc.create_thread(
@@ -1892,6 +1913,25 @@ mod tests {
             err,
             CommentsDocError::CommentsDocIdMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn create_thread_rejects_invalid_source_range_anchor() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+        let err = doc
+            .create_thread(
+                "thread-1",
+                "msg-1",
+                &source_anchor(3, 0, 2, 0, Some("quote")),
+                "body",
+                None,
+                "2026-06-16T00:00:00Z",
+            )
+            .expect_err("inverted source range should be rejected");
+
+        assert!(matches!(err, CommentsDocError::InvalidAnchor(_)));
+        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
+        assert!(projection.threads.is_empty());
     }
 
     #[test]
