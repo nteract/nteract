@@ -151,9 +151,9 @@ Local desktop:
   optimistic state, while the daemon finalizes author/scope fields in the same
   doc.
 - Local agents use MCP tools/resources against an active notebook session. The
-  first local MCP slice can list projected comments and create/reply by writing
-  pending comment mutations into the synced local replica; daemon request
-  handling is still needed for finalization and policy transitions.
+  implemented local MCP slice lists projected comments, creates/replies through
+  pending comment mutations, and routes resolve/reopen plus authority
+  finalization through daemon request handling.
 
 Cloud hosted rooms:
 
@@ -799,19 +799,21 @@ sidecar or future lightweight doc, not in the shared durable `CommentsDoc`.
 
 Build the first UI as a shared notebook component, not a cloud-only overlay.
 The local desktop/browser prototype now consumes the WASM comments projection,
-renders cell-level comment affordances, opens focused thread popovers, exposes an
-all-comments rail, and lets selected source prose/code create source-range
-anchors with quoted snippets. Inline source highlights, output-anchor markers,
-stale/deleted-anchor treatment, and hosted parity remain follow-up work.
+exposes an all-comments rail, and lets selected source prose/code create
+source-range anchors with quoted snippets. Notebook-body cell markers, focused
+thread popovers outside the rail, inline source highlights, output-anchor
+markers, stale/deleted-anchor treatment, and hosted parity remain follow-up
+work.
 
 Placement:
 
 - Materialize `CommentsDoc` into `commentsByCellId`, `notebookThreads`,
   `staleThreads`, and counts through a comments projection hook.
-- Pass comment markers into existing cell chrome instead of adding cell-like
-  siblings. `CellContainer` already has a right action overlay and
+- Pass future comment markers into existing cell chrome instead of adding
+  cell-like siblings. `CellContainer` already has a right action overlay and
   `data-cell-id` markers.
-- Use popovers for focused threads and a comments rail/panel for all threads.
+- Use the comments rail/panel for the first local UI; focused popovers can layer
+  on later once body markers exist.
 - For cell-range anchors, draw a parent-owned overlay by measuring
   `[data-cell-id]` elements. Do not insert extra rows into `NotebookView`.
 - For source-range anchors, keep the selection button and quoted snippet path;
@@ -951,12 +953,12 @@ Phase 2: local sync and MCP
 
 Phase 3: UI prototype
 
-- Render cell comment markers in the existing cell chrome. (Landed for the
-  local desktop/browser prototype.)
-- Add a popover thread view and an all-comments rail/panel. (Landed for the
-  local desktop/browser prototype.)
+- Add an all-comments rail/panel. (Landed for the local desktop/browser
+  prototype.)
 - Add selected source prose/code comment affordances with source-range anchors
   and quoted snippets. (Landed.)
+- Render cell comment markers in the existing cell chrome.
+- Add a focused thread popover from body markers.
 - Include stale/deleted-anchor handling.
 - Render stamped authorship plus derived `last_writer_actor_label` for edit
   attribution, with a visible mismatch/unknown state for imported or raw changes.

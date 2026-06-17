@@ -65,4 +65,12 @@ describe("comment-source-anchor", () => {
 
     expect(sourceRangeAnchorFromSelection("cell-1", view, 6, 4)).toBeNull();
   });
+
+  it("checks oversized selections by UTF-8 bytes", () => {
+    const source = "éé";
+    const view = viewWithSelection(source, 0, source.length);
+
+    expect(sourceRangeAnchorFromSelection("cell-1", view, 6, 3)).toBeNull();
+    expect(sourceRangeAnchorFromSelection("cell-1", view, 6, 4)?.exact_quote).toBe(source);
+  });
 });

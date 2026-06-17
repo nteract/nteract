@@ -517,6 +517,41 @@ fn required_body(request: &CallToolRequestParams) -> Result<&str, McpError> {
 }
 
 fn validate_anchor_for_create(anchor: &comments_doc::CommentAnchor) -> Result<(), McpError> {
+    if let comments_doc::CommentAnchor::SourceRange {
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+        exact_quote,
+        ..
+    } = anchor
+    {
+        if start_line == end_line && start_column == end_column {
+            return Err(McpError::invalid_params(
+                "source_range must select at least one source character",
+                None,
+            ));
+        }
+        let Some(exact_quote) = exact_quote
+            .as_deref()
+            .filter(|quote| !quote.trim().is_empty())
+        else {
+            return Err(McpError::invalid_params(
+                "source_range exact_quote is required and must not be whitespace-only",
+                None,
+            ));
+        };
+        if exact_quote.len() > comments_doc::MAX_SOURCE_COMMENT_QUOTE_BYTES {
+            return Err(McpError::invalid_params(
+                format!(
+                    "source_range exact_quote exceeds {} bytes",
+                    comments_doc::MAX_SOURCE_COMMENT_QUOTE_BYTES
+                ),
+                None,
+            ));
+        }
+    }
+
     comments_doc::validate_comment_anchor(anchor)
         .map_err(|error| McpError::invalid_params(error, None))
 }
@@ -673,8 +708,16 @@ mod tests {
     fn source_range_validation_rejects_inverted_spans() {
         assert!(validate_anchor_for_create(&source_anchor(10, 0, 9, 99, Some("quote"))).is_err());
         assert!(validate_anchor_for_create(&source_anchor(10, 8, 10, 7, Some("quote"))).is_err());
-        assert!(validate_anchor_for_create(&source_anchor(10, 7, 10, 7, Some(""))).is_ok());
         assert!(validate_anchor_for_create(&source_anchor(10, 7, 11, 0, Some("quote"))).is_ok());
+    }
+
+    #[test]
+    fn source_range_validation_requires_non_empty_exact_quote() {
+        assert!(validate_anchor_for_create(&source_anchor(10, 7, 10, 7, Some("x"))).is_err());
+        assert!(validate_anchor_for_create(&source_anchor(10, 7, 10, 8, None)).is_err());
+        assert!(validate_anchor_for_create(&source_anchor(10, 7, 10, 8, Some(""))).is_err());
+        assert!(validate_anchor_for_create(&source_anchor(10, 7, 10, 8, Some("   "))).is_err());
+        assert!(validate_anchor_for_create(&source_anchor(10, 7, 10, 8, Some("x"))).is_ok());
     }
 
     #[test]

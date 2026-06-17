@@ -5,7 +5,8 @@ import type { CommentAnchor } from "runtimed";
 export type SourceRangeCommentAnchor = Extract<CommentAnchor, { kind: "source_range" }>;
 
 const DEFAULT_CONTEXT_CHARS = 40;
-export const MAX_SOURCE_COMMENT_EXACT_QUOTE_CHARS = 4096;
+export const MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES = 4096;
+const utf8Encoder = new TextEncoder();
 
 export interface SourcePoint {
   line: number;
@@ -24,7 +25,7 @@ export function sourceRangeAnchorFromSelection(
   cellId: string,
   view: EditorView,
   contextChars = DEFAULT_CONTEXT_CHARS,
-  maxExactQuoteChars = MAX_SOURCE_COMMENT_EXACT_QUOTE_CHARS,
+  maxExactQuoteBytes = MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES,
 ): SourceRangeCommentAnchor | null {
   const selection = view.state.selection.main;
   const from = Math.min(selection.anchor, selection.head);
@@ -33,7 +34,12 @@ export function sourceRangeAnchorFromSelection(
 
   const doc = view.state.doc;
   const exactQuote = doc.sliceString(from, to);
-  if (exactQuote.trim().length === 0 || exactQuote.length > maxExactQuoteChars) return null;
+  if (
+    exactQuote.trim().length === 0 ||
+    utf8Encoder.encode(exactQuote).length > maxExactQuoteBytes
+  ) {
+    return null;
+  }
 
   const start = sourcePointFromOffset(doc, from);
   const end = sourcePointFromOffset(doc, to);

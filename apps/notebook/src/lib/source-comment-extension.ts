@@ -1,7 +1,7 @@
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, keymap, showTooltip, type Tooltip } from "@codemirror/view";
 import {
-  MAX_SOURCE_COMMENT_EXACT_QUOTE_CHARS,
+  MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES,
   sourceRangeAnchorFromSelection,
   type SourceRangeCommentAnchor,
 } from "./comment-source-anchor";
@@ -9,6 +9,7 @@ import {
 export type SourceCommentRequestHandler = (anchor: SourceRangeCommentAnchor) => void;
 
 const setSourceCommentFocusEffect = StateEffect.define<boolean>();
+const utf8Encoder = new TextEncoder();
 
 interface SourceCommentTooltipState {
   focused: boolean;
@@ -73,7 +74,7 @@ function sourceCommentTooltips(
   if (selection.empty) return [];
   const selectedText = state.doc.sliceString(selection.from, selection.to);
   if (selectedText.trim().length === 0) return [];
-  if (selectedText.length > MAX_SOURCE_COMMENT_EXACT_QUOTE_CHARS) return [];
+  if (utf8Encoder.encode(selectedText).length > MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES) return [];
 
   return [
     {
