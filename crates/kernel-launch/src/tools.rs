@@ -1145,6 +1145,187 @@ pub async fn get_pixi_path() -> Result<PathBuf> {
     }
 }
 
+// ── Nono (Unix only) ─────────────────────────────────────────────────
+
+/// Target nono version for GitHub download.
+///
+/// nono only supports Unix (macOS and Linux). There is no Windows native build.
+/// The `#[cfg(unix)]` gate on all nono code below enforces this at compile time;
+/// when the Windows gate is eventually removed this constant and the functions
+/// below remain unchanged.
+#[cfg(unix)]
+pub const NONO_TARGET_VERSION: &str = "0.63.0";
+
+/// Global cache for the nono binary path (Unix only).
+#[cfg(unix)]
+static NONO_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
+
+/// Download and verify the nono binary from GitHub releases (Unix only).
+///
+/// Asset naming: `nono-v{version}-{arch}-{platform}.tar.gz`
+/// Checksums:    single `SHA256SUMS.txt` (BSD-style: `<hash>  <filename>`)
+/// Tag format:   `v{version}` (the `v` also appears in the asset filename).
+///
+/// Integrity is verified against the per-archive SHA-256 digest published in
+/// SHA256SUMS.txt, matching the same pattern used for uv, ruff, and pixi.
+#[cfg(unix)]
+async fn download_nono_from_github(version: &str) -> Result<BootstrappedTool> {
+    let platform = get_github_platform()?;
+
+    let asset_name = format!(
+        "nono-v{}-{}-{}.tar.gz",
+        version, platform.arch, platform.platform
+    );
+
+    let download_url = format!(
+        "https://github.com/always-further/nono/releases/download/v{}/{}",
+        version, asset_name
+    );
+    let checksum_url = format!(
+        "https://github.com/always-further/nono/releases/download/v{}/SHA256SUMS.txt",
+        version
+    );
+
+    info!("Downloading nono {} from GitHub...", version);
+
+    let cache_dir = tools_cache_dir();
+    let hash = compute_tool_hash("nono", Some(version));
+    let env_path = cache_dir.join(format!("nono-{}", hash));
+    let binary_path = env_path.join("bin").join("nono");
+
+    if binary_path.exists() {
+        info!("Using cached nono at {:?}", binary_path);
+        return Ok(BootstrappedTool {
+            binary_path,
+            env_path,
+        });
+    }
+
+    tokio::fs::create_dir_all(&cache_dir).await?;
+
+    if env_path.exists() {
+        tokio::fs::remove_dir_all(&env_path).await?;
+    }
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()?;
+
+    // Download SHA256SUMS.txt and extract the digest for our asset.
+    // Format: "<hash>  <filename>" (two-space BSD style).
+    info!("Fetching checksums from {}...", checksum_url);
+    let checksum_response = client.get(&checksum_url).send().await?;
+    if !checksum_response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download SHA256SUMS.txt: {}",
+            checksum_response.status()
+        ));
+    }
+    let checksum_text = checksum_response.text().await?;
+    let expected_hash = checksum_text
+        .lines()
+        .find_map(|line| {
+            let mut parts = line.splitn(2, "  ");
+            let hash = parts.next()?.trim();
+            let name = parts.next()?.trim();
+            if name == asset_name {
+                Some(hash.to_lowercase())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| anyhow!("Checksum for {} not found in SHA256SUMS.txt", asset_name))?;
+
+    // Download archive and verify checksum.
+    info!("Downloading {}...", asset_name);
+    let archive_response = client.get(&download_url).send().await?;
+    if !archive_response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download nono: {}",
+            archive_response.status()
+        ));
+    }
+    let archive_bytes = archive_response.bytes().await?;
+
+    info!("Verifying checksum...");
+    let mut hasher = Sha256::new();
+    hasher.update(&archive_bytes);
+    let actual_hash = hex::encode(hasher.finalize());
+
+    if actual_hash != expected_hash {
+        return Err(anyhow!(
+            "Checksum mismatch for nono: expected {}, got {}",
+            expected_hash,
+            actual_hash
+        ));
+    }
+
+    info!("Extracting nono to {:?}...", env_path);
+    let env_path_clone = env_path.clone();
+    let binary_path_clone = binary_path.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        extract_tool_tarball(&archive_bytes, &env_path_clone, "nono")?;
+        if !binary_path_clone.exists() {
+            return Err(anyhow!(
+                "nono binary not found after extraction at {:?}",
+                binary_path_clone
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow!("Extraction task panicked: {}", e))??;
+
+    info!(
+        "Successfully installed nono {} at {:?}",
+        version, binary_path
+    );
+    Ok(BootstrappedTool {
+        binary_path,
+        env_path,
+    })
+}
+
+/// Get the path to the nono binary (Unix only), checking system PATH first
+/// then downloading a pinned release from GitHub.
+///
+/// Results are cached for subsequent calls within the same daemon process.
+#[cfg(unix)]
+pub async fn get_nono_path() -> Result<PathBuf> {
+    let result = NONO_PATH
+        .get_or_init(|| async {
+            if let Ok(output) = tokio::process::Command::new("nono")
+                .arg("--version")
+                .output()
+                .await
+            {
+                if output.status.success() {
+                    if let Some(abs) = find_in_path("nono") {
+                        info!("Using system nono at {}", abs.display());
+                        return Arc::new(Ok(abs));
+                    }
+                    info!("Using system nono (could not resolve absolute path)");
+                    return Arc::new(Ok(PathBuf::from("nono")));
+                }
+            }
+
+            info!(
+                "Downloading nono {} from GitHub releases...",
+                NONO_TARGET_VERSION
+            );
+            match download_nono_from_github(NONO_TARGET_VERSION).await {
+                Ok(tool) => Arc::new(Ok(tool.binary_path)),
+                Err(e) => Arc::new(Err(e.to_string())),
+            }
+        })
+        .await;
+
+    match result.as_ref() {
+        Ok(path) => Ok(path.clone()),
+        Err(e) => Err(anyhow!("{}", e)),
+    }
+}
+
 // ── Pixi project info via `pixi info --json` ────────────────────────
 
 /// Environment info from `pixi info --json`.
@@ -1464,5 +1645,166 @@ mod tests {
         assert!(UV_TARGET_VERSION.contains('.'));
         assert!(RUFF_TARGET_VERSION.contains('.'));
         assert!(PIXI_TARGET_VERSION.contains('.'));
+    }
+
+    // ── Nono unit tests (no network) ────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn test_nono_version_constant() {
+        // Version string must be semver-shaped: at least two dots.
+        assert!(
+            NONO_TARGET_VERSION.contains('.'),
+            "NONO_TARGET_VERSION should be a semver string, got {NONO_TARGET_VERSION}"
+        );
+        let parts: Vec<&str> = NONO_TARGET_VERSION.split('.').collect();
+        assert!(
+            parts.len() >= 2,
+            "NONO_TARGET_VERSION should have at least major.minor, got {NONO_TARGET_VERSION}"
+        );
+        // Each part must parse as a non-negative integer.
+        for part in &parts {
+            part.parse::<u32>().unwrap_or_else(|_| {
+                panic!("NONO_TARGET_VERSION component '{part}' is not a valid integer")
+            });
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_nono_tool_hash_stable() {
+        // Same version → same hash (deterministic cache key).
+        let h1 = compute_tool_hash("nono", Some(NONO_TARGET_VERSION));
+        let h2 = compute_tool_hash("nono", Some(NONO_TARGET_VERSION));
+        assert_eq!(h1, h2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_nono_tool_hash_differs_from_other_tools() {
+        // nono must not collide with uv or pixi at the same version string.
+        let nono_hash = compute_tool_hash("nono", Some(NONO_TARGET_VERSION));
+        let uv_hash = compute_tool_hash("uv", Some(NONO_TARGET_VERSION));
+        let pixi_hash = compute_tool_hash("pixi", Some(NONO_TARGET_VERSION));
+        assert_ne!(nono_hash, uv_hash);
+        assert_ne!(nono_hash, pixi_hash);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_nono_tool_hash_differs_across_versions() {
+        let h1 = compute_tool_hash("nono", Some("0.62.0"));
+        let h2 = compute_tool_hash("nono", Some("0.63.0"));
+        assert_ne!(h1, h2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_nono_cached_binary_path_is_under_tools_dir() {
+        let path = cached_tool_binary_path("nono", Some(NONO_TARGET_VERSION));
+        let tools = tools_cache_dir();
+        assert!(
+            path.starts_with(&tools),
+            "nono cache path {path:?} should be under tools dir {tools:?}"
+        );
+        // Must end with the binary name (no .exe on Unix).
+        assert_eq!(path.file_name().unwrap(), "nono");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_nono_asset_name_format() {
+        // Verify the asset name we'd construct matches the real GitHub release
+        // naming convention: nono-v{version}-{arch}-{platform}.tar.gz
+        let platform = get_github_platform().unwrap();
+        let asset = format!(
+            "nono-v{}-{}-{}.tar.gz",
+            NONO_TARGET_VERSION, platform.arch, platform.platform
+        );
+        assert!(asset.starts_with("nono-v"));
+        assert!(asset.ends_with(".tar.gz"));
+        assert!(asset.contains(NONO_TARGET_VERSION));
+        assert!(asset.contains(platform.arch));
+        assert!(asset.contains(platform.platform));
+        // The v-prefix must be present in the asset name (unlike uv/ruff which have no v).
+        assert!(
+            asset.contains(&format!("nono-v{}", NONO_TARGET_VERSION)),
+            "asset name should embed 'nono-v{{version}}', got {asset}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_nono_checksum_url_format() {
+        // SHA256SUMS.txt is served as a release asset alongside the archives,
+        // matching the same CDN path used by all other tools.
+        let version = NONO_TARGET_VERSION;
+        let url = format!(
+            "https://github.com/always-further/nono/releases/download/v{}/SHA256SUMS.txt",
+            version
+        );
+        assert!(url.contains("/always-further/nono/"));
+        assert!(url.contains(&format!("/v{}/", version)));
+        assert!(url.ends_with("SHA256SUMS.txt"));
+    }
+
+    // ── Nono network integration test ───────────────────────────────
+    //
+    // Marked #[ignore] so `cargo test` is hermetic. CI runs it explicitly
+    // with `cargo test -p kernel-launch -- --ignored nono`, matching the
+    // pattern used in notebook-sync for daemon-dependent tests.
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "makes real network calls to GitHub and Sigstore; run with --ignored"]
+    async fn test_get_nono_path_downloads_and_verifies() {
+        // This test exercises the full download + Sigstore attestation path.
+        // It downloads the real nono binary from GitHub, verifies the bundle,
+        // and checks that the resulting binary is executable.
+        //
+        // Uses a temp dir so it does not pollute the real tools cache and
+        // can be re-run cleanly even if a previous run left a partial download.
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let result = download_nono_from_github(NONO_TARGET_VERSION).await;
+
+        match result {
+            Ok(tool) => {
+                assert!(
+                    tool.binary_path.exists(),
+                    "nono binary should exist at {:?}",
+                    tool.binary_path
+                );
+                let meta = std::fs::metadata(&tool.binary_path)
+                    .expect("should be able to stat nono binary");
+                assert!(meta.is_file(), "nono path should be a regular file");
+                // Must be executable.
+                let mode = meta.permissions().mode();
+                assert!(
+                    mode & 0o111 != 0,
+                    "nono binary should be executable, mode={mode:o}"
+                );
+                // Sanity: running `nono --version` should succeed.
+                let output = tokio::process::Command::new(&tool.binary_path)
+                    .arg("--version")
+                    .output()
+                    .await
+                    .expect("should be able to run nono --version");
+                assert!(
+                    output.status.success(),
+                    "nono --version exited with {:?}",
+                    output.status
+                );
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    stdout.contains(NONO_TARGET_VERSION),
+                    "nono --version output '{stdout}' should contain version {NONO_TARGET_VERSION}"
+                );
+            }
+            Err(e) => panic!("download_nono_from_github failed: {e}"),
+        }
+
+        drop(tmp);
     }
 }

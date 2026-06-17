@@ -230,7 +230,7 @@ fn jobj_get<'a, 's>(
     obj: &'a [(std::borrow::Cow<'s, str>, jiter::JsonValue<'s>)],
     key: &str,
 ) -> Option<&'a jiter::JsonValue<'s>> {
-    obj.iter().find(|(k, _)| k.as_ref() == key).map(|(_, v)| v)
+    obj.iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
 
 /// Parse a notebook file into streaming cells using jiter for fast JSON parsing.
