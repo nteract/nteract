@@ -138,7 +138,7 @@ describe("comment-source-anchor", () => {
     root.remove();
   });
 
-  it("expands rendered markdown selections when source markup changes text length", () => {
+  it("rejects rendered markdown selections when hidden source markup changes selected text", () => {
     const root = document.createElement("div");
     root.innerHTML = `
       <p>
@@ -162,8 +162,8 @@ describe("comment-source-anchor", () => {
         "**bold**",
         root,
         window.getSelection(),
-      )?.exact_quote,
-    ).toBe("**bold**");
+      ),
+    ).toBeNull();
 
     root.remove();
   });

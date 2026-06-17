@@ -109,6 +109,7 @@ async function selectRenderedMarkdownText(cell: Locator, text: string) {
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
+    (root as HTMLElement).focus();
     root.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
   }, text);
 }
@@ -347,7 +348,8 @@ test.describe("notebook comments rail", () => {
     ).toBeVisible({ timeout: 30_000 });
 
     await selectRenderedMarkdownText(markdownCell, renderedQuote);
-    await page.getByRole("button", { name: "Comment on selected markdown" }).click();
+    await expect(page.getByRole("button", { name: "Comment on selected markdown" })).toBeVisible();
+    await page.keyboard.press("Control+Alt+M");
 
     const panel = page.getByTestId("notebook-comments-panel");
     await expect(panel.getByTestId("comment-draft-target")).toContainText(renderedQuote);

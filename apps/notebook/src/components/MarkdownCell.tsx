@@ -25,6 +25,7 @@ import { ProjectedMarkdownView } from "./markdown/ProjectedMarkdownView";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import {
   canRenderMarkdownProjectionInHost,
+  markdownProjectionMatchesSource,
   type MarkdownProjectionRun,
   projectedMarkdownPreviewHeight,
   projectMarkdownPlan,
@@ -271,6 +272,12 @@ export const MarkdownCell = memo(function MarkdownCell({
     [cell.markdownProjection, cell.source, draftPreviewSource],
   );
   const canRenderProjectionInHost = canRenderMarkdownProjectionInHost(markdownProjection);
+  const canCommentOnRenderedMarkdown =
+    Boolean(onCreateSourceComment) &&
+    !readOnly &&
+    !editing &&
+    markdownProjection !== null &&
+    markdownProjectionMatchesSource(markdownProjection, previewSource);
   const previewMinHeight = useMemo(
     () =>
       projectedMarkdownPreviewHeight(
@@ -430,7 +437,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   }, []);
 
   const updateRenderedSourceCommentTarget = useCallback(() => {
-    if (editing || readOnly || !onCreateSourceComment || !canRenderProjectionInHost) {
+    if (!canCommentOnRenderedMarkdown) {
       clearRenderedSourceCommentTarget();
       return;
     }
@@ -468,20 +475,39 @@ export const MarkdownCell = memo(function MarkdownCell({
       ),
       top: Math.max(0, rangeRect.top - rootRect.top - 32),
     });
+  }, [canCommentOnRenderedMarkdown, cell.id, clearRenderedSourceCommentTarget, previewSource]);
+
+  const requestRenderedSourceComment = useCallback(() => {
+    if (!canCommentOnRenderedMarkdown || !onCreateSourceComment) return false;
+
+    const root = viewRef.current;
+    if (!root || typeof window === "undefined") return false;
+
+    const anchor = sourceRangeAnchorFromRenderedMarkdownSelection(
+      cell.id,
+      previewSource,
+      root,
+      window.getSelection(),
+    );
+
+    if (!anchor) return false;
+    onCreateSourceComment(anchor);
+    window.getSelection()?.removeAllRanges();
+    clearRenderedSourceCommentTarget();
+    return true;
   }, [
-    canRenderProjectionInHost,
+    canCommentOnRenderedMarkdown,
     cell.id,
     clearRenderedSourceCommentTarget,
-    editing,
     onCreateSourceComment,
     previewSource,
-    readOnly,
   ]);
 
   const handleRenderedSourceCommentClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
       event.stopPropagation();
+      if (requestRenderedSourceComment()) return;
       const anchor = renderedSourceCommentTarget?.anchor;
       if (!anchor || !onCreateSourceComment) return;
       onCreateSourceComment(anchor);
@@ -490,7 +516,12 @@ export const MarkdownCell = memo(function MarkdownCell({
       }
       clearRenderedSourceCommentTarget();
     },
-    [clearRenderedSourceCommentTarget, onCreateSourceComment, renderedSourceCommentTarget],
+    [
+      clearRenderedSourceCommentTarget,
+      onCreateSourceComment,
+      renderedSourceCommentTarget,
+      requestRenderedSourceComment,
+    ],
   );
 
   const handlePreviewFrameMouseUp = useCallback(
@@ -696,6 +727,14 @@ export const MarkdownCell = memo(function MarkdownCell({
   // Handle keyboard navigation in view mode (when not editing)
   const handleViewKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      if (key === "m" && e.altKey && (e.metaKey || e.ctrlKey)) {
+        if (requestRenderedSourceComment()) {
+          e.preventDefault();
+          return;
+        }
+      }
+
       if (e.key === "ArrowDown") {
         onFocusNext?.("start");
         e.preventDefault();
@@ -718,7 +757,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         e.preventDefault();
       }
     },
-    [enterEditing, onFocusNext, onFocusPrevious, readOnly],
+    [enterEditing, onFocusNext, onFocusPrevious, readOnly, requestRenderedSourceComment],
   );
 
   // Handle focus next, creating a new cell if at the end

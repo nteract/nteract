@@ -29,7 +29,8 @@ export function sourceRangeAnchorFromRenderedMarkdownSelection(
 
   const range = selection.getRangeAt(0);
   if (!root.contains(range.commonAncestorContainer)) return null;
-  if (selection.toString().trim().length === 0) return null;
+  const selectedText = selection.toString();
+  if (selectedText.trim().length === 0) return null;
 
   const start = selectionPointForRangeBoundary(root, range.startContainer, range.startOffset);
   const end = selectionPointForRangeBoundary(root, range.endContainer, range.endOffset);
@@ -39,7 +40,9 @@ export function sourceRangeAnchorFromRenderedMarkdownSelection(
   const to = sourceOffsetForRenderedPoint(end, "end");
   if (from === null || to === null) return null;
 
-  return sourceRangeAnchorFromOffsets(cellId, source, from, to);
+  const anchor = sourceRangeAnchorFromOffsets(cellId, source, from, to);
+  if (!anchor || anchor.exact_quote !== selectedText) return null;
+  return anchor;
 }
 
 function selectionPointForRangeBoundary(
