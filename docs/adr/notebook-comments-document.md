@@ -204,35 +204,37 @@ ROOT/
         kind: Str
         ...anchor fields...
       position: Str                  # fractional order in the projection scope
-      status: Str                    # "open" | "resolved"
+      status: Str                    # provisional open/resolved status
       mutation_state: Str            # "pending" | "accepted" | "rejected"
-      rejection_reason: Str?
       created_at: Str
-      created_by_actor_label: Str?   # host/daemon stamped when accepted
-      created_by_authority: Str?     # "host_stamped" | "local_uid" | "imported"
-      created_by_display_name: Str?  # advisory, host projected when available
-      resolved_at: Str?
-      resolved_by_actor_label: Str?
-      resolved_by_authority: Str?
-      archived_at: Str?
-      archived_by_actor_label: Str?
-      archived_by_authority: Str?
+      authority_mutation_state: Str? # authority-written accepted/rejected
+      authority_status: Str?         # authority-written open/resolved
+      authority_anchor_json: Str?    # accepted anchor snapshot
+      authority_position: Str?
+      authority_created_at: Str?
+      authority_created_by_actor_label: Str?
+      authority_created_by_authority: Str?
+      authority_rejection_reason: Str?
+      authority_resolved_at: Str?
+      authority_resolved_by_actor_label: Str?
+      authority_resolved_by_authority: Str?
+      authority_reopened_at: Str?
+      authority_reopened_by_actor_label: Str?
+      authority_reopened_by_authority: Str?
       messages/
         {message_id}/
           id: Str
           position: Str              # fractional reply order
           body: Text
           mutation_state: Str        # "pending" | "accepted" | "rejected"
-          rejection_reason: Str?
           created_at: Str
-          created_by_actor_label: Str?
-          created_by_authority: Str?
-          edited_at: Str?
-          edited_by_actor_label: Str?
-          edited_by_authority: Str?
-          deleted_at: Str?
-          deleted_by_actor_label: Str?
-          deleted_by_authority: Str?
+          authority_mutation_state: Str?
+          authority_body: Str?
+          authority_position: Str?
+          authority_created_at: Str?
+          authority_created_by_actor_label: Str?
+          authority_created_by_authority: Str?
+          authority_rejection_reason: Str?
 ```
 
 Do not store a derived `anchor_index` inside `CommentsDoc`. It would add synced
@@ -245,16 +247,13 @@ Message bodies should be Automerge `Text`, even if v0 only edits a whole comment
 body at once. It keeps the schema ready for collaborative comment editing and
 avoids whole-string conflict behavior.
 
-`created_by_authority` and related authority fields record the trust context of
-the durable attribution field once an authority or import has established that
-field:
-
-- `host_stamped`: Cloud room host stamped the field from an authenticated Cloud
-  request.
-- `local_uid`: local daemon stamped the field from same-UID desktop provenance.
-- `imported`: attribution was carried across a boundary such as local-to-Cloud
-  promotion, clone-with-comments, or external import and should be displayed as
-  imported/unverified.
+`authority_created_by_authority` and related authority fields record which
+comments authority wrote the durable attribution snapshot. In the local
+implementation that value is the authority actor label `runtimed:comments`;
+hosted rooms should use a Cloud comments-authority actor label. Imported
+comments should be replayed or stamped with an explicit imported-authority label
+so they do not become indistinguishable from locally or hosted-authenticated
+comments.
 
 Pending state is carried by `mutation_state`, not by overloading the authority
 enum. While a thread or message is pending, authority fields are absent or
@@ -272,17 +271,19 @@ can display or collapse.
 `mutation_state = "accepted"` is meaningful only because of *who wrote it*, not
 because the field says so. In raw CRDT convergence any editor-scope peer can write
 any field, so a malicious client could set `mutation_state = "accepted"`,
-`created_by_authority = "host_stamped"`, and `created_by_actor_label` to a victim
-in a single client change and self-finalize a spoofed comment.
+`authority_mutation_state = "accepted"`,
+`authority_created_by_authority = "runtimed:comments"`, and
+`authority_created_by_actor_label` to a victim in a single client change and
+self-finalize a spoofed comment.
 
 The trust invariant the projection must enforce:
 
-- Policy-bearing fields (`mutation_state`, `status`, `created_by_*`,
-  `edited_at`, `edited_by_*`, `resolved_at`, `resolved_by_*`, `deleted_at`,
-  `deleted_by_*`, `archived_at`, `archived_by_*`, and the authority fields) are
-  trusted only when the latest change writing them was authored by an actor
-  whose principal is the comments authority (local daemon or Cloud comments
-  host).
+- Policy-bearing `authority_*` fields (`authority_mutation_state`,
+  `authority_status`, `authority_created_by_*`, `authority_resolved_*`,
+  `authority_reopened_*`, future tombstone/edit/moderation snapshots, and any
+  other authority-prefixed policy field) are trusted only when the latest change
+  writing them was authored by an actor whose principal is the comments
+  authority (local daemon or Cloud comments host).
 - Body text is trusted when authored by the claimed author's validated principal.
 - A client-authored `accepted` is ignored and rendered as pending. The field is a
   cache of "an authority change finalized this," verifiable by the attribution
