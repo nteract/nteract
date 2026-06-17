@@ -637,12 +637,22 @@ export function isRecoverableCloudFrameRejection(message: SessionControlMessage)
     return true;
   }
   if (message.frame_type === FrameType.RUNTIME_STATE_SYNC) {
-    return isSyncDivergenceRejectionReason(message.reason, "cloud-room-state-receive-sync");
+    return (
+      isSyncDivergenceRejectionReason(message.reason, "cloud-room-state-receive-sync") ||
+      isRecoverableRoomHostSyncBoundaryRejection(message.reason)
+    );
   }
   if (message.frame_type === FrameType.COMMS_DOC_SYNC) {
-    return isSyncDivergenceRejectionReason(message.reason, "cloud-room-comms-receive-sync");
+    return (
+      isSyncDivergenceRejectionReason(message.reason, "cloud-room-comms-receive-sync") ||
+      isRecoverableRoomHostSyncBoundaryRejection(message.reason)
+    );
   }
   return false;
+}
+
+function isRecoverableRoomHostSyncBoundaryRejection(reason: string): boolean {
+  return /recursive use of an object detected which would lead to unsafe aliasing/i.test(reason);
 }
 
 function isSyncDivergenceRejectionReason(reason: string, docTag: string): boolean {
