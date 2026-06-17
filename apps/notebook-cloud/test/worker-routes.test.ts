@@ -2899,6 +2899,37 @@ describe("Worker artifact routes", () => {
     assert.equal(body.workstations[0]?.is_default, true);
   });
 
+  it("streams user-owned workstation events with CORS headers", async () => {
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/events", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Content-Type"), "text/event-stream; charset=utf-8");
+    assert.match(await response.text(), /event: ready/);
+    const streamRequest = events.requests.find(
+      (entry) => new URL(entry.url).pathname === "/stream",
+    );
+    assert.equal(streamRequest?.objectName, objectName);
+  });
+
   it("projects a stale workstation as online when its event stream is connected", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
