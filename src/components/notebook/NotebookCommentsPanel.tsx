@@ -25,6 +25,12 @@ export interface NotebookCommentsPanelProps {
   onResolveThread?: (threadId: string) => void | Promise<void>;
   onReopenThread?: (threadId: string) => void | Promise<void>;
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
+  /**
+   * Resolve a friendly display name for a comment author's actor label
+   * (e.g. mapping a connected agent to "Claude Code"). Falls back to parsing
+   * the actor label when this returns undefined.
+   */
+  resolveActorDisplayName?: (actorLabel: string) => string | undefined;
 }
 
 export function NotebookCommentsPanel({
@@ -39,6 +45,7 @@ export function NotebookCommentsPanel({
   onResolveThread,
   onReopenThread,
   onFocusThreadAnchor,
+  resolveActorDisplayName,
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
   const labeledThreads = labelCommentThreads(threads);
@@ -105,6 +112,7 @@ export function NotebookCommentsPanel({
               onResolveThread={onResolveThread}
               onReopenThread={onReopenThread}
               onFocusThreadAnchor={onFocusThreadAnchor}
+              resolveActorDisplayName={resolveActorDisplayName}
             />
           ))}
         </ol>
@@ -163,6 +171,7 @@ function CommentThreadItem({
   onResolveThread,
   onReopenThread,
   onFocusThreadAnchor,
+  resolveActorDisplayName,
 }: {
   thread: CommentThreadSnapshot;
   threadLabel: string;
@@ -172,6 +181,7 @@ function CommentThreadItem({
   onResolveThread?: (threadId: string) => void | Promise<void>;
   onReopenThread?: (threadId: string) => void | Promise<void>;
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
+  resolveActorDisplayName?: (actorLabel: string) => string | undefined;
 }) {
   const [statusSubmitting, setStatusSubmitting] = useState(false);
   const hasUnsettledMessages = thread.messages.some(
@@ -257,7 +267,11 @@ function CommentThreadItem({
 
         <div className="space-y-2">
           {thread.messages.map((message) => (
-            <CommentMessage key={message.id} message={message} />
+            <CommentMessage
+              key={message.id}
+              message={message}
+              resolveActorDisplayName={resolveActorDisplayName}
+            />
           ))}
         </div>
 
@@ -275,7 +289,13 @@ function CommentThreadItem({
   );
 }
 
-function CommentMessage({ message }: { message: CommentMessageSnapshot }) {
+function CommentMessage({
+  message,
+  resolveActorDisplayName,
+}: {
+  message: CommentMessageSnapshot;
+  resolveActorDisplayName?: (actorLabel: string) => string | undefined;
+}) {
   return (
     <article className="space-y-1 rounded bg-muted/35 px-2.5 py-2">
       <p className="whitespace-pre-wrap break-words text-sm leading-5 text-foreground">
@@ -287,7 +307,8 @@ function CommentMessage({ message }: { message: CommentMessageSnapshot }) {
         ) : null}
         {message.created_by_actor_label ? (
           <span title={message.created_by_actor_label}>
-            {formatActorLabel(message.created_by_actor_label)}
+            {resolveActorDisplayName?.(message.created_by_actor_label) ??
+              formatActorLabel(message.created_by_actor_label)}
           </span>
         ) : null}
       </div>

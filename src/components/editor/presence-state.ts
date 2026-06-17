@@ -195,6 +195,26 @@ export class RemotePresenceState {
     return undefined;
   }
 
+  /**
+   * Find a connected peer's friendly label by exact actor-label match.
+   *
+   * Comments store the Automerge actor label, which encodes the operator
+   * kind (e.g. `nteract-mcp`) rather than the client name. Presence carries
+   * the same actor label alongside the `peer_label` derived from the MCP
+   * client info (e.g. "Claude Code"), so a connected author can be shown by
+   * the name presence already displays. Returns undefined once the author
+   * disconnects; callers fall back to parsing the actor label.
+   */
+  findPeerLabelByActorLabel(actorLabel: string): string | undefined {
+    for (const peer of this.peers.values()) {
+      if (peer.peerId === this.localPeerId) continue;
+      if (peer.actorLabel && peer.actorLabel === actorLabel) {
+        return peer.peerLabel;
+      }
+    }
+    return undefined;
+  }
+
   getPeersForCell(cellId: string): PeerCursorInfo[] {
     const result: PeerCursorInfo[] = [];
     for (const peer of this.peers.values()) {

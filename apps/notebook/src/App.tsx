@@ -70,7 +70,10 @@ import { PresenceProvider } from "./contexts/PresenceContext";
 import { useNotebook } from "./hooks/useNotebook";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
 import { CrdtBridgeProvider } from "@/components/notebook";
-import { startCursorDispatch } from "@/components/notebook/cursor-registry";
+import {
+  findPeerLabelByActorLabel,
+  startCursorDispatch,
+} from "@/components/notebook/cursor-registry";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
 import { useDenoConfig } from "./hooks/useDenoConfig";
 import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
@@ -1820,6 +1823,7 @@ function AppContent() {
                   onResolveThread={canMutateComments ? handleResolveCommentThread : undefined}
                   onReopenThread={canMutateComments ? handleReopenCommentThread : undefined}
                   onFocusThreadAnchor={handleFocusCommentThreadAnchor}
+                  resolveActorDisplayName={findPeerLabelByActorLabel}
                 />
               }
               packagesPanel={

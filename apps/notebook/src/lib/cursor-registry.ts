@@ -1,5 +1,6 @@
 export {
   findPeerColorByActorLabel,
+  findPeerLabelByActorLabel,
   getPeersForCell,
   onEditorRegistered,
   onEditorUnregistered,

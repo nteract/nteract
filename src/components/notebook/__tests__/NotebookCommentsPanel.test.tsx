@@ -363,6 +363,58 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.queryByText("local:ubuntu/desktop:d47eea7d")).not.toBeInTheDocument();
   });
 
+  it("prefers a resolved display name over the parsed actor label", () => {
+    const resolveActorDisplayName = vi.fn((actorLabel: string) =>
+      actorLabel === "local:kylekelley/agent:nteract-mcp:6483cc03" ? "Claude Code" : undefined,
+    );
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [
+            {
+              ...projection.threads[0],
+              messages: [
+                {
+                  ...projection.threads[0].messages[0],
+                  created_by_actor_label: "local:kylekelley/agent:nteract-mcp:6483cc03",
+                },
+              ],
+            },
+          ],
+        }}
+        resolveActorDisplayName={resolveActorDisplayName}
+      />,
+    );
+
+    expect(screen.getByText("Claude Code")).toBeVisible();
+    expect(screen.queryByText("kylekelley nteract-mcp")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the parsed actor label when no display name resolves", () => {
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [
+            {
+              ...projection.threads[0],
+              messages: [
+                {
+                  ...projection.threads[0].messages[0],
+                  created_by_actor_label: "local:kylekelley/agent:nteract-mcp:6483cc03",
+                },
+              ],
+            },
+          ],
+        }}
+        resolveActorDisplayName={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("kylekelley nteract-mcp")).toBeVisible();
+  });
+
   it("reopens resolved threads", () => {
     const onReopenThread = vi.fn();
     render(

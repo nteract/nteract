@@ -112,6 +112,17 @@ export function findPeerColorByActorLabel(actorLabel: string): string | undefine
 }
 
 /**
+ * Find a connected peer's friendly label by exact actor-label match.
+ *
+ * Lets comment authors render by the name presence shows (e.g. "Claude Code")
+ * instead of the raw actor label's operator kind. Returns undefined when the
+ * author is not currently connected.
+ */
+export function findPeerLabelByActorLabel(actorLabel: string): string | undefined {
+  return presenceState.findPeerLabelByActorLabel(actorLabel);
+}
+
+/**
  * Get all remote peers that have a cursor or focus in the given cell.
  */
 export function getPeersForCell(cellId: string): PeerCursorInfo[] {
