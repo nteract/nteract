@@ -1576,6 +1576,191 @@ async fn test_comments_doc_sync_strips_runtime_peer_change() {
 }
 
 #[tokio::test]
+async fn test_runtime_agent_channel_drops_comments_doc_sync_and_scope_cannot_finalize_comments() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "comments-runtime-agent-channel.ipynb");
+    let room = Arc::new(room);
+    let runtime_agent_id = "runtime-agent-comments-test".to_string();
+    {
+        let mut current = room.current_runtime_agent_id.write().await;
+        *current = Some(runtime_agent_id.clone());
+    }
+
+    let (client, server) = tokio::io::duplex(1024 * 1024);
+    let (mut client_reader, mut client_writer) = tokio::io::split(client);
+    let (server_reader, server_writer) = tokio::io::split(server);
+    let handler = tokio::spawn(super::handle_runtime_agent_sync_connection(
+        server_reader,
+        server_writer,
+        room.clone(),
+        room.id.to_string(),
+        runtime_agent_id.clone(),
+        tmp.path().join("executions"),
+    ));
+
+    let mut initial_frame_types = Vec::new();
+    for _ in 0..3 {
+        let frame = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            notebook_protocol::connection::recv_typed_frame(&mut client_reader),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("runtime agent initial sync frame");
+        initial_frame_types.push(frame.frame_type);
+    }
+    assert!(
+        initial_frame_types
+            .contains(&notebook_protocol::connection::NotebookFrameType::AutomergeSync),
+        "runtime agent should receive NotebookDoc initial sync"
+    );
+    assert!(
+        initial_frame_types
+            .contains(&notebook_protocol::connection::NotebookFrameType::RuntimeStateSync),
+        "runtime agent should receive RuntimeStateDoc initial sync"
+    );
+    assert!(
+        initial_frame_types
+            .contains(&notebook_protocol::connection::NotebookFrameType::CommsDocSync),
+        "runtime agent should still receive CommsDoc initial sync"
+    );
+    assert!(
+        !initial_frame_types
+            .contains(&notebook_protocol::connection::NotebookFrameType::CommentsDocSync),
+        "runtime agent channel must not receive CommentsDoc initial sync"
+    );
+
+    let mut unused_peer_state = automerge::sync::State::new();
+    let payload = comments_sync_payload_from_room(
+        room.as_ref(),
+        &mut unused_peer_state,
+        "agent:runtime-agent-channel",
+        "thread-runtime-agent-channel",
+        "runtime agent channel must not mutate comments",
+    );
+    notebook_protocol::connection::send_typed_frame(
+        &mut client_writer,
+        notebook_protocol::connection::NotebookFrameType::CommentsDocSync,
+        &payload,
+    )
+    .await
+    .unwrap();
+
+    let no_comments_reply = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        notebook_protocol::connection::recv_typed_frame(&mut client_reader),
+    )
+    .await;
+    assert!(
+        no_comments_reply.is_err(),
+        "runtime agent CommentsDocSync frames must be dropped without negotiation"
+    );
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[], None))
+        .unwrap()
+        .unwrap();
+    assert!(
+        projection.threads.is_empty(),
+        "runtime agent channel must not mutate CommentsDoc"
+    );
+    assert!(!room.comments_store.doc_path(&room.comments_doc_id).exists());
+
+    room.comments
+        .with_doc(|doc| {
+            doc.doc_mut()
+                .set_actor(ActorId::from(b"agent:comments-editor"));
+            doc.create_thread(
+                "thread-runtime-agent-request",
+                "message-runtime-agent-request",
+                &comments_doc::CommentAnchor::Notebook,
+                "runtime agent must not finalize comment content",
+                None,
+                "2026-06-16T00:02:00Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let observed_heads = comments_heads_hex(room.as_ref());
+    let runtime_accept = crate::requests::comments::accept_thread(
+        room.as_ref(),
+        "thread-runtime-agent-request".to_string(),
+        "message-runtime-agent-request".to_string(),
+        observed_heads,
+        Some("agent:runtime-agent-channel"),
+        nteract_identity::ConnectionScope::RuntimePeer,
+    )
+    .await;
+    assert!(matches!(
+        runtime_accept,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].mutation_state,
+        comments_doc::ProjectedMutationState::Pending
+    );
+    assert!(
+        !projection.threads[0].trusted,
+        "runtime peer must not authority-finalize pending comment content"
+    );
+
+    let observed_heads = comments_heads_hex(room.as_ref());
+    let editor_accept = crate::requests::comments::accept_thread(
+        room.as_ref(),
+        "thread-runtime-agent-request".to_string(),
+        "message-runtime-agent-request".to_string(),
+        observed_heads,
+        Some("agent:comments-editor"),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await;
+    assert!(matches!(
+        editor_accept,
+        crate::protocol::NotebookResponse::Ok {}
+    ));
+
+    let observed_heads = comments_heads_hex(room.as_ref());
+    let runtime_resolve = crate::requests::comments::resolve_thread(
+        room.as_ref(),
+        "thread-runtime-agent-request".to_string(),
+        observed_heads,
+        Some("agent:runtime-agent-channel"),
+        nteract_identity::ConnectionScope::RuntimePeer,
+    )
+    .await;
+    assert!(matches!(
+        runtime_resolve,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+    let projection = room
+        .comments
+        .read(|doc| doc.read_projection(&[COMMENTS_DOC_ACTOR], None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        projection.threads[0].status,
+        comments_doc::ProjectedThreadStatus::Open
+    );
+    assert!(projection.threads[0].resolved_by_authority.is_none());
+
+    tokio::io::AsyncWriteExt::shutdown(&mut client_writer)
+        .await
+        .unwrap();
+    drop(client_writer);
+    drop(client_reader);
+    tokio::time::timeout(std::time::Duration::from_secs(2), handler)
+        .await
+        .expect("runtime agent handler should exit after client close")
+        .expect("runtime agent handler should not panic");
+}
+
+#[tokio::test]
 async fn test_comments_doc_sync_rejects_mismatched_actor_label() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "comments-actor-mismatch.ipynb");
