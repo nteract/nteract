@@ -590,8 +590,8 @@ function AppContent() {
   const handleCreateDocumentComment = useCallback(
     async (body: string) => {
       const handle = getHandle();
-      if (!handle?.create_comment_thread) {
-        failCommentAction("Comments sync unavailable.");
+      if (!handle || !handle.create_comment_thread || !handle.get_comments_doc_heads_hex) {
+        return failCommentAction("Comments sync unavailable.");
       }
       setCommentsError(null);
       const projection = refreshCommentsProjection() ?? commentsProjection;
@@ -609,7 +609,7 @@ function AppContent() {
           afterThreadId,
           new Date().toISOString(),
         );
-        const observedCommentsHeads = handle.get_comments_doc_heads_hex?.() ?? [];
+        const observedCommentsHeads = handle.get_comments_doc_heads_hex();
         if (observedCommentsHeads.length === 0) {
           failCommentAction("Comment heads unavailable after create.");
         }
@@ -648,8 +648,8 @@ function AppContent() {
   const handleReplyCommentThread = useCallback(
     async (threadId: string, body: string) => {
       const handle = getHandle();
-      if (!handle?.reply_comment_thread) {
-        failCommentAction("Comments sync unavailable.");
+      if (!handle || !handle.reply_comment_thread || !handle.get_comments_doc_heads_hex) {
+        return failCommentAction("Comments sync unavailable.");
       }
       setCommentsError(null);
       const projection = refreshCommentsProjection() ?? commentsProjection;
@@ -664,7 +664,7 @@ function AppContent() {
           afterMessageId,
           new Date().toISOString(),
         );
-        const observedCommentsHeads = handle.get_comments_doc_heads_hex?.() ?? [];
+        const observedCommentsHeads = handle.get_comments_doc_heads_hex();
         if (observedCommentsHeads.length === 0) {
           failCommentAction("Comment heads unavailable after reply.");
         }
@@ -703,7 +703,7 @@ function AppContent() {
   const handleCommentThreadStatusChange = useCallback(
     async (threadId: string, action: "resolve" | "reopen") => {
       const handle = getHandle();
-      if (!handle?.get_comments_doc_heads_hex) {
+      if (!handle || !handle.get_comments_doc_heads_hex) {
         setCommentsError("Comments sync unavailable.");
         return;
       }
