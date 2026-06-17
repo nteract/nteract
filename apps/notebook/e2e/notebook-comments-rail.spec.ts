@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import {
   ensureCodeCell,
   ensureMarkdownCell,
@@ -85,6 +85,38 @@ function acceptedSourceThreadWithMessage(
   );
 }
 
+async function selectRenderedMarkdownText(cell: Locator, text: string) {
+  await cell.getByLabel("Markdown cell content").evaluate((root, selectedText) => {
+    function findTextNode(node: Node): Text | null {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent?.includes(selectedText)) {
+        return node as Text;
+      }
+      for (const child of node.childNodes) {
+        const found = findTextNode(child);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    const textNode = findTextNode(root);
+    if (!textNode || !textNode.textContent) {
+      throw new Error(`Could not find rendered markdown text: ${selectedText}`);
+    }
+    const start = textNode.textContent.indexOf(selectedText);
+    const range = document.createRange();
+    range.setStart(textNode, start);
+    range.setEnd(textNode, start + selectedText.length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    root.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+  }, text);
+}
+
+function commentMessage(panel: Locator, body: string): Locator {
+  return panel.locator("article").filter({ hasText: body });
+}
+
 test.describe("notebook comments rail", () => {
   let mcp: McpPeer | null = null;
 
@@ -108,7 +140,7 @@ test.describe("notebook comments rail", () => {
     await panel.getByLabel("New document comment").fill(body);
     await panel.getByRole("button", { name: "Add comment" }).click();
 
-    await expect(panel.getByText(body)).toBeVisible({ timeout: 30_000 });
+    await expect(commentMessage(panel, body)).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(async () => hasAcceptedComment(await mcp!.listComments(), body), {
         timeout: 120_000,
@@ -132,7 +164,7 @@ test.describe("notebook comments rail", () => {
     const replyBody = `Desktop reply ${crypto.randomUUID()}`;
     await panel.getByRole("textbox", { name: "Reply to Document comment 1" }).fill(replyBody);
     await panel.getByRole("button", { name: "Submit reply to Document comment 1" }).click();
-    await expect(panel.getByText(replyBody)).toBeVisible({ timeout: 30_000 });
+    await expect(commentMessage(panel, replyBody)).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(async () => hasAcceptedComment(await mcp!.listComments(), replyBody), {
         timeout: 120_000,
@@ -291,6 +323,73 @@ test.describe("notebook comments rail", () => {
     });
   });
 
+  test("creates rendered markdown prose comments in Desktop", async ({ page }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+
+    mcp = await McpPeer.start();
+    await mcp.connectNotebook(notebookId);
+
+    const markdownSource =
+      "## Review plan\n\nThis rendered prose should be commentable from preview.\n\n";
+    const renderedQuote = "rendered prose";
+    const markdownCell = await ensureMarkdownCell(page);
+    await setCellSource(markdownCell, markdownSource);
+    const markdownCellId = await markdownCell.getAttribute("data-cell-id");
+    if (!markdownCellId) throw new Error("Markdown cell id not found");
+
+    const renderButton = markdownCell.getByLabel("View rendered markdown");
+    if (await renderButton.isVisible()) {
+      await renderButton.click();
+    }
+    await expect(
+      markdownCell.locator('[data-slot="projected-markdown-output"]').getByText(renderedQuote),
+    ).toBeVisible({ timeout: 30_000 });
+
+    await selectRenderedMarkdownText(markdownCell, renderedQuote);
+    await page.getByRole("button", { name: "Comment on selected markdown" }).click();
+
+    const panel = page.getByTestId("notebook-comments-panel");
+    await expect(panel.getByTestId("comment-draft-target")).toContainText(renderedQuote);
+    await expect(panel.getByLabel("New source comment")).toBeFocused();
+
+    const body = `Rendered markdown comment ${crypto.randomUUID()}`;
+    await panel.getByLabel("New source comment").fill(body);
+    await panel.getByRole("button", { name: "Add comment" }).click();
+
+    await expect(commentMessage(panel, body)).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(() => mcp!.listComments({ cellId: markdownCellId }), {
+        timeout: 120_000,
+      })
+      .toMatchObject({
+        threads: expect.arrayContaining([
+          expect.objectContaining({
+            mutation_state: "accepted",
+            anchor: expect.objectContaining({
+              kind: "source_range",
+              cell_id: markdownCellId,
+              exact_quote: renderedQuote,
+            }),
+            messages: expect.arrayContaining([
+              expect.objectContaining({
+                body,
+                mutation_state: "accepted",
+              }),
+            ]),
+          }),
+        ]),
+      });
+
+    expect(
+      acceptedSourceThreadWithMessage(
+        await mcp.listComments({ cellId: markdownCellId }),
+        body,
+        renderedQuote,
+      ),
+    ).not.toBeNull();
+  });
+
   test("creates selected source comments in Desktop and exposes source anchors through MCP", async ({
     page,
   }) => {
@@ -319,7 +418,7 @@ test.describe("notebook comments rail", () => {
     await panel.getByLabel("New source comment").fill(body);
     await panel.getByRole("button", { name: "Add comment" }).click();
 
-    await expect(panel.getByText(body)).toBeVisible({ timeout: 30_000 });
+    await expect(commentMessage(panel, body)).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(() => mcp!.listComments({ cellId }), {
         timeout: 120_000,
@@ -364,7 +463,7 @@ test.describe("notebook comments rail", () => {
     await panel.getByLabel("New source comment").fill(markdownBody);
     await panel.getByRole("button", { name: "Add comment" }).click();
 
-    await expect(panel.getByText(markdownBody)).toBeVisible({ timeout: 30_000 });
+    await expect(commentMessage(panel, markdownBody)).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(() => mcp!.listComments({ cellId: markdownCellId }), {
         timeout: 120_000,
@@ -403,7 +502,7 @@ test.describe("notebook comments rail", () => {
     await panel.getByLabel("New source comment").fill(rawBody);
     await panel.getByRole("button", { name: "Add comment" }).click();
 
-    await expect(panel.getByText(rawBody)).toBeVisible({ timeout: 30_000 });
+    await expect(commentMessage(panel, rawBody)).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(() => mcp!.listComments({ cellId: rawCellId }), {
         timeout: 120_000,

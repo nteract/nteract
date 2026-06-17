@@ -32,8 +32,53 @@ export function sourceRangeAnchorFromSelection(
   const to = Math.max(selection.anchor, selection.head);
   if (from === to) return null;
 
-  const doc = view.state.doc;
-  const exactQuote = doc.sliceString(from, to);
+  return sourceRangeAnchorFromOffsets(
+    cellId,
+    view.state.doc.toString(),
+    from,
+    to,
+    contextChars,
+    maxExactQuoteBytes,
+  );
+}
+
+export function sourcePointFromStringOffset(source: string, offset: number): SourcePoint {
+  const normalizedOffset = Math.min(source.length, Math.max(0, offset));
+  let line = 0;
+  let lineStart = 0;
+  for (let index = 0; index < normalizedOffset; index += 1) {
+    if (source.charCodeAt(index) === 10) {
+      line += 1;
+      lineStart = index + 1;
+    }
+  }
+  return {
+    line,
+    column: normalizedOffset - lineStart,
+  };
+}
+
+export function sourceRangeAnchorFromOffsets(
+  cellId: string,
+  source: string,
+  fromOffset: number,
+  toOffset: number,
+  contextChars = DEFAULT_CONTEXT_CHARS,
+  maxExactQuoteBytes = MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES,
+): SourceRangeCommentAnchor | null {
+  const from = Math.min(fromOffset, toOffset);
+  const to = Math.max(fromOffset, toOffset);
+  if (
+    !Number.isInteger(from) ||
+    !Number.isInteger(to) ||
+    from < 0 ||
+    to > source.length ||
+    from === to
+  ) {
+    return null;
+  }
+
+  const exactQuote = source.slice(from, to);
   if (
     exactQuote.trim().length === 0 ||
     utf8Encoder.encode(exactQuote).length > maxExactQuoteBytes
@@ -41,8 +86,8 @@ export function sourceRangeAnchorFromSelection(
     return null;
   }
 
-  const start = sourcePointFromOffset(doc, from);
-  const end = sourcePointFromOffset(doc, to);
+  const start = sourcePointFromStringOffset(source, from);
+  const end = sourcePointFromStringOffset(source, to);
 
   return {
     kind: "source_range",
@@ -51,8 +96,8 @@ export function sourceRangeAnchorFromSelection(
     start_column: start.column,
     end_line: end.line,
     end_column: end.column,
-    prefix_quote: doc.sliceString(Math.max(0, from - contextChars), from),
+    prefix_quote: source.slice(Math.max(0, from - contextChars), from),
     exact_quote: exactQuote,
-    suffix_quote: doc.sliceString(to, Math.min(doc.length, to + contextChars)),
+    suffix_quote: source.slice(to, Math.min(source.length, to + contextChars)),
   };
 }

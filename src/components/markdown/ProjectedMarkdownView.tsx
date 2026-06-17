@@ -1,4 +1,4 @@
-import { Fragment, type CSSProperties, type ReactNode } from "react";
+import { type CSSProperties, type ReactNode } from "react";
 import katex from "katex";
 import type {
   MarkdownProjectionBlock,
@@ -669,15 +669,18 @@ function renderRuns(
   if (runs.length === 0) return null;
 
   return runs.map((run) => (
-    <Fragment key={run.inlineId}>
-      {activeInlineId === run.inlineId ? (
-        <span data-source-active-run="true" className={sourceActiveRunClass}>
-          {renderRun(run, onLinkClick)}
-        </span>
-      ) : (
-        renderRun(run, onLinkClick)
-      )}
-    </Fragment>
+    <span
+      key={run.inlineId}
+      data-markdown-source-run="true"
+      data-rendered-start={run.renderedTextUtf16[0]}
+      data-rendered-end={run.renderedTextUtf16[1]}
+      data-source-start={run.sourceSpanUtf16[0]}
+      data-source-end={run.sourceSpanUtf16[1]}
+      data-source-active-run={activeInlineId === run.inlineId ? "true" : undefined}
+      className={cn(activeInlineId === run.inlineId && sourceActiveRunClass)}
+    >
+      {renderRun(run, onLinkClick)}
+    </span>
   ));
 }
 

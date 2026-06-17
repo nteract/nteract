@@ -53,6 +53,7 @@ import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
 import { toggleMarkdownTaskMarker } from "../lib/markdown-task-source";
 import { presenceSenderExtension } from "../lib/presence-sender";
+import { sourceRangeAnchorFromRenderedMarkdownSelection } from "../lib/rendered-markdown-source-comment";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import type { SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
 import type { MarkdownCell as MarkdownCellType } from "../types";
@@ -239,6 +240,11 @@ export const MarkdownCell = memo(function MarkdownCell({
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
+  const [renderedSourceCommentTarget, setRenderedSourceCommentTarget] = useState<{
+    anchor: SourceRangeCommentAnchor;
+    left: number;
+    top: number;
+  } | null>(null);
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
   const [previewFrameReadyGeneration, setPreviewFrameReadyGeneration] = useState(0);
   const previewSource = draftPreviewSource ?? cell.source;
@@ -248,6 +254,10 @@ export const MarkdownCell = memo(function MarkdownCell({
       setDraftPreviewSource(null);
     }
   }, [cell.source, draftPreviewSource]);
+
+  useEffect(() => {
+    setRenderedSourceCommentTarget(null);
+  }, [editing, previewSource]);
 
   // Same resolution rule as the outline rail: a source-matching attached plan
   // wins, an edited source reprojects, never render a plan for source the
@@ -412,7 +422,76 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   const handlePreviewWrapperPointerDown = useCallback(() => {
     activatePreviewFrameInteraction();
+    setRenderedSourceCommentTarget(null);
   }, [activatePreviewFrameInteraction]);
+
+  const clearRenderedSourceCommentTarget = useCallback(() => {
+    setRenderedSourceCommentTarget(null);
+  }, []);
+
+  const updateRenderedSourceCommentTarget = useCallback(() => {
+    if (editing || readOnly || !onCreateSourceComment || !canRenderProjectionInHost) {
+      clearRenderedSourceCommentTarget();
+      return;
+    }
+
+    const root = viewRef.current;
+    if (!root || typeof window === "undefined") {
+      clearRenderedSourceCommentTarget();
+      return;
+    }
+
+    const selection = window.getSelection();
+    const anchor = sourceRangeAnchorFromRenderedMarkdownSelection(
+      cell.id,
+      previewSource,
+      root,
+      selection,
+    );
+    if (!anchor || !selection || selection.rangeCount === 0) {
+      clearRenderedSourceCommentTarget();
+      return;
+    }
+
+    const rangeRect = selection.getRangeAt(0).getBoundingClientRect();
+    const rootRect = root.getBoundingClientRect();
+    if (rangeRect.width === 0 && rangeRect.height === 0) {
+      clearRenderedSourceCommentTarget();
+      return;
+    }
+
+    setRenderedSourceCommentTarget({
+      anchor,
+      left: Math.min(
+        Math.max(0, rangeRect.right - rootRect.left + 6),
+        Math.max(0, rootRect.width - 84),
+      ),
+      top: Math.max(0, rangeRect.top - rootRect.top - 32),
+    });
+  }, [
+    canRenderProjectionInHost,
+    cell.id,
+    clearRenderedSourceCommentTarget,
+    editing,
+    onCreateSourceComment,
+    previewSource,
+    readOnly,
+  ]);
+
+  const handleRenderedSourceCommentClick = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const anchor = renderedSourceCommentTarget?.anchor;
+      if (!anchor || !onCreateSourceComment) return;
+      onCreateSourceComment(anchor);
+      if (typeof window !== "undefined") {
+        window.getSelection()?.removeAllRanges();
+      }
+      clearRenderedSourceCommentTarget();
+    },
+    [clearRenderedSourceCommentTarget, onCreateSourceComment, renderedSourceCommentTarget],
+  );
 
   const handlePreviewFrameMouseUp = useCallback(
     ({ hasSelection }: { hasSelection?: boolean }) => {
@@ -866,10 +945,12 @@ export const MarkdownCell = memo(function MarkdownCell({
             aria-readonly
             aria-label="Markdown cell content"
             tabIndex={0}
-            className={cn("py-2 cursor-text outline-none", editing && "hidden")}
+            className={cn("relative py-2 cursor-text outline-none", editing && "hidden")}
             onFocus={activatePreviewFrameInteraction}
             onDoubleClick={enterEditing}
             onPointerDown={handlePreviewWrapperPointerDown}
+            onMouseUp={updateRenderedSourceCommentTarget}
+            onKeyUp={updateRenderedSourceCommentTarget}
             onKeyDown={handleViewKeyDown}
           >
             {previewSource && canRenderProjectionInHost && markdownProjection ? (
@@ -912,6 +993,30 @@ export const MarkdownCell = memo(function MarkdownCell({
               </div>
             )}
             {!previewSource && <p className="text-muted-foreground italic">Double-click to edit</p>}
+            {renderedSourceCommentTarget ? (
+              <button
+                type="button"
+                aria-label="Comment on selected markdown"
+                title="Comment on selected markdown"
+                data-testid="markdown-source-comment-button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onClick={handleRenderedSourceCommentClick}
+                className="absolute z-20 rounded-md border bg-background px-2 py-1 text-[11px] font-medium leading-none text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                style={{
+                  left: renderedSourceCommentTarget.left,
+                  top: renderedSourceCommentTarget.top,
+                }}
+              >
+                Comment
+              </button>
+            ) : null}
           </div>
         </>
       }
