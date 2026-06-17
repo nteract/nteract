@@ -8,6 +8,8 @@ interface CommentMessage {
 }
 
 interface CommentThread {
+  id?: string;
+  status?: string;
   mutation_state?: string;
   messages?: CommentMessage[];
 }
@@ -17,14 +19,31 @@ interface CommentsListResult {
 }
 
 function hasAcceptedComment(result: unknown, body: string): boolean {
+  return Boolean(acceptedThreadWithMessage(result, body));
+}
+
+function acceptedThreadWithMessage(result: unknown, body: string): CommentThread | null {
   const threads = (result as CommentsListResult | null)?.threads ?? [];
-  return threads.some(
-    (thread) =>
-      thread.mutation_state === "accepted" &&
-      (thread.messages ?? []).some(
-        (message) => message.body === body && message.mutation_state === "accepted",
-      ),
+  return (
+    threads.find(
+      (thread) =>
+        thread.mutation_state === "accepted" &&
+        (thread.messages ?? []).some(
+          (message) => message.body === body && message.mutation_state === "accepted",
+        ),
+    ) ?? null
   );
+}
+
+function acceptedThreadStatus(result: unknown, threadId: string): string | null {
+  const threads = (result as CommentsListResult | null)?.threads ?? [];
+  const thread = threads.find(
+    (thread) =>
+      thread.id === threadId &&
+      thread.mutation_state === "accepted" &&
+      (thread.messages ?? []).some((message) => message.mutation_state === "accepted"),
+  );
+  return thread?.status ?? null;
 }
 
 test.describe("notebook comments rail", () => {
@@ -57,5 +76,60 @@ test.describe("notebook comments rail", () => {
         timeout: 120_000,
       })
       .toBe(true);
+
+    let threadId: string | null = null;
+    await expect
+      .poll(
+        async () => {
+          threadId = acceptedThreadWithMessage(await mcp!.listComments(), body)?.id ?? null;
+          return threadId;
+        },
+        {
+          timeout: 120_000,
+        },
+      )
+      .not.toBeNull();
+    if (!threadId) throw new Error("Accepted comment thread id not found");
+
+    const replyBody = `Desktop reply ${crypto.randomUUID()}`;
+    await panel.getByLabel(`Reply to ${threadId}`).fill(replyBody);
+    await panel.getByRole("button", { name: "Reply" }).click();
+    await expect(panel.getByText(replyBody)).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(async () => hasAcceptedComment(await mcp!.listComments(), replyBody), {
+        timeout: 120_000,
+      })
+      .toBe(true);
+
+    await expect(panel.getByRole("button", { name: "Resolve" })).toBeEnabled({
+      timeout: 30_000,
+    });
+    await panel.getByRole("button", { name: "Resolve" }).click();
+    await expect(panel.getByRole("button", { name: "Reopen" })).toBeVisible({
+      timeout: 120_000,
+    });
+    await expect
+      .poll(
+        async () =>
+          acceptedThreadStatus(await mcp!.listComments({ includeResolved: true }), threadId),
+        {
+          timeout: 120_000,
+        },
+      )
+      .toBe("resolved");
+
+    await panel.getByRole("button", { name: "Reopen" }).click();
+    await expect(panel.getByRole("button", { name: "Resolve" })).toBeVisible({
+      timeout: 120_000,
+    });
+    await expect
+      .poll(
+        async () =>
+          acceptedThreadStatus(await mcp!.listComments({ includeResolved: true }), threadId),
+        {
+          timeout: 120_000,
+        },
+      )
+      .toBe("open");
   });
 });

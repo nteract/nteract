@@ -102,6 +102,30 @@ describe("NotebookClient", () => {
     });
   });
 
+  it("emits comment thread resolve requests", async () => {
+    const { client, sendRequest } = stubClient();
+
+    await client.resolveCommentThread("thread-1", ["head-a"]);
+
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "resolve_comment_thread",
+      thread_id: "thread-1",
+      observed_comments_heads: ["head-a"],
+    });
+  });
+
+  it("emits comment thread reopen requests", async () => {
+    const { client, sendRequest } = stubClient();
+
+    await client.reopenCommentThread("thread-1", ["head-a", "head-b"]);
+
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "reopen_comment_thread",
+      thread_id: "thread-1",
+      observed_comments_heads: ["head-a", "head-b"],
+    });
+  });
+
   it("clones a notebook as an ephemeral room", async () => {
     const { client, sendRequest } = stubClient();
     sendRequest.mockResolvedValueOnce({

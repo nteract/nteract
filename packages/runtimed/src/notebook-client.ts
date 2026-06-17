@@ -264,6 +264,40 @@ export class NotebookClient {
     }
   }
 
+  /** Ask the daemon comments authority to resolve an accepted thread. */
+  async resolveCommentThread(
+    threadId: string,
+    observedCommentsHeads: string[],
+  ): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({
+        type: "resolve_comment_thread",
+        thread_id: threadId,
+        observed_comments_heads: observedCommentsHeads,
+      });
+    } catch (e) {
+      this.log.error("[notebook-client] Resolve comment thread failed:", e);
+      throw e;
+    }
+  }
+
+  /** Ask the daemon comments authority to reopen a resolved thread. */
+  async reopenCommentThread(
+    threadId: string,
+    observedCommentsHeads: string[],
+  ): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({
+        type: "reopen_comment_thread",
+        thread_id: threadId,
+        observed_comments_heads: observedCommentsHeads,
+      });
+    } catch (e) {
+      this.log.error("[notebook-client] Reopen comment thread failed:", e);
+      throw e;
+    }
+  }
+
   /** Run all code cells (daemon reads from synced doc). */
   async runAllCells(options: RunAllCellsOptions = {}): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Running all cells");

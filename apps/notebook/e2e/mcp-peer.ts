@@ -101,6 +101,14 @@ export class McpPeer {
     return await this.callToolJson("reply_comment_thread", { thread_id: threadId, body });
   }
 
+  async resolveCommentThread(threadId: string): Promise<unknown> {
+    return await this.callToolJson("resolve_comment_thread", { thread_id: threadId });
+  }
+
+  async reopenCommentThread(threadId: string): Promise<unknown> {
+    return await this.callToolJson("reopen_comment_thread", { thread_id: threadId });
+  }
+
   async setCell(cellId: string, source: string, andRun = false): Promise<unknown> {
     return await this.callToolJson("set_cell", {
       cell_id: cellId,

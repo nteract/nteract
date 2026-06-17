@@ -698,6 +698,50 @@ function AppContent() {
     ],
   );
 
+  const handleCommentThreadStatusChange = useCallback(
+    async (threadId: string, action: "resolve" | "reopen") => {
+      const handle = getHandle();
+      if (!handle?.get_comments_doc_heads_hex) {
+        setCommentsError("Comments sync unavailable.");
+        return;
+      }
+      setCommentsError(null);
+      refreshCommentsProjection();
+      const observedCommentsHeads = handle.get_comments_doc_heads_hex();
+      if (observedCommentsHeads.length === 0) {
+        setCommentsError("Comment heads unavailable for status update.");
+        return;
+      }
+      try {
+        const response =
+          action === "resolve"
+            ? await notebookClient.resolveCommentThread(threadId, observedCommentsHeads)
+            : await notebookClient.reopenCommentThread(threadId, observedCommentsHeads);
+        const authorityError = commentAuthorityError(response, `${action} comment thread`);
+        if (authorityError) {
+          setCommentsError(authorityError);
+          return;
+        }
+        triggerSync();
+      } catch (error) {
+        setCommentsError(
+          error instanceof Error ? error.message : `${action} comment thread failed.`,
+        );
+      }
+    },
+    [getHandle, notebookClient, refreshCommentsProjection, triggerSync],
+  );
+
+  const handleResolveCommentThread = useCallback(
+    (threadId: string) => handleCommentThreadStatusChange(threadId, "resolve"),
+    [handleCommentThreadStatusChange],
+  );
+
+  const handleReopenCommentThread = useCallback(
+    (threadId: string) => handleCommentThreadStatusChange(threadId, "reopen"),
+    [handleCommentThreadStatusChange],
+  );
+
   // Connection/identity slot source: daemon lifecycle, stable for the
   // app's lifetime (the dot must transition on daemon restarts).
   const desktopConnectionStatus = useMemo(
@@ -1630,6 +1674,8 @@ function AppContent() {
                   errorMessage={commentsError}
                   onCreateThread={canMutateComments ? handleCreateDocumentComment : undefined}
                   onReplyThread={canMutateComments ? handleReplyCommentThread : undefined}
+                  onResolveThread={canMutateComments ? handleResolveCommentThread : undefined}
+                  onReopenThread={canMutateComments ? handleReopenCommentThread : undefined}
                 />
               }
               packagesPanel={

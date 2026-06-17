@@ -87,7 +87,14 @@ describe("NotebookCommentsPanel", () => {
 
   it("renders threads and submits replies", async () => {
     const onReplyThread = vi.fn();
-    render(<NotebookCommentsPanel projection={projection} onReplyThread={onReplyThread} />);
+    const onResolveThread = vi.fn();
+    render(
+      <NotebookCommentsPanel
+        projection={projection}
+        onReplyThread={onReplyThread}
+        onResolveThread={onResolveThread}
+      />,
+    );
 
     expect(screen.getByText("Check the framing before publishing.")).toBeVisible();
     expect(screen.getByText("alice")).toBeVisible();
@@ -101,5 +108,42 @@ describe("NotebookCommentsPanel", () => {
     await waitFor(() =>
       expect(onReplyThread).toHaveBeenCalledWith("thread-1", "Looks ready locally"),
     );
+
+    fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
+    expect(onResolveThread).toHaveBeenCalledWith("thread-1");
+  });
+
+  it("reopens resolved threads", () => {
+    const onReopenThread = vi.fn();
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [{ ...projection.threads[0], status: "resolved" }],
+        }}
+        onReopenThread={onReopenThread}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reopen" }));
+    expect(onReopenThread).toHaveBeenCalledWith("thread-1");
+  });
+
+  it("does not allow status actions for pending threads", () => {
+    const onResolveThread = vi.fn();
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [{ ...projection.threads[0], mutation_state: "pending" }],
+        }}
+        onResolveThread={onResolveThread}
+      />,
+    );
+
+    const resolve = screen.getByRole("button", { name: "Resolve" });
+    expect(resolve).toBeDisabled();
+    fireEvent.click(resolve);
+    expect(onResolveThread).not.toHaveBeenCalled();
   });
 });

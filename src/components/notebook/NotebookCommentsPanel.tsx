@@ -1,4 +1,4 @@
-import { MessageSquare, Plus, Send } from "lucide-react";
+import { CheckCircle2, MessageSquare, Plus, RotateCcw, Send } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import type { CommentMessageSnapshot, CommentThreadSnapshot, CommentsProjection } from "runtimed";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,8 @@ export interface NotebookCommentsPanelProps {
   errorMessage?: string | null;
   onCreateThread?: (body: string) => void | Promise<void>;
   onReplyThread?: (threadId: string, body: string) => void | Promise<void>;
+  onResolveThread?: (threadId: string) => void | Promise<void>;
+  onReopenThread?: (threadId: string) => void | Promise<void>;
 }
 
 export function NotebookCommentsPanel({
@@ -19,10 +21,13 @@ export function NotebookCommentsPanel({
   errorMessage = null,
   onCreateThread,
   onReplyThread,
+  onResolveThread,
+  onReopenThread,
 }: NotebookCommentsPanelProps) {
   const threads = (projection?.threads ?? []).filter((thread) => thread.anchor.kind === "notebook");
   const canCreate = !readOnly && Boolean(onCreateThread);
   const canReply = !readOnly && Boolean(onReplyThread);
+  const canUpdateStatus = !readOnly && (Boolean(onResolveThread) || Boolean(onReopenThread));
 
   return (
     <section className="flex min-h-0 flex-col gap-3" data-testid="notebook-comments-panel">
@@ -58,7 +63,10 @@ export function NotebookCommentsPanel({
               key={thread.id}
               thread={thread}
               canReply={canReply}
+              canUpdateStatus={canUpdateStatus}
               onReplyThread={onReplyThread}
+              onResolveThread={onResolveThread}
+              onReopenThread={onReopenThread}
             />
           ))}
         </ol>
@@ -70,12 +78,45 @@ export function NotebookCommentsPanel({
 function CommentThreadItem({
   thread,
   canReply,
+  canUpdateStatus,
   onReplyThread,
+  onResolveThread,
+  onReopenThread,
 }: {
   thread: CommentThreadSnapshot;
   canReply: boolean;
+  canUpdateStatus: boolean;
   onReplyThread?: (threadId: string, body: string) => void | Promise<void>;
+  onResolveThread?: (threadId: string) => void | Promise<void>;
+  onReopenThread?: (threadId: string) => void | Promise<void>;
 }) {
+  const [statusSubmitting, setStatusSubmitting] = useState(false);
+  const statusActionEnabled = canUpdateStatus && thread.mutation_state === "accepted";
+  const statusAction =
+    thread.status === "resolved"
+      ? {
+          label: "Reopen",
+          icon: RotateCcw,
+          onClick: () => onReopenThread?.(thread.id),
+          disabled: !statusActionEnabled || !onReopenThread,
+        }
+      : {
+          label: "Resolve",
+          icon: CheckCircle2,
+          onClick: () => onResolveThread?.(thread.id),
+          disabled: !statusActionEnabled || !onResolveThread,
+        };
+  const StatusIcon = statusAction.icon;
+  const handleStatusAction = async () => {
+    if (statusAction.disabled) return;
+    setStatusSubmitting(true);
+    try {
+      await statusAction.onClick();
+    } finally {
+      setStatusSubmitting(false);
+    }
+  };
+
   return (
     <li className="rounded-md border bg-card text-card-foreground shadow-sm">
       <div className="space-y-3 p-3">
@@ -90,6 +131,18 @@ function CommentThreadItem({
           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
             {thread.messages.length}
           </span>
+        </div>
+
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleStatusAction}
+            disabled={statusAction.disabled || statusSubmitting}
+            className="inline-flex min-h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <StatusIcon className="size-3.5" aria-hidden="true" />
+            {statusAction.label}
+          </button>
         </div>
 
         <div className="space-y-2">
