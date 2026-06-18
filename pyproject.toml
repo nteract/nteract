@@ -3,20 +3,10 @@ name = "nteract-workspace"
 version = "0.0.0"
 description = "Development workspace for nteract Python packages"
 requires-python = ">=3.10,<3.14"
-dependencies = [
-    "nteract",
-    "gremlin ; sys_platform == 'darwin'",
-    "dx",
-    "nteract-kernel-launcher",
-    "pr-reviewer ; sys_platform == 'darwin'",
-    "safari-timeline",
-    "pandas",
-    "polars",
-    "pyarrow>=14",
-    "numpy>=2.2.6",
-    "narwhals>=1.0",
-    "anywidget>=0.9.21",
-]
+# Keep the root package installable without resolving workspace-only packages
+# from PyPI. `uv sync` uses the `dev` dependency group below for the local
+# workspace environment.
+dependencies = []
 
 [build-system]
 requires = ["setuptools"]
@@ -67,15 +57,24 @@ known-first-party = ["runtimed", "nteract", "prewarm", "pr_reviewer", "safari_ti
 
 [dependency-groups]
 dev = [
+    "nteract",
+    "gremlin ; sys_platform == 'darwin'",
+    "dx",
+    "nteract-kernel-launcher",
+    "pr-reviewer ; sys_platform == 'darwin'",
+    "safari-timeline",
+    "pandas",
+    "polars>=1.39.3",
+    "pyarrow>=14",
+    "numpy>=2.2.6",
+    "narwhals>=1.0",
+    "anywidget>=0.9.21",
     "ruff==0.15.10",
     "ty>=0.0.22",
     "pytest>=8.0",
     "pyzmq>=26.0",
-    "numpy>=1.26",
     "matplotlib>=3.8",
-    "anywidget>=0.9.21",
     "quak>=0.3.4",
-    "polars>=1.39.3",
     "plotly>=6.0",
     "nbformat>=5.0",
     "datasets>=2.0",
