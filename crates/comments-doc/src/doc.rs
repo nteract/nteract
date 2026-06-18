@@ -16,7 +16,7 @@ use loro_fractional_index::FractionalIndex;
 use crate::error::CommentsDocError;
 use crate::types::{
     CommentAnchor, CommentCreated, CommentMessageSnapshot, CommentReplied, CommentThreadSnapshot,
-    CommentsProjection, NotebookCommentRef, ProjectedMutationState, ProjectedThreadStatus,
+    CommentsProjection, NotebookCommentRef, ProjectedThreadStatus,
 };
 
 #[cfg(test)]
@@ -223,7 +223,6 @@ impl CommentsDoc {
         self.doc
             .put(&thread, "thread_order_scope", anchor.thread_order_scope())?;
         self.doc.put(&thread, "status", "open")?;
-        self.doc.put(&thread, "mutation_state", "pending")?;
         self.doc.put(&thread, "created_at", created_at)?;
         let anchor_value = serde_json::to_value(anchor)?;
         automunge::put_json_at_key_batched(&mut self.doc, &thread, "anchor", &anchor_value)?;
@@ -262,144 +261,20 @@ impl CommentsDoc {
         })
     }
 
-    pub fn accept_thread_creation(
-        &mut self,
-        thread_id: &str,
-        actor_label: &str,
-        authority: &str,
-    ) -> Result<(), CommentsDocError> {
-        let thread = self.thread_or_error(thread_id)?;
-        let anchor = self
-            .read_anchor(&thread)
-            .ok_or_else(|| CommentsDocError::ThreadNotFound(thread_id.to_string()))?;
-        let anchor_json = serde_json::to_string(&anchor)?;
-        let position = read_str(&self.doc, &thread, "position")
-            .unwrap_or_else(|| DEFAULT_POSITION.to_string());
-        let created_at = read_str(&self.doc, &thread, "created_at").unwrap_or_default();
-        self.doc
-            .put(&thread, "authority_mutation_state", "accepted")?;
-        self.doc.put(&thread, "authority_status", "open")?;
-        self.doc
-            .put(&thread, "authority_anchor_json", anchor_json.as_str())?;
-        self.doc
-            .put(&thread, "authority_position", position.as_str())?;
-        self.doc
-            .put(&thread, "authority_created_at", created_at.as_str())?;
-        self.doc
-            .put(&thread, "authority_created_by_actor_label", actor_label)?;
-        self.doc
-            .put(&thread, "authority_created_by_authority", authority)?;
-        Ok(())
-    }
-
-    pub fn reject_thread_creation(
-        &mut self,
-        thread_id: &str,
-        reason: &str,
-    ) -> Result<(), CommentsDocError> {
-        let thread = self.thread_or_error(thread_id)?;
-        if let Some(anchor) = self.read_anchor(&thread) {
-            let anchor_json = serde_json::to_string(&anchor)?;
-            self.doc
-                .put(&thread, "authority_anchor_json", anchor_json.as_str())?;
-        }
-        let position = read_str(&self.doc, &thread, "position")
-            .unwrap_or_else(|| DEFAULT_POSITION.to_string());
-        let created_at = read_str(&self.doc, &thread, "created_at").unwrap_or_default();
-        self.doc
-            .put(&thread, "authority_mutation_state", "rejected")?;
-        self.doc.put(&thread, "authority_status", "open")?;
-        self.doc
-            .put(&thread, "authority_position", position.as_str())?;
-        self.doc
-            .put(&thread, "authority_created_at", created_at.as_str())?;
-        self.doc
-            .put(&thread, "authority_rejection_reason", reason)?;
-        Ok(())
-    }
-
-    pub fn accept_message(
-        &mut self,
-        thread_id: &str,
-        message_id: &str,
-        actor_label: &str,
-        authority: &str,
-    ) -> Result<(), CommentsDocError> {
-        let message = self.message_or_error(thread_id, message_id)?;
-        let body = read_text_at_key(&self.doc, &message, "body").unwrap_or_default();
-        let position = read_str(&self.doc, &message, "position")
-            .unwrap_or_else(|| DEFAULT_POSITION.to_string());
-        let created_at = read_str(&self.doc, &message, "created_at").unwrap_or_default();
-        self.doc
-            .put(&message, "authority_mutation_state", "accepted")?;
-        self.doc.put(&message, "authority_body", body.as_str())?;
-        self.doc
-            .put(&message, "authority_position", position.as_str())?;
-        self.doc
-            .put(&message, "authority_created_at", created_at.as_str())?;
-        self.doc
-            .put(&message, "authority_created_by_actor_label", actor_label)?;
-        self.doc
-            .put(&message, "authority_created_by_authority", authority)?;
-        Ok(())
-    }
-
-    pub fn reject_message(
-        &mut self,
-        thread_id: &str,
-        message_id: &str,
-        reason: &str,
-    ) -> Result<(), CommentsDocError> {
-        let message = self.message_or_error(thread_id, message_id)?;
-        let body = read_text_at_key(&self.doc, &message, "body").unwrap_or_default();
-        let position = read_str(&self.doc, &message, "position")
-            .unwrap_or_else(|| DEFAULT_POSITION.to_string());
-        let created_at = read_str(&self.doc, &message, "created_at").unwrap_or_default();
-        self.doc
-            .put(&message, "authority_mutation_state", "rejected")?;
-        self.doc.put(&message, "authority_body", body.as_str())?;
-        self.doc
-            .put(&message, "authority_position", position.as_str())?;
-        self.doc
-            .put(&message, "authority_created_at", created_at.as_str())?;
-        self.doc
-            .put(&message, "authority_rejection_reason", reason)?;
-        Ok(())
-    }
-
     pub fn resolve_thread(
         &mut self,
         thread_id: &str,
-        actor_label: &str,
-        authority: &str,
         resolved_at: &str,
     ) -> Result<(), CommentsDocError> {
         let thread = self.thread_or_error(thread_id)?;
-        self.doc.put(&thread, "authority_status", "resolved")?;
-        self.doc
-            .put(&thread, "authority_resolved_at", resolved_at)?;
-        self.doc
-            .put(&thread, "authority_resolved_by_actor_label", actor_label)?;
-        self.doc
-            .put(&thread, "authority_resolved_by_authority", authority)?;
+        self.doc.put(&thread, "status", "resolved")?;
+        self.doc.put(&thread, "resolved_at", resolved_at)?;
         Ok(())
     }
 
-    pub fn reopen_thread(
-        &mut self,
-        thread_id: &str,
-        actor_label: &str,
-        authority: &str,
-        reopened_at: &str,
-    ) -> Result<(), CommentsDocError> {
+    pub fn reopen_thread(&mut self, thread_id: &str) -> Result<(), CommentsDocError> {
         let thread = self.thread_or_error(thread_id)?;
-        self.doc.put(&thread, "authority_status", "open")?;
-        self.doc
-            .put(&thread, "authority_reopened_at", reopened_at)?;
-        self.doc
-            .put(&thread, "authority_reopened_by_actor_label", actor_label)?;
-        self.doc
-            .put(&thread, "authority_reopened_by_authority", authority)?;
+        self.doc.put(&thread, "status", "open")?;
         Ok(())
     }
 
@@ -422,14 +297,12 @@ impl CommentsDoc {
 
     pub fn read_projection(
         &self,
-        authority_actor_labels: &[&str],
         current_cell_order: Option<&[String]>,
     ) -> Result<CommentsProjection, CommentsDocError> {
         self.ensure_raw_comments_doc_id_matches()?;
         let comments_doc_id = self
             .comments_doc_id()
             .ok_or(CommentsDocError::MissingCommentsDocId)?;
-        let authority_actors = authority_actor_set(authority_actor_labels);
         let Some(threads_obj) = self.get_map("threads") else {
             return Ok(CommentsProjection {
                 comments_doc_id,
@@ -447,179 +320,42 @@ impl CommentsDoc {
             else {
                 continue;
             };
-            let mut mutation_state = self.projected_mutation_state(&thread_obj, &authority_actors);
-            let projected_from_authority = matches!(
-                mutation_state,
-                ProjectedMutationState::Accepted | ProjectedMutationState::Rejected
-            );
-            let Some(raw_anchor) = self.read_anchor(&thread_obj) else {
+            let Some(anchor) = self.read_anchor(&thread_obj) else {
                 continue;
             };
-            let anchor = if projected_from_authority {
-                match self.projected_thread_anchor(&thread_obj, &authority_actors) {
-                    Some(anchor) => anchor,
-                    None => {
-                        mutation_state = ProjectedMutationState::Unverified;
-                        raw_anchor
-                    }
-                }
-            } else {
-                raw_anchor
-            };
-            let mut status = self.projected_thread_status(&thread_obj, &authority_actors);
-            if projected_from_authority && status == ProjectedThreadStatus::Unverified {
-                mutation_state = ProjectedMutationState::Unverified;
-            }
-            if status == ProjectedThreadStatus::Resolved
-                && self.has_visible_key(&thread_obj, "authority_resolved_at")
-                && !has_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_resolved_at",
-                    &authority_actors,
-                )
-            {
-                status = ProjectedThreadStatus::Unverified;
-                mutation_state = ProjectedMutationState::Unverified;
-            }
-            if projected_from_authority
-                && mutation_state != ProjectedMutationState::Unverified
-                && (!has_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_position",
-                    &authority_actors,
-                ) || !has_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_created_at",
-                    &authority_actors,
-                ))
-            {
-                mutation_state = ProjectedMutationState::Unverified;
-            }
-            if mutation_state == ProjectedMutationState::Accepted
-                && (!has_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_created_by_actor_label",
-                    &authority_actors,
-                ) || !has_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_created_by_authority",
-                    &authority_actors,
-                ))
-            {
-                mutation_state = ProjectedMutationState::Unverified;
-            }
-            if mutation_state == ProjectedMutationState::Rejected
-                && !has_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_rejection_reason",
-                    &authority_actors,
-                )
-            {
-                mutation_state = ProjectedMutationState::Unverified;
-            }
-            let accepted = mutation_state == ProjectedMutationState::Accepted;
-            let rejected = mutation_state == ProjectedMutationState::Rejected;
-            let position = if accepted || rejected {
-                read_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_position",
-                    &authority_actors,
-                )
-            } else {
-                read_str(&self.doc, &thread_obj, "position")
-            }
-            .unwrap_or_else(|| DEFAULT_POSITION.to_string());
-            let created_at = if accepted || rejected {
-                read_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_created_at",
-                    &authority_actors,
-                )
-            } else {
-                read_str(&self.doc, &thread_obj, "created_at")
-            }
-            .unwrap_or_default();
+            let status =
+                if read_str(&self.doc, &thread_obj, "status").as_deref() == Some("resolved") {
+                    ProjectedThreadStatus::Resolved
+                } else {
+                    ProjectedThreadStatus::Open
+                };
+            let position = read_str(&self.doc, &thread_obj, "position")
+                .unwrap_or_else(|| DEFAULT_POSITION.to_string());
+            let created_at = read_str(&self.doc, &thread_obj, "created_at").unwrap_or_default();
+            let created_by_actor_label = actor_label_of(&thread_obj);
             let resolved_at = if status == ProjectedThreadStatus::Resolved {
-                read_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_resolved_at",
-                    &authority_actors,
-                )
+                read_str(&self.doc, &thread_obj, "resolved_at")
             } else {
                 None
             };
             let resolved_by_actor_label = if status == ProjectedThreadStatus::Resolved {
-                read_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_resolved_by_actor_label",
-                    &authority_actors,
-                )
+                field_writer_label(&self.doc, &thread_obj, "status")
             } else {
                 None
             };
-            let resolved_by_authority = if status == ProjectedThreadStatus::Resolved {
-                read_trusted_str(
-                    &self.doc,
-                    &thread_obj,
-                    "authority_resolved_by_authority",
-                    &authority_actors,
-                )
-            } else {
-                None
-            };
+            let messages = self.read_messages(&thread_id, &thread_obj);
+            let badge_cell_ids = anchor.badge_cell_ids(current_cell_order);
             threads.push(CommentThreadSnapshot {
                 id: thread_id.clone(),
-                anchor: anchor.clone(),
+                anchor,
                 position,
                 status,
-                mutation_state,
-                trusted: accepted && status != ProjectedThreadStatus::Unverified,
-                messages: self.read_messages(&thread_id, &thread_obj, &authority_actors),
-                badge_cell_ids: anchor.badge_cell_ids(current_cell_order),
+                messages,
+                badge_cell_ids,
                 created_at,
-                created_by_actor_label: if accepted || rejected {
-                    read_trusted_str(
-                        &self.doc,
-                        &thread_obj,
-                        "authority_created_by_actor_label",
-                        &authority_actors,
-                    )
-                } else {
-                    None
-                },
-                created_by_authority: if accepted || rejected {
-                    read_trusted_str(
-                        &self.doc,
-                        &thread_obj,
-                        "authority_created_by_authority",
-                        &authority_actors,
-                    )
-                } else {
-                    None
-                },
-                rejection_reason: if rejected {
-                    read_trusted_str(
-                        &self.doc,
-                        &thread_obj,
-                        "authority_rejection_reason",
-                        &authority_actors,
-                    )
-                } else {
-                    None
-                },
+                created_by_actor_label,
                 resolved_at,
                 resolved_by_actor_label,
-                resolved_by_authority,
             });
         }
 
@@ -639,11 +375,10 @@ impl CommentsDoc {
     pub fn get_comments_for_cell(
         &self,
         cell_id: &str,
-        authority_actor_labels: &[&str],
         current_cell_order: Option<&[String]>,
     ) -> Result<Vec<CommentThreadSnapshot>, CommentsDocError> {
         Ok(self
-            .read_projection(authority_actor_labels, current_cell_order)?
+            .read_projection(current_cell_order)?
             .threads
             .into_iter()
             .filter(|thread| thread.badge_cell_ids.iter().any(|id| id == cell_id))
@@ -766,7 +501,6 @@ impl CommentsDoc {
         let message = self.doc.put_object(messages, message_id, ObjType::Map)?;
         self.doc.put(&message, "id", message_id)?;
         self.doc.put(&message, "position", position.as_str())?;
-        self.doc.put(&message, "mutation_state", "pending")?;
         self.doc.put(&message, "created_at", created_at)?;
         let body_obj = self.doc.put_object(&message, "body", ObjType::Text)?;
         if !body.is_empty() {
@@ -775,12 +509,7 @@ impl CommentsDoc {
         Ok(())
     }
 
-    fn read_messages(
-        &self,
-        thread_id: &str,
-        thread_obj: &ObjId,
-        authority_actors: &HashSet<ActorId>,
-    ) -> Vec<CommentMessageSnapshot> {
+    fn read_messages(&self, thread_id: &str, thread_obj: &ObjId) -> Vec<CommentMessageSnapshot> {
         let Some(messages_obj) = self.messages_obj(thread_obj) else {
             return Vec::new();
         };
@@ -794,122 +523,16 @@ impl CommentsDoc {
             else {
                 continue;
             };
-            let mut mutation_state = self.projected_mutation_state(&message_obj, authority_actors);
-            let projected_from_authority = matches!(
-                mutation_state,
-                ProjectedMutationState::Accepted | ProjectedMutationState::Rejected
-            );
-            if projected_from_authority
-                && (!has_trusted_str(&self.doc, &message_obj, "authority_body", authority_actors)
-                    || !has_trusted_str(
-                        &self.doc,
-                        &message_obj,
-                        "authority_position",
-                        authority_actors,
-                    )
-                    || !has_trusted_str(
-                        &self.doc,
-                        &message_obj,
-                        "authority_created_at",
-                        authority_actors,
-                    ))
-            {
-                mutation_state = ProjectedMutationState::Unverified;
-            }
-            if mutation_state == ProjectedMutationState::Accepted
-                && (!has_trusted_str(
-                    &self.doc,
-                    &message_obj,
-                    "authority_created_by_actor_label",
-                    authority_actors,
-                ) || !has_trusted_str(
-                    &self.doc,
-                    &message_obj,
-                    "authority_created_by_authority",
-                    authority_actors,
-                ))
-            {
-                mutation_state = ProjectedMutationState::Unverified;
-            }
-            if mutation_state == ProjectedMutationState::Rejected
-                && !has_trusted_str(
-                    &self.doc,
-                    &message_obj,
-                    "authority_rejection_reason",
-                    authority_actors,
-                )
-            {
-                mutation_state = ProjectedMutationState::Unverified;
-            }
-            let accepted = mutation_state == ProjectedMutationState::Accepted;
-            let rejected = mutation_state == ProjectedMutationState::Rejected;
-            let position = if accepted || rejected {
-                read_trusted_str(
-                    &self.doc,
-                    &message_obj,
-                    "authority_position",
-                    authority_actors,
-                )
-            } else {
-                read_str(&self.doc, &message_obj, "position")
-            }
-            .unwrap_or_else(|| DEFAULT_POSITION.to_string());
-            let body = if accepted || rejected {
-                read_trusted_str(&self.doc, &message_obj, "authority_body", authority_actors)
-                    .unwrap_or_default()
-            } else {
-                read_text_at_key(&self.doc, &message_obj, "body").unwrap_or_default()
-            };
-            let accepted = mutation_state == ProjectedMutationState::Accepted;
-            let rejected = mutation_state == ProjectedMutationState::Rejected;
-            let created_at = if accepted || rejected {
-                read_trusted_str(
-                    &self.doc,
-                    &message_obj,
-                    "authority_created_at",
-                    authority_actors,
-                )
-            } else {
-                read_str(&self.doc, &message_obj, "created_at")
-            }
-            .unwrap_or_default();
+            let position = read_str(&self.doc, &message_obj, "position")
+                .unwrap_or_else(|| DEFAULT_POSITION.to_string());
+            let body = read_text_at_key(&self.doc, &message_obj, "body").unwrap_or_default();
+            let created_at = read_str(&self.doc, &message_obj, "created_at").unwrap_or_default();
             messages.push(CommentMessageSnapshot {
                 id: message_id.clone(),
                 position,
                 body,
-                mutation_state,
-                trusted: accepted,
                 created_at,
-                created_by_actor_label: if accepted || rejected {
-                    read_trusted_str(
-                        &self.doc,
-                        &message_obj,
-                        "authority_created_by_actor_label",
-                        authority_actors,
-                    )
-                } else {
-                    None
-                },
-                created_by_authority: if accepted || rejected {
-                    read_trusted_str(
-                        &self.doc,
-                        &message_obj,
-                        "authority_created_by_authority",
-                        authority_actors,
-                    )
-                } else {
-                    None
-                },
-                rejection_reason: if rejected {
-                    read_trusted_str(
-                        &self.doc,
-                        &message_obj,
-                        "authority_rejection_reason",
-                        authority_actors,
-                    )
-                } else {
-                    None
-                },
+                created_by_actor_label: actor_label_of(&message_obj),
             });
         }
         messages.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
@@ -921,63 +544,9 @@ impl CommentsDoc {
         messages
     }
 
-    fn projected_mutation_state(
-        &self,
-        obj: &ObjId,
-        authority_actors: &HashSet<ActorId>,
-    ) -> ProjectedMutationState {
-        match read_trusted_str(&self.doc, obj, "authority_mutation_state", authority_actors)
-            .as_deref()
-        {
-            Some("accepted") => ProjectedMutationState::Accepted,
-            Some("rejected") => ProjectedMutationState::Rejected,
-            Some(_) => ProjectedMutationState::Unverified,
-            None if self.has_visible_key(obj, "authority_mutation_state") => {
-                ProjectedMutationState::Unverified
-            }
-            None => ProjectedMutationState::Pending,
-        }
-    }
-
-    fn projected_thread_status(
-        &self,
-        thread_obj: &ObjId,
-        authority_actors: &HashSet<ActorId>,
-    ) -> ProjectedThreadStatus {
-        match read_trusted_str(&self.doc, thread_obj, "authority_status", authority_actors)
-            .as_deref()
-        {
-            Some("open") => ProjectedThreadStatus::Open,
-            Some("resolved") => ProjectedThreadStatus::Resolved,
-            Some(_) => ProjectedThreadStatus::Unverified,
-            None if self.has_visible_key(thread_obj, "authority_status") => {
-                ProjectedThreadStatus::Unverified
-            }
-            None => ProjectedThreadStatus::Open,
-        }
-    }
-
     fn read_anchor(&self, thread_obj: &ObjId) -> Option<CommentAnchor> {
         let value = automunge::read_json_value(&self.doc, thread_obj, "anchor")?;
         serde_json::from_value(value).ok()
-    }
-
-    fn projected_thread_anchor(
-        &self,
-        thread_obj: &ObjId,
-        authority_actors: &HashSet<ActorId>,
-    ) -> Option<CommentAnchor> {
-        read_trusted_str(
-            &self.doc,
-            thread_obj,
-            "authority_anchor_json",
-            authority_actors,
-        )
-        .and_then(|value| serde_json::from_str(&value).ok())
-    }
-
-    fn has_visible_key(&self, obj: &ObjId, key: &str) -> bool {
-        self.doc.get(obj, key).ok().flatten().is_some()
     }
 
     fn get_map(&self, key: &str) -> Option<ObjId> {
@@ -1195,33 +764,20 @@ fn scalar_string(value: &Value<'_>) -> Option<String> {
     }
 }
 
-fn read_trusted_str(
-    doc: &AutoCommit,
-    obj: &ObjId,
-    key: &str,
-    authority_actors: &HashSet<ActorId>,
-) -> Option<String> {
-    doc.get(obj, key).ok().flatten().and_then(|(value, op_id)| {
-        if !obj_id_authored_by_authority(&op_id, authority_actors) {
-            return None;
-        }
-        match value {
-            Value::Scalar(s) => match s.as_ref() {
-                ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    })
+/// Principal label of the actor that created an object, recovered from its
+/// Automerge object id. Returns None for the root or for a creator whose actor
+/// bytes are not a UTF-8 label.
+fn actor_label_of(obj: &ObjId) -> Option<String> {
+    match obj {
+        ObjId::Id(_, actor, _) => String::from_utf8(actor.to_bytes().to_vec()).ok(),
+        _ => None,
+    }
 }
 
-fn has_trusted_str(
-    doc: &AutoCommit,
-    obj: &ObjId,
-    key: &str,
-    authority_actors: &HashSet<ActorId>,
-) -> bool {
-    read_trusted_str(doc, obj, key, authority_actors).is_some()
+/// Principal label of the actor that wrote the current winning value of a field.
+fn field_writer_label(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
+    let (_value, op_id) = doc.get(obj, key).ok().flatten()?;
+    actor_label_of(&op_id)
 }
 
 fn parse_fractional_position(position: &str) -> Result<FractionalIndex, CommentsDocError> {
@@ -1248,20 +804,6 @@ fn read_text_obj(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
-fn authority_actor_set(authority_actor_labels: &[&str]) -> HashSet<ActorId> {
-    authority_actor_labels
-        .iter()
-        .map(|label| ActorId::from(label.as_bytes()))
-        .collect()
-}
-
-fn obj_id_authored_by_authority(obj_id: &ObjId, authority_actors: &HashSet<ActorId>) -> bool {
-    match obj_id {
-        ObjId::Id(_, actor, _) => authority_actors.contains(actor),
-        _ => false,
-    }
-}
-
 struct CommentsSyncRecoveryContext<'a> {
     doc: &'a mut CommentsDoc,
     peer_state: &'a mut sync::State,
@@ -1273,7 +815,6 @@ mod tests {
 
     const DOC_ID: &str = "comments:test-notebook";
     const CLIENT: &str = "client:user";
-    const AUTHORITY: &str = "comments-authority:local";
 
     fn notebook_ref() -> NotebookCommentRef {
         NotebookCommentRef::LocalRoom {
@@ -1348,7 +889,7 @@ mod tests {
             .unwrap();
 
         let err = doc
-            .read_projection(&[AUTHORITY], None)
+            .read_projection(None)
             .expect_err("non-string identity conflict should reject projection");
         assert!(matches!(err, CommentsDocError::CommentsDocIdConflict));
     }
@@ -1364,15 +905,15 @@ mod tests {
         let seed = CommentsDoc::from_doc_unchecked(seed);
         assert_eq!(seed.comments_doc_id().as_deref(), Some(""));
         assert!(seed
-            .read_projection(&[AUTHORITY], None)
+            .read_projection(None)
             .expect_err("seed without id must not project")
             .to_string()
             .contains("comments_doc_id is required"));
     }
 
     #[test]
-    fn pending_thread_projects_before_authority_acceptance() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+    fn thread_and_message_project_created_actor_labels() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), "client:alice");
         doc.create_thread(
             "thread-1",
             "msg-1",
@@ -1383,24 +924,28 @@ mod tests {
         )
         .unwrap();
 
-        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
+        let projection = doc.read_projection(None).unwrap();
         assert_eq!(projection.comments_doc_id, DOC_ID);
         assert_eq!(projection.threads.len(), 1);
         let thread = &projection.threads[0];
-        assert_eq!(thread.mutation_state, ProjectedMutationState::Pending);
         assert_eq!(thread.status, ProjectedThreadStatus::Open);
-        assert!(!thread.trusted);
+        assert_eq!(
+            thread.created_by_actor_label.as_deref(),
+            Some("client:alice")
+        );
+        assert_eq!(thread.created_at, "2026-06-16T00:00:00Z");
+        assert_eq!(thread.badge_cell_ids, vec!["cell-a"]);
         assert_eq!(thread.messages[0].body, "needs a citation");
         assert_eq!(
-            thread.messages[0].mutation_state,
-            ProjectedMutationState::Pending
+            thread.messages[0].created_by_actor_label.as_deref(),
+            Some("client:alice")
         );
-        assert_eq!(thread.badge_cell_ids, vec!["cell-a"]);
+        assert_eq!(thread.messages[0].created_at, "2026-06-16T00:00:00Z");
     }
 
     #[test]
-    fn authority_written_policy_fields_finalize_thread_and_message() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+    fn resolve_and_reopen_project_status_and_resolver_actor() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), "client:alice");
         doc.create_thread(
             "thread-1",
             "msg-1",
@@ -1410,353 +955,26 @@ mod tests {
             "2026-06-16T00:00:00Z",
         )
         .unwrap();
-        doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
-        doc.accept_thread_creation("thread-1", "local-user", "local_uid")
-            .unwrap();
-        doc.accept_message("thread-1", "msg-1", "local-user", "local_uid")
+
+        doc.doc_mut()
+            .set_actor(ActorId::from("client:bob".as_bytes()));
+        doc.resolve_thread("thread-1", "2026-06-16T00:00:02Z")
             .unwrap();
 
-        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
+        let projection = doc.read_projection(None).unwrap();
         let thread = &projection.threads[0];
-        assert_eq!(thread.mutation_state, ProjectedMutationState::Accepted);
-        assert!(thread.trusted);
-        assert_eq!(thread.created_by_actor_label.as_deref(), Some("local-user"));
-        assert_eq!(thread.created_by_authority.as_deref(), Some("local_uid"));
+        assert_eq!(thread.status, ProjectedThreadStatus::Resolved);
+        assert_eq!(thread.resolved_at.as_deref(), Some("2026-06-16T00:00:02Z"));
         assert_eq!(
-            thread.messages[0].mutation_state,
-            ProjectedMutationState::Accepted
+            thread.resolved_by_actor_label.as_deref(),
+            Some("client:bob")
         );
-        assert!(thread.messages[0].trusted);
-    }
 
-    #[test]
-    fn accepted_projection_uses_authority_snapshots_not_later_client_edits() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
-        doc.create_thread(
-            "thread-1",
-            "msg-1",
-            &cell_anchor("cell-a"),
-            "approved body",
-            None,
-            "2026-06-16T00:00:00Z",
-        )
-        .unwrap();
-        doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
-        doc.accept_thread_creation("thread-1", "local-user", "local_uid")
-            .unwrap();
-        doc.accept_message("thread-1", "msg-1", "local-user", "local_uid")
-            .unwrap();
-
-        doc.doc_mut().set_actor(ActorId::from(CLIENT.as_bytes()));
-        let thread = doc.thread_obj("thread-1").unwrap();
-        let moved_anchor = serde_json::to_value(cell_anchor("cell-b")).unwrap();
-        automunge::update_json_at_key(doc.doc_mut(), &thread, "anchor", &moved_anchor).unwrap();
-        doc.doc_mut().put(&thread, "position", "ff").unwrap();
-        doc.edit_message_body("thread-1", "msg-1", "tampered body")
-            .unwrap();
-
-        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
-        let thread = &projection.threads[0];
-        assert_eq!(thread.anchor, cell_anchor("cell-a"));
-        assert_eq!(thread.position, DEFAULT_POSITION);
-        assert_eq!(thread.badge_cell_ids, vec!["cell-a"]);
-        assert_eq!(thread.messages[0].body, "approved body");
-        assert!(thread.trusted);
-        assert!(thread.messages[0].trusted);
-    }
-
-    #[test]
-    fn client_authored_authority_anchor_conflict_keeps_thread_unverified() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
-        doc.create_thread(
-            "thread-1",
-            "msg-1",
-            &cell_anchor("cell-a"),
-            "approved body",
-            None,
-            "2026-06-16T00:00:00Z",
-        )
-        .unwrap();
-        doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
-        doc.accept_thread_creation("thread-1", "local-user", "local_uid")
-            .unwrap();
-
-        doc.doc_mut().set_actor(ActorId::from(CLIENT.as_bytes()));
-        let thread = doc.thread_obj("thread-1").unwrap();
-        doc.doc_mut()
-            .put(&thread, "authority_anchor_json", "not json")
-            .unwrap();
-
-        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
-        assert_eq!(projection.threads.len(), 1);
-        assert_eq!(
-            projection.threads[0].mutation_state,
-            ProjectedMutationState::Unverified
-        );
-        assert!(!projection.threads[0].trusted);
-        assert_eq!(projection.threads[0].anchor, cell_anchor("cell-a"));
-    }
-
-    #[test]
-    fn client_authored_authority_snapshot_conflicts_unverify_thread_and_message() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
-        doc.create_thread(
-            "thread-1",
-            "msg-1",
-            &cell_anchor("cell-a"),
-            "approved body",
-            None,
-            "2026-06-16T00:00:00Z",
-        )
-        .unwrap();
-        doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
-        doc.accept_thread_creation("thread-1", "local-user", "local_uid")
-            .unwrap();
-        doc.accept_message("thread-1", "msg-1", "local-user", "local_uid")
-            .unwrap();
-
-        doc.doc_mut().set_actor(ActorId::from(CLIENT.as_bytes()));
-        let thread = doc.thread_obj("thread-1").unwrap();
-        let message = doc.message_or_error("thread-1", "msg-1").unwrap();
-        doc.doc_mut()
-            .put(&thread, "authority_position", "ff")
-            .unwrap();
-        doc.doc_mut()
-            .put(&message, "authority_body", "forged")
-            .unwrap();
-
-        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
-        let thread = &projection.threads[0];
-        assert_eq!(thread.mutation_state, ProjectedMutationState::Unverified);
-        assert!(!thread.trusted);
-        assert_eq!(
-            thread.messages[0].mutation_state,
-            ProjectedMutationState::Unverified
-        );
-        assert!(!thread.messages[0].trusted);
-        assert_eq!(thread.messages[0].body, "approved body");
-    }
-
-    #[test]
-    fn client_authored_policy_fields_are_ignored() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
-        doc.create_thread(
-            "thread-1",
-            "msg-1",
-            &cell_anchor("cell-a"),
-            "spoofed",
-            None,
-            "2026-06-16T00:00:00Z",
-        )
-        .unwrap();
-        let thread = doc.thread_obj("thread-1").unwrap();
-        doc.doc_mut()
-            .put(&thread, "mutation_state", "accepted")
-            .unwrap();
-        doc.doc_mut().put(&thread, "status", "resolved").unwrap();
-        doc.doc_mut()
-            .put(&thread, "created_by_actor_label", "victim")
-            .unwrap();
-
-        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
-        let thread = &projection.threads[0];
-        assert_eq!(thread.mutation_state, ProjectedMutationState::Pending);
+        doc.reopen_thread("thread-1").unwrap();
+        let thread = &doc.read_projection(None).unwrap().threads[0];
         assert_eq!(thread.status, ProjectedThreadStatus::Open);
-        assert!(!thread.trusted);
-        assert_eq!(thread.created_by_actor_label, None);
-    }
-
-    #[test]
-    fn client_conflicting_policy_field_de_trusts_projection() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
-        doc.create_thread(
-            "thread-1",
-            "msg-1",
-            &cell_anchor("cell-a"),
-            "spoofed",
-            None,
-            "2026-06-16T00:00:00Z",
-        )
-        .unwrap();
-        doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
-        doc.accept_thread_creation("thread-1", "local-user", "local_uid")
-            .unwrap();
-        assert_eq!(
-            doc.read_projection(&[AUTHORITY], None).unwrap().threads[0].mutation_state,
-            ProjectedMutationState::Accepted
-        );
-
-        let thread = doc.thread_obj("thread-1").unwrap();
-        doc.doc_mut().set_actor(ActorId::from(CLIENT.as_bytes()));
-        doc.doc_mut()
-            .put(&thread, "authority_mutation_state", "rejected")
-            .unwrap();
-
-        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
-        assert_eq!(
-            projection.threads[0].mutation_state,
-            ProjectedMutationState::Unverified
-        );
-        assert!(!projection.threads[0].trusted);
-    }
-
-    #[test]
-    fn authority_resolve_and_reopen_drive_projected_status() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
-        doc.create_thread(
-            "thread-1",
-            "msg-1",
-            &cell_anchor("cell-a"),
-            "needs a citation",
-            None,
-            "2026-06-16T00:00:00Z",
-        )
-        .unwrap();
-        doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
-        doc.accept_thread_creation("thread-1", "local-user", "local_uid")
-            .unwrap();
-        doc.resolve_thread(
-            "thread-1",
-            "local-user",
-            "local_uid",
-            "2026-06-16T00:00:02Z",
-        )
-        .unwrap();
-        assert_eq!(
-            doc.read_projection(&[AUTHORITY], None).unwrap().threads[0].status,
-            ProjectedThreadStatus::Resolved
-        );
-        assert_eq!(
-            doc.read_projection(&[AUTHORITY], None).unwrap().threads[0]
-                .resolved_at
-                .as_deref(),
-            Some("2026-06-16T00:00:02Z")
-        );
-
-        doc.reopen_thread(
-            "thread-1",
-            "local-user",
-            "local_uid",
-            "2026-06-16T00:00:03Z",
-        )
-        .unwrap();
-        assert_eq!(
-            doc.read_projection(&[AUTHORITY], None).unwrap().threads[0].status,
-            ProjectedThreadStatus::Open
-        );
-        assert_eq!(
-            doc.read_projection(&[AUTHORITY], None).unwrap().threads[0].resolved_at,
-            None
-        );
-    }
-
-    #[test]
-    fn rejected_thread_and_message_project_authority_reasons() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
-        doc.create_thread(
-            "thread-1",
-            "msg-1",
-            &cell_anchor("cell-a"),
-            "not relevant",
-            None,
-            "2026-06-16T00:00:00Z",
-        )
-        .unwrap();
-        doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
-        doc.reject_thread_creation("thread-1", "off-topic").unwrap();
-        doc.reject_message("thread-1", "msg-1", "duplicates prior note")
-            .unwrap();
-
-        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
-        let thread = &projection.threads[0];
-        assert_eq!(thread.mutation_state, ProjectedMutationState::Rejected);
-        assert_eq!(thread.rejection_reason.as_deref(), Some("off-topic"));
-        assert_eq!(
-            thread.messages[0].mutation_state,
-            ProjectedMutationState::Rejected
-        );
-        assert_eq!(
-            thread.messages[0].rejection_reason.as_deref(),
-            Some("duplicates prior note")
-        );
-        assert!(!thread.trusted);
-        assert!(!thread.messages[0].trusted);
-    }
-
-    #[test]
-    fn raw_client_reopen_does_not_override_authority_resolve() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
-        doc.create_thread(
-            "thread-1",
-            "msg-1",
-            &cell_anchor("cell-a"),
-            "needs a citation",
-            None,
-            "2026-06-16T00:00:00Z",
-        )
-        .unwrap();
-        doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
-        doc.accept_thread_creation("thread-1", "local-user", "local_uid")
-            .unwrap();
-        doc.resolve_thread(
-            "thread-1",
-            "local-user",
-            "local_uid",
-            "2026-06-16T00:00:02Z",
-        )
-        .unwrap();
-
-        doc.doc_mut().set_actor(ActorId::from(CLIENT.as_bytes()));
-        let thread = doc.thread_obj("thread-1").unwrap();
-        doc.doc_mut().put(&thread, "status", "open").unwrap();
-
-        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
-        assert_eq!(
-            projection.threads[0].status,
-            ProjectedThreadStatus::Resolved
-        );
-        assert_eq!(
-            projection.threads[0].resolved_at.as_deref(),
-            Some("2026-06-16T00:00:02Z")
-        );
-    }
-
-    #[test]
-    fn client_authored_resolved_metadata_conflict_unverifies_status() {
-        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
-        doc.create_thread(
-            "thread-1",
-            "msg-1",
-            &cell_anchor("cell-a"),
-            "needs a citation",
-            None,
-            "2026-06-16T00:00:00Z",
-        )
-        .unwrap();
-        doc.doc_mut().set_actor(ActorId::from(AUTHORITY.as_bytes()));
-        doc.accept_thread_creation("thread-1", "local-user", "local_uid")
-            .unwrap();
-        doc.resolve_thread(
-            "thread-1",
-            "local-user",
-            "local_uid",
-            "2026-06-16T00:00:02Z",
-        )
-        .unwrap();
-
-        doc.doc_mut().set_actor(ActorId::from(CLIENT.as_bytes()));
-        let thread = doc.thread_obj("thread-1").unwrap();
-        doc.doc_mut()
-            .put(&thread, "authority_resolved_at", "client-forged")
-            .unwrap();
-
-        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
-        assert_eq!(
-            projection.threads[0].status,
-            ProjectedThreadStatus::Unverified
-        );
-        assert!(!projection.threads[0].trusted);
-        assert_eq!(projection.threads[0].resolved_at, None);
+        assert_eq!(thread.resolved_at, None);
+        assert_eq!(thread.resolved_by_actor_label, None);
     }
 
     #[test]
@@ -1776,7 +994,7 @@ mod tests {
         doc.edit_message_body("thread-1", "msg-1", "new body")
             .unwrap();
         assert_eq!(
-            doc.read_projection(&[AUTHORITY], None).unwrap().threads[0].messages[0].body,
+            doc.read_projection(None).unwrap().threads[0].messages[0].body,
             "new body"
         );
     }
@@ -1810,7 +1028,7 @@ mod tests {
         )
         .unwrap();
 
-        let messages: Vec<String> = doc.read_projection(&[AUTHORITY], None).unwrap().threads[0]
+        let messages: Vec<String> = doc.read_projection(None).unwrap().threads[0]
             .messages
             .iter()
             .map(|message| message.id.clone())
@@ -1935,12 +1153,12 @@ mod tests {
         .unwrap();
         sync_pair(&mut a, &mut b);
 
-        let a_messages: Vec<String> = a.read_projection(&[AUTHORITY], None).unwrap().threads[0]
+        let a_messages: Vec<String> = a.read_projection(None).unwrap().threads[0]
             .messages
             .iter()
             .map(|message| message.id.clone())
             .collect();
-        let b_messages: Vec<String> = b.read_projection(&[AUTHORITY], None).unwrap().threads[0]
+        let b_messages: Vec<String> = b.read_projection(None).unwrap().threads[0]
             .messages
             .iter()
             .map(|message| message.id.clone())
@@ -1985,14 +1203,14 @@ mod tests {
         sync_pair(&mut a, &mut b);
 
         let a_threads: Vec<String> = a
-            .read_projection(&[AUTHORITY], None)
+            .read_projection(None)
             .unwrap()
             .threads
             .iter()
             .map(|thread| thread.id.clone())
             .collect();
         let b_threads: Vec<String> = b
-            .read_projection(&[AUTHORITY], None)
+            .read_projection(None)
             .unwrap()
             .threads
             .iter()
@@ -2034,22 +1252,15 @@ mod tests {
             "2026-06-16T00:00:00Z",
         )
         .unwrap();
-        let comments = doc
-            .get_comments_for_cell("cell-a", &[AUTHORITY], None)
-            .unwrap();
+        let comments = doc.get_comments_for_cell("cell-a", None).unwrap();
         assert_eq!(comments.len(), 1);
-        assert_eq!(
-            doc.get_comments_for_cell("cell-b", &[AUTHORITY], None)
-                .unwrap()
-                .len(),
-            0
-        );
+        assert_eq!(doc.get_comments_for_cell("cell-b", None).unwrap().len(), 0);
     }
 
     #[test]
-    fn sync_round_trip_preserves_pending_and_authority_finalized_state() {
-        let mut client = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
-        let mut daemon = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), AUTHORITY);
+    fn sync_round_trip_preserves_thread_message_attribution_and_status() {
+        let mut client = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), "client:alice");
+        let mut peer = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), "client:bob");
         client
             .create_thread(
                 "thread-1",
@@ -2061,29 +1272,27 @@ mod tests {
             )
             .unwrap();
 
-        sync_pair(&mut client, &mut daemon);
-        assert_eq!(
-            daemon.read_projection(&[AUTHORITY], None).unwrap().threads[0].mutation_state,
-            ProjectedMutationState::Pending
-        );
-
-        daemon
-            .accept_thread_creation("thread-1", "local-user", "local_uid")
-            .unwrap();
-        daemon
-            .accept_message("thread-1", "msg-1", "local-user", "local_uid")
+        sync_pair(&mut client, &mut peer);
+        peer.resolve_thread("thread-1", "2026-06-16T00:00:02Z")
             .unwrap();
 
-        sync_pair(&mut daemon, &mut client);
-        let projection = client.read_projection(&[AUTHORITY], None).unwrap();
+        sync_pair(&mut peer, &mut client);
+        let projection = client.read_projection(None).unwrap();
+        let thread = &projection.threads[0];
+        assert_eq!(thread.status, ProjectedThreadStatus::Resolved);
         assert_eq!(
-            projection.threads[0].mutation_state,
-            ProjectedMutationState::Accepted
+            thread.created_by_actor_label.as_deref(),
+            Some("client:alice")
         );
-        assert!(projection.threads[0].trusted);
+        assert_eq!(thread.messages[0].body, "needs a citation");
         assert_eq!(
-            projection.threads[0].messages[0].mutation_state,
-            ProjectedMutationState::Accepted
+            thread.messages[0].created_by_actor_label.as_deref(),
+            Some("client:alice")
+        );
+        assert_eq!(thread.resolved_at.as_deref(), Some("2026-06-16T00:00:02Z"));
+        assert_eq!(
+            thread.resolved_by_actor_label.as_deref(),
+            Some("client:bob")
         );
     }
 
@@ -2124,11 +1333,7 @@ mod tests {
         assert!(matches!(err, CommentsDocError::CommentsDocIdConflict));
         assert_eq!(receiver.comments_doc_id().as_deref(), Some(DOC_ID));
         assert_eq!(receiver.raw_comments_doc_id().as_deref(), Some(DOC_ID));
-        assert!(receiver
-            .read_projection(&[AUTHORITY], None)
-            .unwrap()
-            .threads
-            .is_empty());
+        assert!(receiver.read_projection(None).unwrap().threads.is_empty());
     }
 
     #[test]
@@ -2143,7 +1348,7 @@ mod tests {
         sync_pair_without_projection_check(&mut other, &mut doc);
 
         let err = doc
-            .read_projection(&[AUTHORITY], None)
+            .read_projection(None)
             .expect_err("conflicting id should reject projection");
         assert!(matches!(
             err,

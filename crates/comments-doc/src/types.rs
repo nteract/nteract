@@ -105,16 +105,13 @@ pub struct CommentMessageSnapshot {
     pub id: String,
     pub position: String,
     pub body: String,
-    pub mutation_state: ProjectedMutationState,
-    pub trusted: bool,
     #[serde(default)]
     pub created_at: String,
+    /// Author principal, read from the Automerge change that created the
+    /// message object. Trust comes from the sync ingress binding a connection
+    /// to its actor id before admitting its changes, not from a stored field.
     #[serde(default)]
     pub created_by_actor_label: Option<String>,
-    #[serde(default)]
-    pub created_by_authority: Option<String>,
-    #[serde(default)]
-    pub rejection_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,24 +120,19 @@ pub struct CommentThreadSnapshot {
     pub anchor: CommentAnchor,
     pub position: String,
     pub status: ProjectedThreadStatus,
-    pub mutation_state: ProjectedMutationState,
-    pub trusted: bool,
     pub messages: Vec<CommentMessageSnapshot>,
     pub badge_cell_ids: Vec<String>,
     #[serde(default)]
     pub created_at: String,
+    /// Author principal, read from the change that created the thread object.
     #[serde(default)]
     pub created_by_actor_label: Option<String>,
     #[serde(default)]
-    pub created_by_authority: Option<String>,
-    #[serde(default)]
-    pub rejection_reason: Option<String>,
-    #[serde(default)]
     pub resolved_at: Option<String>,
+    /// Principal that last wrote the resolved status, read from that field's
+    /// change author.
     #[serde(default)]
     pub resolved_by_actor_label: Option<String>,
-    #[serde(default)]
-    pub resolved_by_authority: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,19 +143,9 @@ pub struct CommentsProjection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProjectedMutationState {
-    Pending,
-    Accepted,
-    Rejected,
-    Unverified,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ProjectedThreadStatus {
     Open,
     Resolved,
-    Unverified,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
