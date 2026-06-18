@@ -1,6 +1,6 @@
 //! Embedded renderer plugin assets for MCP App output rendering.
 //!
-//! Heavy visualization renderers (plotly, vega, leaflet, markdown, sift) ship
+//! Heavy visualization renderers (plotly, vega, leaflet, markdown, bokeh, sift) ship
 //! inside the daemon binary via `include_bytes!`. The blob server serves raw
 //! JS/CSS assets at `GET /renderer-plugins/{name}` for the shared isolated
 //! renderer. It also keeps `GET /plugins/{name}` for legacy MCP App plugin
@@ -53,6 +53,7 @@ pub const EMBEDDED_PLUGINS: &[EmbeddedPlugin] = &[
     plugin!("vega.js"),
     plugin!("leaflet.js"),
     plugin!("leaflet.css"),
+    plugin!("bokeh.js"),
     plugin!("sift.js"),
     plugin!("sift.css"),
     EmbeddedPlugin {
