@@ -9,3 +9,4 @@ new durable decisions.
 | Plan | Status | Notes |
 |------|--------|-------|
 | [Notebook Surface Library Refactor Checklist](notebook-surface-library-refactor-checklist.md) | Active checklist | Living checklist for shared notebook libraries across Desktop, Cloud, and Elements. |
+| [Comments Rollout](comments-rollout.md) | Active | Slices for wiring notebook comments end to end (sync, MCP, UI) on top of the merged comments-doc core. |
