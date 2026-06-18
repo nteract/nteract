@@ -29,7 +29,7 @@ const COMMENTS_DOC_SCHEMA_VERSION: u64 = 1;
 const COMMENTS_DOC_GENESIS_V1_BYTES: &[u8] = include_bytes!("../assets/comments_doc_genesis_v1.am");
 const DEFAULT_POSITION: &str = "80";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommentsDoc {
     doc: AutoCommit,
     comments_doc_id: String,

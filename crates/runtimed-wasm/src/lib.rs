@@ -12,6 +12,7 @@ use automerge::patches::PatchAction;
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::Prop;
+use comments_doc::{CommentsDoc, NotebookCommentRef};
 use notebook_doc::diff::{
     diff_doc, extract_change_actor_hashes, extract_change_actors, CellChangeset, ChangeActor,
     TextPatch,
@@ -343,7 +344,7 @@ pub enum FrameEvent {
 /// The Worker owns WebSocket I/O; the WASM room host owns document state and
 /// per-peer Automerge sync state. Each event tells the Worker which peer should
 /// receive which typed-frame payload.
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct RoomHostOutboundFrame {
     pub peer_id: String,
     pub frame_type: u8,
@@ -351,7 +352,7 @@ pub struct RoomHostOutboundFrame {
 }
 
 /// Result returned after the room host processes one peer frame.
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct RoomHostFrameResult {
     pub changed: bool,
     pub notebook_changed: bool,
@@ -625,7 +626,7 @@ impl RuntimeStatePeerHandle {
     }
 }
 
-/// Durable-Object room host for NotebookDoc + RuntimeStateDoc + CommsDoc sync.
+/// Durable-Object room host for NotebookDoc + RuntimeStateDoc + CommsDoc + CommentsDoc sync.
 ///
 /// Unlike [`NotebookHandle`], this is not a frontend/client handle. It owns the
 /// authoritative document pair for one room and keeps a separate Automerge
@@ -637,24 +638,30 @@ pub struct RoomHostHandle {
     doc: NotebookDoc,
     state_doc: RuntimeStateDoc,
     comms_doc: CommsDoc,
+    comments_doc: CommentsDoc,
     notebook_peer_states: HashMap<String, sync::State>,
     runtime_peer_states: HashMap<String, sync::State>,
     comms_peer_states: HashMap<String, sync::State>,
+    comments_peer_states: HashMap<String, sync::State>,
 }
 
 #[wasm_bindgen]
 impl RoomHostHandle {
     /// Create an empty room host from the canonical schema seeds.
     pub fn create_empty(notebook_id: &str, actor_label: &str) -> Result<RoomHostHandle, JsError> {
+        let (comments_doc_id, comments_ref) = hosted_comments_identity(notebook_id);
         Ok(RoomHostHandle {
             doc: NotebookDoc::new_with_actor(notebook_id, actor_label),
             state_doc: RuntimeStateDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create runtime state doc failed: {e}")))?,
             comms_doc: CommsDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create comms doc failed: {e}")))?,
+            comments_doc: CommentsDoc::try_new_empty(&comments_doc_id, &comments_ref)
+                .map_err(|e| JsError::new(&format!("create comments doc failed: {e}")))?,
             notebook_peer_states: HashMap::new(),
             runtime_peer_states: HashMap::new(),
             comms_peer_states: HashMap::new(),
+            comments_peer_states: HashMap::new(),
         })
     }
 
@@ -685,14 +692,21 @@ impl RoomHostHandle {
         .map_err(|e| JsError::new(&format!("load notebook snapshot failed: {e}")))?;
         let runtime_doc = automerge::AutoCommit::load(runtime_state_bytes)
             .map_err(|e| JsError::new(&format!("load runtime snapshot failed: {e}")))?;
+        let notebook_id = doc
+            .notebook_id()
+            .ok_or_else(|| JsError::new("load room host snapshot missing notebook_id"))?;
+        let (comments_doc_id, comments_ref) = hosted_comments_identity(&notebook_id);
         Ok(RoomHostHandle {
             doc,
             state_doc: RuntimeStateDoc::from_doc(runtime_doc),
             comms_doc: CommsDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create comms doc failed: {e}")))?,
+            comments_doc: CommentsDoc::try_new_empty(&comments_doc_id, &comments_ref)
+                .map_err(|e| JsError::new(&format!("create comments doc failed: {e}")))?,
             notebook_peer_states: HashMap::new(),
             runtime_peer_states: HashMap::new(),
             comms_peer_states: HashMap::new(),
+            comments_peer_states: HashMap::new(),
         })
     }
 
@@ -701,6 +715,7 @@ impl RoomHostHandle {
         self.notebook_peer_states.remove(peer_id);
         self.runtime_peer_states.remove(peer_id);
         self.comms_peer_states.remove(peer_id);
+        self.comments_peer_states.remove(peer_id);
     }
 
     /// Reconcile the authoritative RuntimeStateDoc after the room's
@@ -784,6 +799,7 @@ impl RoomHostHandle {
             connection_scope.allows_notebook_write(),
             allows_runtime_state_doc_write(connection_scope),
             allows_comms_doc_write(connection_scope),
+            allows_comments_doc_write(connection_scope),
             &mut result.outbound,
         )?;
         serialize_to_js(&result).map_err(|e| JsError::new(&format!("serialize room result: {e}")))
@@ -813,6 +829,7 @@ impl RoomHostHandle {
         let can_write_notebook = connection_scope.allows_notebook_write();
         let can_submit_execution_requests = allows_execution_request_submit(connection_scope);
         let can_write_comms = allows_comms_doc_write(connection_scope);
+        let can_write_comments = allows_comments_doc_write(connection_scope);
         let frame_type = frame_bytes[0];
         let payload = &frame_bytes[1..];
         let result = match frame_type {
@@ -828,6 +845,9 @@ impl RoomHostHandle {
             }
             frame_types::COMMS_DOC_SYNC => {
                 self.receive_comms_doc_sync(peer_id, principal, can_write_comms, payload)?
+            }
+            frame_types::COMMENTS_DOC_SYNC => {
+                self.receive_comments_doc_sync(peer_id, principal, can_write_comments, payload)?
             }
             frame_types::REQUEST => self.receive_request(
                 peer_id,
@@ -856,6 +876,11 @@ impl RoomHostHandle {
         self.comms_doc.doc_mut().save()
     }
 
+    /// Export the current CommentsDoc bytes for room checkpointing.
+    pub fn save_comments_doc(&mut self) -> Vec<u8> {
+        self.comments_doc.save()
+    }
+
     /// Replace the current CommsDoc from checkpointed bytes.
     pub fn load_comms_doc(&mut self, comms_bytes: &[u8]) -> Result<(), JsError> {
         let comms_doc = automerge::AutoCommit::load(comms_bytes)
@@ -863,6 +888,12 @@ impl RoomHostHandle {
         self.comms_doc = CommsDoc::from_doc(comms_doc);
         self.comms_peer_states.clear();
         Ok(())
+    }
+
+    /// Replace the current CommentsDoc from checkpointed bytes.
+    pub fn load_comments_doc(&mut self, comments_bytes: &[u8]) -> Result<(), JsError> {
+        self.load_comments_doc_inner(comments_bytes)
+            .map_err(|error| JsError::new(&error))
     }
 
     /// Current NotebookDoc heads as hex strings.
@@ -887,9 +918,36 @@ impl RoomHostHandle {
             .map(|head| hex::encode(head.as_ref()))
             .collect()
     }
+
+    /// Current CommentsDoc heads as hex strings.
+    pub fn get_comments_doc_heads_hex(&mut self) -> Vec<String> {
+        self.comments_doc
+            .get_heads()
+            .into_iter()
+            .map(|head| hex::encode(head.as_ref()))
+            .collect()
+    }
 }
 
 impl RoomHostHandle {
+    fn expected_comments_doc_id_string(&self) -> Result<String, String> {
+        self.doc
+            .notebook_id()
+            .map(|notebook_id| hosted_comments_doc_id(&notebook_id))
+            .ok_or_else(|| "room host notebook is missing notebook_id".to_string())
+    }
+
+    fn load_comments_doc_inner(&mut self, comments_bytes: &[u8]) -> Result<(), String> {
+        let expected_comments_doc_id = self.expected_comments_doc_id_string()?;
+        let actor = notebook_doc::actor_label_from_id(self.comments_doc.doc().get_actor());
+        let comments_doc =
+            CommentsDoc::load_with_actor(comments_bytes, &expected_comments_doc_id, &actor)
+                .map_err(|e| format!("load comments snapshot failed: {e}"))?;
+        self.comments_doc = comments_doc;
+        self.comments_peer_states.clear();
+        Ok(())
+    }
+
     fn receive_notebook_sync(
         &mut self,
         peer_id: &str,
@@ -1087,6 +1145,81 @@ impl RoomHostHandle {
         self.queue_comms_doc_sync_for_peer(peer_id, can_write, &mut result.outbound)?;
         if changed {
             self.queue_comms_doc_sync_for_other_peers(peer_id, &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+
+    fn receive_comments_doc_sync(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        can_write: bool,
+        payload: &[u8],
+    ) -> Result<RoomHostFrameResult, JsError> {
+        self.receive_comments_doc_sync_inner(peer_id, principal, can_write, payload)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    fn receive_comments_doc_sync_inner(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        can_write: bool,
+        payload: &[u8],
+    ) -> Result<RoomHostFrameResult, String> {
+        let message =
+            sync::Message::decode(payload).map_err(|e| format!("decode comments doc sync: {e}"))?;
+        let has_changes = !message.changes.is_empty();
+        if has_changes && !can_write {
+            return Err("connection scope cannot write CommentsDoc changes".to_string());
+        }
+        if has_changes {
+            let heads_before = self.comments_doc.get_heads();
+            let peer_state = self
+                .comments_peer_states
+                .entry(peer_id.to_string())
+                .or_insert_with(|| room_peer_sync_state(can_write));
+            let mut preview = self.comments_doc.clone();
+            let mut preview_peer_state = peer_state.clone();
+            preview
+                .receive_sync_message_with_changes_recovering(
+                    &mut preview_peer_state,
+                    message.clone(),
+                    "cloud-room-comments-auth-preview",
+                )
+                .map_err(|e| format!("comments auth preview failed: {e}"))?;
+            let actors = extract_change_actors(preview.doc_mut(), &heads_before);
+            validate_room_actor_labels_inner(principal, actors.iter().map(String::as_str))?;
+        }
+
+        let heads_before = self.comments_doc.get_heads();
+        {
+            let peer_state = self
+                .comments_peer_states
+                .entry(peer_id.to_string())
+                .or_insert_with(|| room_peer_sync_state(can_write));
+            self.comments_doc
+                .receive_sync_message_with_changes_recovering(
+                    peer_state,
+                    message,
+                    "cloud-room-comments-receive-sync",
+                )
+                .map_err(|e| format!("receive comments doc sync: {e}"))?;
+        }
+        let heads_after = self.comments_doc.get_heads();
+        let changed = heads_before != heads_after;
+
+        let mut result = RoomHostFrameResult {
+            changed,
+            notebook_changed: false,
+            runtime_state_changed: false,
+            outbound: Vec::new(),
+        };
+        self.queue_comments_doc_sync_for_peer(peer_id, can_write, &mut result.outbound)
+            .map_err(|error| format!("{error:?}"))?;
+        if changed {
+            self.queue_comments_doc_sync_for_other_peers(peer_id, &mut result.outbound)
+                .map_err(|error| format!("{error:?}"))?;
         }
         Ok(result)
     }
@@ -1398,11 +1531,13 @@ impl RoomHostHandle {
         can_write_notebook: bool,
         can_write_runtime_state: bool,
         can_write_comms: bool,
+        can_write_comments: bool,
         outbound: &mut Vec<RoomHostOutboundFrame>,
     ) -> Result<(), JsError> {
         self.queue_notebook_sync_for_peer(peer_id, can_write_notebook, outbound)?;
         self.queue_runtime_state_sync_for_peer(peer_id, can_write_runtime_state, outbound)?;
         self.queue_comms_doc_sync_for_peer(peer_id, can_write_comms, outbound)?;
+        self.queue_comments_doc_sync_for_peer(peer_id, can_write_comments, outbound)?;
         Ok(())
     }
 
@@ -1519,6 +1654,45 @@ impl RoomHostHandle {
                 continue;
             }
             self.queue_comms_doc_sync_for_peer(&peer_id, true, outbound)?;
+        }
+        Ok(())
+    }
+
+    fn queue_comments_doc_sync_for_peer(
+        &mut self,
+        peer_id: &str,
+        can_write: bool,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        let peer_state = self
+            .comments_peer_states
+            .entry(peer_id.to_string())
+            .or_insert_with(|| room_peer_sync_state(can_write));
+        if let Some(message) = self
+            .comments_doc
+            .generate_sync_message_recovering(peer_state, "cloud-room-comments-sync-outbound")
+            .map_err(|e| JsError::new(&format!("generate comments doc sync: {e}")))?
+        {
+            outbound.push(RoomHostOutboundFrame {
+                peer_id: peer_id.to_string(),
+                frame_type: frame_types::COMMENTS_DOC_SYNC,
+                payload: message.encode(),
+            });
+        }
+        Ok(())
+    }
+
+    fn queue_comments_doc_sync_for_other_peers(
+        &mut self,
+        changed_peer_id: &str,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        let peers: Vec<String> = self.comments_peer_states.keys().cloned().collect();
+        for peer_id in peers {
+            if peer_id == changed_peer_id {
+                continue;
+            }
+            self.queue_comments_doc_sync_for_peer(&peer_id, true, outbound)?;
         }
         Ok(())
     }
@@ -1714,26 +1888,48 @@ fn allows_comms_doc_write(scope: ConnectionScope) -> bool {
     )
 }
 
+fn allows_comments_doc_write(scope: ConnectionScope) -> bool {
+    matches!(scope, ConnectionScope::Editor | ConnectionScope::Owner)
+}
+
+fn hosted_comments_doc_id(notebook_id: &str) -> String {
+    format!("comments:{notebook_id}")
+}
+
+fn hosted_comments_identity(notebook_id: &str) -> (String, NotebookCommentRef) {
+    (
+        hosted_comments_doc_id(notebook_id),
+        NotebookCommentRef::HostedRoom {
+            room_locator: notebook_id.to_string(),
+        },
+    )
+}
+
 fn validate_room_actor_labels<'a>(
     principal: &str,
     labels: impl IntoIterator<Item = &'a str>,
 ) -> Result<(), JsError> {
+    validate_room_actor_labels_inner(principal, labels).map_err(|error| JsError::new(&error))
+}
+
+fn validate_room_actor_labels_inner<'a>(
+    principal: &str,
+    labels: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
     let expected = Principal::new(principal.to_string())
-        .map_err(|e| JsError::new(&format!("authenticated principal is invalid: {e}")))?;
+        .map_err(|e| format!("authenticated principal is invalid: {e}"))?;
     for label in labels {
         match ActorLabel::parse(label.to_string()) {
             Ok(actor) if actor.principal() == expected.as_str() => {}
             Ok(actor) => {
-                return Err(JsError::new(&format!(
+                return Err(format!(
                     "actor principal {} is not authorized for authenticated principal {}",
                     actor.principal(),
                     expected
-                )));
+                ));
             }
             Err(error) => {
-                return Err(JsError::new(&format!(
-                    "actor label {label:?} is invalid: {error}"
-                )));
+                return Err(format!("actor label {label:?} is invalid: {error}"));
             }
         }
     }
@@ -4564,6 +4760,299 @@ mod tests {
         assert!(host.doc.get_cell("cell-second").is_none());
     }
 
+    #[test]
+    fn room_host_accepts_editor_comments_doc_change_fans_out_and_persists() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut editor = hosted_comments_client("demo", "user:dev:alice/browser:a");
+        let mut editor_state = sync::State::new();
+        let mut viewer = hosted_comments_client("demo", "user:dev:bob/browser:b");
+        let mut viewer_state = sync::State::new();
+
+        sync_comments_doc_with_host(
+            &mut host,
+            "peer-editor",
+            "user:dev:alice",
+            true,
+            &mut editor,
+            &mut editor_state,
+        );
+        sync_comments_doc_with_host(
+            &mut host,
+            "peer-viewer",
+            "user:dev:bob",
+            true,
+            &mut viewer,
+            &mut viewer_state,
+        );
+
+        editor
+            .create_thread(
+                "thread-1",
+                "message-1",
+                &comments_doc::CommentAnchor::Notebook,
+                "ship the comments path",
+                None,
+                "2026-06-18T00:00:00Z",
+            )
+            .expect("create comment");
+
+        let accepted = apply_comments_client_change_to_host(
+            &mut host,
+            "peer-editor",
+            "user:dev:alice",
+            true,
+            &mut editor,
+            &mut editor_state,
+        )
+        .expect("editor comment accepted");
+        assert!(accepted.changed);
+        assert!(accepted.outbound.iter().any(|frame| {
+            frame.peer_id == "peer-viewer" && frame.frame_type == frame_types::COMMENTS_DOC_SYNC
+        }));
+
+        apply_comments_outbound_to_client(
+            &accepted.outbound,
+            "peer-viewer",
+            &mut viewer,
+            &mut viewer_state,
+        );
+        let viewer_projection = viewer.read_projection(None).expect("viewer projection");
+        assert_eq!(viewer_projection.threads.len(), 1);
+        assert_eq!(
+            viewer_projection.threads[0]
+                .created_by_actor_label
+                .as_deref(),
+            Some("user:dev:alice/browser:a")
+        );
+        assert_eq!(
+            viewer_projection.threads[0].messages[0].body,
+            "ship the comments path"
+        );
+
+        let saved = host.save_comments_doc();
+        let mut reloaded =
+            RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+                .expect("create reloaded room host");
+        reloaded
+            .load_comments_doc(&saved)
+            .expect("load saved comments doc");
+        let projection = reloaded
+            .comments_doc
+            .read_projection(None)
+            .expect("reloaded projection");
+        assert_eq!(projection.threads.len(), 1);
+        assert_eq!(projection.threads[0].id, "thread-1");
+    }
+
+    #[test]
+    fn room_host_rejects_forged_comments_doc_change_without_applying() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut forged = comments_doc_from_host(&mut host, "user:dev:mallory/browser:m");
+        let mut forged_state = sync::State::new();
+        sync_comments_doc_with_host(
+            &mut host,
+            "peer-alice",
+            "user:dev:alice",
+            true,
+            &mut forged,
+            &mut forged_state,
+        );
+        forged
+            .create_thread(
+                "thread-forged",
+                "message-forged",
+                &comments_doc::CommentAnchor::Notebook,
+                "not alice",
+                None,
+                "2026-06-18T00:00:00Z",
+            )
+            .expect("create forged comment");
+
+        let error = apply_comments_client_change_to_host(
+            &mut host,
+            "peer-alice",
+            "user:dev:alice",
+            true,
+            &mut forged,
+            &mut forged_state,
+        )
+        .expect_err("forged actor should be rejected");
+        let error_text = format!("{error:?}");
+        assert!(
+            error_text.contains("authenticated principal user:dev:alice"),
+            "unexpected error: {error:?}"
+        );
+        assert!(host
+            .comments_doc
+            .read_projection(None)
+            .expect("host projection")
+            .threads
+            .is_empty());
+    }
+
+    #[test]
+    fn room_host_rejects_mixed_author_comments_doc_payload_wholesale() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut mixed = comments_doc_from_host(&mut host, "user:dev:alice/browser:a");
+        let mut mixed_state = sync::State::new();
+        sync_comments_doc_with_host(
+            &mut host,
+            "peer-alice",
+            "user:dev:alice",
+            true,
+            &mut mixed,
+            &mut mixed_state,
+        );
+        mixed
+            .create_thread(
+                "thread-alice",
+                "message-alice",
+                &comments_doc::CommentAnchor::Notebook,
+                "from alice",
+                None,
+                "2026-06-18T00:00:00Z",
+            )
+            .expect("create alice comment");
+        mixed.doc_mut().set_actor(automerge::ActorId::from(
+            "user:dev:mallory/browser:m".as_bytes(),
+        ));
+        mixed
+            .create_thread(
+                "thread-mallory",
+                "message-mallory",
+                &comments_doc::CommentAnchor::Notebook,
+                "from mallory",
+                None,
+                "2026-06-18T00:00:01Z",
+            )
+            .expect("create mallory comment");
+
+        let error = apply_comments_client_change_to_host(
+            &mut host,
+            "peer-alice",
+            "user:dev:alice",
+            true,
+            &mut mixed,
+            &mut mixed_state,
+        )
+        .expect_err("mixed actor payload should be rejected");
+        let error_text = format!("{error:?}");
+        assert!(
+            error_text.contains("user:dev:mallory"),
+            "unexpected error: {error:?}"
+        );
+        assert!(host
+            .comments_doc
+            .read_projection(None)
+            .expect("host projection")
+            .threads
+            .is_empty());
+    }
+
+    #[test]
+    fn room_host_rejects_viewer_comments_doc_change() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut viewer = comments_doc_from_host(&mut host, "user:dev:bob/browser:b");
+        let heads_before = host.comments_doc.get_heads();
+        viewer
+            .create_thread(
+                "thread-viewer",
+                "message-viewer",
+                &comments_doc::CommentAnchor::Notebook,
+                "viewer cannot write",
+                None,
+                "2026-06-18T00:00:00Z",
+            )
+            .expect("create viewer comment");
+        let payload = comments_change_payload(&mut viewer, &heads_before);
+        let error = host
+            .receive_comments_doc_sync_inner("peer-viewer", "user:dev:bob", false, &payload)
+            .expect_err("viewer comment should be rejected");
+        let error_text = format!("{error:?}");
+        assert!(
+            error_text.contains("cannot write CommentsDoc"),
+            "unexpected error: {error:?}"
+        );
+        assert!(host
+            .comments_doc
+            .read_projection(None)
+            .expect("host projection")
+            .threads
+            .is_empty());
+    }
+
+    #[test]
+    fn room_host_rejects_runtime_peer_comments_doc_change() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut runtime_peer = comments_doc_from_host(&mut host, "user:dev:runtime/runtime:py");
+        let mut runtime_state = sync::State::new();
+        sync_comments_doc_with_host(
+            &mut host,
+            "peer-runtime",
+            "user:dev:runtime",
+            true,
+            &mut runtime_peer,
+            &mut runtime_state,
+        );
+        runtime_peer
+            .create_thread(
+                "thread-runtime",
+                "message-runtime",
+                &comments_doc::CommentAnchor::Notebook,
+                "runtime peer cannot write",
+                None,
+                "2026-06-18T00:00:00Z",
+            )
+            .expect("create runtime peer comment");
+        runtime_state = sync::State::new();
+
+        let error = apply_comments_client_change_to_host(
+            &mut host,
+            "peer-runtime",
+            "user:dev:runtime",
+            false,
+            &mut runtime_peer,
+            &mut runtime_state,
+        )
+        .expect_err("runtime peer comment should be rejected");
+        let error_text = format!("{error:?}");
+        assert!(
+            error_text.contains("cannot write CommentsDoc"),
+            "unexpected error: {error:?}"
+        );
+        assert!(host
+            .comments_doc
+            .read_projection(None)
+            .expect("host projection")
+            .threads
+            .is_empty());
+    }
+
+    #[test]
+    fn room_host_rejects_comments_doc_checkpoint_with_wrong_id() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let wrong_ref = NotebookCommentRef::HostedRoom {
+            room_locator: "other".to_string(),
+        };
+        let mut wrong_doc =
+            CommentsDoc::new_with_actor("comments:other", &wrong_ref, "user:dev:alice/browser:a");
+        let bytes = wrong_doc.save();
+
+        let error = host
+            .load_comments_doc_inner(&bytes)
+            .expect_err("wrong comments_doc_id should be rejected");
+        assert!(
+            error.contains("comments_doc_id mismatch"),
+            "unexpected error: {error:?}"
+        );
+    }
+
     // -- runtime_peer-gone reconciliation (Phase 3d watchdog core) --------
 
     use runtime_doc::KernelActivity;
@@ -4608,6 +5097,131 @@ mod tests {
             updated_at: Some("2026-06-07T00:00:00.000Z".to_string()),
             runtime_session_id: Some("job-runtime".to_string()),
         }
+    }
+
+    fn hosted_comments_client(notebook_id: &str, actor_label: &str) -> CommentsDoc {
+        let (comments_doc_id, notebook_ref) = hosted_comments_identity(notebook_id);
+        CommentsDoc::new_with_actor(&comments_doc_id, &notebook_ref, actor_label)
+    }
+
+    fn comments_doc_from_host(host: &mut RoomHostHandle, actor_label: &str) -> CommentsDoc {
+        let comments_doc_id = host
+            .expected_comments_doc_id_string()
+            .expect("host comments doc id");
+        let bytes = host.save_comments_doc();
+        CommentsDoc::load_with_actor(&bytes, &comments_doc_id, actor_label)
+            .expect("load comments doc from host")
+    }
+
+    fn sync_comments_doc_with_host(
+        host: &mut RoomHostHandle,
+        peer_id: &str,
+        principal: &str,
+        can_write: bool,
+        client: &mut CommentsDoc,
+        client_state: &mut sync::State,
+    ) {
+        let mut outbound = Vec::new();
+        host.queue_comments_doc_sync_for_peer(peer_id, can_write, &mut outbound)
+            .expect("queue comments sync");
+        for _ in 0..8 {
+            let replies =
+                apply_comments_outbound_to_client(&outbound, peer_id, client, client_state);
+            if replies.is_empty() {
+                return;
+            }
+            outbound = Vec::new();
+            for reply in replies {
+                let result = host
+                    .receive_comments_doc_sync(peer_id, principal, can_write, &reply)
+                    .expect("apply comments sync reply");
+                outbound.extend(result.outbound);
+            }
+        }
+    }
+
+    fn apply_comments_client_change_to_host(
+        host: &mut RoomHostHandle,
+        peer_id: &str,
+        principal: &str,
+        can_write: bool,
+        client: &mut CommentsDoc,
+        client_state: &mut sync::State,
+    ) -> Result<RoomHostFrameResult, String> {
+        let mut last = RoomHostFrameResult::empty();
+        for _ in 0..8 {
+            let Some(message) = client.generate_sync_message(client_state) else {
+                continue;
+            };
+            let result = host.receive_comments_doc_sync_inner(
+                peer_id,
+                principal,
+                can_write,
+                &message.encode(),
+            )?;
+            if result.changed {
+                return Ok(result);
+            }
+            let replies =
+                apply_comments_outbound_to_client(&result.outbound, peer_id, client, client_state);
+            last = result;
+            for reply in replies {
+                let next =
+                    host.receive_comments_doc_sync_inner(peer_id, principal, can_write, &reply)?;
+                if next.changed {
+                    return Ok(next);
+                }
+                last = next;
+            }
+        }
+        if last.outbound.is_empty() {
+            Err("comments doc change did not produce sync message".to_string())
+        } else {
+            Ok(last)
+        }
+    }
+
+    fn apply_comments_outbound_to_client(
+        outbound: &[RoomHostOutboundFrame],
+        peer_id: &str,
+        client: &mut CommentsDoc,
+        client_state: &mut sync::State,
+    ) -> Vec<Vec<u8>> {
+        let mut replies = Vec::new();
+        for frame in outbound {
+            if frame.peer_id != peer_id || frame.frame_type != frame_types::COMMENTS_DOC_SYNC {
+                continue;
+            }
+            let message = sync::Message::decode(&frame.payload).expect("decode comments sync");
+            let _ = client
+                .receive_sync_message_with_changes_recovering(
+                    client_state,
+                    message,
+                    "comments-test-client-receive",
+                )
+                .expect("client receive comments sync");
+            if let Some(reply) = client.generate_sync_message(client_state) {
+                replies.push(reply.encode());
+            }
+        }
+        replies
+    }
+
+    fn comments_change_payload(
+        client: &mut CommentsDoc,
+        heads_before: &[automerge::ChangeHash],
+    ) -> Vec<u8> {
+        let changes = client.doc_mut().save_after(heads_before);
+        assert!(!changes.is_empty(), "expected incremental comments changes");
+        sync::Message {
+            heads: client.get_heads(),
+            need: Vec::new(),
+            have: Vec::new(),
+            changes: sync::ChunkList::from(changes),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        }
+        .encode()
     }
 
     #[test]
@@ -4942,7 +5556,7 @@ mod tests {
         // Register a runtime peer so the accepted queue is fanned out to the
         // executor as well as visible to the browser peer.
         let mut initial = Vec::new();
-        host.queue_current_sync_for_peer("runtime-peer", false, true, true, &mut initial)
+        host.queue_current_sync_for_peer("runtime-peer", false, true, true, false, &mut initial)
             .expect("initial runtime peer sync");
 
         let supplied = "22222222-2222-4222-8222-222222222222";
@@ -5032,7 +5646,7 @@ mod tests {
         // the initial sync advances that peer's room-host sync state, so a
         // later ExecuteCell should fan out only the new queued execution.
         let mut initial = Vec::new();
-        host.queue_current_sync_for_peer("runtime-peer", false, true, true, &mut initial)
+        host.queue_current_sync_for_peer("runtime-peer", false, true, true, false, &mut initial)
             .expect("initial runtime peer sync");
         assert!(
             initial

@@ -24,7 +24,7 @@ const EXPECTED_FRAME_TYPE_ENTRIES = [
   ["SESSION_CONTROL", 0x07, "session_control", false],
   ["PUT_BLOB", 0x08, "put_blob", true],
   ["COMMS_DOC_SYNC", 0x09, "comms_doc_sync", true],
-  ["COMMENTS_DOC_SYNC", 0x0a, "comments_doc_sync", false],
+  ["COMMENTS_DOC_SYNC", 0x0a, "comments_doc_sync", true],
 ] as const satisfies ReadonlyArray<
   readonly [keyof typeof FrameType, FrameTypeValue, string, boolean]
 >;
@@ -40,7 +40,7 @@ const EXPECTED_CLIENT_WRITABLE = {
   0x07: false,
   0x08: true,
   0x09: true,
-  0x0a: false,
+  0x0a: true,
 } as const satisfies Readonly<Record<FrameTypeValue, boolean>>;
 
 describe("typed-frame protocol helpers", () => {
@@ -114,6 +114,7 @@ describe("typed-frame protocol helpers", () => {
     assert.equal(frameSizeLimits(FrameType.AUTOMERGE_SYNC).cap, 64 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.RUNTIME_STATE_SYNC).cap, 64 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.COMMS_DOC_SYNC).cap, 64 * 1024 * 1024);
+    assert.equal(frameSizeLimits(FrameType.COMMENTS_DOC_SYNC).cap, 64 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.PUT_BLOB).cap, 32 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.REQUEST).cap, 16 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.PRESENCE).cap, 4 * 1024);

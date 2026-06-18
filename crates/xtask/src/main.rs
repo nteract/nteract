@@ -1883,6 +1883,10 @@ const GENESIS_SEEDS_IN_WASM: &[(&str, &str)] = &[
         "comms-doc genesis",
         "crates/runtime-doc/assets/comms_doc_genesis_v1.am",
     ),
+    (
+        "comments-doc genesis",
+        "crates/comments-doc/assets/comments_doc_genesis_v1.am",
+    ),
 ];
 
 const RUNTIMED_WASM_BINARY: &str = "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm";
@@ -3460,6 +3464,9 @@ const RUNTIMED_WASM_INPUTS: &[&str] = &[
     "crates/automerge-recovery/src",
     "crates/automunge/Cargo.toml",
     "crates/automunge/src",
+    "crates/comments-doc/Cargo.toml",
+    "crates/comments-doc/assets",
+    "crates/comments-doc/src",
     "crates/notebook-doc/Cargo.toml",
     "crates/notebook-doc/assets",
     "crates/notebook-doc/src",

@@ -6243,9 +6243,11 @@ interface RevisionRow {
   notebook_heads_hash: string;
   runtime_heads_hash: string | null;
   comms_heads_hash: string | null;
+  comments_heads_hash: string | null;
   snapshot_key: string;
   runtime_snapshot_key: string | null;
   comms_snapshot_key: string | null;
+  comments_snapshot_key: string | null;
   actor_label: string;
   created_at: string;
 }
@@ -7048,9 +7050,11 @@ class FakeD1Statement implements D1PreparedStatement {
         notebookHeadsHash,
         runtimeHeadsHash,
         commsHeadsHash,
+        commentsHeadsHash,
         snapshotKey,
         runtimeSnapshotKey,
         commsSnapshotKey,
+        commentsSnapshotKey,
         actorLabel,
       ] = this.values as [
         string,
@@ -7059,7 +7063,9 @@ class FakeD1Statement implements D1PreparedStatement {
         string,
         string | null,
         string | null,
+        string | null,
         string,
+        string | null,
         string | null,
         string | null,
         string,
@@ -7071,9 +7077,11 @@ class FakeD1Statement implements D1PreparedStatement {
         notebook_heads_hash: notebookHeadsHash,
         runtime_heads_hash: runtimeHeadsHash,
         comms_heads_hash: commsHeadsHash,
+        comments_heads_hash: commentsHeadsHash,
         snapshot_key: snapshotKey,
         runtime_snapshot_key: runtimeSnapshotKey,
         comms_snapshot_key: commsSnapshotKey,
+        comments_snapshot_key: commentsSnapshotKey,
         actor_label: actorLabel,
         created_at: new Date().toISOString(),
       });

@@ -723,6 +723,7 @@ describe("RoomMaterializer", () => {
     const keys = [...(await state.storage.list({ prefix: "room-host:" })).keys()].sort();
     assert.deepEqual(keys, [
       "room-host:checkpoint",
+      "room-host:comments-doc",
       "room-host:comms-doc",
       "room-host:notebook-doc",
       "room-host:runtime-state-doc",
@@ -2529,9 +2530,11 @@ function fakePublishedSnapshotEnv(input: {
         notebook_heads_hash: "heads-published",
         runtime_heads_hash: "runtime-published",
         comms_heads_hash: null,
+        comments_heads_hash: null,
         snapshot_key: snapshotKey,
         runtime_snapshot_key: runtimeSnapshotKey,
         comms_snapshot_key: null,
+        comments_snapshot_key: null,
         actor_label: input.actorLabel,
         created_at: "2026-05-28T00:00:00.000Z",
       },
@@ -2580,9 +2583,11 @@ class FakeCatalogD1 implements D1Database {
         notebook_heads_hash: string;
         runtime_heads_hash: string;
         comms_heads_hash: string | null;
+        comments_heads_hash: string | null;
         snapshot_key: string;
         runtime_snapshot_key: string;
         comms_snapshot_key: string | null;
+        comments_snapshot_key: string | null;
         actor_label: string;
         created_at: string;
       };
@@ -2634,6 +2639,8 @@ class FakeCatalogStatement implements D1PreparedStatement {
         { name: "runtime_state_doc_id" },
         { name: "comms_heads_hash" },
         { name: "comms_snapshot_key" },
+        { name: "comments_heads_hash" },
+        { name: "comments_snapshot_key" },
       ] as T[]);
     }
     if (/FROM notebook_revisions/s.test(this.query)) {
