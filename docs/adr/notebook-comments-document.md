@@ -177,7 +177,8 @@ Published notebook snapshots:
 - If comments are published, they are a frozen read-only projection at publish
   heads, not a live comments sync subscription.
 - Published attribution may need redaction or coarsening because
-  `created_by_actor_label` and display names can expose internal reviewers.
+  `authority_created_by_actor_label` and display names can expose internal
+  reviewers.
 
 That means the v0 local path sidecar is intentionally an adapter detail. The
 portable model is still "one comments doc attached to one notebook room," with a
@@ -204,35 +205,37 @@ ROOT/
         kind: Str
         ...anchor fields...
       position: Str                  # fractional order in the projection scope
-      status: Str                    # "open" | "resolved"
+      status: Str                    # provisional open/resolved status
       mutation_state: Str            # "pending" | "accepted" | "rejected"
-      rejection_reason: Str?
       created_at: Str
-      created_by_actor_label: Str?   # host/daemon stamped when accepted
-      created_by_authority: Str?     # "host_stamped" | "local_uid" | "imported"
-      created_by_display_name: Str?  # advisory, host projected when available
-      resolved_at: Str?
-      resolved_by_actor_label: Str?
-      resolved_by_authority: Str?
-      archived_at: Str?
-      archived_by_actor_label: Str?
-      archived_by_authority: Str?
+      authority_mutation_state: Str? # authority-written accepted/rejected
+      authority_status: Str?         # authority-written open/resolved
+      authority_anchor_json: Str?    # accepted anchor snapshot
+      authority_position: Str?
+      authority_created_at: Str?
+      authority_created_by_actor_label: Str?
+      authority_created_by_authority: Str?
+      authority_rejection_reason: Str?
+      authority_resolved_at: Str?
+      authority_resolved_by_actor_label: Str?
+      authority_resolved_by_authority: Str?
+      authority_reopened_at: Str?
+      authority_reopened_by_actor_label: Str?
+      authority_reopened_by_authority: Str?
       messages/
         {message_id}/
           id: Str
           position: Str              # fractional reply order
           body: Text
           mutation_state: Str        # "pending" | "accepted" | "rejected"
-          rejection_reason: Str?
           created_at: Str
-          created_by_actor_label: Str?
-          created_by_authority: Str?
-          edited_at: Str?
-          edited_by_actor_label: Str?
-          edited_by_authority: Str?
-          deleted_at: Str?
-          deleted_by_actor_label: Str?
-          deleted_by_authority: Str?
+          authority_mutation_state: Str?
+          authority_body: Str?
+          authority_position: Str?
+          authority_created_at: Str?
+          authority_created_by_actor_label: Str?
+          authority_created_by_authority: Str?
+          authority_rejection_reason: Str?
 ```
 
 Do not store a derived `anchor_index` inside `CommentsDoc`. It would add synced
@@ -245,16 +248,13 @@ Message bodies should be Automerge `Text`, even if v0 only edits a whole comment
 body at once. It keeps the schema ready for collaborative comment editing and
 avoids whole-string conflict behavior.
 
-`created_by_authority` and related authority fields record the trust context of
-the durable attribution field once an authority or import has established that
-field:
-
-- `host_stamped`: Cloud room host stamped the field from an authenticated Cloud
-  request.
-- `local_uid`: local daemon stamped the field from same-UID desktop provenance.
-- `imported`: attribution was carried across a boundary such as local-to-Cloud
-  promotion, clone-with-comments, or external import and should be displayed as
-  imported/unverified.
+`authority_created_by_authority` and related authority fields record which
+comments authority wrote the durable attribution snapshot. In the local
+implementation that value is the authority actor label `runtimed:comments`;
+hosted rooms should use a Cloud comments-authority actor label. Imported
+comments should be replayed or stamped with an explicit imported-authority label
+so they do not become indistinguishable from locally or hosted-authenticated
+comments.
 
 Pending state is carried by `mutation_state`, not by overloading the authority
 enum. While a thread or message is pending, authority fields are absent or
@@ -272,17 +272,19 @@ can display or collapse.
 `mutation_state = "accepted"` is meaningful only because of *who wrote it*, not
 because the field says so. In raw CRDT convergence any editor-scope peer can write
 any field, so a malicious client could set `mutation_state = "accepted"`,
-`created_by_authority = "host_stamped"`, and `created_by_actor_label` to a victim
-in a single client change and self-finalize a spoofed comment.
+`authority_mutation_state = "accepted"`,
+`authority_created_by_authority = "runtimed:comments"`, and
+`authority_created_by_actor_label` to a victim in a single client change and
+self-finalize a spoofed comment.
 
 The trust invariant the projection must enforce:
 
-- Policy-bearing fields (`mutation_state`, `status`, `created_by_*`,
-  `edited_at`, `edited_by_*`, `resolved_at`, `resolved_by_*`, `deleted_at`,
-  `deleted_by_*`, `archived_at`, `archived_by_*`, and the authority fields) are
-  trusted only when the latest change writing them was authored by an actor
-  whose principal is the comments authority (local daemon or Cloud comments
-  host).
+- Policy-bearing `authority_*` fields (`authority_mutation_state`,
+  `authority_status`, `authority_created_by_*`, `authority_resolved_*`,
+  `authority_reopened_*`, future tombstone/edit/moderation snapshots, and any
+  other authority-prefixed policy field) are trusted only when the latest change
+  writing them was authored by an actor whose principal is the comments
+  authority (local daemon or Cloud comments host).
 - Body text is trusted when authored by the claimed author's validated principal.
 - A client-authored `accepted` is ignored and rendered as pending. The field is a
   cache of "an authority change finalized this," verifiable by the attribution
@@ -403,20 +405,21 @@ stable across peers.
 
 ## Wire And Sync
 
-Add the first `CommentsDoc` wrapper module alongside `runtime-doc` because
-`CommsDoc` and the existing Automerge document recovery helpers already live
-there. Move it to a dedicated crate later only if the comment domain grows large
-enough to justify that split.
+Add the first `CommentsDoc` wrapper in a dedicated `comments-doc` crate.
+Comments are durable notebook collaboration state, not runtime state, and the
+crate boundary keeps comment lifetime and moderation policy separate from
+`RuntimeStateDoc` and `CommsDoc`.
 
 Core seams:
 
-- `crates/runtime-doc/src/comments.rs`, `crates/runtime-doc/src/lib.rs`, and
-  related tests
+- `crates/comments-doc/src/lib.rs` and related tests
   - add `CommentsDoc`, `CommentsDocHandle`, state/projection types, schema seed,
     save/load/head/sync helpers, mutation helpers, and authority-finalization
     tests
   - keep comments policy helpers separate from CommsDoc policy; widget-state
     authorization is not comments authorization
+  - require `comments_doc_id` on every materialized comments document and reject
+    sync/projection when the raw document identity conflicts with the expected id
 - `crates/notebook-wire/src/lib.rs`
   - add `frame_types::COMMENTS_DOC_SYNC = 0x0a`
   - add `NotebookFrameType::CommentsDocSync`
@@ -633,6 +636,11 @@ flag. Helpers may mark `COMMENTS_DOC_SYNC` writable so empty Automerge
 negotiation can pass through generic client code, but room ingress still has to
 inspect `Message.changes` and scope before applying document changes.
 
+Room ingress must also authenticate the connection principal to the Automerge
+actor id before accepting authority-authored comment fields. The `comments-doc`
+crate can project only fields authored by configured authority actor ids, but it
+cannot prove that a remote peer was allowed to use that actor id.
+
 ### Sync policy
 
 `CommentsDocSync` is the replication path for both pending client-authored
@@ -683,8 +691,8 @@ The repo already has the pieces for this pattern:
 ```text
 CommentProjection/
   threads/{thread_id}/messages/{message_id}/
-    created_by_actor_label          # durable, host/daemon-stamped or imported
-    created_by_authority
+    authority_created_by_actor_label # durable, host/daemon-stamped or imported
+    authority_created_by_authority
     last_writer_actor_label         # derived from validated Automerge actor
     last_writer_authority           # "validated_change_actor" | "unknown"
     attribution_mismatch: Bool      # stamped field disagrees with actor evidence
@@ -823,9 +831,9 @@ Clone:
 - If a future clone operation opts into comments, replay comments as fresh
   mutations into the new `CommentsDoc`. Never byte-fork the source comments doc,
   because that would share Automerge history and actor lineage across rooms.
-- Imported clone comments should carry `created_by_authority = "imported"`.
-  Output-anchored comments should be dropped or hard-marked stale because clone
-  has no source outputs.
+- Imported clone comments should carry an imported-authority label in
+  `authority_created_by_authority`. Output-anchored comments should be dropped
+  or hard-marked stale because clone has no source outputs.
 
 Local-to-Cloud promotion or import:
 
@@ -835,7 +843,8 @@ Local-to-Cloud promotion or import:
   the source local principal to an authenticated Cloud principal.
 - Import must not carry raw local Automerge actor history into the hosted room.
   Either replay imported comments as fresh destination-space changes or store
-  them as sanitized projection data with `created_by_authority = "imported"`.
+  them as sanitized projection data with an imported-authority label in
+  `authority_created_by_authority`.
 
 Published snapshots:
 
