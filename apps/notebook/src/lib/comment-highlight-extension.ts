@@ -123,6 +123,13 @@ const commentHighlightTheme = EditorView.baseTheme({
     backgroundColor: "hsl(var(--muted-foreground) / 0.12)",
     borderBottomColor: "hsl(var(--muted-foreground) / 0.4)",
   },
+  // The comment preview is the only hover tooltip, so strip the default
+  // (theme-dark) tooltip chrome and let the preview card own its appearance.
+  ".cm-tooltip.cm-tooltip-hover": {
+    border: "none",
+    backgroundColor: "transparent",
+    padding: "0",
+  },
 });
 
 /** Innermost highlight covering a position, if any. */
@@ -155,7 +162,7 @@ const BOT_ICON_SVG =
 function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const root = document.createElement("div");
   root.style.cssText =
-    "width:min(300px,80vw);font:inherit;color:hsl(var(--popover-foreground));";
+    "width:min(300px,80vw);padding:10px 12px;border:1px solid hsl(var(--border));border-radius:10px;background:hsl(var(--popover));color:hsl(var(--popover-foreground));box-shadow:0 8px 24px rgb(0 0 0 / 0.14);font:inherit;";
 
   const head = document.createElement("div");
   head.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:5px;";
