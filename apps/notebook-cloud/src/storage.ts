@@ -23,9 +23,11 @@ export interface RevisionRow {
   notebook_heads_hash: string;
   runtime_heads_hash: string | null;
   comms_heads_hash: string | null;
+  comments_heads_hash: string | null;
   snapshot_key: string;
   runtime_snapshot_key: string | null;
   comms_snapshot_key: string | null;
+  comments_snapshot_key: string | null;
   actor_label: string;
   created_at: string;
 }
@@ -160,9 +162,11 @@ const SCHEMA_STATEMENTS = [
     notebook_heads_hash TEXT NOT NULL,
     runtime_heads_hash TEXT,
     comms_heads_hash TEXT,
+    comments_heads_hash TEXT,
     snapshot_key TEXT NOT NULL,
     runtime_snapshot_key TEXT,
     comms_snapshot_key TEXT,
+    comments_snapshot_key TEXT,
     actor_label TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
@@ -356,6 +360,16 @@ const SCHEMA_MIGRATIONS = [
     table: "notebook_revisions",
     column: "comms_snapshot_key",
     statement: `ALTER TABLE notebook_revisions ADD COLUMN comms_snapshot_key TEXT`,
+  },
+  {
+    table: "notebook_revisions",
+    column: "comments_heads_hash",
+    statement: `ALTER TABLE notebook_revisions ADD COLUMN comments_heads_hash TEXT`,
+  },
+  {
+    table: "notebook_revisions",
+    column: "comments_snapshot_key",
+    statement: `ALTER TABLE notebook_revisions ADD COLUMN comments_snapshot_key TEXT`,
   },
 ];
 
@@ -1453,9 +1467,11 @@ export async function recordRevision(
     notebookHeadsHash: string;
     runtimeHeadsHash: string | null;
     commsHeadsHash: string | null;
+    commentsHeadsHash?: string | null;
     snapshotKey: string;
     runtimeSnapshotKey: string | null;
     commsSnapshotKey: string | null;
+    commentsSnapshotKey?: string | null;
     actorLabel: string;
     publishPublic?: boolean;
   },
@@ -1476,11 +1492,13 @@ export async function recordRevision(
        notebook_heads_hash,
        runtime_heads_hash,
        comms_heads_hash,
+       comments_heads_hash,
        snapshot_key,
        runtime_snapshot_key,
        comms_snapshot_key,
+       comments_snapshot_key,
        actor_label
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       revisionId,
       revision.notebookId,
@@ -1488,9 +1506,11 @@ export async function recordRevision(
       revision.notebookHeadsHash,
       revision.runtimeHeadsHash,
       revision.commsHeadsHash,
+      revision.commentsHeadsHash ?? null,
       revision.snapshotKey,
       revision.runtimeSnapshotKey,
       revision.commsSnapshotKey,
+      revision.commentsSnapshotKey ?? null,
       revision.actorLabel,
     ),
     env.DB.prepare(
@@ -1573,9 +1593,11 @@ export async function getNotebookCatalog(
             notebook_heads_hash,
             runtime_heads_hash,
             comms_heads_hash,
+            comments_heads_hash,
             snapshot_key,
             runtime_snapshot_key,
             comms_snapshot_key,
+            comments_snapshot_key,
             actor_label,
             created_at
        FROM notebook_revisions

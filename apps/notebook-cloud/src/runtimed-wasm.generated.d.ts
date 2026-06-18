@@ -88,9 +88,11 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     static create_empty(notebookId: string, actorLabel: string): RoomHostHandle;
     static load_snapshot(notebookBytes: Uint8Array, runtimeStateBytes: Uint8Array): RoomHostHandle;
     get_comms_doc_heads_hex(): string[];
+    get_comments_doc_heads_hex(): string[];
     get_heads_hex(): string[];
     get_runtime_state_heads_hex(): string[];
     load_comms_doc(commsBytes: Uint8Array): void;
+    load_comments_doc(commentsBytes: Uint8Array): void;
     receive_peer_frame(
       peerId: string,
       principal: string,
@@ -101,6 +103,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     remove_peer(peerId: string): void;
     save_notebook(): Uint8Array;
     save_comms_doc(): Uint8Array;
+    save_comments_doc(): Uint8Array;
     save_runtime_state_doc(): Uint8Array;
     seed_initial_code_cell_if_empty(cellId: string): boolean;
     sync_peer(

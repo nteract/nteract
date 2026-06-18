@@ -1128,6 +1128,7 @@ export class NotebookRoom {
       case FrameType.AUTOMERGE_SYNC:
       case FrameType.RUNTIME_STATE_SYNC:
       case FrameType.COMMS_DOC_SYNC:
+      case FrameType.COMMENTS_DOC_SYNC:
         // These frames are both data and protocol control. Read-only peers may
         // send empty sync acks/needs; RoomMaterializer rejects messages carrying
         // document changes when the connection lacks write scope.

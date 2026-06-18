@@ -1177,6 +1177,8 @@ class FakeD1Statement implements D1PreparedStatement {
         { name: "runtime_state_doc_id" },
         { name: "comms_heads_hash" },
         { name: "comms_snapshot_key" },
+        { name: "comments_heads_hash" },
+        { name: "comments_snapshot_key" },
       ] as T[]);
     }
     if (this.query.includes("FROM principal_profiles")) {
