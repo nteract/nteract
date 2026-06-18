@@ -808,31 +808,6 @@ function AppContent() {
   }, []);
 
   // Source-range threads grouped by cell, pushed to the editor highlight layer.
-  const sourceCommentThreadsByCell = useMemo(() => {
-    const map = new Map<string, SourceCommentThread[]>();
-    for (const thread of commentsProjection?.threads ?? []) {
-      if (thread.anchor.kind !== "source_range") continue;
-      const list = map.get(thread.anchor.cell_id) ?? [];
-      list.push({
-        threadId: thread.id,
-        anchor: thread.anchor,
-        resolved: thread.status === "resolved",
-        authorActorLabel: thread.created_by_actor_label ?? null,
-      });
-      map.set(thread.anchor.cell_id, list);
-    }
-    return map;
-  }, [commentsProjection]);
-
-  useEffect(() => {
-    setSourceCommentThreads(sourceCommentThreadsByCell);
-  }, [sourceCommentThreadsByCell]);
-
-  const handleActivateCommentThread = useCallback((_threadId: string) => {
-    // Clicking a highlighted range surfaces the thread in the comments rail.
-    openNotebookRailPanel("comments");
-  }, []);
-
   const resolveCommentAuthor = useCallback((actorLabel: string): CommentAuthor => {
     const parsed = parseNotebookActorLabel(actorLabel);
     const isAgent = parsed?.kind === "agent";
@@ -846,6 +821,45 @@ function AppContent() {
       ? (parsed?.onBehalfOf ?? friendlyNotebookActorLabel(principal))
       : null;
     return { displayName, color: colorForActorLabel(actorLabel), isAgent, onBehalfOf };
+  }, []);
+
+  const sourceCommentThreadsByCell = useMemo(() => {
+    const map = new Map<string, SourceCommentThread[]>();
+    for (const thread of commentsProjection?.threads ?? []) {
+      if (thread.anchor.kind !== "source_range") continue;
+      const list = map.get(thread.anchor.cell_id) ?? [];
+      const firstMessage = thread.messages[0];
+      const author = thread.created_by_actor_label
+        ? resolveCommentAuthor(thread.created_by_actor_label)
+        : undefined;
+      list.push({
+        threadId: thread.id,
+        anchor: thread.anchor,
+        resolved: thread.status === "resolved",
+        authorActorLabel: thread.created_by_actor_label ?? null,
+        preview: firstMessage
+          ? {
+              authorName: author?.displayName ?? "Unknown",
+              authorColor: author?.color,
+              isAgent: author?.isAgent,
+              onBehalfOf: author?.onBehalfOf,
+              body: firstMessage.body,
+              replyCount: Math.max(0, thread.messages.length - 1),
+            }
+          : undefined,
+      });
+      map.set(thread.anchor.cell_id, list);
+    }
+    return map;
+  }, [commentsProjection, resolveCommentAuthor]);
+
+  useEffect(() => {
+    setSourceCommentThreads(sourceCommentThreadsByCell);
+  }, [sourceCommentThreadsByCell]);
+
+  const handleActivateCommentThread = useCallback((_threadId: string) => {
+    // Clicking a highlighted range surfaces the thread in the comments rail.
+    openNotebookRailPanel("comments");
   }, []);
 
   const handleClearCommentDraftTarget = useCallback(() => {

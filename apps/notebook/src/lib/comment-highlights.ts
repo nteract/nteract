@@ -15,6 +15,7 @@
 import { colorForActorLabel } from "./actor-colors";
 import {
   type CommentHighlight,
+  type CommentHighlightPreview,
   setCommentHighlightsEffect,
 } from "./comment-highlight-extension";
 import { resolveSourceRangeAnchor, type SourceRangeCommentAnchor } from "./comment-source-anchor";
@@ -26,6 +27,8 @@ export interface SourceCommentThread {
   resolved: boolean;
   /** Actor label of the thread author, used to color the highlight. */
   authorActorLabel: string | null;
+  /** Summary shown when hovering the highlighted range. */
+  preview?: CommentHighlightPreview;
 }
 
 let threadsByCell = new Map<string, SourceCommentThread[]>();
@@ -62,6 +65,7 @@ function dispatchCell(cellId: string): void {
       threadId: thread.threadId,
       resolved: thread.resolved,
       color: thread.authorActorLabel ? colorForActorLabel(thread.authorActorLabel) : undefined,
+      preview: thread.preview,
     });
   }
   view.dispatch({ effects: setCommentHighlightsEffect.of(highlights) });
