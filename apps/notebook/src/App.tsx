@@ -438,6 +438,9 @@ function AppContent() {
     anchor: SourceRangeCommentAnchor;
     rect: SourceCommentSelectionRect;
   } | null>(null);
+  const [commentFocus, setCommentFocus] = useState<{ threadId: string; nonce: number } | null>(
+    null,
+  );
 
   const refreshCommentsProjection = useCallback(() => {
     const projection = getHandle()?.get_comments_projection?.();
@@ -875,9 +878,12 @@ function AppContent() {
     setSourceCommentThreads(sourceCommentThreadsByCell);
   }, [sourceCommentThreadsByCell]);
 
-  const handleActivateCommentThread = useCallback((_threadId: string) => {
-    // Clicking a highlighted range surfaces the thread in the comments rail.
+  const handleActivateCommentThread = useCallback((threadId: string) => {
+    // Clicking a highlighted range opens the rail and focuses (scrolls to +
+    // flashes) that thread. The bumped nonce re-triggers the flash on repeat
+    // clicks of the same highlight.
     openNotebookRailPanel("comments");
+    setCommentFocus((previous) => ({ threadId, nonce: (previous?.nonce ?? 0) + 1 }));
   }, []);
 
   const handleClearCommentDraftTarget = useCallback(() => {
@@ -1988,6 +1994,8 @@ function AppContent() {
                   onRetryThread={canMutateComments ? handleRetryFinalizeThread : undefined}
                   onFocusThreadAnchor={handleFocusCommentThreadAnchor}
                   resolveCommentAuthor={resolveCommentAuthor}
+                  focusedThreadId={commentFocus?.threadId ?? null}
+                  focusNonce={commentFocus?.nonce ?? 0}
                   sourceLanguage={
                     runtime === "python" ? "python" : runtime === "deno" ? "typescript" : undefined
                   }

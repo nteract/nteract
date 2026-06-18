@@ -452,6 +452,14 @@ describe("NotebookCommentsPanel", () => {
     expect(onResolveThread).not.toHaveBeenCalled();
   });
 
+  it("flashes the focused thread", () => {
+    const { container } = render(
+      <NotebookCommentsPanel projection={projection} focusedThreadId="thread-1" focusNonce={1} />,
+    );
+    // The focused thread's card gets the flash ring.
+    expect(container.querySelector("li.ring-2")).not.toBeNull();
+  });
+
   it("surfaces an unsettled thread as not posted and retries finalization", () => {
     const onRetryThread = vi.fn();
     render(

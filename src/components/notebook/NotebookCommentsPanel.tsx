@@ -64,6 +64,10 @@ export interface NotebookCommentsPanelProps {
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
   /** Language for syntax-highlighting quoted source (e.g. "python"). */
   sourceLanguage?: string;
+  /** Thread to scroll to and flash (e.g. after clicking its editor highlight). */
+  focusedThreadId?: string | null;
+  /** Bumped each focus request so repeat focuses of the same thread re-flash. */
+  focusNonce?: number;
 }
 
 export function NotebookCommentsPanel({
@@ -81,12 +85,21 @@ export function NotebookCommentsPanel({
   onFocusThreadAnchor,
   resolveCommentAuthor,
   sourceLanguage,
+  focusedThreadId = null,
+  focusNonce = 0,
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
   const labeledThreads = labelCommentThreads(threads);
   const openThreads = labeledThreads.filter(({ thread }) => thread.status !== "resolved");
   const resolvedThreads = labeledThreads.filter(({ thread }) => thread.status === "resolved");
   const [showResolved, setShowResolved] = useState(false);
+
+  // Reveal resolved threads when the focus target is one of them, so a click
+  // on a resolved thread's highlight can scroll to it.
+  const focusedIsResolved = resolvedThreads.some(({ thread }) => thread.id === focusedThreadId);
+  useEffect(() => {
+    if (focusedIsResolved) setShowResolved(true);
+  }, [focusedIsResolved, focusNonce]);
   const canCreate = !readOnly && Boolean(onCreateThread);
   const canReply = !readOnly && Boolean(onReplyThread);
   const canUpdateStatus = !readOnly && (Boolean(onResolveThread) || Boolean(onReopenThread));
@@ -111,6 +124,8 @@ export function NotebookCommentsPanel({
       onFocusThreadAnchor={onFocusThreadAnchor}
       resolveCommentAuthor={resolveCommentAuthor}
       sourceLanguage={sourceLanguage}
+      focused={thread.id === focusedThreadId}
+      focusNonce={focusNonce}
     />
   );
 
@@ -248,6 +263,8 @@ function CommentThreadItem({
   onFocusThreadAnchor,
   resolveCommentAuthor,
   sourceLanguage,
+  focused,
+  focusNonce,
 }: {
   thread: CommentThreadSnapshot;
   threadLabel: string;
@@ -260,7 +277,19 @@ function CommentThreadItem({
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
   sourceLanguage?: string;
+  focused?: boolean;
+  focusNonce?: number;
 }) {
+  const itemRef = useRef<HTMLLIElement>(null);
+  const [flashing, setFlashing] = useState(false);
+  // On a focus request for this thread, scroll it into view and flash a ring.
+  useEffect(() => {
+    if (!focused) return;
+    itemRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+    setFlashing(true);
+    const timer = setTimeout(() => setFlashing(false), 1100);
+    return () => clearTimeout(timer);
+  }, [focused, focusNonce]);
   const [statusSubmitting, setStatusSubmitting] = useState(false);
   const hasUnsettledMessages = thread.messages.some(
     (message) => message.mutation_state === "pending" || message.mutation_state === "unverified",
@@ -305,7 +334,13 @@ function CommentThreadItem({
   const unsettled = thread.mutation_state === "pending" || thread.mutation_state === "unverified";
 
   return (
-    <li className="rounded-lg border bg-card text-card-foreground shadow-sm">
+    <li
+      ref={itemRef}
+      className={cn(
+        "rounded-lg border bg-card text-card-foreground shadow-sm transition-shadow duration-700",
+        flashing && "ring-2 ring-primary/60",
+      )}
+    >
       <div className="space-y-3 p-3">
         <div className="flex items-center gap-2">
           {quote ? (
