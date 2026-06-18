@@ -38,6 +38,8 @@ export interface CommentAuthor {
   isAgent?: boolean;
   /** Principal the agent is acting for, when operating on someone's behalf. */
   onBehalfOf?: string | null;
+  /** Color of the principal the agent acts for (for the on-behalf-of badge). */
+  onBehalfOfColor?: string;
 }
 
 export interface NotebookCommentsPanelProps {
@@ -436,14 +438,35 @@ function CommentMessage({
 }
 
 function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
-  const initials = authorInitials(author.displayName);
-  return (
+  const face = (
     <div
-      className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white"
+      className="flex size-5 items-center justify-center rounded-full text-[9px] font-semibold text-white"
       style={{ backgroundColor: author.color ?? "hsl(var(--muted-foreground))" }}
-      aria-hidden="true"
     >
-      {author.isAgent ? <Bot className="size-3" /> : initials}
+      {author.isAgent ? <Bot className="size-3" /> : authorInitials(author.displayName)}
+    </div>
+  );
+
+  // When an agent acts for someone, badge the principal in the corner — the
+  // recognizable "on behalf of" cue — tinted with the principal's own color.
+  if (author.isAgent && author.onBehalfOf) {
+    return (
+      <div className="relative mt-0.5 size-5 shrink-0" aria-hidden="true">
+        {face}
+        <span
+          className="absolute -bottom-1 -right-1 flex size-3 items-center justify-center rounded-full text-[6px] font-bold text-white ring-2 ring-card"
+          style={{ backgroundColor: author.onBehalfOfColor ?? "hsl(var(--muted-foreground))" }}
+          title={`on behalf of ${author.onBehalfOf}`}
+        >
+          {authorInitials(author.onBehalfOf).slice(0, 1)}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-0.5 shrink-0" aria-hidden="true">
+      {face}
     </div>
   );
 }

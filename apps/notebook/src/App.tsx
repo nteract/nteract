@@ -831,7 +831,13 @@ function AppContent() {
     const onBehalfOf = isAgent
       ? (parsed?.onBehalfOf ?? friendlyNotebookActorLabel(principal))
       : null;
-    return { displayName, color: colorForActorLabel(actorLabel), isAgent, onBehalfOf };
+    return {
+      displayName,
+      color: colorForActorLabel(actorLabel),
+      isAgent,
+      onBehalfOf,
+      onBehalfOfColor: isAgent && principal ? colorForActorLabel(principal) : undefined,
+    };
   }, []);
 
   const sourceCommentThreadsByCell = useMemo(() => {
