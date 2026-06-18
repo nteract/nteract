@@ -37,7 +37,7 @@ const RESOLVED_PLUGIN_PREFIX = "\0virtual:renderer-plugin/";
 const PREBUILT_DIR = path.resolve(__dirname, "../notebook/src/renderer-plugins");
 
 /** Plugin names that have pre-built artifacts. */
-const PLUGIN_NAMES = ["markdown", "plotly", "vega", "leaflet", "sift"];
+const PLUGIN_NAMES = ["markdown", "plotly", "bokeh", "vega", "leaflet", "sift"];
 const PLUGIN_CSS_NAMES = new Set(["markdown", "leaflet", "sift"]);
 
 interface IsolatedRendererPluginOptions {
@@ -55,7 +55,7 @@ interface IsolatedRendererPluginOptions {
    * Plugin artifacts to require during production build startup.
    * Consumers that provide their own plugin loader can set this to `[]` and
    * still use the core isolated renderer bundle.
-   * @default ["markdown", "plotly", "vega", "leaflet", "sift"]
+   * @default ["markdown", "plotly", "bokeh", "vega", "leaflet", "sift"]
    */
   prebuiltPluginNames?: readonly string[];
 }

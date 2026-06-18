@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
+import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
 import {
   MARKDOWN_PROJECTION_MIME_TYPE,
   setMarkdownProjectionProjector,
@@ -9,6 +10,7 @@ import {
   hasWidgetOutputs,
   outputAllowsScrollPassthrough,
   outputSegmentLane,
+  outputUsesBokeh,
   outputUsesPlotly,
   outputUsesSift,
   outputUsesVega,
@@ -187,19 +189,28 @@ describe("output lane policy", () => {
       }),
       displayOutput("bokeh-load-js", {
         "application/javascript": 'document.getElementById("bokeh-loading").textContent = "ok";',
-        "application/vnd.bokehjs_load.v0+json": "",
+        [BOKEHJS_LOAD_MIME_TYPE]: "",
       }),
       displayOutput("bokeh-root-html", {
         "text/html": '<div id="bokeh-root"></div>',
       }),
       displayOutput("bokeh-exec-js", {
         "application/javascript": 'document.getElementById("bokeh-root").textContent = "plot";',
-        "application/vnd.bokehjs_exec.v0+json": "",
+        [BOKEHJS_EXEC_MIME_TYPE]: "",
       }),
     ];
 
     const segments = splitOutputSegments(outputs);
 
+    expect(outputs.map((output) => selectedOutputMimeType(output))).toEqual([
+      "text/html",
+      BOKEHJS_LOAD_MIME_TYPE,
+      "text/html",
+      BOKEHJS_EXEC_MIME_TYPE,
+    ]);
+    expect(outputUsesBokeh(outputs[1])).toBe(true);
+    expect(outputUsesBokeh(outputs[3])).toBe(true);
+    expect(outputUsesWheelOwningFrame(outputs[3])).toBe(true);
     expect(outputs.map((output) => outputAllowsScrollPassthrough(output))).toEqual([
       true,
       true,
@@ -210,6 +221,26 @@ describe("output lane policy", () => {
     expect(segments[0].outputs.map((output) => output.output_id)).toEqual([
       "bokeh-loading-html",
       "bokeh-load-js",
+      "bokeh-root-html",
+      "bokeh-exec-js",
+    ]);
+  });
+
+  it("keeps show(p) root HTML and Bokeh exec output in one document lane", () => {
+    const outputs = [
+      displayOutput("bokeh-root-html", {
+        "text/html": '<div id="bokeh-root"></div>',
+      }),
+      displayOutput("bokeh-exec-js", {
+        "application/javascript": 'document.getElementById("bokeh-root").textContent = "plot";',
+        [BOKEHJS_EXEC_MIME_TYPE]: "",
+      }),
+    ];
+
+    const segments = splitOutputSegments(outputs);
+
+    expect(segments.map((segment) => segment.lane)).toEqual(["static-frame"]);
+    expect(segments[0].outputs.map((output) => output.output_id)).toEqual([
       "bokeh-root-html",
       "bokeh-exec-js",
     ]);

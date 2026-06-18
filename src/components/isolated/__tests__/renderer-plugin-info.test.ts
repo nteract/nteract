@@ -4,6 +4,7 @@ import {
   rendererPluginInfoForMime,
   rendererPluginNameForMime,
 } from "../renderer-plugin-info";
+import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
 
 describe("renderer plugin metadata", () => {
   it("maps exact MIME types to the shared renderer plugin names", () => {
@@ -13,6 +14,14 @@ describe("renderer plugin metadata", () => {
     });
     expect(rendererPluginInfoForMime("application/vnd.plotly.v1+json")).toEqual({
       name: "plotly",
+      hasCss: false,
+    });
+    expect(rendererPluginInfoForMime(BOKEHJS_LOAD_MIME_TYPE)).toEqual({
+      name: "bokeh",
+      hasCss: false,
+    });
+    expect(rendererPluginInfoForMime(BOKEHJS_EXEC_MIME_TYPE)).toEqual({
+      name: "bokeh",
       hasCss: false,
     });
     expect(rendererPluginInfoForMime("application/vnd.apache.parquet")).toEqual({

@@ -1,6 +1,7 @@
 import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
+import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
 import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 import { OutputArea, type JupyterOutput } from "../OutputArea";
 
@@ -273,6 +274,28 @@ function makeBokehDocumentOutputs(): JupyterOutput[] {
       },
       metadata: {
         "application/vnd.bokehjs_exec.v0+json": { id: "p1011" },
+      },
+    },
+  ];
+}
+
+function makeBokehShowOnlyOutputs(): JupyterOutput[] {
+  return [
+    {
+      output_id: "bokeh-show-root-html",
+      output_type: "display_data",
+      data: { "text/html": '<div id="bokeh-root"></div>' },
+      metadata: {},
+    },
+    {
+      output_id: "bokeh-show-exec-js",
+      output_type: "display_data",
+      data: {
+        "application/javascript": 'document.getElementById("bokeh-root").textContent = "plot";',
+        [BOKEHJS_EXEC_MIME_TYPE]: "",
+      },
+      metadata: {
+        [BOKEHJS_EXEC_MIME_TYPE]: { id: "p1011" },
       },
     },
   ];
@@ -980,7 +1003,12 @@ describe("OutputArea iframe theme sync", () => {
           outputIndex: 0,
         }),
         expect.objectContaining({
-          mimeType: "application/javascript",
+          data: expect.objectContaining({
+            "application/javascript":
+              'document.getElementById("bokeh-loading").textContent = "BokehJS loaded";',
+            [BOKEHJS_LOAD_MIME_TYPE]: "",
+          }),
+          mimeType: BOKEHJS_LOAD_MIME_TYPE,
           outputId: "bokeh-load-js",
           outputIndex: 1,
         }),
@@ -990,9 +1018,42 @@ describe("OutputArea iframe theme sync", () => {
           outputIndex: 2,
         }),
         expect.objectContaining({
-          mimeType: "application/javascript",
+          data: expect.objectContaining({
+            "application/javascript": 'document.getElementById("bokeh-root").textContent = "plot";',
+            [BOKEHJS_EXEC_MIME_TYPE]: "",
+          }),
+          metadata: { id: "p1011" },
+          mimeType: BOKEHJS_EXEC_MIME_TYPE,
           outputId: "bokeh-exec-js",
           outputIndex: 3,
+        }),
+      ]);
+    });
+  });
+
+  it("keeps show(p) root HTML with the Bokeh exec renderer payload", async () => {
+    render(<OutputArea outputs={makeBokehShowOnlyOutputs()} />);
+
+    const frames = screen.getAllByTestId("isolated-frame");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("true");
+
+    await waitFor(() => {
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "text/html",
+          outputId: "bokeh-show-root-html",
+          outputIndex: 0,
+        }),
+        expect.objectContaining({
+          data: expect.objectContaining({
+            "application/javascript": 'document.getElementById("bokeh-root").textContent = "plot";',
+            [BOKEHJS_EXEC_MIME_TYPE]: "",
+          }),
+          metadata: { id: "p1011" },
+          mimeType: BOKEHJS_EXEC_MIME_TYPE,
+          outputId: "bokeh-show-exec-js",
+          outputIndex: 1,
         }),
       ]);
     });

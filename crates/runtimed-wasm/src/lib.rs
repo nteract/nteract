@@ -34,6 +34,10 @@ use wasm_bindgen::prelude::*;
 
 const MARKDOWN_PROJECTION_MIME: &str = "application/vnd.nteract.markdown+json";
 const MARKDOWN_SOURCE_MIME: &str = "text/markdown";
+const BOKEHJS_EXEC_MIME: &str = "application/vnd.bokehjs_exec.v0+json";
+const BOKEHJS_LOAD_MIME: &str = "application/vnd.bokehjs_load.v0+json";
+const BOKEHJS_SCRIPT_MIME: &str = "application/javascript";
+const BOKEHJS_HTML_MIME: &str = "text/html";
 const RUNT_OUTPUT_CACHE_KEY: &str = "_runt_output_cache_key";
 
 /// Install the panic hook on module init so Rust panics inside WASM
@@ -2621,6 +2625,8 @@ impl NotebookHandle {
 
     /// Narrow an output manifest's data bundle to the winning MIME type,
     /// plus all binary MIME refs and text/plain as a fallback candidate.
+    /// Multi-MIME renderer plugins may keep a small set of sibling refs that
+    /// are required to render the selected MIME.
     ///
     /// Resolves ContentRefs into `ResolvedContentRef` variants:
     /// - Binary MIME types → `Url` (blob server URL, zero fetch cost)
@@ -2651,11 +2657,24 @@ impl NotebookHandle {
 
             if let Some(winner_mime) = winner {
                 let mut narrowed = serde_json::Map::new();
+                let bokeh_bundle = data.contains_key(BOKEHJS_EXEC_MIME)
+                    || data.contains_key(BOKEHJS_LOAD_MIME)
+                    || winner_mime == BOKEHJS_EXEC_MIME
+                    || winner_mime == BOKEHJS_LOAD_MIME;
+
                 for (mime, val) in data {
                     if mime == winner_mime
                         || mime == "text/plain"
                         || is_binary_mime(mime)
                         || (winner_mime == MARKDOWN_PROJECTION_MIME && mime == MARKDOWN_SOURCE_MIME)
+                        || (bokeh_bundle
+                            && matches!(
+                                mime.as_str(),
+                                BOKEHJS_EXEC_MIME
+                                    | BOKEHJS_LOAD_MIME
+                                    | BOKEHJS_SCRIPT_MIME
+                                    | BOKEHJS_HTML_MIME
+                            ))
                     {
                         let resolved = self.resolve_content_ref(mime, val);
                         narrowed.insert(mime.clone(), resolved);
@@ -5285,6 +5304,37 @@ mod tests {
             !data.contains_key("text/html"),
             "non-winning rich text fallbacks should still be dropped"
         );
+    }
+
+    #[test]
+    fn bokeh_narrowing_keeps_marker_javascript_and_html_bundle() {
+        let mut handle = NotebookHandle::create_empty().expect("create handle");
+        handle.mime_priority = vec![
+            BOKEHJS_EXEC_MIME.to_string(),
+            BOKEHJS_LOAD_MIME.to_string(),
+            "text/html".to_string(),
+            BOKEHJS_SCRIPT_MIME.to_string(),
+            "text/plain".to_string(),
+        ];
+
+        let narrowed = handle.narrow_output_data(json!({
+            "output_type": "display_data",
+            "data": {
+                BOKEHJS_EXEC_MIME: { "inline": "" },
+                BOKEHJS_SCRIPT_MIME: { "inline": "Bokeh.embed.embed_items_notebook([]);" },
+                BOKEHJS_HTML_MIME: { "inline": "<div id=\"p1011\"></div>" },
+                "text/plain": { "inline": "fallback" },
+            },
+            "metadata": {
+                BOKEHJS_EXEC_MIME: { "id": "p1011" },
+            },
+        }));
+        let data = narrowed["data"].as_object().expect("narrowed data object");
+
+        assert!(data.contains_key(BOKEHJS_EXEC_MIME));
+        assert!(data.contains_key(BOKEHJS_SCRIPT_MIME));
+        assert!(data.contains_key(BOKEHJS_HTML_MIME));
+        assert!(data.contains_key("text/plain"));
     }
 
     #[test]

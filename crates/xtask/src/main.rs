@@ -3337,6 +3337,7 @@ fn ensure_renderer_artifacts_current(sift_wasm_rebuilt: bool) {
         "isolated-renderer.css",
         "markdown.js",
         "markdown.css",
+        "bokeh.js",
     ];
     let missing_lfs_tracked: Vec<&str> = lfs_tracked_probes
         .iter()
@@ -3428,6 +3429,9 @@ fn ensure_renderer_artifacts_current(sift_wasm_rebuilt: bool) {
             {
                 targets.push("markdown");
             }
+            if generated_needs_rebuild.contains(&"bokeh.js") {
+                targets.push("bokeh");
+            }
             if sift_missing || sift_source_changed || sift_wasm_rebuilt {
                 targets.push("sift");
             }
@@ -3510,6 +3514,7 @@ const GENERATED_RENDERER_PLUGIN_OUTPUTS: &[&str] = &[
     "apps/notebook/src/renderer-plugins/isolated-renderer.css",
     "apps/notebook/src/renderer-plugins/markdown.js",
     "apps/notebook/src/renderer-plugins/markdown.css",
+    "apps/notebook/src/renderer-plugins/bokeh.js",
     "apps/notebook/src/renderer-plugins/sift.js",
     "apps/notebook/src/renderer-plugins/sift.css",
 ];
@@ -3519,6 +3524,7 @@ const RENDERER_PLUGIN_OUTPUTS: &[&str] = &[
     "apps/notebook/src/renderer-plugins/isolated-renderer.css",
     "apps/notebook/src/renderer-plugins/markdown.js",
     "apps/notebook/src/renderer-plugins/markdown.css",
+    "apps/notebook/src/renderer-plugins/bokeh.js",
     "apps/notebook/src/renderer-plugins/plotly.js",
     "apps/notebook/src/renderer-plugins/vega.js",
     "apps/notebook/src/renderer-plugins/leaflet.js",
@@ -4112,6 +4118,7 @@ fn mcp_widget_needs_rebuild() -> Option<&'static str> {
         Path::new("src/build/renderer-plugin-builder.ts"),
         Path::new("apps/notebook/src/renderer-plugins/markdown.js"),
         Path::new("apps/notebook/src/renderer-plugins/markdown.css"),
+        Path::new("apps/notebook/src/renderer-plugins/bokeh.js"),
         Path::new("apps/notebook/src/renderer-plugins/plotly.js"),
         Path::new("apps/notebook/src/renderer-plugins/vega.js"),
         Path::new("apps/notebook/src/renderer-plugins/leaflet.js"),
