@@ -374,7 +374,6 @@ export {
 export type {
   CommentAnchor,
   CommentMessageSnapshot,
-  CommentMutationState,
   CommentsProjection,
   CommentThreadSnapshot,
   CommentThreadStatus,

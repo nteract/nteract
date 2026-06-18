@@ -322,6 +322,7 @@ export class NotebookRoom {
       type: "cloud_room_ready",
       protocol: "v4",
       notebook_id: notebookId,
+      comments_doc_id: `comments:${notebookId}`,
       peer_id: peer.id,
       actor_label: identity.actorLabel,
       connection_scope: identity.scope,

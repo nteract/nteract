@@ -17,6 +17,7 @@ import {
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import {
   NotebookConnectionIdentity,
+  NotebookCommentsPanel,
   NotebookDocumentToolbar,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
@@ -37,6 +38,9 @@ import {
   setFocusedCellId,
   useFocusedCellId,
   useNotebookViewModel,
+  type CommentAnchor,
+  type CommentThreadSnapshot,
+  type CommentsProjection,
 } from "@/components/notebook";
 import {
   openNotebookRailPanel,
@@ -264,6 +268,8 @@ export function NotebookViewer({
   }, []);
   const handleNotebookViewFocus = useCallback(() => {}, []);
   const { activePanelId: activeRailPanel, collapsed: railCollapsed } = useNotebookRailUiState();
+  const [commentsProjection, setCommentsProjection] = useState<CommentsProjection | null>(null);
+  const [commentsError, setCommentsError] = useState<string | null>(null);
   const handledHeadingHashRef = useRef<string | null>(null);
   const [latestAccessRequest, setLatestAccessRequest] = useState<CloudNotebookAccessRequest | null>(
     null,
@@ -488,6 +494,22 @@ export function NotebookViewer({
     resolveSyncAuth,
     widgetStore,
   });
+  useEffect(() => {
+    const liveRuntime = liveRuntimeRef.current;
+    if (!liveRuntime) {
+      setCommentsProjection(null);
+      return;
+    }
+    const initialProjection = liveRuntime.handle.get_comments_projection?.() as
+      | CommentsProjection
+      | undefined;
+    setCommentsProjection(initialProjection ?? null);
+    const subscription = liveRuntime.engine.commentsProjection$.subscribe((projection) => {
+      setCommentsProjection(projection);
+      setCommentsError(null);
+    });
+    return () => subscription.unsubscribe();
+  }, [connectionPeerId, liveRuntimeRef]);
   const cloudExecutionStartPromiseRef = useRef<Promise<boolean> | null>(null);
   const cloudNotebookHost = useMemo(
     () =>
@@ -1124,6 +1146,121 @@ export function NotebookViewer({
     },
     [shellCapabilities.canEditCells, shellCapabilities.canEditMarkdown, noteLocalCellEdit],
   );
+  const canWriteComments = connectionScope === "editor" || connectionScope === "owner";
+  const applyLocalCommentEvent = useCallback(
+    (event: unknown): boolean => {
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime) {
+        setCommentsError("Comments are not connected.");
+        return false;
+      }
+      const applied = liveRuntime.engine.applyLocalMutationEvent(
+        event as Parameters<typeof liveRuntime.engine.applyLocalMutationEvent>[0],
+      );
+      if (!applied) {
+        setCommentsError("Unable to update comments.");
+        return false;
+      }
+      setCommentsError(null);
+      liveRuntime.engine.scheduleFlush();
+      return true;
+    },
+    [liveRuntimeRef],
+  );
+  const handleCreateCommentThread = useCallback(
+    async (body: string) => {
+      if (!canWriteComments) return;
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime || typeof liveRuntime.handle.create_comment_thread !== "function") {
+        setCommentsError("Comments are not ready.");
+        return;
+      }
+      try {
+        const anchor: CommentAnchor = { kind: "notebook" };
+        const event = liveRuntime.handle.create_comment_thread(
+          createCloudCommentId("thread"),
+          createCloudCommentId("message"),
+          anchor,
+          body,
+          null,
+          new Date().toISOString(),
+        );
+        applyLocalCommentEvent(event);
+      } catch (error) {
+        setCommentsError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [applyLocalCommentEvent, canWriteComments, liveRuntimeRef],
+  );
+  const handleReplyCommentThread = useCallback(
+    async (threadId: string, body: string) => {
+      if (!canWriteComments) return;
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime || typeof liveRuntime.handle.reply_comment_thread !== "function") {
+        setCommentsError("Comments are not ready.");
+        return;
+      }
+      try {
+        const event = liveRuntime.handle.reply_comment_thread(
+          threadId,
+          createCloudCommentId("message"),
+          body,
+          null,
+          new Date().toISOString(),
+        );
+        applyLocalCommentEvent(event);
+      } catch (error) {
+        setCommentsError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [applyLocalCommentEvent, canWriteComments, liveRuntimeRef],
+  );
+  const handleResolveCommentThread = useCallback(
+    async (threadId: string) => {
+      if (!canWriteComments) return;
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime || typeof liveRuntime.handle.resolve_comment_thread !== "function") {
+        setCommentsError("Comments are not ready.");
+        return;
+      }
+      try {
+        const event = liveRuntime.handle.resolve_comment_thread(
+          threadId,
+          new Date().toISOString(),
+        );
+        applyLocalCommentEvent(event);
+      } catch (error) {
+        setCommentsError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [applyLocalCommentEvent, canWriteComments, liveRuntimeRef],
+  );
+  const handleReopenCommentThread = useCallback(
+    async (threadId: string) => {
+      if (!canWriteComments) return;
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime || typeof liveRuntime.handle.reopen_comment_thread !== "function") {
+        setCommentsError("Comments are not ready.");
+        return;
+      }
+      try {
+        const event = liveRuntime.handle.reopen_comment_thread(threadId);
+        applyLocalCommentEvent(event);
+      } catch (error) {
+        setCommentsError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [applyLocalCommentEvent, canWriteComments, liveRuntimeRef],
+  );
+  const handleFocusCommentAnchor = useCallback(
+    (thread: CommentThreadSnapshot) => {
+      const cellId = thread.badge_cell_ids[0];
+      if (cellId) {
+        focusCellInStore(cellId);
+      }
+    },
+    [focusCellInStore],
+  );
   const resetPrototypeAuth = useCallback(() => {
     void clearCloudAppSession().catch((error: unknown) => {
       console.warn("[notebook-cloud] app session clear failed", error);
@@ -1344,6 +1481,19 @@ export function NotebookViewer({
     !shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"
       ? "outline"
       : activeRailPanel;
+  const commentsPanel = (
+    <NotebookCommentsPanel
+      projection={commentsProjection}
+      readOnly={!canWriteComments}
+      statusMessage={commentsProjection ? null : "Syncing comments..."}
+      errorMessage={commentsError}
+      onCreateThread={canWriteComments ? handleCreateCommentThread : undefined}
+      onReplyThread={canWriteComments ? handleReplyCommentThread : undefined}
+      onResolveThread={canWriteComments ? handleResolveCommentThread : undefined}
+      onReopenThread={canWriteComments ? handleReopenCommentThread : undefined}
+      onFocusThreadAnchor={handleFocusCommentAnchor}
+    />
+  );
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
@@ -1353,6 +1503,7 @@ export function NotebookViewer({
       activeOutlineItemId={activeOutlineItemId}
       selectedOutlineItemId={selectedOutlineItemId}
       selectedOutlineCellId={focusedCellId}
+      commentsPanel={commentsPanel}
       workstationsPanel={
         shouldShowCloudWorkstationsPanel ? (
           <NotebookWorkstationsPanel
@@ -1639,6 +1790,13 @@ function cloudNotebookEnvironmentManager(
     }
   }
   return null;
+}
+
+function createCloudCommentId(prefix: string): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function cloudAccessRequestNotice(
