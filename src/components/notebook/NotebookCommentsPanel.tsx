@@ -62,8 +62,12 @@ export interface NotebookCommentsPanelProps {
    * to parsing the actor label when not provided.
    */
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
-  /** Language for syntax-highlighting quoted source (e.g. "python"). */
-  sourceLanguage?: string;
+  /**
+   * Language for syntax-highlighting a quoted source range, by anchored cell.
+   * Returns undefined for cells whose quotes should not be code-highlighted
+   * (e.g. markdown prose, raw cells).
+   */
+  resolveSourceLanguage?: (cellId: string) => string | undefined;
   /** Thread to scroll to and flash (e.g. after clicking its editor highlight). */
   focusedThreadId?: string | null;
   /** Bumped each focus request so repeat focuses of the same thread re-flash. */
@@ -84,7 +88,7 @@ export function NotebookCommentsPanel({
   onRetryThread,
   onFocusThreadAnchor,
   resolveCommentAuthor,
-  sourceLanguage,
+  resolveSourceLanguage,
   focusedThreadId = null,
   focusNonce = 0,
 }: NotebookCommentsPanelProps) {
@@ -123,7 +127,7 @@ export function NotebookCommentsPanel({
       onRetryThread={onRetryThread}
       onFocusThreadAnchor={onFocusThreadAnchor}
       resolveCommentAuthor={resolveCommentAuthor}
-      sourceLanguage={sourceLanguage}
+      resolveSourceLanguage={resolveSourceLanguage}
       focused={thread.id === focusedThreadId}
       focusNonce={focusNonce}
     />
@@ -262,7 +266,7 @@ function CommentThreadItem({
   onRetryThread,
   onFocusThreadAnchor,
   resolveCommentAuthor,
-  sourceLanguage,
+  resolveSourceLanguage,
   focused,
   focusNonce,
 }: {
@@ -276,7 +280,7 @@ function CommentThreadItem({
   onRetryThread?: (threadId: string) => void | Promise<void>;
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
-  sourceLanguage?: string;
+  resolveSourceLanguage?: (cellId: string) => string | undefined;
   focused?: boolean;
   focusNonce?: number;
 }) {
@@ -346,7 +350,11 @@ function CommentThreadItem({
           {quote ? (
             <CommentSourceQuote
               quote={quote}
-              language={sourceLanguage}
+              language={
+                resolveSourceLanguage
+                  ? resolveSourceLanguage(commentThreadTargetCellId(thread) ?? "")
+                  : undefined
+              }
               color={threadAuthor?.color}
             />
           ) : (

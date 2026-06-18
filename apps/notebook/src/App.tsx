@@ -843,6 +843,18 @@ function AppContent() {
     };
   }, []);
 
+  // Highlight a quoted source range with the anchored cell's language: code
+  // cells use the runtime language; markdown/raw quotes are prose and stay
+  // plain rather than being colored as code.
+  const resolveSourceLanguage = useCallback(
+    (cellId: string): string | undefined => {
+      const cell = getNotebookCellsSnapshot().find((candidate) => candidate.id === cellId);
+      if (cell?.cell_type !== "code") return undefined;
+      return runtime === "python" ? "python" : runtime === "deno" ? "typescript" : undefined;
+    },
+    [runtime],
+  );
+
   const sourceCommentThreadsByCell = useMemo(() => {
     const map = new Map<string, SourceCommentThread[]>();
     for (const thread of commentsProjection?.threads ?? []) {
@@ -1996,9 +2008,7 @@ function AppContent() {
                   resolveCommentAuthor={resolveCommentAuthor}
                   focusedThreadId={commentFocus?.threadId ?? null}
                   focusNonce={commentFocus?.nonce ?? 0}
-                  sourceLanguage={
-                    runtime === "python" ? "python" : runtime === "deno" ? "typescript" : undefined
-                  }
+                  resolveSourceLanguage={resolveSourceLanguage}
                 />
               }
               packagesPanel={
