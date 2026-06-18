@@ -25,6 +25,14 @@ new_sqlite_classes = ["NotebookRoom"]
 tag = "v2"
 new_sqlite_classes = ["WorkstationEvents"]
 
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["MarkdownDocumentRoom"]
+
+[[migrations]]
+tag = "v4"
+deleted_classes = ["MarkdownDocumentRoom"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "nteract-notebook-cloud-prototype-db"
