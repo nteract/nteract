@@ -9,8 +9,11 @@ import {
   type CommentAnchor,
   type CommentThreadSnapshot,
   type CommentsProjection,
+  friendlyNotebookActorLabel,
+  parseNotebookActorLabel,
   putBlob,
   type SessionStatus,
+  splitNotebookActorPrincipalOperator,
 } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
@@ -47,6 +50,7 @@ import {
   EnvBuildDecisionDialog,
   KernelLaunchErrorBanner,
   NotebookConnectionIdentity,
+  type CommentAuthor,
   NotebookCommentsPanel,
   type NotebookCommentDraftTarget,
   NotebookDocumentRail,
@@ -57,6 +61,7 @@ import {
   UntrustedBanner,
 } from "@/components/notebook";
 import { GlobalFindBar } from "@/components/search";
+import { colorForActorLabel } from "./lib/actor-colors";
 import { setSourceCommentThreads, type SourceCommentThread } from "./lib/comment-highlights";
 import type {
   SourceCommentSelectionRect,
@@ -826,6 +831,21 @@ function AppContent() {
   const handleActivateCommentThread = useCallback((_threadId: string) => {
     // Clicking a highlighted range surfaces the thread in the comments rail.
     openNotebookRailPanel("comments");
+  }, []);
+
+  const resolveCommentAuthor = useCallback((actorLabel: string): CommentAuthor => {
+    const parsed = parseNotebookActorLabel(actorLabel);
+    const isAgent = parsed?.kind === "agent";
+    // Prefer the live presence name (e.g. "Claude Code") for a connected
+    // author, then the parsed operator label, then a humanized fallback.
+    const liveName = findPeerLabelByActorLabel(actorLabel);
+    const displayName =
+      liveName ?? parsed?.label ?? friendlyNotebookActorLabel(actorLabel) ?? actorLabel;
+    const [principal] = splitNotebookActorPrincipalOperator(actorLabel);
+    const onBehalfOf = isAgent
+      ? (parsed?.onBehalfOf ?? friendlyNotebookActorLabel(principal))
+      : null;
+    return { displayName, color: colorForActorLabel(actorLabel), isAgent, onBehalfOf };
   }, []);
 
   const handleClearCommentDraftTarget = useCallback(() => {
@@ -1885,7 +1905,7 @@ function AppContent() {
                   onResolveThread={canMutateComments ? handleResolveCommentThread : undefined}
                   onReopenThread={canMutateComments ? handleReopenCommentThread : undefined}
                   onFocusThreadAnchor={handleFocusCommentThreadAnchor}
-                  resolveActorDisplayName={findPeerLabelByActorLabel}
+                  resolveCommentAuthor={resolveCommentAuthor}
                 />
               }
               packagesPanel={

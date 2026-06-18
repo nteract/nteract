@@ -219,6 +219,7 @@ export {
 } from "./NotebookWorkstationsPanel";
 export { NotebookDocumentRail, type NotebookDocumentRailProps } from "./NotebookDocumentRail";
 export {
+  type CommentAuthor,
   NotebookCommentsPanel,
   type NotebookCommentDraftTarget,
   type NotebookCommentsPanelProps,

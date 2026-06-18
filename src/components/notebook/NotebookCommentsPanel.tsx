@@ -1,4 +1,13 @@
-import { CheckCircle2, LocateFixed, MessageSquare, Plus, RotateCcw, Send, X } from "lucide-react";
+import {
+  Bot,
+  CheckCircle2,
+  LocateFixed,
+  MessageSquare,
+  Plus,
+  RotateCcw,
+  Send,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type {
   CommentAnchor,
@@ -6,11 +15,25 @@ import type {
   CommentThreadSnapshot,
   CommentsProjection,
 } from "runtimed";
+import { projectMarkdownPlan } from "../../lib/markdown-projection";
 import { cn } from "@/lib/utils";
+import { ProjectedMarkdownView } from "../markdown/ProjectedMarkdownView";
 
 export interface NotebookCommentDraftTarget {
   anchor: CommentAnchor;
   quote?: string | null;
+}
+
+/** Rendered attribution for a comment author. */
+export interface CommentAuthor {
+  /** Display name (e.g. "Claude Code" or "kylekelley"). */
+  displayName: string;
+  /** Author color (hex), shared with cursors/attribution/highlights. */
+  color?: string;
+  /** True when the author is an AI agent rather than a person. */
+  isAgent?: boolean;
+  /** Principal the agent is acting for, when operating on someone's behalf. */
+  onBehalfOf?: string | null;
 }
 
 export interface NotebookCommentsPanelProps {
@@ -26,11 +49,11 @@ export interface NotebookCommentsPanelProps {
   onReopenThread?: (threadId: string) => void | Promise<void>;
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
   /**
-   * Resolve a friendly display name for a comment author's actor label
-   * (e.g. mapping a connected agent to "Claude Code"). Falls back to parsing
-   * the actor label when this returns undefined.
+   * Resolve attribution for a comment author's actor label: display name,
+   * color, whether it's an AI agent, and the principal it acts for. Falls back
+   * to parsing the actor label when not provided.
    */
-  resolveActorDisplayName?: (actorLabel: string) => string | undefined;
+  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
 }
 
 export function NotebookCommentsPanel({
@@ -45,7 +68,7 @@ export function NotebookCommentsPanel({
   onResolveThread,
   onReopenThread,
   onFocusThreadAnchor,
-  resolveActorDisplayName,
+  resolveCommentAuthor,
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
   const labeledThreads = labelCommentThreads(threads);
@@ -112,7 +135,7 @@ export function NotebookCommentsPanel({
               onResolveThread={onResolveThread}
               onReopenThread={onReopenThread}
               onFocusThreadAnchor={onFocusThreadAnchor}
-              resolveActorDisplayName={resolveActorDisplayName}
+              resolveCommentAuthor={resolveCommentAuthor}
             />
           ))}
         </ol>
@@ -171,7 +194,7 @@ function CommentThreadItem({
   onResolveThread,
   onReopenThread,
   onFocusThreadAnchor,
-  resolveActorDisplayName,
+  resolveCommentAuthor,
 }: {
   thread: CommentThreadSnapshot;
   threadLabel: string;
@@ -181,7 +204,7 @@ function CommentThreadItem({
   onResolveThread?: (threadId: string) => void | Promise<void>;
   onReopenThread?: (threadId: string) => void | Promise<void>;
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
-  resolveActorDisplayName?: (actorLabel: string) => string | undefined;
+  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
 }) {
   const [statusSubmitting, setStatusSubmitting] = useState(false);
   const hasUnsettledMessages = thread.messages.some(
@@ -219,15 +242,12 @@ function CommentThreadItem({
   return (
     <li className="rounded-md border bg-card text-card-foreground shadow-sm">
       <div className="space-y-3 p-3">
-        <div className="flex min-w-0 items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium text-muted-foreground">{threadLabel}</div>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              <CommentBadge state={thread.status} />
-              {thread.mutation_state !== "accepted" ? (
-                <CommentBadge state={thread.mutation_state} />
-              ) : null}
-            </div>
+        <div className="flex min-w-0 items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {thread.status === "resolved" ? <CommentBadge state="resolved" /> : null}
+            {thread.mutation_state === "rejected" ? (
+              <span className="text-[11px] font-medium text-destructive">Couldn't post</span>
+            ) : null}
           </div>
           <span
             aria-label={`${thread.messages.length} ${
@@ -270,7 +290,7 @@ function CommentThreadItem({
             <CommentMessage
               key={message.id}
               message={message}
-              resolveActorDisplayName={resolveActorDisplayName}
+              resolveCommentAuthor={resolveCommentAuthor}
             />
           ))}
         </div>
@@ -291,29 +311,86 @@ function CommentThreadItem({
 
 function CommentMessage({
   message,
-  resolveActorDisplayName,
+  resolveCommentAuthor,
 }: {
   message: CommentMessageSnapshot;
-  resolveActorDisplayName?: (actorLabel: string) => string | undefined;
+  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
 }) {
+  const author: CommentAuthor | null = message.created_by_actor_label
+    ? (resolveCommentAuthor?.(message.created_by_actor_label) ?? {
+        displayName: formatActorLabel(message.created_by_actor_label),
+      })
+    : null;
+
   return (
-    <article className="space-y-1 rounded bg-muted/35 px-2.5 py-2">
-      <p className="whitespace-pre-wrap break-words text-sm leading-5 text-foreground">
-        {message.body}
-      </p>
-      <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
-        {message.mutation_state !== "accepted" ? (
-          <CommentBadge state={message.mutation_state} compact />
-        ) : null}
-        {message.created_by_actor_label ? (
-          <span title={message.created_by_actor_label}>
-            {resolveActorDisplayName?.(message.created_by_actor_label) ??
-              formatActorLabel(message.created_by_actor_label)}
-          </span>
-        ) : null}
+    <article className="space-y-1.5 rounded-md bg-muted/35 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        {author ? (
+          <CommentAuthorAvatar author={author} />
+        ) : (
+          <div className="size-6 shrink-0 rounded-full bg-muted" aria-hidden="true" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-1.5">
+            <span
+              className="truncate text-xs font-medium text-foreground"
+              title={message.created_by_actor_label ?? undefined}
+            >
+              {author?.displayName ?? "Unknown"}
+            </span>
+            {author?.isAgent ? (
+              <span
+                className="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground"
+                title="AI agent"
+              >
+                <Bot className="size-2.5" aria-hidden="true" />
+                AI
+              </span>
+            ) : null}
+            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+              {formatRelativeTime(message.created_at)}
+            </span>
+          </div>
+          {author?.isAgent && author.onBehalfOf ? (
+            <div className="text-[10px] text-muted-foreground">for {author.onBehalfOf}</div>
+          ) : null}
+        </div>
       </div>
+      <CommentBody body={message.body} />
+      {message.mutation_state === "rejected" ? (
+        <div className="text-[10px] font-medium text-destructive">Couldn't post</div>
+      ) : null}
     </article>
   );
+}
+
+function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
+  const initials = authorInitials(author.displayName);
+  return (
+    <div
+      className="flex size-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+      style={{ backgroundColor: author.color ?? "hsl(var(--muted-foreground))" }}
+      aria-hidden="true"
+    >
+      {author.isAgent ? <Bot className="size-3.5" /> : initials}
+    </div>
+  );
+}
+
+/**
+ * Render a comment body through the shared markdown engine so inline code,
+ * emphasis, links, and lists match the rest of the app. The projector returns
+ * a structured plan (never raw HTML), so this is safe by construction; falls
+ * back to plain text when the projector is unavailable.
+ */
+function CommentBody({ body }: { body: string }) {
+  const plan = projectMarkdownPlan(body);
+  if (!plan) {
+    return (
+      <p className="whitespace-pre-wrap break-words text-sm leading-5 text-foreground">{body}</p>
+    );
+  }
+  return <ProjectedMarkdownView plan={plan} className="text-sm leading-5" />;
 }
 
 function CommentAnchorQuote({ quote }: { quote: string | null }) {
@@ -516,6 +593,28 @@ function draftAnchorKey(anchor: CommentAnchor): string {
     default:
       return "notebook";
   }
+}
+
+function authorInitials(displayName: string): string {
+  const words = displayName.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "?";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+}
+
+function formatRelativeTime(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.round((Date.now() - then) / 1000);
+  if (seconds < 45) return "now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d`;
+  return new Date(iso).toLocaleDateString();
 }
 
 function formatQuotePreview(quote: string | null | undefined): string | null {

@@ -258,7 +258,6 @@ describe("NotebookCommentsPanel", () => {
 
     expect(screen.getByText("Check the framing before publishing.")).toBeVisible();
     expect(screen.getByText("alice")).toBeVisible();
-    expect(screen.getByText("Cell comment 1")).toBeVisible();
     expect(screen.getByText("Cell-scoped comment")).toBeVisible();
     expect(screen.getAllByLabelText("1 message")).toHaveLength(2);
 
@@ -300,7 +299,6 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    expect(screen.getByText("Source comment 1")).toBeVisible();
     expect(screen.getByTestId("comment-thread-source-quote")).toHaveTextContent("important_call()");
     fireEvent.click(screen.getByRole("button", { name: "Show cell for Source comment 1" }));
     expect(onFocusThreadAnchor).toHaveBeenCalledWith(sourceThread);
@@ -363,10 +361,13 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.queryByText("local:ubuntu/desktop:d47eea7d")).not.toBeInTheDocument();
   });
 
-  it("prefers a resolved display name over the parsed actor label", () => {
-    const resolveActorDisplayName = vi.fn((actorLabel: string) =>
-      actorLabel === "local:kylekelley/agent:nteract-mcp:6483cc03" ? "Claude Code" : undefined,
-    );
+  it("renders resolved author attribution with the on-behalf-of principal", () => {
+    const resolveCommentAuthor = vi.fn((actorLabel: string) => ({
+      displayName: actorLabel.includes("agent") ? "Claude Code" : actorLabel,
+      isAgent: true,
+      onBehalfOf: "kylekelley",
+      color: "#3b82f6",
+    }));
     render(
       <NotebookCommentsPanel
         projection={{
@@ -383,15 +384,16 @@ describe("NotebookCommentsPanel", () => {
             },
           ],
         }}
-        resolveActorDisplayName={resolveActorDisplayName}
+        resolveCommentAuthor={resolveCommentAuthor}
       />,
     );
 
     expect(screen.getByText("Claude Code")).toBeVisible();
-    expect(screen.queryByText("kylekelley nteract-mcp")).not.toBeInTheDocument();
+    expect(screen.getByText("AI")).toBeVisible();
+    expect(screen.getByText("for kylekelley")).toBeVisible();
   });
 
-  it("falls back to the parsed actor label when no display name resolves", () => {
+  it("falls back to the parsed actor label when no author resolver is given", () => {
     render(
       <NotebookCommentsPanel
         projection={{
@@ -408,7 +410,6 @@ describe("NotebookCommentsPanel", () => {
             },
           ],
         }}
-        resolveActorDisplayName={() => undefined}
       />,
     );
 
