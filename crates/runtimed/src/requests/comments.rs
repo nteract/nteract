@@ -261,14 +261,26 @@ async fn finalize_thread_creation(
                 .threads
                 .iter()
                 .find(|thread| thread.id == thread_id)
-                .map(|thread| &thread.anchor)
+                .map(|thread| thread.anchor.clone())
                 .ok_or_else(|| comments_doc::CommentsDocError::ThreadNotFound(thread_id.clone()))?;
             let Some(notebook_doc) = notebook_doc else {
                 return Err(comments_doc::CommentsDocError::InvalidAnchor(
                     "notebook document unavailable for source_range validation".to_string(),
                 ));
             };
-            validate_thread_anchor_against_notebook_doc(notebook_doc, anchor)?;
+            if let Err(anchor_error) =
+                validate_thread_anchor_against_notebook_doc(notebook_doc, &anchor)
+            {
+                // A source range that no longer resolves shouldn't kill the
+                // comment: demote it to a dangling document comment so the
+                // (already authentic) comment survives. Other anchor kinds still
+                // reject on structural problems.
+                if matches!(anchor, comments_doc::CommentAnchor::SourceRange { .. }) {
+                    doc.demote_thread_anchor_to_notebook(&thread_id)?;
+                } else {
+                    return Err(anchor_error);
+                }
+            }
         }
         doc.doc_mut()
             .set_actor(ActorId::from(COMMENTS_DOC_ACTOR.as_bytes()));

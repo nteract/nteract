@@ -337,6 +337,25 @@ impl CommentsDoc {
         Ok(())
     }
 
+    /// Demote a thread's anchor to a notebook (document-level) comment.
+    ///
+    /// Used at finalize when a source-range anchor can no longer be resolved
+    /// against the current cell source: rather than reject an already-authentic
+    /// comment, it survives as a dangling document comment. Call before
+    /// `accept_thread_creation` so the accepted authority anchor reflects it.
+    pub fn demote_thread_anchor_to_notebook(
+        &mut self,
+        thread_id: &str,
+    ) -> Result<(), CommentsDocError> {
+        let thread = self.thread_or_error(thread_id)?;
+        let anchor = CommentAnchor::Notebook;
+        let anchor_value = serde_json::to_value(&anchor)?;
+        automunge::put_json_at_key_batched(&mut self.doc, &thread, "anchor", &anchor_value)?;
+        self.doc
+            .put(&thread, "thread_order_scope", anchor.thread_order_scope())?;
+        Ok(())
+    }
+
     pub fn reject_thread_creation(
         &mut self,
         thread_id: &str,
@@ -1861,6 +1880,34 @@ mod tests {
         doc.accept_message("thread-1", "msg-1", "local-user", "local_uid")
             .unwrap();
         doc
+    }
+
+    #[test]
+    fn demote_thread_anchor_to_notebook_makes_it_a_document_comment() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+        doc.create_thread(
+            "thread-1",
+            "msg-1",
+            &source_anchor(0, 0, 0, 4, Some("beta")),
+            "anchored comment",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+
+        doc.demote_thread_anchor_to_notebook("thread-1").unwrap();
+
+        let projection = doc.read_projection(&[AUTHORITY], None).unwrap();
+        let thread = projection
+            .threads
+            .iter()
+            .find(|thread| thread.id == "thread-1")
+            .expect("thread present after demote");
+        assert!(
+            matches!(thread.anchor, CommentAnchor::Notebook),
+            "demoted thread should be a document comment, got {:?}",
+            thread.anchor
+        );
     }
 
     fn change_hashes_for_actor(doc: &mut AutoCommit, actor: &str) -> Vec<automerge::ChangeHash> {
