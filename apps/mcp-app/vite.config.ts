@@ -13,6 +13,7 @@ const siftWasmPath = path.join(repoRoot, "crates/sift-wasm/pkg/sift_wasm_bg.wasm
 const daemonPluginAssets = [
   "markdown.js",
   "markdown.css",
+  "bokeh.js",
   "plotly.js",
   "vega.js",
   "leaflet.js",

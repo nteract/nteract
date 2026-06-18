@@ -2473,6 +2473,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bokeh_display_data_preserves_exec_marker_mime() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "text/html": "<div id=\"p1011\"></div>",
+                "application/javascript": "Bokeh.embed.embed_items_notebook([]);",
+                "application/vnd.bokehjs_exec.v0+json": ""
+            },
+            "metadata": {
+                "application/vnd.bokehjs_exec.v0+json": { "id": "p1011" }
+            }
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::DisplayData { data, .. } = manifest else {
+            panic!("expected DisplayData");
+        };
+
+        assert!(data.contains_key("application/vnd.bokehjs_exec.v0+json"));
+    }
+
+    #[tokio::test]
     async fn markdown_display_data_adds_projected_plan_sibling() {
         let dir = TempDir::new().unwrap();
         let store = test_store(&dir);

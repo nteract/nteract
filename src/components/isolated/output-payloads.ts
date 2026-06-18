@@ -1,8 +1,13 @@
 import type { RenderPayload } from "./frame-bridge";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
+import { isBokehMimeType } from "@/components/outputs/bokeh-mime";
 import { DEFAULT_PRIORITY, selectMimeType } from "@/components/outputs/mime-priority";
 
 export type IdentifiedJupyterOutput = JupyterOutput & { output_id: string };
+type DataJupyterOutput = Extract<
+  IdentifiedJupyterOutput,
+  { output_type: "execute_result" | "display_data" }
+>;
 
 export interface RenderPayloadOptions {
   cellId?: string;
@@ -31,6 +36,18 @@ function requireOutputId(output: IdentifiedJupyterOutput): string {
   return output.output_id;
 }
 
+function dataForSelectedMime(output: DataJupyterOutput, mimeType: string): unknown {
+  if (!isBokehMimeType(mimeType)) {
+    return output.data[mimeType];
+  }
+
+  return {
+    [mimeType]: output.data[mimeType],
+    "application/javascript": output.data["application/javascript"],
+    "text/html": output.data["text/html"],
+  };
+}
+
 export function jupyterOutputToRenderPayload(
   output: IdentifiedJupyterOutput,
   outputIndex: number,
@@ -44,7 +61,7 @@ export function jupyterOutputToRenderPayload(
     if (!mimeType) return null;
     return {
       mimeType,
-      data: output.data[mimeType],
+      data: dataForSelectedMime(output, mimeType),
       metadata: output.metadata?.[mimeType] as Record<string, unknown> | undefined,
       outputId,
       cellId,

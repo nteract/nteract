@@ -1,4 +1,9 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
+import {
+  BOKEHJS_EXEC_MIME_TYPE,
+  BOKEHJS_LOAD_MIME_TYPE,
+  isBokehMimeType,
+} from "@/components/outputs/bokeh-mime";
 import { DEFAULT_PRIORITY, selectMimeType } from "@/components/outputs/mime-priority";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
@@ -38,6 +43,8 @@ const SCROLL_PASSTHROUGH_MIME_TYPES = new Set([
   // JavaScript display outputs often act on adjacent HTML display outputs in
   // the same cell (Bokeh's notebook loader/root pair is the common case).
   "application/javascript",
+  BOKEHJS_LOAD_MIME_TYPE,
+  BOKEHJS_EXEC_MIME_TYPE,
   // Sift's interactive tables are also click-to-engage (see SIFT_MIME_TYPES).
   "application/vnd.apache.parquet",
   "application/vnd.apache.arrow.stream",
@@ -109,10 +116,18 @@ export function outputUsesPlotly(
   return mimeType === "application/vnd.plotly.v1+json";
 }
 
+export function outputUsesBokeh(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  const mimeType = selectedOutputMimeType(output, priority);
+  return mimeType !== null && isBokehMimeType(mimeType);
+}
+
 /**
  * Outputs whose iframe must own the wheel once the user engages it: Sift's
  * crossfilter tables scroll internally, and chart surfaces like Vega/Altair
- * and Plotly pan or zoom. While engaged the wheel-boundary forwarding is
+ * Plotly, and Bokeh pan or zoom. While engaged the wheel-boundary forwarding is
  * locked so the page does not steal the gesture.
  */
 export function outputUsesWheelOwningFrame(
@@ -122,7 +137,8 @@ export function outputUsesWheelOwningFrame(
   return (
     outputUsesSift(output, priority) ||
     outputUsesVega(output, priority) ||
-    outputUsesPlotly(output, priority)
+    outputUsesPlotly(output, priority) ||
+    outputUsesBokeh(output, priority)
   );
 }
 

@@ -40,6 +40,7 @@ function normalize(m: { code: string; css?: string }): PluginModule {
 const PLUGIN_LOADERS: Record<RendererPluginName, () => Promise<PluginModule>> = {
   markdown: () => import("virtual:renderer-plugin/markdown").then(normalize),
   plotly: () => import("virtual:renderer-plugin/plotly").then(normalize),
+  bokeh: () => import("virtual:renderer-plugin/bokeh").then(normalize),
   vega: () => import("virtual:renderer-plugin/vega").then(normalize),
   leaflet: () => import("virtual:renderer-plugin/leaflet").then(normalize),
   sift: () => import("virtual:renderer-plugin/sift").then(normalize),

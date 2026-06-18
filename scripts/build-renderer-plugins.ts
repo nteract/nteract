@@ -3,8 +3,8 @@
  *
  * Output: `apps/notebook/src/renderer-plugins/` - core IIFE + CJS plugins.
  * Stable third-party bundles (plotly, vega, leaflet) are LFS-tracked.
- * Owned/generated bundles (isolated-renderer, markdown, sift) stay gitignored
- * because they are local build outputs. Sift also re-embeds sift-wasm's
+ * Owned/generated bundles (isolated-renderer, markdown, bokeh, sift) stay
+ * gitignored because they are local build outputs. Sift also re-embeds sift-wasm's
  * wasm-bindgen glue and must be rebuilt in lockstep.
  *
  * The notebook Vite app loads these CJS bundles directly. runtimed
@@ -47,6 +47,7 @@ Targets:
   core               Alias for isolated-renderer
   markdown           Markdown renderer plugin
   plotly             Plotly renderer plugin
+  bokeh              Bokeh renderer plugin
   vega               Vega renderer plugin
   leaflet            Leaflet renderer plugin
   sift               Sift renderer plugin

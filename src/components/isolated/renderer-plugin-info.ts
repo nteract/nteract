@@ -1,6 +1,7 @@
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
+import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
 
-export type RendererPluginName = "markdown" | "plotly" | "vega" | "leaflet" | "sift";
+export type RendererPluginName = "markdown" | "plotly" | "bokeh" | "vega" | "leaflet" | "sift";
 
 export interface RendererPluginInfo {
   name: RendererPluginName;
@@ -11,6 +12,8 @@ const MIME_TO_PLUGIN: Record<string, RendererPluginInfo> = {
   "text/markdown": { name: "markdown", hasCss: true },
   "text/latex": { name: "markdown", hasCss: true },
   "application/vnd.plotly.v1+json": { name: "plotly", hasCss: false },
+  [BOKEHJS_LOAD_MIME_TYPE]: { name: "bokeh", hasCss: false },
+  [BOKEHJS_EXEC_MIME_TYPE]: { name: "bokeh", hasCss: false },
   "application/geo+json": { name: "leaflet", hasCss: true },
   "application/vnd.apache.parquet": { name: "sift", hasCss: true },
   "application/vnd.apache.arrow.stream": { name: "sift", hasCss: true },
