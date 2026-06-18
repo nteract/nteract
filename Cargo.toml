@@ -9,6 +9,7 @@ members = [
     "crates/automerge-recovery",
     "crates/notebook",
     "crates/automunge",
+    "crates/comments-doc",
     "crates/notebook-wire",
     "crates/notebook-doc",
     "crates/runtime-doc",
