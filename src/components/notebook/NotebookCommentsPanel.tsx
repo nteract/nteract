@@ -289,11 +289,7 @@ function CommentThreadItem({
     return () => clearTimeout(timer);
   }, [focused, focusNonce]);
   const [statusSubmitting, setStatusSubmitting] = useState(false);
-  const hasUnsettledMessages = thread.messages.some(
-    (message) => message.mutation_state === "pending" || message.mutation_state === "unverified",
-  );
-  const statusActionEnabled =
-    canUpdateStatus && thread.mutation_state === "accepted" && !hasUnsettledMessages;
+  const statusActionEnabled = canUpdateStatus;
   const statusAction =
     thread.status === "resolved"
       ? {
@@ -353,9 +349,6 @@ function CommentThreadItem({
             </div>
           )}
           {thread.status === "resolved" ? <CommentBadge state="resolved" /> : null}
-          {thread.mutation_state === "rejected" ? (
-            <span className="text-[11px] font-medium text-destructive">Couldn't post</span>
-          ) : null}
           <div className="flex shrink-0 items-center gap-0.5">
             {canShowCell ? (
               <button
@@ -451,9 +444,6 @@ function CommentMessage({
           </span>
         </div>
         <CommentBody body={message.body} />
-        {message.mutation_state === "rejected" ? (
-          <div className="text-[10px] font-medium text-destructive">Couldn't post</div>
-        ) : null}
       </div>
     </article>
   );
@@ -794,13 +784,8 @@ function formatActorLabel(actorLabel: string): string {
 
 function stateToneClassName(state: string): string {
   switch (state) {
-    case "accepted":
     case "open":
       return "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/25 dark:text-emerald-300";
-    case "pending":
-      return "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/25 dark:text-amber-300";
-    case "rejected":
-      return "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-950/25 dark:text-rose-300";
     case "resolved":
       return "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-950/25 dark:text-sky-300";
     default:

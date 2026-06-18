@@ -1,4 +1,4 @@
-import { ListTree, Package, Server } from "lucide-react";
+import { ListTree, MessageSquare, Package, Server } from "lucide-react";
 import { useMemo, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import {
   buildNotebookOutlineTree,
@@ -16,7 +16,7 @@ import {
 } from "@/components/rail";
 import { cn } from "@/lib/utils";
 
-export type NotebookRailPanelId = "outline" | "packages" | "workstations";
+export type NotebookRailPanelId = "outline" | "packages" | "comments" | "workstations";
 
 export const NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY = RAIL_TAKEOVER_MEDIA_QUERY;
 export const NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME = RAIL_TAKEOVER_STAGE_CLASS_NAME;
@@ -35,6 +35,7 @@ export interface NotebookRailProps {
   selectedOutlineItemId?: string | null;
   selectedOutlineCellId?: string | null;
   packagesPanel: ReactNode;
+  commentsPanel?: ReactNode;
   workstationsPanel?: ReactNode;
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
@@ -58,6 +59,7 @@ export function NotebookRail({
   selectedOutlineItemId = null,
   selectedOutlineCellId = null,
   packagesPanel,
+  commentsPanel,
   workstationsPanel,
   onActivePanelChange,
   onCollapsedChange,
@@ -66,15 +68,21 @@ export function NotebookRail({
   getOutlineItemHref,
   className,
 }: NotebookRailProps) {
-  const railButtons = workstationsPanel
-    ? [...baseRailButtons, { id: "workstations" as const, label: "Workstations", icon: Server }]
-    : baseRailButtons;
+  const railButtons = [
+    ...baseRailButtons,
+    ...(commentsPanel ? [{ id: "comments" as const, label: "Comments", icon: MessageSquare }] : []),
+    ...(workstationsPanel
+      ? [{ id: "workstations" as const, label: "Workstations", icon: Server }]
+      : []),
+  ];
   const title =
     activePanelId === "packages"
       ? "Packages"
-      : activePanelId === "workstations"
-        ? "Workstations"
-        : "Outline";
+      : activePanelId === "comments"
+        ? "Comments"
+        : activePanelId === "workstations"
+          ? "Workstations"
+          : "Outline";
   return (
     <Rail
       activePanelId={activePanelId}
@@ -103,6 +111,8 @@ export function NotebookRail({
         />
       ) : activePanelId === "packages" ? (
         packagesPanel
+      ) : activePanelId === "comments" ? (
+        commentsPanel
       ) : (
         workstationsPanel
       )}

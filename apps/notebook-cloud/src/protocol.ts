@@ -43,6 +43,7 @@ export type SessionControlMessage =
       type: "cloud_room_ready";
       protocol: typeof NOTEBOOK_PROTOCOL;
       notebook_id: string;
+      comments_doc_id?: string;
       peer_id: string;
       actor_label: string;
       connection_scope: string;

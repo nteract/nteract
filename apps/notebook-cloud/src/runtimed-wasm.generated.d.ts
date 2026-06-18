@@ -41,6 +41,10 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
   export class NotebookHandle {
     constructor(notebookId: string);
     static create_bootstrap(actorLabel: string): NotebookHandle;
+    static create_bootstrap_with_comments(
+      actorLabel: string,
+      commentsDocId: string,
+    ): NotebookHandle;
     static load_snapshot(notebookBytes: Uint8Array, runtimeStateBytes: Uint8Array): NotebookHandle;
     add_cell_after(
       cellId: string,
@@ -50,29 +54,53 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     cell_count(): number;
     cancel_last_flush(): void;
     cancel_last_comms_doc_flush(): void;
+    cancel_last_comments_doc_flush(): void;
     cancel_last_pool_state_flush(): void;
     cancel_last_runtime_state_flush(): void;
+    create_comment_thread(
+      threadId: string,
+      messageId: string,
+      anchor: unknown,
+      body: string,
+      afterThreadId: string | null | undefined,
+      createdAt: string,
+    ): unknown;
     flush_comms_doc_sync(): Uint8Array | undefined;
+    flush_comments_doc_sync(): Uint8Array | undefined;
     flush_local_changes(): Uint8Array | undefined;
     flush_pool_state_sync(): Uint8Array | undefined;
     flush_runtime_state_sync(): Uint8Array | undefined;
     generate_comms_doc_sync_reply(): Uint8Array | undefined;
+    generate_comments_doc_sync_reply(): Uint8Array | undefined;
     generate_pool_state_sync_reply(): Uint8Array | undefined;
     generate_runtime_state_sync_reply(): Uint8Array | undefined;
     get_cells_json(): string;
     get_comms_doc_id(): string | undefined;
     get_comms_state(): unknown;
+    get_comments_doc_heads_hex(): string[];
+    get_comments_doc_id(): string | undefined;
+    get_comments_projection(): unknown;
     get_dependency_fingerprint(): string | undefined;
     get_heads_hex(): string[];
     get_metadata_snapshot_json(): string | undefined;
     get_runtime_state_doc_id(): string | undefined;
     get_runtime_state(): unknown;
+    init_comments_sync_target(commentsDocId: string): void;
     load_comms_doc(commsBytes: Uint8Array): void;
     move_cell(cellId: string, afterCellId?: string | null): string;
     delete_cell(cellId: string): boolean;
     get_runtime_state_heads_hex(): string[];
     receive_frame(frameBytes: Uint8Array): unknown;
+    reopen_comment_thread(threadId: string): unknown;
     reset_sync_state(): void;
+    reply_comment_thread(
+      threadId: string,
+      messageId: string,
+      body: string,
+      afterMessageId: string | null | undefined,
+      createdAt: string,
+    ): unknown;
+    resolve_comment_thread(threadId: string, resolvedAt: string): unknown;
     resolve_comm_state(commId: string): unknown;
     set_actor(actorLabel: string): void;
     set_blob_port(port: number): void;

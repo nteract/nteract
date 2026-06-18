@@ -35,19 +35,14 @@ export type CommentAnchor =
       output_id?: string | null;
     };
 
-export type CommentMutationState = "pending" | "accepted" | "rejected" | "unverified";
-export type CommentThreadStatus = "open" | "resolved" | "unverified";
+export type CommentThreadStatus = "open" | "resolved";
 
 export interface CommentMessageSnapshot {
   id: string;
   position: string;
   body: string;
-  mutation_state: CommentMutationState;
-  trusted: boolean;
   created_at: string;
   created_by_actor_label?: string | null;
-  created_by_authority?: string | null;
-  rejection_reason?: string | null;
 }
 
 export interface CommentThreadSnapshot {
@@ -55,17 +50,12 @@ export interface CommentThreadSnapshot {
   anchor: CommentAnchor;
   position: string;
   status: CommentThreadStatus;
-  mutation_state: CommentMutationState;
-  trusted: boolean;
   messages: CommentMessageSnapshot[];
   badge_cell_ids: string[];
   created_at: string;
   created_by_actor_label?: string | null;
-  created_by_authority?: string | null;
-  rejection_reason?: string | null;
   resolved_at?: string | null;
   resolved_by_actor_label?: string | null;
-  resolved_by_authority?: string | null;
 }
 
 export interface CommentsProjection {

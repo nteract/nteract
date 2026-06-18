@@ -272,6 +272,9 @@ export async function connectCloudSyncRuntime({
       loadFromBytes: (bytes) =>
         loadNotebookHandleFromBytes(bytes, ready.actor_label, wasmModuleUrl, wasmUrl),
     });
+    if (ready.comments_doc_id) {
+      initCloudCommentsSyncTarget(handle, ready.comments_doc_id);
+    }
     const syncHandle = syncableCloudHandle(handle);
     // Mutable connection identity: presence encoders and the runtime's
     // identity getters always read the LATEST handshake's values, so a
@@ -645,6 +648,12 @@ export function isRecoverableCloudFrameRejection(message: SessionControlMessage)
   if (message.frame_type === FrameType.COMMS_DOC_SYNC) {
     return (
       isSyncDivergenceRejectionReason(message.reason, "cloud-room-comms-receive-sync") ||
+      isRecoverableRoomHostSyncBoundaryRejection(message.reason)
+    );
+  }
+  if (message.frame_type === FrameType.COMMENTS_DOC_SYNC) {
+    return (
+      isSyncDivergenceRejectionReason(message.reason, "cloud-room-comments-receive-sync") ||
       isRecoverableRoomHostSyncBoundaryRejection(message.reason)
     );
   }
@@ -1689,8 +1698,18 @@ const consoleSyncLogger = {
   error: (message: string, ...args: unknown[]) => console.error(message, ...args),
 };
 
+function initCloudCommentsSyncTarget(handle: NotebookHandle, commentsDocId: string): void {
+  const candidate = handle as NotebookHandle &
+    Partial<Pick<NotebookHandle, "init_comments_sync_target">>;
+  if (typeof candidate.init_comments_sync_target !== "function") {
+    return;
+  }
+  candidate.init_comments_sync_target(commentsDocId);
+}
+
 export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
   const commsSync = cloudCommsDocSyncMethods(handle);
+  const commentsSync = cloudCommentsDocSyncMethods(handle);
   return {
     receive_frame: (bytes) =>
       handle.receive_frame(bytes) as ReturnType<SyncableHandle["receive_frame"]>,
@@ -1702,6 +1721,9 @@ export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
     flush_comms_doc_sync: commsSync.flush_comms_doc_sync,
     cancel_last_comms_doc_flush: commsSync.cancel_last_comms_doc_flush,
     generate_comms_doc_sync_reply: commsSync.generate_comms_doc_sync_reply,
+    flush_comments_doc_sync: commentsSync.flush_comments_doc_sync,
+    cancel_last_comments_doc_flush: commentsSync.cancel_last_comments_doc_flush,
+    generate_comments_doc_sync_reply: commentsSync.generate_comments_doc_sync_reply,
     // notebook-cloud does not host or display daemon pool state. The shared
     // SyncEngine flushes pool sync opportunistically for Desktop, so the cloud
     // adapter intentionally presents PoolDoc as absent instead of sending a
@@ -1715,6 +1737,13 @@ export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
     get_dependency_fingerprint: () => handle.get_dependency_fingerprint(),
     get_runtime_state: () => handle.get_runtime_state(),
     get_comms_state: () => handle.get_comms_state(),
+    get_comments_projection: commentsSync.get_comments_projection,
+    get_comments_doc_heads_hex: commentsSync.get_comments_doc_heads_hex,
+    init_comments_sync_target: commentsSync.init_comments_sync_target,
+    create_comment_thread: commentsSync.create_comment_thread,
+    reply_comment_thread: commentsSync.reply_comment_thread,
+    resolve_comment_thread: commentsSync.resolve_comment_thread,
+    reopen_comment_thread: commentsSync.reopen_comment_thread,
     resolve_comm_state: (commId) =>
       handle.resolve_comm_state(commId) as
         | {
@@ -1776,5 +1805,109 @@ function cloudCommsDocSyncMethods(handle: NotebookHandle): CloudCommsDocSyncMeth
     flush_comms_doc_sync: () => null,
     cancel_last_comms_doc_flush: () => undefined,
     generate_comms_doc_sync_reply: () => null,
+  };
+}
+
+type CloudCommentsDocSyncMethods = Pick<
+  SyncableHandle,
+  | "flush_comments_doc_sync"
+  | "cancel_last_comments_doc_flush"
+  | "generate_comments_doc_sync_reply"
+  | "get_comments_projection"
+  | "get_comments_doc_heads_hex"
+  | "init_comments_sync_target"
+  | "create_comment_thread"
+  | "reply_comment_thread"
+  | "resolve_comment_thread"
+  | "reopen_comment_thread"
+>;
+
+function cloudCommentsDocSyncMethods(handle: NotebookHandle): CloudCommentsDocSyncMethods {
+  const candidate = handle as NotebookHandle &
+    Partial<
+      Pick<
+        NotebookHandle,
+        | "flush_comments_doc_sync"
+        | "cancel_last_comments_doc_flush"
+        | "generate_comments_doc_sync_reply"
+        | "get_comments_projection"
+        | "get_comments_doc_heads_hex"
+        | "init_comments_sync_target"
+        | "create_comment_thread"
+        | "reply_comment_thread"
+        | "resolve_comment_thread"
+        | "reopen_comment_thread"
+      >
+    >;
+
+  if (
+    typeof candidate.flush_comments_doc_sync === "function" &&
+    typeof candidate.cancel_last_comments_doc_flush === "function" &&
+    typeof candidate.generate_comments_doc_sync_reply === "function"
+  ) {
+    return {
+      flush_comments_doc_sync: () => candidate.flush_comments_doc_sync?.() ?? null,
+      cancel_last_comments_doc_flush: () => candidate.cancel_last_comments_doc_flush?.(),
+      generate_comments_doc_sync_reply: () =>
+        candidate.generate_comments_doc_sync_reply?.() ?? null,
+      get_comments_projection:
+        typeof candidate.get_comments_projection === "function"
+          ? () =>
+              candidate.get_comments_projection?.() as ReturnType<
+                NonNullable<SyncableHandle["get_comments_projection"]>
+              >
+          : undefined,
+      get_comments_doc_heads_hex:
+        typeof candidate.get_comments_doc_heads_hex === "function"
+          ? () => candidate.get_comments_doc_heads_hex?.() ?? []
+          : undefined,
+      init_comments_sync_target:
+        typeof candidate.init_comments_sync_target === "function"
+          ? (commentsDocId) => candidate.init_comments_sync_target?.(commentsDocId)
+          : undefined,
+      create_comment_thread:
+        typeof candidate.create_comment_thread === "function"
+          ? (threadId, messageId, anchor, body, afterThreadId, createdAt) =>
+              candidate.create_comment_thread?.(
+                threadId,
+                messageId,
+                anchor,
+                body,
+                afterThreadId,
+                createdAt,
+              ) as ReturnType<NonNullable<SyncableHandle["create_comment_thread"]>>
+          : undefined,
+      reply_comment_thread:
+        typeof candidate.reply_comment_thread === "function"
+          ? (threadId, messageId, body, afterMessageId, createdAt) =>
+              candidate.reply_comment_thread?.(
+                threadId,
+                messageId,
+                body,
+                afterMessageId,
+                createdAt,
+              ) as ReturnType<NonNullable<SyncableHandle["reply_comment_thread"]>>
+          : undefined,
+      resolve_comment_thread:
+        typeof candidate.resolve_comment_thread === "function"
+          ? (threadId, resolvedAt) =>
+              candidate.resolve_comment_thread?.(threadId, resolvedAt) as ReturnType<
+                NonNullable<SyncableHandle["resolve_comment_thread"]>
+              >
+          : undefined,
+      reopen_comment_thread:
+        typeof candidate.reopen_comment_thread === "function"
+          ? (threadId) =>
+              candidate.reopen_comment_thread?.(threadId) as ReturnType<
+                NonNullable<SyncableHandle["reopen_comment_thread"]>
+              >
+          : undefined,
+    };
+  }
+
+  return {
+    flush_comments_doc_sync: () => null,
+    cancel_last_comments_doc_flush: () => undefined,
+    generate_comments_doc_sync_reply: () => null,
   };
 }

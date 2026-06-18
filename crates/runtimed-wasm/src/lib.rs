@@ -12,7 +12,7 @@ use automerge::patches::PatchAction;
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::Prop;
-use comments_doc::{CommentsDoc, NotebookCommentRef};
+use comments_doc::{CommentAnchor, CommentsDoc, CommentsProjection, NotebookCommentRef};
 use notebook_doc::diff::{
     diff_doc, extract_change_actor_hashes, extract_change_actors, CellChangeset, ChangeActor,
     TextPatch,
@@ -66,6 +66,27 @@ fn serialize_to_js<T: Serialize>(value: &T) -> Result<JsValue, serde_wasm_bindge
         .serialize_maps_as_objects(true)
         .serialize_missing_as_null(true);
     value.serialize(&serializer)
+}
+
+fn create_comments_doc_sync_target(
+    comments_doc_id: &str,
+    actor_label: &str,
+) -> Result<CommentsDoc, JsError> {
+    let notebook_ref = comments_sync_target_ref(comments_doc_id);
+    CommentsDoc::try_new_with_actor(comments_doc_id, &notebook_ref, actor_label).map_err(|e| {
+        JsError::new(&format!(
+            "create comments doc sync target failed for {comments_doc_id}: {e}"
+        ))
+    })
+}
+
+fn comments_sync_target_ref(comments_doc_id: &str) -> NotebookCommentRef {
+    NotebookCommentRef::HostedRoom {
+        room_locator: comments_doc_id
+            .strip_prefix("comments:")
+            .unwrap_or(comments_doc_id)
+            .to_string(),
+    }
 }
 
 /// Project markdown source into the experimental nteract markdown plan.
@@ -276,6 +297,12 @@ pub enum FrameEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         state: Option<Box<CommsState>>,
     },
+    /// CommentsDoc was synced — frontend should update comment projections.
+    CommentsDocSyncApplied {
+        changed: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        projection: Option<Box<CommentsProjection>>,
+    },
     /// Sync apply error recovered — doc rebuilt and sync state normalized.
     ///
     /// Emitted when `receive_sync_message` returns an error. The WASM layer
@@ -313,6 +340,14 @@ pub enum FrameEvent {
         changed: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         state: Option<Box<CommsState>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply: Option<Vec<u8>>,
+    },
+    /// CommentsDoc sync error recovered — comments doc rebuilt.
+    CommentsDocSyncError {
+        changed: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        projection: Option<Box<CommentsProjection>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reply: Option<Vec<u8>>,
     },
@@ -2054,6 +2089,9 @@ pub struct NotebookHandle {
     /// Widget comm state doc — mutable by notebook editors and runtime.
     comms_doc: CommsDoc,
     comms_sync_state: sync::State,
+    /// Durable comments doc — mutable by notebook editors and owners.
+    comments_doc: Option<CommentsDoc>,
+    comments_sync_state: sync::State,
     /// Previous per-`output_id` manifest snapshot. Used to produce the
     /// per-output diff emitted on `RuntimeStateSyncApplied.output_changeset`.
     prev_output_by_id: HashMap<String, serde_json::Value>,
@@ -2333,6 +2371,8 @@ impl NotebookHandle {
             comms_doc: CommsDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create comms doc failed: {}", e)))?,
             comms_sync_state: sync::State::new(),
+            comments_doc: None,
+            comments_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
             output_identity_epoch: 0,
             output_revision_by_id: HashMap::new(),
@@ -2365,6 +2405,8 @@ impl NotebookHandle {
             state_sync_state: sync::State::new(),
             comms_doc,
             comms_sync_state: sync::State::new(),
+            comments_doc: None,
+            comments_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
             output_identity_epoch: 0,
             output_revision_by_id: HashMap::new(),
@@ -2375,6 +2417,16 @@ impl NotebookHandle {
             mime_priority: Vec::new(),
             blob_port: None,
         })
+    }
+
+    /// Create a bootstrap handle with daemon-provided CommentsDoc identity.
+    pub fn create_bootstrap_with_comments(
+        actor_label: &str,
+        comments_doc_id: &str,
+    ) -> Result<NotebookHandle, JsError> {
+        let mut handle = Self::create_bootstrap(actor_label)?;
+        handle.init_comments_sync_target(comments_doc_id)?;
+        Ok(handle)
     }
 
     /// Create a handle with the bootstrap skeleton for sync.
@@ -2405,6 +2457,8 @@ impl NotebookHandle {
             comms_doc: CommsDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create comms doc failed: {}", e)))?,
             comms_sync_state: sync::State::new(),
+            comments_doc: None,
+            comments_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
             output_identity_epoch: 0,
             output_revision_by_id: HashMap::new(),
@@ -2517,6 +2571,11 @@ impl NotebookHandle {
         self.comms_doc
             .doc_mut()
             .set_actor(automerge::ActorId::from(actor_label.as_bytes()));
+        if let Some(comments_doc) = self.comments_doc.as_mut() {
+            comments_doc
+                .doc_mut()
+                .set_actor(automerge::ActorId::from(actor_label.as_bytes()));
+        }
     }
 
     /// Return the deduplicated, sorted list of actor labels that have
@@ -3894,6 +3953,62 @@ impl NotebookHandle {
         self.comms_sync_state.sent_hashes.clear();
     }
 
+    /// Generate a sync reply for the CommentsDoc.
+    pub fn generate_comments_doc_sync_reply(&mut self) -> Option<Vec<u8>> {
+        self.comments_doc.as_mut().and_then(|comments_doc| {
+            comments_doc
+                .generate_sync_message(&mut self.comments_sync_state)
+                .map(|msg| msg.encode())
+        })
+    }
+
+    /// Generate an initial CommentsDoc sync message.
+    pub fn flush_comments_doc_sync(&mut self) -> Option<Vec<u8>> {
+        self.comments_doc.as_mut().and_then(|comments_doc| {
+            comments_doc
+                .generate_sync_message(&mut self.comments_sync_state)
+                .map(|msg| msg.encode())
+        })
+    }
+
+    /// Roll back CommentsDoc sync state after a failed delivery.
+    pub fn cancel_last_comments_doc_flush(&mut self) {
+        self.comments_sync_state.in_flight = false;
+        self.comments_sync_state.sent_hashes.clear();
+    }
+
+    /// Initialize CommentsDoc sync from daemon-provided room identity.
+    pub fn init_comments_sync_target(&mut self, comments_doc_id: &str) -> Result<(), JsError> {
+        let actor_label = self.doc.get_actor_id();
+        if self
+            .comments_doc
+            .as_ref()
+            .and_then(CommentsDoc::comments_doc_id)
+            .as_deref()
+            == Some(comments_doc_id)
+        {
+            if let Some(comments_doc) = self.comments_doc.as_mut() {
+                comments_doc
+                    .doc_mut()
+                    .set_actor(automerge::ActorId::from(actor_label.as_bytes()));
+            }
+            return Ok(());
+        }
+        self.comments_doc = Some(create_comments_doc_sync_target(
+            comments_doc_id,
+            &actor_label,
+        )?);
+        self.comments_sync_state = sync::State::new();
+        Ok(())
+    }
+
+    /// Current CommentsDoc identity if comments sync is initialized.
+    pub fn get_comments_doc_id(&self) -> Option<String> {
+        self.comments_doc
+            .as_ref()
+            .and_then(CommentsDoc::comments_doc_id)
+    }
+
     /// Generate a sync reply for the PoolDoc.
     pub fn generate_pool_state_sync_reply(&mut self) -> Option<Vec<u8>> {
         self.pool_doc
@@ -3932,6 +4047,100 @@ impl NotebookHandle {
     pub fn get_comms_state(&self) -> JsValue {
         let state = self.comms_doc.read_state();
         serialize_to_js(&state).unwrap_or(JsValue::UNDEFINED)
+    }
+
+    /// Read the current CommentsDoc projection from the WASM doc.
+    pub fn get_comments_projection(&mut self) -> JsValue {
+        self.comments_projection()
+            .and_then(|projection| {
+                serialize_to_js(&projection)
+                    .map_err(|e| JsError::new(&format!("serialize comments projection: {e}")))
+            })
+            .unwrap_or(JsValue::UNDEFINED)
+    }
+
+    /// Return the current CommentsDoc heads as hex strings.
+    pub fn get_comments_doc_heads_hex(&mut self) -> Vec<String> {
+        self.comments_doc
+            .as_mut()
+            .map(|comments_doc| {
+                comments_doc
+                    .get_heads()
+                    .into_iter()
+                    .map(|head| hex::encode(head.as_ref()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Create a local comment thread in CommentsDoc.
+    pub fn create_comment_thread(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        anchor: JsValue,
+        body: &str,
+        after_thread_id: Option<String>,
+        created_at: &str,
+    ) -> Result<JsValue, JsError> {
+        let anchor: CommentAnchor = serde_wasm_bindgen::from_value(anchor)
+            .map_err(|e| JsError::new(&format!("decode comment anchor: {e}")))?;
+        let comments_doc = self.comments_doc_mut()?;
+        comments_doc
+            .create_thread(
+                thread_id,
+                message_id,
+                &anchor,
+                body,
+                after_thread_id.as_deref(),
+                created_at,
+            )
+            .map_err(|e| JsError::new(&format!("create comment thread: {e}")))?;
+        self.serialize_comments_projection_event()
+    }
+
+    /// Add a local reply to a comment thread in CommentsDoc.
+    pub fn reply_comment_thread(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        body: &str,
+        after_message_id: Option<String>,
+        created_at: &str,
+    ) -> Result<JsValue, JsError> {
+        let comments_doc = self.comments_doc_mut()?;
+        comments_doc
+            .reply(
+                thread_id,
+                message_id,
+                body,
+                after_message_id.as_deref(),
+                created_at,
+            )
+            .map_err(|e| JsError::new(&format!("reply to comment thread: {e}")))?;
+        self.serialize_comments_projection_event()
+    }
+
+    /// Mark a comment thread as resolved in CommentsDoc.
+    pub fn resolve_comment_thread(
+        &mut self,
+        thread_id: &str,
+        resolved_at: &str,
+    ) -> Result<JsValue, JsError> {
+        let comments_doc = self.comments_doc_mut()?;
+        comments_doc
+            .resolve_thread(thread_id, resolved_at)
+            .map_err(|e| JsError::new(&format!("resolve comment thread: {e}")))?;
+        self.serialize_comments_projection_event()
+    }
+
+    /// Reopen a resolved comment thread in CommentsDoc.
+    pub fn reopen_comment_thread(&mut self, thread_id: &str) -> Result<JsValue, JsError> {
+        let comments_doc = self.comments_doc_mut()?;
+        comments_doc
+            .reopen_thread(thread_id)
+            .map_err(|e| JsError::new(&format!("reopen comment thread: {e}")))?;
+        self.serialize_comments_projection_event()
     }
 
     /// Project any pending execution-view changes across NotebookDoc and
@@ -4001,6 +4210,7 @@ impl NotebookHandle {
         self.sync_state = sync::State::new();
         self.state_sync_state = sync::State::new();
         self.comms_sync_state = sync::State::new();
+        self.comments_sync_state = sync::State::new();
         self.pool_sync_state = sync::State::new();
     }
 
@@ -4032,6 +4242,13 @@ impl NotebookHandle {
             sync::State::decode(&encoded).unwrap_or_else(|_| sync::State::new());
     }
 
+    /// Normalize the CommentsDoc sync state (same pattern as notebook sync).
+    fn normalize_comments_sync_state(&mut self) {
+        let encoded = self.comments_sync_state.encode();
+        self.comments_sync_state =
+            sync::State::decode(&encoded).unwrap_or_else(|_| sync::State::new());
+    }
+
     /// Rebuild the notebook doc via save→load to clear corrupted internal indices.
     ///
     /// Delegates to `NotebookDoc::rebuild_from_save`, which preserves the actor
@@ -4057,6 +4274,45 @@ impl NotebookHandle {
     /// Delegates to `CommsDoc::rebuild_from_save`, which preserves the actor.
     fn rebuild_comms_doc(&mut self) {
         let _ = self.comms_doc.rebuild_from_save();
+    }
+
+    /// Rebuild the CommentsDoc via save→load.
+    ///
+    /// Delegates to `CommentsDoc::rebuild_from_save`, which preserves the actor
+    /// and required comments document identity.
+    fn rebuild_comments_doc(&mut self) {
+        if let Some(comments_doc) = self.comments_doc.as_mut() {
+            let _ = comments_doc.rebuild_from_save();
+        }
+    }
+
+    fn comments_doc_mut(&mut self) -> Result<&mut CommentsDoc, JsError> {
+        self.comments_doc
+            .as_mut()
+            .ok_or_else(|| JsError::new("CommentsDoc is not initialized"))
+    }
+
+    fn comments_projection(&mut self) -> Result<CommentsProjection, JsError> {
+        let cell_order: Vec<String> = self
+            .doc
+            .get_cells()
+            .into_iter()
+            .map(|cell| cell.id)
+            .collect();
+        self.comments_doc
+            .as_ref()
+            .ok_or_else(|| JsError::new("CommentsDoc is not initialized"))?
+            .read_projection(Some(&cell_order))
+            .map_err(|e| JsError::new(&format!("read comments projection: {e}")))
+    }
+
+    fn serialize_comments_projection_event(&mut self) -> Result<JsValue, JsError> {
+        let event = FrameEvent::CommentsDocSyncApplied {
+            changed: true,
+            projection: Some(Box::new(self.comments_projection()?)),
+        };
+        serialize_to_js(&event)
+            .map_err(|e| JsError::new(&format!("serialize comments projection event: {e}")))
     }
 
     /// Normalize pool sync state via encode→decode round-trip.
@@ -4349,6 +4605,63 @@ impl NotebookHandle {
                 };
 
                 events.push(FrameEvent::CommsDocSyncApplied { changed, state });
+            }
+            frame_types::COMMENTS_DOC_SYNC => {
+                let Ok(msg) = sync::Message::decode(payload) else {
+                    return JsValue::UNDEFINED;
+                };
+                let Some(comments_doc) = self.comments_doc.as_mut() else {
+                    web_sys::console::warn_1(
+                        &"[wasm] comments sync received before comments doc initialization".into(),
+                    );
+                    return JsValue::UNDEFINED;
+                };
+                let heads_before = comments_doc.get_heads();
+                if comments_doc
+                    .receive_sync_message_with_changes(&mut self.comments_sync_state, msg)
+                    .is_err()
+                {
+                    self.rebuild_comments_doc();
+                    self.normalize_comments_sync_state();
+                    let heads_after = self
+                        .comments_doc
+                        .as_mut()
+                        .map(CommentsDoc::get_heads)
+                        .unwrap_or_default();
+                    let changed = heads_before != heads_after;
+                    let projection = if changed {
+                        self.comments_projection().ok().map(Box::new)
+                    } else {
+                        None
+                    };
+                    let reply = self.comments_doc.as_mut().and_then(|comments_doc| {
+                        comments_doc
+                            .generate_sync_message(&mut self.comments_sync_state)
+                            .map(|msg| msg.encode())
+                    });
+                    events.push(FrameEvent::CommentsDocSyncError {
+                        changed,
+                        projection,
+                        reply,
+                    });
+                    return serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED);
+                }
+                let heads_after = self
+                    .comments_doc
+                    .as_mut()
+                    .map(CommentsDoc::get_heads)
+                    .unwrap_or_default();
+                let changed = heads_before != heads_after;
+                let projection = if changed {
+                    self.comments_projection().ok().map(Box::new)
+                } else {
+                    None
+                };
+
+                events.push(FrameEvent::CommentsDocSyncApplied {
+                    changed,
+                    projection,
+                });
             }
             frame_types::POOL_STATE_SYNC => {
                 // Apply daemon's PoolDoc sync message to our local replica.

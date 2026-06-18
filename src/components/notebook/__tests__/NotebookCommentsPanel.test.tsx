@@ -11,15 +11,11 @@ const projection: CommentsProjection = {
       anchor: { kind: "notebook" },
       position: "80",
       status: "open",
-      mutation_state: "accepted",
-      trusted: true,
       messages: [
         {
           id: "message-1",
           position: "80",
           body: "Check the framing before publishing.",
-          mutation_state: "accepted",
-          trusted: true,
           created_at: "2026-06-16T00:00:00.000Z",
           created_by_actor_label: "alice",
         },
@@ -32,15 +28,11 @@ const projection: CommentsProjection = {
       anchor: { kind: "cell", cell_id: "cell-1" },
       position: "80",
       status: "open",
-      mutation_state: "accepted",
-      trusted: true,
       messages: [
         {
           id: "message-cell",
           position: "80",
           body: "Cell-scoped comment",
-          mutation_state: "accepted",
-          trusted: true,
           created_at: "2026-06-16T00:00:00.000Z",
         },
       ],
@@ -326,39 +318,6 @@ describe("NotebookCommentsPanel", () => {
     expect(onFocusThreadAnchor).toHaveBeenCalledWith(sourceThread);
   });
 
-  it("does not allow status actions while a reply is pending", () => {
-    const onResolveThread = vi.fn();
-    render(
-      <NotebookCommentsPanel
-        projection={{
-          ...projection,
-          threads: [
-            {
-              ...projection.threads[0],
-              messages: [
-                ...projection.threads[0].messages,
-                {
-                  id: "message-pending",
-                  position: "81",
-                  body: "Still syncing",
-                  mutation_state: "pending",
-                  trusted: false,
-                  created_at: "2026-06-16T00:01:00.000Z",
-                },
-              ],
-            },
-          ],
-        }}
-        onResolveThread={onResolveThread}
-      />,
-    );
-
-    const resolve = screen.getByRole("button", { name: "Resolve Document comment 1" });
-    expect(resolve).toBeDisabled();
-    fireEvent.click(resolve);
-    expect(onResolveThread).not.toHaveBeenCalled();
-  });
-
   it("formats local actor labels without exposing the raw durable id", () => {
     render(
       <NotebookCommentsPanel
@@ -455,24 +414,6 @@ describe("NotebookCommentsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show resolved (1)" }));
     fireEvent.click(screen.getByRole("button", { name: "Reopen Document comment 1" }));
     expect(onReopenThread).toHaveBeenCalledWith("thread-1");
-  });
-
-  it("does not allow status actions for pending threads", () => {
-    const onResolveThread = vi.fn();
-    render(
-      <NotebookCommentsPanel
-        projection={{
-          ...projection,
-          threads: [{ ...projection.threads[0], mutation_state: "pending" }],
-        }}
-        onResolveThread={onResolveThread}
-      />,
-    );
-
-    const resolve = screen.getByRole("button", { name: "Resolve Document comment 1" });
-    expect(resolve).toBeDisabled();
-    fireEvent.click(resolve);
-    expect(onResolveThread).not.toHaveBeenCalled();
   });
 
   it("flashes the focused thread", () => {
