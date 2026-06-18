@@ -1,6 +1,8 @@
 import {
   Bot,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   LocateFixed,
   MessageSquare,
   Plus,
@@ -72,9 +74,33 @@ export function NotebookCommentsPanel({
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
   const labeledThreads = labelCommentThreads(threads);
+  const openThreads = labeledThreads.filter(({ thread }) => thread.status !== "resolved");
+  const resolvedThreads = labeledThreads.filter(({ thread }) => thread.status === "resolved");
+  const [showResolved, setShowResolved] = useState(false);
   const canCreate = !readOnly && Boolean(onCreateThread);
   const canReply = !readOnly && Boolean(onReplyThread);
   const canUpdateStatus = !readOnly && (Boolean(onResolveThread) || Boolean(onReopenThread));
+
+  const renderThread = ({
+    thread,
+    threadLabel,
+  }: {
+    thread: CommentThreadSnapshot;
+    threadLabel: string;
+  }) => (
+    <CommentThreadItem
+      key={thread.id}
+      thread={thread}
+      threadLabel={threadLabel}
+      canReply={canReply}
+      canUpdateStatus={canUpdateStatus}
+      onReplyThread={onReplyThread}
+      onResolveThread={onResolveThread}
+      onReopenThread={onReopenThread}
+      onFocusThreadAnchor={onFocusThreadAnchor}
+      resolveCommentAuthor={resolveCommentAuthor}
+    />
+  );
 
   return (
     <section className="flex min-h-0 flex-col gap-3" data-testid="notebook-comments-panel">
@@ -123,22 +149,34 @@ export function NotebookCommentsPanel({
           <span>No comments yet.</span>
         </div>
       ) : (
-        <ol className="space-y-3">
-          {labeledThreads.map(({ thread, threadLabel }) => (
-            <CommentThreadItem
-              key={thread.id}
-              thread={thread}
-              threadLabel={threadLabel}
-              canReply={canReply}
-              canUpdateStatus={canUpdateStatus}
-              onReplyThread={onReplyThread}
-              onResolveThread={onResolveThread}
-              onReopenThread={onReopenThread}
-              onFocusThreadAnchor={onFocusThreadAnchor}
-              resolveCommentAuthor={resolveCommentAuthor}
-            />
-          ))}
-        </ol>
+        <div className="space-y-3">
+          {openThreads.length > 0 ? (
+            <ol className="space-y-3">{openThreads.map(renderThread)}</ol>
+          ) : resolvedThreads.length > 0 ? (
+            <p className="px-1 py-4 text-center text-sm text-muted-foreground">No open comments.</p>
+          ) : null}
+
+          {resolvedThreads.length > 0 ? (
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => setShowResolved((value) => !value)}
+                aria-expanded={showResolved}
+                className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {showResolved ? (
+                  <ChevronDown className="size-3.5" aria-hidden="true" />
+                ) : (
+                  <ChevronRight className="size-3.5" aria-hidden="true" />
+                )}
+                {showResolved ? "Hide" : "Show"} resolved ({resolvedThreads.length})
+              </button>
+              {showResolved ? (
+                <ol className="space-y-3">{resolvedThreads.map(renderThread)}</ol>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       )}
     </section>
   );

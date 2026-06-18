@@ -415,7 +415,7 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByText("kylekelley nteract-mcp")).toBeVisible();
   });
 
-  it("reopens resolved threads", () => {
+  it("reveals resolved threads behind a toggle and reopens them", () => {
     const onReopenThread = vi.fn();
     render(
       <NotebookCommentsPanel
@@ -427,6 +427,9 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
+    // Resolved threads are hidden until revealed.
+    expect(screen.queryByRole("button", { name: "Reopen Document comment 1" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show resolved (1)" }));
     fireEvent.click(screen.getByRole("button", { name: "Reopen Document comment 1" }));
     expect(onReopenThread).toHaveBeenCalledWith("thread-1");
   });
