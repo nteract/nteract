@@ -1,0 +1,49 @@
+---
+title: Comment surfaces
+description: Anchored notebook comments. The rail panel, attribution, and AI-on-behalf authorship.
+---
+
+import { CommentSurfacesExample } from "@/components/comment-surfaces-example";
+
+People and AI agents work the same live notebook, and comments are how they
+talk about it: a thread anchored to a source range, a cell, an output, or the
+whole document. The rail below is rendered from fixtures, no daemon and no
+kernel, so the surface and its rationale stand on their own.
+
+<CommentSurfacesExample />
+
+## Presentational by design
+
+The panel takes a comments projection plus callbacks and never touches the
+daemon. The host resolves two things for it:
+
+- `resolveCommentAuthor(actorLabel)` → name, color, and whether the author is an
+  AI agent acting on someone's behalf.
+- `resolveSourceLanguage(cellId)` → the language to highlight a quoted source
+  range in (markdown and raw quotes stay plain prose).
+
+That split is what lets the panel render here from a fixture map, and lets the
+notebook app wire the same props to live presence and the runtime.
+
+## AI on behalf of a person
+
+Authorship is legible at a glance and impossible to fake. Each message shows an
+identity-colored avatar (the same color as that author's cursor and edits),
+name, and time. An agent additionally carries an `AI` chip, a `· for <person>`
+note, and a small principal badge on its avatar, the "acting on behalf of"
+cue. In the app, trust is earned: the daemon finalizes a comment against the
+authenticated connection before it's marked trusted, so "Claude Code · for Ada"
+is provable, not asserted.
+
+## Anchors
+
+A source-range comment quotes the code it's about, highlighted in the cell's
+language and tinted with the author's color; other comments anchor to a cell,
+an output, or the document. If the document shifts past an anchor, the comment
+degrades to a dangling document comment rather than vanishing.
+
+## Resolution
+
+Open threads lead; resolved ones tuck behind **Show resolved** so the rail stays
+on active discussion. The demo is live. Reply, resolve, or add a document
+comment.

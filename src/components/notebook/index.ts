@@ -365,3 +365,17 @@ export {
   type NotebookViewLanguageResolver,
   type NotebookTracebackCellTarget,
 } from "./view-model";
+export {
+  type CommentAuthor,
+  NotebookCommentsPanel,
+  type NotebookCommentDraftTarget,
+  type NotebookCommentsPanelProps,
+} from "./NotebookCommentsPanel";
+export type {
+  CommentAnchor,
+  CommentMessageSnapshot,
+  CommentMutationState,
+  CommentsProjection,
+  CommentThreadSnapshot,
+  CommentThreadStatus,
+} from "./comment-types";
