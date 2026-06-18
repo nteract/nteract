@@ -74,6 +74,7 @@ const FRAME_TYPES: &[(&str, u8)] = &[
     ("PRESENCE", frame_types::PRESENCE),
     ("RUNTIME_STATE_SYNC", frame_types::RUNTIME_STATE_SYNC),
     ("COMMS_DOC_SYNC", frame_types::COMMS_DOC_SYNC),
+    ("COMMENTS_DOC_SYNC", frame_types::COMMENTS_DOC_SYNC),
     ("POOL_STATE_SYNC", frame_types::POOL_STATE_SYNC),
     ("SESSION_CONTROL", frame_types::SESSION_CONTROL),
     ("PUT_BLOB", frame_types::PUT_BLOB),

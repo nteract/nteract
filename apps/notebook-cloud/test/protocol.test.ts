@@ -24,6 +24,7 @@ const EXPECTED_FRAME_TYPE_ENTRIES = [
   ["SESSION_CONTROL", 0x07, "session_control", false],
   ["PUT_BLOB", 0x08, "put_blob", true],
   ["COMMS_DOC_SYNC", 0x09, "comms_doc_sync", true],
+  ["COMMENTS_DOC_SYNC", 0x0a, "comments_doc_sync", false],
 ] as const satisfies ReadonlyArray<
   readonly [keyof typeof FrameType, FrameTypeValue, string, boolean]
 >;
@@ -39,6 +40,7 @@ const EXPECTED_CLIENT_WRITABLE = {
   0x07: false,
   0x08: true,
   0x09: true,
+  0x0a: false,
 } as const satisfies Readonly<Record<FrameTypeValue, boolean>>;
 
 describe("typed-frame protocol helpers", () => {

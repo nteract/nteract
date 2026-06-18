@@ -141,6 +141,9 @@ const CLIENT_WRITABLE_FRAME_TYPES = {
   [FrameType.PRESENCE]: true,
   [FrameType.RUNTIME_STATE_SYNC]: true,
   [FrameType.COMMS_DOC_SYNC]: true,
+  // Hosted Cloud comments sync is server-originated until the room-host comments
+  // path lands (ADR Phase 4); client-authored comment frames are not admitted yet.
+  [FrameType.COMMENTS_DOC_SYNC]: false,
   [FrameType.POOL_STATE_SYNC]: true,
   [FrameType.SESSION_CONTROL]: false,
   [FrameType.PUT_BLOB]: true,
