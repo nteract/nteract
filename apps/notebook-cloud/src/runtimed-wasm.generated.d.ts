@@ -41,7 +41,10 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
   export class NotebookHandle {
     constructor(notebookId: string);
     static create_bootstrap(actorLabel: string): NotebookHandle;
-    static create_bootstrap_with_comments(actorLabel: string, commentsDocId: string): NotebookHandle;
+    static create_bootstrap_with_comments(
+      actorLabel: string,
+      commentsDocId: string,
+    ): NotebookHandle;
     static load_snapshot(notebookBytes: Uint8Array, runtimeStateBytes: Uint8Array): NotebookHandle;
     add_cell_after(
       cellId: string,

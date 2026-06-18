@@ -1224,10 +1224,7 @@ export function NotebookViewer({
         return;
       }
       try {
-        const event = liveRuntime.handle.resolve_comment_thread(
-          threadId,
-          new Date().toISOString(),
-        );
+        const event = liveRuntime.handle.resolve_comment_thread(threadId, new Date().toISOString());
         applyLocalCommentEvent(event);
       } catch (error) {
         setCommentsError(error instanceof Error ? error.message : String(error));
