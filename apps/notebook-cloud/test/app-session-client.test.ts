@@ -17,14 +17,14 @@ describe("cloud app session client", () => {
         assert.deepEqual(init?.headers, { Accept: "application/json" });
         return Response.json({
           ok: true,
-          session: { provider: "oidc", expires_at: 1_800 },
+          session: { provider: "oidc", expires_at: 1_800, cache_key: "cache-a" },
         });
       },
     });
 
     assert.deepEqual(status, {
       ok: true,
-      session: { provider: "oidc", expires_at: 1_800 },
+      session: { provider: "oidc", expires_at: 1_800, cache_key: "cache-a" },
     });
   });
 
@@ -37,17 +37,14 @@ describe("cloud app session client", () => {
   });
 
   it("checks app session freshness with the same renewal skew as the viewer", () => {
-    assert.equal(cloudAppSessionIsFresh({ provider: "oidc", expires_at: 1_300 }, 1_000), true);
-    assert.equal(cloudAppSessionIsFresh({ provider: "oidc", expires_at: 1_060 }, 1_000), false);
+    assert.equal(cloudAppSessionIsFresh(session(1_300), 1_000), true);
+    assert.equal(cloudAppSessionIsFresh(session(1_060), 1_000), false);
     assert.equal(cloudAppSessionIsFresh(null, 1_000), false);
   });
 
   it("renews app sessions before the browser cookie expires", () => {
-    assert.equal(
-      cloudAppSessionNeedsRenewal({ provider: "oidc", expires_at: 3_000 }, 1_000),
-      false,
-    );
-    assert.equal(cloudAppSessionNeedsRenewal({ provider: "oidc", expires_at: 2_700 }, 1_000), true);
+    assert.equal(cloudAppSessionNeedsRenewal(session(3_000), 1_000), false);
+    assert.equal(cloudAppSessionNeedsRenewal(session(2_700), 1_000), true);
     assert.equal(cloudAppSessionNeedsRenewal(null, 1_000), true);
   });
 
@@ -58,6 +55,7 @@ describe("cloud app session client", () => {
         session: {
           provider: "oidc",
           expires_at: 1_800,
+          cache_key: "cache-a",
           email: "private@example.test",
         },
       }),
@@ -69,6 +67,7 @@ describe("cloud app session client", () => {
         session: {
           provider: "oidc",
           expires_at: 1_800,
+          cache_key: "cache-a",
           display_name: "Private User",
         },
       }),
@@ -80,7 +79,8 @@ describe("cloud app session client", () => {
     await assert.rejects(
       () =>
         readCloudAppSessionStatus({
-          fetchImpl: async () => Response.json({ ok: true, session: { provider: "oidc" } }),
+          fetchImpl: async () =>
+            Response.json({ ok: true, session: { provider: "oidc", expires_at: 1_800 } }),
         }),
       /response shape was invalid/,
     );
@@ -93,3 +93,7 @@ describe("cloud app session client", () => {
     );
   });
 });
+
+function session(expiresAt: number) {
+  return { provider: "oidc" as const, expires_at: expiresAt, cache_key: "cache-a" };
+}

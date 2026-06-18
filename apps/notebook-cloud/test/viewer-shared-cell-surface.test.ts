@@ -713,7 +713,7 @@ test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange
   );
   assert.match(
     routeSourceText,
-    /\[authState, bootstrap, canFetchNotebookList, refreshIndex, waitingForAppSession\]/,
+    /\[\s*appSessionStatus\.session,[\s\S]*authState,[\s\S]*bootstrap,[\s\S]*canFetchNotebookList,[\s\S]*refreshIndex,[\s\S]*waitingForAppSession,[\s\S]*\]/,
   );
 });
 
@@ -735,7 +735,11 @@ test("cloud notebook list waits for app-session cookies before catalog fetches",
 
   assert.match(
     sourceText,
-    /const canFetchNotebookList = authState\.mode === "dev" \|\| hasAppSession;/,
+    /const \{[\s\S]*canFetchCatalog: canFetchNotebookList,[\s\S]*hasAppSession,[\s\S]*signedIn,[\s\S]*waitingForAppSession,[\s\S]*\} = hostedAuth;/,
+  );
+  assert.match(
+    sourceText,
+    /projectHostedCatalogAuthState\(authState,[\s\S]*appSession: appSessionStatus\.session,[\s\S]*appSessionLoading: appSessionStatus\.status === "loading"/,
   );
   assert.match(
     sourceText,
@@ -754,16 +758,16 @@ test("cloud notebook list trusts server bootstrap on initial app-session paint",
 
   assert.match(
     sourceText,
-    /const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache\(authState, bootstrap\);/,
+    /const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*bootstrap,[\s\S]*\);/,
   );
   assert.match(
     sourceText,
-    /if \(refreshIndex === 0 && bootstrap\) \{[\s\S]*writeCachedCloudNotebookListToWindow\(authState, bootstrap\.notebooks\);[\s\S]*setListState\(\{ kind: "ready", notebooks: bootstrap\.notebooks \}\);[\s\S]*return;/,
+    /if \(refreshIndex === 0 && bootstrap\) \{[\s\S]*writeCachedCloudNotebookListToWindow\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*bootstrap\.notebooks,[\s\S]*\);[\s\S]*setListState\(\{ kind: "ready", notebooks: bootstrap\.notebooks \}\);[\s\S]*return;/,
     "fresh notebook-home bootstrap should satisfy the initial render without an immediate duplicate /api/n fetch",
   );
   assert.match(
     sourceText,
-    /return bootstrap\?\.notebooks \?\? readCachedCloudNotebookListFromWindow\(authState\);/,
+    /return bootstrap\?\.notebooks \?\? readCachedCloudNotebookListFromWindow\(authState, appSession\);/,
     "server bootstrap should beat stale sessionStorage cache when both are present",
   );
 });

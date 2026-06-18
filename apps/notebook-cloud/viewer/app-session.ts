@@ -6,6 +6,7 @@ export const CLOUD_APP_SESSION_ENDPOINT = "/api/auth/session";
 export interface CloudAppSession {
   provider: "oidc";
   expires_at: number;
+  cache_key: string;
 }
 
 export interface CloudAppSessionStatus {
@@ -93,7 +94,10 @@ export function isCloudAppSession(value: unknown): value is CloudAppSession {
   return (
     candidate.provider === "oidc" &&
     Number.isFinite(candidate.expires_at) &&
-    Object.keys(candidate).every((key) => key === "provider" || key === "expires_at")
+    typeof candidate.cache_key === "string" &&
+    Object.keys(candidate).every(
+      (key) => key === "provider" || key === "expires_at" || key === "cache_key",
+    )
   );
 }
 

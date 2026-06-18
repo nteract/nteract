@@ -499,11 +499,12 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(bodyText, /session-status-user/);
     const body = JSON.parse(bodyText) as {
       ok: boolean;
-      session: { provider: string; expires_at: number } | null;
+      session: { provider: string; expires_at: number; cache_key: string } | null;
     };
     assert.equal(body.ok, true);
     assert.equal(body.session?.provider, "oidc");
     assert.equal(typeof body.session?.expires_at, "number");
+    assert.equal(typeof body.session?.cache_key, "string");
   });
 
   it("rejects cross-origin app session exchange attempts", async () => {
@@ -581,6 +582,7 @@ describe("Worker artifact routes", () => {
     assert.equal(bootstrap.notebooks[0]?.title, "Bootstrap Visible");
     assert.equal(bootstrap.session?.provider, "oidc");
     assert.equal(typeof bootstrap.session?.expires_at, "number");
+    assert.equal(typeof bootstrap.session?.cache_key, "string");
     assert.doesNotMatch(html, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(html, /bootstrap@example\.test|bootstrap-user|Bootstrap User/);
   });
@@ -659,6 +661,7 @@ describe("Worker artifact routes", () => {
     const config = notebookViewerConfig(html);
     assert.equal(config.session?.provider, "oidc");
     assert.equal(typeof config.session?.expires_at, "number");
+    assert.equal(typeof config.session?.cache_key, "string");
     assert.doesNotMatch(html, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(html, /viewer-bootstrap@example\.test|viewer-bootstrap-user/);
     assert.doesNotMatch(html, /Viewer Bootstrap User/);
@@ -6156,6 +6159,7 @@ function notebookHomeBootstrap(html: string): {
   session?: {
     provider: string;
     expires_at: number;
+    cache_key: string;
   };
 } {
   const match = html.match(
@@ -6171,6 +6175,7 @@ function notebookHomeBootstrap(html: string): {
     session?: {
       provider: string;
       expires_at: number;
+      cache_key: string;
     };
   };
 }
@@ -6179,6 +6184,7 @@ function notebookViewerConfig(html: string): {
   session?: {
     provider: string;
     expires_at: number;
+    cache_key: string;
   } | null;
 } {
   const match = html.match(
@@ -6189,6 +6195,7 @@ function notebookViewerConfig(html: string): {
     session?: {
       provider: string;
       expires_at: number;
+      cache_key: string;
     } | null;
   };
 }

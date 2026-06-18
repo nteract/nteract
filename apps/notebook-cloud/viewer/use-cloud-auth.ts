@@ -34,7 +34,7 @@ export function cloudAppSessionsEqual(
 ): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
-  return a.provider === b.provider && a.expires_at === b.expires_at;
+  return a.provider === b.provider && a.expires_at === b.expires_at && a.cache_key === b.cache_key;
 }
 
 /**

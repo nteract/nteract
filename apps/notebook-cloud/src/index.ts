@@ -985,6 +985,7 @@ function appSessionResponse(session: CloudAppSession): Record<string, unknown> {
   return {
     provider: session.provider,
     expires_at: session.expiresAt,
+    cache_key: session.cacheKey,
   };
 }
 
