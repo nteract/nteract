@@ -1,19 +1,31 @@
 # Python Packages
 
-Development home for nteract Python packages. The UV workspace root (`pyproject.toml` and `.venv`) lives at the **repo root**, with three workspace members:
+Development home for nteract Python packages. The UV workspace root (`pyproject.toml` and `.venv`) lives at the **repo root**.
 
 | Package | Description |
 |---------|-------------|
 | `python/runtimed/` | Low-level Python bindings for the runtimed daemon (maturin/PyO3) |
 | `python/nteract/` | MCP server for AI agents — composes runtimed primitives |
+| `python/dx/` | Display and blob-store helpers used from Python kernels |
+| `python/nteract-kernel-launcher/` | Embedded launcher package vendored by the daemon into kernel environments |
+| `python/prewarm/` | Environment warm-up utility for Python kernels |
 | `python/gremlin/` | Autonomous notebook agent for stress testing |
+| `python/pr-reviewer/` | Internal opencode-backed PR reviewer |
+| `python/safari-timeline/` | Safari Web Inspector timeline unpacking utilities |
+
+The root project keeps install metadata empty. Workspace-local packages live in
+the default `dev` dependency group so plain `pip install .` does not try to
+resolve unpublished packages from PyPI. `nteract-kernel-launcher` is especially
+important here: the packaged daemon embeds its sources and vendors them into
+kernel environments, so use explicit `uv --package nteract-kernel-launcher`
+commands when working on or testing that package directly.
 
 ## Dev Setup
 
 The virtual environment lives at the repo root (`.venv`), not inside `python/`.
 
 ```bash
-# From the repo root — creates .venv and installs all workspace members
+# From the repo root — creates .venv and installs the default dev workspace
 uv sync
 ```
 
