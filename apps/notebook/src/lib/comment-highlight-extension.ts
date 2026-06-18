@@ -123,70 +123,6 @@ const commentHighlightTheme = EditorView.baseTheme({
     backgroundColor: "hsl(var(--muted-foreground) / 0.12)",
     borderBottomColor: "hsl(var(--muted-foreground) / 0.4)",
   },
-  ".cm-tooltip:has(.cm-comment-preview)": {
-    // Let the preview card own its chrome instead of the default tooltip box.
-    border: "none",
-    backgroundColor: "transparent",
-  },
-  ".cm-comment-preview": {
-    width: "min(300px, 80vw)",
-    padding: "10px 12px",
-    border: "1px solid hsl(var(--border))",
-    borderRadius: "10px",
-    backgroundColor: "hsl(var(--popover))",
-    color: "hsl(var(--popover-foreground))",
-    boxShadow: "0 8px 24px rgb(0 0 0 / 0.14)",
-    font: "inherit",
-  },
-  ".cm-comment-preview-head": {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    marginBottom: "5px",
-  },
-  ".cm-comment-preview-avatar": {
-    position: "relative",
-    flex: "none",
-    width: "18px",
-    height: "18px",
-    borderRadius: "50%",
-    color: "#fff",
-    fontSize: "9px",
-    fontWeight: "600",
-    display: "grid",
-    placeItems: "center",
-  },
-  ".cm-comment-preview-badge": {
-    position: "absolute",
-    bottom: "-3px",
-    right: "-3px",
-    width: "11px",
-    height: "11px",
-    borderRadius: "50%",
-    display: "grid",
-    placeItems: "center",
-    color: "#fff",
-    fontSize: "6px",
-    fontWeight: "700",
-    boxShadow: "0 0 0 2px hsl(var(--popover))",
-  },
-  ".cm-comment-preview-name": { fontSize: "12px", fontWeight: "600" },
-  ".cm-comment-preview-meta": { fontSize: "10px", color: "hsl(var(--muted-foreground))" },
-  ".cm-comment-preview-body": {
-    fontSize: "13px",
-    lineHeight: "1.45",
-    display: "-webkit-box",
-    WebkitLineClamp: "4",
-    WebkitBoxOrient: "vertical",
-    overflow: "hidden",
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-  },
-  ".cm-comment-preview-replies": {
-    marginTop: "6px",
-    fontSize: "10px",
-    color: "hsl(var(--muted-foreground))",
-  },
 });
 
 /** Innermost highlight covering a position, if any. */
@@ -213,27 +149,31 @@ function activateThreadAt(
 const BOT_ICON_SVG =
   '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>';
 
+// Styles are inlined rather than themed: CodeMirror's StyleModule (used by
+// baseTheme) does not parse modern selectors, so the default .cm-tooltip box
+// supplies the outer chrome and these elements own their own layout.
 function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const root = document.createElement("div");
-  root.className = "cm-comment-preview";
+  root.style.cssText =
+    "width:min(300px,80vw);font:inherit;color:hsl(var(--popover-foreground));";
 
   const head = document.createElement("div");
-  head.className = "cm-comment-preview-head";
+  head.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:5px;";
 
   const avatar = document.createElement("span");
-  avatar.className = "cm-comment-preview-avatar";
+  avatar.style.cssText =
+    "position:relative;flex:none;width:18px;height:18px;border-radius:50%;color:#fff;font-size:9px;font-weight:600;display:grid;place-items:center;";
   avatar.style.backgroundColor = preview.authorColor ?? "hsl(var(--muted-foreground))";
   if (preview.isAgent) {
-    // Match the panel's bot glyph (lucide Bot) rather than an emoji.
-    avatar.innerHTML = BOT_ICON_SVG;
+    avatar.innerHTML = BOT_ICON_SVG; // lucide Bot, matching the panel
   } else {
     avatar.textContent = initials(preview.authorName);
   }
-  // Mirror the panel's on-behalf-of corner badge so attribution reads the same
-  // in the hover preview as in the rail.
+  // Mirror the panel's on-behalf-of corner badge.
   if (preview.isAgent && preview.onBehalfOf) {
     const badge = document.createElement("span");
-    badge.className = "cm-comment-preview-badge";
+    badge.style.cssText =
+      "position:absolute;bottom:-3px;right:-3px;width:11px;height:11px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:6px;font-weight:700;box-shadow:0 0 0 2px hsl(var(--popover));";
     badge.style.backgroundColor = preview.onBehalfOfColor ?? "hsl(var(--muted-foreground))";
     badge.textContent = initials(preview.onBehalfOf).slice(0, 1);
     avatar.appendChild(badge);
@@ -241,26 +181,27 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   head.appendChild(avatar);
 
   const name = document.createElement("span");
-  name.className = "cm-comment-preview-name";
+  name.style.cssText = "font-size:12px;font-weight:600;";
   name.textContent = preview.authorName;
   head.appendChild(name);
 
   if (preview.isAgent) {
     const meta = document.createElement("span");
-    meta.className = "cm-comment-preview-meta";
+    meta.style.cssText = "font-size:10px;color:hsl(var(--muted-foreground));";
     meta.textContent = preview.onBehalfOf ? `AI · for ${preview.onBehalfOf}` : "AI";
     head.appendChild(meta);
   }
   root.appendChild(head);
 
   const body = document.createElement("div");
-  body.className = "cm-comment-preview-body";
+  body.style.cssText =
+    "font-size:13px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;word-break:break-word;";
   body.textContent = preview.body;
   root.appendChild(body);
 
   if (preview.replyCount > 0) {
     const replies = document.createElement("div");
-    replies.className = "cm-comment-preview-replies";
+    replies.style.cssText = "margin-top:6px;font-size:10px;color:hsl(var(--muted-foreground));";
     replies.textContent = `+${preview.replyCount} ${preview.replyCount === 1 ? "reply" : "replies"}`;
     root.appendChild(replies);
   }
