@@ -51,6 +51,8 @@ export interface NotebookCommentsPanelProps {
   onReplyThread?: (threadId: string, body: string) => void | Promise<void>;
   onResolveThread?: (threadId: string) => void | Promise<void>;
   onReopenThread?: (threadId: string) => void | Promise<void>;
+  /** Re-attempt finalization for a thread stuck in pending. */
+  onRetryThread?: (threadId: string) => void | Promise<void>;
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
   /**
    * Resolve attribution for a comment author's actor label: display name,
@@ -73,6 +75,7 @@ export function NotebookCommentsPanel({
   onReplyThread,
   onResolveThread,
   onReopenThread,
+  onRetryThread,
   onFocusThreadAnchor,
   resolveCommentAuthor,
   sourceLanguage,
@@ -102,6 +105,7 @@ export function NotebookCommentsPanel({
       onReplyThread={onReplyThread}
       onResolveThread={onResolveThread}
       onReopenThread={onReopenThread}
+      onRetryThread={onRetryThread}
       onFocusThreadAnchor={onFocusThreadAnchor}
       resolveCommentAuthor={resolveCommentAuthor}
       sourceLanguage={sourceLanguage}
@@ -237,6 +241,7 @@ function CommentThreadItem({
   onReplyThread,
   onResolveThread,
   onReopenThread,
+  onRetryThread,
   onFocusThreadAnchor,
   resolveCommentAuthor,
   sourceLanguage,
@@ -248,6 +253,7 @@ function CommentThreadItem({
   onReplyThread?: (threadId: string, body: string) => void | Promise<void>;
   onResolveThread?: (threadId: string) => void | Promise<void>;
   onReopenThread?: (threadId: string) => void | Promise<void>;
+  onRetryThread?: (threadId: string) => void | Promise<void>;
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
   sourceLanguage?: string;
@@ -290,6 +296,10 @@ function CommentThreadItem({
     ? resolveCommentAuthor?.(thread.created_by_actor_label)
     : undefined;
   const canShowCell = Boolean(commentThreadTargetCellId(thread) && onFocusThreadAnchor);
+  // Pending/unverified: created locally but not yet finalized by the daemon. If
+  // it stays here it never actually posted; offer a retry (anchor repair on the
+  // daemon means a previously-failed finalize can now succeed).
+  const unsettled = thread.mutation_state === "pending" || thread.mutation_state === "unverified";
 
   return (
     <li className="rounded-lg border bg-card text-card-foreground shadow-sm">
@@ -309,6 +319,17 @@ function CommentThreadItem({
           {thread.status === "resolved" ? <CommentBadge state="resolved" /> : null}
           {thread.mutation_state === "rejected" ? (
             <span className="text-[11px] font-medium text-destructive">Couldn't post</span>
+          ) : null}
+          {unsettled && onRetryThread ? (
+            <button
+              type="button"
+              onClick={() => onRetryThread(thread.id)}
+              aria-label={`Retry posting ${threadLabel}`}
+              className="inline-flex shrink-0 items-center gap-1 rounded text-[11px] font-medium text-amber-700 transition-colors hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-300"
+            >
+              <RotateCcw className="size-3" aria-hidden="true" />
+              Not posted · Retry
+            </button>
           ) : null}
           <div className="flex shrink-0 items-center gap-0.5">
             {canShowCell ? (

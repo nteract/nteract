@@ -976,6 +976,55 @@ function AppContent() {
     [handleCommentThreadStatusChange],
   );
 
+  // Re-attempt daemon finalization for a thread stuck in pending (e.g. a finalize
+  // that previously failed on anchor drift, now repairable). Recovers a comment
+  // that otherwise looked posted but never committed.
+  const handleRetryFinalizeThread = useCallback(
+    async (threadId: string) => {
+      const handle = getHandle();
+      if (!handle?.get_comments_doc_heads_hex) {
+        return failCommentAction("Comments sync unavailable.");
+      }
+      const projection = refreshCommentsProjection() ?? commentsProjection;
+      const thread = projection?.threads.find((candidate) => candidate.id === threadId);
+      const messageId = thread?.messages[0]?.id;
+      if (!thread || !messageId) {
+        return failCommentAction("Comment not found to retry.");
+      }
+      setCommentsError(null);
+      try {
+        const observedCommentsHeads = handle.get_comments_doc_heads_hex();
+        const synced = await flushSync();
+        if (!synced) {
+          failCommentAction("Failed to sync comment before authority accept.");
+        }
+        const response = await notebookClient.acceptCommentThread(
+          threadId,
+          messageId,
+          observedCommentsHeads,
+        );
+        const authorityError = commentAuthorityError(response, "accept comment thread");
+        if (authorityError) {
+          failCommentAction(authorityError);
+        }
+        triggerSync();
+        refreshCommentsProjection();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Retry failed.";
+        setCommentsError(message);
+      }
+    },
+    [
+      commentsProjection,
+      failCommentAction,
+      flushSync,
+      getHandle,
+      notebookClient,
+      refreshCommentsProjection,
+      triggerSync,
+    ],
+  );
+
   // Connection/identity slot source: daemon lifecycle, stable for the
   // app's lifetime (the dot must transition on daemon restarts).
   const desktopConnectionStatus = useMemo(
@@ -1929,6 +1978,7 @@ function AppContent() {
                   onReplyThread={canMutateComments ? handleReplyCommentThread : undefined}
                   onResolveThread={canMutateComments ? handleResolveCommentThread : undefined}
                   onReopenThread={canMutateComments ? handleReopenCommentThread : undefined}
+                  onRetryThread={canMutateComments ? handleRetryFinalizeThread : undefined}
                   onFocusThreadAnchor={handleFocusCommentThreadAnchor}
                   resolveCommentAuthor={resolveCommentAuthor}
                   sourceLanguage={

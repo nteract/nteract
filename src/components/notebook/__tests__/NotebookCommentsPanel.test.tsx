@@ -451,4 +451,22 @@ describe("NotebookCommentsPanel", () => {
     fireEvent.click(resolve);
     expect(onResolveThread).not.toHaveBeenCalled();
   });
+
+  it("surfaces an unsettled thread as not posted and retries finalization", () => {
+    const onRetryThread = vi.fn();
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [{ ...projection.threads[0], mutation_state: "pending" }],
+        }}
+        onRetryThread={onRetryThread}
+      />,
+    );
+
+    const retry = screen.getByRole("button", { name: "Retry posting Document comment 1" });
+    expect(retry).toBeVisible();
+    fireEvent.click(retry);
+    expect(onRetryThread).toHaveBeenCalledWith("thread-1");
+  });
 });
