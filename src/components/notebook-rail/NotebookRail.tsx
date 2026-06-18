@@ -121,6 +121,8 @@ export interface NotebookOutlinePanelProps {
   activeItemId?: string | null;
   selectedItemId?: string | null;
   selectedCellId?: string | null;
+  ariaLabel?: string;
+  emptyMessage?: string;
   onSelectItem?: (item: NotebookOutlineItem) => void;
   onNavigateItem?: (item: NotebookOutlineItem, href: string) => boolean | void;
   getItemHref?: (item: NotebookOutlineItem) => string | null | undefined;
@@ -132,6 +134,8 @@ export function NotebookOutlinePanel({
   activeItemId = null,
   selectedItemId = null,
   selectedCellId = null,
+  ariaLabel = "Notebook outline",
+  emptyMessage = "Add Markdown headings to structure your notebook. They will appear here.",
   onSelectItem,
   onNavigateItem,
   getItemHref,
@@ -141,7 +145,7 @@ export function NotebookOutlinePanel({
   if (items.length === 0) {
     return (
       <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-        Add Markdown headings to structure your notebook. They will appear here.
+        {emptyMessage}
       </div>
     );
   }
@@ -160,7 +164,7 @@ export function NotebookOutlinePanel({
 
   return (
     <nav
-      aria-label="Notebook outline"
+      aria-label={ariaLabel}
       className="-ml-1"
       data-testid="notebook-outline-panel"
       data-drag-policy="navigation-only"
