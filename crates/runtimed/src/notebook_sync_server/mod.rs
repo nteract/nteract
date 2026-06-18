@@ -50,6 +50,8 @@ use runtime_doc::RuntimeStateDoc;
 mod attachments;
 mod blob_upload;
 mod catalog;
+#[allow(dead_code)]
+mod comments_store;
 mod identity;
 mod load;
 mod metadata;
