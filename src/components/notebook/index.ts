@@ -105,6 +105,12 @@ export {
   type ApplyOutputChangesetOptions,
 } from "./state/runtime-store-projection";
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
+export {
+  DocumentTitle,
+  type DocumentTitleClassNames,
+  type DocumentTitleDisplay,
+  type DocumentTitleProps,
+} from "./DocumentTitle";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
 export {
   NotebookNotice,
