@@ -62,6 +62,7 @@ import {
 } from "@/components/notebook";
 import { GlobalFindBar } from "@/components/search";
 import { colorForActorLabel } from "./lib/actor-colors";
+import { cachedActorName, rememberActorName } from "./lib/actor-name-cache";
 import { setSourceCommentThreads, type SourceCommentThread } from "./lib/comment-highlights";
 import {
   setCommentsProjectionSnapshot,
@@ -815,11 +816,17 @@ function AppContent() {
   const resolveCommentAuthor = useCallback((actorLabel: string): CommentAuthor => {
     const parsed = parseNotebookActorLabel(actorLabel);
     const isAgent = parsed?.kind === "agent";
-    // Prefer the live presence name (e.g. "Claude Code") for a connected
-    // author, then the parsed operator label, then a humanized fallback.
+    // Prefer the live presence name (e.g. "Claude Code"); remember it so the
+    // author keeps that name after disconnecting. Then fall back to the last
+    // remembered name, then the parsed operator label, then a humanized form.
     const liveName = findPeerLabelByActorLabel(actorLabel);
+    if (liveName) rememberActorName(actorLabel, liveName);
     const displayName =
-      liveName ?? parsed?.label ?? friendlyNotebookActorLabel(actorLabel) ?? actorLabel;
+      liveName ??
+      cachedActorName(actorLabel) ??
+      parsed?.label ??
+      friendlyNotebookActorLabel(actorLabel) ??
+      actorLabel;
     const [principal] = splitNotebookActorPrincipalOperator(actorLabel);
     const onBehalfOf = isAgent
       ? (parsed?.onBehalfOf ?? friendlyNotebookActorLabel(principal))
