@@ -142,22 +142,36 @@ pub fn validate_source_range_anchor_against_source(
         return Ok(());
     };
 
-    let start = source_byte_offset_from_utf16_point(source, *start_line, *start_column)?;
-    let end = source_byte_offset_from_utf16_point(source, *end_line, *end_column)?;
-    if start > end {
-        return Err(format!(
-            "source_range start ({start_line}:{start_column}) must be before or equal to end ({end_line}:{end_column})"
-        ));
-    }
-
-    if let Some(exact_quote) = exact_quote {
-        let current = &source[start..end];
-        if current != exact_quote {
-            return Err("source_range exact_quote does not match current cell source".to_string());
+    // Fast path: the stored line/column still resolves and, when an exact quote
+    // is present, the text there still matches it.
+    if let (Ok(start), Ok(end)) = (
+        source_byte_offset_from_utf16_point(source, *start_line, *start_column),
+        source_byte_offset_from_utf16_point(source, *end_line, *end_column),
+    ) {
+        if start <= end {
+            match exact_quote {
+                None => return Ok(()),
+                Some(quote) if &source[start..end] == quote => return Ok(()),
+                Some(_) => {}
+            }
         }
     }
 
-    Ok(())
+    // Repair path: the document shifted since the comment was authored, so the
+    // stored line/column no longer lines up. Accept as long as the quoted text
+    // still exists somewhere in the source — clients resolve the live position
+    // by quote on render. Only reject when the quoted text is truly gone (or
+    // there is no quote to re-anchor by), which is the one case where the
+    // comment has genuinely lost its target.
+    match exact_quote {
+        Some(quote) if !quote.is_empty() && source.contains(quote.as_str()) => Ok(()),
+        Some(_) => {
+            Err("source_range exact_quote no longer present in current cell source".to_string())
+        }
+        None => Err(format!(
+            "source_range position ({start_line}:{start_column}) is outside current cell source"
+        )),
+    }
 }
 
 fn validate_source_range_order(
@@ -331,6 +345,42 @@ mod tests {
 
         assert!(validate_source_range_anchor_against_source(&anchor, "alpha\nbeta\n").is_ok());
         assert!(validate_source_range_anchor_against_source(&anchor, "alpha\ngamma\n").is_err());
+    }
+
+    #[test]
+    fn repairs_source_range_anchor_when_document_shifted() {
+        // Anchor authored at line 1, but the cell gained a line above so the
+        // quoted text now lives on line 2. The stored line/column no longer
+        // matches, yet the quote is still present: finalize should accept.
+        let anchor = CommentAnchor::SourceRange {
+            cell_id: "cell-1".into(),
+            start_line: 1,
+            start_column: 0,
+            end_line: 1,
+            end_column: 4,
+            prefix_quote: None,
+            exact_quote: Some("beta".into()),
+            suffix_quote: None,
+        };
+
+        assert!(
+            validate_source_range_anchor_against_source(&anchor, "added\nalpha\nbeta\n").is_ok(),
+            "drifted anchor whose quote still exists should validate"
+        );
+        // Column out of bounds for the current line, but the quote still exists.
+        let out_of_bounds = CommentAnchor::SourceRange {
+            cell_id: "cell-1".into(),
+            start_line: 0,
+            start_column: 40,
+            end_line: 0,
+            end_column: 44,
+            prefix_quote: None,
+            exact_quote: Some("beta".into()),
+            suffix_quote: None,
+        };
+        assert!(validate_source_range_anchor_against_source(&out_of_bounds, "x\nbeta\n").is_ok());
+        // Quote genuinely gone: still rejected.
+        assert!(validate_source_range_anchor_against_source(&anchor, "added\nalpha\n").is_err());
     }
 
     #[test]
