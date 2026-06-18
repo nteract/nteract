@@ -146,4 +146,33 @@ describe("NotebookEditModeButton", () => {
       "Offline while the room reconnects",
     );
   });
+
+  it("accepts document-specific segmented labels and edit disabled state", () => {
+    const onModeChange = vi.fn();
+
+    render(
+      <NotebookEditModeButton
+        ariaLabel="Markdown document mode"
+        dataSlot="markdown-document-mode-toggle"
+        editDisabled
+        editLabel="Edit"
+        editTitle="Editing requires edit access"
+        mode="view"
+        state="viewing"
+        variant="segmented"
+        viewSegmentLabel="View"
+        viewTitle="View Markdown"
+        onModeChange={onModeChange}
+      />,
+    );
+
+    const group = screen.getByRole("group", { name: "Markdown document mode" });
+    expect(group).toHaveAttribute("data-slot", "markdown-document-mode-toggle");
+    expect(screen.getByRole("button", { name: "View" })).toHaveAttribute("title", "View Markdown");
+    expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(onModeChange).not.toHaveBeenCalled();
+  });
 });
