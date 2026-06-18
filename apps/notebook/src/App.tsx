@@ -860,6 +860,7 @@ function AppContent() {
               authorColor: author?.color,
               isAgent: author?.isAgent,
               onBehalfOf: author?.onBehalfOf,
+              onBehalfOfColor: author?.onBehalfOfColor,
               body: firstMessage.body,
               replyCount: Math.max(0, thread.messages.length - 1),
             }

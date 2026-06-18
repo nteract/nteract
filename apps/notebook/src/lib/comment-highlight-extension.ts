@@ -26,6 +26,7 @@ export interface CommentHighlightPreview {
   authorColor?: string;
   isAgent?: boolean;
   onBehalfOf?: string | null;
+  onBehalfOfColor?: string;
   body: string;
   replyCount: number;
 }
@@ -144,6 +145,7 @@ const commentHighlightTheme = EditorView.baseTheme({
     marginBottom: "5px",
   },
   ".cm-comment-preview-avatar": {
+    position: "relative",
     flex: "none",
     width: "18px",
     height: "18px",
@@ -153,6 +155,20 @@ const commentHighlightTheme = EditorView.baseTheme({
     fontWeight: "600",
     display: "grid",
     placeItems: "center",
+  },
+  ".cm-comment-preview-badge": {
+    position: "absolute",
+    bottom: "-3px",
+    right: "-3px",
+    width: "11px",
+    height: "11px",
+    borderRadius: "50%",
+    display: "grid",
+    placeItems: "center",
+    color: "#fff",
+    fontSize: "6px",
+    fontWeight: "700",
+    boxShadow: "0 0 0 2px hsl(var(--popover))",
   },
   ".cm-comment-preview-name": { fontSize: "12px", fontWeight: "600" },
   ".cm-comment-preview-meta": { fontSize: "10px", color: "hsl(var(--muted-foreground))" },
@@ -212,6 +228,15 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
     avatar.innerHTML = BOT_ICON_SVG;
   } else {
     avatar.textContent = initials(preview.authorName);
+  }
+  // Mirror the panel's on-behalf-of corner badge so attribution reads the same
+  // in the hover preview as in the rail.
+  if (preview.isAgent && preview.onBehalfOf) {
+    const badge = document.createElement("span");
+    badge.className = "cm-comment-preview-badge";
+    badge.style.backgroundColor = preview.onBehalfOfColor ?? "hsl(var(--muted-foreground))";
+    badge.textContent = initials(preview.onBehalfOf).slice(0, 1);
+    avatar.appendChild(badge);
   }
   head.appendChild(avatar);
 
