@@ -63,6 +63,10 @@ import {
 import { GlobalFindBar } from "@/components/search";
 import { colorForActorLabel } from "./lib/actor-colors";
 import { setSourceCommentThreads, type SourceCommentThread } from "./lib/comment-highlights";
+import {
+  setCommentsProjectionSnapshot,
+  useCommentsProjection,
+} from "./lib/comments-projection-store";
 import type {
   SourceCommentSelectionRect,
   SourceRangeCommentAnchor,
@@ -424,7 +428,7 @@ function AppContent() {
   // `useObservable` seeds with `null` until the engine emits.
   const sessionStatus = useObservable<SessionStatus | null>(sessionStatus$, null);
   const sessionReady = sessionStatus?.runtime_state === "ready";
-  const [commentsProjection, setCommentsProjection] = useState<CommentsProjection | null>(null);
+  const commentsProjection = useCommentsProjection();
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [commentDraftTarget, setCommentDraftTarget] = useState<NotebookCommentDraftTarget | null>(
     null,
@@ -438,7 +442,7 @@ function AppContent() {
     const projection = getHandle()?.get_comments_projection?.();
     const nextProjection =
       projection && typeof projection === "object" ? (projection as CommentsProjection) : null;
-    setCommentsProjection(nextProjection);
+    setCommentsProjectionSnapshot(nextProjection);
     return nextProjection;
   }, [getHandle]);
 
@@ -447,7 +451,7 @@ function AppContent() {
     const engine = getEngine();
     if (!engine) return;
     const sub = engine.commentsProjection$.subscribe((projection) => {
-      setCommentsProjection(projection);
+      setCommentsProjectionSnapshot(projection);
       setCommentsError(null);
     });
     return () => sub.unsubscribe();
