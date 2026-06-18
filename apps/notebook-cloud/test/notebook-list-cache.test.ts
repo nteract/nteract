@@ -16,25 +16,52 @@ describe("cloud notebook list cache", () => {
     const auth = oidcAuth("user-a");
     const notebooks = [notebook("nb-a")];
 
-    writeCachedCloudNotebookList(storage, auth, notebooks, 1_000);
+    writeCachedCloudNotebookList(storage, auth, null, notebooks, 1_000);
 
-    assert.deepEqual(readCachedCloudNotebookList(storage, auth, 2_000), notebooks);
+    assert.deepEqual(readCachedCloudNotebookList(storage, auth, null, 2_000), notebooks);
   });
 
   it("does not reuse cached catalog rows for another identity", () => {
     const storage = new MemoryStorage();
-    writeCachedCloudNotebookList(storage, oidcAuth("user-a"), [notebook("nb-a")], 1_000);
+    writeCachedCloudNotebookList(storage, oidcAuth("user-a"), null, [notebook("nb-a")], 1_000);
 
-    assert.equal(readCachedCloudNotebookList(storage, oidcAuth("user-b"), 2_000), null);
+    assert.equal(readCachedCloudNotebookList(storage, oidcAuth("user-b"), null, 2_000), null);
+  });
+
+  it("prefers the app session cache key over local OIDC claims", () => {
+    const storage = new MemoryStorage();
+    const notebooks = [notebook("nb-a")];
+
+    writeCachedCloudNotebookList(
+      storage,
+      oidcAuth("user-a"),
+      appSession("session-a"),
+      notebooks,
+      1_000,
+    );
+
+    assert.deepEqual(
+      readCachedCloudNotebookList(storage, oidcAuth("user-b"), appSession("session-a"), 2_000),
+      notebooks,
+    );
+    assert.equal(
+      readCachedCloudNotebookList(storage, oidcAuth("user-a"), appSession("session-b"), 2_000),
+      null,
+    );
   });
 
   it("expires retained catalog rows", () => {
     const storage = new MemoryStorage();
     const auth = oidcAuth("user-a");
-    writeCachedCloudNotebookList(storage, auth, [notebook("nb-a")], 1_000);
+    writeCachedCloudNotebookList(storage, auth, null, [notebook("nb-a")], 1_000);
 
     assert.equal(
-      readCachedCloudNotebookList(storage, auth, 1_000 + CLOUD_NOTEBOOK_LIST_CACHE_TTL_MS + 1),
+      readCachedCloudNotebookList(
+        storage,
+        auth,
+        null,
+        1_000 + CLOUD_NOTEBOOK_LIST_CACHE_TTL_MS + 1,
+      ),
       null,
     );
   });
@@ -50,17 +77,17 @@ describe("cloud notebook list cache", () => {
       }),
     );
 
-    assert.equal(readCachedCloudNotebookList(storage, oidcAuth("user-a"), 2_000), null);
+    assert.equal(readCachedCloudNotebookList(storage, oidcAuth("user-a"), null, 2_000), null);
   });
 
   it("clears retained catalog rows", () => {
     const storage = new MemoryStorage();
     const auth = oidcAuth("user-a");
-    writeCachedCloudNotebookList(storage, auth, [notebook("nb-a")], 1_000);
+    writeCachedCloudNotebookList(storage, auth, null, [notebook("nb-a")], 1_000);
 
     clearCachedCloudNotebookList(storage);
 
-    assert.equal(readCachedCloudNotebookList(storage, auth, 2_000), null);
+    assert.equal(readCachedCloudNotebookList(storage, auth, null, 2_000), null);
   });
 });
 
@@ -92,6 +119,14 @@ function notebook(id: string): CloudNotebookListItem {
       acl: `/api/n/${id}/acl`,
       access_requests: `/api/n/${id}/access-requests`,
     },
+  };
+}
+
+function appSession(cacheKey: string) {
+  return {
+    provider: "oidc" as const,
+    expires_at: 1_750_000_000,
+    cache_key: cacheKey,
   };
 }
 

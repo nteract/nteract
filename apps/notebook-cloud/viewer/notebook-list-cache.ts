@@ -1,3 +1,4 @@
+import type { CloudAppSession } from "./app-session";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import { isCloudNotebookListItem, type CloudNotebookListItem } from "./notebook-dashboard";
 
@@ -20,9 +21,10 @@ interface CachedCloudNotebookList {
 export function readCachedCloudNotebookList(
   storage: Pick<CloudNotebookListCacheStorage, "getItem">,
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null | undefined,
   now = Date.now(),
 ): CloudNotebookListItem[] | null {
-  const authKey = cloudNotebookListCacheAuthKey(authState);
+  const authKey = cloudNotebookListCacheAuthKey(authState, appSession);
   if (!authKey) {
     return null;
   }
@@ -55,10 +57,11 @@ export function readCachedCloudNotebookList(
 export function writeCachedCloudNotebookList(
   storage: Pick<CloudNotebookListCacheStorage, "setItem">,
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null | undefined,
   notebooks: CloudNotebookListItem[],
   now = Date.now(),
 ): void {
-  const authKey = cloudNotebookListCacheAuthKey(authState);
+  const authKey = cloudNotebookListCacheAuthKey(authState, appSession);
   if (!authKey) {
     return;
   }
@@ -79,7 +82,13 @@ export function clearCachedCloudNotebookList(
   storage.removeItem(CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY);
 }
 
-export function cloudNotebookListCacheAuthKey(authState: CloudPrototypeAuthState): string | null {
+export function cloudNotebookListCacheAuthKey(
+  authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null | undefined,
+): string | null {
+  if (appSession?.cache_key) {
+    return `app-session:${appSession.cache_key}`;
+  }
   if (authState.mode === "oidc" && authState.oidcClaims?.sub) {
     return `oidc:${authState.oidcClaims.sub}`;
   }

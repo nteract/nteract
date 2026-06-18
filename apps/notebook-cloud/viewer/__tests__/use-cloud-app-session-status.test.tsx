@@ -29,6 +29,7 @@ describe("useCloudAppSessionStatus", () => {
   const session = (overrides: Partial<CloudAppSession> = {}): CloudAppSession => ({
     provider: "oidc",
     expires_at: 4_000_000_000,
+    cache_key: "cache-a",
     ...overrides,
   });
 
@@ -76,10 +77,26 @@ describe("useCloudAppSessionStatus", () => {
 
   it("adopts a genuinely renewed session", async () => {
     const initial = session({ expires_at: 1 });
-    const renewed = session({ expires_at: 4_000_009_999 });
+    const renewed = session({ expires_at: 4_000_009_999, cache_key: "cache-b" });
     mocks.readCloudAppSessionStatus.mockResolvedValue({ ok: true, session: renewed });
 
     const { result } = renderHook(() => useCloudAppSessionStatus(initial));
+    await waitFor(() => expect(mocks.readCloudAppSessionStatus).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+
+    expect(result.current.status).toBe("ready");
+    expect(result.current.session).toBe(renewed);
+  });
+
+  it("adopts a session when only the cache boundary changes", async () => {
+    const initial = session({ expires_at: 4_000_000_000, cache_key: "cache-a" });
+    const renewed = session({ expires_at: 4_000_000_000, cache_key: "cache-b" });
+    mocks.readCloudAppSessionStatus.mockResolvedValue({ ok: true, session: renewed });
+
+    const { result } = renderHook(() => useCloudAppSessionStatus(initial));
+    act(() => {
+      result.current.refreshAppSessionStatus();
+    });
     await waitFor(() => expect(mocks.readCloudAppSessionStatus).toHaveBeenCalledTimes(1));
     await act(async () => {});
 

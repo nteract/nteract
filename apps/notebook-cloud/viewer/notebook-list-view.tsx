@@ -18,7 +18,9 @@ import {
 import { cloudResponseError } from "./cloud-response";
 import { clearCloudAppSession, establishCloudAppSession } from "./app-session";
 import { CloudNotebookDashboard } from "./cloud-notebook-dashboard-view";
+import { projectHostedCatalogAuthState } from "./hosted-catalog-auth";
 import { loadCloudNotebookListBootstrap } from "./cloud-viewer-config";
+import type { CloudAppSession } from "./app-session";
 import type {
   CloudNotebookCreateResponse,
   CloudNotebookListBootstrap,
@@ -75,11 +77,16 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   const [renameState, setRenameState] = useState<CloudNotebookRenameState | null>(null);
   const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
-  const hasExplicitAuth = authState.mode === "dev" || authState.mode === "oidc";
-  const hasAppSession = Boolean(appSessionStatus.session);
-  const signedIn = hasExplicitAuth || hasAppSession;
-  const canFetchNotebookList = authState.mode === "dev" || hasAppSession;
-  const waitingForAppSession = authState.mode === "oidc" && !hasAppSession;
+  const hostedAuth = projectHostedCatalogAuthState(authState, {
+    appSession: appSessionStatus.session,
+    appSessionLoading: appSessionStatus.status === "loading",
+  });
+  const {
+    canFetchCatalog: canFetchNotebookList,
+    hasAppSession,
+    signedIn,
+    waitingForAppSession,
+  } = hostedAuth;
   const dashboardModel = useMemo(
     () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
     [listState],
@@ -96,7 +103,11 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   }, [listState]);
 
   useEffect(() => {
-    const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache(authState, bootstrap);
+    const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache(
+      authState,
+      appSessionStatus.session,
+      bootstrap,
+    );
     if (!canFetchNotebookList) {
       if (waitingForAppSession) {
         setListState(
@@ -110,7 +121,11 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
     }
 
     if (refreshIndex === 0 && bootstrap) {
-      writeCachedCloudNotebookListToWindow(authState, bootstrap.notebooks);
+      writeCachedCloudNotebookListToWindow(
+        authState,
+        appSessionStatus.session,
+        bootstrap.notebooks,
+      );
       setListState({ kind: "ready", notebooks: bootstrap.notebooks });
       return;
     }
@@ -130,7 +145,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
         if (!isCloudNotebookListResponse(body)) {
           throw new Error("Unable to list notebooks: response shape was invalid");
         }
-        writeCachedCloudNotebookListToWindow(authState, body.notebooks);
+        writeCachedCloudNotebookListToWindow(authState, appSessionStatus.session, body.notebooks);
         setListState({ kind: "ready", notebooks: body.notebooks });
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -144,7 +159,14 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
     return () => {
       controller.abort();
     };
-  }, [authState, bootstrap, canFetchNotebookList, refreshIndex, waitingForAppSession]);
+  }, [
+    appSessionStatus.session,
+    authState,
+    bootstrap,
+    canFetchNotebookList,
+    refreshIndex,
+    waitingForAppSession,
+  ]);
 
   const refreshList = () => {
     if (authState.mode === "oidc" && authState.token) {
@@ -277,7 +299,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
               }
             : notebook,
         );
-        writeCachedCloudNotebookListToWindow(authState, notebooks);
+        writeCachedCloudNotebookListToWindow(authState, appSessionStatus.session, notebooks);
         return {
           kind: "ready",
           notebooks,
@@ -517,7 +539,11 @@ function initialCloudNotebookListState(
   authState: CloudPrototypeAuthState,
   bootstrap: CloudNotebookListBootstrap | null,
 ): CloudNotebookListState {
-  const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache(authState, bootstrap);
+  const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache(
+    authState,
+    bootstrap?.session ?? null,
+    bootstrap,
+  );
   return seededNotebooks ? { kind: "ready", notebooks: seededNotebooks } : { kind: "loading" };
 }
 
@@ -541,27 +567,30 @@ function fetchCloudNotebookList(
 
 function cloudNotebookListSeedFromBootstrapOrCache(
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null | undefined,
   bootstrap: CloudNotebookListBootstrap | null,
 ): CloudNotebookListItem[] | null {
-  return bootstrap?.notebooks ?? readCachedCloudNotebookListFromWindow(authState);
+  return bootstrap?.notebooks ?? readCachedCloudNotebookListFromWindow(authState, appSession);
 }
 
 function readCachedCloudNotebookListFromWindow(
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null | undefined,
 ): CloudNotebookListItem[] | null {
   const storage = cloudNotebookListCacheStorage();
-  return storage ? readCachedCloudNotebookList(storage, authState) : null;
+  return storage ? readCachedCloudNotebookList(storage, authState, appSession) : null;
 }
 
 function writeCachedCloudNotebookListToWindow(
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null | undefined,
   notebooks: CloudNotebookListItem[],
 ): void {
   const storage = cloudNotebookListCacheStorage();
   if (!storage) {
     return;
   }
-  writeCachedCloudNotebookList(storage, authState, notebooks);
+  writeCachedCloudNotebookList(storage, authState, appSession, notebooks);
 }
 
 function clearCachedCloudNotebookListFromWindow(): void {
