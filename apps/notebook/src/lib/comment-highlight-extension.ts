@@ -125,9 +125,11 @@ const commentHighlightTheme = EditorView.baseTheme({
   },
   // The comment preview is the only hover tooltip, so strip the default
   // (theme-dark) tooltip chrome and let the preview card own its appearance.
+  // Reset color too: the dark tooltip sets white text, which the card overrides.
   ".cm-tooltip.cm-tooltip-hover": {
     border: "none",
     backgroundColor: "transparent",
+    color: "hsl(var(--popover-foreground, 222 47% 11%))",
     padding: "0",
   },
 });
@@ -161,8 +163,10 @@ const BOT_ICON_SVG =
 // supplies the outer chrome and these elements own their own layout.
 function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const root = document.createElement("div");
+  // Fallbacks because these tokens may not be defined as bare CSS vars here;
+  // without them the text inherits the dark tooltip's white and goes invisible.
   root.style.cssText =
-    "width:min(300px,80vw);padding:10px 12px;border:1px solid hsl(var(--border));border-radius:10px;background:hsl(var(--popover));color:hsl(var(--popover-foreground));box-shadow:0 8px 24px rgb(0 0 0 / 0.14);font:inherit;";
+    "width:min(300px,80vw);padding:10px 12px;border:1px solid hsl(var(--border, 214 32% 91%));border-radius:10px;background:hsl(var(--popover, 0 0% 100%));color:hsl(var(--popover-foreground, 222 47% 11%));box-shadow:0 8px 24px rgb(0 0 0 / 0.14);font:inherit;";
 
   const head = document.createElement("div");
   head.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:5px;";
@@ -170,7 +174,7 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const avatar = document.createElement("span");
   avatar.style.cssText =
     "position:relative;flex:none;width:18px;height:18px;border-radius:50%;color:#fff;font-size:9px;font-weight:600;display:grid;place-items:center;";
-  avatar.style.backgroundColor = preview.authorColor ?? "hsl(var(--muted-foreground))";
+  avatar.style.backgroundColor = preview.authorColor ?? "hsl(var(--muted-foreground, 215 16% 47%))";
   if (preview.isAgent) {
     avatar.innerHTML = BOT_ICON_SVG; // lucide Bot, matching the panel
   } else {
@@ -180,8 +184,8 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   if (preview.isAgent && preview.onBehalfOf) {
     const badge = document.createElement("span");
     badge.style.cssText =
-      "position:absolute;bottom:-3px;right:-3px;width:11px;height:11px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:6px;font-weight:700;box-shadow:0 0 0 2px hsl(var(--popover));";
-    badge.style.backgroundColor = preview.onBehalfOfColor ?? "hsl(var(--muted-foreground))";
+      "position:absolute;bottom:-3px;right:-3px;width:11px;height:11px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:6px;font-weight:700;box-shadow:0 0 0 2px hsl(var(--popover, 0 0% 100%));";
+    badge.style.backgroundColor = preview.onBehalfOfColor ?? "hsl(var(--muted-foreground, 215 16% 47%))";
     badge.textContent = initials(preview.onBehalfOf).slice(0, 1);
     avatar.appendChild(badge);
   }
@@ -194,7 +198,7 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
 
   if (preview.isAgent) {
     const meta = document.createElement("span");
-    meta.style.cssText = "font-size:10px;color:hsl(var(--muted-foreground));";
+    meta.style.cssText = "font-size:10px;color:hsl(var(--muted-foreground, 215 16% 47%));";
     meta.textContent = preview.onBehalfOf ? `AI · for ${preview.onBehalfOf}` : "AI";
     head.appendChild(meta);
   }
@@ -208,7 +212,7 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
 
   if (preview.replyCount > 0) {
     const replies = document.createElement("div");
-    replies.style.cssText = "margin-top:6px;font-size:10px;color:hsl(var(--muted-foreground));";
+    replies.style.cssText = "margin-top:6px;font-size:10px;color:hsl(var(--muted-foreground, 215 16% 47%));";
     replies.textContent = `+${preview.replyCount} ${preview.replyCount === 1 ? "reply" : "replies"}`;
     root.appendChild(replies);
   }
