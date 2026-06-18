@@ -239,53 +239,60 @@ function CommentThreadItem({
     }
   };
 
+  const quote = sourceQuoteFromAnchor(thread.anchor);
+  const threadAuthor = thread.created_by_actor_label
+    ? resolveCommentAuthor?.(thread.created_by_actor_label)
+    : undefined;
+  const canShowCell = Boolean(commentThreadTargetCellId(thread) && onFocusThreadAnchor);
+
   return (
-    <li className="rounded-md border bg-card text-card-foreground shadow-sm">
+    <li className="rounded-lg border bg-card text-card-foreground shadow-sm">
       <div className="space-y-3 p-3">
-        <div className="flex min-w-0 items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {thread.status === "resolved" ? <CommentBadge state="resolved" /> : null}
-            {thread.mutation_state === "rejected" ? (
-              <span className="text-[11px] font-medium text-destructive">Couldn't post</span>
+        <div className="flex items-center gap-2">
+          {quote ? (
+            <code
+              className="min-w-0 flex-1 truncate border-l-2 pl-2 font-mono text-xs text-foreground"
+              style={{ borderColor: threadAuthor?.color ?? "hsl(var(--border))" }}
+              data-testid="comment-thread-source-quote"
+              title={quote}
+            >
+              {quote}
+            </code>
+          ) : (
+            <div className="min-w-0 flex-1 text-xs text-muted-foreground">
+              {anchorLabel(thread)}
+            </div>
+          )}
+          {thread.status === "resolved" ? <CommentBadge state="resolved" /> : null}
+          {thread.mutation_state === "rejected" ? (
+            <span className="text-[11px] font-medium text-destructive">Couldn't post</span>
+          ) : null}
+          <div className="flex shrink-0 items-center gap-0.5">
+            {canShowCell ? (
+              <button
+                type="button"
+                onClick={() => onFocusThreadAnchor?.(thread)}
+                aria-label={`Show cell for ${threadLabel}`}
+                title="Show cell"
+                className="inline-grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <LocateFixed className="size-3.5" aria-hidden="true" />
+              </button>
             ) : null}
-          </div>
-          <span
-            aria-label={`${thread.messages.length} ${
-              thread.messages.length === 1 ? "message" : "messages"
-            }`}
-            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-          >
-            {thread.messages.length}
-          </span>
-        </div>
-
-        <CommentAnchorQuote quote={sourceQuoteFromAnchor(thread.anchor)} />
-
-        <div className="flex justify-end gap-2">
-          {commentThreadTargetCellId(thread) && onFocusThreadAnchor ? (
             <button
               type="button"
-              onClick={() => onFocusThreadAnchor(thread)}
-              aria-label={`Show cell for ${threadLabel}`}
-              className="inline-flex min-h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+              onClick={handleStatusAction}
+              disabled={statusAction.disabled || statusSubmitting}
+              aria-label={statusAction.ariaLabel}
+              title={statusAction.label}
+              className="inline-grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <LocateFixed className="size-3.5" aria-hidden="true" />
-              Show cell
+              <StatusIcon className="size-3.5" aria-hidden="true" />
             </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={handleStatusAction}
-            disabled={statusAction.disabled || statusSubmitting}
-            aria-label={statusAction.ariaLabel}
-            className="inline-flex min-h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <StatusIcon className="size-3.5" aria-hidden="true" />
-            {statusAction.label}
-          </button>
+          </div>
         </div>
 
-        <div className="space-y-2">
+        <div className="space-y-3">
           {thread.messages.map((message) => (
             <CommentMessage
               key={message.id}
@@ -301,7 +308,8 @@ function CommentThreadItem({
           buttonLabel="Reply"
           icon="send"
           disabled={!canReply}
-          placeholder="Reply"
+          placeholder="Reply…"
+          compact
           onSubmit={onReplyThread ? (body) => onReplyThread(thread.id, body) : undefined}
         />
       </div>
@@ -323,43 +331,41 @@ function CommentMessage({
     : null;
 
   return (
-    <article className="space-y-1.5 rounded-md bg-muted/35 px-2.5 py-2">
-      <div className="flex items-center gap-2">
-        {author ? (
-          <CommentAuthorAvatar author={author} />
-        ) : (
-          <div className="size-6 shrink-0 rounded-full bg-muted" aria-hidden="true" />
-        )}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-1.5">
+    <article className="flex gap-2.5">
+      {author ? (
+        <CommentAuthorAvatar author={author} />
+      ) : (
+        <div className="mt-0.5 size-5 shrink-0 rounded-full bg-muted" aria-hidden="true" />
+      )}
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <div className="flex flex-wrap items-baseline gap-x-1.5">
+          <span
+            className="text-xs font-semibold text-foreground"
+            title={message.created_by_actor_label ?? undefined}
+          >
+            {author?.displayName ?? "Unknown"}
+          </span>
+          {author?.isAgent ? (
             <span
-              className="truncate text-xs font-medium text-foreground"
-              title={message.created_by_actor_label ?? undefined}
+              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground"
+              title="AI agent"
             >
-              {author?.displayName ?? "Unknown"}
+              <Bot className="size-2.5" aria-hidden="true" />
+              AI
             </span>
-            {author?.isAgent ? (
-              <span
-                className="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground"
-                title="AI agent"
-              >
-                <Bot className="size-2.5" aria-hidden="true" />
-                AI
-              </span>
-            ) : null}
-            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-              {formatRelativeTime(message.created_at)}
-            </span>
-          </div>
-          {author?.isAgent && author.onBehalfOf ? (
-            <div className="text-[10px] text-muted-foreground">for {author.onBehalfOf}</div>
           ) : null}
+          {author?.isAgent && author.onBehalfOf ? (
+            <span className="text-[10px] text-muted-foreground">· for {author.onBehalfOf}</span>
+          ) : null}
+          <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+            {formatRelativeTime(message.created_at)}
+          </span>
         </div>
+        <CommentBody body={message.body} />
+        {message.mutation_state === "rejected" ? (
+          <div className="text-[10px] font-medium text-destructive">Couldn't post</div>
+        ) : null}
       </div>
-      <CommentBody body={message.body} />
-      {message.mutation_state === "rejected" ? (
-        <div className="text-[10px] font-medium text-destructive">Couldn't post</div>
-      ) : null}
     </article>
   );
 }
@@ -368,11 +374,11 @@ function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
   const initials = authorInitials(author.displayName);
   return (
     <div
-      className="flex size-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+      className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white"
       style={{ backgroundColor: author.color ?? "hsl(var(--muted-foreground))" }}
       aria-hidden="true"
     >
-      {author.isAgent ? <Bot className="size-3.5" /> : initials}
+      {author.isAgent ? <Bot className="size-3" /> : initials}
     </div>
   );
 }
@@ -393,20 +399,6 @@ function CommentBody({ body }: { body: string }) {
   return <ProjectedMarkdownView plan={plan} className="text-sm leading-5" />;
 }
 
-function CommentAnchorQuote({ quote }: { quote: string | null }) {
-  const preview = formatQuotePreview(quote);
-  if (!preview) return null;
-
-  return (
-    <blockquote
-      className="max-h-24 overflow-hidden whitespace-pre-wrap break-words border-l-2 border-border pl-2 text-xs leading-5 text-foreground"
-      data-testid="comment-thread-source-quote"
-    >
-      {preview}
-    </blockquote>
-  );
-}
-
 function CommentComposer({
   ariaLabel,
   buttonAriaLabel,
@@ -415,6 +407,7 @@ function CommentComposer({
   disabled,
   autoFocusKey = null,
   placeholder,
+  compact = false,
   onSubmit,
 }: {
   ariaLabel: string;
@@ -424,12 +417,17 @@ function CommentComposer({
   disabled: boolean;
   autoFocusKey?: string | null;
   placeholder: string;
+  /** Collapse to a single line until focused or non-empty (used for replies). */
+  compact?: boolean;
   onSubmit?: (body: string) => void | Promise<void>;
 }) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const Icon = icon === "plus" ? Plus : Send;
+  // Collapsed only while compact, blurred, and empty.
+  const expanded = !compact || focused || body.length > 0;
 
   useEffect(() => {
     if (!autoFocusKey || disabled) return;
@@ -474,24 +472,29 @@ function CommentComposer({
         disabled={disabled || submitting}
         placeholder={placeholder}
         onChange={(event) => setBody(event.target.value)}
-        rows={3}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        rows={expanded ? 3 : 1}
         className={cn(
-          "min-h-20 w-full resize-y rounded-md border bg-background px-2.5 py-2 text-sm leading-5",
+          "w-full resize-y border bg-background px-3 text-sm leading-5",
+          expanded ? "min-h-20 rounded-md py-2" : "min-h-0 resize-none rounded-full py-1.5",
           "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
           (disabled || submitting) && "cursor-not-allowed opacity-60",
         )}
       />
-      <div className="flex justify-end">
-        <button
-          type="submit"
-          disabled={disabled || submitting || body.trim().length === 0}
-          aria-label={buttonAriaLabel}
-          className="inline-flex min-h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Icon className="size-3.5" aria-hidden="true" />
-          {buttonLabel}
-        </button>
-      </div>
+      {expanded ? (
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={disabled || submitting || body.trim().length === 0}
+            aria-label={buttonAriaLabel}
+            className="inline-flex min-h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Icon className="size-3.5" aria-hidden="true" />
+            {buttonLabel}
+          </button>
+        </div>
+      ) : null}
     </form>
   );
 }

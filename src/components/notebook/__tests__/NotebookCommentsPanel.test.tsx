@@ -259,7 +259,6 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByText("Check the framing before publishing.")).toBeVisible();
     expect(screen.getByText("alice")).toBeVisible();
     expect(screen.getByText("Cell-scoped comment")).toBeVisible();
-    expect(screen.getAllByLabelText("1 message")).toHaveLength(2);
 
     fireEvent.change(screen.getByLabelText("Reply to Document comment 1"), {
       target: { value: "Looks ready locally" },
@@ -390,7 +389,7 @@ describe("NotebookCommentsPanel", () => {
 
     expect(screen.getByText("Claude Code")).toBeVisible();
     expect(screen.getByText("AI")).toBeVisible();
-    expect(screen.getByText("for kylekelley")).toBeVisible();
+    expect(screen.getByText("· for kylekelley")).toBeVisible();
   });
 
   it("falls back to the parsed actor label when no author resolver is given", () => {
