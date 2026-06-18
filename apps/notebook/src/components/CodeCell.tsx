@@ -41,6 +41,8 @@ import { logNotebookIsolatedDiagnostic } from "../lib/isolated-diagnostics";
 import { useCellOutputs } from "@/components/notebook/state/output-store";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
+import { commentHighlightExtension } from "../lib/comment-highlight-extension";
+import { refreshCellCommentHighlights } from "../lib/comment-highlights";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import { tabCompletionKeymap } from "../lib/tab-completion";
 import type {
@@ -105,6 +107,7 @@ interface CodeCellProps {
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
   ) => void;
+  onActivateCommentThread?: (threadId: string) => void;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFrameUntilVisible?: boolean;
   deferredOutputIsolatedFrameRootMargin?: string;
@@ -357,6 +360,7 @@ export const CodeCell = memo(function CodeCell({
   readOnly = false,
   canExecute = !readOnly,
   onCreateSourceComment,
+  onActivateCommentThread,
   outputHostContext,
   deferOutputIsolatedFrameUntilVisible = false,
   deferredOutputIsolatedFrameRootMargin,
@@ -618,6 +622,18 @@ export const CodeCell = memo(function CodeCell({
     return [sourceCommentExtension(cell.id, onCreateSourceComment)];
   }, [cell.id, onCreateSourceComment, readOnly]);
 
+  // Comment highlights are read-only affordances, so they render even when the
+  // editor itself is not editable.
+  const commentHighlightExt = useMemo(() => {
+    if (!onActivateCommentThread) return [];
+    return [
+      commentHighlightExtension({
+        onActivate: onActivateCommentThread,
+        onReady: () => refreshCellCommentHighlights(cell.id),
+      }),
+    ];
+  }, [cell.id, onActivateCommentThread]);
+
   // CodeMirror extensions: CRDT bridge + kernel completion + tab completion + search highlighting + remote cursors + presence sender
   const editorExtensions = useMemo(
     () => [
@@ -629,6 +645,7 @@ export const CodeCell = memo(function CodeCell({
       ...textAttributionExt,
       ...presenceSenderExt,
       ...sourceCommentExt,
+      ...commentHighlightExt,
     ],
     [
       crdtBridgeExt,
@@ -639,6 +656,7 @@ export const CodeCell = memo(function CodeCell({
       textAttributionExt,
       presenceSenderExt,
       sourceCommentExt,
+      commentHighlightExt,
     ],
   );
 

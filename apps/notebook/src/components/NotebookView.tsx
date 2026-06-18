@@ -92,6 +92,7 @@ export interface NotebookViewProps {
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
   ) => void;
+  onActivateCommentThread?: (threadId: string) => void;
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFramesUntilVisible?: boolean;
@@ -369,6 +370,7 @@ function NotebookViewContent({
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
   onCreateSourceComment,
+  onActivateCommentThread,
   markdownHeadingAnchorsByCellId,
   outputHostContext,
   deferOutputIsolatedFramesUntilVisible = false,
@@ -944,6 +946,7 @@ function NotebookViewContent({
             readOnly={!canEditCodeCellSources}
             canExecute={canExecuteCells}
             onCreateSourceComment={onCreateSourceComment}
+            onActivateCommentThread={onActivateCommentThread}
             outputHostContext={outputHostContext}
             deferOutputIsolatedFrameUntilVisible={deferOutputIsolatedFramesUntilVisible}
             deferredOutputIsolatedFrameRootMargin={deferredOutputIsolatedFrameRootMargin}
@@ -1018,6 +1021,7 @@ function NotebookViewContent({
             headingAnchors={markdownHeadingAnchorsByCellId?.get(cell.id)}
             readOnly={!canEditMarkdownSources}
             onCreateSourceComment={onCreateSourceComment}
+            onActivateCommentThread={onActivateCommentThread}
             outputHostContext={outputHostContext}
           />
         );
@@ -1041,6 +1045,7 @@ function NotebookViewContent({
           rightGutterContent={rightGutterContent}
           readOnly={!canEditCodeCellSources}
           onCreateSourceComment={onCreateSourceComment}
+          onActivateCommentThread={onActivateCommentThread}
         />
       );
     },
@@ -1057,6 +1062,7 @@ function NotebookViewContent({
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
       onCreateSourceComment,
+      onActivateCommentThread,
       markdownHeadingAnchorsByCellId,
       canEditCodeCellSources,
       canEditMarkdownSources,

@@ -20,40 +20,14 @@
  * agent's attribution highlight matches their cursor color.
  */
 
-import { peerColor } from "@/components/editor/remote-cursors";
+import { colorForActors } from "./actor-colors";
 import {
   type AttributionMark,
   addTextAttributions,
 } from "@/components/editor/text-attribution";
 import { isTextAttributionEvent, type TextAttribution } from "runtimed";
-import { findPeerColorByActorLabel } from "./cursor-registry";
 import { getCellEditor } from "./editor-registry";
 import { subscribeBroadcast } from "./notebook-frame-bus";
-
-// ── Color cache ──────────────────────────────────────────────────────
-
-/**
- * Derive a highlight color from an actor label.
- *
- * Uses the same `peerColor()` hash as remote cursors so an agent's
- * attribution glow matches their cursor bar color.
- *
- * For multi-actor attributions (rare — usually a single actor per sync
- * batch), we use the first actor's color.
- */
-function colorForActors(actors: string[]): string {
-  if (actors.length === 0) return "#3b82f6"; // blue-500 fallback
-
-  // Exact match: look up the actor label in the cursor-registry's peer map.
-  // Each peer's presence update includes their Automerge actor label, so
-  // we can directly map attribution actors to cursor colors.
-  for (const actor of actors) {
-    const peerMatch = findPeerColorByActorLabel(actor);
-    if (peerMatch) return peerMatch;
-  }
-
-  return peerColor(actors[0]);
-}
 
 // ── Event handler ────────────────────────────────────────────────────
 

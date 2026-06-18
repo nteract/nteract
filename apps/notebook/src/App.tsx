@@ -57,6 +57,7 @@ import {
   UntrustedBanner,
 } from "@/components/notebook";
 import { GlobalFindBar } from "@/components/search";
+import { setSourceCommentThreads, type SourceCommentThread } from "./lib/comment-highlights";
 import type {
   SourceCommentSelectionRect,
   SourceRangeCommentAnchor,
@@ -799,6 +800,32 @@ function AppContent() {
 
   const handleCancelSourceComment = useCallback(() => {
     setSourceCommentRequest(null);
+  }, []);
+
+  // Source-range threads grouped by cell, pushed to the editor highlight layer.
+  const sourceCommentThreadsByCell = useMemo(() => {
+    const map = new Map<string, SourceCommentThread[]>();
+    for (const thread of commentsProjection?.threads ?? []) {
+      if (thread.anchor.kind !== "source_range") continue;
+      const list = map.get(thread.anchor.cell_id) ?? [];
+      list.push({
+        threadId: thread.id,
+        anchor: thread.anchor,
+        resolved: thread.status === "resolved",
+        authorActorLabel: thread.created_by_actor_label ?? null,
+      });
+      map.set(thread.anchor.cell_id, list);
+    }
+    return map;
+  }, [commentsProjection]);
+
+  useEffect(() => {
+    setSourceCommentThreads(sourceCommentThreadsByCell);
+  }, [sourceCommentThreadsByCell]);
+
+  const handleActivateCommentThread = useCallback((_threadId: string) => {
+    // Clicking a highlighted range surfaces the thread in the comments rail.
+    openNotebookRailPanel("comments");
   }, []);
 
   const handleClearCommentDraftTarget = useCallback(() => {
@@ -2014,6 +2041,7 @@ function AppContent() {
                 onSetCellSourceHidden={setCellSourceHidden}
                 onSetCellOutputsHidden={setCellOutputsHidden}
                 onCreateSourceComment={canMutateComments ? handleRequestSourceComment : undefined}
+                onActivateCommentThread={handleActivateCommentThread}
                 markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
               />
             </CrdtBridgeProvider>

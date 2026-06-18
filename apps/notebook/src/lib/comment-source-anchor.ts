@@ -155,3 +155,76 @@ export function sourceRangeAnchorFromOffsets(
     suffix_quote: source.slice(to, Math.min(source.length, to + contextChars)),
   };
 }
+
+/** Character offset for a zero-based (line, column) point in `source`. */
+export function offsetFromSourcePoint(source: string, line: number, column: number): number {
+  let offset = 0;
+  let currentLine = 0;
+  while (currentLine < line && offset < source.length) {
+    const newline = source.indexOf("\n", offset);
+    if (newline === -1) {
+      offset = source.length;
+      break;
+    }
+    offset = newline + 1;
+    currentLine += 1;
+  }
+  return Math.min(source.length, offset + Math.max(0, column));
+}
+
+export interface ResolvedSourceRange {
+  from: number;
+  to: number;
+}
+
+/**
+ * Resolve a stored source-range anchor to live character offsets in the current
+ * source, repairing the position when the document has shifted since the
+ * comment was created.
+ *
+ * Strategy: trust the stored line/column when the text there still equals the
+ * exact quote. Otherwise search for the quote and pick the occurrence whose
+ * neighbouring text best matches the stored prefix/suffix, breaking ties by
+ * proximity to the original offset. Returns null when the quoted text is gone,
+ * which the caller treats as "the anchored text no longer exists."
+ */
+export function resolveSourceRangeAnchor(
+  source: string,
+  anchor: SourceRangeCommentAnchor,
+): ResolvedSourceRange | null {
+  const quote = anchor.exact_quote ?? "";
+  if (quote.length === 0) return null;
+
+  const expectedFrom = offsetFromSourcePoint(source, anchor.start_line, anchor.start_column);
+  if (source.slice(expectedFrom, expectedFrom + quote.length) === quote) {
+    return { from: expectedFrom, to: expectedFrom + quote.length };
+  }
+
+  const occurrences: number[] = [];
+  for (let index = source.indexOf(quote); index !== -1; index = source.indexOf(quote, index + 1)) {
+    occurrences.push(index);
+  }
+  if (occurrences.length === 0) return null;
+  if (occurrences.length === 1) {
+    return { from: occurrences[0], to: occurrences[0] + quote.length };
+  }
+
+  const prefix = anchor.prefix_quote ?? "";
+  const suffix = anchor.suffix_quote ?? "";
+  let best = occurrences[0];
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const index of occurrences) {
+    const before = source.slice(Math.max(0, index - prefix.length), index);
+    const after = source.slice(index + quote.length, index + quote.length + suffix.length);
+    let score = 0;
+    if (prefix.length > 0 && before.endsWith(prefix)) score += 2;
+    if (suffix.length > 0 && after.startsWith(suffix)) score += 2;
+    // Proximity to the original offset breaks ties (closer is better).
+    score -= Math.abs(index - expectedFrom) / Math.max(1, source.length);
+    if (score > bestScore) {
+      bestScore = score;
+      best = index;
+    }
+  }
+  return { from: best, to: best + quote.length };
+}

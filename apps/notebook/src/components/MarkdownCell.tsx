@@ -58,6 +58,8 @@ import {
   sourceRangeAnchorFromRenderedMarkdownRuns,
   sourceRangeAnchorFromRenderedMarkdownSelection,
 } from "../lib/rendered-markdown-source-comment";
+import { commentHighlightExtension } from "../lib/comment-highlight-extension";
+import { refreshCellCommentHighlights } from "../lib/comment-highlights";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import {
   selectionRectFromDomRect,
@@ -151,6 +153,7 @@ interface MarkdownCellProps {
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
   ) => void;
+  onActivateCommentThread?: (threadId: string) => void;
   outputHostContext?: NteractEmbedHostContextPatch;
 }
 
@@ -169,6 +172,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   headingAnchors = EMPTY_HEADING_ANCHORS,
   readOnly = false,
   onCreateSourceComment,
+  onActivateCommentThread,
   outputHostContext,
 }: MarkdownCellProps) {
   const isFocused = useIsCellFocused(cell.id);
@@ -847,6 +851,16 @@ export const MarkdownCell = memo(function MarkdownCell({
     return [sourceCommentExtension(cell.id, onCreateSourceComment)];
   }, [cell.id, onCreateSourceComment, readOnly]);
 
+  const commentHighlightExt = useMemo(() => {
+    if (!onActivateCommentThread) return [];
+    return [
+      commentHighlightExtension({
+        onActivate: onActivateCommentThread,
+        onReady: () => refreshCellCommentHighlights(cell.id),
+      }),
+    ];
+  }, [cell.id, onActivateCommentThread]);
+
   // Search highlight extension for edit mode + remote cursors + presence sender
   const searchExtensions = useMemo(
     () => [
@@ -855,8 +869,16 @@ export const MarkdownCell = memo(function MarkdownCell({
       ...textAttributionExt,
       ...presenceSenderExt,
       ...sourceCommentExt,
+      ...commentHighlightExt,
     ],
-    [searchQuery, remoteCursorsExt, textAttributionExt, presenceSenderExt, sourceCommentExt],
+    [
+      searchQuery,
+      remoteCursorsExt,
+      textAttributionExt,
+      presenceSenderExt,
+      sourceCommentExt,
+      commentHighlightExt,
+    ],
   );
   const editorExtensions = useMemo(
     () => [crdtBridgeExt, ...searchExtensions],

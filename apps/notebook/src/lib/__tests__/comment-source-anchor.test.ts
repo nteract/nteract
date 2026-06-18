@@ -3,6 +3,9 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
+  offsetFromSourcePoint,
+  resolveSourceRangeAnchor,
+  type SourceRangeCommentAnchor,
   sourceRangeAnchorFromOffsets,
   sourceRangeAnchorFromSelection,
   sourcePointFromOffset,
@@ -207,5 +210,72 @@ describe("comment-source-anchor", () => {
         },
       ]),
     ).toBeNull();
+  });
+});
+
+describe("resolveSourceRangeAnchor", () => {
+  const source = "import sympy as sp\nf = sp.sin(x) * sp.exp(x)\ndf = sp.diff(f, x)\n";
+
+  function anchorFor(quote: string): SourceRangeCommentAnchor {
+    const from = source.indexOf(quote);
+    const start = sourcePointFromStringOffset(source, from);
+    const end = sourcePointFromStringOffset(source, from + quote.length);
+    return {
+      kind: "source_range",
+      cell_id: "cell-1",
+      start_line: start.line,
+      start_column: start.column,
+      end_line: end.line,
+      end_column: end.column,
+      prefix_quote: source.slice(Math.max(0, from - 12), from),
+      exact_quote: quote,
+      suffix_quote: source.slice(from + quote.length, from + quote.length + 12),
+    };
+  }
+
+  it("maps stored line/column straight through when the text is unchanged", () => {
+    const anchor = anchorFor("sp.diff(f, x)");
+    const expected = source.indexOf("sp.diff(f, x)");
+    expect(resolveSourceRangeAnchor(source, anchor)).toEqual({
+      from: expected,
+      to: expected + "sp.diff(f, x)".length,
+    });
+  });
+
+  it("repairs the offset after the document shifts above the quote", () => {
+    const anchor = anchorFor("sp.diff(f, x)");
+    const shifted = `# added a comment line\n${source}`;
+    const expected = shifted.indexOf("sp.diff(f, x)");
+    expect(resolveSourceRangeAnchor(shifted, anchor)).toEqual({
+      from: expected,
+      to: expected + "sp.diff(f, x)".length,
+    });
+  });
+
+  it("uses prefix/suffix to disambiguate repeated quotes", () => {
+    const repeated = "value = 1\nvalue = 1\n";
+    const second = repeated.lastIndexOf("value");
+    const anchor: SourceRangeCommentAnchor = {
+      kind: "source_range",
+      cell_id: "cell-1",
+      start_line: 1,
+      start_column: 0,
+      end_line: 1,
+      end_column: 5,
+      prefix_quote: "value = 1\n",
+      exact_quote: "value",
+      suffix_quote: " = 1",
+    };
+    expect(resolveSourceRangeAnchor(repeated, anchor)).toEqual({ from: second, to: second + 5 });
+  });
+
+  it("returns null when the quoted text no longer exists", () => {
+    const anchor = anchorFor("sp.diff(f, x)");
+    expect(resolveSourceRangeAnchor("totally different source", anchor)).toBeNull();
+  });
+
+  it("computes offsets from zero-based points", () => {
+    expect(offsetFromSourcePoint("alpha\nbeta", 1, 2)).toBe(8);
+    expect(offsetFromSourcePoint("alpha\nbeta", 0, 0)).toBe(0);
   });
 });

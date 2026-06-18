@@ -18,6 +18,8 @@ import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry
 import { detectRawFormat } from "../lib/detect-raw-format";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { presenceSenderExtension } from "../lib/presence-sender";
+import { commentHighlightExtension } from "../lib/comment-highlight-extension";
+import { refreshCellCommentHighlights } from "../lib/comment-highlights";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import type {
   SourceCommentSelectionRect,
@@ -45,6 +47,7 @@ interface RawCellProps {
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
   ) => void;
+  onActivateCommentThread?: (threadId: string) => void;
 }
 
 export const RawCell = memo(function RawCell({
@@ -60,6 +63,7 @@ export const RawCell = memo(function RawCell({
   rightGutterContent,
   readOnly = false,
   onCreateSourceComment,
+  onActivateCommentThread,
 }: RawCellProps) {
   const isFocused = useIsCellFocused(cell.id);
   const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
@@ -168,6 +172,16 @@ export const RawCell = memo(function RawCell({
     return [sourceCommentExtension(cell.id, onCreateSourceComment)];
   }, [cell.id, onCreateSourceComment, readOnly]);
 
+  const commentHighlightExt = useMemo(() => {
+    if (!onActivateCommentThread) return [];
+    return [
+      commentHighlightExtension({
+        onActivate: onActivateCommentThread,
+        onReady: () => refreshCellCommentHighlights(cell.id),
+      }),
+    ];
+  }, [cell.id, onActivateCommentThread]);
+
   // Search highlight extension + remote cursors + presence sender
   const searchExtensions = useMemo(
     () => [
@@ -176,8 +190,16 @@ export const RawCell = memo(function RawCell({
       ...textAttributionExt,
       ...presenceSenderExt,
       ...sourceCommentExt,
+      ...commentHighlightExt,
     ],
-    [searchQuery, remoteCursorsExt, textAttributionExt, presenceSenderExt, sourceCommentExt],
+    [
+      searchQuery,
+      remoteCursorsExt,
+      textAttributionExt,
+      presenceSenderExt,
+      sourceCommentExt,
+      commentHighlightExt,
+    ],
   );
 
   // Get keyboard navigation bindings
