@@ -193,6 +193,10 @@ function activateThreadAt(
   return true;
 }
 
+// lucide "bot" path data, sized for the 18px preview avatar.
+const BOT_ICON_SVG =
+  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>';
+
 function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const root = document.createElement("div");
   root.className = "cm-comment-preview";
@@ -203,7 +207,12 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const avatar = document.createElement("span");
   avatar.className = "cm-comment-preview-avatar";
   avatar.style.backgroundColor = preview.authorColor ?? "hsl(var(--muted-foreground))";
-  avatar.textContent = preview.isAgent ? "🤖" : initials(preview.authorName);
+  if (preview.isAgent) {
+    // Match the panel's bot glyph (lucide Bot) rather than an emoji.
+    avatar.innerHTML = BOT_ICON_SVG;
+  } else {
+    avatar.textContent = initials(preview.authorName);
+  }
   head.appendChild(avatar);
 
   const name = document.createElement("span");

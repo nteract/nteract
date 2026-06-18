@@ -150,6 +150,7 @@ export function NotebookCommentsPanel({
             ? `Add a ${anchorLabelForDraft(draftTarget.anchor)} comment`
             : "Add a document comment"
         }
+        compact={!draftTarget}
         onSubmit={onCreateThread}
       />
 
@@ -519,8 +520,8 @@ function CommentComposer({
   const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const Icon = icon === "plus" ? Plus : Send;
-  // Collapsed only while compact, blurred, and empty.
-  const expanded = !compact || focused || body.length > 0;
+  // Collapsed only while compact, blurred, empty, and idle.
+  const expanded = !compact || focused || submitting || body.length > 0;
 
   useEffect(() => {
     if (!autoFocusKey || disabled) return;
