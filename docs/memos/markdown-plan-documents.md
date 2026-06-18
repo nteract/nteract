@@ -13,6 +13,39 @@ path for a calm Markdown Plan editor that can pair well with LLM authors, render
 richly, support presence/comments, publish to Cloud with ACLs, and eventually
 host constrained MDX-style components.
 
+## Prototype Lessons, June 2026
+
+A hosted `/m` prototype proved the document type is promising, but also showed
+that a standalone Markdown app route is too easy to let drift away from the
+notebook product shell. The useful pieces should be harvested first, while the
+route, storage, and dashboard decisions stay in memo/RFC territory:
+
+- Document title chrome should be shared with notebooks, including the
+  local-first title editing affordance and its no-layout-jump behavior.
+- View/edit mode controls, source/rendered/split controls, and outline panels
+  should use shared document controls with document-specific labels rather than
+  one-off Markdown route chrome.
+- Hosted catalog/auth state should be a pure projection over browser auth plus
+  the first-party app-session cookie. Notebook and future document catalogs
+  should use the same session-keyed cache pattern so `/n`, `/m`, or a future
+  dashboard do not rediscover auth behavior independently.
+- The first screen after creating a Markdown document must optimize time to
+  first written thought: create should land in edit/source-capable mode without
+  making the author click through view mode first.
+- The rendered Markdown and source editor should share document alignment and
+  width rules. Switching rendered/source/split should feel like a mode change,
+  not a page reflow.
+- Frontmatter can remain body content for now, but local files need a future
+  association story for cloud document id, revision id, and published URL.
+- Do not add durable D1 tables, Durable Object classes, or public `/m` product
+  commitments until the dashboard/home route, sharing vocabulary, and document
+  catalog model are designed alongside notebooks.
+
+Concrete follow-through from this prototype should be small PRs before a new
+document route lands: shared title chrome, parameterized document controls,
+session-keyed hosted catalog cache, and this memo update. Those are generally
+useful even if the Markdown route is delayed or redesigned.
+
 ## Scope
 
 The target is not executable Markdown. It is closer to an optimized collaborative
@@ -405,16 +438,23 @@ Public viewer presence should inherit the current hosted policy: authenticated
 viewers can participate normally, anonymous public viewers remain local-only or
 aggregate-only until the open hosted presence policy is settled.
 
-### 7. Start As A Tailored Route, Package Later
+### 7. Start As A Shared Document Surface, Package Later
 
 The pragmatic product route is:
 
-1. Add a tailored Markdown document route/shell that shares projection,
-   markdown typography, rail, presence plumbing, comments projection, and cloud
-   ACL/publish infrastructure.
+1. Add a tailored Markdown document surface that shares notebook app chrome,
+   title editing, mode controls, rail/outline, projection, markdown typography,
+   presence plumbing, comments projection, and cloud ACL/publish
+   infrastructure.
 2. Add MCP tools for Markdown document creation/update/commenting/publish.
 3. Package as a separate app only after the route proves the document model and
    editing loop.
+
+The first product question is whether documents belong under `/m`, under a
+combined dashboard/home route, or under a kind-aware hosted catalog. The
+prototype showed that a new route can work technically, but user navigation,
+creation, sharing, recency, and naming should probably be solved with the
+notebook home rather than beside it.
 
 Suggested Cloud API shape:
 
@@ -491,10 +531,10 @@ cloud-stamped authorship.
 
 OC-9: Route versus app
 
-Start as a tailored route sharing internals. Package a separate app once the
-document model, comments, and Cloud posting flow are real. A new app too early
-would duplicate rail/viewer/editor infrastructure before the boundaries are
-known.
+Start as a shared document surface inside the hosted/desktop product shell.
+Package a separate app once the document model, comments, and Cloud posting flow
+are real. A new app or isolated route too early would duplicate
+rail/viewer/editor/auth infrastructure before the boundaries are known.
 
 OC-10: File sync conflict policy
 
@@ -505,12 +545,17 @@ but preserve Automerge as the live collaboration source while the app is open.
 
 ## Suggested Next Spike
 
-1. Build an Elements fixture for a Markdown Plan shell:
-   left rail outline, rendered Markdown, source editor mode, rendered presence
-   overlays, output-artifact placeholders, and comments placeholders.
+1. Build an Elements fixture for a Markdown Plan shell that deliberately shares
+   notebook-like app chrome: title editing, document mode controls, source /
+   rendered / split controls, left rail outline, rendered Markdown, source
+   editor mode, rendered presence overlays, output-artifact placeholders, and
+   comments placeholders.
 2. Extend the markdown projection engine to parse `<!-- nteract:output ... -->`
    comments after code blocks into output artifact references.
 3. Expose `isolated_regions` and component/diagnostic placeholders through the
    WASM/TypeScript projection schema.
 4. Draft a comments ADR amendment for generic document locators.
-5. Sketch the Cloud `POST /api/markdown-documents` and MCP tool schemas.
+5. Sketch the hosted catalog/dashboard shape before committing to `/m`-specific
+   D1 tables or Durable Object classes.
+6. Sketch the Cloud `POST /api/markdown-documents` and MCP tool schemas only
+   after the catalog shape is clear.
