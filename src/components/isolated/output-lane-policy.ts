@@ -35,6 +35,9 @@ const SCROLL_PASSTHROUGH_MIME_TYPES = new Set([
   "text/markdown",
   "text/html",
   "image/svg+xml",
+  // JavaScript display outputs often act on adjacent HTML display outputs in
+  // the same cell (Bokeh's notebook loader/root pair is the common case).
+  "application/javascript",
   // Sift's interactive tables are also click-to-engage (see SIFT_MIME_TYPES).
   "application/vnd.apache.parquet",
   "application/vnd.apache.arrow.stream",

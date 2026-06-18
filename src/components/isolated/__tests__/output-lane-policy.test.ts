@@ -180,6 +180,41 @@ describe("output lane policy", () => {
     expect(outputSegmentLane(output)).toBe("vega-frame");
   });
 
+  it("keeps Bokeh's HTML and JavaScript display outputs in one document lane", () => {
+    const outputs = [
+      displayOutput("bokeh-loading-html", {
+        "text/html": '<span id="bokeh-loading">Loading BokehJS ...</span>',
+      }),
+      displayOutput("bokeh-load-js", {
+        "application/javascript": 'document.getElementById("bokeh-loading").textContent = "ok";',
+        "application/vnd.bokehjs_load.v0+json": "",
+      }),
+      displayOutput("bokeh-root-html", {
+        "text/html": '<div id="bokeh-root"></div>',
+      }),
+      displayOutput("bokeh-exec-js", {
+        "application/javascript": 'document.getElementById("bokeh-root").textContent = "plot";',
+        "application/vnd.bokehjs_exec.v0+json": "",
+      }),
+    ];
+
+    const segments = splitOutputSegments(outputs);
+
+    expect(outputs.map((output) => outputAllowsScrollPassthrough(output))).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(segments.map((segment) => segment.lane)).toEqual(["static-frame"]);
+    expect(segments[0].outputs.map((output) => output.output_id)).toEqual([
+      "bokeh-loading-html",
+      "bokeh-load-js",
+      "bokeh-root-html",
+      "bokeh-exec-js",
+    ]);
+  });
+
   it("keeps pan/zoom charts standalone instead of coalescing with sibling document outputs", () => {
     withMarkdownProjection("isolated");
     const markdown = displayOutput("markdown-1", { "text/markdown": "# heading" });

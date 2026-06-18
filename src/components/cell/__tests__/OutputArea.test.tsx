@@ -240,6 +240,44 @@ function makeMixedDocumentOutputs(): JupyterOutput[] {
   ];
 }
 
+function makeBokehDocumentOutputs(): JupyterOutput[] {
+  return [
+    {
+      output_id: "bokeh-loading-html",
+      output_type: "display_data",
+      data: { "text/html": '<span id="bokeh-loading">Loading BokehJS ...</span>' },
+      metadata: {},
+    },
+    {
+      output_id: "bokeh-load-js",
+      output_type: "display_data",
+      data: {
+        "application/javascript":
+          'document.getElementById("bokeh-loading").textContent = "BokehJS loaded";',
+        "application/vnd.bokehjs_load.v0+json": "",
+      },
+      metadata: {},
+    },
+    {
+      output_id: "bokeh-root-html",
+      output_type: "display_data",
+      data: { "text/html": '<div id="bokeh-root"></div>' },
+      metadata: {},
+    },
+    {
+      output_id: "bokeh-exec-js",
+      output_type: "display_data",
+      data: {
+        "application/javascript": 'document.getElementById("bokeh-root").textContent = "plot";',
+        "application/vnd.bokehjs_exec.v0+json": "",
+      },
+      metadata: {
+        "application/vnd.bokehjs_exec.v0+json": { id: "p1011" },
+      },
+    },
+  ];
+}
+
 function makeParquetOutput(): JupyterOutput[] {
   return [
     {
@@ -922,6 +960,39 @@ describe("OutputArea iframe theme sync", () => {
         expect.objectContaining({
           mimeType: "application/vnd.apache.parquet",
           outputId: "parquet-output",
+        }),
+      ]);
+    });
+  });
+
+  it("keeps Bokeh's related HTML and JavaScript outputs in one iframe document", async () => {
+    render(<OutputArea outputs={makeBokehDocumentOutputs()} />);
+
+    const frames = screen.getAllByTestId("isolated-frame");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("true");
+
+    await waitFor(() => {
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "text/html",
+          outputId: "bokeh-loading-html",
+          outputIndex: 0,
+        }),
+        expect.objectContaining({
+          mimeType: "application/javascript",
+          outputId: "bokeh-load-js",
+          outputIndex: 1,
+        }),
+        expect.objectContaining({
+          mimeType: "text/html",
+          outputId: "bokeh-root-html",
+          outputIndex: 2,
+        }),
+        expect.objectContaining({
+          mimeType: "application/javascript",
+          outputId: "bokeh-exec-js",
+          outputIndex: 3,
         }),
       ]);
     });
