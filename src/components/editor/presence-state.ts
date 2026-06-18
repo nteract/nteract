@@ -1,4 +1,9 @@
-import { peerColor, type RemoteCursorState, type RemoteSelectionState } from "./remote-cursors";
+import {
+  colorForActorIdentity,
+  peerColor,
+  type RemoteCursorState,
+  type RemoteSelectionState,
+} from "./remote-cursors";
 
 export interface CursorData {
   cell_id: string;
@@ -238,7 +243,10 @@ export class RemotePresenceState {
     const peer: PeerCursorInfo = existing ?? {
       peerId: msg.peer_id,
       peerLabel: msg.peer_label || "Peer",
-      color: peerColor(msg.peer_id),
+      // Color keys on the durable actor identity when known, so it matches the
+      // author's comments/attribution and survives reconnects; falls back to
+      // the ephemeral peer id only until the actor label arrives.
+      color: msg.actor_label ? colorForActorIdentity(msg.actor_label) : peerColor(msg.peer_id),
     };
 
     if (msg.peer_label) {
@@ -246,6 +254,7 @@ export class RemotePresenceState {
     }
     if (msg.actor_label) {
       peer.actorLabel = msg.actor_label;
+      peer.color = colorForActorIdentity(msg.actor_label);
     }
 
     const affectedCells = new Set<string>();
@@ -322,7 +331,7 @@ export class RemotePresenceState {
         peerId: snap.peer_id,
         peerLabel: snap.peer_label,
         actorLabel: snap.actor_label,
-        color: peerColor(snap.peer_id),
+        color: snap.actor_label ? colorForActorIdentity(snap.actor_label) : peerColor(snap.peer_id),
       };
 
       for (const ch of snap.channels) {

@@ -74,6 +74,37 @@ export function peerColor(peerId: string): string {
   return CURSOR_COLORS[Math.abs(hash) % CURSOR_COLORS.length];
 }
 
+/**
+ * Reduce an actor label to its durable identity key (principal + operator
+ * kind:name), dropping the per-connection/per-device instance id so every
+ * session of the same actor maps to one color.
+ *
+ * `local:kylekelley/agent:nteract-mcp:6483cc…` → `local:kylekelley/agent:nteract-mcp`
+ * `local:kylekelley/desktop:b2c5d701`          → `local:kylekelley/desktop`
+ */
+export function identityColorKey(actorLabel: string): string {
+  const slash = actorLabel.indexOf("/");
+  if (slash === -1) return actorLabel;
+  const principal = actorLabel.slice(0, slash);
+  const operator = actorLabel.slice(slash + 1);
+  const segments = operator.split(":");
+  const kind = segments[0];
+  const operatorKey =
+    kind === "agent" || kind === "runtime" || kind === "system"
+      ? segments.slice(0, 2).join(":") // kind:name, drop instance id
+      : kind; // e.g. desktop:<device> → desktop
+  return `${principal}/${operatorKey}`;
+}
+
+/**
+ * Deterministic color for an actor's durable identity. This is the single
+ * source of color across cursors, attribution, and comments so the same
+ * author reads as one color everywhere, regardless of session.
+ */
+export function colorForActorIdentity(actorLabel: string): string {
+  return peerColor(identityColorKey(actorLabel));
+}
+
 // ── State effects ────────────────────────────────────────────────────
 
 const setCursorsEffect = StateEffect.define<RemoteCursorState[]>();

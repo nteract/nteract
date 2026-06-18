@@ -15,6 +15,8 @@ vi.mock("@/components/notebook/state/notebook-frame-bus", () => ({
 // Mock remote-cursors to avoid DOM dependencies
 vi.mock("@/components/editor/remote-cursors", () => ({
   peerColor: (peerId: string) => `#${peerId.slice(0, 6)}`,
+  colorForActorIdentity: (actorLabel: string) => `#actor-${actorLabel}`,
+  identityColorKey: (actorLabel: string) => actorLabel,
   setRemoteCursors: vi.fn(),
   setRemoteSelections: vi.fn(),
 }));
@@ -265,8 +267,8 @@ describe("cursor-registry cell-level functions", () => {
 
       const color = findPeerColorByActorLabel("user:anaconda:alice/agent:claude:s1");
       expect(color).toBeDefined();
-      // peerColor mock returns `#${peerId.slice(0, 6)}`
-      expect(color).toBe("#peer-1");
+      // Color now keys on the actor identity (colorForActorIdentity mock).
+      expect(color).toBe("#actor-user:anaconda:alice/agent:claude:s1");
     });
 
     it("returns undefined when no peer matches actor_label", () => {
@@ -324,7 +326,7 @@ describe("cursor-registry cell-level functions", () => {
 
       const color = findPeerColorByActorLabel("user:anaconda:alice/agent:claude:snap123");
       expect(color).toBeDefined();
-      expect(color).toBe("#agent-");
+      expect(color).toBe("#actor-user:anaconda:alice/agent:claude:snap123");
     });
 
     it("loses actor_label when peer leaves", () => {
