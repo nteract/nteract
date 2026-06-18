@@ -346,6 +346,17 @@ where
                                 }
                             }
 
+                            NotebookFrameType::CommentsDocSync => {
+                                // The daemon does not yet hold a CommentsDoc replica, and no admitted
+                                // client opens a comments send path in this slice (the Tauri send gate
+                                // does not forward 0x0a). This defensive arm drops a stray frame; the
+                                // sidecar receive/apply handler and the send gate land together in the
+                                // daemon comments ingress slice so no sender can be silently dropped.
+                                debug!(
+                                    "[notebook-sync] CommentsDocSync received from peer {peer_id}; daemon comments ingress not yet wired"
+                                );
+                            }
+
                             NotebookFrameType::PoolStateSync => {
                                 if !handle_pool_state_frame(
                                     &daemon,

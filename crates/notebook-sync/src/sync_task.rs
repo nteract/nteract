@@ -854,6 +854,16 @@ impl SyncReactor {
                 Ok(())
             }
 
+            NotebookFrameType::CommentsDocSync => {
+                // CommentsDoc sync is a frontend WASM concern, like PoolStateSync.
+                // The Python client sync task holds no comments replica.
+                debug!(
+                    "[notebook-sync] Ignoring CommentsDocSync frame for {} (handled by frontend)",
+                    self.io.notebook_id
+                );
+                Ok(())
+            }
+
             NotebookFrameType::SessionControl => {
                 let message = match serde_json::from_slice::<SessionControlMessage>(&frame.payload)
                 {

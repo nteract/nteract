@@ -38,6 +38,9 @@ pub mod frame_types {
 
     /// CommsDoc sync message (binary Automerge sync).
     pub const COMMS_DOC_SYNC: u8 = 0x09;
+
+    /// CommentsDoc sync message (binary Automerge sync).
+    pub const COMMENTS_DOC_SYNC: u8 = 0x0a;
 }
 
 const KIB: usize = 1024;
@@ -113,6 +116,10 @@ pub fn typed_frame_size_limits(frame_type: NotebookFrameType) -> FrameSizeLimits
             cap: 64 * MIB,
             warn: 16 * MIB,
         },
+        NotebookFrameType::CommentsDocSync => FrameSizeLimits {
+            cap: 64 * MIB,
+            warn: 16 * MIB,
+        },
         NotebookFrameType::PoolStateSync => FrameSizeLimits {
             cap: MIB,
             warn: 256 * KIB,
@@ -164,6 +171,8 @@ pub enum NotebookFrameType {
     PutBlob = frame_types::PUT_BLOB,
     /// CommsDoc sync message (binary Automerge sync).
     CommsDocSync = frame_types::COMMS_DOC_SYNC,
+    /// CommentsDoc sync message (binary Automerge sync).
+    CommentsDocSync = frame_types::COMMENTS_DOC_SYNC,
 }
 
 impl TryFrom<u8> for NotebookFrameType {
@@ -181,6 +190,7 @@ impl TryFrom<u8> for NotebookFrameType {
             frame_types::SESSION_CONTROL => Ok(Self::SessionControl),
             frame_types::PUT_BLOB => Ok(Self::PutBlob),
             frame_types::COMMS_DOC_SYNC => Ok(Self::CommsDocSync),
+            frame_types::COMMENTS_DOC_SYNC => Ok(Self::CommentsDocSync),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unknown notebook frame type: 0x{:02x}", value),

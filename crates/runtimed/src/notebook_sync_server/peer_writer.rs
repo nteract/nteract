@@ -38,6 +38,7 @@ impl PeerEgressLane {
             | NotebookFrameType::Response
             | NotebookFrameType::RuntimeStateSync
             | NotebookFrameType::CommsDocSync
+            | NotebookFrameType::CommentsDocSync
             | NotebookFrameType::PoolStateSync
             | NotebookFrameType::SessionControl
             | NotebookFrameType::PutBlob => Self::Reliable,
