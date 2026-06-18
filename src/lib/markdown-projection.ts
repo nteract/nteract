@@ -257,6 +257,29 @@ export function findMarkdownProjectionAtSourcePosition(
   return { block, position: normalizedPosition, run };
 }
 
+/**
+ * Runs whose source span overlaps the half-open source range [from, to).
+ *
+ * This is the projection primitive for rendering comment highlights in the
+ * projected markdown view: a source-range comment anchor (UTF-16 offsets into
+ * the cell source) maps to the rendered runs it covers, which the view then
+ * tints. Empty ranges yield no runs.
+ */
+export function markdownRunsForSourceRange(
+  plan: MarkdownProjectionPlan | null,
+  from: number,
+  to: number,
+): MarkdownProjectionRun[] {
+  if (!plan) return [];
+  const start = Math.min(from, to);
+  const end = Math.max(from, to);
+  if (start === end) return [];
+  return plan.runs.filter((run) => {
+    const [runStart, runEnd] = run.sourceSpanUtf16;
+    return runStart < end && runEnd > start;
+  });
+}
+
 export function canRenderMarkdownProjectionInHost(plan: MarkdownProjectionPlan | null): boolean {
   return plan != null;
 }

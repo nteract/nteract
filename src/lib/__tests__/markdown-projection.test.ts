@@ -8,6 +8,7 @@ import {
   canRenderMarkdownProjectionInHost,
   findMarkdownProjectionAtSourcePosition,
   markdownProjectionMatchesSource,
+  markdownRunsForSourceRange,
   projectMarkdownPlan,
   resolveMarkdownProjection,
   setMarkdownProjectionProjector,
@@ -332,5 +333,22 @@ describe("markdown projection", () => {
         }),
       }),
     );
+  });
+
+  it("maps a source range to the rendered runs it overlaps", () => {
+    const plan = projectMarkdownPlan("Alpha **bravo** charlie\n");
+    expect(plan).not.toBeNull();
+    const runs = plan?.runs ?? [];
+    expect(runs.length).toBeGreaterThan(0);
+
+    // Query a run by its own source span; it must be returned.
+    const target = runs.find((run) => run.renderedText.includes("bravo")) ?? runs[0];
+    const [from, to] = target.sourceSpanUtf16;
+    const overlapping = markdownRunsForSourceRange(plan, from, to);
+    expect(overlapping.map((run) => run.inlineId)).toContain(target.inlineId);
+
+    // Empty ranges and a null plan yield no runs.
+    expect(markdownRunsForSourceRange(plan, from, from)).toEqual([]);
+    expect(markdownRunsForSourceRange(null, 0, 5)).toEqual([]);
   });
 });
