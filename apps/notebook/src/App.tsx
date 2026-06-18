@@ -1906,6 +1906,9 @@ function AppContent() {
                   onReopenThread={canMutateComments ? handleReopenCommentThread : undefined}
                   onFocusThreadAnchor={handleFocusCommentThreadAnchor}
                   resolveCommentAuthor={resolveCommentAuthor}
+                  sourceLanguage={
+                    runtime === "python" ? "python" : runtime === "deno" ? "typescript" : undefined
+                  }
                 />
               }
               packagesPanel={

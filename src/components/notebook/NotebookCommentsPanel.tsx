@@ -18,7 +18,9 @@ import type {
   CommentsProjection,
 } from "runtimed";
 import { projectMarkdownPlan } from "../../lib/markdown-projection";
+import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
+import { highlight } from "@/components/editor/static-highlight";
 import { ProjectedMarkdownView } from "../markdown/ProjectedMarkdownView";
 
 export interface NotebookCommentDraftTarget {
@@ -56,6 +58,8 @@ export interface NotebookCommentsPanelProps {
    * to parsing the actor label when not provided.
    */
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
+  /** Language for syntax-highlighting quoted source (e.g. "python"). */
+  sourceLanguage?: string;
 }
 
 export function NotebookCommentsPanel({
@@ -71,6 +75,7 @@ export function NotebookCommentsPanel({
   onReopenThread,
   onFocusThreadAnchor,
   resolveCommentAuthor,
+  sourceLanguage,
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
   const labeledThreads = labelCommentThreads(threads);
@@ -99,6 +104,7 @@ export function NotebookCommentsPanel({
       onReopenThread={onReopenThread}
       onFocusThreadAnchor={onFocusThreadAnchor}
       resolveCommentAuthor={resolveCommentAuthor}
+      sourceLanguage={sourceLanguage}
     />
   );
 
@@ -233,6 +239,7 @@ function CommentThreadItem({
   onReopenThread,
   onFocusThreadAnchor,
   resolveCommentAuthor,
+  sourceLanguage,
 }: {
   thread: CommentThreadSnapshot;
   threadLabel: string;
@@ -243,6 +250,7 @@ function CommentThreadItem({
   onReopenThread?: (threadId: string) => void | Promise<void>;
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
+  sourceLanguage?: string;
 }) {
   const [statusSubmitting, setStatusSubmitting] = useState(false);
   const hasUnsettledMessages = thread.messages.some(
@@ -288,14 +296,11 @@ function CommentThreadItem({
       <div className="space-y-3 p-3">
         <div className="flex items-center gap-2">
           {quote ? (
-            <code
-              className="min-w-0 flex-1 truncate border-l-2 pl-2 font-mono text-xs text-foreground"
-              style={{ borderColor: threadAuthor?.color ?? "hsl(var(--border))" }}
-              data-testid="comment-thread-source-quote"
-              title={quote}
-            >
-              {quote}
-            </code>
+            <CommentSourceQuote
+              quote={quote}
+              language={sourceLanguage}
+              color={threadAuthor?.color}
+            />
           ) : (
             <div className="min-w-0 flex-1 text-xs text-muted-foreground">
               {anchorLabel(thread)}
@@ -427,6 +432,35 @@ function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
  * a structured plan (never raw HTML), so this is safe by construction; falls
  * back to plain text when the projector is unavailable.
  */
+/**
+ * The selected source a thread is anchored to, rendered as a single-line,
+ * syntax-highlighted snippet with a left bar tinted to the thread author's
+ * color. Uses the same static highlighter as markdown code blocks.
+ */
+function CommentSourceQuote({
+  quote,
+  language,
+  color,
+}: {
+  quote: string;
+  language?: string;
+  color?: string;
+}) {
+  const isDark = useDarkMode();
+  const colorTheme = useColorTheme() === "cream" ? "cream" : "classic";
+  const nodes = highlight(quote, language, isDark, colorTheme);
+  return (
+    <code
+      className="min-w-0 flex-1 truncate border-l-2 pl-2 font-mono text-xs"
+      style={{ borderColor: color ?? "hsl(var(--border))" }}
+      data-testid="comment-thread-source-quote"
+      title={quote}
+    >
+      {nodes}
+    </code>
+  );
+}
+
 function CommentBody({ body }: { body: string }) {
   const plan = projectMarkdownPlan(body);
   if (!plan) {
