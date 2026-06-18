@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { NotebookCommentsPanel } from "../NotebookCommentsPanel";
 import type { CommentsProjection } from "../comment-types";
 
@@ -51,6 +51,29 @@ const projection: CommentsProjection = {
 };
 
 describe("NotebookCommentsPanel", () => {
+  // jsdom has no matchMedia; the dark-mode/color-theme hooks read it when a
+  // source-range quote highlights. Stub it for the lifetime of the suite.
+  const originalMatchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia");
+
+  beforeEach(() => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    });
+  });
+
+  afterEach(() => {
+    if (originalMatchMedia) {
+      Object.defineProperty(window, "matchMedia", originalMatchMedia);
+    } else {
+      delete (window as Partial<Window>).matchMedia;
+    }
+  });
+
   it("renders the unavailable state with disabled composer", () => {
     render(
       <NotebookCommentsPanel
