@@ -39,6 +39,91 @@ describe("ProjectedMarkdownView", () => {
     }
   });
 
+  it("marks rendered runs with source spans for comment anchors", () => {
+    const { container } = render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 16],
+              sourceSpanUtf16: [0, 16],
+              syntaxSpans: [],
+              text: "alpha beta",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "r0",
+              listItemIndex: null,
+              renderedText: "alpha",
+              renderedTextUtf16: [0, 5],
+              semantic: "text",
+              sourceSpanByte: [0, 5],
+              sourceSpanUtf16: [0, 5],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const run = container.querySelector("[data-markdown-source-run='true']");
+    expect(run).not.toBeNull();
+    expect(run).toHaveAttribute("data-rendered-start", "0");
+    expect(run).toHaveAttribute("data-rendered-end", "5");
+    expect(run).toHaveAttribute("data-source-start", "0");
+    expect(run).toHaveAttribute("data-source-end", "5");
+  });
+
+  it("renders keyboard-accessible comment actions for commentable paragraphs", () => {
+    const onCommentRuns = vi.fn();
+    render(
+      <ProjectedMarkdownView
+        canCommentOnRuns={() => true}
+        onCommentRuns={onCommentRuns}
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 11],
+              sourceSpanUtf16: [0, 11],
+              syntaxSpans: [],
+              text: "plain prose",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "r0",
+              listItemIndex: null,
+              renderedText: "plain prose",
+              renderedTextUtf16: [0, 11],
+              semantic: "text",
+              sourceSpanByte: [0, 11],
+              sourceSpanUtf16: [0, 11],
+            },
+          ],
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Comment on rendered paragraph" }));
+
+    expect(onCommentRuns).toHaveBeenCalledTimes(1);
+    expect(onCommentRuns.mock.calls[0]?.[0]).toMatchObject([
+      expect.objectContaining({ inlineId: "r0" }),
+    ]);
+  });
+
   it("matches the output document heading rhythm", () => {
     const { container } = render(
       <ProjectedMarkdownView
@@ -307,7 +392,7 @@ describe("ProjectedMarkdownView", () => {
       />,
     );
 
-    expect(screen.getByText("First paragraph")).toHaveClass("my-3", "leading-relaxed");
+    expect(screen.getByText("First paragraph").closest("p")).toHaveClass("my-3", "leading-relaxed");
     expect(screen.getByRole("list")).toHaveClass("my-3", "ml-6", "list-disc");
     expect(screen.getByText("quoted").closest("blockquote")).toHaveClass(
       "border-l-2",
@@ -1099,7 +1184,7 @@ describe("ProjectedMarkdownView", () => {
       />,
     );
 
-    expect(screen.getByText("K and note")).toBeInTheDocument();
+    expect(screen.getByText("K").closest("p")).toHaveTextContent("K and note");
     expect(document.querySelector("kbd")).toBeNull();
     expect(document.querySelector("[title='shortcut']")).toBeNull();
   });
