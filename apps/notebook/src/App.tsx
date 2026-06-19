@@ -221,7 +221,11 @@ function commentAnchorThreadOrderScope(anchor: CommentAnchor): string {
 function sourceRangeAnchorMatchesCurrentCell(anchor: CommentAnchor): boolean {
   if (anchor.kind !== "source_range") return false;
   const cell = getCellById(anchor.cell_id);
-  if (!cell || (cell.cell_type !== "code" && cell.cell_type !== "raw")) return false;
+  if (
+    !cell ||
+    (cell.cell_type !== "code" && cell.cell_type !== "raw" && cell.cell_type !== "markdown")
+  )
+    return false;
   return resolveSourceRangeAnchor(cell.source, anchor) !== null;
 }
 

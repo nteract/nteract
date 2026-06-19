@@ -102,6 +102,35 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByLabelText("New document comment")).toHaveValue("");
   });
 
+  it("focuses the document composer when opened", async () => {
+    render(
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [] }}
+        onCreateThread={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText("New document comment")).toHaveFocus());
+  });
+
+  it("submits a new document comment with Cmd Enter", async () => {
+    const onCreateThread = vi.fn();
+    render(
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [] }}
+        onCreateThread={onCreateThread}
+      />,
+    );
+
+    const composer = screen.getByLabelText("New document comment");
+    fireEvent.change(composer, {
+      target: { value: "Submit from the keyboard" },
+    });
+    fireEvent.keyDown(composer, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(onCreateThread).toHaveBeenCalledWith("Submit from the keyboard"));
+  });
+
   it("submits a selected source draft comment", async () => {
     const onCreateThread = vi.fn();
     const onClearDraftTarget = vi.fn();
@@ -286,6 +315,34 @@ describe("NotebookCommentsPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Resolve Document comment 1" }));
     expect(onResolveThread).toHaveBeenCalledWith("thread-1");
+  });
+
+  it("focuses the reply composer for a focused thread", async () => {
+    render(
+      <NotebookCommentsPanel
+        projection={projection}
+        focusedThreadId="thread-1"
+        focusNonce={1}
+        onReplyThread={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText("Reply to Document comment 1")).toHaveFocus());
+  });
+
+  it("submits replies with Ctrl Enter", async () => {
+    const onReplyThread = vi.fn();
+    render(<NotebookCommentsPanel projection={projection} onReplyThread={onReplyThread} />);
+
+    const reply = screen.getByLabelText("Reply to Document comment 1");
+    fireEvent.change(reply, {
+      target: { value: "Reply from the keyboard" },
+    });
+    fireEvent.keyDown(reply, { key: "Enter", ctrlKey: true });
+
+    await waitFor(() =>
+      expect(onReplyThread).toHaveBeenCalledWith("thread-1", "Reply from the keyboard"),
+    );
   });
 
   it("renders source excerpts on source range threads", () => {

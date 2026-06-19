@@ -54,10 +54,7 @@ import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
 import { toggleMarkdownTaskMarker } from "../lib/markdown-task-source";
 import { presenceSenderExtension } from "../lib/presence-sender";
-import {
-  sourceRangeAnchorFromRenderedMarkdownRuns,
-  sourceRangeAnchorFromRenderedMarkdownSelection,
-} from "../lib/rendered-markdown-source-comment";
+import { sourceRangeAnchorFromRenderedMarkdownSelection } from "../lib/rendered-markdown-source-comment";
 import { commentHighlightExtension } from "../lib/comment-highlight-extension";
 import { refreshCellCommentHighlights, type SourceCommentThread } from "../lib/comment-highlights";
 import {
@@ -538,34 +535,6 @@ export const MarkdownCell = memo(function MarkdownCell({
     onCreateSourceComment,
     previewSource,
   ]);
-
-  const sourceRangeAnchorFromRenderedRuns = useCallback(
-    (runs: readonly MarkdownProjectionRun[]) => {
-      if (!canCommentOnRenderedMarkdown) return null;
-      return sourceRangeAnchorFromRenderedMarkdownRuns(cell.id, previewSource, runs);
-    },
-    [canCommentOnRenderedMarkdown, cell.id, previewSource],
-  );
-
-  const canCommentOnRenderedRuns = useCallback(
-    (runs: readonly MarkdownProjectionRun[]) => sourceRangeAnchorFromRenderedRuns(runs) !== null,
-    [sourceRangeAnchorFromRenderedRuns],
-  );
-
-  const handleRenderedRunsComment = useCallback(
-    (runs: readonly MarkdownProjectionRun[]) => {
-      const anchor = sourceRangeAnchorFromRenderedRuns(runs);
-      if (!anchor || !onCreateSourceComment) return;
-      const rect =
-        typeof window !== "undefined" ? selectionRectFromDomSelection(window.getSelection()) : null;
-      onCreateSourceComment(anchor, rect);
-      if (typeof window !== "undefined") {
-        window.getSelection()?.removeAllRanges();
-      }
-      clearRenderedSourceCommentTarget();
-    },
-    [clearRenderedSourceCommentTarget, onCreateSourceComment, sourceRangeAnchorFromRenderedRuns],
-  );
 
   const handleRenderedSourceCommentClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
@@ -1090,12 +1059,6 @@ export const MarkdownCell = memo(function MarkdownCell({
                   commentHighlights={renderedCommentHighlights}
                   headingAnchors={headingAnchors}
                   onLinkClick={handleLinkClick}
-                  canCommentOnRuns={
-                    canCommentOnRenderedMarkdown ? canCommentOnRenderedRuns : undefined
-                  }
-                  onCommentRuns={
-                    canCommentOnRenderedMarkdown ? handleRenderedRunsComment : undefined
-                  }
                   onTaskCheckedChange={
                     readOnly || !onUpdateSource ? undefined : handleTaskCheckedChange
                   }

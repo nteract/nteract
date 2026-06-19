@@ -2026,7 +2026,10 @@ function commentAnchorThreadOrderScope(anchor: CommentAnchor): string {
 
 function sourceRangeAnchorMatchesCurrentCell(anchor: SourceRangeCommentAnchor): boolean {
   const cell = getCellById(anchor.cell_id);
-  if (!cell || (cell.cell_type !== "code" && cell.cell_type !== "raw")) {
+  if (
+    !cell ||
+    (cell.cell_type !== "code" && cell.cell_type !== "raw" && cell.cell_type !== "markdown")
+  ) {
     return false;
   }
   return resolveSourceRangeAnchor(cell.source, anchor) !== null;
