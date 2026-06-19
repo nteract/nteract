@@ -43,10 +43,21 @@ type BokehIndex = Record<string, unknown> & {
 type PanelWindow = Window &
   typeof globalThis & {
     Bokeh?: {
+      Panel?: unknown;
+      version?: string;
+      versions?: {
+        get?: (version: string) => unknown;
+        has?: (version: string) => boolean;
+      };
       index?: BokehIndex;
     };
     PyViz?: PyVizGlobal | HTMLElement;
+    __nteractBokehLoadPromise__?: Promise<void>;
+    __nteractPanelLoadPromises__?: Record<string, Promise<void>>;
   };
+
+const BOKEH_RESOURCE_SUFFIXES = ["", "-gl", "-widgets", "-tables", "-mathjax"];
+const PANEL_DIST_BASE_RE = /https:\/\/cdn\.holoviz\.org\/panel\/[^/]+\/dist\//;
 
 function panelWindow(): PanelWindow {
   return window as PanelWindow;
@@ -70,6 +81,20 @@ function panelDocumentId(metadata?: Record<string, unknown>): string | null {
 function panelServerId(metadata?: Record<string, unknown>): string | null {
   const serverId = metadata?.server_id;
   return typeof serverId === "string" ? serverId : null;
+}
+
+function extractBokehVersion(script: string | null): string | null {
+  if (!script) return null;
+  return script.match(/"version"\s*:\s*"([^"]+)"/)?.[1] ?? null;
+}
+
+function normalizeBokehVersion(version: string | null): string | null {
+  return version?.replace("rc", "-rc.").replace(".dev", "-dev.") ?? null;
+}
+
+function extractPanelDistBase(html: string | null): string | null {
+  if (!html) return null;
+  return html.match(PANEL_DIST_BASE_RE)?.[0] ?? null;
 }
 
 function ensurePyViz(): PyVizGlobal {
@@ -129,6 +154,85 @@ function appendHtmlWithExecutableScripts(container: HTMLElement, html: string): 
 
   requestHostResize();
   return wrapper;
+}
+
+function loadScript(src: string, required: boolean): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[data-nteract-panel-src="${src}"]`);
+    if (existing) {
+      resolve();
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.async = false;
+    script.dataset.nteractPanelSrc = src;
+    script.onload = () => resolve();
+    script.onerror = () => {
+      const error = new Error(`Failed to load Panel/BokehJS resource: ${src}`);
+      if (required) reject(error);
+      else {
+        console.warn(error.message);
+        resolve();
+      }
+    };
+    script.src = src;
+    document.head.appendChild(script);
+  });
+}
+
+async function ensureBokeh(version: string | null): Promise<void> {
+  const target = panelWindow();
+  const normalizedVersion = normalizeBokehVersion(version);
+  const bokeh = target.Bokeh;
+  if (
+    bokeh !== undefined &&
+    (!normalizedVersion ||
+      bokeh.version === normalizedVersion ||
+      bokeh.versions?.has?.(normalizedVersion))
+  ) {
+    return;
+  }
+  if (target.__nteractBokehLoadPromise__) return target.__nteractBokehLoadPromise__;
+  if (!normalizedVersion) {
+    throw new Error("BokehJS is missing and no Bokeh document version was found");
+  }
+
+  target.__nteractBokehLoadPromise__ = (async () => {
+    for (const [index, suffix] of BOKEH_RESOURCE_SUFFIXES.entries()) {
+      const src = `https://cdn.bokeh.org/bokeh/release/bokeh${suffix}-${normalizedVersion}.min.js`;
+      await loadScript(src, index === 0);
+    }
+    if (panelWindow().Bokeh === undefined) {
+      throw new Error(`BokehJS ${normalizedVersion} loaded without defining window.Bokeh`);
+    }
+  })().catch((error) => {
+    target.__nteractBokehLoadPromise__ = undefined;
+    throw error;
+  });
+
+  return target.__nteractBokehLoadPromise__;
+}
+
+async function ensurePanelRuntime(html: string | null, code: string | null): Promise<void> {
+  const target = panelWindow();
+  const version = extractBokehVersion(code ?? html);
+  await ensureBokeh(version);
+
+  if (target.Bokeh?.Panel !== undefined) return;
+
+  const panelDistBase = extractPanelDistBase(html);
+  if (!panelDistBase) {
+    throw new Error("Panel output did not include a Panel CDN resource URL");
+  }
+
+  target.__nteractPanelLoadPromises__ ??= {};
+  const panelSrc = `${panelDistBase}panel.min.js`;
+  target.__nteractPanelLoadPromises__[panelSrc] ??= loadScript(panelSrc, true).catch((error) => {
+    delete target.__nteractPanelLoadPromises__?.[panelSrc];
+    throw error;
+  });
+  await target.__nteractPanelLoadPromises__[panelSrc];
 }
 
 function scriptFromServerHtml(html: string): HTMLScriptElement {
@@ -225,8 +329,23 @@ function PanelRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
         throw new Error("Panel output did not include text/html or application/javascript data");
       }
 
+      if (!documentId) {
+        if (html) {
+          trackNode(appendHtmlWithExecutableScripts(container, html));
+        }
+        if (code) {
+          trackNode(appendExecutableScript(container, code));
+        }
+        return;
+      }
+
       if (html) {
+        await ensurePanelRuntime(html, code);
+        if (cancelled) return;
         trackNode(appendHtmlWithExecutableScripts(container, html));
+      } else if (code) {
+        await ensurePanelRuntime(null, code);
+        if (cancelled) return;
       }
       if (code) {
         trackNode(appendExecutableScript(container, code));

@@ -257,6 +257,7 @@ describe("output lane policy", () => {
         "application/javascript": 'document.getElementById("panel-loading").textContent = "ok";',
         [PANEL_LOAD_MIME_TYPE]: "",
       }),
+      displayOutput("panel-empty-placeholder", {}),
       displayOutput("panel-root-html", {
         "text/html": '<div id="panel-root"></div>',
       }),
@@ -272,13 +273,15 @@ describe("output lane policy", () => {
     expect(outputs.map((output) => selectedOutputMimeType(output))).toEqual([
       "text/html",
       PANEL_LOAD_MIME_TYPE,
+      null,
       "text/html",
       PANEL_EXEC_MIME_TYPE,
     ]);
     expect(outputUsesPanel(outputs[1])).toBe(true);
-    expect(outputUsesPanel(outputs[3])).toBe(true);
-    expect(outputUsesWheelOwningFrame(outputs[3])).toBe(true);
+    expect(outputUsesPanel(outputs[4])).toBe(true);
+    expect(outputUsesWheelOwningFrame(outputs[4])).toBe(true);
     expect(outputs.map((output) => outputAllowsScrollPassthrough(output))).toEqual([
+      true,
       true,
       true,
       true,
@@ -288,6 +291,7 @@ describe("output lane policy", () => {
     expect(segments[0].outputs.map((output) => output.output_id)).toEqual([
       "panel-loading-html",
       "panel-load-js",
+      "panel-empty-placeholder",
       "panel-root-html",
       "panel-exec-html",
     ]);
@@ -333,13 +337,13 @@ describe("output lane policy", () => {
     expect(anyOutputNeedsIsolation(outputs)).toBe(false);
   });
 
-  it("does not mark display outputs without a selected MIME as scroll passthrough", () => {
+  it("treats display outputs without a selected MIME as transparent", () => {
     const output = displayOutput("empty-display", {
       "text/plain": null,
     });
 
     expect(selectedOutputMimeType(output)).toBeNull();
-    expect(outputAllowsScrollPassthrough(output)).toBe(false);
+    expect(outputAllowsScrollPassthrough(output)).toBe(true);
     expect(outputSegmentLane(output)).toBe("dom");
   });
 

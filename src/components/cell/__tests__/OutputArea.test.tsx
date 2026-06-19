@@ -321,6 +321,12 @@ function makePanelDocumentOutputs(): JupyterOutput[] {
       metadata: {},
     },
     {
+      output_id: "panel-empty-placeholder",
+      output_type: "display_data",
+      data: {},
+      metadata: {},
+    },
+    {
       output_id: "panel-root-html",
       output_type: "display_data",
       data: { "text/html": '<div id="panel-root"></div>' },
@@ -1126,7 +1132,7 @@ describe("OutputArea iframe theme sync", () => {
         expect.objectContaining({
           mimeType: "text/html",
           outputId: "panel-root-html",
-          outputIndex: 2,
+          outputIndex: 3,
         }),
         expect.objectContaining({
           data: expect.objectContaining({
@@ -1139,7 +1145,7 @@ describe("OutputArea iframe theme sync", () => {
           metadata: { id: "p1011" },
           mimeType: PANEL_EXEC_MIME_TYPE,
           outputId: "panel-exec-html",
-          outputIndex: 3,
+          outputIndex: 4,
         }),
       ]);
     });

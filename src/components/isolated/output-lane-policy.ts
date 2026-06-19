@@ -96,6 +96,7 @@ export function outputAllowsScrollPassthrough(
   }
 
   const mimeType = selectedOutputMimeType(output, priority);
+  if (mimeType === null) return true;
   return mimeType !== null && isScrollPassthroughMimeType(mimeType);
 }
 
@@ -230,6 +231,16 @@ function laneStandsAlone(lane: OutputLane): boolean {
   return lane === "sift-frame" || lane === "vega-frame" || lane === "plotly-frame";
 }
 
+function isEmptyDisplayOutput(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  if (output.output_type !== "execute_result" && output.output_type !== "display_data") {
+    return false;
+  }
+  return selectedOutputMimeType(output, priority) === null;
+}
+
 export function splitOutputSegments(
   outputs: readonly JupyterOutput[],
   priority: readonly string[] = DEFAULT_PRIORITY,
@@ -240,7 +251,9 @@ export function splitOutputSegments(
     const lane = outputSegmentLane(output, priority);
     const previous = segments.at(-1);
 
-    if (!laneStandsAlone(lane) && previous && previous.lane === lane) {
+    if (previous?.lane === "static-frame" && isEmptyDisplayOutput(output, priority)) {
+      previous.outputs.push(output);
+    } else if (!laneStandsAlone(lane) && previous && previous.lane === lane) {
       previous.outputs.push(output);
     } else {
       segments.push({ lane, outputs: [output] });
