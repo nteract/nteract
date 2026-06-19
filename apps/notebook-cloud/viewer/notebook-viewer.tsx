@@ -43,7 +43,6 @@ import {
   type CommentThreadSnapshot,
   type CommentsProjection,
 } from "@/components/notebook";
-import { peerColor } from "@/components/editor/remote-cursors";
 import {
   openNotebookRailPanel,
   setActiveNotebookRailPanel,
@@ -556,14 +555,13 @@ export function NotebookViewer({
         peers: commentAuthorPeers,
         source: "cloud",
       });
-      const principalColor = peerColor(display.principalId);
 
       return {
         displayName: display.displayName,
-        color: principalColor,
+        color: display.color,
         isAgent: display.isAgent,
         onBehalfOf: display.onBehalfOf,
-        onBehalfOfColor: display.onBehalfOf ? principalColor : undefined,
+        onBehalfOfColor: display.onBehalfOf ? display.color : undefined,
       };
     },
     [commentAuthorPeers],

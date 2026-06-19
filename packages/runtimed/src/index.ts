@@ -290,8 +290,17 @@ export {
   type ParsedNotebookActorLabel,
 } from "./notebook-actor-projection";
 
+// Notebook actor colors
+export {
+  CURSOR_COLORS,
+  colorForActorIdentity,
+  identityColorKey,
+  peerColor,
+} from "./notebook-actor-color";
+
 // Notebook actor display
 export {
+  actorInitials,
   resolveActorDisplay,
   type ActorDisplay,
   type ActorDisplayPeer,
