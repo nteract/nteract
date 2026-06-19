@@ -7,6 +7,7 @@
     "jsx": "preserve",
     "paths": {
       "@/components/cell/*": ["../../src/components/cell/*"],
+      "@/components/comments/*": ["../../src/components/comments/*"],
       "@/bindings": ["../../src/bindings/index.ts"],
       "@/bindings/*": ["../../src/bindings/*"],
       "@/components/editor/*": ["../../src/components/editor/*"],

@@ -1,5 +1,5 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { Check, MessageSquarePlus, Pencil } from "lucide-react";
+import { Check, Pencil } from "lucide-react";
 import {
   memo,
   type MouseEvent,
@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
+import { CommentSelectionAffordance } from "@/components/comments/CommentSelectionAffordance";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
@@ -1097,28 +1098,16 @@ export const MarkdownCell = memo(function MarkdownCell({
                 <p className="text-muted-foreground italic">Double-click to edit</p>
               )}
               {renderedSourceCommentTarget ? (
-                <button
-                  type="button"
-                  aria-label="Comment on selected markdown"
-                  title="Comment on selected markdown"
-                  data-testid="markdown-source-comment-button"
-                  onPointerDown={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                  }}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                  }}
-                  onClick={handleRenderedSourceCommentClick}
-                  className="absolute z-20 inline-flex size-6 items-center justify-center rounded-md border bg-background p-0 text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                <CommentSelectionAffordance
+                  className="absolute z-20"
                   style={{
                     left: renderedSourceCommentTarget.left,
                     top: renderedSourceCommentTarget.top,
                   }}
-                >
-                  <MessageSquarePlus className="h-[15px] w-[15px]" aria-hidden="true" />
-                </button>
+                  label="Comment on selected markdown"
+                  testId="markdown-source-comment-button"
+                  onActivate={handleRenderedSourceCommentClick}
+                />
               ) : null}
             </div>
           </RenderedMarkdownContextMenu>

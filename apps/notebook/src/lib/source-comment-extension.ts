@@ -68,7 +68,7 @@ export function sourceCommentExtension(
     },
   ]);
 
-  return [sourceCommentTheme, tooltipField, focusSync, shortcut];
+  return [tooltipField, focusSync, shortcut];
 }
 
 function sourceCommentTooltips(
@@ -88,13 +88,20 @@ function sourceCommentTooltips(
       above: true,
       strictSide: false,
       create(view) {
+        // Shared dot affordance (styles/comment-affordance.css), matching the
+        // rendered-markdown plane. CodeMirror wraps this in a .cm-tooltip; the
+        // shared CSS strips that wrapper's chrome so only the dot shows.
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "cm-source-comment-button";
-        button.appendChild(createCommentIcon());
+        button.className = "comment-affordance";
         button.title = "Comment on selection";
         button.setAttribute("aria-label", "Comment on selection");
         button.setAttribute("data-testid", "source-comment-button");
+        const dot = document.createElement("span");
+        dot.className = "comment-affordance-dot";
+        dot.setAttribute("aria-hidden", "true");
+        dot.appendChild(createCommentIcon());
+        button.appendChild(dot);
         button.addEventListener("mousedown", (event) => {
           event.preventDefault();
         });
@@ -110,8 +117,9 @@ function sourceCommentTooltips(
 
 function createCommentIcon(): SVGSVGElement {
   const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  icon.setAttribute("width", "15");
-  icon.setAttribute("height", "15");
+  icon.setAttribute("class", "comment-affordance-icon");
+  icon.setAttribute("width", "14");
+  icon.setAttribute("height", "14");
   icon.setAttribute("viewBox", "0 0 24 24");
   icon.setAttribute("fill", "none");
   icon.setAttribute("stroke", "currentColor");
@@ -147,30 +155,3 @@ function requestSourceComment(
   onCreateSourceComment(anchor, selectionRectFromView(view));
   return true;
 }
-
-const sourceCommentTheme = EditorView.baseTheme({
-  ".cm-source-comment-button": {
-    border: "1px solid var(--border, #ebebeb)",
-    borderRadius: "0.375rem",
-    backgroundColor: "var(--background, #ffffff)",
-    color: "var(--foreground, #1e1e1e)",
-    boxShadow: "0 1px 4px rgb(0 0 0 / 0.14)",
-    boxSizing: "border-box",
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    height: "24px",
-    padding: "0",
-    width: "24px",
-  },
-  ".cm-source-comment-button:hover": {
-    borderColor: "var(--primary, #2563eb)",
-    backgroundColor: "var(--primary, #2563eb)",
-    color: "var(--primary-foreground, #ffffff)",
-  },
-  ".cm-source-comment-button:focus-visible": {
-    outline: "2px solid var(--ring, #a3a3a3)",
-    outlineOffset: "2px",
-  },
-});

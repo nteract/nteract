@@ -1,0 +1,81 @@
+/* The "comment on selection" affordance, shared across the CodeMirror editor
+   plane and the rendered-markdown plane. One definition so both surfaces match
+   and the look is tunable in one place (cataloged in Elements).
+
+   Resting state is a small unobtrusive dot that sits out of the way while a
+   reader selects and copies text. On hover or keyboard focus the dot grows in
+   place into a labeled comment button. Growing the same element (rather than
+   revealing a separate floating panel) keeps the target under the cursor, so
+   there is no gap to cross and nothing to flicker out as you reach for it. */
+.comment-affordance {
+  --comment-affordance-color: var(--primary, #2563eb);
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* A stable 22px hit area around a 9px dot: easy to hit without enlarging the
+     resting footprint. */
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: var(--primary-foreground, #ffffff);
+  cursor: pointer;
+}
+
+.comment-affordance-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 9px;
+  height: 9px;
+  border-radius: 9999px;
+  background-color: color-mix(in srgb, var(--comment-affordance-color) 50%, transparent);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+  transition:
+    width 120ms ease,
+    height 120ms ease,
+    border-radius 120ms ease,
+    background-color 120ms ease;
+}
+
+.comment-affordance-icon {
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.comment-affordance:hover .comment-affordance-dot,
+.comment-affordance:focus-visible .comment-affordance-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 0.5rem;
+  background-color: var(--comment-affordance-color);
+}
+
+.comment-affordance:hover .comment-affordance-icon,
+.comment-affordance:focus-visible .comment-affordance-icon {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.comment-affordance:focus-visible {
+  outline: 2px solid var(--ring, #a3a3a3);
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* The CodeMirror editor plane renders this button inside a CM tooltip wrapper.
+   Strip the default tooltip chrome so only the dot shows. */
+.cm-tooltip:has(.comment-affordance) {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
