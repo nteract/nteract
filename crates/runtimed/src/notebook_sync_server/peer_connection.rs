@@ -2,6 +2,7 @@ use super::peer_eviction::handle_peer_disconnect;
 use super::peer_loop::run_sync_loop_v2;
 use super::peer_presence::cleanup_presence_on_disconnect;
 use super::*;
+use anyhow::Context;
 use runtime_doc::RuntimeLifecycle;
 
 /// Handle a single notebook sync client connection.
@@ -253,11 +254,23 @@ where
 
     // Send capabilities response unless already sent via NotebookConnectionInfo.
     if !skip_capabilities {
+        let comments_doc_id = room
+            .comments
+            .read(|doc| doc.comments_doc_id())
+            .context("read comments doc id for notebook sync capabilities")?;
+        let comments_notebook_ref = room
+            .comments
+            .read(|doc| doc.notebook_ref())
+            .context("read comments notebook ref for notebook sync capabilities")?
+            .map(serde_json::to_value)
+            .transpose()
+            .context("serialize comments notebook ref for notebook sync capabilities")?;
         let caps = connection::ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
             .with_identity(
                 connection_identity.actor_label().as_str(),
                 connection_identity.scope().as_str(),
-            );
+            )
+            .with_comments_doc_identity(comments_doc_id, comments_notebook_ref);
         if typed_capabilities {
             connection::send_typed_bootstrap_frame(
                 &mut writer,

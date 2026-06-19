@@ -431,6 +431,10 @@ struct DaemonReadyPayload {
     actor_label: Option<String>,
     /// Server-enforced scope for this connection.
     connection_scope: Option<String>,
+    /// Daemon-authoritative CommentsDoc identity for this room.
+    comments_doc_id: Option<String>,
+    /// Daemon-authoritative notebook reference stored inside the CommentsDoc.
+    comments_notebook_ref: Option<serde_json::Value>,
 }
 
 /// How to connect a new window to the daemon.
@@ -615,6 +619,8 @@ async fn initialize_notebook_sync_open(
         runtime: None,
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
+        comments_doc_id: info.capabilities.comments_doc_id.clone(),
+        comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
     };
 
     setup_sync_receivers(
@@ -695,6 +701,8 @@ async fn initialize_notebook_sync_create(
         runtime: Some(runtime),
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
+        comments_doc_id: info.capabilities.comments_doc_id.clone(),
+        comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
     };
 
     setup_sync_receivers(
@@ -767,6 +775,8 @@ async fn initialize_notebook_sync_attach(
         runtime: Some(runtime),
         actor_label: capabilities.actor_label.clone(),
         connection_scope: capabilities.connection_scope.clone(),
+        comments_doc_id: capabilities.comments_doc_id.clone(),
+        comments_notebook_ref: capabilities.comments_notebook_ref.clone(),
     };
 
     setup_sync_receivers(

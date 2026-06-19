@@ -166,13 +166,19 @@ describe("startRelayBootstrapCoordinator", () => {
     coordinator.stop();
   });
 
-  it("applies the daemon actor label before creating the notebook handle", async () => {
+  it("applies daemon ready metadata before creating the notebook handle", async () => {
     const ready = createReadySource();
     const authoritativeActor = "local:quill/desktop:daemon";
+    const authoritativeCommentsDocId = "comments:local-room:nb-1";
     let actorLabel = "desktop:fallback";
+    let commentsDocId: string | null = null;
+    let observedCommentsDocId: string | null = null;
     const handle = createHostedHandle();
     const slot: NotebookHandleSlot = { current: null };
-    const createHandle = vi.fn((_actor: string) => handle);
+    const createHandle = vi.fn((_actor: string) => {
+      observedCommentsDocId = commentsDocId;
+      return handle;
+    });
     const handleHost = new NotebookHandleHost({
       actorLabel: () => actorLabel,
       createHandle,
@@ -186,6 +192,7 @@ describe("startRelayBootstrapCoordinator", () => {
       onReady: ready.onReady,
       beforeBootstrap: (trigger) => {
         actorLabel = trigger.payload.actor_label ?? actorLabel;
+        commentsDocId = trigger.payload.comments_doc_id ?? null;
       },
       bootstrap: (isCancelled) => handleHost.bootstrap(isCancelled),
       notifyRelayReady,
@@ -195,12 +202,14 @@ describe("startRelayBootstrapCoordinator", () => {
       notebook_id: "nb-1",
       relay_generation: 8,
       actor_label: authoritativeActor,
+      comments_doc_id: authoritativeCommentsDocId,
     });
     await flushMicrotasks();
     await flushMicrotasks();
 
     expect(createHandle).toHaveBeenCalledWith(authoritativeActor);
     expect(createHandle).not.toHaveBeenCalledWith("desktop:fallback");
+    expect(observedCommentsDocId).toBe(authoritativeCommentsDocId);
     expect(notifyRelayReady).toHaveBeenCalledWith(8);
 
     coordinator.stop();

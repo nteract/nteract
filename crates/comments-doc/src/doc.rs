@@ -88,6 +88,38 @@ impl CommentsDoc {
         Ok(comments)
     }
 
+    pub fn load_with_actor_repairing_identity(
+        bytes: &[u8],
+        expected_comments_doc_id: &str,
+        expected_notebook_ref: &NotebookCommentRef,
+        actor_label: &str,
+    ) -> Result<(Self, bool), CommentsDocError> {
+        validate_comments_doc_id(expected_comments_doc_id)?;
+        let mut doc = AutoCommit::load(bytes)?;
+        doc.set_actor(ActorId::from(actor_label.as_bytes()));
+        let mut comments = Self {
+            doc,
+            comments_doc_id: expected_comments_doc_id.to_string(),
+        };
+
+        let mut repaired = match comments.ensure_raw_comments_doc_id_matches() {
+            Ok(()) => false,
+            Err(CommentsDocError::CommentsDocIdConflict) => {
+                comments.set_comments_doc_id(expected_comments_doc_id)?;
+                true
+            }
+            Err(err) => return Err(err),
+        };
+
+        if comments.notebook_ref().as_ref() != Some(expected_notebook_ref) {
+            comments.set_notebook_ref(expected_notebook_ref)?;
+            repaired = true;
+        }
+
+        comments.ensure_raw_comments_doc_id_matches()?;
+        Ok((comments, repaired))
+    }
+
     pub fn new(comments_doc_id: &str, notebook_ref: &NotebookCommentRef) -> Self {
         Self::try_new(comments_doc_id, notebook_ref)
             .unwrap_or_else(|err| panic!("seed comments doc schema: {err}"))

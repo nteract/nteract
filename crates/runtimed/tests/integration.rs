@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use comments_doc::local_path_comments_doc_id;
 use notebook_doc::presence::PresenceMessage;
 use notebook_protocol::connection::LaunchSpec;
 use notebook_sync::connect;
@@ -762,6 +763,19 @@ async fn test_local_identity_handshake_and_presence_rewrite() {
         result.info.capabilities.connection_scope.as_deref(),
         Some("owner")
     );
+    let expected_comments_doc_id = format!("comments:local-room:{}", result.info.notebook_id);
+    assert_eq!(
+        result.info.capabilities.comments_doc_id.as_deref(),
+        Some(expected_comments_doc_id.as_str())
+    );
+    let expected_comments_notebook_ref = serde_json::json!({
+        "kind": "local_room",
+        "room_id": result.info.notebook_id
+    });
+    assert_eq!(
+        result.info.capabilities.comments_notebook_ref.as_ref(),
+        Some(&expected_comments_notebook_ref)
+    );
     assert_eq!(
         notebook_sync::presence::actor_label(&result.handle).as_deref(),
         Some(actor_label)
@@ -784,6 +798,14 @@ async fn test_local_identity_handshake_and_presence_rewrite() {
     assert_eq!(
         relay.capabilities.connection_scope.as_deref(),
         Some("owner")
+    );
+    assert_eq!(
+        relay.capabilities.comments_doc_id.as_deref(),
+        Some(expected_comments_doc_id.as_str())
+    );
+    assert_eq!(
+        relay.capabilities.comments_notebook_ref.as_ref(),
+        Some(&expected_comments_notebook_ref)
     );
 
     let forged = notebook_doc::presence::encode_custom_update_labeled(
@@ -2872,6 +2894,20 @@ async fn test_streaming_load_via_open_notebook() {
     // Handshake reports 0 cells (streaming load is deferred)
     assert_eq!(info.cell_count, 0);
     assert!(info.error.is_none());
+    let canonical_path = std::fs::canonicalize(&nb_path).unwrap();
+    let expected_comments_doc_id = local_path_comments_doc_id(canonical_path.to_string_lossy());
+    assert_eq!(
+        info.capabilities.comments_doc_id.as_deref(),
+        Some(expected_comments_doc_id.as_str())
+    );
+    let expected_comments_notebook_ref = serde_json::json!({
+        "kind": "local_path",
+        "canonical_path": canonical_path.to_string_lossy()
+    });
+    assert_eq!(
+        info.capabilities.comments_notebook_ref.as_ref(),
+        Some(&expected_comments_notebook_ref)
+    );
 
     assert_session_ready(&handle, "OpenNotebook streaming load").await;
     let mut cells = handle.get_cells();

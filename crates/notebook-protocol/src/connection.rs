@@ -325,6 +325,8 @@ mod tests {
                 put_blob: None,
                 actor_label: None,
                 connection_scope: None,
+                comments_doc_id: None,
+                comments_notebook_ref: None,
             }
         }
 
@@ -396,6 +398,28 @@ mod tests {
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""notebook_path":"/home/user/notebook.ipynb""#));
+
+        // With CommentsDoc identity
+        let info = NotebookConnectionInfo {
+            capabilities: capabilities(None, None).with_comments_doc_identity(
+                Some("comments:local-room:550e8400-e29b-41d4-a716-446655440000".into()),
+                Some(serde_json::json!({
+                    "kind": "local_room",
+                    "room_id": "550e8400-e29b-41d4-a716-446655440000"
+                })),
+            ),
+            notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            cell_count: 5,
+            needs_trust_approval: false,
+            error: None,
+            ephemeral: true,
+            notebook_path: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains(
+            r#""comments_doc_id":"comments:local-room:550e8400-e29b-41d4-a716-446655440000""#
+        ));
+        assert!(json.contains(r#""comments_notebook_ref":{"kind":"local_room","room_id":"550e8400-e29b-41d4-a716-446655440000"}"#));
 
         // With identity metadata
         let info = NotebookConnectionInfo {
