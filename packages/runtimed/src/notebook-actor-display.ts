@@ -75,11 +75,19 @@ export function actorInitials(name: string): string {
     .split(/[\s@._-]+/g)
     .map((word) => word.trim())
     .filter(Boolean);
-  const initials = words
-    .slice(0, 2)
-    .map((word) => word[0]?.toUpperCase() ?? "")
-    .join("");
-  return initials || "U";
+  if (words.length === 0) {
+    return "U";
+  }
+  // A single word keeps two letters ("Alice" -> "AL"); multiple words take the
+  // first letter of the first two ("Kyle Kelley" -> "KK").
+  const initials =
+    words.length === 1
+      ? words[0].slice(0, 2)
+      : words
+          .slice(0, 2)
+          .map((word) => word[0] ?? "")
+          .join("");
+  return initials.toUpperCase() || "U";
 }
 
 function looksLikeEmailAddress(label: string): boolean {

@@ -42,6 +42,7 @@ import {
   ViewPlugin,
   type ViewUpdate,
 } from "@codemirror/view";
+import { friendlyNotebookActorLabel } from "runtimed";
 
 // ── Toggles ──────────────────────────────────────────────────────────
 // Flip these to compare effects independently. Vite HMR picks up changes.
@@ -106,11 +107,17 @@ export interface AttributionMark {
   color?: string;
 }
 
+type ResolveActorName = (label: string) => string;
+
+export interface TextAttributionExtensionOptions {
+  resolveActorName?: ResolveActorName;
+}
+
 /** Internal mark with a creation timestamp for fade calculation. */
 interface TimedMark {
   from: number;
   to: number;
-  actors: string[];
+  tooltip: string;
   /** Pre-parsed "R, G, B" string for rgba(). */
   color: string;
   /** `performance.now()` when this mark was created. */
@@ -130,6 +137,26 @@ function hexToRgb(hex: string): string {
   const b = Number.parseInt(h.slice(4, 6), 16);
   if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return DEFAULT_COLOR;
   return `${r}, ${g}, ${b}`;
+}
+
+function defaultResolveActorName(label: string): string {
+  return friendlyNotebookActorLabel(label) ?? "";
+}
+
+function attributionTooltip(actors: readonly string[], resolveActorName: ResolveActorName): string {
+  const names: string[] = [];
+  const seen = new Set<string>();
+
+  for (const actor of actors) {
+    const name = resolveActorName(actor).trim();
+    if (!name || seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    names.push(name);
+  }
+
+  return names.join(", ");
 }
 
 // ── Curves ───────────────────────────────────────────────────────────
@@ -174,49 +201,51 @@ const tickEffect = StateEffect.define<null>();
  * Document changes remap `from`/`to` through the change set so highlights
  * track their text even as the document is edited around them.
  */
-const marksField = StateField.define<TimedMark[]>({
-  create: () => [],
-  update(marks: TimedMark[], tr: Transaction): TimedMark[] {
-    let updated = marks;
+function createMarksField(resolveActorName: ResolveActorName): StateField<TimedMark[]> {
+  return StateField.define<TimedMark[]>({
+    create: () => [],
+    update(marks: TimedMark[], tr: Transaction): TimedMark[] {
+      let updated = marks;
 
-    // Remap positions through document changes.
-    // Marks whose range collapses to empty (fully deleted) are dropped.
-    if (tr.docChanged) {
-      updated = updated
-        .map((m) => ({
-          ...m,
-          from: tr.changes.mapPos(m.from, 1),
-          to: tr.changes.mapPos(m.to, -1),
-        }))
-        .filter((m) => m.from < m.to);
-    }
-
-    // Add new marks from effects.
-    for (const effect of tr.effects) {
-      if (effect.is(addAttributionsEffect)) {
-        const now = performance.now();
-        const newMarks: TimedMark[] = effect.value
-          .filter((m) => m.from < m.to)
+      // Remap positions through document changes.
+      // Marks whose range collapses to empty (fully deleted) are dropped.
+      if (tr.docChanged) {
+        updated = updated
           .map((m) => ({
-            from: m.from,
-            to: m.to,
-            actors: m.actors,
-            color: m.color ? hexToRgb(m.color) : DEFAULT_COLOR,
-            createdAt: now,
-          }));
-        updated = [...updated, ...newMarks];
+            ...m,
+            from: tr.changes.mapPos(m.from, 1),
+            to: tr.changes.mapPos(m.to, -1),
+          }))
+          .filter((m) => m.from < m.to);
       }
 
-      // On tick, prune expired marks.
-      if (effect.is(tickEffect)) {
-        const now = performance.now();
-        updated = updated.filter((m) => now - m.createdAt < TOTAL_MS);
-      }
-    }
+      // Add new marks from effects.
+      for (const effect of tr.effects) {
+        if (effect.is(addAttributionsEffect)) {
+          const now = performance.now();
+          const newMarks: TimedMark[] = effect.value
+            .filter((m) => m.from < m.to)
+            .map((m) => ({
+              from: m.from,
+              to: m.to,
+              tooltip: attributionTooltip(m.actors, resolveActorName),
+              color: m.color ? hexToRgb(m.color) : DEFAULT_COLOR,
+              createdAt: now,
+            }));
+          updated = [...updated, ...newMarks];
+        }
 
-    return updated;
-  },
-});
+        // On tick, prune expired marks.
+        if (effect.is(tickEffect)) {
+          const now = performance.now();
+          updated = updated.filter((m) => now - m.createdAt < TOTAL_MS);
+        }
+      }
+
+      return updated;
+    },
+  });
+}
 
 // ── Decoration builder ───────────────────────────────────────────────
 
@@ -267,17 +296,19 @@ function buildDecorations(marks: TimedMark[]): DecorationSet {
       }
     }
 
-    const tooltip = mark.actors.join(", ");
+    const attributes: Record<string, string> = {
+      style: `${opacityStyle} ${underlineStyle} transition: opacity ${TICK_MS}ms linear;`,
+    };
+    if (mark.tooltip) {
+      attributes.title = mark.tooltip;
+    }
 
     builder.add(
       mark.from,
       mark.to,
       Decoration.mark({
         class: "cm-text-attribution",
-        attributes: {
-          style: `${opacityStyle} ${underlineStyle} transition: opacity ${TICK_MS}ms linear;`,
-          title: tooltip,
-        },
+        attributes,
       }),
     );
   }
@@ -287,18 +318,20 @@ function buildDecorations(marks: TimedMark[]): DecorationSet {
 
 // ── Decoration state field ───────────────────────────────────────────
 
-const decorationsField = StateField.define<DecorationSet>({
-  create: () => Decoration.none,
-  update(decos, tr) {
-    const needsRebuild =
-      tr.docChanged || tr.effects.some((e) => e.is(addAttributionsEffect) || e.is(tickEffect));
+function createDecorationsField(marksField: StateField<TimedMark[]>): StateField<DecorationSet> {
+  return StateField.define<DecorationSet>({
+    create: () => Decoration.none,
+    update(decos, tr) {
+      const needsRebuild =
+        tr.docChanged || tr.effects.some((e) => e.is(addAttributionsEffect) || e.is(tickEffect));
 
-    if (!needsRebuild) return decos;
+      if (!needsRebuild) return decos;
 
-    return buildDecorations(tr.state.field(marksField));
-  },
-  provide: (f) => EditorView.decorations.from(f),
-});
+      return buildDecorations(tr.state.field(marksField));
+    },
+    provide: (f) => EditorView.decorations.from(f),
+  });
+}
 
 // ── Tick / prune plugin ──────────────────────────────────────────────
 
@@ -306,48 +339,50 @@ const decorationsField = StateField.define<DecorationSet>({
  * Runs a periodic timer that dispatches `tickEffect` to fade and prune
  * expired marks. The timer only runs while there are active marks.
  */
-const attributionTickPlugin = ViewPlugin.fromClass(
-  class {
-    timer: ReturnType<typeof setInterval> | null = null;
-    view: EditorView;
+function createAttributionTickPlugin(marksField: StateField<TimedMark[]>): Extension {
+  return ViewPlugin.fromClass(
+    class {
+      timer: ReturnType<typeof setInterval> | null = null;
+      view: EditorView;
 
-    constructor(view: EditorView) {
-      this.view = view;
-      this.maybeStartTimer();
-    }
-
-    update(update: ViewUpdate) {
-      for (const effect of update.transactions.flatMap((t) => t.effects)) {
-        if (effect.is(addAttributionsEffect)) {
-          this.maybeStartTimer();
-          return;
-        }
+      constructor(view: EditorView) {
+        this.view = view;
+        this.maybeStartTimer();
       }
-    }
 
-    maybeStartTimer() {
-      if (this.timer !== null) return;
-      this.timer = setInterval(() => {
-        const marks = this.view.state.field(marksField);
-        if (marks.length === 0) {
-          if (this.timer !== null) {
-            clearInterval(this.timer);
-            this.timer = null;
+      update(update: ViewUpdate) {
+        for (const effect of update.transactions.flatMap((t) => t.effects)) {
+          if (effect.is(addAttributionsEffect)) {
+            this.maybeStartTimer();
+            return;
           }
-          return;
         }
-        this.view.dispatch({ effects: tickEffect.of(null) });
-      }, TICK_MS);
-    }
-
-    destroy() {
-      if (this.timer !== null) {
-        clearInterval(this.timer);
-        this.timer = null;
       }
-    }
-  },
-);
+
+      maybeStartTimer() {
+        if (this.timer !== null) return;
+        this.timer = setInterval(() => {
+          const marks = this.view.state.field(marksField);
+          if (marks.length === 0) {
+            if (this.timer !== null) {
+              clearInterval(this.timer);
+              this.timer = null;
+            }
+            return;
+          }
+          this.view.dispatch({ effects: tickEffect.of(null) });
+        }, TICK_MS);
+      }
+
+      destroy() {
+        if (this.timer !== null) {
+          clearInterval(this.timer);
+          this.timer = null;
+        }
+      }
+    },
+  );
+}
 
 // ── Theme ────────────────────────────────────────────────────────────
 
@@ -367,8 +402,13 @@ const attributionTheme = EditorView.theme({
  * Add to the editor's extensions array. Then call `addTextAttributions()`
  * to push highlight ranges from outside React.
  */
-export function textAttributionExtension(): Extension[] {
+export function textAttributionExtension(
+  options: TextAttributionExtensionOptions = {},
+): Extension[] {
   injectKeyframes();
+  const marksField = createMarksField(options.resolveActorName ?? defaultResolveActorName);
+  const decorationsField = createDecorationsField(marksField);
+  const attributionTickPlugin = createAttributionTickPlugin(marksField);
 
   return [marksField, decorationsField, attributionTickPlugin, attributionTheme];
 }
