@@ -30,71 +30,19 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
-      - name: Run agent
-        id: review
-        uses: pullfrog/pullfrog@v0
-        with:
-          model: bedrock/byok
-          push: disabled
-          prompt: |
-            Review this repository as a senior nteract code reviewer. Stay
-            read-only. Inspect the diff first, then the nearest owning code,
-            tests, AGENTS.md files, ADRs/plans, and recent patterns when they
-            are relevant. Be terse, adversarial, and evidence-backed.
+      - name: Build review prompt
+        id: review_prompt
+        env:
+          CALLER_PROMPT: ${{ inputs.prompt }}
+        shell: bash
+        run: |
+          delimiter="pullfrog_prompt_${RANDOM}_${RANDOM}"
+          {
+            echo "prompt<<${delimiter}"
+            cat .agents/reviewers/nteract-code-review-rubric.md
+            cat <<'PULLFROG_PROMPT'
 
-            Primary goal:
-            - Find concrete bugs, behavioral regressions, data loss, security
-              issues, concurrency hazards, broken tests, and missing tests that
-              could allow the diff to regress.
-            - Also report repo-invariant architecture/style nits when they
-              protect maintainability or product behavior. Examples: state
-              being owned by a React component/app hook when it belongs in a
-              shared projection/store, packages/runtimed, or runtimed-wasm;
-              app-local code in apps/ duplicating a shared surface that belongs
-              under src/; direct host imports leaking into shared code; stale
-              generated artifacts; or stale docs/agent guidance that contradicts
-              current authority boundaries.
-
-            Suppress comments that are only subjective preference, formatting,
-            naming, Tailwind ordering, or "could be cleaner" with no concrete
-            owner, invariant, user-visible behavior, or test gap. Group repeated
-            instances under one finding. Prefer at most 12 findings.
-
-            nteract review checklist:
-            - State ownership: Notebook edits flow through NotebookDoc/WASM/CRDT
-              paths. Runtime lifecycle, queue, outputs, env, trust, execution
-              snapshots, and widget topology are daemon/runtime-owned
-              RuntimeStateDoc facts. Mutable widget values belong in CommsDoc.
-              React/app stores should be projections or local UI policy, not
-              durable sources of truth.
-            - Shared surfaces: reusable notebook UI, output rendering, identity
-              helpers, and headless state/projection logic belong under
-              src/components/**, src/lib/**, or packages/runtimed/**. Keep
-              apps/notebook/** and apps/notebook-cloud/** focused on host policy,
-              routes, shell wiring, and side effects.
-            - Host boundaries: shared libraries must stay free of Tauri,
-              Cloudflare, OIDC, D1/R2/Durable Object, ACL, credential, and daemon
-              launch policy. Host adapters own those effects.
-            - Authority boundaries: review every write path, including request
-              RPCs, room admission, materializer/checkpoint paths, WASM handlers,
-              broadcasts, persistence, and tests. Viewer and runtime_peer roles
-              must not gain unintended writes; client plumbing alone is not
-              enough evidence for hosted authority changes.
-            - Protocol changes: wire protocol, Rust handling, WASM bindings,
-              packages/runtimed types/stores, recovery, and tests should move
-              together.
-            - Outputs/widgets: RuntimeStateDoc is the durable output/runtime
-              record; output/control ordering must survive stdout floods and
-              display churn; MIME/blob/renderer plugin changes need artifact or
-              browser-backed evidence when possible.
-            - Async projection work: reject stale fire-and-forget updates that
-              can resurrect removed/replaced state without reset epochs,
-              generations, cancellation, or equivalent guards.
-            - Tests: require focused tests at the changed boundary. Treat deleted
-              tests as suspicious unless the behavior was removed and replacement
-              coverage exists.
-
-            Verdict rules:
+            Pullfrog output contract:
             - "✅" means the review completed and found no actionable issues.
             - "⚠️" means the review found non-blocking risk, missing coverage,
               uncertainty, or a repo-invariant architecture/style nit the human
@@ -104,18 +52,22 @@ jobs:
               corruption risk, or the review could not be trusted because of
               infrastructure/tooling uncertainty.
 
-            Every finding must name a concrete failure mode or invariant drift,
-            explain why the diff introduced or exposed it, identify the affected
-            file and line when possible, and suggest the smallest useful fix.
-            Use severity "nit" for non-blocking architecture/style findings.
-            Do not invent findings.
-
             Return the structured output by calling Pullfrog's set_output tool.
             The output must match the provided JSON schema exactly. Do not add
             markdown, prose, or extra keys outside the schema.
 
             Caller prompt:
-            ${{ inputs.prompt }}
+          PULLFROG_PROMPT
+            printf '%s\n' "$CALLER_PROMPT"
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Run agent
+        id: review
+        uses: pullfrog/pullfrog@v0
+        with:
+          model: bedrock/byok
+          push: disabled
+          prompt: ${{ steps.review_prompt.outputs.prompt }}
           output_schema: |
             {
               "$schema": "http://json-schema.org/draft-07/schema#",
