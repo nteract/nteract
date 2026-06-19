@@ -31,7 +31,7 @@ import {
   resolveMarkdownProjection,
 } from "../lib/markdown-projection";
 import { cn } from "@/lib/utils";
-import { usePresenceContext } from "../contexts/PresenceContext";
+import { usePresenceContext } from "@/components/notebook/presence-context";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import { useBlobResolver } from "../lib/blob-port";

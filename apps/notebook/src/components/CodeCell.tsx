@@ -14,7 +14,7 @@ import { textAttributionExtension } from "@/components/editor/text-attribution";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { cn } from "@/lib/utils";
-import { usePresenceContext } from "../contexts/PresenceContext";
+import { usePresenceContext } from "@/components/notebook/presence-context";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import {

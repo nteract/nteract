@@ -27,9 +27,10 @@ outline rail.
   moving cells into the sidebar.
 - `NotebookCommandToolbar` is imported from `src/components/notebook` with inert
   fixture callbacks and runtime status props.
-- `NotebookView` renders the scenario cells from seeded notebook, execution,
-  and cell UI stores. The outline page does not add its own markdown,
-  queued, running, or run-count badges around cells.
+- `NotebookView` renders the scenario cells from the render-only
+  `apps/notebook/src/notebook-surface.ts` seam plus seeded notebook, execution,
+  and cell UI stores. The outline page does not add its own markdown, queued,
+  running, or run-count badges around cells.
 - Output renderer fixtures stay on output-specific catalog pages; this rail
   page keeps code cells output-free so renderer adapter chrome does not read as
   notebook design.

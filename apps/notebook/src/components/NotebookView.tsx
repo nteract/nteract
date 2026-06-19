@@ -29,7 +29,7 @@ import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
-import { usePresenceContext } from "../contexts/PresenceContext";
+import { usePresenceContext } from "@/components/notebook/presence-context";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
 import {
   flushCellUIState,
