@@ -41,7 +41,7 @@ function stubPanelResourceLoads() {
   ): Node {
     if (node instanceof HTMLScriptElement && node.src) {
       appendedSrcs.push(node.src);
-      if (node.src.includes("bokeh-3.9.1.min.js")) {
+      if (node.src.includes("cdn.bokeh.org/bokeh/release/")) {
         (window as typeof window & { Bokeh?: unknown }).Bokeh = {
           version: "3.9.1",
           index: {},
@@ -66,19 +66,35 @@ function renderedScripts(container: HTMLElement): HTMLScriptElement[] {
   return Array.from(container.querySelectorAll("script"));
 }
 
+function removePanelLoaderScripts() {
+  for (const script of document.querySelectorAll("script[data-nteract-panel-src]")) {
+    script.remove();
+  }
+}
+
 describe("Panel renderer plugin", () => {
   beforeEach(() => {
     stubAnimationFrames();
+    removePanelLoaderScripts();
     delete (window as typeof window & { PyViz?: unknown }).PyViz;
     delete (window as typeof window & { Bokeh?: unknown }).Bokeh;
+    delete (window as typeof window & { __nteractBokehLoadPromise__?: unknown })
+      .__nteractBokehLoadPromise__;
+    delete (window as typeof window & { __nteractPanelLoadPromises__?: unknown })
+      .__nteractPanelLoadPromises__;
   });
 
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    removePanelLoaderScripts();
     delete (window as typeof window & { PyViz?: unknown }).PyViz;
     delete (window as typeof window & { Bokeh?: unknown }).Bokeh;
+    delete (window as typeof window & { __nteractBokehLoadPromise__?: unknown })
+      .__nteractBokehLoadPromise__;
+    delete (window as typeof window & { __nteractPanelLoadPromises__?: unknown })
+      .__nteractPanelLoadPromises__;
   });
 
   it("registers Panel load and exec MIME types", () => {
@@ -198,6 +214,89 @@ describe("Panel renderer plugin", () => {
       "https://cdn.bokeh.org/bokeh/release/bokeh-mathjax-3.9.1.min.js",
       "https://cdn.holoviz.org/panel/1.9.3/dist/panel.min.js",
     ]);
+  });
+
+  it("executes code-only Panel exec bundles after loading BokehJS", async () => {
+    const appendedSrcs = stubPanelResourceLoads();
+    const { Renderer } = installPanelRenderer();
+    const { container } = render(
+      <Renderer
+        data={{
+          "application/javascript": `
+            window.__panelCodeOnlyDocs = {"docid": {"version": "3.9.1"}};
+            window.__panelCodeOnlyRan = true;
+          `,
+          [PANEL_EXEC_MIME_TYPE]: "",
+        }}
+        metadata={{ id: "p1011" }}
+        mimeType={PANEL_EXEC_MIME_TYPE}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(renderedScripts(container).at(-1)?.textContent).toContain("__panelCodeOnlyRan");
+    });
+
+    expect(appendedSrcs).toEqual([
+      "https://cdn.bokeh.org/bokeh/release/bokeh-3.9.1.min.js",
+      "https://cdn.bokeh.org/bokeh/release/bokeh-gl-3.9.1.min.js",
+      "https://cdn.bokeh.org/bokeh/release/bokeh-widgets-3.9.1.min.js",
+      "https://cdn.bokeh.org/bokeh/release/bokeh-tables-3.9.1.min.js",
+      "https://cdn.bokeh.org/bokeh/release/bokeh-mathjax-3.9.1.min.js",
+    ]);
+  });
+
+  it("does not re-register a Panel plot after cleanup", async () => {
+    const animationFrameCallbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      animationFrameCallbacks.push(callback);
+      return animationFrameCallbacks.length;
+    });
+    const view = { model: { document: { clear: vi.fn() } } };
+    (
+      window as typeof window & {
+        Bokeh?: { Panel?: unknown; index?: { get_by_id: () => unknown; delete: () => void } };
+      }
+    ).Bokeh = {
+      Panel: {},
+      index: {
+        get_by_id: () => view,
+        delete: vi.fn(),
+      },
+    };
+    const { Renderer } = installPanelRenderer();
+    const { unmount } = render(
+      <Renderer
+        data={{
+          "text/html": '<div id="panel-root"></div>',
+          [PANEL_EXEC_MIME_TYPE]: "",
+        }}
+        metadata={{ id: "p1011" }}
+        mimeType={PANEL_EXEC_MIME_TYPE}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        (window as typeof window & { PyViz?: { plot_index?: Record<string, unknown> } }).PyViz
+          ?.plot_index?.p1011,
+      ).toBe(view);
+    });
+
+    unmount();
+    expect(
+      (window as typeof window & { PyViz?: { plot_index?: Record<string, unknown> } }).PyViz
+        ?.plot_index?.p1011,
+    ).toBeUndefined();
+
+    for (const callback of animationFrameCallbacks) {
+      callback(0);
+    }
+
+    expect(
+      (window as typeof window & { PyViz?: { plot_index?: Record<string, unknown> } }).PyViz
+        ?.plot_index?.p1011,
+    ).toBeUndefined();
   });
 
   it("copies script attributes for Panel server outputs", async () => {

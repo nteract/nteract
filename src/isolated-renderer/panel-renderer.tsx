@@ -221,10 +221,8 @@ async function ensurePanelRuntime(html: string | null, code: string | null): Pro
 
   if (target.Bokeh?.Panel !== undefined) return;
 
-  const panelDistBase = extractPanelDistBase(html);
-  if (!panelDistBase) {
-    throw new Error("Panel output did not include a Panel CDN resource URL");
-  }
+  const panelDistBase = extractPanelDistBase(html ?? code);
+  if (!panelDistBase) return;
 
   target.__nteractPanelLoadPromises__ ??= {};
   const panelSrc = `${panelDistBase}panel.min.js`;
@@ -353,7 +351,7 @@ function PanelRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
 
       rememberPanelPlot(documentId);
       requestAnimationFrame(() => {
-        rememberPanelPlot(documentId);
+        if (!cancelled) rememberPanelPlot(documentId);
       });
     }
 
