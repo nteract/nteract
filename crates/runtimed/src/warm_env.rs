@@ -235,12 +235,9 @@ where
 async fn collect_reader(
     handle: tokio::task::JoinHandle<io::Result<Vec<u8>>>,
 ) -> io::Result<Vec<u8>> {
-    handle.await.map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to join child output reader: {error}"),
-        )
-    })?
+    handle
+        .await
+        .map_err(|error| io::Error::other(format!("failed to join child output reader: {error}")))?
 }
 
 async fn run_output_with_timeout(
