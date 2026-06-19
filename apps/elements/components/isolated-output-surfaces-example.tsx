@@ -892,7 +892,7 @@ export function IsolatedOutputSurfacesExample() {
                 {(mcpFrameEvents.length > 0 ? mcpFrameEvents : ["waiting"]).map((event, index) => (
                   <span
                     key={`${index}-${event}`}
-                    className="rounded-full border border-fd-border bg-fd-card px-2 py-1 font-mono text-[11px] text-fd-muted-foreground"
+                    className="font-mono text-[11px] text-fd-muted-foreground"
                   >
                     {event}
                   </span>

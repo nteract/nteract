@@ -47,7 +47,7 @@ const noopInsert = () => undefined;
 export function CellInsertionAffordancesExample() {
   return (
     <div className="not-prose space-y-6">
-      <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-900 dark:text-emerald-100">
+      <section className="border-l border-fd-border py-1 pl-4 text-fd-muted-foreground">
         <div className="flex items-start gap-3">
           <CheckCircle2 className="mt-0.5 size-4 flex-none" aria-hidden="true" />
           <div>

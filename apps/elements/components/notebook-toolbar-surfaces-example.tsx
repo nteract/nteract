@@ -389,9 +389,5 @@ function ToolbarIdentityControls({ scenario }: { scenario: ElementsNotebookScena
 }
 
 function ScenarioPill({ label }: { label: string }) {
-  return (
-    <span className="rounded-full border border-fd-border bg-fd-background px-2 py-0.5">
-      {label}
-    </span>
-  );
+  return <span className="text-[11px] font-medium text-fd-muted-foreground">{label}</span>;
 }

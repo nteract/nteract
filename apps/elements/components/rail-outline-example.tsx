@@ -247,7 +247,7 @@ function ScenarioNotice({
 }) {
   return (
     <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(280px,420px)]">
-      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs leading-5 text-emerald-900 dark:text-emerald-300">
+      <div className="border-l border-fd-border py-1 pl-3 text-xs leading-5 text-fd-muted-foreground">
         <div className="mb-1 flex items-center gap-2 font-semibold">
           <ShieldCheck className="size-3.5" aria-hidden="true" />
           NotebookDocumentShell, NotebookRail, and NotebookView render from current sources.

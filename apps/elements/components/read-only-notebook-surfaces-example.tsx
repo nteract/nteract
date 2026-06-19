@@ -16,7 +16,7 @@ export function ReadOnlyNotebookSurfacesExample() {
 
   return (
     <div className="not-prose space-y-6" data-testid="read-only-notebook-surfaces-example">
-      <section className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-sky-900 dark:text-sky-100">
+      <section className="border-l border-fd-border py-1 pl-4 text-fd-muted-foreground">
         <div className="flex items-start gap-3">
           <Cloud className="mt-0.5 size-4 flex-none" aria-hidden="true" />
           <div>
@@ -42,7 +42,7 @@ export function ReadOnlyNotebookSurfacesExample() {
               </div>
             </div>
           </div>
-          <span className="shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+          <span className="shrink-0 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
             rendered
           </span>
         </div>
@@ -69,7 +69,7 @@ export function ReadOnlyNotebookSurfacesExample() {
                 </div>
               </div>
             </div>
-            <span className="shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+            <span className="shrink-0 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
               rendered
             </span>
           </div>
@@ -98,7 +98,7 @@ export function ReadOnlyNotebookSurfacesExample() {
                 </div>
               </div>
             </div>
-            <span className="shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+            <span className="shrink-0 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
               rendered
             </span>
           </div>

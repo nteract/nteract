@@ -102,7 +102,7 @@ export function PackageManagerSurfacesExample() {
         {packageSurfaces.map((surface) => (
           <div key={surface.name} className="rounded-lg border border-fd-border bg-fd-card p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
-              <span className="rounded-full border border-fd-border bg-fd-muted px-2 py-1 text-[11px] font-medium uppercase text-fd-muted-foreground">
+              <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
                 {surface.manager}
               </span>
               <CheckCircle2 className="size-4 text-emerald-500" aria-hidden="true" />
