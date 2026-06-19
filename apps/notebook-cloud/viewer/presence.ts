@@ -1,6 +1,10 @@
 import type { CloudRoomPeerRosterEntry, SessionControlMessage } from "../src/protocol";
 import type { ConnectionScope } from "../src/auth-shared";
-import { notebookActorIdentityFromProjection, notebookActorProjectionFromLabel } from "runtimed";
+import {
+  actorInitials,
+  notebookActorIdentityFromProjection,
+  notebookActorProjectionFromLabel,
+} from "runtimed";
 
 export type CloudViewerPresenceConnection = "connecting" | "connected" | "disconnected";
 
@@ -357,21 +361,7 @@ export function cloudPresenceRuntimePeerCount(state: CloudViewerPresenceState): 
   return Math.max(state.runtimePeerCount, visibleRuntimePeers);
 }
 
-export function cloudPresenceInitials(label: string): string {
-  const trimmed = label.trim();
-  if (looksLikeEmailAddress(trimmed)) {
-    return "U";
-  }
-  const words = trimmed
-    .split(/[\s@._-]+/g)
-    .map((word) => word.trim())
-    .filter(Boolean);
-  const initials = words
-    .slice(0, 2)
-    .map((word) => word[0]?.toUpperCase() ?? "")
-    .join("");
-  return initials || "?";
-}
+export const cloudPresenceInitials: (label: string) => string = actorInitials;
 
 export interface CloudFriendlyPeerLabelInput {
   displayName?: string | null;

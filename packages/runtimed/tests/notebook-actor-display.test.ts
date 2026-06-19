@@ -54,7 +54,7 @@ describe("resolveActorDisplay", () => {
       kind: "agent",
       isAgent: true,
       onBehalfOf: "Kyle Kelley",
-      initials: "C",
+      initials: "CO",
     });
   });
 
@@ -71,6 +71,8 @@ describe("resolveActorDisplay", () => {
   it("derives initials across names, delimiters, and email-like labels", () => {
     expect(actorInitials("Kyle Kelley")).toBe("KK");
     expect(actorInitials("kyle.kelley")).toBe("KK");
+    expect(actorInitials("Alice")).toBe("AL");
+    expect(actorInitials("a")).toBe("A");
     expect(actorInitials("rgbkrk@gmail.com")).toBe("U");
     expect(actorInitials("")).toBe("U");
   });

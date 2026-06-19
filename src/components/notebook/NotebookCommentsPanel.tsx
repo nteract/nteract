@@ -10,6 +10,7 @@ import {
   Send,
   X,
 } from "lucide-react";
+import { actorInitials } from "runtimed";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type {
   CommentAnchor,
@@ -494,7 +495,7 @@ function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
       className="flex size-5 items-center justify-center rounded-full text-[9px] font-semibold text-white"
       style={{ backgroundColor: author.color ?? "hsl(var(--muted-foreground))" }}
     >
-      {author.isAgent ? <Bot className="size-3" /> : authorInitials(author.displayName)}
+      {author.isAgent ? <Bot className="size-3" /> : actorInitials(author.displayName)}
     </div>
   );
 
@@ -509,7 +510,7 @@ function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
           style={{ backgroundColor: author.onBehalfOfColor ?? "hsl(var(--muted-foreground))" }}
           title={`on behalf of ${author.onBehalfOf}`}
         >
-          {authorInitials(author.onBehalfOf).slice(0, 1)}
+          {actorInitials(author.onBehalfOf).slice(0, 1)}
         </span>
       </div>
     );
@@ -750,13 +751,6 @@ function draftAnchorKey(anchor: CommentAnchor): string {
     default:
       return "notebook";
   }
-}
-
-function authorInitials(displayName: string): string {
-  const words = displayName.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return "?";
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return (words[0][0] + words[words.length - 1][0]).toUpperCase();
 }
 
 function formatRelativeTime(iso: string | null | undefined): string {
