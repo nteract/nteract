@@ -1,5 +1,5 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { Check, Pencil } from "lucide-react";
+import { Check, MessageSquarePlus, Pencil } from "lucide-react";
 import {
   memo,
   type MouseEvent,
@@ -69,6 +69,7 @@ import {
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import type { MarkdownCell as MarkdownCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
+import { RenderedMarkdownContextMenu } from "./RenderedMarkdownContextMenu";
 
 const handleIframeError = (err: { message: string; stack?: string }) =>
   logger.error("[MarkdownCell] iframe error:", err);
@@ -78,6 +79,7 @@ const MARKDOWN_EDITOR_CONTENT_ATTRIBUTES = {
   autocorrect: "on",
   spellcheck: "true",
 } as const;
+const MARKDOWN_RENDERED_COMMENT_BUTTON_SIZE = 24;
 const MARKDOWN_PREVIEW_MIN_HEIGHT = 24;
 const MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT = 720;
 
@@ -486,7 +488,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       anchor,
       left: Math.min(
         Math.max(0, rangeRect.right - rootRect.left + 6),
-        Math.max(0, rootRect.width - 84),
+        Math.max(0, rootRect.width - MARKDOWN_RENDERED_COMMENT_BUTTON_SIZE),
       ),
       top: Math.max(0, rangeRect.top - rootRect.top - 32),
     });
@@ -669,7 +671,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     const frame = frameRef.current;
     if (!frame || !previewSource) return;
 
-    // Clear injected set — a reloaded iframe has a fresh renderer registry.
+    // Clear injected set because a reloaded iframe has a fresh renderer registry.
     injectedLibsRef.current.clear();
     setPreviewFrameReadyGeneration((generation) => generation + 1);
     void renderMarkdownPreviewFrame(frame);
@@ -829,13 +831,13 @@ export const MarkdownCell = memo(function MarkdownCell({
     [getCurrentEditorSource, isLastCell, onFocusNext, onInsertCellAfter, readOnly],
   );
 
-  // Remote cursors extension (stable — no deps that change)
+  // Remote cursors extension (stable, no deps that change)
   const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
 
-  // Text attribution extension (stable — no deps that change)
+  // Text attribution extension (stable, no deps that change)
   const textAttributionExt = useMemo(() => textAttributionExtension(), []);
 
-  // Presence sender extension — broadcasts local cursor/selection to other peers
+  // Presence sender extension broadcasts local cursor/selection to other peers.
   const presenceSenderExt = useMemo(() => {
     if (!presence) return [];
     return [
@@ -1043,90 +1045,101 @@ export const MarkdownCell = memo(function MarkdownCell({
             </div>
           </div>
 
-          {/* View section - hidden when editing */}
-          <div
-            ref={viewRef}
-            role="textbox"
-            aria-readonly
-            aria-label="Markdown cell content"
-            tabIndex={0}
-            className={cn("relative py-2 cursor-text outline-none", editing && "hidden")}
-            onFocus={activatePreviewFrameInteraction}
-            onDoubleClick={enterEditing}
-            onPointerDown={handlePreviewWrapperPointerDown}
-            onMouseUp={updateRenderedSourceCommentTarget}
-            onKeyUp={updateRenderedSourceCommentTarget}
-            onKeyDown={handleViewKeyDown}
+          <RenderedMarkdownContextMenu
+            cellId={cell.id}
+            source={previewSource}
+            viewRef={viewRef}
+            onCreateSourceComment={canCommentOnRenderedMarkdown ? onCreateSourceComment : undefined}
           >
-            {previewSource && canRenderProjectionInHost && markdownProjection ? (
-              <ProjectedMarkdownView
-                plan={markdownProjection}
-                headingAnchors={headingAnchors}
-                onLinkClick={handleLinkClick}
-                canCommentOnRuns={
-                  canCommentOnRenderedMarkdown ? canCommentOnRenderedRuns : undefined
-                }
-                onCommentRuns={canCommentOnRenderedMarkdown ? handleRenderedRunsComment : undefined}
-                onTaskCheckedChange={
-                  readOnly || !onUpdateSource ? undefined : handleTaskCheckedChange
-                }
-                activeSourcePosition={activeSourcePosition}
-              />
-            ) : (
-              <div
-                className={previewSource ? undefined : "hidden"}
-                onPointerDown={handlePreviewWrapperPointerDown}
-                onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
-              >
-                <IsolatedFrame
-                  ref={frameRef}
-                  name={`md-${cell.id}`}
-                  darkMode={darkMode}
-                  colorTheme={colorTheme}
-                  hostContext={outputHostContext}
-                  minHeight={previewMinHeight}
-                  autoHeight
-                  scrollPassthrough={!previewFrameInteractionActive}
-                  allowWheelBoundaryScroll={previewFrameInteractionActive}
-                  revealOnRender
-                  reserveHeightOnReveal
-                  onReady={handleFrameReady}
+            {/* View section - hidden when editing */}
+            <div
+              ref={viewRef}
+              role="textbox"
+              aria-readonly
+              aria-label="Markdown cell content"
+              tabIndex={0}
+              className={cn("relative py-2 cursor-text outline-none", editing && "hidden")}
+              onFocus={activatePreviewFrameInteraction}
+              onDoubleClick={enterEditing}
+              onPointerDown={handlePreviewWrapperPointerDown}
+              onMouseUp={updateRenderedSourceCommentTarget}
+              onKeyUp={updateRenderedSourceCommentTarget}
+              onKeyDown={handleViewKeyDown}
+            >
+              {previewSource && canRenderProjectionInHost && markdownProjection ? (
+                <ProjectedMarkdownView
+                  plan={markdownProjection}
+                  headingAnchors={headingAnchors}
                   onLinkClick={handleLinkClick}
-                  onMouseDown={activatePreviewFrameInteraction}
-                  onMouseUp={handlePreviewFrameMouseUp}
-                  onDoubleClick={enterEditing}
-                  onError={handleIframeError}
-                  onDiagnostic={logNotebookIsolatedDiagnostic}
-                  className="w-full"
+                  canCommentOnRuns={
+                    canCommentOnRenderedMarkdown ? canCommentOnRenderedRuns : undefined
+                  }
+                  onCommentRuns={
+                    canCommentOnRenderedMarkdown ? handleRenderedRunsComment : undefined
+                  }
+                  onTaskCheckedChange={
+                    readOnly || !onUpdateSource ? undefined : handleTaskCheckedChange
+                  }
+                  activeSourcePosition={activeSourcePosition}
                 />
-              </div>
-            )}
-            {!previewSource && <p className="text-muted-foreground italic">Double-click to edit</p>}
-            {renderedSourceCommentTarget ? (
-              <button
-                type="button"
-                aria-label="Comment on selected markdown"
-                title="Comment on selected markdown"
-                data-testid="markdown-source-comment-button"
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-                onClick={handleRenderedSourceCommentClick}
-                className="absolute z-20 rounded-md border bg-background px-2 py-1 text-[11px] font-medium leading-none text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-                style={{
-                  left: renderedSourceCommentTarget.left,
-                  top: renderedSourceCommentTarget.top,
-                }}
-              >
-                Comment
-              </button>
-            ) : null}
-          </div>
+              ) : (
+                <div
+                  className={previewSource ? undefined : "hidden"}
+                  onPointerDown={handlePreviewWrapperPointerDown}
+                  onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
+                >
+                  <IsolatedFrame
+                    ref={frameRef}
+                    name={`md-${cell.id}`}
+                    darkMode={darkMode}
+                    colorTheme={colorTheme}
+                    hostContext={outputHostContext}
+                    minHeight={previewMinHeight}
+                    autoHeight
+                    scrollPassthrough={!previewFrameInteractionActive}
+                    allowWheelBoundaryScroll={previewFrameInteractionActive}
+                    revealOnRender
+                    reserveHeightOnReveal
+                    onReady={handleFrameReady}
+                    onLinkClick={handleLinkClick}
+                    onMouseDown={activatePreviewFrameInteraction}
+                    onMouseUp={handlePreviewFrameMouseUp}
+                    onDoubleClick={enterEditing}
+                    onError={handleIframeError}
+                    onDiagnostic={logNotebookIsolatedDiagnostic}
+                    className="w-full"
+                  />
+                </div>
+              )}
+              {!previewSource && (
+                <p className="text-muted-foreground italic">Double-click to edit</p>
+              )}
+              {renderedSourceCommentTarget ? (
+                <button
+                  type="button"
+                  aria-label="Comment on selected markdown"
+                  title="Comment on selected markdown"
+                  data-testid="markdown-source-comment-button"
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onClick={handleRenderedSourceCommentClick}
+                  className="absolute z-20 inline-flex size-6 items-center justify-center rounded-md border bg-background p-0 text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                  style={{
+                    left: renderedSourceCommentTarget.left,
+                    top: renderedSourceCommentTarget.top,
+                  }}
+                >
+                  <MessageSquarePlus className="h-[15px] w-[15px]" aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          </RenderedMarkdownContextMenu>
         </>
       }
     />
