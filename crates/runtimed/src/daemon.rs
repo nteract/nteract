@@ -389,6 +389,7 @@ struct Pool {
 
 const MIN_WARM_BASES: usize = 2;
 const POOL_PACKAGE_HASH_FILE: &str = ".runt-pool-packages.sha256";
+const POOL_READY_MARKER_FILE: &str = ".runt-pool-ready";
 /// How long a peer-less, kernel-less room may sit before the reaper
 /// removes it. Set to 24h so a user who returns within the same day
 /// reattaches to the same in-memory doc + outputs.
@@ -553,6 +554,16 @@ async fn pool_package_hash_matches(
     }
 }
 
+fn pool_env_ready_marker_exists(venv_path: &Path) -> bool {
+    venv_path.join(".warmed").exists() || venv_path.join(POOL_READY_MARKER_FILE).exists()
+}
+
+fn pool_entry_paths_are_ready(entry: &PoolEntry) -> bool {
+    entry.env.venv_path.exists()
+        && entry.env.python_path.exists()
+        && pool_env_ready_marker_exists(&entry.env.venv_path)
+}
+
 /// Settings changes that arrive close together (e.g. a user adding several
 /// default packages in the Settings panel, each dispatching its own sync
 /// round trip) would otherwise trigger a separate pool eviction + rewarm
@@ -591,10 +602,7 @@ impl Pool {
         let mut removed_paths = Vec::new();
         let mut healthy = VecDeque::new();
         for entry in self.available.drain(..) {
-            if entry.env.venv_path.exists()
-                && entry.env.python_path.exists()
-                && entry.env.venv_path.join(".warmed").exists()
-            {
+            if pool_entry_paths_are_ready(&entry) {
                 healthy.push_back(entry);
             } else {
                 removed_paths.push(entry.env.venv_path.clone());
@@ -664,13 +672,10 @@ impl Pool {
     fn take(&mut self) -> (Option<PooledEnv>, Vec<PathBuf>) {
         let stale_paths = self.prune_stale();
 
-        // Try to get a valid environment, skipping any with missing paths or missing warmup
+        // Try to get a valid environment, skipping any with missing paths or readiness marker.
         let mut invalid_paths = Vec::new();
         while let Some(entry) = self.available.pop_front() {
-            if entry.env.venv_path.exists()
-                && entry.env.python_path.exists()
-                && entry.env.venv_path.join(".warmed").exists()
-            {
+            if pool_entry_paths_are_ready(&entry) {
                 self.leased_paths
                     .insert(pool_env_root(&entry.env.venv_path));
                 let mut all_paths = stale_paths;
@@ -678,7 +683,7 @@ impl Pool {
                 return (Some(entry.env), all_paths);
             }
             warn!(
-                "[runtimed] Skipping env with missing path or warmup marker: {:?}",
+                "[runtimed] Skipping env with missing path or readiness marker: {:?}",
                 entry.env.venv_path
             );
             invalid_paths.push(entry.env.venv_path);
@@ -688,10 +693,7 @@ impl Pool {
         all_paths.extend(invalid_paths);
         while let Some(entry) = self.retired_available.pop_front() {
             let root = pool_env_root(&entry.env.venv_path);
-            if entry.env.venv_path.exists()
-                && entry.env.python_path.exists()
-                && entry.env.venv_path.join(".warmed").exists()
-            {
+            if pool_entry_paths_are_ready(&entry) {
                 info!(
                     "[runtimed] Pool empty; falling back to retired environment {:?}",
                     entry.env.venv_path
@@ -701,7 +703,7 @@ impl Pool {
                 return (Some(entry.env), all_paths);
             }
             warn!(
-                "[runtimed] Skipping retired env with missing path or warmup marker: {:?}",
+                "[runtimed] Skipping retired env with missing path or readiness marker: {:?}",
                 entry.env.venv_path
             );
             self.retired_paths.remove(&root);
@@ -2258,7 +2260,7 @@ impl Daemon {
                 #[cfg(not(target_os = "windows"))]
                 let python_path = env_path.join("bin").join("python");
 
-                if python_path.exists() && env_path.join(".warmed").exists() {
+                if python_path.exists() && pool_env_ready_marker_exists(&env_path) {
                     let hash_matches =
                         pool_package_hash_matches(&env_path, EnvType::Uv, &uv_prewarmed).await;
                     let mut pool = self.uv_pool.lock().await;
@@ -2306,7 +2308,7 @@ impl Daemon {
                 #[cfg(not(target_os = "windows"))]
                 let python_path = env_path.join("bin").join("python");
 
-                if python_path.exists() {
+                if python_path.exists() && pool_env_ready_marker_exists(&env_path) {
                     let hash_matches =
                         pool_package_hash_matches(&env_path, EnvType::Conda, &conda_prewarmed)
                             .await;
@@ -2354,7 +2356,7 @@ impl Daemon {
                 #[cfg(not(target_os = "windows"))]
                 let python_path = venv_path.join("bin").join("python");
 
-                if python_path.exists() && venv_path.join(".warmed").exists() {
+                if python_path.exists() && pool_env_ready_marker_exists(&venv_path) {
                     let hash_matches =
                         pool_package_hash_matches(&env_path, EnvType::Pixi, &pixi_prewarmed).await;
                     let mut pool = self.pixi_pool.lock().await;
@@ -6041,7 +6043,7 @@ mod tests {
         }
         std::fs::write(&python_path, "").unwrap();
 
-        // Create warmup marker so take() accepts this env
+        // Create warmup marker so take() accepts this env.
         std::fs::write(venv_path.join(".warmed"), "").unwrap();
 
         PooledEnv {
@@ -6855,11 +6857,11 @@ mod tests {
     }
 
     #[test]
-    fn test_pool_take_skips_unwarmed() {
+    fn test_pool_take_requires_readiness_marker() {
         let temp_dir = TempDir::new().unwrap();
         let mut pool = Pool::new(3, 3600);
 
-        // Create an env with valid paths but NO .warmed marker
+        // Create an env with valid paths but no readiness marker.
         let venv_path = temp_dir.path().join("unwarmed-env");
         std::fs::create_dir_all(&venv_path).unwrap();
         #[cfg(windows)]
@@ -6882,6 +6884,30 @@ mod tests {
         // take() should skip the unwarmed env
         let (taken, _stale) = pool.take();
         assert!(taken.is_none());
+
+        // A validated env without the full `.warmed` marker remains leaseable.
+        let ready_venv_path = temp_dir.path().join("ready-env");
+        std::fs::create_dir_all(&ready_venv_path).unwrap();
+        #[cfg(windows)]
+        let ready_python_path = ready_venv_path.join("Scripts").join("python.exe");
+        #[cfg(not(windows))]
+        let ready_python_path = ready_venv_path.join("bin").join("python");
+        if let Some(parent) = ready_python_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&ready_python_path, "").unwrap();
+        std::fs::write(ready_venv_path.join(POOL_READY_MARKER_FILE), "").unwrap();
+        let ready_env = PooledEnv {
+            env_type: EnvType::Uv,
+            venv_path: ready_venv_path.clone(),
+            python_path: ready_python_path,
+            prewarmed_packages: vec![],
+        };
+        pool.add(ready_env);
+
+        let (taken, _stale) = pool.take();
+        assert!(taken.is_some());
+        assert_eq!(taken.unwrap().venv_path, ready_venv_path);
 
         // Add a properly warmed env
         let warmed_env = create_test_env(&temp_dir, "warmed-env");
@@ -7764,6 +7790,31 @@ mod tests {
 
         let pool = daemon.uv_pool.lock().await;
         assert_eq!(pool.available.len(), 1);
+        assert!(pool.retired_paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_existing_environments_recovers_ready_marker_with_matching_package_hash() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            uv_pool_size: 1,
+            ..lease_test_config(&temp_dir)
+        };
+        std::fs::create_dir_all(&config.cache_dir).unwrap();
+        let expected = uv_prewarmed_packages(&[], true);
+        let env = create_test_env_in(&config.cache_dir, "runtimed-uv-ready-marker");
+        std::fs::remove_file(env.venv_path.join(".warmed")).unwrap();
+        std::fs::write(env.venv_path.join(POOL_READY_MARKER_FILE), "").unwrap();
+        write_pool_package_hash(&env.venv_path, EnvType::Uv, &expected)
+            .await
+            .unwrap();
+
+        let daemon = Daemon::new_for_test(config).unwrap();
+        daemon.find_existing_environments().await;
+
+        let pool = daemon.uv_pool.lock().await;
+        assert_eq!(pool.available.len(), 1);
+        assert_eq!(pool.available.front().unwrap().env.venv_path, env.venv_path);
         assert!(pool.retired_paths.is_empty());
     }
 
