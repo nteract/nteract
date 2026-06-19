@@ -12,6 +12,7 @@ import {
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookEditModeButton,
+  NotebookIdentityGroup,
   NotebookPackageSummaryPanel,
   NotebookToolbarFrame,
   NotebookWorkstationsPanel,
@@ -19,6 +20,7 @@ import {
   projectNotebookWorkstationSelection,
   type CommentAuthor,
   type NotebookCommandToolbarStatus,
+  type NotebookActorIdentity,
   type NotebookInteractionMode,
   type NotebookInteractionModeProjection,
   type NotebookShellCapabilities,
@@ -64,6 +66,23 @@ const ADA = "local:ada/desktop:1";
 const CLAUDE = "local:ada/agent:claude-code:1";
 const ADA_COLOR = "#16a34a";
 const CLAUDE_COLOR = "#7c3aed";
+
+const hostedPeople: NotebookActorIdentity[] = [
+  {
+    id: "cloud:kyle",
+    label: "Kyle",
+    detail: "Owner",
+    kind: "human",
+    status: "active",
+  },
+  {
+    id: "cloud:morgan",
+    label: "Morgan",
+    detail: "Viewing",
+    kind: "human",
+    status: "active",
+  },
+];
 
 const commentsProjection: CommentsProjection = {
   comments_doc_id: "comments:full-shell-composition",
@@ -428,13 +447,21 @@ function FullShellToolbar({
         )}
         presence={<FullShellTitle />}
         utilityControls={
-          <NotebookEditModeButton
-            mode={mode}
-            state={interaction.state}
-            onModeChange={onModeChange}
-            variant="segmented"
-            className="bg-muted/35"
-          />
+          <>
+            <NotebookIdentityGroup
+              actors={hostedPeople}
+              maxVisible={2}
+              label="Hosted participants"
+              className="hidden sm:inline-flex"
+            />
+            <NotebookEditModeButton
+              mode={mode}
+              state={interaction.state}
+              onModeChange={onModeChange}
+              variant="segmented"
+              className="bg-muted/35"
+            />
+          </>
         }
         sharingControls={
           <button
@@ -482,7 +509,7 @@ function FullShellTitle() {
         MathNet topic visualization
       </span>
       <span className="hidden truncate text-[11px] leading-4 text-muted-foreground sm:block">
-        preview.runt.run/n/topic-viz/topic-viz
+        Hosted preview - preview.runt.run/n/topic-viz/topic-viz
       </span>
     </div>
   );
