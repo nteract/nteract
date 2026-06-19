@@ -5,6 +5,7 @@ description: Anchored notebook comments. The rail panel, attribution, and AI-on-
 
 import { CommentSurfacesExample } from "@/components/comment-surfaces-example";
 import { CommentHighlightSurfacesExample } from "@/components/comment-highlight-surfaces-example";
+import { CommentSelectionAffordanceExample } from "@/components/comment-selection-affordance-example";
 
 People and AI agents work the same live notebook, and comments are how they
 talk about it: a thread anchored to a source range, a cell, an output, or the
@@ -12,6 +13,15 @@ whole document. The rail below is rendered from fixtures, no daemon and no
 kernel, so the surface and its rationale stand on their own.
 
 <CommentSurfacesExample />
+
+## Commenting on a selection
+
+Selecting text is for reading and copying first, so the entry point to a comment
+stays quiet: a small dot near the selection that grows in place into a comment
+button on hover or keyboard focus. The same affordance appears in the CodeMirror
+editor and in rendered markdown.
+
+<CommentSelectionAffordanceExample />
 
 ## Rendered markdown highlights
 
