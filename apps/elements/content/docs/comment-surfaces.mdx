@@ -29,9 +29,9 @@ notebook app wire the same props to live presence and the runtime.
 
 Authorship is legible at a glance and impossible to fake. Each message shows an
 identity-colored avatar (the same color as that author's cursor and edits),
-name, and time. An agent additionally carries an `AI` chip, a `· for <person>`
-note, and a small principal badge on its avatar, the "acting on behalf of"
-cue. In the app, trust is earned: the daemon finalizes a comment against the
+name, and time. An agent uses the bot avatar plus a quiet `· for <person>` note,
+with a small principal badge on its avatar as the "acting on behalf of" cue. In
+the app, trust is earned: the daemon finalizes a comment against the
 authenticated connection before it's marked trusted, so "Claude Code · for Ada"
 is provable, not asserted.
 
@@ -45,5 +45,6 @@ degrades to a dangling document comment rather than vanishing.
 ## Resolution
 
 Open threads lead; resolved ones tuck behind **Show resolved** so the rail stays
-on active discussion. The demo is live. Reply, resolve, or add a document
-comment.
+on active discussion. A compact receipt records who resolved the thread and
+when, while replies still make it clear that adding a comment will reopen the
+discussion.

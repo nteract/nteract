@@ -293,7 +293,7 @@ function CommentThreadItem({
   const statusAction =
     thread.status === "resolved"
       ? {
-          label: "Reopen",
+          label: "Re-open",
           icon: RotateCcw,
           onClick: () => onReopenThread?.(thread.id),
           ariaLabel: `Reopen ${threadLabel}`,
@@ -328,6 +328,7 @@ function CommentThreadItem({
       ref={itemRef}
       className={cn(
         "rounded-lg border bg-card text-card-foreground shadow-sm transition-shadow duration-700",
+        thread.status === "resolved" && "border-border/70 bg-muted/10 shadow-none",
         flashing && "ring-2 ring-primary/60",
       )}
     >
@@ -348,7 +349,6 @@ function CommentThreadItem({
               {anchorLabel(thread)}
             </div>
           )}
-          {thread.status === "resolved" ? <CommentBadge state="resolved" /> : null}
           <div className="flex shrink-0 items-center gap-0.5">
             {canShowCell ? (
               <button
@@ -382,6 +382,9 @@ function CommentThreadItem({
               resolveCommentAuthor={resolveCommentAuthor}
             />
           ))}
+          {thread.status === "resolved" ? (
+            <CommentResolutionReceipt thread={thread} resolveCommentAuthor={resolveCommentAuthor} />
+          ) : null}
         </div>
 
         <CommentComposer
@@ -390,12 +393,57 @@ function CommentThreadItem({
           buttonLabel="Reply"
           icon="send"
           disabled={!canReply}
-          placeholder="Reply…"
+          placeholder={thread.status === "resolved" ? "Reply to reopen…" : "Reply…"}
           compact
           onSubmit={onReplyThread ? (body) => onReplyThread(thread.id, body) : undefined}
         />
       </div>
     </li>
+  );
+}
+
+function resolveThreadResolutionAuthor(
+  thread: CommentThreadSnapshot,
+  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor,
+): { actorLabel: string | null; author: CommentAuthor | null } {
+  const actorLabel = thread.resolved_by_actor_label ?? thread.created_by_actor_label ?? null;
+  return {
+    actorLabel,
+    author: actorLabel
+      ? (resolveCommentAuthor?.(actorLabel) ?? { displayName: formatActorLabel(actorLabel) })
+      : null,
+  };
+}
+
+function CommentResolutionReceipt({
+  thread,
+  resolveCommentAuthor,
+}: {
+  thread: CommentThreadSnapshot;
+  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
+}) {
+  const { author } = resolveThreadResolutionAuthor(thread, resolveCommentAuthor);
+  const resolvedTime = formatRelativeTime(thread.resolved_at);
+  const resolverName = author?.displayName ?? "Someone";
+  const resolverIdentity =
+    author?.isAgent && author.onBehalfOf
+      ? `${resolverName} for ${author.onBehalfOf}`
+      : resolverName;
+  const resolutionLabel = `${resolverIdentity} marked as resolved${resolvedTime ? ` · ${resolvedTime}` : ""}`;
+  return (
+    <div
+      className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+      data-testid="comment-resolution-receipt"
+      aria-label={resolutionLabel}
+      title={resolutionLabel}
+    >
+      <CheckCircle2 className="size-3.5 shrink-0" aria-hidden="true" />
+      <span className="min-w-0 truncate" title={resolverIdentity}>
+        {resolverIdentity}
+      </span>
+      <span className="shrink-0">marked as resolved</span>
+      {resolvedTime ? <span className="shrink-0">· {resolvedTime}</span> : null}
+    </div>
   );
 }
 
@@ -427,15 +475,6 @@ function CommentMessage({
           >
             {author?.displayName ?? "Unknown"}
           </span>
-          {author?.isAgent ? (
-            <span
-              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground"
-              title="AI agent"
-            >
-              <Bot className="size-2.5" aria-hidden="true" />
-              AI
-            </span>
-          ) : null}
           {author?.isAgent && author.onBehalfOf ? (
             <span className="text-[10px] text-muted-foreground">· for {author.onBehalfOf}</span>
           ) : null}
@@ -628,20 +667,6 @@ function CommentComposer({
   );
 }
 
-function CommentBadge({ state, compact = false }: { state: string; compact?: boolean }) {
-  return (
-    <span
-      className={cn(
-        "rounded border px-1.5 py-0.5 font-medium",
-        compact ? "text-[10px]" : "text-[11px]",
-        stateToneClassName(state),
-      )}
-    >
-      {formatStateLabel(state)}
-    </span>
-  );
-}
-
 function anchorLabel(thread: CommentThreadSnapshot): string {
   switch (thread.anchor.kind) {
     case "cell":
@@ -780,15 +805,4 @@ function formatActorLabel(actorLabel: string): string {
   }
 
   return actorLabel;
-}
-
-function stateToneClassName(state: string): string {
-  switch (state) {
-    case "open":
-      return "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/25 dark:text-emerald-300";
-    case "resolved":
-      return "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-950/25 dark:text-sky-300";
-    default:
-      return "border-border bg-muted text-muted-foreground";
-  }
 }

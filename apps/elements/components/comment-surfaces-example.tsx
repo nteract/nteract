@@ -102,7 +102,7 @@ const INITIAL: CommentsProjection = {
       created_at: "2026-06-18T14:00:00Z",
       created_by_actor_label: ADA,
       resolved_at: "2026-06-18T14:10:00Z",
-      resolved_by_actor_label: ADA,
+      resolved_by_actor_label: CLAUDE,
       messages: [
         {
           id: "m3",
@@ -140,6 +140,8 @@ export function CommentSurfacesExample() {
           ? {
               ...thread,
               status: "open",
+              resolved_at: null,
+              resolved_by_actor_label: null,
               messages: [
                 ...thread.messages,
                 {
@@ -159,7 +161,21 @@ export function CommentSurfacesExample() {
     setProjection((current) => ({
       ...current,
       threads: current.threads.map((thread) =>
-        thread.id === threadId ? { ...thread, status } : thread,
+        thread.id === threadId
+          ? status === "resolved"
+            ? {
+                ...thread,
+                status,
+                resolved_at: nowRef.current,
+                resolved_by_actor_label: ADA,
+              }
+            : {
+                ...thread,
+                status,
+                resolved_at: null,
+                resolved_by_actor_label: null,
+              }
+          : thread,
       ),
     }));
 
