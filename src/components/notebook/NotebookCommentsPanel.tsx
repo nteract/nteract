@@ -28,6 +28,8 @@ export interface NotebookCommentDraftTarget {
   quote?: string | null;
 }
 
+export type ResolvedThreadPresentation = "timeline" | "receipt" | "header";
+
 /** Rendered attribution for a comment author. */
 export interface CommentAuthor {
   /** Display name (e.g. "Claude Code" or "kylekelley"). */
@@ -70,6 +72,8 @@ export interface NotebookCommentsPanelProps {
   focusedThreadId?: string | null;
   /** Bumped each focus request so repeat focuses of the same thread re-flash. */
   focusNonce?: number;
+  /** Design-system switch for resolved-thread treatment. */
+  resolvedThreadPresentation?: ResolvedThreadPresentation;
 }
 
 export function NotebookCommentsPanel({
@@ -88,6 +92,7 @@ export function NotebookCommentsPanel({
   resolveSourceLanguage,
   focusedThreadId = null,
   focusNonce = 0,
+  resolvedThreadPresentation = "timeline",
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
   const labeledThreads = labelCommentThreads(threads);
@@ -126,6 +131,7 @@ export function NotebookCommentsPanel({
       resolveSourceLanguage={resolveSourceLanguage}
       focused={thread.id === focusedThreadId}
       focusNonce={focusNonce}
+      resolvedThreadPresentation={resolvedThreadPresentation}
     />
   );
 
@@ -264,6 +270,7 @@ function CommentThreadItem({
   resolveSourceLanguage,
   focused,
   focusNonce,
+  resolvedThreadPresentation,
 }: {
   thread: CommentThreadSnapshot;
   threadLabel: string;
@@ -277,6 +284,7 @@ function CommentThreadItem({
   resolveSourceLanguage?: (cellId: string) => string | undefined;
   focused?: boolean;
   focusNonce?: number;
+  resolvedThreadPresentation: ResolvedThreadPresentation;
 }) {
   const itemRef = useRef<HTMLLIElement>(null);
   const [flashing, setFlashing] = useState(false);
@@ -293,7 +301,7 @@ function CommentThreadItem({
   const statusAction =
     thread.status === "resolved"
       ? {
-          label: "Reopen",
+          label: "Re-open",
           icon: RotateCcw,
           onClick: () => onReopenThread?.(thread.id),
           ariaLabel: `Reopen ${threadLabel}`,
@@ -322,12 +330,14 @@ function CommentThreadItem({
     ? resolveCommentAuthor?.(thread.created_by_actor_label)
     : undefined;
   const canShowCell = Boolean(commentThreadTargetCellId(thread) && onFocusThreadAnchor);
+  const showHeaderReceipt = thread.status === "resolved" && resolvedThreadPresentation === "header";
 
   return (
     <li
       ref={itemRef}
       className={cn(
         "rounded-lg border bg-card text-card-foreground shadow-sm transition-shadow duration-700",
+        thread.status === "resolved" && "border-border/70 bg-muted/10 shadow-none",
         flashing && "ring-2 ring-primary/60",
       )}
     >
@@ -348,7 +358,12 @@ function CommentThreadItem({
               {anchorLabel(thread)}
             </div>
           )}
-          {thread.status === "resolved" ? <CommentBadge state="resolved" /> : null}
+          {showHeaderReceipt ? (
+            <CommentResolutionHeaderReceipt
+              thread={thread}
+              resolveCommentAuthor={resolveCommentAuthor}
+            />
+          ) : null}
           <div className="flex shrink-0 items-center gap-0.5">
             {canShowCell ? (
               <button
@@ -382,6 +397,12 @@ function CommentThreadItem({
               resolveCommentAuthor={resolveCommentAuthor}
             />
           ))}
+          {thread.status === "resolved" && resolvedThreadPresentation === "timeline" ? (
+            <CommentResolutionEvent thread={thread} resolveCommentAuthor={resolveCommentAuthor} />
+          ) : null}
+          {thread.status === "resolved" && resolvedThreadPresentation === "receipt" ? (
+            <CommentResolutionReceipt thread={thread} resolveCommentAuthor={resolveCommentAuthor} />
+          ) : null}
         </div>
 
         <CommentComposer
@@ -390,12 +411,118 @@ function CommentThreadItem({
           buttonLabel="Reply"
           icon="send"
           disabled={!canReply}
-          placeholder="Reply…"
+          placeholder={thread.status === "resolved" ? "Reply to reopen…" : "Reply…"}
           compact
           onSubmit={onReplyThread ? (body) => onReplyThread(thread.id, body) : undefined}
         />
       </div>
     </li>
+  );
+}
+
+function resolveThreadResolutionAuthor(
+  thread: CommentThreadSnapshot,
+  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor,
+): { actorLabel: string | null; author: CommentAuthor | null } {
+  const actorLabel = thread.resolved_by_actor_label ?? thread.created_by_actor_label ?? null;
+  return {
+    actorLabel,
+    author: actorLabel
+      ? (resolveCommentAuthor?.(actorLabel) ?? { displayName: formatActorLabel(actorLabel) })
+      : null,
+  };
+}
+
+function CommentResolutionEvent({
+  thread,
+  resolveCommentAuthor,
+}: {
+  thread: CommentThreadSnapshot;
+  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
+}) {
+  const { actorLabel, author } = resolveThreadResolutionAuthor(thread, resolveCommentAuthor);
+  const resolvedTime = formatRelativeTime(thread.resolved_at);
+
+  return (
+    <article className="flex gap-2.5 text-muted-foreground" data-testid="comment-resolution-event">
+      {author ? (
+        <CommentAuthorAvatar author={author} />
+      ) : (
+        <div className="mt-0.5 size-5 shrink-0 rounded-full bg-muted" aria-hidden="true" />
+      )}
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <div className="flex flex-wrap items-baseline gap-x-1.5">
+          <span className="text-xs font-semibold text-foreground" title={actorLabel ?? undefined}>
+            {author?.displayName ?? "Unknown"}
+          </span>
+          {author?.isAgent && author.onBehalfOf ? (
+            <span className="text-[10px] text-muted-foreground">· for {author.onBehalfOf}</span>
+          ) : null}
+          {resolvedTime ? (
+            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+              {resolvedTime}
+            </span>
+          ) : null}
+        </div>
+        <p className="text-sm leading-5">Marked as resolved</p>
+      </div>
+    </article>
+  );
+}
+
+function CommentResolutionReceipt({
+  thread,
+  resolveCommentAuthor,
+}: {
+  thread: CommentThreadSnapshot;
+  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
+}) {
+  const { author } = resolveThreadResolutionAuthor(thread, resolveCommentAuthor);
+  const resolvedTime = formatRelativeTime(thread.resolved_at);
+  const resolverName = author?.displayName ?? "Someone";
+  const resolverIdentity =
+    author?.isAgent && author.onBehalfOf
+      ? `${resolverName} for ${author.onBehalfOf}`
+      : resolverName;
+  const resolutionLabel = `${resolverIdentity} marked as resolved${resolvedTime ? ` · ${resolvedTime}` : ""}`;
+  return (
+    <div
+      className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+      data-testid="comment-resolution-receipt"
+      aria-label={resolutionLabel}
+      title={resolutionLabel}
+    >
+      <CheckCircle2 className="size-3.5 shrink-0" aria-hidden="true" />
+      <span className="min-w-0 truncate" title={resolverIdentity}>
+        {resolverIdentity}
+      </span>
+      <span className="shrink-0">marked as resolved</span>
+      {resolvedTime ? <span className="shrink-0">· {resolvedTime}</span> : null}
+    </div>
+  );
+}
+
+function CommentResolutionHeaderReceipt({
+  thread,
+  resolveCommentAuthor,
+}: {
+  thread: CommentThreadSnapshot;
+  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
+}) {
+  const { author } = resolveThreadResolutionAuthor(thread, resolveCommentAuthor);
+  const resolvedTime = formatRelativeTime(thread.resolved_at);
+  return (
+    <span
+      className="hidden max-w-24 shrink-0 truncate text-[11px] text-muted-foreground sm:inline"
+      title={[
+        author?.displayName ? `${author.displayName} marked as resolved` : "Marked as resolved",
+        resolvedTime,
+      ]
+        .filter(Boolean)
+        .join(" · ")}
+    >
+      {resolvedTime ? `Resolved ${resolvedTime}` : "Resolved"}
+    </span>
   );
 }
 
@@ -427,15 +554,6 @@ function CommentMessage({
           >
             {author?.displayName ?? "Unknown"}
           </span>
-          {author?.isAgent ? (
-            <span
-              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground"
-              title="AI agent"
-            >
-              <Bot className="size-2.5" aria-hidden="true" />
-              AI
-            </span>
-          ) : null}
           {author?.isAgent && author.onBehalfOf ? (
             <span className="text-[10px] text-muted-foreground">· for {author.onBehalfOf}</span>
           ) : null}
@@ -628,20 +746,6 @@ function CommentComposer({
   );
 }
 
-function CommentBadge({ state, compact = false }: { state: string; compact?: boolean }) {
-  return (
-    <span
-      className={cn(
-        "rounded border px-1.5 py-0.5 font-medium",
-        compact ? "text-[10px]" : "text-[11px]",
-        stateToneClassName(state),
-      )}
-    >
-      {formatStateLabel(state)}
-    </span>
-  );
-}
-
 function anchorLabel(thread: CommentThreadSnapshot): string {
   switch (thread.anchor.kind) {
     case "cell":
@@ -780,15 +884,4 @@ function formatActorLabel(actorLabel: string): string {
   }
 
   return actorLabel;
-}
-
-function stateToneClassName(state: string): string {
-  switch (state) {
-    case "open":
-      return "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/25 dark:text-emerald-300";
-    case "resolved":
-      return "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-950/25 dark:text-sky-300";
-    default:
-      return "border-border bg-muted text-muted-foreground";
-  }
 }

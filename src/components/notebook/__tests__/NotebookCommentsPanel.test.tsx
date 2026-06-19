@@ -370,7 +370,7 @@ describe("NotebookCommentsPanel", () => {
     );
 
     expect(screen.getByText("Claude Code")).toBeVisible();
-    expect(screen.getByText("AI")).toBeVisible();
+    expect(screen.queryByText("AI")).not.toBeInTheDocument();
     expect(screen.getByText("· for kylekelley")).toBeVisible();
   });
 
@@ -399,12 +399,23 @@ describe("NotebookCommentsPanel", () => {
 
   it("reveals resolved threads behind a toggle and reopens them", () => {
     const onReopenThread = vi.fn();
+    const resolveCommentAuthor = vi.fn((actorLabel: string) => ({
+      displayName: actorLabel === "reviewer" ? "Reviewer" : actorLabel,
+    }));
     render(
       <NotebookCommentsPanel
         projection={{
           ...projection,
-          threads: [{ ...projection.threads[0], status: "resolved" }],
+          threads: [
+            {
+              ...projection.threads[0],
+              status: "resolved",
+              resolved_at: "2026-06-16T00:05:00.000Z",
+              resolved_by_actor_label: "reviewer",
+            },
+          ],
         }}
+        resolveCommentAuthor={resolveCommentAuthor}
         onReopenThread={onReopenThread}
       />,
     );
@@ -412,8 +423,68 @@ describe("NotebookCommentsPanel", () => {
     // Resolved threads are hidden until revealed.
     expect(screen.queryByRole("button", { name: "Reopen Document comment 1" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show resolved (1)" }));
+    expect(screen.getByTestId("comment-resolution-event")).toHaveTextContent("Marked as resolved");
+    expect(screen.getByText("Reviewer")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Reopen Document comment 1" }));
     expect(onReopenThread).toHaveBeenCalledWith("thread-1");
+  });
+
+  it("uses the resolver identity in the compact resolution receipt", () => {
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [
+            {
+              ...projection.threads[0],
+              status: "resolved",
+              resolved_at: "2026-06-16T00:05:00.000Z",
+              resolved_by_actor_label: "reviewer",
+            },
+          ],
+        }}
+        resolvedThreadPresentation="receipt"
+        resolveCommentAuthor={(actorLabel) => ({
+          displayName: actorLabel === "reviewer" ? "Reviewer" : actorLabel,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show resolved (1)" }));
+    expect(screen.getByTestId("comment-resolution-receipt")).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("Reviewer marked as resolved"),
+    );
+  });
+
+  it("includes the on-behalf-of principal in the compact resolver identity", () => {
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [
+            {
+              ...projection.threads[0],
+              status: "resolved",
+              resolved_at: "2026-06-16T00:05:00.000Z",
+              resolved_by_actor_label: "agent",
+            },
+          ],
+        }}
+        resolvedThreadPresentation="receipt"
+        resolveCommentAuthor={() => ({
+          displayName: "Claude Code",
+          isAgent: true,
+          onBehalfOf: "Ada",
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show resolved (1)" }));
+    expect(screen.getByTestId("comment-resolution-receipt")).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("Claude Code for Ada marked as resolved"),
+    );
   });
 
   it("flashes the focused thread", () => {

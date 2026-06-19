@@ -370,6 +370,7 @@ export {
   NotebookCommentsPanel,
   type NotebookCommentDraftTarget,
   type NotebookCommentsPanelProps,
+  type ResolvedThreadPresentation,
 } from "./NotebookCommentsPanel";
 export type {
   CommentAnchor,
