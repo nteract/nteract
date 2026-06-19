@@ -126,6 +126,50 @@ describe("Bokeh renderer plugin", () => {
     expect(appendedSrcs).toEqual([]);
   });
 
+  it("keeps an equivalent exec payload mounted without clearing the Bokeh document", async () => {
+    const { Renderer } = installBokehRenderer();
+    const clear = vi.fn();
+    const deleteView = vi.fn();
+    const view = { model: { document: { clear } } };
+    window.Bokeh = {
+      index: {
+        get_by_id: vi.fn(() => view),
+        delete: deleteView,
+      },
+    };
+
+    const code = "window.__bokehExecRan = true;";
+    const { container, rerender } = render(
+      <Renderer
+        data={{
+          "application/javascript": code,
+          [BOKEHJS_EXEC_MIME_TYPE]: "",
+        }}
+        metadata={{ id: "p1011" }}
+        mimeType={BOKEHJS_EXEC_MIME_TYPE}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(renderedScripts(container).at(-1)?.textContent).toBe(code);
+    });
+
+    rerender(
+      <Renderer
+        data={{
+          "application/javascript": code,
+          [BOKEHJS_EXEC_MIME_TYPE]: "",
+        }}
+        metadata={{ id: "p1011" }}
+        mimeType={BOKEHJS_EXEC_MIME_TYPE}
+      />,
+    );
+
+    expect(clear).not.toHaveBeenCalled();
+    expect(deleteView).not.toHaveBeenCalled();
+    expect(renderedScripts(container)).toHaveLength(1);
+  });
+
   it("appends Bokeh load MIME JavaScript directly", async () => {
     const { Renderer } = installBokehRenderer();
     const { container } = render(
