@@ -336,6 +336,10 @@ export function useCloudViewerSession({
           hasAppSession: hasAppSessionRef.current,
         }),
       onDiagnostic: (diagnostic) => {
+        // Sustained reconnect diagnostics run after a runtime has gone live.
+        // Pre-ready access diagnostics still stop their scoped pendingTransport;
+        // once live, the runtime retry loop owns transport teardown while we
+        // replace generic reconnect copy with the access-specific failure.
         setConnectionError((current) =>
           cloudConnectionErrorWithAccessDiagnostic(current, diagnostic),
         );
