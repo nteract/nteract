@@ -198,9 +198,9 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(sourceText, /cloudNotebookTitleDisplay,/);
   assert.match(sourceText, /cloudNotebookUrlAfterRename,/);
-  assert.match(titleSourceText, /className="cloud-notebook-home-link"/);
+  assert.match(titleSourceText, /homeLink: "cloud-notebook-home-link"/);
   assert.match(titleSourceText, /<House aria-hidden="true" \/>/);
-  assert.match(titleSourceText, /<PencilLine aria-hidden="true" \/>/);
+  assert.match(titleSourceText, /renameButtonTitle="Rename notebook"/);
   assert.doesNotMatch(titleSourceText, /cloud-notebook-logo/);
   assert.doesNotMatch(sourceText, /function shouldShowCloudNotebookCommandToolbar/);
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);

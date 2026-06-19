@@ -75,6 +75,7 @@ interface SelectedRuntimePeerSession {
 
 interface RejectFrameOptions {
   countsTowardStreak?: boolean;
+  sendControl?: boolean;
 }
 
 interface PeerCloseOptions {
@@ -861,6 +862,7 @@ export class NotebookRoom {
           peer,
           frame.type,
           `unsupported presence payload: ${String(error)}`,
+          { sendControl: false },
         );
         return;
       }
@@ -1637,6 +1639,9 @@ export class NotebookRoom {
       counter: "rejected_frames",
       counter_delta: 1,
     });
+    if (options.sendControl === false) {
+      return;
+    }
     this.sendControl(notebookId, peer, {
       type: "cloud_frame_rejected",
       notebook_id: notebookId,

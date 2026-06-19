@@ -387,15 +387,7 @@ export class RoomMaterializer {
     const startedAt = Date.now();
     const published = await this.loadLatestPublishedSnapshotPairForCheckpoint();
     if (!published) {
-      cloudLog("warn", "room.materializer.recovery_skipped", {
-        notebook_id: this.notebookId,
-        operation,
-        reason: "latest_published_snapshot_unavailable",
-        error: errorMessage(cause),
-        counter: "materializer_recovery_skipped",
-        counter_delta: 1,
-      });
-      return false;
+      return this.recoverHostFromCheckpointNow(operation, cause, startedAt);
     }
 
     try {
@@ -438,6 +430,74 @@ export class RoomMaterializer {
         error: errorMessage(recoveryError),
         original_error: errorMessage(cause),
         counter: "materializer_recovery_failed",
+        counter_delta: 1,
+      });
+      return false;
+    }
+  }
+
+  private async recoverHostFromCheckpointNow(
+    operation: string,
+    cause: unknown,
+    startedAt: number,
+  ): Promise<boolean> {
+    let checkpoint: Awaited<ReturnType<RoomMaterializer["loadCheckpoint"]>>;
+    try {
+      checkpoint = await this.loadCheckpoint();
+    } catch (error) {
+      cloudLog("warn", "room.materializer.checkpoint_reload_lookup_failed", {
+        notebook_id: this.notebookId,
+        operation,
+        duration_ms: durationMs(startedAt),
+        error: errorMessage(error),
+        original_error: errorMessage(cause),
+        counter: "materializer_checkpoint_reload_lookup_failures",
+        counter_delta: 1,
+      });
+      return false;
+    }
+    if (!checkpoint) {
+      cloudLog("warn", "room.materializer.recovery_skipped", {
+        notebook_id: this.notebookId,
+        operation,
+        reason: "latest_published_snapshot_and_checkpoint_unavailable",
+        error: errorMessage(cause),
+        counter: "materializer_recovery_skipped",
+        counter_delta: 1,
+      });
+      return false;
+    }
+
+    try {
+      const host = await loadRoomHostSnapshot(
+        checkpoint.notebookBytes,
+        checkpoint.runtimeStateBytes,
+        checkpoint.commsDocBytes,
+        checkpoint.commentsDocBytes,
+      );
+      this.markLoadedCheckpoint(checkpoint.metadata);
+      this.hostReady = Promise.resolve(host);
+      cloudLog("warn", "room.materializer.recovered_from_checkpoint_reload", {
+        notebook_id: this.notebookId,
+        operation,
+        duration_ms: durationMs(startedAt),
+        notebook_byte_length: checkpoint.notebookBytes.byteLength,
+        runtime_state_byte_length: checkpoint.runtimeStateBytes.byteLength,
+        comms_doc_byte_length: checkpoint.commsDocBytes?.byteLength ?? 0,
+        comments_doc_byte_length: checkpoint.commentsDocBytes?.byteLength ?? 0,
+        error: errorMessage(cause),
+        counter: "materializer_recovered_from_checkpoint_reload",
+        counter_delta: 1,
+      });
+      return true;
+    } catch (recoveryError) {
+      cloudLog("warn", "room.materializer.checkpoint_reload_failed", {
+        notebook_id: this.notebookId,
+        operation,
+        duration_ms: durationMs(startedAt),
+        error: errorMessage(recoveryError),
+        original_error: errorMessage(cause),
+        counter: "materializer_checkpoint_reload_failures",
         counter_delta: 1,
       });
       return false;

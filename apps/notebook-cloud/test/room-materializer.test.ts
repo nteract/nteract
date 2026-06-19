@@ -1346,6 +1346,67 @@ describe("RoomMaterializer", () => {
     assert.deepEqual([...(await state.storage.list({ prefix: "room-host:" })).keys()], []);
   });
 
+  it("recovers unpublished rooms by reloading the durable checkpoint", async () => {
+    const state = fakeState();
+    const checkpointSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "checkpoint-cell",
+      "Recovered checkpoint without published snapshot\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(checkpointSnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(checkpointSnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 4,
+        notebook_heads: checkpointSnapshot.notebookHeads,
+        runtime_state_heads: checkpointSnapshot.runtimeStateHeads,
+        saved_at: "2026-05-28T00:00:00.000Z",
+        published_revision_id: null,
+        published_notebook_heads: null,
+        published_runtime_state_heads: null,
+      }),
+    ]);
+
+    const reloaded = new RoomMaterializer("demo", state, {} as Env);
+    const checkpointHost = await (
+      reloaded as unknown as {
+        loadHost(): Promise<{ sync_peer: (peerId: string, connectionScope: string) => unknown }>;
+      }
+    ).loadHost();
+    checkpointHost.sync_peer = () => {
+      throw new Error("recursive use of an object detected which would lead to unsafe aliasing");
+    };
+
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["checkpoint-cell", "Recovered checkpoint without published snapshot\n"]],
+    );
+    assert.deepEqual(
+      [...(await state.storage.list({ prefix: "room-host:" })).keys()].sort(),
+      ["room-host:checkpoint", "room-host:notebook-doc", "room-host:runtime-state-doc"],
+      "checkpoint reload should keep the durable checkpoint in place",
+    );
+  });
+
   it("recovers from a checkpoint host that fails while receiving a peer sync frame", async () => {
     const state = fakeState();
     const checkpointSnapshot = await createNotebookRoomSnapshot(

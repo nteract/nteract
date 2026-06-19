@@ -232,6 +232,36 @@ describe("NotebookRoom presence rewrite", () => {
     );
   });
 
+  it("drops unsupported presence payloads without surfacing a room load rejection", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "peer-a",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(peer.id, peer);
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.PRESENCE,
+        new TextEncoder().encode(JSON.stringify({ actor_label: identity.actorLabel })),
+      ),
+    );
+
+    assert.equal(peer.consecutiveRejectedFrames, 1);
+    assert.equal(socket.sent.length, 0, "bad presence should not send cloud_frame_rejected");
+    assert.equal(socket.closed, false);
+  });
+
   it("keeps anonymous viewer presence local to the connection", async () => {
     const anonymous = authenticateAnonymousViewer(
       new Request("https://cloud.test/n/demo/sync?viewer_session=anon-a"),
