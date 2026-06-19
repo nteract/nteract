@@ -1046,22 +1046,22 @@ const widgetSurfaceToneClasses: Record<
 > = {
   emerald: {
     bar: "bg-emerald-400",
-    badge: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+    badge: "text-emerald-700 dark:text-emerald-300",
     icon: "text-emerald-600 dark:text-emerald-300",
   },
   sky: {
     bar: "bg-sky-400",
-    badge: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+    badge: "text-sky-700 dark:text-sky-300",
     icon: "text-sky-600 dark:text-sky-300",
   },
   amber: {
     bar: "bg-amber-400",
-    badge: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    badge: "text-amber-700 dark:text-amber-300",
     icon: "text-amber-600 dark:text-amber-300",
   },
   neutral: {
     bar: "bg-fd-muted-foreground/35",
-    badge: "bg-fd-muted text-fd-muted-foreground",
+    badge: "text-fd-muted-foreground",
     icon: "text-fd-muted-foreground",
   },
 };
@@ -1532,18 +1532,16 @@ function ControllerPollingFixture() {
         {gamepadFixtureReady ? (
           <WidgetView modelId="widget-controller" />
         ) : (
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-fd-muted-foreground">
+          <div className="border-l border-amber-500/50 py-1 pl-3 text-xs text-fd-muted-foreground">
             Gamepad fixture unavailable{gamepadFixtureError ? `: ${gamepadFixtureError}` : "."}
           </div>
         )}
       </div>
-      <div className="flex flex-wrap gap-2 text-xs text-fd-muted-foreground">
-        <span className="rounded-full border border-fd-border bg-fd-card px-2 py-1">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-fd-muted-foreground">
+        <span>
           fixture frame <span className="font-mono">{frame}</span>
         </span>
-        <span className="rounded-full border border-fd-border bg-fd-card px-2 py-1">
-          navigator.getGamepads
-        </span>
+        <span>navigator.getGamepads</span>
       </div>
     </div>
   );
@@ -1684,13 +1682,9 @@ function WidgetInventory() {
   );
 
   return (
-    <div className="flex flex-wrap gap-2 text-xs text-fd-muted-foreground">
-      <span className="rounded-full border border-fd-border bg-fd-card px-2 py-1">
-        {visibleModels.length} rendered models
-      </span>
-      <span className="rounded-full border border-fd-border bg-fd-card px-2 py-1">
-        {models.size} fixture comms
-      </span>
+    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-fd-muted-foreground">
+      <span>{visibleModels.length} rendered models</span>
+      <span>{models.size} fixture comms</span>
     </div>
   );
 }
@@ -1724,12 +1718,7 @@ function WidgetSurfaceGrammar() {
                 <item.icon className={cn("mt-0.5 size-4 shrink-0", tone.icon)} aria-hidden="true" />
                 <div>
                   <h3 className="text-sm font-semibold">{item.label}</h3>
-                  <div
-                    className={cn(
-                      "mt-2 inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium leading-none",
-                      tone.badge,
-                    )}
-                  >
+                  <div className={cn("mt-2 text-[11px] font-medium leading-none", tone.badge)}>
                     {item.state}
                   </div>
                 </div>
@@ -1922,7 +1911,7 @@ export function WidgetSurfacesExample() {
         ))}
       </section>
 
-      <section className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+      <section className="border-l border-fd-border py-1 pl-4">
         <div className="flex items-start gap-3">
           <CircleDotDashed className="mt-0.5 size-4 flex-none text-amber-600" aria-hidden="true" />
           <div className="min-w-0 flex-1">
@@ -1932,7 +1921,7 @@ export function WidgetSurfacesExample() {
               transport, kernel-originated anywidget asset URLs, and production daemon blob resolver
               lifecycle need explicit iframe/runtime adapters before they can render here.
             </p>
-            <div className="mt-4 overflow-hidden rounded-md border border-amber-500/25 bg-fd-card/70">
+            <div className="mt-4 overflow-hidden border border-fd-border">
               <div className="hidden grid-cols-[190px_210px_230px_minmax(0,1fr)] gap-3 border-b border-amber-500/20 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
                 <span>Adapter</span>
                 <span>Catalog path</span>

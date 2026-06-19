@@ -210,7 +210,7 @@ function SectionHeader({
           </div>
         </div>
       </div>
-      <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+      <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
         rendered
       </span>
     </div>
@@ -306,7 +306,7 @@ export function EditorSurfacesExample() {
 
   return (
     <div className="not-prose space-y-6" data-testid="editor-surfaces-example">
-      <section className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-sky-900 dark:text-sky-100">
+      <section className="border-l border-fd-border py-1 pl-4 text-fd-muted-foreground">
         <div className="flex items-start gap-3">
           <TextCursorInput className="mt-0.5 size-4 flex-none" aria-hidden="true" />
           <div>

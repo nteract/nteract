@@ -134,7 +134,7 @@ function InsertionRibbonFixture({
 export function CellAnatomyExample() {
   return (
     <div className="not-prose space-y-6">
-      <section className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-sky-900 dark:text-sky-900">
+      <section className="border-l border-fd-border py-1 pl-4 text-fd-muted-foreground">
         <div className="flex items-start gap-3">
           <ShieldCheck className="mt-0.5 size-4 flex-none" aria-hidden="true" />
           <div>

@@ -22,12 +22,13 @@ chrome.
 
 This cell slice imports the notebook app cell components directly and feeds
 them fixture state through the same stores they use in the desktop app. It also
-mounts the production `NotebookView` workspace shell with local visual order so
-stable DOM ordering, hidden-cell grouping, cell adders, and navigation chrome
-are visible without opening a notebook document. Catalog fixtures seed cell,
+mounts the production `NotebookView` workspace shell through the render-only
+`apps/notebook/src/notebook-surface.ts` seam with local visual order so stable
+DOM ordering, hidden-cell grouping, cell adders, and navigation chrome are
+visible without opening a notebook document. Catalog fixtures seed cell,
 execution, output, focus, CRDT-provider state, and local order, while notebook
-document projection, kernel execution, iframe bootstrap, DnD persistence, and
-Automerge sync remain production boundaries.
+document projection, kernel execution, iframe bootstrap, DnD persistence,
+generated WASM, and Automerge sync remain production boundaries.
 
 <FullCellSurfacesClient />
 

@@ -106,7 +106,7 @@ export function IdentityEnvironmentSurfacesExample() {
 
   return (
     <div className="not-prose space-y-6" data-elements-slot="identity-environment-surfaces">
-      <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-fd-foreground">
+      <section className="border-l border-fd-border py-1 pl-4 text-fd-muted-foreground">
         <div className="flex items-start gap-3">
           <CheckCircle2
             className="mt-0.5 size-4 flex-none text-emerald-700 dark:text-emerald-300"
@@ -315,10 +315,10 @@ function AccessPill({ scenario }: { scenario: ElementsNotebookScenario }) {
   return (
     <span
       className={cn(
-        "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium",
+        "shrink-0 text-[11px] font-medium uppercase tracking-[0.08em]",
         scenario.capabilities.access.isPublic
-          ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-          : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+          ? "text-amber-700 dark:text-amber-300"
+          : "text-emerald-700 dark:text-emerald-300",
       )}
     >
       {scenario.capabilities.access.isPublic ? "public" : scenario.capabilities.access.level}
