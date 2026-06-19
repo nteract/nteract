@@ -109,7 +109,8 @@ def test_run_review_uses_opencode_output(monkeypatch, tmp_path: Path) -> None:
     assert report.cost_usd == 0.34
     assert report.raw_result is not None
     assert "diff --git a/src/a.py b/src/a.py" in calls[0][0]
-    assert "Do not report style-only comments." in calls[0][0]
+    assert "repo-invariant architecture/style nits" in calls[0][0]
+    assert '"category": "correctness" | "state_ownership"' in calls[0][0]
     assert calls[0][1] == tmp_path
     assert calls[0][2] == config
 

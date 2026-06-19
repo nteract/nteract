@@ -10,6 +10,9 @@ The opencode session runs in the disposable worktree with a generated
 read-only reviewer config that denies `edit` permissions while allowing shell
 inspection. Review prompts include the full diff up front so shell inspection
 can be used for deeper review instead of basic diff reconstruction.
+The shared nteract reviewer rubric lives at
+`.agents/reviewers/nteract-code-review-rubric.md`; keep custom Claude, Codex,
+Pullfrog, and `pr-reviewer` passes aligned with that file.
 
 ## Usage
 
