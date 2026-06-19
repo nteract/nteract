@@ -1,0 +1,26 @@
+---
+title: Full shell composition
+description: A full-space notebook shell using shared desktop and cloud surfaces.
+---
+
+import Link from "next/link";
+
+This route composes the shared notebook shell at browser scale: app chrome,
+command toolbar, outline/packages/workstation rail, production notebook cells,
+and the comments panel against deterministic fixture state.
+
+<Link
+  href="/full-shell-composition"
+  className="not-prose my-6 inline-flex h-10 items-center rounded-md bg-fd-primary px-4 text-sm font-medium text-fd-primary-foreground"
+>
+  Open full shell composition
+</Link>
+
+## Boundary
+
+- The shell, rail, command toolbar, comments panel, package panel, workstation
+  panel, and `NotebookView` come from shared production components.
+- Elements owns only the fixture scenario, comments projection, focus state,
+  and inert host callbacks.
+- Desktop and cloud should continue to pass host facts into the same shared
+  surfaces instead of forking shell layout logic.

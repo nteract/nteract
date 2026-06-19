@@ -16,20 +16,38 @@ export interface SourceCommentThread {
 
 let threadsByCell = new Map<string, SourceCommentThread[]>();
 let dispatchedCells = new Set<string>();
+let dispatchScheduled = false;
+const pendingDispatchCells = new Set<string>();
 
 /** Replace the full set of source-comment threads and refresh affected cells. */
 export function setSourceCommentThreads(next: Map<string, SourceCommentThread[]>): void {
   threadsByCell = next;
   const affected = new Set<string>([...dispatchedCells, ...next.keys()]);
   for (const cellId of affected) {
-    dispatchCell(cellId);
+    scheduleCellDispatch(cellId);
   }
   dispatchedCells = new Set(next.keys());
 }
 
 /** Re-resolve and push highlights for one cell after its editor mounts. */
 export function refreshCellCommentHighlights(cellId: string): void {
-  dispatchCell(cellId);
+  scheduleCellDispatch(cellId);
+}
+
+function scheduleCellDispatch(cellId: string): void {
+  pendingDispatchCells.add(cellId);
+  if (dispatchScheduled) return;
+  dispatchScheduled = true;
+  queueMicrotask(flushPendingDispatches);
+}
+
+function flushPendingDispatches(): void {
+  dispatchScheduled = false;
+  const cellIds = [...pendingDispatchCells];
+  pendingDispatchCells.clear();
+  for (const cellId of cellIds) {
+    dispatchCell(cellId);
+  }
 }
 
 function dispatchCell(cellId: string): void {

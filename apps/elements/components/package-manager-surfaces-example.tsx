@@ -1,81 +1,33 @@
 "use client";
 
-import {
-  CheckCircle2,
-  FileCode2,
-  Layers3,
-  PackageCheck,
-  RefreshCw,
-  TerminalSquare,
-} from "lucide-react";
-import type { EnvProgressState } from "runtimed";
+import { CheckCircle2, FileCode2, PackageCheck } from "lucide-react";
 import type { ReactNode } from "react";
-import {
-  CondaDependencyPanel,
-  DenoDependencyPanel,
-  EnvironmentSummary,
-  EnvironmentPackageSummaryPanel,
-  PixiDependencyPanel,
-} from "@/components/environment";
+import { EnvironmentPackageSummaryPanel } from "@/components/environment";
 import { NotebookPackageSummaryPanel } from "@/components/notebook";
 import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
-
-const asyncNoop = async () => {};
-const asyncTrue = async () => true;
-const noop = () => {};
-
-const condaProgress: EnvProgressState = {
-  isActive: true,
-  phase: "link_progress",
-  envType: "conda",
-  error: null,
-  statusText: "Installing 17/24 scikit-learn",
-  elapsedMs: 18_400,
-  progress: { completed: 17, total: 24 },
-  bytesPerSecond: null,
-  currentPackage: "scikit-learn",
-};
 
 const packageSurfaces = [
   {
     name: "EnvironmentPackageSummaryPanel",
     source: "src/components/environment/EnvironmentPackageSummaryPanel.tsx",
-    manager: "summary",
-    role: "Host-neutral package summary projection for rails, cloud views, and read-only embeds.",
+    manager: "listing",
+    role: "Host-neutral declared-package listing for rails, cloud views, and read-only embeds.",
   },
   {
     name: "NotebookPackageSummaryPanel",
     source: "src/components/notebook/NotebookPackageSummaryPanel.tsx",
     manager: "rail",
-    role: "Shared notebook rail wrapper for package summary and environment status.",
-  },
-  {
-    name: "CondaDependencyPanel",
-    source: "src/components/environment/CondaDependencyPanel.tsx",
-    manager: "conda",
-    role: "Conda packages, channels, environment.yml details, and solve progress.",
-  },
-  {
-    name: "PixiDependencyPanel",
-    source: "src/components/environment/PixiDependencyPanel.tsx",
-    manager: "pixi",
-    role: "pixi.toml details, Conda and PyPI dependency display, and restart prompts.",
-  },
-  {
-    name: "DenoDependencyPanel",
-    source: "src/components/environment/DenoDependencyPanel.tsx",
-    manager: "deno",
-    role: "deno.json details, npm import behavior, and Deno import examples.",
+    role: "Shared notebook rail wrapper for declared packages.",
   },
 ];
 
 const packageBoundaryRows = [
   {
-    boundary: "Package details",
+    boundary: "Package listing",
     catalogPath: "static package records",
     productionBoundary: "Automerge package state and project files",
     detail:
-      "uv, Conda, Pixi, and Deno headers receive the same prop shapes they use in the notebook app without editing notebook documents.",
+      "The package rail lists declared packages from the notebook projection. Manager-specific environment details stay out of this surface.",
   },
   {
     boundary: "Package actions",
@@ -133,118 +85,12 @@ export function PackageManagerSurfacesExample() {
 
         <SurfaceFrame
           icon={<PackageCheck className="size-4 text-fuchsia-500" aria-hidden="true" />}
-          title="Notebook rail package summary"
-          detail="Shared package summary with the same environment header used by notebook shell fixtures."
+          title="Notebook rail package listing"
+          detail="Shared package listing inside the notebook rail wrapper."
         >
           <div className="p-3">
-            <NotebookPackageSummaryPanel
-              packages={scenario.viewModel.packages}
-              readOnly
-              header={
-                <EnvironmentSummary
-                  capabilities={scenario.capabilities}
-                  packages={scenario.viewModel.packages}
-                  environment={scenario.environment}
-                  showPackageDetails={false}
-                  className="shadow-none"
-                />
-              }
-            />
+            <NotebookPackageSummaryPanel packages={scenario.viewModel.packages} readOnly />
           </div>
-        </SurfaceFrame>
-
-        <SurfaceFrame
-          icon={<RefreshCw className="size-4 text-emerald-500" aria-hidden="true" />}
-          title="Conda environment"
-          detail="Fixture channels, environment.yml imports, and solve progress."
-        >
-          <CondaDependencyPanel
-            dependencies={["python=3.13", "scikit-learn", "seaborn"]}
-            channels={["conda-forge", "nvidia"]}
-            python="3.13"
-            loading={false}
-            envSource="conda:env_yml"
-            variant="rail"
-            syncState={{ status: "dirty" }}
-            onAdd={asyncNoop}
-            onRemove={asyncNoop}
-            onSetChannels={asyncNoop}
-            onSetPython={asyncNoop}
-            onSyncNow={asyncTrue}
-            onRetryLaunch={asyncTrue}
-            envProgress={condaProgress}
-            onResetProgress={noop}
-            environmentYmlInfo={{
-              path: "/Users/kyle/notebooks/environment.yml",
-              relative_path: "environment.yml",
-              name: "mathnet",
-              has_dependencies: true,
-              dependency_count: 3,
-              has_pip_dependencies: true,
-              pip_dependency_count: 1,
-              python: "3.13",
-              channels: ["conda-forge", "nvidia"],
-            }}
-            environmentYmlDeps={{
-              path: "/Users/kyle/notebooks/environment.yml",
-              relative_path: "environment.yml",
-              name: "mathnet",
-              dependencies: ["python=3.13", "scikit-learn", "seaborn"],
-              pip_dependencies: ["datasets"],
-              python: "3.13",
-              channels: ["conda-forge", "nvidia"],
-            }}
-            justSynced={false}
-          />
-        </SurfaceFrame>
-
-        <SurfaceFrame
-          icon={<Layers3 className="size-4 text-amber-500" aria-hidden="true" />}
-          title="Pixi project"
-          detail="Fixture pixi.toml project details with Conda and PyPI dependencies."
-        >
-          <PixiDependencyPanel
-            pixiInfo={{
-              path: "/Users/kyle/notebooks/pixi.toml",
-              relative_path: "pixi.toml",
-              workspace_name: "mathnet",
-              dependencies: ["python>=3.13", "numpy", "pandas"],
-              has_dependencies: true,
-              dependency_count: 3,
-              pypi_dependencies: ["altair", "great-tables"],
-              has_pypi_dependencies: true,
-              pypi_dependency_count: 2,
-              python: ">=3.13",
-              channels: ["conda-forge"],
-            }}
-            envSource="pixi:toml"
-            variant="rail"
-            syncState={{ status: "dirty", added: ["plotly"], removed: [] }}
-            onSyncNow={asyncTrue}
-            justSynced={false}
-          />
-        </SurfaceFrame>
-
-        <SurfaceFrame
-          icon={<TerminalSquare className="size-4 text-emerald-500" aria-hidden="true" />}
-          title="Deno imports"
-          detail="Fixture deno.json imports and the flexible npm toggle."
-        >
-          <DenoDependencyPanel
-            denoConfigInfo={{
-              path: "/Users/kyle/notebooks/deno.json",
-              relative_path: "deno.json",
-              name: "notebook-tools",
-              has_imports: true,
-              has_tasks: true,
-            }}
-            flexibleNpmImports
-            onSetFlexibleNpmImports={noop}
-            syncState={{ status: "dirty" }}
-            syncing={false}
-            onSyncNow={asyncTrue}
-            justSynced={false}
-          />
         </SurfaceFrame>
       </section>
 

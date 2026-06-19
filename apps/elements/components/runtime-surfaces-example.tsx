@@ -25,7 +25,6 @@ import {
   TrustDialog,
   UntrustedBanner,
 } from "@/components/notebook";
-import { EnvironmentSummary } from "@/components/environment";
 import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
@@ -231,15 +230,6 @@ function PackageSummaryFixture({ scenario }: { scenario: ElementsNotebookScenari
           <NotebookPackageSummaryPanel
             packages={scenario.viewModel.packages}
             readOnly={!scenario.capabilities.canManagePackages}
-            header={
-              <EnvironmentSummary
-                capabilities={scenario.capabilities}
-                packages={scenario.viewModel.packages}
-                environment={scenario.environment}
-                showPackageDetails={false}
-                className="shadow-none"
-              />
-            }
           />
         </div>
       </div>

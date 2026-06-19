@@ -7,7 +7,7 @@ import {
 } from "../index";
 
 describe("EnvironmentPackageSummaryPanel", () => {
-  it("renders package details without a notebook rail wrapper", () => {
+  it("renders package specs as a listing without environment manager chrome", () => {
     const packages: NotebookPackageViewModel = {
       summary: "uv · 2 packages",
       sections: [
@@ -23,12 +23,13 @@ describe("EnvironmentPackageSummaryPanel", () => {
     const { container } = render(<EnvironmentPackageSummaryPanel packages={packages} readOnly />);
 
     expect(container.querySelector('[data-slot="environment-package-summary-panel"]')).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "uv" })).toBeVisible();
+    expect(screen.getByRole("list", { name: "Declared packages" })).toBeVisible();
     expect(screen.getByText("pandas>=2")).toBeVisible();
     expect(screen.getByText("polars")).toBeVisible();
-    expect(screen.getByText(">=3.12")).toBeVisible();
-    expect(screen.getByText("2 declared dependencies")).toBeVisible();
-    expect(screen.getByText("View only")).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "uv" })).toBeNull();
+    expect(screen.queryByText(">=3.12")).toBeNull();
+    expect(screen.queryByText("2 declared dependencies")).toBeNull();
+    expect(screen.queryByText("View only")).toBeNull();
   });
 
   it("projects notebook metadata into environment package sections", () => {
