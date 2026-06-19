@@ -4,6 +4,8 @@ import {
   deriveRuntimeKind,
   NotebookClient,
   resolveActorDisplay,
+  splitNotebookActorPrincipalOperator,
+  type ActorDisplayPeer,
   type CommentAnchor,
   type CommentThreadSnapshot,
   type CommentsProjection,
@@ -753,11 +755,22 @@ function AppContent() {
     setSourceCommentRequest(null);
   }, []);
 
+  // The OS full name only labels the local author. We feed it through a peers
+  // entry keyed by the local principal, mirroring the cloud presence model, so
+  // synced peers and agents resolve their own labels instead of inheriting this
+  // machine's user name.
+  const commentAuthorPeers = useMemo<ActorDisplayPeer[]>(() => {
+    const label = peerLabel.trim();
+    if (!localActor || !label) return [];
+    const [localPrincipal] = splitNotebookActorPrincipalOperator(localActor);
+    return [{ participantKey: localPrincipal, label }];
+  }, [localActor, peerLabel]);
+
   const resolveCommentAuthor = useCallback(
     (actorLabel: string): CommentAuthor => {
       const display = resolveActorDisplay({
         actorLabel,
-        peers: [],
+        peers: commentAuthorPeers,
         source: connectionScope ? "cloud" : "local",
       });
       return {
@@ -769,7 +782,7 @@ function AppContent() {
         onBehalfOfColor: display.onBehalfOfColor,
       };
     },
-    [connectionScope],
+    [commentAuthorPeers, connectionScope],
   );
 
   const resolveSourceLanguage = useCallback(

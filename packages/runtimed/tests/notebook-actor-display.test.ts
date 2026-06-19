@@ -68,6 +68,21 @@ describe("resolveActorDisplay", () => {
     ).toBe("Ada");
   });
 
+  it("uses the local presence peer label for the local principal", () => {
+    // The desktop host feeds the OS full name through a peers entry keyed by the
+    // local principal, so only the local author is relabeled; other principals
+    // keep their own friendly labels.
+    const localActor = "user:local:kylekelley/desktop:app";
+    const [localPrincipal] = localActor.split("/");
+    expect(
+      resolveActorDisplay({
+        actorLabel: localActor,
+        peers: [{ participantKey: localPrincipal, label: "Kyle Kelley" }],
+        source: "local",
+      }).displayName,
+    ).toBe("Kyle Kelley");
+  });
+
   it("derives initials across names, delimiters, and email-like labels", () => {
     expect(actorInitials("Kyle Kelley")).toBe("KK");
     expect(actorInitials("kyle.kelley")).toBe("KK");
