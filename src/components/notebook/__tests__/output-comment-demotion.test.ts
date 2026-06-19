@@ -44,4 +44,28 @@ describe("shouldDemoteOutputCommentAnchor", () => {
       shouldDemoteOutputCommentAnchor(outputAnchor("execution-1", "output-2"), runtimeState()),
     ).toBe(true);
   });
+
+  it("does not demote while the cell store has not loaded the cell yet", () => {
+    // Reconnect / notebook switch: comments projection is preserved while the
+    // cell store is momentarily empty. Absence is not detachment.
+    expect(
+      shouldDemoteOutputCommentAnchor(outputAnchor("execution-1"), {
+        cellExists: false,
+        currentExecutionId: null,
+        currentOutputIds: [],
+      }),
+    ).toBe(false);
+  });
+
+  it("does not demote while the runtime state has no loaded execution yet", () => {
+    // Cell is back but RuntimeStateDoc execution pointers have not landed.
+    // A stale-looking anchor must wait, not demote on the empty window.
+    expect(
+      shouldDemoteOutputCommentAnchor(outputAnchor("execution-1", "output-1"), {
+        cellExists: true,
+        currentExecutionId: null,
+        currentOutputIds: [],
+      }),
+    ).toBe(false);
+  });
 });
