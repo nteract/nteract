@@ -1726,20 +1726,20 @@ export function NotebookViewer({
         ) : undefined
       }
       packagesPanel={
-        <NotebookPackageSummaryPanel
-          packages={notebookViewModel.packages}
-          readOnly={!shellCapabilities.canManagePackages}
-          header={
-            shouldShowPackageEnvironmentSummary ? (
-              <EnvironmentSummary
-                capabilities={shellCapabilities}
-                packages={notebookViewModel.packages}
-                showPackageDetails={false}
-                className="cloud-package-summary-header"
-              />
-            ) : undefined
-          }
-        />
+        <>
+          {shouldShowPackageEnvironmentSummary ? (
+            <EnvironmentSummary
+              capabilities={shellCapabilities}
+              packages={notebookViewModel.packages}
+              showPackageDetails={false}
+              className="cloud-package-summary-header"
+            />
+          ) : null}
+          <NotebookPackageSummaryPanel
+            packages={notebookViewModel.packages}
+            readOnly={!shellCapabilities.canManagePackages}
+          />
+        </>
       }
       onActivePanelChange={setActiveNotebookRailPanel}
       onCollapsedChange={setNotebookRailCollapsed}
