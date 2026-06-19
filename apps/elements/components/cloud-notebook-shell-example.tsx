@@ -44,7 +44,6 @@ import {
   type NotebookRegisteredWorkstation,
   type NotebookShellCapabilities,
 } from "@/components/notebook";
-import { EnvironmentSummary } from "@/components/environment";
 import { cn } from "@/lib/utils";
 import {
   ElementsNotebookEnvironment,
@@ -339,19 +338,7 @@ function CloudNotebookShellExampleContent() {
         />
       }
       packagesPanel={
-        <NotebookPackageSummaryPanel
-          packages={scenario.viewModel.packages}
-          readOnly
-          header={
-            <EnvironmentSummary
-              capabilities={shellCapabilities}
-              packages={scenario.viewModel.packages}
-              environment={scenario.environment}
-              showPackageDetails={false}
-              className="shadow-none"
-            />
-          }
-        />
+        <NotebookPackageSummaryPanel packages={scenario.viewModel.packages} readOnly />
       }
       onActivePanelChange={actions.setActivePanel}
       onCollapsedChange={actions.setRailCollapsed}

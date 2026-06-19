@@ -26,7 +26,6 @@ import {
   type NotebookShellCapabilities,
   type NotebookViewCell,
 } from "@/components/notebook";
-import { EnvironmentSummary } from "@/components/environment";
 import type { CommentsProjection } from "@/components/notebook/comment-types";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
@@ -310,19 +309,7 @@ export function FullShellCompositionExample() {
             selectedOutlineItemId={selectedOutlineItemId ?? selectedOutlineItem}
             selectedOutlineCellId={focusedCellId}
             packagesPanel={
-              <NotebookPackageSummaryPanel
-                packages={scenario.viewModel.packages}
-                readOnly
-                header={
-                  <EnvironmentSummary
-                    capabilities={capabilities}
-                    packages={scenario.viewModel.packages}
-                    environment={scenario.environment}
-                    showPackageDetails={false}
-                    className="shadow-none"
-                  />
-                }
-              />
+              <NotebookPackageSummaryPanel packages={scenario.viewModel.packages} readOnly />
             }
             commentsPanel={commentsPanel}
             workstationsPanel={

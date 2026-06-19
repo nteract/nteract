@@ -1,27 +1,25 @@
 ---
 title: Package manager surfaces
-description: Fixture-backed package summaries and manager panels from the notebook app.
+description: Fixture-backed package listings from the notebook app.
 ---
 
 import { PackageManagerSurfacesExample } from "@/components/package-manager-surfaces-example";
 
-Package management is notebook UI. The rail should let people read package
-details at a glance, then manage the source only when the host grants that
-affordance. This page renders shared package summaries plus manager-specific
-fixtures without a live daemon, Automerge document, or environment solve.
-Package viewing and package management are separate shell capabilities; hosted
-viewer, editor, and owner fixtures can inspect package state while write actions
-remain disabled.
+Package management is notebook UI. The rail should let people scan declared
+packages as a list, then manage the source only when the host grants that
+affordance. This page renders the shared package listing without a live daemon,
+Automerge document, or environment solve. Package viewing and package
+management are separate shell capabilities; hosted viewer, editor, and owner
+fixtures can inspect package state while write actions remain disabled.
 
 <PackageManagerSurfacesExample />
 
 ## Rail intent
 
-- `NotebookDocumentRail` is the notebook home for package details. It can wrap
-  the shared `EnvironmentPackageSummaryPanel` for host-neutral view-only state,
-  or host manager-specific panels when management is available.
-- The catalog uses `NotebookPackageSummaryPanel` for uv/package rail review; the
-  older uv management control is intentionally absent from this page.
+- `NotebookDocumentRail` is the notebook home for declared packages. It wraps
+  the shared `EnvironmentPackageSummaryPanel` as a list, not manager cards.
+- The catalog uses `NotebookPackageSummaryPanel` for package rail review; uv,
+  pixi, Deno, and Conda manager controls stay outside this package listing.
 - Manager headers remain app-adapter surfaces because they can write project
   files, approve trust, sync packages, and start rebuild decisions.
 - The catalog should keep using existing notebook components, not parallel
