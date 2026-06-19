@@ -31,13 +31,14 @@ describe("comm changes store bridge", () => {
       _model_name: "IntSliderModel",
       value: 7,
     });
+    expect(store.getModel("comm-slider")?.targetName).toBe("jupyter.widget");
 
     applyWidgetCommChangesToStore(store, {
       opened: [],
       updated: [
         {
           commId: "comm-slider",
-          targetName: "jupyter.widget",
+          targetName: "hv-extension-comm",
           modelModule: "@jupyter-widgets/controls",
           modelName: "IntSliderModel",
           state: { value: 18 },
@@ -72,7 +73,7 @@ describe("comm changes store bridge", () => {
       updated: [
         {
           commId: "comm-slider",
-          targetName: "jupyter.widget",
+          targetName: "hv-extension-comm",
           modelModule: "@jupyter-widgets/controls",
           modelName: "IntSliderModel",
           state: { value: 18 },
@@ -87,6 +88,7 @@ describe("comm changes store bridge", () => {
     expect(model?.state.value).toBe(18);
     expect(model?.state._model_module).toBe("@jupyter-widgets/controls");
     expect(model?.state._model_name).toBe("IntSliderModel");
+    expect(model?.targetName).toBe("hv-extension-comm");
   });
 
   it("suppresses optimistic echoes while keeping output resolution hooks", () => {

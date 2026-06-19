@@ -67,7 +67,12 @@ interface WidgetStore {
   getSnapshot(): Map<string, WidgetModel>;
 
   getModel(modelId: string): WidgetModel | undefined;
-  createModel(commId: string, state: Record<string, unknown>, bufferPaths?: string[][]): void;
+  createModel(
+    commId: string,
+    state: Record<string, unknown>,
+    bufferPaths?: string[][],
+    targetName?: string,
+  ): void;
   updateModel(commId: string, statePatch: Record<string, unknown>, bufferPaths?: string[][]): void;
   deleteModel(commId: string): void;
   wasModelClosed(commId: string): boolean;

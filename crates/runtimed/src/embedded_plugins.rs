@@ -1,6 +1,6 @@
 //! Embedded renderer plugin assets for MCP App output rendering.
 //!
-//! Heavy visualization renderers (plotly, vega, leaflet, markdown, bokeh, sift) ship
+//! Heavy visualization renderers (plotly, vega, leaflet, markdown, bokeh, panel, sift) ship
 //! inside the daemon binary via `include_bytes!`. The blob server serves raw
 //! JS/CSS assets at `GET /renderer-plugins/{name}` for the shared isolated
 //! renderer. It also keeps `GET /plugins/{name}` for legacy MCP App plugin
@@ -9,7 +9,7 @@
 //! The canonical source directory is `apps/notebook/src/renderer-plugins/` -
 //! the same raw CJS bundles the notebook Vite app loads via its
 //! isolated-renderer virtual modules. Stable third-party bundles (plotly, vega,
-//! leaflet) are LFS-tracked; isolated-renderer, markdown, and sift JS/CSS
+//! leaflet) are LFS-tracked; isolated-renderer, markdown, bokeh, panel, and sift JS/CSS
 //! bundles are generated locally by `cargo xtask renderer-plugins`. Sift's WASM
 //! blob comes straight from `crates/sift-wasm/pkg/sift_wasm_bg.wasm`.
 //!
@@ -54,6 +54,7 @@ pub const EMBEDDED_PLUGINS: &[EmbeddedPlugin] = &[
     plugin!("leaflet.js"),
     plugin!("leaflet.css"),
     plugin!("bokeh.js"),
+    plugin!("panel.js"),
     plugin!("sift.js"),
     plugin!("sift.css"),
     EmbeddedPlugin {

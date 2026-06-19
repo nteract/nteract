@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
+import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
 import {
   MARKDOWN_PROJECTION_MIME_TYPE,
   setMarkdownProjectionProjector,
@@ -11,6 +12,7 @@ import {
   outputAllowsScrollPassthrough,
   outputSegmentLane,
   outputUsesBokeh,
+  outputUsesPanel,
   outputUsesPlotly,
   outputUsesSift,
   outputUsesVega,
@@ -243,6 +245,51 @@ describe("output lane policy", () => {
     expect(segments[0].outputs.map((output) => output.output_id)).toEqual([
       "bokeh-root-html",
       "bokeh-exec-js",
+    ]);
+  });
+
+  it("keeps Panel's HTML and JavaScript display outputs in one document lane", () => {
+    const outputs = [
+      displayOutput("panel-loading-html", {
+        "text/html": '<span id="panel-loading">Loading Panel ...</span>',
+      }),
+      displayOutput("panel-load-js", {
+        "application/javascript": 'document.getElementById("panel-loading").textContent = "ok";',
+        [PANEL_LOAD_MIME_TYPE]: "",
+      }),
+      displayOutput("panel-root-html", {
+        "text/html": '<div id="panel-root"></div>',
+      }),
+      displayOutput("panel-exec-html", {
+        "text/html": '<div id="panel-widget"></div><script>window.__panelHtmlRan = true;</script>',
+        "application/javascript": 'document.getElementById("panel-root").textContent = "widget";',
+        [PANEL_EXEC_MIME_TYPE]: "",
+      }),
+    ];
+
+    const segments = splitOutputSegments(outputs);
+
+    expect(outputs.map((output) => selectedOutputMimeType(output))).toEqual([
+      "text/html",
+      PANEL_LOAD_MIME_TYPE,
+      "text/html",
+      PANEL_EXEC_MIME_TYPE,
+    ]);
+    expect(outputUsesPanel(outputs[1])).toBe(true);
+    expect(outputUsesPanel(outputs[3])).toBe(true);
+    expect(outputUsesWheelOwningFrame(outputs[3])).toBe(true);
+    expect(outputs.map((output) => outputAllowsScrollPassthrough(output))).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(segments.map((segment) => segment.lane)).toEqual(["static-frame"]);
+    expect(segments[0].outputs.map((output) => output.output_id)).toEqual([
+      "panel-loading-html",
+      "panel-load-js",
+      "panel-root-html",
+      "panel-exec-html",
     ]);
   });
 

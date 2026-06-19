@@ -28,13 +28,23 @@ export function applyWidgetCommChangesToStore(
   options: ApplyWidgetCommChangesOptions = {},
 ): void {
   for (const comm of changes.opened) {
-    store.createModel(comm.commId, widgetStateWithMetadata(comm), comm.bufferPaths);
+    store.createModel(
+      comm.commId,
+      widgetStateWithMetadata(comm),
+      comm.bufferPaths,
+      comm.targetName,
+    );
     maybeResolveCommOutputs(store, comm.commId, comm.unresolvedOutputs, options);
   }
 
   for (const comm of changes.updated) {
     if (!store.getModel(comm.commId)) {
-      store.createModel(comm.commId, widgetStateWithMetadata(comm), comm.bufferPaths);
+      store.createModel(
+        comm.commId,
+        widgetStateWithMetadata(comm),
+        comm.bufferPaths,
+        comm.targetName,
+      );
       maybeResolveCommOutputs(store, comm.commId, comm.unresolvedOutputs, options);
       continue;
     }

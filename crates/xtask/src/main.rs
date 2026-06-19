@@ -228,8 +228,8 @@ Other:
   renderer-plugins           Rebuild pre-built renderer plugins (notebook + MCP)
   renderer-plugins --only sift
                              Rebuild one renderer plugin target. Valid targets:
-                             isolated-renderer, core, markdown, plotly, vega,
-                             leaflet, sift.
+                             isolated-renderer, core, markdown, plotly, bokeh,
+                             panel, vega, leaflet, sift.
   verify-plugins             Check renderer plugin bundles match their wasm artifacts
                              (every wasm-bindgen import in the plugin JS must be
                              exported by the paired wasm binary). Catches #2048-style
@@ -1733,7 +1733,9 @@ fn parse_renderer_plugin_targets(args: &[String]) -> Vec<String> {
         if arg == "--help" || arg == "-h" {
             eprintln!("Usage: cargo xtask renderer-plugins [--only <target>[,<target>...]]");
             eprintln!();
-            eprintln!("Targets: isolated-renderer, core, markdown, plotly, vega, leaflet, sift");
+            eprintln!(
+                "Targets: isolated-renderer, core, markdown, plotly, bokeh, panel, vega, leaflet, sift"
+            );
             exit(0);
         }
         if arg == "--only" {
@@ -3317,7 +3319,7 @@ fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
 ///
 /// - **Renderer plugin bundles** split into stable LFS-tracked third-party
 ///   outputs (`plotly.js`, `vega.js`, `leaflet.*`) and generated local outputs
-///   (`isolated-renderer.*`, `markdown.*`, `sift.*`). We rebuild generated
+///   (`isolated-renderer.*`, `markdown.*`, `bokeh.js`, `panel.js`, `sift.*`). We rebuild generated
 ///   outputs when they're missing or pointer-shaped, and rebuild sift when it
 ///   is stale relative to sift-wasm source.
 ///
@@ -3342,6 +3344,7 @@ fn ensure_renderer_artifacts_current(sift_wasm_rebuilt: bool) {
         "markdown.js",
         "markdown.css",
         "bokeh.js",
+        "panel.js",
     ];
     let missing_lfs_tracked: Vec<&str> = lfs_tracked_probes
         .iter()
@@ -3436,6 +3439,9 @@ fn ensure_renderer_artifacts_current(sift_wasm_rebuilt: bool) {
             if generated_needs_rebuild.contains(&"bokeh.js") {
                 targets.push("bokeh");
             }
+            if generated_needs_rebuild.contains(&"panel.js") {
+                targets.push("panel");
+            }
             if sift_missing || sift_source_changed || sift_wasm_rebuilt {
                 targets.push("sift");
             }
@@ -3522,6 +3528,7 @@ const GENERATED_RENDERER_PLUGIN_OUTPUTS: &[&str] = &[
     "apps/notebook/src/renderer-plugins/markdown.js",
     "apps/notebook/src/renderer-plugins/markdown.css",
     "apps/notebook/src/renderer-plugins/bokeh.js",
+    "apps/notebook/src/renderer-plugins/panel.js",
     "apps/notebook/src/renderer-plugins/sift.js",
     "apps/notebook/src/renderer-plugins/sift.css",
 ];
@@ -3532,6 +3539,7 @@ const RENDERER_PLUGIN_OUTPUTS: &[&str] = &[
     "apps/notebook/src/renderer-plugins/markdown.js",
     "apps/notebook/src/renderer-plugins/markdown.css",
     "apps/notebook/src/renderer-plugins/bokeh.js",
+    "apps/notebook/src/renderer-plugins/panel.js",
     "apps/notebook/src/renderer-plugins/plotly.js",
     "apps/notebook/src/renderer-plugins/vega.js",
     "apps/notebook/src/renderer-plugins/leaflet.js",
@@ -4126,6 +4134,7 @@ fn mcp_widget_needs_rebuild() -> Option<&'static str> {
         Path::new("apps/notebook/src/renderer-plugins/markdown.js"),
         Path::new("apps/notebook/src/renderer-plugins/markdown.css"),
         Path::new("apps/notebook/src/renderer-plugins/bokeh.js"),
+        Path::new("apps/notebook/src/renderer-plugins/panel.js"),
         Path::new("apps/notebook/src/renderer-plugins/plotly.js"),
         Path::new("apps/notebook/src/renderer-plugins/vega.js"),
         Path::new("apps/notebook/src/renderer-plugins/leaflet.js"),

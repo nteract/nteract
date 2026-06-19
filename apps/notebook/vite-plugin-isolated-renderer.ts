@@ -4,7 +4,7 @@
  * Loads pre-built renderer plugin artifacts from disk and exposes them as
  * virtual modules. The artifacts live under `apps/notebook/src/renderer-plugins/`.
  * Stable third-party plugin bundles are LFS-tracked; generated
- * isolated-renderer, markdown, and sift bundles are produced locally by
+ * isolated-renderer, markdown, bokeh, panel, and sift bundles are produced locally by
  * `cargo xtask renderer-plugins` or `cargo xtask artifacts ensure renderer`.
  *
  * In dev mode (Vite dev server), changes to isolated renderer source files
@@ -37,7 +37,7 @@ const RESOLVED_PLUGIN_PREFIX = "\0virtual:renderer-plugin/";
 const PREBUILT_DIR = path.resolve(__dirname, "../notebook/src/renderer-plugins");
 
 /** Plugin names that have pre-built artifacts. */
-const PLUGIN_NAMES = ["markdown", "plotly", "bokeh", "vega", "leaflet", "sift"];
+const PLUGIN_NAMES = ["markdown", "plotly", "bokeh", "panel", "vega", "leaflet", "sift"];
 const PLUGIN_CSS_NAMES = new Set(["markdown", "leaflet", "sift"]);
 
 interface IsolatedRendererPluginOptions {
@@ -55,7 +55,7 @@ interface IsolatedRendererPluginOptions {
    * Plugin artifacts to require during production build startup.
    * Consumers that provide their own plugin loader can set this to `[]` and
    * still use the core isolated renderer bundle.
-   * @default ["markdown", "plotly", "bokeh", "vega", "leaflet", "sift"]
+   * @default ["markdown", "plotly", "bokeh", "panel", "vega", "leaflet", "sift"]
    */
   prebuiltPluginNames?: readonly string[];
 }

@@ -39,6 +39,8 @@ const BOKEHJS_EXEC_MIME: &str = "application/vnd.bokehjs_exec.v0+json";
 const BOKEHJS_LOAD_MIME: &str = "application/vnd.bokehjs_load.v0+json";
 const BOKEHJS_SCRIPT_MIME: &str = "application/javascript";
 const BOKEHJS_HTML_MIME: &str = "text/html";
+const PANEL_EXEC_MIME: &str = "application/vnd.holoviews_exec.v0+json";
+const PANEL_LOAD_MIME: &str = "application/vnd.holoviews_load.v0+json";
 const RUNT_OUTPUT_CACHE_KEY: &str = "_runt_output_cache_key";
 
 /// Install the panic hook on module init so Rust panics inside WASM
@@ -2916,6 +2918,10 @@ impl NotebookHandle {
                     || data.contains_key(BOKEHJS_LOAD_MIME)
                     || winner_mime == BOKEHJS_EXEC_MIME
                     || winner_mime == BOKEHJS_LOAD_MIME;
+                let panel_bundle = data.contains_key(PANEL_EXEC_MIME)
+                    || data.contains_key(PANEL_LOAD_MIME)
+                    || winner_mime == PANEL_EXEC_MIME
+                    || winner_mime == PANEL_LOAD_MIME;
 
                 for (mime, val) in data {
                     if mime == winner_mime
@@ -2927,6 +2933,14 @@ impl NotebookHandle {
                                 mime.as_str(),
                                 BOKEHJS_EXEC_MIME
                                     | BOKEHJS_LOAD_MIME
+                                    | BOKEHJS_SCRIPT_MIME
+                                    | BOKEHJS_HTML_MIME
+                            ))
+                        || (panel_bundle
+                            && matches!(
+                                mime.as_str(),
+                                PANEL_EXEC_MIME
+                                    | PANEL_LOAD_MIME
                                     | BOKEHJS_SCRIPT_MIME
                                     | BOKEHJS_HTML_MIME
                             ))
@@ -6259,6 +6273,37 @@ mod tests {
         let data = narrowed["data"].as_object().expect("narrowed data object");
 
         assert!(data.contains_key(BOKEHJS_EXEC_MIME));
+        assert!(data.contains_key(BOKEHJS_SCRIPT_MIME));
+        assert!(data.contains_key(BOKEHJS_HTML_MIME));
+        assert!(data.contains_key("text/plain"));
+    }
+
+    #[test]
+    fn panel_narrowing_keeps_marker_javascript_and_html_bundle() {
+        let mut handle = NotebookHandle::create_empty().expect("create handle");
+        handle.mime_priority = vec![
+            PANEL_EXEC_MIME.to_string(),
+            PANEL_LOAD_MIME.to_string(),
+            "text/html".to_string(),
+            BOKEHJS_SCRIPT_MIME.to_string(),
+            "text/plain".to_string(),
+        ];
+
+        let narrowed = handle.narrow_output_data(json!({
+            "output_type": "display_data",
+            "data": {
+                PANEL_EXEC_MIME: { "inline": "" },
+                BOKEHJS_SCRIPT_MIME: { "inline": "window.__panelExecRan = true;" },
+                BOKEHJS_HTML_MIME: { "inline": "<div id=\"p1011\"></div><script>window.__panelHtmlRan = true;</script>" },
+                "text/plain": { "inline": "fallback" },
+            },
+            "metadata": {
+                PANEL_EXEC_MIME: { "id": "p1011" },
+            },
+        }));
+        let data = narrowed["data"].as_object().expect("narrowed data object");
+
+        assert!(data.contains_key(PANEL_EXEC_MIME));
         assert!(data.contains_key(BOKEHJS_SCRIPT_MIME));
         assert!(data.contains_key(BOKEHJS_HTML_MIME));
         assert!(data.contains_key("text/plain"));

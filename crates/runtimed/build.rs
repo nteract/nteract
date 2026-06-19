@@ -4,7 +4,7 @@ fn main() {
     // Renderer plugin bundles live under `apps/notebook/src/renderer-plugins/`.
     // Stable third-party bundles (plotly, vega, leaflet) are LFS-tracked;
     // owned/generated renderer bundles (isolated-renderer.*, markdown.*,
-    // sift.*) are gitignored and rebuilt via
+    // bokeh.*, panel.*, sift.*) are gitignored and rebuilt via
     // `cargo xtask artifacts ensure renderer`.
     // sift_wasm.wasm is embedded directly from `crates/sift-wasm/pkg/`.
     // Probe each path before `include_bytes!` so a missing file points at
@@ -17,6 +17,8 @@ fn main() {
         "vega.js",
         "leaflet.js",
         "leaflet.css",
+        "bokeh.js",
+        "panel.js",
         "sift.js",
         "sift.css",
     ];
@@ -29,7 +31,7 @@ fn main() {
                  Stable bundles (plotly, vega, leaflet) \
                  are LFS-tracked - run `git lfs pull` if your checkout has pointer \
                  files only.\n\
-                 Generated bundles (isolated-renderer.*, markdown.*, sift.*) are gitignored - run \
+                 Generated bundles (isolated-renderer.*, markdown.*, bokeh.*, panel.*, sift.*) are gitignored - run \
                  `cargo xtask artifacts ensure sift,renderer` from the \
                  workspace root to rebuild.",
                 path.display(),
