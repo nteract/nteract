@@ -150,10 +150,10 @@ function requestSourceComment(
 
 const sourceCommentTheme = EditorView.baseTheme({
   ".cm-source-comment-button": {
-    border: "1px solid hsl(var(--border))",
+    border: "1px solid var(--border, #ebebeb)",
     borderRadius: "0.375rem",
-    backgroundColor: "hsl(var(--background))",
-    color: "hsl(var(--foreground))",
+    backgroundColor: "var(--background, #ffffff)",
+    color: "var(--foreground, #1e1e1e)",
     boxShadow: "0 1px 4px rgb(0 0 0 / 0.14)",
     boxSizing: "border-box",
     cursor: "pointer",
@@ -165,10 +165,10 @@ const sourceCommentTheme = EditorView.baseTheme({
     width: "24px",
   },
   ".cm-source-comment-button:hover": {
-    backgroundColor: "hsl(var(--muted))",
+    backgroundColor: "var(--muted, #f5f5f5)",
   },
   ".cm-source-comment-button:focus-visible": {
-    outline: "2px solid hsl(var(--ring))",
+    outline: "2px solid var(--ring, #a3a3a3)",
     outlineOffset: "2px",
   },
 });
