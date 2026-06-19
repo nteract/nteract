@@ -15,7 +15,6 @@ export interface ResolveActorDisplayOptions {
   actorLabel: string;
   peers: ReadonlyArray<ActorDisplayPeer>;
   source: "cloud" | "local";
-  identityLabel?: string;
 }
 
 export interface ActorDisplay {
@@ -34,9 +33,8 @@ export function resolveActorDisplay({
   actorLabel,
   peers,
   source,
-  identityLabel,
 }: ResolveActorDisplayOptions): ActorDisplay {
-  const projection = notebookActorProjectionFromLabel(actorLabel, { identityLabel, source });
+  const projection = notebookActorProjectionFromLabel(actorLabel, { source });
   const identity = notebookActorIdentityFromProjection(projection);
   const principalId = projection.principal.id;
   const peer = peerForPrincipal(peers, principalId);
