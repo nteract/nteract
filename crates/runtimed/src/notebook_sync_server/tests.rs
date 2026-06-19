@@ -1186,8 +1186,20 @@ fn test_room_with_path_and_store(
     let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
     let (comms_changed_tx, _) = broadcast::channel(16);
     let comms = runtime_doc::CommsDocHandle::new(runtime_doc::CommsDoc::new(), comms_changed_tx);
+    let room_id = uuid::Uuid::new_v4();
+    let comments_store = comments_store::CommentsSidecarStore::for_notebook_docs_dir(
+        &tmp.path().join("notebook-docs"),
+    );
+    let comments_locator = comments_store::comments_locator_for_room(room_id, Some(&notebook_path));
+    let comments_doc_id = comments_store
+        .resolve_doc_id(&comments_locator)
+        .expect("seed comments document id");
+    let comments_ref = comments_store::comments_ref_for_room(room_id, Some(&notebook_path));
+    let comments = comments_store
+        .load_or_create(&comments_doc_id, &comments_ref)
+        .expect("create comments document");
     let room = NotebookRoom {
-        id: uuid::Uuid::new_v4(),
+        id: room_id,
         doc: Arc::new(RwLock::new(doc)),
         broadcasts: RoomBroadcasts::default(),
         persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
@@ -1217,6 +1229,8 @@ fn test_room_with_path_and_store(
         trusted_packages,
         state,
         comms,
+        comments,
+        comments_store,
         runtime_agent_handle: Arc::new(Mutex::new(None)),
         runtime_agent_env_path: Arc::new(RwLock::new(None)),
         runtime_agent_launched_config: Arc::new(RwLock::new(None)),
