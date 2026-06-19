@@ -13,7 +13,7 @@ on:
         description: Run name
       model_id:
         type: string
-        description: Bedrock model or inference profile ID
+        description: Bedrock model or inference profile ID for OpenCode
         default: us.anthropic.claude-sonnet-4-6
 
 permissions:
@@ -125,6 +125,7 @@ jobs:
               }
             }
         env:
+          PULLFROG_AGENT: opencode
           AWS_REGION: us-east-1
           BEDROCK_MODEL_ID: ${{ inputs.model_id || 'us.anthropic.claude-sonnet-4-6' }}
       - name: Render review result
