@@ -26,6 +26,13 @@ and installs the per-user daemon service (`runt daemon doctor --fix` —
 systemd on Linux, launchd on macOS). Everything is per-user; no root
 required. Re-run to upgrade.
 
+The examples below use the stable channel command names. Nightly releases use
+channel-suffixed commands instead: `runt-nightly`, `runtimed-nightly`, and
+`nteract-mcp-nightly`. If you install a nightly headless release, run
+`runt-nightly workstation ...` wherever this guide shows
+`runt workstation ...`; the workstation credential is stored under
+`~/.config/nteract-nightly/workstation.json`.
+
 For air-gapped installs, download the release assets yourself and use
 `--from-dir`.
 
@@ -107,6 +114,9 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 ```
+
+For nightly, use `%h/.local/bin/runt-nightly workstation run ...` in
+`ExecStart`.
 
 ```bash
 systemctl --user enable --now nteract-workstation

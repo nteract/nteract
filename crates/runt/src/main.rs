@@ -2906,18 +2906,16 @@ fn get_binary_version(path: &Path) -> Option<String> {
 
 /// Find bundled runtimed binary in common app locations
 fn find_bundled_runtimed() -> Option<PathBuf> {
-    let binary_name = if cfg!(windows) {
-        "runtimed.exe"
-    } else {
-        "runtimed"
-    };
+    let binary_names = bundled_runtimed_binary_names();
 
     // Check if we're running from within an app bundle
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(parent) = current_exe.parent() {
-            let sibling = parent.join(binary_name);
-            if sibling.exists() {
-                return Some(sibling);
+            for binary_name in &binary_names {
+                let sibling = parent.join(binary_name);
+                if sibling.exists() {
+                    return Some(sibling);
+                }
             }
         }
     }
@@ -2927,12 +2925,14 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     {
         let mut locations = Vec::new();
         for app_name in runt_workspace::desktop_app_launch_candidates() {
-            locations.push(PathBuf::from(format!(
-                "/Applications/{app_name}.app/Contents/MacOS/{binary_name}"
-            )));
-            locations.push(dirs::home_dir().unwrap_or_default().join(format!(
-                "Applications/{app_name}.app/Contents/MacOS/{binary_name}"
-            )));
+            for binary_name in &binary_names {
+                locations.push(PathBuf::from(format!(
+                    "/Applications/{app_name}.app/Contents/MacOS/{binary_name}"
+                )));
+                locations.push(dirs::home_dir().unwrap_or_default().join(format!(
+                    "Applications/{app_name}.app/Contents/MacOS/{binary_name}"
+                )));
+            }
         }
         for path in &locations {
             if path.exists() {
@@ -2946,13 +2946,28 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     {
         let mut locations = Vec::new();
         for app_name in runt_workspace::desktop_app_launch_candidates() {
-            locations.push(PathBuf::from(format!(
-                "/usr/share/{app_name}/{binary_name}"
-            )));
-            locations.push(PathBuf::from(format!("/opt/{app_name}/{binary_name}")));
+            for binary_name in &binary_names {
+                locations.push(PathBuf::from(format!(
+                    "/usr/share/{app_name}/{binary_name}"
+                )));
+                locations.push(PathBuf::from(format!("/opt/{app_name}/{binary_name}")));
+            }
+        }
+        if let Some(data_dir) = dirs::data_dir() {
+            for binary_name in &binary_names {
+                locations.push(
+                    data_dir
+                        .join("nteract")
+                        .join(runt_workspace::channel_display_name())
+                        .join("bin")
+                        .join(binary_name),
+                );
+            }
         }
         // AppImage extracts to /tmp, check common paths
-        locations.push(PathBuf::from(format!("/usr/local/bin/{binary_name}")));
+        for binary_name in &binary_names {
+            locations.push(PathBuf::from(format!("/usr/local/bin/{binary_name}")));
+        }
         for path in &locations {
             if path.exists() {
                 return Some(path.clone());
@@ -2965,19 +2980,21 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     {
         let mut locations = Vec::new();
         for app_name in runt_workspace::desktop_app_launch_candidates() {
-            locations.push(
-                dirs::data_local_dir()
-                    .unwrap_or_default()
-                    .join("Programs")
-                    .join(app_name)
-                    .join(binary_name),
-            );
-            locations.push(PathBuf::from(format!(
-                "C:\\Program Files\\{app_name}\\{binary_name}"
-            )));
-            locations.push(PathBuf::from(format!(
-                "C:\\Program Files (x86)\\{app_name}\\{binary_name}"
-            )));
+            for binary_name in &binary_names {
+                locations.push(
+                    dirs::data_local_dir()
+                        .unwrap_or_default()
+                        .join("Programs")
+                        .join(app_name)
+                        .join(binary_name),
+                );
+                locations.push(PathBuf::from(format!(
+                    "C:\\Program Files\\{app_name}\\{binary_name}"
+                )));
+                locations.push(PathBuf::from(format!(
+                    "C:\\Program Files (x86)\\{app_name}\\{binary_name}"
+                )));
+            }
         }
         for path in &locations {
             if path.exists() {
@@ -2987,6 +3004,25 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     }
 
     None
+}
+
+fn bundled_runtimed_binary_names() -> Vec<String> {
+    let primary = if cfg!(windows) {
+        format!("{}.exe", runt_workspace::daemon_binary_basename())
+    } else {
+        runt_workspace::daemon_binary_basename().to_string()
+    };
+    let legacy = if cfg!(windows) {
+        "runtimed.exe".to_string()
+    } else {
+        "runtimed".to_string()
+    };
+
+    if primary == legacy {
+        vec![primary]
+    } else {
+        vec![primary, legacy]
+    }
 }
 
 // ============================================================================
@@ -4757,6 +4793,26 @@ mod tests {
                 extra_args: vec!["--runtime".to_string(), "deno".to_string()],
             }
         );
+    }
+
+    #[test]
+    fn bundled_runtimed_binary_names_try_channel_name_before_legacy_name() {
+        let names = bundled_runtimed_binary_names();
+        let expected_primary = if cfg!(windows) {
+            format!("{}.exe", runt_workspace::daemon_binary_basename())
+        } else {
+            runt_workspace::daemon_binary_basename().to_string()
+        };
+
+        assert_eq!(names.first(), Some(&expected_primary));
+        if runt_workspace::daemon_binary_basename() != "runtimed" {
+            let expected_legacy = if cfg!(windows) {
+                "runtimed.exe"
+            } else {
+                "runtimed"
+            };
+            assert_eq!(names.get(1).map(String::as_str), Some(expected_legacy));
+        }
     }
 
     /// Test that the shutdown command correctly identifies UUIDs vs file paths.

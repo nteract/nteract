@@ -393,6 +393,6 @@ if [[ "$HEADLESS" == "1" ]]; then
   echo "notebook, mint a pairing code from the notebook's workstation panel, then:"
   echo "  $CLI_NAME workstation connect https://app.runt.run --code <code>"
   echo "  $CLI_NAME workstation run"
-  echo "(Releases without 'runt workstation' can use the cloud-runtime-agent flow"
+  echo "(Releases without '$CLI_NAME workstation' can use the cloud-runtime-agent flow"
   echo "in docs/remote-workstation.md.)"
 fi

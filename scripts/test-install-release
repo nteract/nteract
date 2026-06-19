@@ -73,9 +73,14 @@ make_darwin_fixtures() {
   local dir="$1"
   local log="$2"
   local stage="$dir/.stage"
-  mkdir -p "$dir" "$stage/nteract.app/Contents/MacOS"
+  local recorders="$dir/.recorders"
+  mkdir -p "$dir" "$recorders" "$stage/nteract.app/Contents/MacOS"
   for tool in nteract runt runtimed nteract-mcp; do
-    make_fake_tool "$stage/nteract.app/Contents/MacOS/$tool" "$log"
+    # macOS kills shell scripts whose executed path is inside
+    # *.app/Contents/MacOS. Keep the recorder script outside the bundle and
+    # put an executable symlink where the app sidecar would be.
+    make_fake_tool "$recorders/$tool" "$log"
+    ln -s "$recorders/$tool" "$stage/nteract.app/Contents/MacOS/$tool"
   done
   tar -czf "$dir/nteract-stable-darwin-arm64.app.tar.gz" -C "$stage" "nteract.app"
   rm -rf "$stage"
@@ -140,6 +145,22 @@ assert_link "$NIGHTLY_HOME/.local/bin/runtimed-nightly" "$NIGHTLY_PREFIX/bin/run
 assert_link "$NIGHTLY_HOME/.local/bin/nteract-mcp-nightly" "$NIGHTLY_PREFIX/bin/nteract-mcp-nightly"
 assert_link "$NIGHTLY_HOME/.local/bin/nteract-nightly" "$NIGHTLY_PREFIX/nteract-nightly.AppImage"
 grep -q "runt-nightly daemon doctor --fix --no-start" "$NIGHTLY_LOG" || fail "nightly: daemon doctor --fix --no-start not invoked"
+
+note "linux nightly headless install"
+NIGHTLY_HEADLESS_HOME="$WORK/nightly-headless-home"
+NIGHTLY_HEADLESS_LOG="$WORK/nightly-headless-calls.log"
+make_nightly_linux_fixtures "$WORK/nightly-headless-assets" "$NIGHTLY_HEADLESS_LOG"
+INSTALLER_UNDER_TEST="$STAMPED_NIGHTLY_INSTALLER" PATH="$WORK/shim-linux:$PATH" \
+  run_installer "$NIGHTLY_HEADLESS_HOME" --from-dir "$WORK/nightly-headless-assets" \
+  --headless --no-start > "$WORK/nightly-headless-out.log"
+NIGHTLY_HEADLESS_PREFIX="$NIGHTLY_HEADLESS_HOME/.local/share/nteract/nightly"
+assert_missing "$NIGHTLY_HEADLESS_PREFIX/nteract-nightly.AppImage"
+assert_link "$NIGHTLY_HEADLESS_HOME/.local/bin/runt-nightly" "$NIGHTLY_HEADLESS_PREFIX/bin/runt-nightly"
+assert_link "$NIGHTLY_HEADLESS_HOME/.local/bin/runtimed-nightly" "$NIGHTLY_HEADLESS_PREFIX/bin/runtimed-nightly"
+assert_link "$NIGHTLY_HEADLESS_HOME/.local/bin/nteract-mcp-nightly" "$NIGHTLY_HEADLESS_PREFIX/bin/nteract-mcp-nightly"
+grep -q "runt-nightly daemon doctor --fix --no-start" "$NIGHTLY_HEADLESS_LOG" || fail "nightly headless: daemon doctor --fix --no-start not invoked"
+grep -q "runt-nightly workstation connect" "$WORK/nightly-headless-out.log" || fail "nightly headless: summary should name the channel-specific connect command"
+grep -q "runt-nightly workstation run" "$WORK/nightly-headless-out.log" || fail "nightly headless: summary should name the channel-specific run command"
 
 note "darwin desktop install (explicit --applications-dir)"
 DARWIN_HOME="$WORK/darwin-home"
