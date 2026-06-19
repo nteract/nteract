@@ -17,9 +17,12 @@ describe("NotebookPackageSummaryPanel", () => {
       ],
     };
 
-    render(<NotebookPackageSummaryPanel packages={packages} readOnly />);
+    const { container } = render(<NotebookPackageSummaryPanel packages={packages} readOnly />);
 
     expect(screen.getByTestId("notebook-packages-panel")).toHaveAttribute("data-read-only", "true");
+    expect(container.querySelector('[data-slot="environment-package-summary-panel"]')).toHaveClass(
+      "-my-3",
+    );
     expect(screen.getByRole("list", { name: "Declared packages" })).toBeVisible();
     expect(screen.getByText("pandas>=2")).toBeVisible();
     expect(screen.getByText("polars")).toBeVisible();
