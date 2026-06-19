@@ -1,8 +1,7 @@
 "use client";
 
 import { NotebookHostProvider } from "@nteract/notebook-host";
-import { ExternalLink, MessageSquare, Share2, UsersRound } from "lucide-react";
-import Link from "next/link";
+import { Share2 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { resolveNotebookOutlineSelection } from "runtimed";
 import {
@@ -15,7 +14,6 @@ import {
   NotebookEditModeButton,
   NotebookPackageSummaryPanel,
   NotebookToolbarFrame,
-  NotebookToolbarIdentity,
   NotebookWorkstationsPanel,
   createNotebookInteractionModeProjection,
   projectNotebookWorkstationSelection,
@@ -330,7 +328,7 @@ export function FullShellCompositionExample() {
           />
         }
       >
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_clamp(20rem,24vw,25rem)] overflow-hidden max-[1180px]:grid-cols-1">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <CrdtBridgeProvider {...crdtAdapter}>
             <section
               aria-label="Notebook document"
@@ -385,25 +383,6 @@ export function FullShellCompositionExample() {
               </div>
             </section>
           </CrdtBridgeProvider>
-          <aside
-            aria-label="Notebook comments"
-            className="min-h-0 overflow-y-auto border-l border-border bg-card px-3 py-3 text-card-foreground max-[1180px]:hidden"
-          >
-            <div className="mb-3 flex min-w-0 items-center justify-between gap-3 px-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <MessageSquare className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                <h2 className="truncate text-sm font-semibold">Comments</h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActivePanel("comments")}
-                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                Rail
-              </button>
-            </div>
-            {commentsPanel}
-          </aside>
         </div>
       </NotebookDocumentShell>
     </NotebookHostProvider>
@@ -449,16 +428,13 @@ function FullShellToolbar({
         )}
         presence={<FullShellTitle />}
         utilityControls={
-          <>
-            <FullShellPresence />
-            <NotebookEditModeButton
-              mode={mode}
-              state={interaction.state}
-              onModeChange={onModeChange}
-              variant="segmented"
-              className="bg-muted/35"
-            />
-          </>
+          <NotebookEditModeButton
+            mode={mode}
+            state={interaction.state}
+            onModeChange={onModeChange}
+            variant="segmented"
+            className="bg-muted/35"
+          />
         }
         sharingControls={
           <button
@@ -469,14 +445,6 @@ function FullShellToolbar({
             <Share2 className="size-3.5" aria-hidden="true" />
             <span className="hidden sm:inline">Share</span>
           </button>
-        }
-        identityControls={
-          <NotebookToolbarIdentity
-            capabilities={capabilities}
-            maxVisible={2}
-            variant="inline"
-            className="hidden xl:flex"
-          />
         }
       />
       <div className="min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -509,38 +477,14 @@ function FullShellToolbar({
 
 function FullShellTitle() {
   return (
-    <div className="flex min-w-0 items-center gap-3" data-slot="full-shell-title">
-      <Link
-        href="/docs/full-shell-composition"
-        className="hidden size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground sm:inline-flex"
-        title="Open shell notes"
-        aria-label="Open shell notes"
-      >
-        <ExternalLink className="size-4" aria-hidden="true" />
-      </Link>
-      <div className="grid min-w-0 text-left">
-        <span className="truncate text-sm font-semibold text-foreground">
-          MathNet topic visualization
-        </span>
-        <span className="hidden truncate text-[11px] leading-4 text-muted-foreground sm:block">
-          preview.runt.run/n/topic-viz/topic-viz
-        </span>
-      </div>
+    <div className="grid min-w-0 text-left" data-slot="full-shell-title">
+      <span className="truncate text-sm font-semibold text-foreground">
+        MathNet topic visualization
+      </span>
+      <span className="hidden truncate text-[11px] leading-4 text-muted-foreground sm:block">
+        preview.runt.run/n/topic-viz/topic-viz
+      </span>
     </div>
-  );
-}
-
-function FullShellPresence() {
-  return (
-    <button
-      type="button"
-      className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      title="Kyle and Morgan are in this notebook"
-      aria-label="2 people in this notebook"
-    >
-      <UsersRound className="size-3.5" aria-hidden="true" />
-      <span className="hidden md:inline">2 here</span>
-    </button>
   );
 }
 

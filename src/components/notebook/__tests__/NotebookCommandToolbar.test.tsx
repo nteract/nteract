@@ -80,7 +80,7 @@ describe("NotebookCommandToolbar", () => {
       <NotebookCommandToolbar
         capabilities={editableToolbarCapabilities}
         runtimeStatus={runtimeStatus}
-        presenceControls={<div>2 here now, editing</div>}
+        presenceControls={<div>Notebook title</div>}
         utilityControls={<button type="button">Utility</button>}
         sharingControls={<button type="button">Share</button>}
         editControls={<button type="button">View</button>}
@@ -89,7 +89,7 @@ describe("NotebookCommandToolbar", () => {
       />,
     );
 
-    expect(screen.getByText("2 here now, editing")).toBeVisible();
+    expect(screen.getByText("Notebook title")).toBeVisible();
     expect(screen.getByRole("button", { name: "Utility" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Share" })).toBeVisible();
     expect(screen.getByRole("button", { name: "View" })).toBeVisible();

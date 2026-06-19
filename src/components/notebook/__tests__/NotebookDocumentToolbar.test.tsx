@@ -50,7 +50,7 @@ describe("NotebookDocumentToolbar", () => {
         capabilities={capabilities()}
         frameClassName="test-frame"
         headerClassName="test-header"
-        presence={<span>2 here now, editing</span>}
+        presence={<span>Notebook title</span>}
         utilityControls={<button type="button">Status</button>}
         notices={<p>Syncing</p>}
       />,
@@ -62,7 +62,7 @@ describe("NotebookDocumentToolbar", () => {
     expect(container.querySelector("[data-slot='notebook-document-header']")).toHaveClass(
       "test-header",
     );
-    expect(screen.getByText("2 here now, editing")).toBeVisible();
+    expect(screen.getByText("Notebook title")).toBeVisible();
     expect(screen.getByRole("button", { name: "Status" })).toBeVisible();
     expect(screen.getByText("Syncing")).toBeVisible();
   });
