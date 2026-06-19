@@ -156,44 +156,49 @@ function cleanupBokehDocument(documentId: string | null): void {
 function BokehRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const payload = asBokehPayload(rawData);
+  const documentId = bokehDocumentId(metadata);
+  const serverId = bokehServerId(metadata);
+  const loadCode =
+    mimeType === BOKEHJS_LOAD_MIME_TYPE
+      ? (normalizeText(payload[BOKEHJS_LOAD_MIME_TYPE]) ??
+        normalizeText(payload["application/javascript"]))
+      : null;
+  const execCode =
+    mimeType === BOKEHJS_EXEC_MIME_TYPE ? normalizeText(payload["application/javascript"]) : null;
+  const serverHtml =
+    mimeType === BOKEHJS_EXEC_MIME_TYPE && serverId ? normalizeText(payload["text/html"]) : null;
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     setError(null);
-    const payload = asBokehPayload(rawData);
-    const documentId = bokehDocumentId(metadata);
     let script: HTMLScriptElement | null = null;
     let cancelled = false;
 
     async function renderBokeh() {
       if (mimeType === BOKEHJS_LOAD_MIME_TYPE) {
-        const code =
-          normalizeText(payload[BOKEHJS_LOAD_MIME_TYPE]) ??
-          normalizeText(payload["application/javascript"]);
-        if (!code) return;
-        script = appendExecutableScript(container, code);
+        if (!loadCode) return;
+        script = appendExecutableScript(container, loadCode);
         return;
       }
 
       if (mimeType !== BOKEHJS_EXEC_MIME_TYPE) return;
 
-      const serverId = bokehServerId(metadata);
       if (serverId) {
-        const html = normalizeText(payload["text/html"]);
-        if (!html) throw new Error("Bokeh server output did not include text/html script data");
-        script = scriptFromServerHtml(html);
+        if (!serverHtml)
+          throw new Error("Bokeh server output did not include text/html script data");
+        script = scriptFromServerHtml(serverHtml);
         container.appendChild(script);
         requestHostResize();
         return;
       }
 
-      const code = normalizeText(payload["application/javascript"]);
-      if (!code) throw new Error("Bokeh output did not include application/javascript data");
-      await ensureBokeh(extractBokehVersion(code));
+      if (!execCode) throw new Error("Bokeh output did not include application/javascript data");
+      await ensureBokeh(extractBokehVersion(execCode));
       if (cancelled) return;
-      script = appendExecutableScript(container, code);
+      script = appendExecutableScript(container, execCode);
     }
 
     void renderBokeh().catch((renderError) => {
@@ -209,7 +214,7 @@ function BokehRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
       }
       cleanupBokehDocument(documentId);
     };
-  }, [rawData, metadata, mimeType]);
+  }, [documentId, execCode, loadCode, mimeType, serverHtml, serverId]);
 
   return (
     <div data-slot="bokeh-output" ref={containerRef}>
