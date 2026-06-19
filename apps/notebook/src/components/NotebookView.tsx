@@ -60,6 +60,10 @@ import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CodeCell, type HiddenGroupCellSummary } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
+import type {
+  SourceCommentSelectionRect,
+  SourceRangeCommentAnchor,
+} from "../lib/comment-source-anchor";
 
 type AddCellResult = NotebookCell | null;
 type AddCellHandler = (type: CellInsertionType, afterCellId?: string | null) => AddCellResult;
@@ -84,6 +88,11 @@ export interface NotebookViewProps {
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
+  onCreateSourceComment?: (
+    anchor: SourceRangeCommentAnchor,
+    rect: SourceCommentSelectionRect | null,
+  ) => void;
+  onActivateCommentThread?: (threadId: string) => void;
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFramesUntilVisible?: boolean;
@@ -360,6 +369,8 @@ function NotebookViewContent({
   onReportOutputMatchCount,
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
+  onCreateSourceComment,
+  onActivateCommentThread,
   markdownHeadingAnchorsByCellId,
   outputHostContext,
   deferOutputIsolatedFramesUntilVisible = false,
@@ -934,6 +945,8 @@ function NotebookViewContent({
             rightGutterContent={rightGutterContent}
             readOnly={!canEditCodeCellSources}
             canExecute={canExecuteCells}
+            onCreateSourceComment={onCreateSourceComment}
+            onActivateCommentThread={onActivateCommentThread}
             outputHostContext={outputHostContext}
             deferOutputIsolatedFrameUntilVisible={deferOutputIsolatedFramesUntilVisible}
             deferredOutputIsolatedFrameRootMargin={deferredOutputIsolatedFrameRootMargin}
@@ -1029,6 +1042,8 @@ function NotebookViewContent({
           isDragging={isDragging}
           rightGutterContent={rightGutterContent}
           readOnly={!canEditCodeCellSources}
+          onCreateSourceComment={onCreateSourceComment}
+          onActivateCommentThread={onActivateCommentThread}
         />
       );
     },
@@ -1044,6 +1059,8 @@ function NotebookViewContent({
       onReportOutputMatchCount,
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
+      onCreateSourceComment,
+      onActivateCommentThread,
       markdownHeadingAnchorsByCellId,
       canEditCodeCellSources,
       canEditMarkdownSources,

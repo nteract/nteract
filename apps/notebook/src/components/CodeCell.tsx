@@ -41,6 +41,13 @@ import { logNotebookIsolatedDiagnostic } from "../lib/isolated-diagnostics";
 import { useCellOutputs } from "@/components/notebook/state/output-store";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
+import { commentHighlightExtension } from "../lib/comment-highlight-extension";
+import { refreshCellCommentHighlights } from "../lib/comment-highlights";
+import type {
+  SourceCommentSelectionRect,
+  SourceRangeCommentAnchor,
+} from "../lib/comment-source-anchor";
+import { sourceCommentExtension } from "../lib/source-comment-extension";
 import { tabCompletionKeymap } from "../lib/tab-completion";
 import type { CodeCell as CodeCellType, JupyterOutput } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
@@ -96,6 +103,11 @@ interface CodeCellProps {
   rightGutterContent?: ReactNode;
   readOnly?: boolean;
   canExecute?: boolean;
+  onCreateSourceComment?: (
+    anchor: SourceRangeCommentAnchor,
+    rect: SourceCommentSelectionRect | null,
+  ) => void;
+  onActivateCommentThread?: (threadId: string) => void;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFrameUntilVisible?: boolean;
   deferredOutputIsolatedFrameRootMargin?: string;
@@ -347,6 +359,8 @@ export const CodeCell = memo(function CodeCell({
   rightGutterContent,
   readOnly = false,
   canExecute = !readOnly,
+  onCreateSourceComment,
+  onActivateCommentThread,
   outputHostContext,
   deferOutputIsolatedFrameUntilVisible = false,
   deferredOutputIsolatedFrameRootMargin,
@@ -445,6 +459,7 @@ export const CodeCell = memo(function CodeCell({
         registeredViewRef.current = view;
         registerCellEditor(cell.id, view);
         onEditorRegistered(cell.id);
+        refreshCellCommentHighlights(cell.id);
         return true;
       }
       return false;
@@ -603,7 +618,25 @@ export const CodeCell = memo(function CodeCell({
     ];
   }, [cell.id, presence]);
 
-  // CodeMirror extensions: CRDT bridge + kernel completion + tab completion + search highlighting + remote cursors + presence sender
+  const sourceCommentExt = useMemo(() => {
+    // The create affordance (selection tooltip + keymap) needs editor focus,
+    // which a read-only editor never takes, so offer it only on editable cells.
+    // Reading existing threads stays open to everyone via commentHighlightExt.
+    if (readOnly || !onCreateSourceComment) return [];
+    return [sourceCommentExtension(cell.id, onCreateSourceComment)];
+  }, [cell.id, onCreateSourceComment, readOnly]);
+
+  const commentHighlightExt = useMemo(() => {
+    if (!onActivateCommentThread) return [];
+    return [
+      commentHighlightExtension({
+        onActivate: onActivateCommentThread,
+        onReady: () => refreshCellCommentHighlights(cell.id),
+      }),
+    ];
+  }, [cell.id, onActivateCommentThread]);
+
+  // CodeMirror extensions: CRDT bridge, completion, search, presence, and comments.
   const editorExtensions = useMemo(
     () => [
       crdtBridgeExt,
@@ -613,6 +646,8 @@ export const CodeCell = memo(function CodeCell({
       ...remoteCursorsExt,
       ...textAttributionExt,
       ...presenceSenderExt,
+      ...sourceCommentExt,
+      ...commentHighlightExt,
     ],
     [
       crdtBridgeExt,
@@ -622,6 +657,8 @@ export const CodeCell = memo(function CodeCell({
       remoteCursorsExt,
       textAttributionExt,
       presenceSenderExt,
+      sourceCommentExt,
+      commentHighlightExt,
     ],
   );
 

@@ -123,6 +123,9 @@ export {
 
 // Handle
 export type {
+  CommentAnchor,
+  CommentThreadSnapshot,
+  CommentsProjection,
   ExecutionQueueProjection,
   ExecutionViewChangeset,
   ExecutionViewSnapshot,

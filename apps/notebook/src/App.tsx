@@ -3,6 +3,10 @@ import {
   deriveEnvManager,
   deriveRuntimeKind,
   NotebookClient,
+  resolveActorDisplay,
+  type CommentAnchor,
+  type CommentThreadSnapshot,
+  type CommentsProjection,
   type ExecuteCellOptions,
   type NotebookResponse,
   type NotebookOutlineItem,
@@ -43,6 +47,7 @@ import {
   DebugBanner,
   EnvBuildDecisionDialog,
   KernelLaunchErrorBanner,
+  NotebookCommentsPanel,
   NotebookConnectionIdentity,
   NotebookDocumentRail,
   NotebookDocumentShell,
@@ -50,8 +55,21 @@ import {
   shouldShowKernelLaunchErrorBanner,
   TrustDialog,
   UntrustedBanner,
+  type CommentAuthor,
+  type NotebookCommentDraftTarget,
 } from "@/components/notebook";
 import { GlobalFindBar } from "@/components/search";
+import { InlineCommentComposer } from "./components/InlineCommentComposer";
+import { setSourceCommentThreads, type SourceCommentThread } from "./lib/comment-highlights";
+import {
+  resolveSourceRangeAnchor,
+  type SourceCommentSelectionRect,
+  type SourceRangeCommentAnchor,
+} from "./lib/comment-source-anchor";
+import {
+  setCommentsProjectionSnapshot,
+  useCommentsProjection,
+} from "./lib/comments-projection-store";
 import { createDesktopConnectionStatusSource } from "./lib/desktop-connection-status";
 import {
   CondaDependencyPanel as CondaDependencyHeader,
@@ -104,7 +122,7 @@ import {
   markExecutionPerformance,
   startExecutionPerformanceTrace,
 } from "./lib/execution-performance";
-import { getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
+import { getCellById, getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
 import { useNotebookViewModel } from "@/components/notebook/state/view-model-store";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
@@ -176,6 +194,35 @@ async function sendMessage(message: unknown): Promise<void> {
 
 function createClientExecutionId(): string {
   return globalThis.crypto.randomUUID();
+}
+
+function createLocalCommentEntityId(prefix: "thread" | "message"): string {
+  return `${prefix}-${globalThis.crypto.randomUUID()}`;
+}
+
+function canConnectionScopeMutateComments(connectionScope: string | null): boolean {
+  return connectionScope === null || connectionScope === "editor" || connectionScope === "owner";
+}
+
+function commentAnchorThreadOrderScope(anchor: CommentAnchor): string {
+  switch (anchor.kind) {
+    case "notebook":
+      return "notebook";
+    case "cell":
+    case "source_range":
+      return `cell:${anchor.cell_id}`;
+    case "output":
+      return `output:${anchor.cell_id}:${anchor.execution_id ?? ""}:${anchor.output_id ?? ""}`;
+    case "cell_range":
+      return `cell_range:${anchor.start_cell_id}:${anchor.end_cell_id}`;
+  }
+}
+
+function sourceRangeAnchorMatchesCurrentCell(anchor: CommentAnchor): boolean {
+  if (anchor.kind !== "source_range") return false;
+  const cell = getCellById(anchor.cell_id);
+  if (!cell || (cell.cell_type !== "code" && cell.cell_type !== "raw")) return false;
+  return resolveSourceRangeAnchor(cell.source, anchor) !== null;
 }
 
 function markClientExecuteResponse(
@@ -313,6 +360,37 @@ function AppContent() {
   // `useObservable` seeds with `null` until the engine emits.
   const sessionStatus = useObservable<SessionStatus | null>(sessionStatus$, null);
   const sessionReady = sessionStatus?.runtime_state === "ready";
+  const commentsProjection = useCommentsProjection();
+  const [commentsError, setCommentsError] = useState<string | null>(null);
+  const [commentDraftTarget, setCommentDraftTarget] = useState<NotebookCommentDraftTarget | null>(
+    null,
+  );
+  const [sourceCommentRequest, setSourceCommentRequest] = useState<{
+    anchor: SourceRangeCommentAnchor;
+    rect: SourceCommentSelectionRect;
+  } | null>(null);
+  const [commentFocus, setCommentFocus] = useState<{ threadId: string; nonce: number } | null>(
+    null,
+  );
+
+  const refreshCommentsProjection = useCallback(() => {
+    const projection =
+      (getHandle()?.get_comments_projection?.() as CommentsProjection | undefined) ?? null;
+    setCommentsProjectionSnapshot(projection);
+    return projection;
+  }, [getHandle]);
+
+  useEffect(() => {
+    refreshCommentsProjection();
+    const engine = getEngine();
+    if (!engine) return;
+    const subscription = engine.commentsProjection$.subscribe((projection) => {
+      setCommentsProjectionSnapshot(projection);
+      setCommentsError(null);
+    });
+    return () => subscription.unsubscribe();
+  }, [getEngine, refreshCommentsProjection, sessionStatus?.notebook_doc]);
+
   // Global find (Cmd+F)
   const globalFind = useGlobalFind(cellIds);
 
@@ -531,6 +609,319 @@ function AppContent() {
       sessionReady,
       statusKey,
     ],
+  );
+  const canMutateComments =
+    Boolean(commentsProjection) && canConnectionScopeMutateComments(connectionScope);
+  const commentsPanelStatus =
+    commentsProjection === null
+      ? "Comments sync unavailable."
+      : canMutateComments
+        ? null
+        : "Read-only connection.";
+  const failCommentAction = useCallback((message: string): never => {
+    setCommentsError(message);
+    throw new Error(message);
+  }, []);
+
+  useEffect(() => {
+    if (!canMutateComments) {
+      setCommentDraftTarget(null);
+      setSourceCommentRequest(null);
+    }
+  }, [canMutateComments]);
+
+  const applyLocalCommentEvent = useCallback(
+    (event: unknown): boolean => {
+      const engine = getEngine();
+      if (!engine) {
+        setCommentsError("Comments are not connected.");
+        return false;
+      }
+      const applied = engine.applyLocalMutationEvent(
+        event as Parameters<typeof engine.applyLocalMutationEvent>[0],
+      );
+      if (!applied) {
+        setCommentsError("Unable to update comments.");
+        return false;
+      }
+      setCommentsError(null);
+      engine.scheduleFlush();
+      refreshCommentsProjection();
+      return true;
+    },
+    [getEngine, refreshCommentsProjection],
+  );
+
+  const handleCreateCommentThread = useCallback(
+    async (anchor: CommentAnchor, body: string) => {
+      if (!canMutateComments) {
+        return failCommentAction("Comments are read-only.");
+      }
+      const handle = getHandle();
+      if (!handle || typeof handle.create_comment_thread !== "function") {
+        return failCommentAction("Comments sync unavailable.");
+      }
+      setCommentsError(null);
+      const projection = refreshCommentsProjection() ?? commentsProjection;
+      const orderScope = commentAnchorThreadOrderScope(anchor);
+      const afterThreadId =
+        projection?.threads
+          .filter((thread) => commentAnchorThreadOrderScope(thread.anchor) === orderScope)
+          .at(-1)?.id ?? null;
+      try {
+        const event = handle.create_comment_thread(
+          createLocalCommentEntityId("thread"),
+          createLocalCommentEntityId("message"),
+          anchor,
+          body,
+          afterThreadId,
+          new Date().toISOString(),
+        );
+        if (!applyLocalCommentEvent(event)) {
+          throw new Error("Unable to update comments.");
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Create comment failed.";
+        setCommentsError(message);
+        throw error instanceof Error ? error : new Error(message);
+      }
+    },
+    [
+      applyLocalCommentEvent,
+      canMutateComments,
+      commentsProjection,
+      failCommentAction,
+      getHandle,
+      refreshCommentsProjection,
+    ],
+  );
+
+  const handleCreateDocumentComment = useCallback(
+    (body: string) => handleCreateCommentThread({ kind: "notebook" }, body),
+    [handleCreateCommentThread],
+  );
+
+  const handleCreatePanelComment = useCallback(
+    async (body: string) => {
+      if (!commentDraftTarget) {
+        await handleCreateDocumentComment(body);
+        return;
+      }
+      if (!sourceRangeAnchorMatchesCurrentCell(commentDraftTarget.anchor)) {
+        failCommentAction("Selected source changed. Select the text again before commenting.");
+        return;
+      }
+      await handleCreateCommentThread(commentDraftTarget.anchor, body);
+      setCommentDraftTarget(null);
+    },
+    [commentDraftTarget, failCommentAction, handleCreateCommentThread, handleCreateDocumentComment],
+  );
+
+  const handleRequestSourceComment = useCallback(
+    (anchor: SourceRangeCommentAnchor, rect: SourceCommentSelectionRect | null) => {
+      setCommentsError(null);
+      if (rect) {
+        setSourceCommentRequest({ anchor, rect });
+        return;
+      }
+      setSourceCommentRequest(null);
+      setCommentDraftTarget({ anchor, quote: anchor.exact_quote ?? null });
+      openNotebookRailPanel("comments");
+    },
+    [],
+  );
+
+  const handleSubmitSourceComment = useCallback(
+    async (body: string) => {
+      if (!sourceCommentRequest) return;
+      if (!sourceRangeAnchorMatchesCurrentCell(sourceCommentRequest.anchor)) {
+        setSourceCommentRequest(null);
+        setCommentsError("Selected source changed. Select the text again before commenting.");
+        return;
+      }
+      await handleCreateCommentThread(sourceCommentRequest.anchor, body);
+      setSourceCommentRequest(null);
+    },
+    [handleCreateCommentThread, sourceCommentRequest],
+  );
+
+  const handleCancelSourceComment = useCallback(() => {
+    setSourceCommentRequest(null);
+  }, []);
+
+  const resolveCommentAuthor = useCallback(
+    (actorLabel: string): CommentAuthor => {
+      const display = resolveActorDisplay({
+        actorLabel,
+        peers: [],
+        source: connectionScope ? "cloud" : "local",
+      });
+      return {
+        displayName: display.displayName,
+        color: display.color,
+        isAgent: display.isAgent,
+        onBehalfOf: display.onBehalfOf,
+        onBehalfOfColor: display.onBehalfOf ? display.color : undefined,
+      };
+    },
+    [connectionScope],
+  );
+
+  const resolveSourceLanguage = useCallback(
+    (cellId: string): string | undefined => {
+      const cell = getCellById(cellId);
+      if (cell?.cell_type !== "code") return undefined;
+      return runtime === "python" ? "python" : runtime === "deno" ? "typescript" : undefined;
+    },
+    [runtime],
+  );
+
+  const sourceCommentThreadsByCell = useMemo(() => {
+    const map = new Map<string, SourceCommentThread[]>();
+    for (const thread of commentsProjection?.threads ?? []) {
+      if (thread.anchor.kind !== "source_range") continue;
+      const list = map.get(thread.anchor.cell_id) ?? [];
+      const firstMessage = thread.messages[0];
+      const author = thread.created_by_actor_label
+        ? resolveCommentAuthor(thread.created_by_actor_label)
+        : undefined;
+      list.push({
+        threadId: thread.id,
+        anchor: thread.anchor,
+        resolved: thread.status === "resolved",
+        color: author?.color,
+        preview: firstMessage
+          ? {
+              authorName: author?.displayName ?? "Unknown",
+              authorColor: author?.color,
+              isAgent: author?.isAgent,
+              onBehalfOf: author?.onBehalfOf,
+              onBehalfOfColor: author?.onBehalfOfColor,
+              body: firstMessage.body,
+              replyCount: Math.max(0, thread.messages.length - 1),
+            }
+          : undefined,
+      });
+      map.set(thread.anchor.cell_id, list);
+    }
+    return map;
+  }, [commentsProjection, resolveCommentAuthor]);
+
+  useEffect(() => {
+    setSourceCommentThreads(sourceCommentThreadsByCell);
+  }, [sourceCommentThreadsByCell]);
+
+  const handleActivateCommentThread = useCallback((threadId: string) => {
+    openNotebookRailPanel("comments");
+    setCommentFocus((previous) => ({ threadId, nonce: (previous?.nonce ?? 0) + 1 }));
+  }, []);
+
+  const handleClearCommentDraftTarget = useCallback(() => {
+    setCommentDraftTarget(null);
+  }, []);
+
+  const handleReplyCommentThread = useCallback(
+    async (threadId: string, body: string) => {
+      if (!canMutateComments) return;
+      const handle = getHandle();
+      if (!handle || typeof handle.reply_comment_thread !== "function") {
+        return failCommentAction("Comments sync unavailable.");
+      }
+      setCommentsError(null);
+      const projection = refreshCommentsProjection() ?? commentsProjection;
+      const afterMessageId =
+        projection?.threads.find((thread) => thread.id === threadId)?.messages.at(-1)?.id ?? null;
+      try {
+        const event = handle.reply_comment_thread(
+          threadId,
+          createLocalCommentEntityId("message"),
+          body,
+          afterMessageId,
+          new Date().toISOString(),
+        );
+        if (!applyLocalCommentEvent(event)) {
+          throw new Error("Unable to update comments.");
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Reply failed.";
+        setCommentsError(message);
+        throw error instanceof Error ? error : new Error(message);
+      }
+    },
+    [
+      applyLocalCommentEvent,
+      canMutateComments,
+      commentsProjection,
+      failCommentAction,
+      getHandle,
+      refreshCommentsProjection,
+    ],
+  );
+
+  const handleResolveCommentThread = useCallback(
+    async (threadId: string) => {
+      if (!canMutateComments) return;
+      const handle = getHandle();
+      if (!handle || typeof handle.resolve_comment_thread !== "function") {
+        return failCommentAction("Comments sync unavailable.");
+      }
+      try {
+        const event = handle.resolve_comment_thread(threadId, new Date().toISOString());
+        if (!applyLocalCommentEvent(event)) {
+          throw new Error("Unable to update comments.");
+        }
+      } catch (error) {
+        setCommentsError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [applyLocalCommentEvent, canMutateComments, failCommentAction, getHandle],
+  );
+
+  const handleReopenCommentThread = useCallback(
+    async (threadId: string) => {
+      if (!canMutateComments) return;
+      const handle = getHandle();
+      if (!handle || typeof handle.reopen_comment_thread !== "function") {
+        return failCommentAction("Comments sync unavailable.");
+      }
+      try {
+        const event = handle.reopen_comment_thread(threadId);
+        if (!applyLocalCommentEvent(event)) {
+          throw new Error("Unable to update comments.");
+        }
+      } catch (error) {
+        setCommentsError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [applyLocalCommentEvent, canMutateComments, failCommentAction, getHandle],
+  );
+
+  const handleFocusCommentThreadAnchor = useCallback((thread: CommentThreadSnapshot) => {
+    const cellId = thread.badge_cell_ids[0];
+    if (cellId) {
+      setFocusedCellId(cellId);
+      flushCellUIState();
+    }
+  }, []);
+
+  const commentsPanel = (
+    <NotebookCommentsPanel
+      projection={commentsProjection}
+      readOnly={!canMutateComments}
+      draftTarget={canMutateComments ? commentDraftTarget : null}
+      statusMessage={commentsPanelStatus}
+      errorMessage={commentsError}
+      onClearDraftTarget={commentDraftTarget ? handleClearCommentDraftTarget : undefined}
+      onCreateThread={canMutateComments ? handleCreatePanelComment : undefined}
+      onReplyThread={canMutateComments ? handleReplyCommentThread : undefined}
+      onResolveThread={canMutateComments ? handleResolveCommentThread : undefined}
+      onReopenThread={canMutateComments ? handleReopenCommentThread : undefined}
+      onFocusThreadAnchor={handleFocusCommentThreadAnchor}
+      resolveCommentAuthor={resolveCommentAuthor}
+      focusedThreadId={commentFocus?.threadId ?? null}
+      focusNonce={commentFocus?.nonce ?? 0}
+      resolveSourceLanguage={resolveSourceLanguage}
+    />
   );
 
   // Connection/identity slot source: daemon lifecycle, stable for the
@@ -1457,6 +1848,7 @@ function AppContent() {
               onCollapsedChange={setNotebookRailCollapsed}
               onSelectOutlineItem={handleSelectOutlineItem}
               onNavigateOutlineItem={handleNavigateOutlineItem}
+              commentsPanel={commentsPanel}
               packagesPanel={
                 <NotebookPackagesPanel readOnly={!shellCapabilities.canManagePackages}>
                   {runtime === "python" && hasUvDependencies && hasCondaDependencies && (
@@ -1609,12 +2001,23 @@ function AppContent() {
                 onReportOutputMatchCount={globalFind.reportOutputMatchCount}
                 onSetCellSourceHidden={setCellSourceHidden}
                 onSetCellOutputsHidden={setCellOutputsHidden}
+                onCreateSourceComment={canMutateComments ? handleRequestSourceComment : undefined}
+                onActivateCommentThread={handleActivateCommentThread}
                 markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
               />
             </CrdtBridgeProvider>
           </div>
         </NotebookDocumentShell>
       </div>
+      {sourceCommentRequest ? (
+        <InlineCommentComposer
+          rect={sourceCommentRequest.rect}
+          quote={sourceCommentRequest.anchor.exact_quote}
+          disabled={!canMutateComments}
+          onSubmit={handleSubmitSourceComment}
+          onCancel={handleCancelSourceComment}
+        />
+      ) : null}
     </PresenceProvider>
   );
 }

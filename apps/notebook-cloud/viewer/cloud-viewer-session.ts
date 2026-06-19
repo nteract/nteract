@@ -26,7 +26,7 @@ import {
   diagnoseCloudConnectionAccess,
   isCloudConnectionAccessDiagnostic,
 } from "./connection-diagnostics";
-import { materializeChangeset } from "../../notebook/src/notebook-surface";
+import { materializeChangeset } from "../../notebook/src/lib/frame-pipeline";
 import { startCursorDispatch } from "@/components/notebook/cursor-registry";
 import { emitBroadcast, emitPresence } from "@/components/notebook/state/notebook-frame-bus";
 import { resetPoolState, setPoolState } from "@/components/notebook/state/pool-state";

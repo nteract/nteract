@@ -66,6 +66,11 @@ function scopeAllowsNotebookWrite(scope: string | null): boolean {
   return scope === null || scope === "editor" || scope === "owner";
 }
 
+function commentsDocIdFromNotebookId(notebookId: string | undefined): string | null {
+  const trimmed = notebookId?.trim();
+  return trimmed ? `comments:${trimmed}` : null;
+}
+
 let warnedMissingExecutionViewProjector = false;
 
 function projectExecutionViewChangeset(handle: NotebookHandle) {
@@ -123,6 +128,7 @@ export function useNotebook() {
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
   const prevPathRef = useRef<string | null>(null);
   const actorLabelRef = useRef(`desktop:${sessionIdRef.current}`);
+  const commentsDocIdRef = useRef<string | null>(null);
   const [localActor, setLocalActor] = useState(actorLabelRef.current);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const canWriteNotebookRef = useRef(true);
@@ -132,7 +138,12 @@ export function useNotebook() {
     () =>
       new NotebookHandleHost<NotebookHandle>({
         actorLabel: () => actorLabelRef.current,
-        createHandle: (actorLabel) => NotebookHandle.create_empty_with_actor(actorLabel),
+        createHandle: (actorLabel) => {
+          const commentsDocId = commentsDocIdRef.current;
+          return commentsDocId
+            ? NotebookHandle.create_bootstrap_with_comments(actorLabel, commentsDocId)
+            : NotebookHandle.create_empty_with_actor(actorLabel);
+        },
         getBlobPort,
         publishHandle: setNotebookHandle,
         ready: waitForNotebookWasmReady,
@@ -330,6 +341,7 @@ export function useNotebook() {
           actorLabelRef.current = trigger.payload.actor_label;
           setLocalActor(trigger.payload.actor_label);
         }
+        commentsDocIdRef.current = commentsDocIdFromNotebookId(trigger.payload.notebook_id);
         const connectionScope = trigger.payload.connection_scope ?? null;
         setConnectionScope(connectionScope);
         canWriteNotebookRef.current = scopeAllowsNotebookWrite(connectionScope);
