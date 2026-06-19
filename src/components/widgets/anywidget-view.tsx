@@ -516,6 +516,7 @@ export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
           {
             id: stableModelId,
             state: {},
+            targetName: "jupyter.widget",
             modelName: "",
             modelModule: "",
           } as WidgetModel,

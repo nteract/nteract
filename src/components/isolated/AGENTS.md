@@ -123,6 +123,7 @@ Heavy renderers (markdown, plotly, vega, leaflet, sift) are **not** in the core 
 | Vega | `application/vnd.vega*.v*` | `virtual:renderer-plugin/vega` | ~865 KB |
 | Plotly | `application/vnd.plotly.v1+json` | `virtual:renderer-plugin/plotly` | ~4.8 MB |
 | Bokeh | `application/vnd.bokehjs_*` | `virtual:renderer-plugin/bokeh` | generated wrapper; loads BokehJS on demand |
+| Panel | `application/vnd.holoviews_*` | `virtual:renderer-plugin/panel` | generated wrapper; runs Panel/PyViz notebook bundles |
 | Leaflet | `application/geo+json` | `virtual:renderer-plugin/leaflet` | ~194 KB |
 | Sift | `application/vnd.apache.parquet` | `virtual:renderer-plugin/sift` | ~380 KB JS + 138 KB CSS |
 

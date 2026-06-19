@@ -170,6 +170,35 @@ describe("Bokeh renderer plugin", () => {
     expect(renderedScripts(container)).toHaveLength(1);
   });
 
+  it("renders sibling Bokeh exec HTML before appending JavaScript", async () => {
+    const appendedSrcs = stubBokehCdnLoads();
+    const { Renderer } = installBokehRenderer();
+    window.Bokeh = {};
+
+    const { container } = render(
+      <Renderer
+        data={{
+          "text/html":
+            '<div id="bokeh-root">Bokeh root</div><script>window.__bokehHtmlRan = true;</script>',
+          "application/javascript": "window.__bokehExecRan = true;",
+          [BOKEHJS_EXEC_MIME_TYPE]: "",
+        }}
+        metadata={{ id: "p1011" }}
+        mimeType={BOKEHJS_EXEC_MIME_TYPE}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("#bokeh-root")?.textContent).toBe("Bokeh root");
+      expect(renderedScripts(container).map((script) => script.textContent)).toEqual([
+        "window.__bokehHtmlRan = true;",
+        "window.__bokehExecRan = true;",
+      ]);
+    });
+
+    expect(appendedSrcs).toEqual([]);
+  });
+
   it("appends Bokeh load MIME JavaScript directly", async () => {
     const { Renderer } = installBokehRenderer();
     const { container } = render(

@@ -82,6 +82,7 @@ describe("resolveModelRef", () => {
       id: "abc123",
       state: { value: 42 },
       buffers: [],
+      targetName: "jupyter.widget",
       modelName: "IntSliderModel",
       modelModule: "@jupyter-widgets/controls",
     };
@@ -165,6 +166,7 @@ describe("createWidgetStore", () => {
       const model = store.getModel("comm-1");
       expect(model).toBeDefined();
       expect(model?.id).toBe("comm-1");
+      expect(model?.targetName).toBe("jupyter.widget");
       expect(model?.modelName).toBe("IntSliderModel");
       expect(model?.modelModule).toBe("@jupyter-widgets/controls");
       expect(model?.state.value).toBe(50);
@@ -179,6 +181,15 @@ describe("createWidgetStore", () => {
       const model = store.getModel("comm-1");
       expect(model?.modelName).toBe("UnknownModel");
       expect(model?.modelModule).toBe("");
+      expect(model?.targetName).toBe("jupyter.widget");
+    });
+
+    it("stores the comm target name when provided", () => {
+      const store = createWidgetStore();
+
+      store.createModel("comm-1", { value: 42 }, undefined, "hv-extension-comm");
+
+      expect(store.getModel("comm-1")?.targetName).toBe("hv-extension-comm");
     });
 
     it("stores bufferPaths with the model", () => {

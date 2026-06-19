@@ -27,6 +27,7 @@ export async function projectCloudWidgetComms(
         bufferPaths: comm.buffer_paths,
         commId: comm.comm_id,
         state,
+        targetName: comm.target_name,
       };
     }),
   );
@@ -34,11 +35,11 @@ export async function projectCloudWidgetComms(
   if (options.shouldContinue && !options.shouldContinue()) return;
 
   const projectedCommIds = new Set<string>();
-  for (const { bufferPaths, commId, state } of projected) {
+  for (const { bufferPaths, commId, state, targetName } of projected) {
     if (store.getModel(commId)) {
       store.updateModel(commId, state, bufferPaths);
     } else {
-      store.createModel(commId, state, bufferPaths);
+      store.createModel(commId, state, bufferPaths, targetName);
     }
     projectedCommIds.add(commId);
   }

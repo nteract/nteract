@@ -2,7 +2,7 @@
  * Shared renderer plugin builder
  *
  * Centralizes the build logic for renderer plugins (markdown, plotly, bokeh,
- * vega, leaflet) used by both the notebook Vite plugin and MCP app build
+ * panel, vega, leaflet) used by both the notebook Vite plugin and MCP app build
  * scripts.
  *
  * Plugins are built as CJS with React externalized (React is provided by the
@@ -60,6 +60,7 @@ export const RENDERER_PLUGINS: RendererPluginDef[] = [
   { name: "markdown", entry: path.resolve(srcDir, "isolated-renderer/markdown-renderer.tsx") },
   { name: "plotly", entry: path.resolve(srcDir, "isolated-renderer/plotly-renderer.tsx") },
   { name: "bokeh", entry: path.resolve(srcDir, "isolated-renderer/bokeh-renderer.tsx") },
+  { name: "panel", entry: path.resolve(srcDir, "isolated-renderer/panel-renderer.tsx") },
   { name: "vega", entry: path.resolve(srcDir, "isolated-renderer/vega-renderer.tsx") },
   { name: "leaflet", entry: path.resolve(srcDir, "isolated-renderer/leaflet-renderer.tsx") },
   { name: "sift", entry: path.resolve(srcDir, "isolated-renderer/sift-renderer.tsx") },

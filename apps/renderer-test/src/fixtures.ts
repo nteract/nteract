@@ -95,6 +95,26 @@ export const fixtures: Fixture[] = [
       },
     }),
   },
+  {
+    label: "Panel/PyViz exec (plugin)",
+    mimeType: "application/vnd.holoviews_exec.v0+json",
+    data: {
+      "text/html": [
+        '<div id="panel-fixture-root" style="font: 14px system-ui; padding: 12px; border: 1px solid #cbd5e1;">',
+        '<label for="panel-fixture-slider">Panel slider</label>',
+        '<input id="panel-fixture-slider" type="range" min="0" max="10" value="4" />',
+        '<output id="panel-fixture-value" for="panel-fixture-slider">4</output>',
+        "</div>",
+        "<script>",
+        "const slider = document.getElementById('panel-fixture-slider');",
+        "const value = document.getElementById('panel-fixture-value');",
+        "slider.addEventListener('input', () => { value.textContent = slider.value; });",
+        "</script>",
+      ].join(""),
+      "application/vnd.holoviews_exec.v0+json": "",
+    },
+    expectedText: ["Panel slider", "4"],
+  },
 ];
 
 export function getFixtureOutputs(fixture: Fixture): FixtureOutput[] {

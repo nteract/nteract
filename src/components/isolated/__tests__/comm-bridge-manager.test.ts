@@ -87,10 +87,12 @@ function createModel(
   id: string,
   state: Record<string, unknown> = {},
   modelModule = "@jupyter-widgets/controls",
+  targetName = "jupyter.widget",
 ): WidgetModel {
   return {
     id,
     state: { _model_name: "TestModel", _model_module: modelModule, ...state },
+    targetName,
     modelName: "TestModel",
     modelModule,
   };
@@ -247,6 +249,28 @@ describe("CommBridgeManager", () => {
       expect(commSync.payload.models).toHaveLength(2);
     });
 
+    it("sends widget_snapshot with each model's stored comm target name", () => {
+      const models = new Map<string, WidgetModel>([
+        ["comm-panel", createModel("comm-panel", { value: 1 }, "", "hv-extension-comm")],
+      ]);
+      const storeWithModels = createMockStore(models);
+      const manager = new CommBridgeManager({
+        frame: mockFrame.frame,
+        store: storeWithModels.store,
+        sendUpdate,
+        sendCustom,
+        closeComm,
+      });
+
+      manager.handleIframeMessage({ type: "widget_ready" });
+
+      const commSync = mockFrame.sendCalls.find(
+        (msg: unknown) => (msg as { type: string }).type === "widget_snapshot",
+      ) as { type: string; payload: { models: Array<{ targetName: string }> } };
+
+      expect(commSync.payload.models[0].targetName).toBe("hv-extension-comm");
+    });
+
     it("tracks sent models to avoid duplicates in syncModels", () => {
       const models = new Map<string, WidgetModel>([
         ["comm-1", createModel("comm-1", { value: 1 })],
@@ -388,7 +412,7 @@ describe("CommBridgeManager", () => {
       manager.handleIframeMessage({ type: "widget_ready" });
 
       // Simulate adding a new model to the store
-      const newModel = createModel("new-comm", { value: 100 });
+      const newModel = createModel("new-comm", { value: 100 }, "", "hv-extension-comm");
       (mockStore.store.getSnapshot as ReturnType<typeof vi.fn>).mockReturnValue(
         new Map([["new-comm", newModel]]),
       );
@@ -403,6 +427,9 @@ describe("CommBridgeManager", () => {
           (msg as { payload: { commId: string } }).payload.commId === "new-comm",
       );
       expect(commOpen).toBeDefined();
+      expect((commOpen as { payload: { targetName: string } }).payload.targetName).toBe(
+        "hv-extension-comm",
+      );
     });
 
     it("sends comm_close for deleted models", () => {

@@ -55,7 +55,8 @@ function bokehServerId(metadata?: Record<string, unknown>): string | null {
   return typeof serverId === "string" ? serverId : null;
 }
 
-function extractBokehVersion(script: string): string | null {
+function extractBokehVersion(script: string | null): string | null {
+  if (!script) return null;
   return script.match(/"version"\s*:\s*"([^"]+)"/)?.[1] ?? null;
 }
 
@@ -129,6 +130,29 @@ function appendExecutableScript(container: HTMLElement, code: string): HTMLScrip
   return script;
 }
 
+function copyScript(source: HTMLScriptElement): HTMLScriptElement {
+  const script = document.createElement("script");
+  for (const attr of Array.from(source.attributes)) {
+    script.setAttribute(attr.name, attr.value);
+  }
+  script.textContent = source.textContent ?? "";
+  return script;
+}
+
+function appendHtmlWithExecutableScripts(container: HTMLElement, html: string): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = html;
+  container.appendChild(wrapper);
+
+  const inertScripts = Array.from(wrapper.querySelectorAll("script"));
+  for (const inertScript of inertScripts) {
+    inertScript.replaceWith(copyScript(inertScript));
+  }
+
+  requestHostResize();
+  return wrapper;
+}
+
 function scriptFromServerHtml(html: string): HTMLScriptElement {
   const wrapper = document.createElement("div");
   wrapper.innerHTML = html;
@@ -166,6 +190,8 @@ function BokehRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
       : null;
   const execCode =
     mimeType === BOKEHJS_EXEC_MIME_TYPE ? normalizeText(payload["application/javascript"]) : null;
+  const execHtml =
+    mimeType === BOKEHJS_EXEC_MIME_TYPE && !serverId ? normalizeText(payload["text/html"]) : null;
   const serverHtml =
     mimeType === BOKEHJS_EXEC_MIME_TYPE && serverId ? normalizeText(payload["text/html"]) : null;
 
@@ -174,13 +200,18 @@ function BokehRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
     if (!container) return;
 
     setError(null);
-    let script: HTMLScriptElement | null = null;
+    const appendedNodes: ChildNode[] = [];
     let cancelled = false;
+
+    function trackNode<T extends ChildNode>(node: T): T {
+      appendedNodes.push(node);
+      return node;
+    }
 
     async function renderBokeh() {
       if (mimeType === BOKEHJS_LOAD_MIME_TYPE) {
         if (!loadCode) return;
-        script = appendExecutableScript(container, loadCode);
+        trackNode(appendExecutableScript(container, loadCode));
         return;
       }
 
@@ -189,16 +220,24 @@ function BokehRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
       if (serverId) {
         if (!serverHtml)
           throw new Error("Bokeh server output did not include text/html script data");
-        script = scriptFromServerHtml(serverHtml);
+        const script = scriptFromServerHtml(serverHtml);
         container.appendChild(script);
+        trackNode(script);
         requestHostResize();
         return;
       }
 
-      if (!execCode) throw new Error("Bokeh output did not include application/javascript data");
-      await ensureBokeh(extractBokehVersion(execCode));
+      if (!execHtml && !execCode) {
+        throw new Error("Bokeh output did not include text/html or application/javascript data");
+      }
+      await ensureBokeh(extractBokehVersion(execCode ?? execHtml));
       if (cancelled) return;
-      script = appendExecutableScript(container, execCode);
+      if (execHtml) {
+        trackNode(appendHtmlWithExecutableScripts(container, execHtml));
+      }
+      if (execCode) {
+        trackNode(appendExecutableScript(container, execCode));
+      }
     }
 
     void renderBokeh().catch((renderError) => {
@@ -209,12 +248,14 @@ function BokehRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
 
     return () => {
       cancelled = true;
-      if (script?.parentElement === container) {
-        container.removeChild(script);
+      for (const node of appendedNodes) {
+        if (node.parentNode === container) {
+          container.removeChild(node);
+        }
       }
       cleanupBokehDocument(documentId);
     };
-  }, [documentId, execCode, loadCode, mimeType, serverHtml, serverId]);
+  }, [documentId, execCode, execHtml, loadCode, mimeType, serverHtml, serverId]);
 
   return (
     <div data-slot="bokeh-output" ref={containerRef}>

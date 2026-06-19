@@ -231,7 +231,7 @@ export class CommBridgeManager {
     for (const [commId, model] of models) {
       modelArray.push({
         commId,
-        targetName: model.modelModule || "jupyter.widget",
+        targetName: model.targetName || model.modelModule || "jupyter.widget",
         state: model.state,
         bufferPaths: model.bufferPaths,
       });
@@ -340,7 +340,7 @@ export class CommBridgeManager {
         // New model - send comm_open
         this.sendCommOpen(
           commId,
-          model.modelModule || "jupyter.widget",
+          model.targetName || model.modelModule || "jupyter.widget",
           model.state,
           model.bufferPaths,
         );

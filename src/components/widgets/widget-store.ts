@@ -10,6 +10,8 @@ export interface WidgetModel {
    * observes it. Empty / absent means no binary data.
    */
   bufferPaths?: string[][];
+  /** Comm target name, e.g., "jupyter.widget", "hv-extension-comm" */
+  targetName: string;
   /** Model class name, e.g., "IntSliderModel", "AnyModel" */
   modelName: string;
   /** Model module, e.g., "@jupyter-widgets/controls", "anywidget" */
@@ -30,7 +32,12 @@ export interface WidgetStore {
   /** Get a single model by ID */
   getModel: (modelId: string) => WidgetModel | undefined;
   /** Create a new model (on comm_open) */
-  createModel: (commId: string, state: Record<string, unknown>, bufferPaths?: string[][]) => void;
+  createModel: (
+    commId: string,
+    state: Record<string, unknown>,
+    bufferPaths?: string[][],
+    targetName?: string,
+  ) => void;
   /** Update a model's state (on comm_msg with method: "update") */
   updateModel: (
     commId: string,
@@ -157,7 +164,12 @@ export function createWidgetStore(): WidgetStore {
       return models.get(modelId);
     },
 
-    createModel(commId: string, state: Record<string, unknown>, bufferPaths?: string[][]): void {
+    createModel(
+      commId: string,
+      state: Record<string, unknown>,
+      bufferPaths?: string[][],
+      targetName = "jupyter.widget",
+    ): void {
       // Handle re-open: remove from closed set if re-opening
       closedModels.delete(commId);
 
@@ -169,6 +181,7 @@ export function createWidgetStore(): WidgetStore {
         id: commId,
         state,
         bufferPaths,
+        targetName,
         modelName,
         modelModule,
       };
