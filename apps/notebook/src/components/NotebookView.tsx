@@ -1020,6 +1020,8 @@ function NotebookViewContent({
             rightGutterContent={rightGutterContent}
             headingAnchors={markdownHeadingAnchorsByCellId?.get(cell.id)}
             readOnly={!canEditMarkdownSources}
+            onCreateSourceComment={onCreateSourceComment}
+            onActivateCommentThread={onActivateCommentThread}
             outputHostContext={outputHostContext}
           />
         );

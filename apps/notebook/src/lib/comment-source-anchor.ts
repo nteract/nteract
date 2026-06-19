@@ -75,6 +75,23 @@ export function selectionRectFromView(view: EditorView): SourceCommentSelectionR
   };
 }
 
+/**
+ * Bounding rectangle of a DOM selection in viewport coordinates, or null when
+ * the selection is empty or has no geometry.
+ */
+export function selectionRectFromDomSelection(
+  selection: Selection | null,
+): SourceCommentSelectionRect | null {
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+  const rect = selection.getRangeAt(0).getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return null;
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+}
+
+export function selectionRectFromDomRect(rect: DOMRect): SourceCommentSelectionRect {
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+}
+
 export function sourcePointFromStringOffset(source: string, offset: number): SourcePoint {
   const normalizedOffset = Math.min(source.length, Math.max(0, offset));
   let line = 0;

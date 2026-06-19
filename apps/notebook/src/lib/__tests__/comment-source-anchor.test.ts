@@ -11,6 +11,10 @@ import {
   sourcePointFromOffset,
   sourcePointFromStringOffset,
 } from "../comment-source-anchor";
+import {
+  sourceRangeAnchorFromRenderedMarkdownRuns,
+  sourceRangeAnchorFromRenderedMarkdownSelection,
+} from "../rendered-markdown-source-comment";
 
 let view: EditorView | null = null;
 
@@ -28,6 +32,7 @@ describe("comment-source-anchor", () => {
   afterEach(() => {
     view?.destroy();
     view = null;
+    window.getSelection()?.removeAllRanges();
   });
 
   it("converts source offsets to zero-based line and column points", () => {
@@ -99,6 +104,112 @@ describe("comment-source-anchor", () => {
       exact_quote: "beta",
       suffix_quote: "\n",
     });
+  });
+
+  it("maps rendered markdown text selections back to source_range anchors", () => {
+    const root = document.createElement("div");
+    root.innerHTML = `
+      <p>
+        <span data-markdown-source-run="true" data-rendered-start="0" data-rendered-end="11" data-source-start="0" data-source-end="11">plain prose</span>
+      </p>
+    `;
+    document.body.append(root);
+    const run = root.querySelector("[data-markdown-source-run='true']");
+    const text = run?.firstChild;
+    if (!text) throw new Error("missing run text");
+
+    const range = document.createRange();
+    range.setStart(text, "plain ".length);
+    range.setEnd(text, "plain prose".length);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    expect(
+      sourceRangeAnchorFromRenderedMarkdownSelection(
+        "cell-1",
+        "plain prose",
+        root,
+        window.getSelection(),
+      ),
+    ).toMatchObject({
+      kind: "source_range",
+      cell_id: "cell-1",
+      start_line: 0,
+      start_column: "plain ".length,
+      end_line: 0,
+      end_column: "plain prose".length,
+      exact_quote: "prose",
+    });
+
+    root.remove();
+  });
+
+  it("rejects rendered markdown selections when hidden source markup changes selected text", () => {
+    const root = document.createElement("div");
+    root.innerHTML = `
+      <p>
+        <span data-markdown-source-run="true" data-rendered-start="0" data-rendered-end="4" data-source-start="0" data-source-end="8"><strong>bold</strong></span>
+      </p>
+    `;
+    document.body.append(root);
+    const run = root.querySelector("[data-markdown-source-run='true']");
+    const text = run?.textContent ? run.querySelector("strong")?.firstChild : null;
+    if (!text) throw new Error("missing strong text");
+
+    const range = document.createRange();
+    range.setStart(text, 1);
+    range.setEnd(text, 3);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    expect(
+      sourceRangeAnchorFromRenderedMarkdownSelection(
+        "cell-1",
+        "**bold**",
+        root,
+        window.getSelection(),
+      ),
+    ).toBeNull();
+
+    root.remove();
+  });
+
+  it("maps rendered markdown runs back to keyboard-created source_range anchors", () => {
+    expect(
+      sourceRangeAnchorFromRenderedMarkdownRuns("cell-1", "plain prose", [
+        {
+          blockId: "p0",
+          inlineId: "r0",
+          listItemIndex: null,
+          renderedText: "plain prose",
+          renderedTextUtf16: [0, 11],
+          semantic: "text",
+          sourceSpanByte: [0, 11],
+          sourceSpanUtf16: [0, 11],
+        },
+      ]),
+    ).toMatchObject({
+      kind: "source_range",
+      cell_id: "cell-1",
+      exact_quote: "plain prose",
+    });
+  });
+
+  it("rejects rendered markdown runs when hidden source markup changes selected text", () => {
+    expect(
+      sourceRangeAnchorFromRenderedMarkdownRuns("cell-1", "**bold**", [
+        {
+          blockId: "p0",
+          inlineId: "r0",
+          listItemIndex: null,
+          renderedText: "bold",
+          renderedTextUtf16: [0, 4],
+          semantic: "strong",
+          sourceSpanByte: [0, 8],
+          sourceSpanUtf16: [0, 8],
+        },
+      ]),
+    ).toBeNull();
   });
 });
 
