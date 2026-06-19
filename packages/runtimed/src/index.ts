@@ -290,6 +290,14 @@ export {
   type ParsedNotebookActorLabel,
 } from "./notebook-actor-projection";
 
+// Notebook actor display
+export {
+  resolveActorDisplay,
+  type ActorDisplay,
+  type ActorDisplayPeer,
+  type ResolveActorDisplayOptions,
+} from "./notebook-actor-display";
+
 // Notebook shell capability projection
 export {
   notebookShellRuntimeTargetSummary,

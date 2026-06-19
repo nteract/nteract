@@ -38,10 +38,12 @@ import {
   setFocusedCellId,
   useFocusedCellId,
   useNotebookViewModel,
+  type CommentAuthor,
   type CommentAnchor,
   type CommentThreadSnapshot,
   type CommentsProjection,
 } from "@/components/notebook";
+import { peerColor } from "@/components/editor/remote-cursors";
 import {
   openNotebookRailPanel,
   setActiveNotebookRailPanel,
@@ -53,6 +55,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { EnvironmentSummary } from "@/components/environment";
 import {
   NotebookClient,
+  resolveActorDisplay,
   workstationAttachmentCanExecute,
   workstationAttachmentIsConnected,
   type CellChangeset,
@@ -537,6 +540,33 @@ export function NotebookViewer({
     presenceStore.subscribe,
     presenceStore.getSnapshot,
     presenceStore.getSnapshot,
+  );
+  const commentAuthorPeers = useMemo(
+    () =>
+      presenceSnapshot.peers.map((peer) => ({
+        participantKey: peer.participantKey,
+        label: peer.label,
+      })),
+    [presenceSnapshot.peers],
+  );
+  const resolveCloudCommentAuthor = useCallback(
+    (actorLabel: string): CommentAuthor => {
+      const display = resolveActorDisplay({
+        actorLabel,
+        peers: commentAuthorPeers,
+        source: "cloud",
+      });
+      const principalColor = peerColor(display.principalId);
+
+      return {
+        displayName: display.displayName,
+        color: principalColor,
+        isAgent: display.isAgent,
+        onBehalfOf: display.onBehalfOf,
+        onBehalfOfColor: display.onBehalfOf ? principalColor : undefined,
+      };
+    },
+    [commentAuthorPeers],
   );
   const runtimeState = useRuntimeState();
   // Deduplicated shared projection — re-renders only when attachment facts
@@ -1489,6 +1519,7 @@ export function NotebookViewer({
       onResolveThread={canWriteComments ? handleResolveCommentThread : undefined}
       onReopenThread={canWriteComments ? handleReopenCommentThread : undefined}
       onFocusThreadAnchor={handleFocusCommentAnchor}
+      resolveCommentAuthor={resolveCloudCommentAuthor}
     />
   );
   const rail = (
