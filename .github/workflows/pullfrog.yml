@@ -6,10 +6,15 @@ on:
     inputs:
       prompt:
         type: string
-        description: Agent prompt
+        description: Review prompt
+        required: true
       name:
         type: string
         description: Run name
+      model_id:
+        type: string
+        description: Bedrock model or inference profile ID
+        default: us.anthropic.claude-sonnet-4-6
 
 permissions:
   contents: read
@@ -26,10 +31,134 @@ jobs:
         with:
           fetch-depth: 1
       - name: Run agent
+        id: review
         uses: pullfrog/pullfrog@v0
         with:
-          prompt: ${{ inputs.prompt }}
+          model: bedrock/byok
+          push: disabled
+          prompt: |
+            Review this repository as a senior nteract code reviewer. Stay
+            read-only. Focus on concrete bugs, behavioral regressions, data
+            loss, security issues, concurrency hazards, broken tests, and
+            missing tests that could allow the diff to regress.
+
+            Do not report style-only comments. Do not invent findings. Every
+            finding must identify a concrete failure mode, why the diff
+            introduced or exposed it, and the affected file and line when
+            possible.
+
+            Verdict rules:
+            - "✅" means the review completed and found no actionable issues.
+            - "⚠️" means the review found non-blocking risk, missing coverage,
+              uncertainty, or a follow-up the human should consider.
+            - "🚨" means the review found a blocker/high-confidence regression,
+              security/data-loss risk, or the review could not be trusted
+              because of infrastructure/tooling uncertainty.
+
+            Return the structured output by calling Pullfrog's set_output tool.
+            The output must match the provided JSON schema exactly. Do not add
+            markdown, prose, or extra keys outside the schema.
+
+            Caller prompt:
+            ${{ inputs.prompt }}
+          output_schema: |
+            {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["verdict", "summary", "findings"],
+              "properties": {
+                "verdict": {
+                  "type": "string",
+                  "enum": ["✅", "⚠️", "🚨"],
+                  "description": "Overall review result."
+                },
+                "summary": {
+                  "type": "string",
+                  "description": "One concise sentence. Say there are no actionable findings when verdict is ✅."
+                },
+                "findings": {
+                  "type": "array",
+                  "description": "Actionable findings only. Empty when verdict is ✅.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "severity",
+                      "file",
+                      "line",
+                      "title",
+                      "evidence",
+                      "suggested_fix",
+                      "confidence"
+                    ],
+                    "properties": {
+                      "severity": {
+                        "type": "string",
+                        "enum": ["blocker", "high", "medium", "low"]
+                      },
+                      "file": {
+                        "type": ["string", "null"],
+                        "description": "Repo-relative file path, or null for infrastructure/tooling findings."
+                      },
+                      "line": {
+                        "type": ["integer", "null"],
+                        "description": "Changed or relevant line number, or null when not applicable."
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "evidence": {
+                        "type": "string",
+                        "description": "Why this is a real bug, regression risk, or review blocker."
+                      },
+                      "suggested_fix": {
+                        "type": ["string", "null"]
+                      },
+                      "confidence": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"]
+                      }
+                    }
+                  }
+                }
+              }
+            }
         env:
-          PULLFROG_AGENT: opencode
           AWS_REGION: us-east-1
-          BEDROCK_MODEL_ID: zai.glm-5
+          BEDROCK_MODEL_ID: ${{ inputs.model_id || 'us.anthropic.claude-sonnet-4-6' }}
+      - name: Render review result
+        if: ${{ always() && steps.review.outputs.result != '' }}
+        env:
+          REVIEW_RESULT: ${{ steps.review.outputs.result }}
+        run: |
+          node <<'NODE'
+          const result = JSON.parse(process.env.REVIEW_RESULT);
+          const findings = Array.isArray(result.findings) ? result.findings : [];
+          const lines = [`${result.verdict} ${result.summary}`];
+
+          if (findings.length > 0) {
+            lines.push("", "Findings:");
+            for (const finding of findings) {
+              const location = finding.file
+                ? `${finding.file}${finding.line === null ? "" : `:${finding.line}`}`
+                : "workflow";
+              lines.push(
+                `- ${finding.severity.toUpperCase()} ${location} - ${finding.title}`,
+                `  Evidence: ${finding.evidence}`,
+              );
+              if (finding.suggested_fix) {
+                lines.push(`  Fix: ${finding.suggested_fix}`);
+              }
+              lines.push(`  Confidence: ${finding.confidence}`);
+            }
+          }
+
+          const summary = `${lines.join("\n")}\n`;
+          console.log(summary);
+          require("node:fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+
+          if (result.verdict === "🚨") {
+            process.exitCode = 1;
+          }
+          NODE
