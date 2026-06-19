@@ -15,8 +15,8 @@ use loro_fractional_index::FractionalIndex;
 
 use crate::error::CommentsDocError;
 use crate::types::{
-    CommentAnchor, CommentCreated, CommentMessageSnapshot, CommentReplied, CommentThreadSnapshot,
-    CommentsProjection, NotebookCommentRef, ProjectedThreadStatus,
+    validate_comment_anchor, CommentAnchor, CommentCreated, CommentMessageSnapshot, CommentReplied,
+    CommentThreadSnapshot, CommentsProjection, NotebookCommentRef, ProjectedThreadStatus,
 };
 
 #[cfg(test)]
@@ -212,6 +212,7 @@ impl CommentsDoc {
         after_thread_id: Option<&str>,
         created_at: &str,
     ) -> Result<CommentCreated, CommentsDocError> {
+        validate_comment_anchor(anchor).map_err(CommentsDocError::InvalidAnchor)?;
         if self.thread_obj(thread_id).is_some() {
             return Err(CommentsDocError::ThreadAlreadyExists(thread_id.to_string()));
         }
@@ -275,6 +276,24 @@ impl CommentsDoc {
     pub fn reopen_thread(&mut self, thread_id: &str) -> Result<(), CommentsDocError> {
         let thread = self.thread_or_error(thread_id)?;
         self.doc.put(&thread, "status", "open")?;
+        Ok(())
+    }
+
+    /// Demote a thread's anchor to a notebook-level comment.
+    ///
+    /// Used when a source-range thread's quoted text no longer exists. The
+    /// comment remains visible as a dangling document comment instead of
+    /// disappearing with its lost source target.
+    pub fn demote_thread_anchor_to_notebook(
+        &mut self,
+        thread_id: &str,
+    ) -> Result<(), CommentsDocError> {
+        let thread = self.thread_or_error(thread_id)?;
+        let anchor = CommentAnchor::Notebook;
+        let anchor_value = serde_json::to_value(&anchor)?;
+        automunge::put_json_at_key_batched(&mut self.doc, &thread, "anchor", &anchor_value)?;
+        self.doc
+            .put(&thread, "thread_order_scope", anchor.thread_order_scope())?;
         Ok(())
     }
 
@@ -829,6 +848,25 @@ mod tests {
         }
     }
 
+    fn source_anchor(
+        start_line: u64,
+        start_column: u64,
+        end_line: u64,
+        end_column: u64,
+        exact_quote: Option<&str>,
+    ) -> CommentAnchor {
+        CommentAnchor::SourceRange {
+            cell_id: "cell-a".to_string(),
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+            prefix_quote: None,
+            exact_quote: exact_quote.map(str::to_string),
+            suffix_quote: None,
+        }
+    }
+
     fn change_hashes_for_actor(doc: &mut AutoCommit, actor: &str) -> Vec<automerge::ChangeHash> {
         doc.get_changes(&[])
             .into_iter()
@@ -879,6 +917,49 @@ mod tests {
             err,
             CommentsDocError::CommentsDocIdMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn create_thread_rejects_invalid_source_range_anchor() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+        let err = doc
+            .create_thread(
+                "thread-1",
+                "msg-1",
+                &source_anchor(3, 0, 2, 0, Some("quote")),
+                "body",
+                None,
+                "2026-06-16T00:00:00Z",
+            )
+            .expect_err("inverted source range should be rejected");
+
+        assert!(matches!(err, CommentsDocError::InvalidAnchor(_)));
+        assert!(doc.read_projection(None).unwrap().threads.is_empty());
+    }
+
+    #[test]
+    fn demote_thread_anchor_to_notebook_makes_it_a_document_comment() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+        doc.create_thread(
+            "thread-1",
+            "msg-1",
+            &source_anchor(0, 0, 0, 4, Some("beta")),
+            "anchored comment",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+
+        doc.demote_thread_anchor_to_notebook("thread-1").unwrap();
+
+        let projection = doc.read_projection(None).unwrap();
+        let thread = projection
+            .threads
+            .iter()
+            .find(|thread| thread.id == "thread-1")
+            .expect("thread present after demote");
+        assert!(matches!(thread.anchor, CommentAnchor::Notebook));
+        assert!(thread.badge_cell_ids.is_empty());
     }
 
     #[test]

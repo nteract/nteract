@@ -12,6 +12,7 @@ pub use identity::{
     local_room_comments_identity, LocalCommentsIdentity,
 };
 pub use types::{
-    CommentAnchor, CommentCreated, CommentMessageSnapshot, CommentReplied, CommentThreadSnapshot,
+    validate_comment_anchor, validate_source_range_anchor_against_source, CommentAnchor,
+    CommentCreated, CommentMessageSnapshot, CommentReplied, CommentThreadSnapshot,
     CommentsProjection, NotebookCommentRef, ProjectedThreadStatus,
 };
