@@ -10,7 +10,7 @@ import {
   Send,
   X,
 } from "lucide-react";
-import { actorInitials } from "runtimed";
+import { actorInitials, onBehalfOfText } from "runtimed";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type {
   CommentAnchor,
@@ -35,12 +35,14 @@ export interface CommentAuthor {
   displayName: string;
   /** Author color (hex), shared with cursors/attribution/highlights. */
   color?: string;
+  /** Profile image URL when the host can resolve one for this author. */
+  imageUrl?: string | null;
   /** True when the author is an AI agent rather than a person. */
   isAgent?: boolean;
   /** Principal the agent is acting for, when operating on someone's behalf. */
   onBehalfOf?: string | null;
   /** Color of the principal the agent acts for (for the on-behalf-of badge). */
-  onBehalfOfColor?: string;
+  onBehalfOfColor?: string | null;
 }
 
 export interface NotebookCommentsPanelProps {
@@ -428,7 +430,7 @@ function CommentResolutionReceipt({
   const resolverName = author?.displayName ?? "Someone";
   const resolverIdentity =
     author?.isAgent && author.onBehalfOf
-      ? `${resolverName} for ${author.onBehalfOf}`
+      ? `${resolverName}${onBehalfOfText(author.onBehalfOf)}`
       : resolverName;
   const resolutionLabel = `${resolverIdentity} marked as resolved${resolvedTime ? ` · ${resolvedTime}` : ""}`;
   return (
@@ -477,7 +479,9 @@ function CommentMessage({
             {author?.displayName ?? "Unknown"}
           </span>
           {author?.isAgent && author.onBehalfOf ? (
-            <span className="text-[10px] text-muted-foreground">· for {author.onBehalfOf}</span>
+            <span className="text-[10px] text-muted-foreground">
+              ·{onBehalfOfText(author.onBehalfOf)}
+            </span>
           ) : null}
           <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
             {formatRelativeTime(message.created_at)}
@@ -492,15 +496,21 @@ function CommentMessage({
 function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
   const face = (
     <div
-      className="flex size-5 items-center justify-center rounded-full text-[9px] font-semibold text-white"
+      className="flex size-5 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold text-white"
       style={{ backgroundColor: author.color ?? "hsl(var(--muted-foreground))" }}
     >
-      {author.isAgent ? <Bot className="size-3" /> : actorInitials(author.displayName)}
+      {author.imageUrl ? (
+        <img className="size-full rounded-full object-cover" src={author.imageUrl} alt="" />
+      ) : author.isAgent ? (
+        <Bot className="size-3" />
+      ) : (
+        actorInitials(author.displayName)
+      )}
     </div>
   );
 
-  // When an agent acts for someone, badge the principal in the corner — the
-  // recognizable "on behalf of" cue — tinted with the principal's own color.
+  // When an agent acts for someone, badge the principal in the corner,
+  // tinted with the principal's own color.
   if (author.isAgent && author.onBehalfOf) {
     return (
       <div className="relative mt-0.5 size-5 shrink-0" aria-hidden="true">
@@ -508,7 +518,7 @@ function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
         <span
           className="absolute -bottom-1 -right-1 flex size-3 items-center justify-center rounded-full text-[6px] font-bold text-white ring-2 ring-card"
           style={{ backgroundColor: author.onBehalfOfColor ?? "hsl(var(--muted-foreground))" }}
-          title={`on behalf of ${author.onBehalfOf}`}
+          title={`${author.displayName}${onBehalfOfText(author.onBehalfOf)}`}
         >
           {actorInitials(author.onBehalfOf).slice(0, 1)}
         </span>

@@ -18,12 +18,13 @@ function resolveCommentAuthor(actorLabel: string): CommentAuthor {
     return {
       displayName: "Claude Code",
       color: CLAUDE_COLOR,
+      imageUrl: null,
       isAgent: true,
       onBehalfOf: "Ada",
       onBehalfOfColor: ADA_COLOR,
     };
   }
-  return { displayName: "Ada", color: ADA_COLOR };
+  return { displayName: "Ada", color: ADA_COLOR, imageUrl: null };
 }
 
 function resolveSourceLanguage(): string {

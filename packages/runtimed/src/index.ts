@@ -302,6 +302,7 @@ export {
 } from "./notebook-actor-color";
 
 // Notebook actor display
+export { onBehalfOfText } from "./notebook-actor-attribution";
 export {
   actorInitials,
   resolveActorDisplay,

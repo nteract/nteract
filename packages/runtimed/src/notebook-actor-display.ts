@@ -3,7 +3,7 @@ import {
   notebookActorProjectionFromLabel,
   type NotebookActorKind,
 } from "./notebook-actor-projection";
-import { colorForActorIdentity } from "./notebook-actor-color";
+import { CURSOR_COLORS, colorForActorIdentity } from "./notebook-actor-color";
 
 export interface ActorDisplayPeer {
   participantKey: string;
@@ -23,6 +23,7 @@ export interface ActorDisplay {
   kind: NotebookActorKind;
   isAgent: boolean;
   onBehalfOf: string | null;
+  onBehalfOfColor: string | null;
   color: string;
   initials: string;
   imageUrl: string | null;
@@ -41,17 +42,29 @@ export function resolveActorDisplay({
   const principalDisplayName = peerLabel ?? projection.principal.label;
   const isAgent = identity.kind === "agent";
   const displayName = isAgent ? (identity.operatorLabel ?? identity.label) : principalDisplayName;
+  const onBehalfOf = isAgent ? (peerLabel ?? identity.principalLabel ?? null) : null;
+  const color = colorForActorIdentity(actorLabel);
 
   return {
     displayName,
     principalId,
     kind: identity.kind,
     isAgent,
-    onBehalfOf: isAgent ? (peerLabel ?? identity.principalLabel ?? null) : null,
-    color: colorForActorIdentity(actorLabel),
+    onBehalfOf,
+    onBehalfOfColor: onBehalfOf
+      ? distinctActorColor(colorForActorIdentity(projection.principal.id), color)
+      : null,
+    color,
     initials: actorInitials(displayName),
     imageUrl: peer?.imageUrl ?? null,
   };
+}
+
+function distinctActorColor(candidate: string, actorColor: string): string {
+  if (candidate !== actorColor) return candidate;
+  const index = CURSOR_COLORS.findIndex((color) => color === candidate);
+  if (index === -1) return candidate;
+  return CURSOR_COLORS[(index + 1) % CURSOR_COLORS.length];
 }
 
 function peerForPrincipal(

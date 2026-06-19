@@ -4,6 +4,7 @@ import type {
   NotebookShellAuthCapabilities,
   NotebookShellRuntimeCapabilities,
 } from "./notebook-shell-capabilities";
+import { onBehalfOfText } from "./notebook-actor-attribution";
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 
 export type ParsedNotebookActorKind = "agent" | "runtime" | "system";
@@ -593,7 +594,7 @@ function operatorActorLabel(actor: NotebookActorProjection): string {
     principalLabel !== actor.operator.label &&
     !isGenericPrincipalLabel(principalLabel)
   ) {
-    return `${actor.operator.label} for ${principalLabel}`;
+    return `${actor.operator.label}${onBehalfOfText(principalLabel)}`;
   }
   return actor.operator.label;
 }
