@@ -68,6 +68,17 @@ describe("resolveActorDisplay", () => {
     ).toBe("Ada");
   });
 
+  it("uses the identity label before the friendly principal label", () => {
+    expect(
+      resolveActorDisplay({
+        actorLabel: "user:local:kylekelley/desktop:app",
+        identityLabel: "Kyle Kelley",
+        peers: [],
+        source: "local",
+      }).displayName,
+    ).toBe("Kyle Kelley");
+  });
+
   it("derives initials across names, delimiters, and email-like labels", () => {
     expect(actorInitials("Kyle Kelley")).toBe("KK");
     expect(actorInitials("kyle.kelley")).toBe("KK");

@@ -1969,9 +1969,50 @@ async fn get_blob_port() -> Result<u16, String> {
 /// Get the OS username for peer presence labels.
 #[tauri::command]
 fn get_username() -> String {
+    #[cfg(target_os = "macos")]
+    if let Some(full_name) = macos_full_user_name() {
+        return full_name;
+    }
+
+    fallback_username()
+}
+
+fn fallback_username() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn macos_full_user_name() -> Option<String> {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSString;
+    use std::ffi::CStr;
+
+    #[link(name = "Foundation", kind = "framework")]
+    extern "C" {
+        fn NSFullUserName() -> id;
+    }
+
+    unsafe {
+        let full_name = NSFullUserName();
+        if full_name == nil {
+            return None;
+        }
+
+        let bytes = full_name.UTF8String();
+        if bytes.is_null() {
+            return None;
+        }
+
+        let name = CStr::from_ptr(bytes).to_string_lossy().trim().to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    }
 }
 
 /// Complete onboarding and open a fresh notebook window.

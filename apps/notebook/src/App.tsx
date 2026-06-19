@@ -757,6 +757,7 @@ function AppContent() {
     (actorLabel: string): CommentAuthor => {
       const display = resolveActorDisplay({
         actorLabel,
+        identityLabel: peerLabel,
         peers: [],
         source: connectionScope ? "cloud" : "local",
       });
