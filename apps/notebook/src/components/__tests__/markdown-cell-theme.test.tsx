@@ -193,6 +193,7 @@ vi.mock("../../lib/cursor-registry", () => ({
 vi.mock("../../lib/editor-registry", () => ({
   registerCellEditor: vi.fn(),
   unregisterCellEditor: vi.fn(),
+  getCellEditor: vi.fn(() => null),
 }));
 
 vi.mock("../../lib/logger", () => ({
