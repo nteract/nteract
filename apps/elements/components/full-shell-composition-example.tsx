@@ -325,7 +325,6 @@ export function FullShellCompositionExample() {
               setSelectedOutlineItemId(item.id);
               setFocusedCellId(item.cellId);
               focusFullShellCell(item.cellId);
-              return true;
             }}
             className="bg-background"
           />
