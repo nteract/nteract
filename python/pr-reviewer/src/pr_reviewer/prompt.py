@@ -1,16 +1,33 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pr_reviewer.workspace import ReviewWorkspace
 
-SYSTEM_PROMPT = """\
-You are an external senior code reviewer. You are reviewing a GitHub pull
-request in a dedicated checkout. Stay read-only. Focus on concrete bugs,
-behavioral regressions, security issues, data loss, concurrency hazards, and
-missing tests that could allow the diff to regress.
+REVIEW_RUBRIC_PATH = (
+    Path(__file__).resolve().parents[4] / ".agents" / "reviewers" / "nteract-code-review-rubric.md"
+)
 
-Do not report style-only comments. Do not invent findings. Each finding must
-identify the affected file, line when possible, the failure mode, and why the
-diff introduced or exposed it. If there are no actionable issues, say so.
+
+def load_nteract_review_rubric() -> str:
+    try:
+        return REVIEW_RUBRIC_PATH.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return (
+            "Review against nteract ownership, authority, shared-surface, "
+            "runtime/output, async, generated-artifact, and test boundaries."
+        )
+
+
+NTERACT_REVIEW_RUBRIC = load_nteract_review_rubric()
+
+SYSTEM_PROMPT = f"""\
+You are an external senior code reviewer. You are reviewing a GitHub pull
+request in a dedicated checkout.
+
+Use this shared nteract reviewer rubric:
+
+{NTERACT_REVIEW_RUBRIC}
 
 Set terminal_reason to explain how the review ended:
 - review_complete: full review completed with no actionable findings.
@@ -25,6 +42,29 @@ context. Prefer read-only inspection when tools are available, but do not assume
 tool access. Do not intentionally edit source files; this review should produce
 findings, not patches.
 """
+
+REVIEW_JSON_SHAPE = """\
+{
+  "verdict": "clear" | "findings" | "needs_human" | "infra_uncertain",
+  "terminal_reason": "review_complete" | "actionable_findings" |
+    "needs_human" | "budget_exhausted" | "infra_uncertain",
+  "summary": "short review summary",
+  "findings": [
+    {
+      "severity": "blocker" | "high" | "medium" | "low" | "nit",
+      "category": "correctness" | "state_ownership" | "shared_surface" |
+        "host_boundary" | "authority_boundary" | "protocol_sync" |
+        "output_widget_runtime" | "async_ordering" | "tests" |
+        "generated_artifact" | "style_maintainability" | "infra",
+      "file": "path/to/file",
+      "line": 123,
+      "title": "short issue title",
+      "evidence": "why this is a real bug, risk, or invariant drift",
+      "suggested_fix": "concrete fix, or null",
+      "confidence": "high" | "medium" | "low"
+    }
+  ]
+}"""
 
 
 def build_review_prompt(workspace: ReviewWorkspace, *, extra_prompt: str | None = None) -> str:
@@ -49,23 +89,7 @@ Diff stat:
 You are in the PR workspace. Inspect files as needed and compare the PR against
 the full diff below. Return exactly one JSON object and no prose, markdown, or
 code fence. The JSON shape is:
-{{
-  "verdict": "clear" | "findings" | "needs_human" | "infra_uncertain",
-  "terminal_reason": "review_complete" | "actionable_findings" |
-    "needs_human" | "budget_exhausted" | "infra_uncertain",
-  "summary": "short review summary",
-  "findings": [
-    {{
-      "severity": "blocker" | "high" | "medium" | "low",
-      "file": "path/to/file",
-      "line": 123,
-      "title": "short issue title",
-      "evidence": "why this is a real bug or risk",
-      "suggested_fix": "concrete fix, or null",
-      "confidence": "high" | "medium" | "low"
-    }}
-  ]
-}}
+{REVIEW_JSON_SHAPE}
 
 Full diff:
 {workspace.diff_patch or "(empty)"}
@@ -96,23 +120,7 @@ Diff stat:
 You are in the workspace being reviewed. Inspect files as needed and compare the
 current local changes against the full diff below. Return exactly one JSON
 object and no prose, markdown, or code fence. The JSON shape is:
-{{
-  "verdict": "clear" | "findings" | "needs_human" | "infra_uncertain",
-  "terminal_reason": "review_complete" | "actionable_findings" |
-    "needs_human" | "budget_exhausted" | "infra_uncertain",
-  "summary": "short architecture review summary",
-  "findings": [
-    {{
-      "severity": "blocker" | "high" | "medium" | "low",
-      "file": "path/to/file",
-      "line": 123,
-      "title": "short issue title",
-      "evidence": "why this is a real architecture, security, product, or maintenance risk",
-      "suggested_fix": "concrete fix, or null",
-      "confidence": "high" | "medium" | "low"
-    }}
-  ]
-}}
+{REVIEW_JSON_SHAPE}
 
 Full diff:
 {workspace.diff_patch or "(empty)"}

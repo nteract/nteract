@@ -11,13 +11,44 @@ TerminalReason = Literal[
     "budget_exhausted",
     "infra_uncertain",
 ]
-Severity = Literal["blocker", "high", "medium", "low"]
+Severity = Literal["blocker", "high", "medium", "low", "nit"]
+Category = Literal[
+    "correctness",
+    "state_ownership",
+    "shared_surface",
+    "host_boundary",
+    "authority_boundary",
+    "protocol_sync",
+    "output_widget_runtime",
+    "async_ordering",
+    "tests",
+    "generated_artifact",
+    "style_maintainability",
+    "infra",
+]
 Confidence = Literal["high", "medium", "low"]
+
+VALID_SEVERITIES = {"blocker", "high", "medium", "low", "nit"}
+VALID_CATEGORIES = {
+    "correctness",
+    "state_ownership",
+    "shared_surface",
+    "host_boundary",
+    "authority_boundary",
+    "protocol_sync",
+    "output_widget_runtime",
+    "async_ordering",
+    "tests",
+    "generated_artifact",
+    "style_maintainability",
+    "infra",
+}
 
 
 @dataclass(frozen=True)
 class Finding:
     severity: Severity
+    category: Category
     file: str
     line: int | None
     title: str
@@ -86,6 +117,7 @@ def normalize_structured_output(data: Any) -> tuple[Verdict, TerminalReason, str
         finding_data = cast(dict[str, Any], item)
         try:
             severity = finding_data["severity"]
+            category = finding_data["category"]
             file = finding_data["file"]
             line = finding_data["line"]
             title = finding_data["title"]
@@ -95,8 +127,10 @@ def normalize_structured_output(data: Any) -> tuple[Verdict, TerminalReason, str
         except KeyError as exc:
             raise ValueError(f"finding {index} is missing required field {exc.args[0]!r}") from exc
 
-        if severity not in {"blocker", "high", "medium", "low"}:
+        if severity not in VALID_SEVERITIES:
             raise ValueError(f"finding {index} has invalid severity {severity!r}")
+        if category not in VALID_CATEGORIES:
+            raise ValueError(f"finding {index} has invalid category {category!r}")
         if not isinstance(file, str):
             raise ValueError(f"finding {index} file was not a string")
         if line is not None and not isinstance(line, int):
@@ -113,6 +147,7 @@ def normalize_structured_output(data: Any) -> tuple[Verdict, TerminalReason, str
         findings.append(
             Finding(
                 severity=cast(Severity, severity),
+                category=cast(Category, category),
                 file=file,
                 line=line,
                 title=title,

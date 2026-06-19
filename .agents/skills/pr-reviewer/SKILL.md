@@ -7,6 +7,8 @@ description: Use the repository-local pr-review CLI for opencode-backed Bedrock 
 
 Use `pr-review` instead of shelling out to raw `claude` for PR reviews in this repository. It creates an isolated disposable git worktree, runs opencode against a Bedrock model, gives the reviewer the PR diff plus repo access, and writes structured JSON reports.
 
+The shared nteract reviewer rubric lives at `.agents/reviewers/nteract-code-review-rubric.md`. Use it when configuring custom Claude/Codex reviewer prompts, and keep `pr-reviewer`/Pullfrog review contracts aligned with it.
+
 ## When To Use
 
 - The user asks for a Claude, Bedrock, external, second-model, or structured PR review.
