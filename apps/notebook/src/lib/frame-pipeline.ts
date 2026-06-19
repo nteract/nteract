@@ -102,6 +102,7 @@ export async function materializeChangeset(
 ): Promise<void> {
   const handle = deps.getHandle();
   if (!handle) return;
+  const isCurrentHandle = () => deps.getHandle() === handle;
 
   // ── Full materialization fallback ──────────────────────────────────
 
@@ -117,6 +118,7 @@ export async function materializeChangeset(
       );
     }
     await deps.materializeCells(handle);
+    if (!isCurrentHandle()) return;
     notifyMetadataChanged();
     return;
   }
@@ -136,6 +138,7 @@ export async function materializeChangeset(
         "[frame-pipeline] full materialization: structural changeset without get_cell_ids",
       );
       await deps.materializeCells(handle);
+      if (!isCurrentHandle()) return;
       notifyMetadataChanged();
       return;
     }
@@ -160,6 +163,7 @@ export async function materializeChangeset(
           `[frame-pipeline] full materialization: structural added cell ${cellId.slice(0, 8)} unavailable`,
         );
         await deps.materializeCells(handle);
+        if (!isCurrentHandle()) return;
         notifyMetadataChanged();
         return;
       }
@@ -187,6 +191,7 @@ export async function materializeChangeset(
           `[frame-pipeline] full materialization: structural ordered cell ${cellId.slice(0, 8)} unavailable`,
         );
         await deps.materializeCells(handle);
+        if (!isCurrentHandle()) return;
         notifyMetadataChanged();
         return;
       }
