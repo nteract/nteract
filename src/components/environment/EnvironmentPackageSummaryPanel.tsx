@@ -21,14 +21,9 @@ export function EnvironmentPackageSummaryPanel({
       data-read-only={readOnly ? "true" : "false"}
     >
       {packageEntries.length === 0 ? (
-        <div className="border-y border-dashed border-border/80 px-1 py-4 text-sm text-muted-foreground">
-          No declared packages.
-        </div>
+        <div className="px-1 py-4 text-sm text-muted-foreground">No declared packages.</div>
       ) : (
-        <ul
-          className="divide-y divide-border/70 border-y border-border/70"
-          aria-label="Declared packages"
-        >
+        <ul className="divide-y divide-border/70" aria-label="Declared packages">
           {packageEntries.map((entry) => (
             <li key={entry.key} className="min-w-0 px-1 py-2">
               <code className="block truncate bg-transparent font-mono text-[12px] leading-5 text-foreground">
