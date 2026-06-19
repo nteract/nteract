@@ -13,5 +13,7 @@
 
 .comment-highlight-resolved {
   background-color: color-mix(in srgb, var(--muted-foreground, #737373) 12%, transparent);
-  border-bottom-color: color-mix(in srgb, var(--muted-foreground, #737373) 40%, transparent);
+  /* Resolved threads keep only a faint tint. The underline is the open-comment
+     "needs attention" cue, so a resolved thread drops it. */
+  border-bottom: none;
 }
