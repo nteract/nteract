@@ -168,16 +168,23 @@ async fn connect(
         }
         Ok(response) => {
             eprintln!(
-                "Warning: registration returned HTTP {}; `runt workstation run` will retry.",
-                response.status()
+                "Warning: registration returned HTTP {}; `{} workstation run` will retry.",
+                response.status(),
+                runt_workspace::cli_command_name()
             );
         }
         Err(error) => {
-            eprintln!("Warning: registration failed ({error}); `runt workstation run` will retry.");
+            eprintln!(
+                "Warning: registration failed ({error}); `{} workstation run` will retry.",
+                runt_workspace::cli_command_name()
+            );
         }
     }
 
-    println!("Run `runt workstation run` to serve attach requests.");
+    println!(
+        "Run `{} workstation run` to serve attach requests.",
+        runt_workspace::cli_command_name()
+    );
     Ok(())
 }
 
@@ -342,9 +349,10 @@ fn resolve_credentials() -> Result<ResolvedCredentials> {
     let cloud_url = env_url.or_else(|| stored.as_ref().map(|c| c.cloud_url.clone()));
     let (Some(token), Some(cloud_url)) = (token, cloud_url) else {
         bail!(
-            "no workstation credential found at {} — run `runt workstation connect <url>` first \
+            "no workstation credential found at {} — run `{} workstation connect <url>` first \
              (or set {CLOUD_TOKEN_ENV} and {CLOUD_URL_ENV})",
-            path.display()
+            path.display(),
+            runt_workspace::cli_command_name()
         );
     };
 
@@ -408,7 +416,8 @@ async fn status(json_output: bool) -> Result<()> {
     if status == 401 || status == 403 {
         bail!(
             "the workstation credential was rejected (HTTP {status}) — it may have been revoked; \
-             run `runt workstation connect {}` with a fresh pairing code",
+             run `{} workstation connect {}` with a fresh pairing code",
+            runt_workspace::cli_command_name(),
             resolved.cloud_url
         );
     }
@@ -436,7 +445,10 @@ async fn status(json_output: bool) -> Result<()> {
         .cloned()
         .unwrap_or_default();
     if workstations.is_empty() {
-        println!("No workstations registered yet. Run `runt workstation run` to register.");
+        println!(
+            "No workstations registered yet. Run `{} workstation run` to register.",
+            runt_workspace::cli_command_name()
+        );
         return Ok(());
     }
     println!(
