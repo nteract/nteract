@@ -6,15 +6,16 @@ import {
   hoverTooltip,
   ViewPlugin,
 } from "@codemirror/view";
-import { actorInitials } from "runtimed";
+import { actorInitials, onBehalfOfText } from "runtimed";
 
 /** Compact thread summary shown when hovering a highlighted range. */
 export interface CommentHighlightPreview {
   authorName: string;
   authorColor?: string;
+  imageUrl?: string | null;
   isAgent?: boolean;
   onBehalfOf?: string | null;
-  onBehalfOfColor?: string;
+  onBehalfOfColor?: string | null;
   body: string;
   replyCount: number;
 }
@@ -148,7 +149,13 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   avatar.style.cssText =
     "position:relative;flex:none;width:18px;height:18px;border-radius:50%;color:#fff;font-size:9px;font-weight:600;display:grid;place-items:center;";
   avatar.style.backgroundColor = preview.authorColor ?? "hsl(var(--muted-foreground, 215 16% 47%))";
-  if (preview.isAgent) {
+  if (preview.imageUrl) {
+    const image = document.createElement("img");
+    image.src = preview.imageUrl;
+    image.alt = "";
+    image.style.cssText = "width:100%;height:100%;border-radius:50%;object-fit:cover;";
+    avatar.appendChild(image);
+  } else if (preview.isAgent) {
     avatar.innerHTML = BOT_ICON_SVG;
   } else {
     avatar.textContent = actorInitials(preview.authorName);
@@ -173,7 +180,7 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   if (preview.isAgent) {
     const meta = document.createElement("span");
     meta.style.cssText = "font-size:10px;color:hsl(var(--muted-foreground, 215 16% 47%));";
-    meta.textContent = preview.onBehalfOf ? `AI for ${preview.onBehalfOf}` : "AI";
+    meta.textContent = `AI${onBehalfOfText(preview.onBehalfOf)}`;
     head.appendChild(meta);
   }
   root.appendChild(head);

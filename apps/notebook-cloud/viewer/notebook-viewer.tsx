@@ -580,9 +580,10 @@ export function NotebookViewer({
       return {
         displayName: display.displayName,
         color: display.color,
+        imageUrl: display.imageUrl,
         isAgent: display.isAgent,
         onBehalfOf: display.onBehalfOf,
-        onBehalfOfColor: display.onBehalfOf ? display.color : undefined,
+        onBehalfOfColor: display.onBehalfOfColor,
       };
     },
     [commentAuthorPeers],
@@ -1354,6 +1355,7 @@ export function NotebookViewer({
           ? {
               authorName: author?.displayName ?? "Unknown",
               authorColor: author?.color,
+              imageUrl: author?.imageUrl,
               isAgent: author?.isAgent,
               onBehalfOf: author?.onBehalfOf,
               onBehalfOfColor: author?.onBehalfOfColor,
