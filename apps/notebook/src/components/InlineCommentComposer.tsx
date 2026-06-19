@@ -33,9 +33,17 @@ export function InlineCommentComposer({
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const justOpenedRef = useRef(true);
 
   useEffect(() => {
     textareaRef.current?.focus();
+    // Ignore outside-interactions for a beat after opening, so the event that
+    // opened this composer (a context menu closing and returning focus to the
+    // editor) does not immediately dismiss it.
+    const settle = window.setTimeout(() => {
+      justOpenedRef.current = false;
+    }, 300);
+    return () => window.clearTimeout(settle);
   }, []);
 
   const submit = async () => {
@@ -92,6 +100,15 @@ export function InlineCommentComposer({
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           textareaRef.current?.focus();
+        }}
+        onPointerDownOutside={(event) => {
+          if (justOpenedRef.current) event.preventDefault();
+        }}
+        onFocusOutside={(event) => {
+          if (justOpenedRef.current) event.preventDefault();
+        }}
+        onInteractOutside={(event) => {
+          if (justOpenedRef.current) event.preventDefault();
         }}
       >
         <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">

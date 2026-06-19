@@ -73,4 +73,24 @@ describe("NotebookContextMenu", () => {
       "true",
     );
   });
+
+  it("can render actions without a surface header", async () => {
+    render(
+      <NotebookContextMenu
+        groups={[
+          {
+            id: "clipboard",
+            actions: [{ id: "copy", label: "Copy" }],
+          },
+        ]}
+      >
+        <button type="button">Editor</button>
+      </NotebookContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Editor" }));
+
+    expect(await screen.findByRole("menuitem", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.queryByText("source")).not.toBeInTheDocument();
+  });
 });

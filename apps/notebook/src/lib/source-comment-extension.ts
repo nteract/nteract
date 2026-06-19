@@ -91,9 +91,9 @@ function sourceCommentTooltips(
         const button = document.createElement("button");
         button.type = "button";
         button.className = "cm-source-comment-button";
-        button.textContent = "Comment";
-        button.title = "Comment on selected source (Ctrl/Cmd+Alt+M)";
-        button.setAttribute("aria-label", "Comment on selected source");
+        button.appendChild(createCommentIcon());
+        button.title = "Comment on selection";
+        button.setAttribute("aria-label", "Comment on selection");
         button.setAttribute("data-testid", "source-comment-button");
         button.addEventListener("mousedown", (event) => {
           event.preventDefault();
@@ -106,6 +106,34 @@ function sourceCommentTooltips(
       },
     },
   ];
+}
+
+function createCommentIcon(): SVGSVGElement {
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("width", "15");
+  icon.setAttribute("height", "15");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "2");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("focusable", "false");
+
+  const bubble = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  bubble.setAttribute("d", "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z");
+  icon.appendChild(bubble);
+
+  const vertical = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  vertical.setAttribute("d", "M12 7v6");
+  icon.appendChild(vertical);
+
+  const horizontal = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  horizontal.setAttribute("d", "M9 10h6");
+  icon.appendChild(horizontal);
+
+  return icon;
 }
 
 function requestSourceComment(
@@ -122,23 +150,25 @@ function requestSourceComment(
 
 const sourceCommentTheme = EditorView.baseTheme({
   ".cm-source-comment-button": {
-    border: "1px solid hsl(var(--border))",
+    border: "1px solid var(--border, #ebebeb)",
     borderRadius: "0.375rem",
-    backgroundColor: "hsl(var(--background))",
-    color: "hsl(var(--foreground))",
+    backgroundColor: "var(--background, #ffffff)",
+    color: "var(--foreground, #1e1e1e)",
     boxShadow: "0 1px 4px rgb(0 0 0 / 0.14)",
+    boxSizing: "border-box",
     cursor: "pointer",
-    fontFamily: "inherit",
-    fontSize: "11px",
-    fontWeight: "500",
-    lineHeight: "1",
-    padding: "5px 7px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "24px",
+    padding: "0",
+    width: "24px",
   },
   ".cm-source-comment-button:hover": {
-    backgroundColor: "hsl(var(--muted))",
+    backgroundColor: "var(--muted, #f5f5f5)",
   },
   ".cm-source-comment-button:focus-visible": {
-    outline: "2px solid hsl(var(--ring))",
+    outline: "2px solid var(--ring, #a3a3a3)",
     outlineOffset: "2px",
   },
 });

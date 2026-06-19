@@ -104,13 +104,13 @@ const commentHighlightTheme = EditorView.baseTheme({
     backgroundColor: "color-mix(in srgb, var(--cm-comment-color) 38%, transparent)",
   },
   ".cm-comment-highlight-resolved": {
-    backgroundColor: "hsl(var(--muted-foreground) / 0.12)",
-    borderBottomColor: "hsl(var(--muted-foreground) / 0.4)",
+    backgroundColor: "color-mix(in srgb, var(--muted-foreground, #737373) 12%, transparent)",
+    borderBottomColor: "color-mix(in srgb, var(--muted-foreground, #737373) 40%, transparent)",
   },
   ".cm-tooltip.cm-tooltip-hover": {
     border: "none",
     backgroundColor: "transparent",
-    color: "hsl(var(--popover-foreground, 222 47% 11%))",
+    color: "var(--popover-foreground, #1e1e1e)",
     padding: "0",
   },
 });
@@ -140,7 +140,7 @@ const BOT_ICON_SVG =
 function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const root = document.createElement("div");
   root.style.cssText =
-    "width:min(300px,80vw);padding:10px 12px;border:1px solid hsl(var(--border, 214 32% 91%));border-radius:10px;background:hsl(var(--popover, 0 0% 100%));color:hsl(var(--popover-foreground, 222 47% 11%));box-shadow:0 8px 24px rgb(0 0 0 / 0.14);font:inherit;";
+    "width:min(300px,80vw);padding:10px 12px;border:1px solid var(--border, #ebebeb);border-radius:10px;background:var(--popover, #ffffff);color:var(--popover-foreground, #1e1e1e);box-shadow:0 8px 24px rgb(0 0 0 / 0.14);font:inherit;";
 
   const head = document.createElement("div");
   head.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:5px;";
@@ -148,7 +148,7 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const avatar = document.createElement("span");
   avatar.style.cssText =
     "position:relative;flex:none;width:18px;height:18px;border-radius:50%;color:#fff;font-size:9px;font-weight:600;display:grid;place-items:center;";
-  avatar.style.backgroundColor = preview.authorColor ?? "hsl(var(--muted-foreground, 215 16% 47%))";
+  avatar.style.backgroundColor = preview.authorColor ?? "var(--muted-foreground, #737373)";
   if (preview.imageUrl) {
     const image = document.createElement("img");
     image.src = preview.imageUrl;
@@ -164,9 +164,9 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   if (preview.isAgent && preview.onBehalfOf) {
     const badge = document.createElement("span");
     badge.style.cssText =
-      "position:absolute;bottom:-3px;right:-3px;width:11px;height:11px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:6px;font-weight:700;box-shadow:0 0 0 2px hsl(var(--popover, 0 0% 100%));";
+      "position:absolute;bottom:-3px;right:-3px;width:11px;height:11px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:6px;font-weight:700;box-shadow:0 0 0 2px var(--popover, #ffffff);";
     badge.style.backgroundColor =
-      preview.onBehalfOfColor ?? "hsl(var(--muted-foreground, 215 16% 47%))";
+      preview.onBehalfOfColor ?? "var(--muted-foreground, #737373)";
     badge.textContent = actorInitials(preview.onBehalfOf).slice(0, 1);
     avatar.appendChild(badge);
   }
@@ -179,7 +179,7 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
 
   if (preview.isAgent) {
     const meta = document.createElement("span");
-    meta.style.cssText = "font-size:10px;color:hsl(var(--muted-foreground, 215 16% 47%));";
+    meta.style.cssText = "font-size:10px;color:var(--muted-foreground, #737373);";
     meta.textContent = `AI${onBehalfOfText(preview.onBehalfOf)}`;
     head.appendChild(meta);
   }
@@ -194,7 +194,7 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   if (preview.replyCount > 0) {
     const replies = document.createElement("div");
     replies.style.cssText =
-      "margin-top:6px;font-size:10px;color:hsl(var(--muted-foreground, 215 16% 47%));";
+      "margin-top:6px;font-size:10px;color:var(--muted-foreground, #737373);";
     replies.textContent = `+${preview.replyCount} ${preview.replyCount === 1 ? "reply" : "replies"}`;
     root.appendChild(replies);
   }

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -32,6 +32,7 @@ export interface NotebookContextMenuAction {
   description?: ReactNode;
   icon?: ReactNode;
   shortcut?: string;
+  separatorBefore?: boolean;
   disabled?: boolean;
   destructive?: boolean;
   onSelect?: () => void;
@@ -44,7 +45,7 @@ export interface NotebookContextMenuGroup {
 }
 
 export interface NotebookContextMenuProps {
-  surface: NotebookContextSurface;
+  surface?: NotebookContextSurface;
   groups: readonly NotebookContextMenuGroup[];
   children: ReactNode;
   contentClassName?: string;
@@ -71,26 +72,28 @@ export function NotebookContextMenu({
       <ContextMenuContent
         className={cn("w-72 p-1.5", contentClassName)}
         data-slot="notebook-context-menu"
-        data-context-kind={surface.kind}
+        data-context-kind={surface?.kind}
       >
-        <ContextMenuLabel className="px-2 py-2">
-          <span className="block text-[11px] font-medium uppercase tracking-normal text-muted-foreground">
-            {surface.kind}
-          </span>
-          <span className="mt-0.5 block truncate text-sm font-semibold text-foreground">
-            {surface.title}
-          </span>
-          {surface.description ? (
-            <span className="mt-1 block whitespace-normal text-xs font-normal leading-5 text-muted-foreground">
-              {surface.description}
+        {surface ? (
+          <ContextMenuLabel className="px-2 py-2">
+            <span className="block text-[11px] font-medium uppercase tracking-normal text-muted-foreground">
+              {surface.kind}
             </span>
-          ) : null}
-          {surface.detail ? (
-            <span className="mt-1 block truncate text-xs font-normal text-muted-foreground">
-              {surface.detail}
+            <span className="mt-0.5 block truncate text-sm font-semibold text-foreground">
+              {surface.title}
             </span>
-          ) : null}
-        </ContextMenuLabel>
+            {surface.description ? (
+              <span className="mt-1 block whitespace-normal text-xs font-normal leading-5 text-muted-foreground">
+                {surface.description}
+              </span>
+            ) : null}
+            {surface.detail ? (
+              <span className="mt-1 block truncate text-xs font-normal text-muted-foreground">
+                {surface.detail}
+              </span>
+            ) : null}
+          </ContextMenuLabel>
+        ) : null}
 
         {visibleGroups.map((group, index) => (
           <div key={group.id}>
@@ -101,30 +104,32 @@ export function NotebookContextMenu({
               </ContextMenuLabel>
             ) : null}
             {group.actions.map((action) => (
-              <ContextMenuItem
-                key={action.id}
-                disabled={action.disabled}
-                variant={action.destructive ? "destructive" : "default"}
-                className="items-start gap-2 py-2"
-                onSelect={() => action.onSelect?.()}
-              >
-                {action.icon ? (
-                  <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-muted-foreground">
-                    {action.icon}
-                  </span>
-                ) : null}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">{action.label}</span>
-                  {action.description ? (
-                    <span className="mt-0.5 block whitespace-normal text-xs leading-4 text-muted-foreground">
-                      {action.description}
+              <Fragment key={action.id}>
+                {action.separatorBefore ? <ContextMenuSeparator /> : null}
+                <ContextMenuItem
+                  disabled={action.disabled}
+                  variant={action.destructive ? "destructive" : "default"}
+                  className="items-start gap-2 py-2"
+                  onSelect={() => action.onSelect?.()}
+                >
+                  {action.icon ? (
+                    <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-muted-foreground">
+                      {action.icon}
                     </span>
                   ) : null}
-                </span>
-                {action.shortcut ? (
-                  <ContextMenuShortcut>{action.shortcut}</ContextMenuShortcut>
-                ) : null}
-              </ContextMenuItem>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{action.label}</span>
+                    {action.description ? (
+                      <span className="mt-0.5 block whitespace-normal text-xs leading-4 text-muted-foreground">
+                        {action.description}
+                      </span>
+                    ) : null}
+                  </span>
+                  {action.shortcut ? (
+                    <ContextMenuShortcut>{action.shortcut}</ContextMenuShortcut>
+                  ) : null}
+                </ContextMenuItem>
+              </Fragment>
             ))}
           </div>
         ))}
