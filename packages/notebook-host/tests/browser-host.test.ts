@@ -85,13 +85,23 @@ describe("createBrowserHost()", () => {
     ws.message(
       JSON.stringify({
         type: "ready",
-        payload: { notebook_id: "nb-1", cell_count: 0, ephemeral: true },
+        payload: {
+          notebook_id: "nb-1",
+          cell_count: 0,
+          ephemeral: true,
+          comments_doc_id: "comments:local-room:nb-1",
+        },
         blob_port: 48124,
         daemon: config.daemon,
       }),
     );
 
-    expect(ready).toHaveBeenCalledWith({ notebook_id: "nb-1", cell_count: 0, ephemeral: true });
+    expect(ready).toHaveBeenCalledWith({
+      notebook_id: "nb-1",
+      cell_count: 0,
+      ephemeral: true,
+      comments_doc_id: "comments:local-room:nb-1",
+    });
     await expect(host.blobs.port()).resolves.toBe(48124);
     await expect(host.blobs.resolver()).resolves.toMatchObject({ port: 48124 });
     expect((await host.blobs.resolver()).url({ blob: "abc123" })).toBe(

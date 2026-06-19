@@ -45,6 +45,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           ephemeral: true,
           notebook_path: null,
           runtime: "python",
+          comments_doc_id: "comments:local-room:nb-1",
         });
       case "get_default_save_directory":
         return Promise.resolve("/tmp/notebooks");
@@ -331,6 +332,7 @@ describe("createTauriHost()", () => {
       ephemeral: true,
       notebook_path: null,
       runtime: "python",
+      comments_doc_id: "comments:local-room:nb-1",
     });
   });
 

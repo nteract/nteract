@@ -41,6 +41,7 @@ interface NotebookConnectionInfoJson {
   runtime?: string;
   actor_label?: string;
   connection_scope?: string;
+  comments_doc_id?: string | null;
   capabilities?: {
     actor_label?: string;
     connection_scope?: string;
@@ -319,6 +320,7 @@ async function handleRelayConnection(
         runtime: info.runtime,
         actor_label: actorLabel,
         connection_scope: connectionScope,
+        comments_doc_id: info.comments_doc_id ?? null,
       },
       blob_port: daemonInfoJson?.blob_port ?? null,
       daemon: daemonInfoJson

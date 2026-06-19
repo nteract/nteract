@@ -66,9 +66,9 @@ function scopeAllowsNotebookWrite(scope: string | null): boolean {
   return scope === null || scope === "editor" || scope === "owner";
 }
 
-function commentsDocIdFromNotebookId(notebookId: string | undefined): string | null {
-  const trimmed = notebookId?.trim();
-  return trimmed ? `comments:${trimmed}` : null;
+function normalizeCommentsDocId(commentsDocId: string | null | undefined): string | null {
+  const trimmed = commentsDocId?.trim();
+  return trimmed || null;
 }
 
 let warnedMissingExecutionViewProjector = false;
@@ -347,7 +347,7 @@ export function useNotebook() {
           actorLabelRef.current = trigger.payload.actor_label;
           setLocalActor(trigger.payload.actor_label);
         }
-        commentsDocIdRef.current = commentsDocIdFromNotebookId(trigger.payload.notebook_id);
+        commentsDocIdRef.current = normalizeCommentsDocId(trigger.payload.comments_doc_id);
         const connectionScope = trigger.payload.connection_scope ?? null;
         setConnectionScope(connectionScope);
         canWriteNotebookRef.current = scopeAllowsNotebookWrite(connectionScope);

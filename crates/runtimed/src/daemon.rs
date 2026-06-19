@@ -3076,6 +3076,10 @@ impl Daemon {
                 runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
             )
         };
+        let comments_doc_id = room
+            .comments
+            .read(|doc| doc.comments_doc_id())
+            .context("read comments doc id for open notebook response")?;
 
         // Send NotebookConnectionInfo response. The wire notebook_id is the
         // room's UUID (stable across the life of the room); the local
@@ -3087,7 +3091,8 @@ impl Daemon {
                 .with_identity(
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
-                ),
+                )
+                .with_comments_doc_id(comments_doc_id),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
@@ -3315,12 +3320,17 @@ impl Daemon {
             .path()
             .await
             .map(|p| p.to_string_lossy().to_string());
+        let comments_doc_id = room
+            .comments
+            .read(|doc| doc.comments_doc_id())
+            .context("read comments doc id for create notebook response")?;
         let response = NotebookConnectionInfo {
             capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
                 .with_identity(
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
-                ),
+                )
+                .with_comments_doc_id(comments_doc_id),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
