@@ -80,6 +80,61 @@ describe("ProjectedMarkdownView", () => {
     expect(run).toHaveAttribute("data-source-end", "5");
   });
 
+  it("renders open and resolved comment highlights for overlapping source ranges", () => {
+    const { container } = render(
+      <ProjectedMarkdownView
+        commentHighlights={[
+          { from: 0, to: 20, color: "#d97706", resolved: false },
+          { from: 6, to: 10, color: "#52525b", resolved: true },
+        ]}
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 10],
+              sourceSpanUtf16: [0, 10],
+              syntaxSpans: [],
+              text: "alpha beta",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "r0",
+              listItemIndex: null,
+              renderedText: "alpha",
+              renderedTextUtf16: [0, 5],
+              semantic: "text",
+              sourceSpanByte: [0, 5],
+              sourceSpanUtf16: [0, 5],
+            },
+            {
+              blockId: "p0",
+              inlineId: "r1",
+              listItemIndex: null,
+              renderedText: "beta",
+              renderedTextUtf16: [6, 10],
+              semantic: "text",
+              sourceSpanByte: [6, 10],
+              sourceSpanUtf16: [6, 10],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const runs = container.querySelectorAll<HTMLElement>("[data-markdown-source-run='true']");
+    expect(runs[0]).toHaveClass("comment-highlight");
+    expect(runs[0]).not.toHaveClass("comment-highlight-resolved");
+    expect(runs[0]?.style.getPropertyValue("--cm-comment-color")).toBe("#d97706");
+    expect(runs[1]).toHaveClass("comment-highlight", "comment-highlight-resolved");
+    expect(runs[1]?.style.getPropertyValue("--cm-comment-color")).toBe("#52525b");
+  });
+
   it("renders keyboard-accessible comment actions for commentable paragraphs", () => {
     const onCommentRuns = vi.fn();
     render(

@@ -71,8 +71,8 @@ function buildDecorations(highlights: CommentHighlight[]): DecorationSet {
       highlight.to,
       Decoration.mark({
         class: highlight.resolved
-          ? "cm-comment-highlight cm-comment-highlight-resolved"
-          : "cm-comment-highlight",
+          ? "cm-comment-highlight comment-highlight cm-comment-highlight-resolved comment-highlight-resolved"
+          : "cm-comment-highlight comment-highlight",
         attributes,
       }),
     );
@@ -92,21 +92,6 @@ const decorationsField = StateField.define<DecorationSet>({
 });
 
 const commentHighlightTheme = EditorView.baseTheme({
-  ".cm-comment-highlight": {
-    "--cm-comment-color": "hsl(45 93% 47%)",
-    backgroundColor: "color-mix(in srgb, var(--cm-comment-color) 22%, transparent)",
-    borderBottom: "2px solid color-mix(in srgb, var(--cm-comment-color) 70%, transparent)",
-    borderRadius: "2px",
-    cursor: "pointer",
-    transition: "background-color 120ms ease",
-  },
-  ".cm-comment-highlight:hover": {
-    backgroundColor: "color-mix(in srgb, var(--cm-comment-color) 38%, transparent)",
-  },
-  ".cm-comment-highlight-resolved": {
-    backgroundColor: "color-mix(in srgb, var(--muted-foreground, #737373) 12%, transparent)",
-    borderBottomColor: "color-mix(in srgb, var(--muted-foreground, #737373) 40%, transparent)",
-  },
   ".cm-tooltip.cm-tooltip-hover": {
     border: "none",
     backgroundColor: "transparent",

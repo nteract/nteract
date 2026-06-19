@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./styles/ansi.css";
+@import "./styles/comment-highlight.css";
 
 @custom-variant dark (&:is(.dark *));
 

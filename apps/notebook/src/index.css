@@ -7,6 +7,7 @@
 @import "../../../src/styles/ansi.css";
 @import "../../../src/styles/notebook-base.css";
 @import "../../../src/styles/cream-theme.css";
+@import "../../../src/styles/comment-highlight.css";
 
 html,
 body,

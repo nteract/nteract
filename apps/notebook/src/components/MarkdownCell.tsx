@@ -59,8 +59,9 @@ import {
   sourceRangeAnchorFromRenderedMarkdownSelection,
 } from "../lib/rendered-markdown-source-comment";
 import { commentHighlightExtension } from "../lib/comment-highlight-extension";
-import { refreshCellCommentHighlights } from "../lib/comment-highlights";
+import { refreshCellCommentHighlights, type SourceCommentThread } from "../lib/comment-highlights";
 import {
+  resolveSourceRangeAnchor,
   selectionRectFromDomRect,
   selectionRectFromDomSelection,
   type SourceCommentSelectionRect,
@@ -156,6 +157,7 @@ interface MarkdownCellProps {
     rect: SourceCommentSelectionRect | null,
   ) => void;
   onActivateCommentThread?: (threadId: string) => void;
+  commentThreads?: readonly SourceCommentThread[];
   outputHostContext?: NteractEmbedHostContextPatch;
 }
 
@@ -175,6 +177,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   readOnly = false,
   onCreateSourceComment,
   onActivateCommentThread,
+  commentThreads,
   outputHostContext,
 }: MarkdownCellProps) {
   const isFocused = useIsCellFocused(cell.id);
@@ -289,12 +292,27 @@ export const MarkdownCell = memo(function MarkdownCell({
     [cell.markdownProjection, cell.source, draftPreviewSource],
   );
   const canRenderProjectionInHost = canRenderMarkdownProjectionInHost(markdownProjection);
-  const canCommentOnRenderedMarkdown =
-    Boolean(onCreateSourceComment) &&
-    !readOnly &&
-    !editing &&
+  const projectionMatchesPreview =
     markdownProjection !== null &&
     markdownProjectionMatchesSource(markdownProjection, previewSource);
+  const canCommentOnRenderedMarkdown =
+    Boolean(onCreateSourceComment) && !readOnly && !editing && projectionMatchesPreview;
+  const renderedCommentHighlights = useMemo(() => {
+    if (editing || !projectionMatchesPreview || !commentThreads?.length) return undefined;
+    const highlights = commentThreads.flatMap((thread) => {
+      const range = resolveSourceRangeAnchor(previewSource, thread.anchor);
+      if (!range) return [];
+      return [
+        {
+          from: range.from,
+          to: range.to,
+          resolved: thread.resolved,
+          ...(thread.color ? { color: thread.color } : {}),
+        },
+      ];
+    });
+    return highlights.length > 0 ? highlights : undefined;
+  }, [commentThreads, editing, previewSource, projectionMatchesPreview]);
   const previewMinHeight = useMemo(
     () =>
       projectedMarkdownPreviewHeight(
@@ -1069,6 +1087,7 @@ export const MarkdownCell = memo(function MarkdownCell({
               {previewSource && canRenderProjectionInHost && markdownProjection ? (
                 <ProjectedMarkdownView
                   plan={markdownProjection}
+                  commentHighlights={renderedCommentHighlights}
                   headingAnchors={headingAnchors}
                   onLinkClick={handleLinkClick}
                   canCommentOnRuns={

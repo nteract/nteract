@@ -257,6 +257,21 @@ export function findMarkdownProjectionAtSourcePosition(
   return { block, position: normalizedPosition, run };
 }
 
+export function markdownRunsForSourceRange(
+  plan: MarkdownProjectionPlan | null,
+  from: number,
+  to: number,
+): MarkdownProjectionRun[] {
+  if (!plan) return [];
+  const start = Math.min(from, to);
+  const end = Math.max(from, to);
+  if (start === end) return [];
+  return plan.runs.filter((run) => {
+    const [runStart, runEnd] = run.sourceSpanUtf16;
+    return runStart < end && runEnd > start;
+  });
+}
+
 export function canRenderMarkdownProjectionInHost(plan: MarkdownProjectionPlan | null): boolean {
   return plan != null;
 }
