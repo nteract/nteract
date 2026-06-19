@@ -178,33 +178,39 @@ export function useNotebook() {
   // ── Core helpers ───────────────────────────────────────────────────
 
   /** Full materialization: WASM doc → resolve manifests → write to store. */
-  const materializeCells = useCallback(async (handle: NotebookHandle) => {
-    const start = performance.now();
-    // Resolve blob port BEFORE reading cells — WASM needs it to
-    // convert binary ContentRefs to Url variants in get_cells_json().
-    let blobResolver = getBlobResolver();
-    if (blobResolver === null) {
-      blobResolver = await refreshBlobResolver();
-    }
-    const blobPort = blobResolver?.port ?? null;
-    if (blobPort !== null) {
-      handle.set_blob_port(blobPort);
-    }
-    const json = handle.get_cells_json();
-    const snapshots: CellSnapshot[] = JSON.parse(json);
-    const newCells = await cellSnapshotsToNotebookCells(
-      snapshots,
-      blobResolver,
-      outputCacheRef.current,
-    );
-    // Pre-warm renderer plugins before cells paint so document-like markdown
-    // and output iframes do not wait for async chunk loads on first render.
-    preWarmCellRenderers(newCells);
-    replaceNotebookCells(newCells);
-    logger.debug(
-      `[automerge-notebook] Full materialization: ${snapshots.length} cells in ${(performance.now() - start).toFixed(1)}ms`,
-    );
-  }, []);
+  const materializeCells = useCallback(
+    async (handle: NotebookHandle) => {
+      const start = performance.now();
+      const isCurrentHandle = () => handleHost.current === handle;
+      // Resolve blob port BEFORE reading cells — WASM needs it to
+      // convert binary ContentRefs to Url variants in get_cells_json().
+      let blobResolver = getBlobResolver();
+      if (blobResolver === null) {
+        blobResolver = await refreshBlobResolver();
+        if (!isCurrentHandle()) return;
+      }
+      const blobPort = blobResolver?.port ?? null;
+      if (blobPort !== null) {
+        handle.set_blob_port(blobPort);
+      }
+      const json = handle.get_cells_json();
+      const snapshots: CellSnapshot[] = JSON.parse(json);
+      const newCells = await cellSnapshotsToNotebookCells(
+        snapshots,
+        blobResolver,
+        outputCacheRef.current,
+      );
+      if (!isCurrentHandle()) return;
+      // Pre-warm renderer plugins before cells paint so document-like markdown
+      // and output iframes do not wait for async chunk loads on first render.
+      preWarmCellRenderers(newCells);
+      replaceNotebookCells(newCells);
+      logger.debug(
+        `[automerge-notebook] Full materialization: ${snapshots.length} cells in ${(performance.now() - start).toFixed(1)}ms`,
+      );
+    },
+    [handleHost],
+  );
 
   /** Sync re-read cells from WASM (cache-only, no blob fetches). */
   const rematerializeCellsSync = useCallback((handle: NotebookHandle) => {
