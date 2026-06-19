@@ -27,6 +27,7 @@ import type {
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import type { RawCell as RawCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
+import { EditorContextMenu } from "./EditorContextMenu";
 
 interface RawCellProps {
   cell: RawCellType;
@@ -151,13 +152,13 @@ export const RawCell = memo(function RawCell({
     [isLastCell, onFocusNext, onInsertCellAfter, readOnly],
   );
 
-  // Remote cursors extension (stable — no deps that change)
+  // Remote cursors extension, stable with no deps that change.
   const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
 
-  // Text attribution extension (stable — no deps that change)
+  // Text attribution extension, stable with no deps that change.
   const textAttributionExt = useMemo(() => textAttributionExtension(), []);
 
-  // Presence sender extension — broadcasts local cursor/selection to other peers
+  // Presence sender extension broadcasts local cursor/selection to other peers.
   const presenceSenderExt = useMemo(() => {
     if (!presence) return [];
     return [
@@ -247,18 +248,24 @@ export const RawCell = memo(function RawCell({
             </span>
           </div>
           <div>
-            <CodeMirrorEditor
-              ref={editorRef}
-              initialValue={cell.source}
-              language={language}
-              lineWrapping
-              keyMap={keyMap}
-              extensions={[crdtBridgeExt, ...searchExtensions]}
-              placeholder="Enter raw content..."
-              className="min-h-[2rem]"
-              autoFocus={isFocused}
+            <EditorContextMenu
+              cellId={cell.id}
               readOnly={readOnly}
-            />
+              onCreateSourceComment={onCreateSourceComment}
+            >
+              <CodeMirrorEditor
+                ref={editorRef}
+                initialValue={cell.source}
+                language={language}
+                lineWrapping
+                keyMap={keyMap}
+                extensions={[crdtBridgeExt, ...searchExtensions]}
+                placeholder="Enter raw content..."
+                className="min-h-[2rem]"
+                autoFocus={isFocused}
+                readOnly={readOnly}
+              />
+            </EditorContextMenu>
           </div>
         </>
       }

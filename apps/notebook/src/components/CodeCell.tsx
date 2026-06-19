@@ -51,6 +51,7 @@ import { sourceCommentExtension } from "../lib/source-comment-extension";
 import { tabCompletionKeymap } from "../lib/tab-completion";
 import type { CodeCell as CodeCellType, JupyterOutput } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
+import { EditorContextMenu } from "./EditorContextMenu";
 import { HistorySearchDialog } from "./HistorySearchDialog";
 
 const SIMPLE_OUTPUT_MAX_CHARS = 2000;
@@ -383,7 +384,7 @@ export const CodeCell = memo(function CodeCell({
   const kernelCompletionExt = useKernelCompletionExtension();
   // Subscribe to outputs via the per-execution / per-output stores rather
   // than `cell.outputs`. Content changes no longer invalidate the cell
-  // snapshot — CodeCell re-renders only when its chrome state changes.
+  // snapshot. CodeCell re-renders only when its chrome state changes.
   const outputs = useCellOutputs(cell.id);
   const executionId = useCellExecutionId(cell.id);
   const execution = useExecution(executionId);
@@ -601,13 +602,13 @@ export const CodeCell = memo(function CodeCell({
     [navigationKeyMap, historyKeyBinding],
   );
 
-  // Remote cursors extension (stable — no deps that change)
+  // Remote cursors extension, stable with no deps that change.
   const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
 
-  // Text attribution extension (stable — no deps that change)
+  // Text attribution extension, stable with no deps that change.
   const textAttributionExt = useMemo(() => textAttributionExtension(), []);
 
-  // Presence sender extension — broadcasts local cursor/selection to other peers
+  // Presence sender extension broadcasts local cursor/selection to other peers.
   const presenceSenderExt = useMemo(() => {
     if (!presence) return [];
     return [
@@ -820,16 +821,22 @@ export const CodeCell = memo(function CodeCell({
               </>
             ) : (
               <>
-                <CodeMirrorEditor
-                  ref={editorRef}
-                  initialValue={cell.source}
-                  language={language}
-                  keyMap={keyMap}
-                  extensions={editorExtensions}
-                  placeholder="Enter code..."
-                  autoFocus={isFocused}
+                <EditorContextMenu
+                  cellId={cell.id}
                   readOnly={readOnly}
-                />
+                  onCreateSourceComment={onCreateSourceComment}
+                >
+                  <CodeMirrorEditor
+                    ref={editorRef}
+                    initialValue={cell.source}
+                    language={language}
+                    keyMap={keyMap}
+                    extensions={editorExtensions}
+                    placeholder="Enter code..."
+                    autoFocus={isFocused}
+                    readOnly={readOnly}
+                  />
+                </EditorContextMenu>
                 {currentLine}
               </>
             )}
