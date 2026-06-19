@@ -395,6 +395,36 @@ describe("startNotebookSyncStoreBridge", () => {
     expect(setLoadError).not.toHaveBeenCalled();
   });
 
+  it("ignores in-flight materializeCells result if the handle is replaced before it resolves", async () => {
+    const materialize = deferred();
+    const materializeCells = vi.fn(() => materialize.promise);
+    const firstHandle = createHandle();
+    const secondHandle = createHandle();
+    let liveHandle = firstHandle;
+    const { bridge, setIsLoading, subjects } = startBridge({
+      materializeCells,
+      getHandle: () => liveHandle,
+    });
+
+    subjects.initialSyncComplete$.next();
+    await flushMicrotasks();
+    expect(materializeCells).toHaveBeenCalledWith(firstHandle);
+    setIsLoading.mockClear();
+
+    // A daemon restart frees gen1 and installs gen2 while materialize is in
+    // flight. The gen1 continuation must bail; gen2 drives its own cycle.
+    liveHandle = secondHandle;
+    materialize.resolve();
+    await flushMicrotasks();
+
+    expect(mocks.applyExecutionViewChangeset).not.toHaveBeenCalled();
+    expect(mocks.seedOutputStoresFromHandle).not.toHaveBeenCalled();
+    expect(mocks.notifyMetadataChanged).not.toHaveBeenCalled();
+    expect(setIsLoading).not.toHaveBeenCalled();
+
+    bridge.stop();
+  });
+
   it("ignores in-flight materializeChangeset result if stopped before it resolves", async () => {
     const work = deferred();
     mocks.materializeChangeset.mockImplementationOnce(() => work.promise);

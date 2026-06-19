@@ -91,6 +91,10 @@ export function startNotebookSyncStoreBridge(
         .materializeCells(handle)
         .then(() => {
           if (stopped) return;
+          // A daemon restart can free this handle during the await (gen1 -> gen2
+          // relay reset). Bail if the live handle was replaced; the gen2
+          // bootstrap drives its own initialSyncComplete materialize cycle.
+          if (options.getHandle() !== handle) return;
           interactiveReady = true;
           const cellIdList = [...handle.get_cell_ids()];
           // `initialSyncComplete$` fires when the notebook doc is interactive,
