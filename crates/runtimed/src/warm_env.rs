@@ -5,13 +5,15 @@
 //! writes structured JSON events to stdout, and exits. All of rattler's
 //! in-process memory is reclaimed by the OS when the process exits.
 
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Output, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
-use crate::async_outcome::{await_result_with_timeout, TimedResult};
+use crate::async_outcome::TimedResult;
 use crate::EnvType;
 
 // -- IPC protocol --------------------------------------------------------
@@ -115,6 +117,7 @@ fn emit_failure(error: String, error_kind: &str, failed_package: Option<String>)
 
 const POOL_PACKAGE_HASH_FILE: &str = ".runt-pool-packages.sha256";
 const POOL_PACKAGE_HASH_VERSION: &str = "v1";
+const POOL_READY_MARKER_FILE: &str = ".runt-pool-ready";
 
 fn expected_pool_package_hash(env_type: EnvType, packages: &[String]) -> String {
     use sha2::{Digest, Sha256};
@@ -149,6 +152,10 @@ async fn write_pool_package_hash(
     .await
 }
 
+async fn write_pool_ready_marker(env_root: &Path) -> std::io::Result<()> {
+    tokio::fs::write(env_root.join(POOL_READY_MARKER_FILE), "").await
+}
+
 // -- site-packages discovery ----------------------------------------------
 
 fn find_site_packages(env_path: &Path) -> Option<String> {
@@ -169,8 +176,13 @@ fn find_site_packages(env_path: &Path) -> Option<String> {
 
 // -- UV env creation ------------------------------------------------------
 
-const UV_OFFLINE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const UV_ONLINE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+const UV_OFFLINE_INSTALL_TIMEOUT: Duration = Duration::from_secs(30);
+const UV_ONLINE_INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
+const UV_VENV_TIMEOUT: Duration = Duration::from_secs(60);
+const PYTHON_RUNTIME_VALIDATION_TIMEOUT: Duration = Duration::from_secs(60);
+// Keep optional warming below the daemon's 120s pool-take wait. Long compileall
+// runs should not keep a validated environment out of the pool.
+const PYTHON_WARMUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn uv_pip_install_args(python_path: &Path, packages: &[String], offline: bool) -> Vec<String> {
     let mut args = vec![
@@ -197,19 +209,193 @@ enum UvInstallAttempt {
 async fn run_uv_pip_install(
     uv_path: &Path,
     install_args: &[String],
-    timeout: std::time::Duration,
+    timeout: Duration,
 ) -> UvInstallAttempt {
     let mut command = tokio::process::Command::new(uv_path);
+    command.args(install_args);
+
+    match run_output_with_timeout(command, timeout).await {
+        TimedResult::Completed(output) => UvInstallAttempt::Completed(output),
+        TimedResult::Failed(e) => UvInstallAttempt::SpawnError(e),
+        TimedResult::TimedOut => UvInstallAttempt::Timeout,
+    }
+}
+
+async fn read_pipe_to_end<R>(mut reader: R) -> io::Result<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut output = Vec::new();
+    reader.read_to_end(&mut output).await?;
+    Ok(output)
+}
+
+async fn collect_reader(
+    handle: tokio::task::JoinHandle<io::Result<Vec<u8>>>,
+) -> io::Result<Vec<u8>> {
+    handle.await.map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to join child output reader: {error}"),
+        )
+    })?
+}
+
+async fn run_output_with_timeout(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> TimedResult<Output, io::Error> {
     command
-        .args(install_args)
         .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    match await_result_with_timeout(command.output(), timeout).await {
-        TimedResult::Completed(output) => UvInstallAttempt::Completed(output),
-        TimedResult::Failed(e) => UvInstallAttempt::SpawnError(e),
-        TimedResult::TimedOut => UvInstallAttempt::Timeout,
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => return TimedResult::Failed(error),
+    };
+
+    let stdout = child
+        .stdout
+        .take()
+        .map(|pipe| tokio::spawn(read_pipe_to_end(pipe)));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|pipe| tokio::spawn(read_pipe_to_end(pipe)));
+
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => return TimedResult::Failed(error),
+        Err(_) => {
+            // Dropping `Command::output()` on timeout can leave the spawned
+            // process running. Keep ownership of the child handle and kill it
+            // before reporting the timeout so warmup retries do not accumulate
+            // orphaned Python processes.
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            if let Some(stdout) = stdout {
+                let _ = collect_reader(stdout).await;
+            }
+            if let Some(stderr) = stderr {
+                let _ = collect_reader(stderr).await;
+            }
+            return TimedResult::TimedOut;
+        }
+    };
+
+    let stdout = match stdout {
+        Some(stdout) => match collect_reader(stdout).await {
+            Ok(output) => output,
+            Err(error) => return TimedResult::Failed(error),
+        },
+        None => Vec::new(),
+    };
+    let stderr = match stderr {
+        Some(stderr) => match collect_reader(stderr).await {
+            Ok(output) => output,
+            Err(error) => return TimedResult::Failed(error),
+        },
+        None => Vec::new(),
+    };
+
+    TimedResult::Completed(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn stderr_excerpt(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr)
+        .chars()
+        .take(200)
+        .collect::<String>()
+}
+
+async fn run_python_script(
+    python_path: &Path,
+    script: &str,
+    timeout: Duration,
+) -> TimedResult<Output, io::Error> {
+    let mut command = tokio::process::Command::new(python_path);
+    command.args(["-c", script]);
+    run_output_with_timeout(command, timeout).await
+}
+
+async fn validate_python_runtime(
+    python_path: &Path,
+    env_label: &str,
+) -> Result<(), (String, &'static str)> {
+    let validation_script = kernel_env::warmup::build_warmup_command(&[], false, None);
+
+    match run_python_script(
+        python_path,
+        &validation_script,
+        PYTHON_RUNTIME_VALIDATION_TIMEOUT,
+    )
+    .await
+    {
+        TimedResult::Completed(output) if output.status.success() => Ok(()),
+        TimedResult::Completed(output) => Err((
+            format!(
+                "{env_label} runtime validation failed: {}",
+                stderr_excerpt(&output)
+            ),
+            "import_error",
+        )),
+        TimedResult::Failed(error) => Err((
+            format!("{env_label} runtime validation failed: {error}"),
+            "import_error",
+        )),
+        TimedResult::TimedOut => Err((
+            format!(
+                "{env_label} runtime validation timed out after {} seconds",
+                PYTHON_RUNTIME_VALIDATION_TIMEOUT.as_secs()
+            ),
+            "timeout",
+        )),
+    }
+}
+
+async fn run_best_effort_python_warmup(
+    env_dir: &Path,
+    python_path: &Path,
+    packages: &[String],
+    include_conda: bool,
+    env_label: &str,
+) {
+    let site_packages = find_site_packages(env_dir);
+    let warmup_script =
+        kernel_env::warmup::build_warmup_command(packages, include_conda, site_packages.as_deref());
+
+    match run_python_script(python_path, &warmup_script, PYTHON_WARMUP_TIMEOUT).await {
+        TimedResult::Completed(output) if output.status.success() => {
+            tokio::fs::write(env_dir.join(".warmed"), "").await.ok();
+        }
+        TimedResult::Completed(output) => {
+            warn!(
+                "[warm-env] {env_label} warmup failed; keeping validated environment usable without .warmed marker: {}",
+                stderr_excerpt(&output)
+            );
+        }
+        TimedResult::Failed(error) => {
+            warn!(
+                "[warm-env] {env_label} warmup failed; keeping validated environment usable without .warmed marker: {error}"
+            );
+        }
+        TimedResult::TimedOut => {
+            // The pool warmer is already a background optimization. Detaching
+            // compileall/import work after this point would race with env
+            // claims, eviction, and cleanup, so keep it bounded and admit the
+            // validated env without the warmed marker when it runs long.
+            warn!(
+                "[warm-env] {env_label} warmup timed out after {} seconds; keeping validated environment usable without .warmed marker",
+                PYTHON_WARMUP_TIMEOUT.as_secs()
+            );
+        }
     }
 }
 
@@ -279,18 +465,13 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
 
     // Create venv
     progress("venv", "creating virtual environment");
-    let venv_result = await_result_with_timeout(
-        tokio::process::Command::new(&uv_path)
-            .arg("venv")
-            .arg(env_dir)
-            .arg("--python")
-            .arg("3.13")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output(),
-        std::time::Duration::from_secs(60),
-    )
-    .await;
+    let mut venv_command = tokio::process::Command::new(&uv_path);
+    venv_command
+        .arg("venv")
+        .arg(env_dir)
+        .arg("--python")
+        .arg("3.13");
+    let venv_result = run_output_with_timeout(venv_command, UV_VENV_TIMEOUT).await;
 
     match venv_result {
         TimedResult::Completed(output) if output.status.success() => {}
@@ -368,55 +549,28 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
         return;
     }
 
+    // Required runtime validation comes before the expensive best-effort
+    // warmup. The env should not enter the pool if core kernel imports hang or
+    // fail, but compileall/import warming is only a performance optimization.
+    progress("validating", "checking kernel imports");
+    if let Err((error, kind)) = validate_python_runtime(&python_path, "UV").await {
+        cleanup_and_fail(env_dir, error, kind, None).await;
+        return;
+    }
+    if let Err(e) = write_pool_ready_marker(env_dir).await {
+        cleanup_and_fail(
+            env_dir,
+            format!("Failed to write pool readiness marker: {e}"),
+            "setup_failed",
+            None,
+        )
+        .await;
+        return;
+    }
+
     // Warmup (.pyc compilation)
     progress("warming", "compiling .pyc files");
-    let site_packages = find_site_packages(env_dir);
-    let warmup_script =
-        kernel_env::warmup::build_warmup_command(packages, false, site_packages.as_deref());
-
-    let warmup_result = await_result_with_timeout(
-        tokio::process::Command::new(&python_path)
-            .args(["-c", &warmup_script])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output(),
-        std::time::Duration::from_secs(180),
-    )
-    .await;
-
-    match warmup_result {
-        TimedResult::Completed(output) if output.status.success() => {
-            tokio::fs::write(env_dir.join(".warmed"), "").await.ok();
-        }
-        TimedResult::Completed(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            cleanup_and_fail(
-                env_dir,
-                format!(
-                    "UV warmup failed: {}",
-                    stderr.chars().take(200).collect::<String>()
-                ),
-                "import_error",
-                None,
-            )
-            .await;
-            return;
-        }
-        TimedResult::Failed(e) => {
-            cleanup_and_fail(
-                env_dir,
-                format!("UV warmup failed: {e}"),
-                "import_error",
-                None,
-            )
-            .await;
-            return;
-        }
-        TimedResult::TimedOut => {
-            cleanup_and_fail(env_dir, "UV warmup timed out".into(), "timeout", None).await;
-            return;
-        }
-    }
+    run_best_effort_python_warmup(env_dir, &python_path, packages, false, "UV").await;
 
     // Write package hash marker
     if let Err(e) = write_pool_package_hash(env_dir, EnvType::Uv, packages).await {
@@ -643,55 +797,25 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
         return;
     }
 
+    progress("validating", "checking kernel imports");
+    if let Err((error, kind)) = validate_python_runtime(&python_path, "Conda").await {
+        cleanup_and_fail(env_dir, error, kind, None).await;
+        return;
+    }
+    if let Err(e) = write_pool_ready_marker(env_dir).await {
+        cleanup_and_fail(
+            env_dir,
+            format!("Failed to write pool readiness marker: {e}"),
+            "setup_failed",
+            None,
+        )
+        .await;
+        return;
+    }
+
     // Warmup
     progress("warming", "compiling .pyc files");
-    let site_packages = find_site_packages(env_dir);
-    let warmup_script =
-        kernel_env::warmup::build_warmup_command(packages, true, site_packages.as_deref());
-
-    let warmup_result = await_result_with_timeout(
-        tokio::process::Command::new(&python_path)
-            .args(["-c", &warmup_script])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output(),
-        std::time::Duration::from_secs(180),
-    )
-    .await;
-
-    match warmup_result {
-        TimedResult::Completed(output) if output.status.success() => {
-            tokio::fs::write(env_dir.join(".warmed"), "").await.ok();
-        }
-        TimedResult::Completed(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            cleanup_and_fail(
-                env_dir,
-                format!(
-                    "Conda warmup failed: {}",
-                    stderr.chars().take(200).collect::<String>()
-                ),
-                "import_error",
-                None,
-            )
-            .await;
-            return;
-        }
-        TimedResult::Failed(e) => {
-            cleanup_and_fail(
-                env_dir,
-                format!("Conda warmup failed: {e}"),
-                "import_error",
-                None,
-            )
-            .await;
-            return;
-        }
-        TimedResult::TimedOut => {
-            cleanup_and_fail(env_dir, "Conda warmup timed out".into(), "timeout", None).await;
-            return;
-        }
-    }
+    run_best_effort_python_warmup(env_dir, &python_path, packages, true, "Conda").await;
 
     if let Err(e) = write_pool_package_hash(env_dir, EnvType::Conda, packages).await {
         warn!("[warm-env] Failed to write Conda pool package marker: {e}");
@@ -861,6 +985,35 @@ mod tests {
         let h1 = expected_pool_package_hash(EnvType::Uv, &["b".into(), "a".into()]);
         let h2 = expected_pool_package_hash(EnvType::Uv, &["a".into(), "b".into()]);
         assert_eq!(h1, h2, "hash should be order-independent");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_output_with_timeout_captures_stdout_and_stderr() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "printf ok; printf err >&2"]);
+
+        let result = run_output_with_timeout(command, Duration::from_secs(5)).await;
+
+        match result {
+            TimedResult::Completed(output) => {
+                assert!(output.status.success());
+                assert_eq!(output.stdout, b"ok");
+                assert_eq!(output.stderr, b"err");
+            }
+            other => panic!("expected completed output, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_output_with_timeout_kills_slow_child() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "sleep 30"]);
+
+        let result = run_output_with_timeout(command, Duration::from_millis(25)).await;
+
+        assert!(matches!(result, TimedResult::TimedOut));
     }
 
     #[test]
