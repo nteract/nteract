@@ -1,0 +1,19 @@
+.comment-highlight {
+  --cm-comment-color: hsl(45 93% 47%);
+  background-color: color-mix(in srgb, var(--cm-comment-color) 22%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--cm-comment-color) 70%, transparent);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.comment-highlight:hover {
+  background-color: color-mix(in srgb, var(--cm-comment-color) 38%, transparent);
+}
+
+.comment-highlight-resolved {
+  background-color: color-mix(in srgb, var(--muted-foreground, #737373) 12%, transparent);
+  /* Resolved threads keep only a faint tint. The underline is the open-comment
+     "needs attention" cue, so a resolved thread drops it. */
+  border-bottom: none;
+}

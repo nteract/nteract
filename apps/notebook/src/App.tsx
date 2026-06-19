@@ -2005,6 +2005,7 @@ function AppContent() {
                 onSetCellOutputsHidden={setCellOutputsHidden}
                 onCreateSourceComment={canMutateComments ? handleRequestSourceComment : undefined}
                 onActivateCommentThread={handleActivateCommentThread}
+                commentThreadsByCell={sourceCommentThreadsByCell}
                 markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
               />
             </CrdtBridgeProvider>

@@ -5,6 +5,7 @@
 @import "../../../src/styles/ansi.css";
 @import "../../../src/styles/notebook-base.css";
 @import "../../../src/styles/cream-theme.css";
+@import "../../../src/styles/comment-highlight.css";
 
 @source "../**/*.{ts,tsx,mdx}";
 @source "../../../src/components/cell/**/*.{ts,tsx}";

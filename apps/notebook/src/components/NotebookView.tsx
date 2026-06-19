@@ -60,6 +60,7 @@ import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CodeCell, type HiddenGroupCellSummary } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
+import type { SourceCommentThread } from "../lib/comment-highlights";
 import type {
   SourceCommentSelectionRect,
   SourceRangeCommentAnchor,
@@ -93,6 +94,7 @@ export interface NotebookViewProps {
     rect: SourceCommentSelectionRect | null,
   ) => void;
   onActivateCommentThread?: (threadId: string) => void;
+  commentThreadsByCell?: ReadonlyMap<string, readonly SourceCommentThread[]>;
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFramesUntilVisible?: boolean;
@@ -371,6 +373,7 @@ function NotebookViewContent({
   onSetCellOutputsHidden,
   onCreateSourceComment,
   onActivateCommentThread,
+  commentThreadsByCell,
   markdownHeadingAnchorsByCellId,
   outputHostContext,
   deferOutputIsolatedFramesUntilVisible = false,
@@ -1019,6 +1022,7 @@ function NotebookViewContent({
             isDragging={isDragging}
             rightGutterContent={rightGutterContent}
             headingAnchors={markdownHeadingAnchorsByCellId?.get(cell.id)}
+            commentThreads={commentThreadsByCell?.get(cell.id)}
             readOnly={!canEditMarkdownSources}
             onCreateSourceComment={onCreateSourceComment}
             onActivateCommentThread={onActivateCommentThread}
@@ -1063,6 +1067,7 @@ function NotebookViewContent({
       onSetCellOutputsHidden,
       onCreateSourceComment,
       onActivateCommentThread,
+      commentThreadsByCell,
       markdownHeadingAnchorsByCellId,
       canEditCodeCellSources,
       canEditMarkdownSources,

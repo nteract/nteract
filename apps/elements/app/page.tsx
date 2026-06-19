@@ -9,6 +9,7 @@ import {
   IdCard,
   LayoutDashboard,
   ListPlus,
+  MessageSquareText,
   MousePointer2,
   PackageCheck,
   Palette,
@@ -75,6 +76,12 @@ const catalogGroups = [
         description: "Target-specific notebook actions for menus and toolbars.",
         href: "/docs/context-controls",
         icon: MousePointer2,
+      },
+      {
+        title: "Comment surfaces",
+        description: "Anchored discussion, attribution, and rendered markdown highlights.",
+        href: "/docs/comment-surfaces",
+        icon: MessageSquareText,
       },
       {
         title: "Notebook toolbar",

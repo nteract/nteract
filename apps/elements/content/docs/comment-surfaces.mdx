@@ -4,6 +4,7 @@ description: Anchored notebook comments. The rail panel, attribution, and AI-on-
 ---
 
 import { CommentSurfacesExample } from "@/components/comment-surfaces-example";
+import { CommentHighlightSurfacesExample } from "@/components/comment-highlight-surfaces-example";
 
 People and AI agents work the same live notebook, and comments are how they
 talk about it: a thread anchored to a source range, a cell, an output, or the
@@ -11,6 +12,14 @@ whole document. The rail below is rendered from fixtures, no daemon and no
 kernel, so the surface and its rationale stand on their own.
 
 <CommentSurfacesExample />
+
+## Rendered markdown highlights
+
+Rendered markdown uses the same comment-highlight surface as the CodeMirror
+editor, so author color and resolved state stay aligned between edit and
+preview mode.
+
+<CommentHighlightSurfacesExample />
 
 ## Presentational by design
 

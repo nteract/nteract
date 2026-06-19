@@ -1975,6 +1975,7 @@ export function NotebookViewer({
                 onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
                 onCreateSourceComment={canWriteComments ? handleRequestSourceComment : undefined}
                 onActivateCommentThread={handleActivateCommentThread}
+                commentThreadsByCell={sourceCommentThreadsByCell}
                 markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
                 outputHostContext={outputHostContext}
                 deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}

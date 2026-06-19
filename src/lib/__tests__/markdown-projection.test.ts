@@ -7,10 +7,13 @@ import { beforeAll, describe, expect, it } from "vite-plus/test";
 import {
   canRenderMarkdownProjectionInHost,
   findMarkdownProjectionAtSourcePosition,
+  markdownRunsForSourceRange,
   markdownProjectionMatchesSource,
   projectMarkdownPlan,
   resolveMarkdownProjection,
   setMarkdownProjectionProjector,
+  type MarkdownProjectionPlan,
+  type MarkdownProjectionRun,
 } from "../markdown-projection";
 
 function readMarkdownFixture(name: string): string {
@@ -18,6 +21,35 @@ function readMarkdownFixture(name: string): string {
     join(process.cwd(), "src/lib/__tests__/fixtures", name),
     "utf8",
   );
+}
+
+function testRun(
+  inlineId: string,
+  sourceSpanUtf16: readonly [number, number],
+): MarkdownProjectionRun {
+  return {
+    blockId: "block:0",
+    inlineId,
+    listItemIndex: null,
+    renderedText: inlineId,
+    renderedTextUtf16: sourceSpanUtf16,
+    semantic: "text",
+    sourceSpanByte: sourceSpanUtf16,
+    sourceSpanUtf16,
+  };
+}
+
+function testPlan(runs: readonly MarkdownProjectionRun[]): MarkdownProjectionPlan {
+  return {
+    version: 1,
+    engine: "test",
+    byteLength: 30,
+    utf16Length: 30,
+    measurement: { estimatedHeight: 24, confidence: "high", width: 720 },
+    anchors: [],
+    blocks: [],
+    runs,
+  };
 }
 
 describe("markdown projection", () => {
@@ -332,5 +364,35 @@ describe("markdown projection", () => {
         }),
       }),
     );
+  });
+
+  it("returns projected runs whose source spans overlap a source range", () => {
+    const plan = testPlan([
+      testRun("before", [0, 4]),
+      testRun("left-edge", [4, 9]),
+      testRun("inside", [9, 14]),
+      testRun("right-edge", [14, 20]),
+      testRun("after", [20, 24]),
+    ]);
+
+    expect(markdownRunsForSourceRange(plan, 8, 15).map((run) => run.inlineId)).toEqual([
+      "left-edge",
+      "inside",
+      "right-edge",
+    ]);
+  });
+
+  it("returns no projected runs for null plans and empty source ranges", () => {
+    const plan = testPlan([testRun("run", [0, 5])]);
+
+    expect(markdownRunsForSourceRange(null, 0, 5)).toEqual([]);
+    expect(markdownRunsForSourceRange(plan, 3, 3)).toEqual([]);
+    expect(markdownRunsForSourceRange(plan, 5, 10)).toEqual([]);
+  });
+
+  it("normalizes reversed source ranges before matching projected runs", () => {
+    const plan = testPlan([testRun("run", [4, 9])]);
+
+    expect(markdownRunsForSourceRange(plan, 8, 2).map((run) => run.inlineId)).toEqual(["run"]);
   });
 });
