@@ -204,6 +204,14 @@ export {
   type NotebookEditModeButtonProps,
   type NotebookEditModeState,
 } from "./NotebookEditModeButton";
+export {
+  NotebookContextMenu,
+  type NotebookContextMenuAction,
+  type NotebookContextMenuGroup,
+  type NotebookContextMenuProps,
+  type NotebookContextSurface,
+  type NotebookContextSurfaceKind,
+} from "./NotebookContextMenu";
 export { computeCanMutateCells } from "./mutation-gate";
 export {
   createNotebookInteractionModeProjection,
