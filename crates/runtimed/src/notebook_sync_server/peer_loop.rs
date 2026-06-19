@@ -353,16 +353,27 @@ where
                             }
 
                             NotebookFrameType::CommentsDocSync => {
-                                if !handle_comments_doc_frame(
+                                // A comments-sync failure must never take down the
+                                // notebook connection. Drop the offending frame and
+                                // keep the peer editing; comments degrade alone.
+                                match handle_comments_doc_frame(
                                     room,
                                     &mut comments_peer_state,
                                     &peer_writer,
                                     &frame.payload,
                                     connection_identity,
                                 )
-                                .await?
+                                .await
                                 {
-                                    continue;
+                                    Ok(true) => {}
+                                    Ok(false) => continue,
+                                    Err(e) => {
+                                        warn!(
+                                            "[notebook-sync] CommentsDoc frame error (dropping frame, keeping connection): {}",
+                                            e
+                                        );
+                                        continue;
+                                    }
                                 }
                             }
 
