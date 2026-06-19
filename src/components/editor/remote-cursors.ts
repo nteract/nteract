@@ -30,6 +30,8 @@ import {
   layer,
 } from "@codemirror/view";
 
+export { CURSOR_COLORS, colorForActorIdentity, identityColorKey, peerColor } from "runtimed";
+
 // ── Types ────────────────────────────────────────────────────────────
 
 export interface RemoteCursorState {
@@ -50,28 +52,6 @@ export interface RemoteSelectionState {
   headLine: number;
   headCol: number;
   color: string;
-}
-
-// ── Color palette ────────────────────────────────────────────────────
-
-const CURSOR_COLORS = [
-  "#2563eb", // blue
-  "#e11d48", // rose
-  "#d97706", // amber
-  "#059669", // emerald
-  "#7c3aed", // violet
-  "#0891b2", // cyan
-  "#db2777", // pink
-  "#65a30d", // lime
-];
-
-/** Deterministic color from peer ID. */
-export function peerColor(peerId: string): string {
-  let hash = 0;
-  for (let i = 0; i < peerId.length; i++) {
-    hash = (hash * 31 + peerId.charCodeAt(i)) | 0;
-  }
-  return CURSOR_COLORS[Math.abs(hash) % CURSOR_COLORS.length];
 }
 
 // ── State effects ────────────────────────────────────────────────────

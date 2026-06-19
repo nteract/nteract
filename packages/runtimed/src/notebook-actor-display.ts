@@ -3,10 +3,12 @@ import {
   notebookActorProjectionFromLabel,
   type NotebookActorKind,
 } from "./notebook-actor-projection";
+import { colorForActorIdentity } from "./notebook-actor-color";
 
 export interface ActorDisplayPeer {
   participantKey: string;
   label: string;
+  imageUrl?: string | null;
 }
 
 export interface ResolveActorDisplayOptions {
@@ -21,6 +23,9 @@ export interface ActorDisplay {
   kind: NotebookActorKind;
   isAgent: boolean;
   onBehalfOf: string | null;
+  color: string;
+  initials: string;
+  imageUrl: string | null;
 }
 
 export function resolveActorDisplay({
@@ -31,24 +36,52 @@ export function resolveActorDisplay({
   const projection = notebookActorProjectionFromLabel(actorLabel, { source });
   const identity = notebookActorIdentityFromProjection(projection);
   const principalId = projection.principal.id;
-  const peerLabel = peerLabelForPrincipal(peers, principalId);
+  const peer = peerForPrincipal(peers, principalId);
+  const peerLabel = labelForPeer(peer);
   const principalDisplayName = peerLabel ?? projection.principal.label;
   const isAgent = identity.kind === "agent";
+  const displayName = isAgent ? (identity.operatorLabel ?? identity.label) : principalDisplayName;
 
   return {
-    displayName: isAgent ? (identity.operatorLabel ?? identity.label) : principalDisplayName,
+    displayName,
     principalId,
     kind: identity.kind,
     isAgent,
     onBehalfOf: isAgent ? (peerLabel ?? identity.principalLabel ?? null) : null,
+    color: colorForActorIdentity(actorLabel),
+    initials: actorInitials(displayName),
+    imageUrl: peer?.imageUrl ?? null,
   };
 }
 
-function peerLabelForPrincipal(
+function peerForPrincipal(
   peers: ReadonlyArray<ActorDisplayPeer>,
   principalId: string,
-): string | null {
-  const peer = peers.find((candidate) => candidate.participantKey === principalId);
+): ActorDisplayPeer | null {
+  return peers.find((candidate) => candidate.participantKey === principalId) ?? null;
+}
+
+function labelForPeer(peer: ActorDisplayPeer | null): string | null {
   const label = peer?.label.trim();
   return label ? label : null;
+}
+
+export function actorInitials(name: string): string {
+  const trimmed = name.trim();
+  if (looksLikeEmailAddress(trimmed)) {
+    return "U";
+  }
+  const words = trimmed
+    .split(/[\s@._-]+/g)
+    .map((word) => word.trim())
+    .filter(Boolean);
+  const initials = words
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("");
+  return initials || "U";
+}
+
+function looksLikeEmailAddress(label: string): boolean {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(label);
 }
