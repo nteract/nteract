@@ -1476,23 +1476,24 @@ export function NotebookViewer({
   );
 
   const handleDemoteDetachedOutputCommentThread = useCallback(
-    (threadId: string) => {
-      if (!canWriteComments) return;
+    (threadId: string): boolean => {
+      // Background auto-repair: report success so the hook only stops retrying
+      // once the demote commits, and stay quiet on the user-facing error state.
+      if (!canWriteComments) return false;
       const liveRuntime = liveRuntimeRef.current;
       if (
         !liveRuntime ||
         typeof liveRuntime.handle.demote_comment_thread_to_notebook !== "function"
       ) {
-        setCommentsError("Comments are not ready.");
-        return;
+        return false;
       }
       try {
         liveRuntime.handle.demote_comment_thread_to_notebook(threadId);
-        setCommentsError(null);
         refreshCloudCommentsProjection();
         liveRuntime.engine.scheduleFlush();
-      } catch (error) {
-        setCommentsError(error instanceof Error ? error.message : String(error));
+        return true;
+      } catch {
+        return false;
       }
     },
     [canWriteComments, liveRuntimeRef, refreshCloudCommentsProjection],

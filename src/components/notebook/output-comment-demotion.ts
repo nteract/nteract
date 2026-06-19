@@ -30,10 +30,17 @@ export function shouldDemoteOutputCommentAnchor(
   // Need a loaded current execution to compare against; null means the runtime
   // state has not bootstrapped yet.
   if (state.currentExecutionId === null) return false;
-  // The cell re-ran: the execution this comment was anchored to is gone.
-  if (anchor.execution_id && anchor.execution_id !== state.currentExecutionId) return true;
-  // The specific output is gone from the loaded current execution.
-  if (anchor.output_id && !state.currentOutputIds.includes(anchor.output_id)) return true;
+  if (anchor.execution_id) {
+    // Pinned to an execution: demote once that execution is replaced by a re-run,
+    // or once the specific output is gone from that still-current execution.
+    if (anchor.execution_id !== state.currentExecutionId) return true;
+    if (anchor.output_id && !state.currentOutputIds.includes(anchor.output_id)) return true;
+    return false;
+  }
+  // No execution pinned (a cell-outputs-level anchor): never demote on output id
+  // alone, because the current execution's outputs are a different run than the
+  // one the comment was made against. The create path always pins an execution,
+  // so this is a guard against a future unpinned anchor, not today's behavior.
   return false;
 }
 
@@ -64,7 +71,10 @@ export function outputCommentAnchorMatchesLiveState(anchor: OutputCommentAnchor)
 interface UseDemoteDetachedOutputCommentThreadsOptions {
   commentsProjection: CommentsProjection | null;
   enabled: boolean;
-  demoteThreadToNotebook: (threadId: string) => void;
+  /** Returns true once the demote has committed. A false result is retried on
+   *  the next execution/output change, so a transient failure never strands a
+   *  thread in the wrong state. */
+  demoteThreadToNotebook: (threadId: string) => boolean;
 }
 
 export function useDemoteDetachedOutputCommentThreads({
@@ -89,8 +99,11 @@ export function useDemoteDetachedOutputCommentThreads({
       ) {
         continue;
       }
-      attemptedThreadIds.current.add(thread.id);
-      demoteThreadToNotebook(thread.id);
+      // Mark attempted only after the demote commits, so a failed write is
+      // retried on the next structure-version bump instead of being silenced.
+      if (demoteThreadToNotebook(thread.id)) {
+        attemptedThreadIds.current.add(thread.id);
+      }
     }
   }, [
     commentsProjection,

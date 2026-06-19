@@ -945,20 +945,21 @@ function AppContent() {
   );
 
   const handleDemoteDetachedOutputCommentThread = useCallback(
-    (threadId: string) => {
-      if (!canMutateComments) return;
+    (threadId: string): boolean => {
+      // Background auto-repair: report success so the hook only stops retrying
+      // once the demote commits, and stay quiet on the user-facing error state.
+      if (!canMutateComments) return false;
       const handle = getHandle();
       if (!handle || typeof handle.demote_comment_thread_to_notebook !== "function") {
-        setCommentsError("Comments sync unavailable.");
-        return;
+        return false;
       }
       try {
         handle.demote_comment_thread_to_notebook(threadId);
-        setCommentsError(null);
         refreshCommentsProjection();
         getEngine()?.scheduleFlush();
-      } catch (error) {
-        setCommentsError(error instanceof Error ? error.message : String(error));
+        return true;
+      } catch {
+        return false;
       }
     },
     [canMutateComments, getEngine, getHandle, refreshCommentsProjection],

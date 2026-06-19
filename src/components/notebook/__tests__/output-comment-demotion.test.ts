@@ -57,6 +57,17 @@ describe("shouldDemoteOutputCommentAnchor", () => {
     ).toBe(false);
   });
 
+  it("does not demote an output anchor that is not pinned to an execution", () => {
+    // execution_id absent: the current execution is a different run, so a missing
+    // output id must not be read as detachment of the run the comment was made on.
+    expect(
+      shouldDemoteOutputCommentAnchor(
+        outputAnchor(null, "output-1"),
+        runtimeState("execution-9", ["output-2"]),
+      ),
+    ).toBe(false);
+  });
+
   it("does not demote while the runtime state has no loaded execution yet", () => {
     // Cell is back but RuntimeStateDoc execution pointers have not landed.
     // A stale-looking anchor must wait, not demote on the empty window.
