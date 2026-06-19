@@ -9,6 +9,7 @@ import {
   IdCard,
   LayoutDashboard,
   ListPlus,
+  MousePointer2,
   PackageCheck,
   Palette,
   PanelLeft,
@@ -62,6 +63,12 @@ const catalogGroups = [
         description: "Rail, environment, and connect-flow options for workstations.",
         href: "/docs/compute-placement",
         icon: Workflow,
+      },
+      {
+        title: "Context controls",
+        description: "Target-specific notebook actions for menus and toolbars.",
+        href: "/docs/context-controls",
+        icon: MousePointer2,
       },
       {
         title: "Notebook toolbar",

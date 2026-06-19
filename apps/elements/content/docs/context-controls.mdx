@@ -1,0 +1,25 @@
+---
+title: Context controls
+description: Right-click notebook actions fed by deterministic fixture context.
+---
+
+import { ContextControlsExample } from "@/components/context-controls-example";
+
+Context controls are supplemental notebook actions. The visible toolbar and
+cell affordances stay primary, while the context menu collects target-specific
+actions such as commenting, docs lookup, source inspection, output handling, and
+package edits.
+
+The fixture below renders the shared `NotebookContextMenu` component with
+deterministic source, markdown, output, and package targets. The menu is real
+Radix/shadcn UI, but every action is inert fixture state.
+
+<ContextControlsExample />
+
+## Boundary
+
+- The shared component owns menu grouping, target labels, disabled/destructive
+  presentation, shortcuts, and action invocation.
+- The host owns target detection, comment anchors, docs routes, notebook
+  mutation, package edits, runtime actions, and permission filtering.
+- Elements owns only the deterministic targets and action transcript for review.
