@@ -124,6 +124,24 @@ describe("NotebookRail", () => {
     expect(onCollapsedChange).toHaveBeenCalledWith(false);
   });
 
+  it("labels the comments rail as Discussions", () => {
+    render(
+      <NotebookRail
+        activePanelId="comments"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        commentsPanel={<div>Thread list</div>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Discussions" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Discussions" })).toBeVisible();
+    expect(screen.getByText("Thread list")).toBeVisible();
+  });
+
   it("does not show the workstations rail item until the host supplies a panel", () => {
     render(
       <NotebookRail

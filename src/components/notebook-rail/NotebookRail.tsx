@@ -70,7 +70,9 @@ export function NotebookRail({
 }: NotebookRailProps) {
   const railButtons = [
     ...baseRailButtons,
-    ...(commentsPanel ? [{ id: "comments" as const, label: "Comments", icon: MessageSquare }] : []),
+    ...(commentsPanel
+      ? [{ id: "comments" as const, label: "Discussions", icon: MessageSquare }]
+      : []),
     ...(workstationsPanel
       ? [{ id: "workstations" as const, label: "Workstations", icon: Server }]
       : []),
@@ -79,7 +81,7 @@ export function NotebookRail({
     activePanelId === "packages"
       ? "Packages"
       : activePanelId === "comments"
-        ? "Comments"
+        ? "Discussions"
         : activePanelId === "workstations"
           ? "Workstations"
           : "Outline";

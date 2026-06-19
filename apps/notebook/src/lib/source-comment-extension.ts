@@ -165,7 +165,9 @@ const sourceCommentTheme = EditorView.baseTheme({
     width: "24px",
   },
   ".cm-source-comment-button:hover": {
-    backgroundColor: "var(--muted, #f5f5f5)",
+    borderColor: "var(--primary, #2563eb)",
+    backgroundColor: "var(--primary, #2563eb)",
+    color: "var(--primary-foreground, #ffffff)",
   },
   ".cm-source-comment-button:focus-visible": {
     outline: "2px solid var(--ring, #a3a3a3)",

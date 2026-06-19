@@ -11,7 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { actorInitials, onBehalfOfText } from "runtimed";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type {
   CommentAnchor,
   CommentMessageSnapshot,
@@ -164,7 +164,7 @@ export function NotebookCommentsPanel({
         buttonLabel="Add comment"
         icon="plus"
         disabled={!canCreate}
-        autoFocusKey={draftTarget ? draftAutoFocusKey(draftTarget) : null}
+        autoFocusKey={draftTarget ? draftAutoFocusKey(draftTarget) : "document"}
         placeholder={
           draftTarget
             ? `Add a ${anchorLabelForDraft(draftTarget.anchor)} comment`
@@ -396,6 +396,7 @@ function CommentThreadItem({
           buttonLabel="Reply"
           icon="send"
           disabled={!canReply}
+          autoFocusKey={focused ? `${thread.id}:${focusNonce}` : null}
           placeholder={thread.status === "resolved" ? "Reply to reopen…" : "Reply…"}
           compact
           onSubmit={onReplyThread ? (body) => onReplyThread(thread.id, body) : undefined}
@@ -627,10 +628,9 @@ function CommentComposer({
     };
   }, [autoFocusKey, disabled]);
 
-  const handleSubmit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submitBody = async () => {
     const trimmed = body.trim();
-    if (!trimmed || disabled || !onSubmit) return;
+    if (!trimmed || disabled || submitting || !onSubmit) return;
     setBody("");
     setSubmitting(true);
     try {
@@ -640,6 +640,17 @@ function CommentComposer({
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    await submitBody();
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
+    event.preventDefault();
+    void submitBody();
   };
 
   return (
@@ -653,6 +664,7 @@ function CommentComposer({
         onChange={(event) => setBody(event.target.value)}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
+        onKeyDown={handleKeyDown}
         rows={expanded ? 3 : 1}
         className={cn(
           "w-full resize-y border bg-background px-3 text-sm leading-5",
