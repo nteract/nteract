@@ -42,6 +42,7 @@ import {
   type CommentAnchor,
   type CommentThreadSnapshot,
   type CommentsProjection,
+  type NotebookCommentDraftTarget,
 } from "@/components/notebook";
 import {
   openNotebookRailPanel,
@@ -80,6 +81,16 @@ import {
   cloudSyncAuthConnectionKey,
 } from "./session-auth-stability";
 import { NotebookView } from "../../notebook/src/notebook-surface";
+import { InlineCommentComposer } from "../../notebook/src/components/InlineCommentComposer";
+import {
+  setSourceCommentThreads,
+  type SourceCommentThread,
+} from "../../notebook/src/lib/comment-highlights";
+import {
+  resolveSourceRangeAnchor,
+  type SourceCommentSelectionRect,
+  type SourceRangeCommentAnchor,
+} from "../../notebook/src/lib/comment-source-anchor";
 import {
   CrdtBridgeProvider,
   createNotebookCellId,
@@ -272,6 +283,16 @@ export function NotebookViewer({
   const { activePanelId: activeRailPanel, collapsed: railCollapsed } = useNotebookRailUiState();
   const [commentsProjection, setCommentsProjection] = useState<CommentsProjection | null>(null);
   const [commentsError, setCommentsError] = useState<string | null>(null);
+  const [commentDraftTarget, setCommentDraftTarget] = useState<NotebookCommentDraftTarget | null>(
+    null,
+  );
+  const [sourceCommentRequest, setSourceCommentRequest] = useState<{
+    anchor: SourceRangeCommentAnchor;
+    rect: SourceCommentSelectionRect;
+  } | null>(null);
+  const [commentFocus, setCommentFocus] = useState<{ threadId: string; nonce: number } | null>(
+    null,
+  );
   const handledHeadingHashRef = useRef<string | null>(null);
   const [latestAccessRequest, setLatestAccessRequest] = useState<CloudNotebookAccessRequest | null>(
     null,
@@ -1175,6 +1196,22 @@ export function NotebookViewer({
     [shellCapabilities.canEditCells, shellCapabilities.canEditMarkdown, noteLocalCellEdit],
   );
   const canWriteComments = connectionScope === "editor" || connectionScope === "owner";
+  useEffect(() => {
+    if (!canWriteComments) {
+      setCommentDraftTarget(null);
+      setSourceCommentRequest(null);
+    }
+  }, [canWriteComments]);
+
+  const refreshCloudCommentsProjection = useCallback(() => {
+    const liveRuntime = liveRuntimeRef.current;
+    const projection = liveRuntime?.handle.get_comments_projection?.() as
+      | CommentsProjection
+      | undefined;
+    setCommentsProjection(projection ?? null);
+    return projection ?? null;
+  }, [liveRuntimeRef]);
+
   const applyLocalCommentEvent = useCallback(
     (event: unknown): boolean => {
       const liveRuntime = liveRuntimeRef.current;
@@ -1191,26 +1228,36 @@ export function NotebookViewer({
       }
       setCommentsError(null);
       liveRuntime.engine.scheduleFlush();
+      refreshCloudCommentsProjection();
       return true;
     },
-    [liveRuntimeRef],
+    [liveRuntimeRef, refreshCloudCommentsProjection],
   );
-  const handleCreateCommentThread = useCallback(
-    async (body: string) => {
-      if (!canWriteComments) return;
+
+  const handleCreateAnchoredCommentThread = useCallback(
+    async (anchor: CommentAnchor, body: string) => {
+      if (!canWriteComments) {
+        setCommentsError("Comments are read-only.");
+        return;
+      }
       const liveRuntime = liveRuntimeRef.current;
       if (!liveRuntime || typeof liveRuntime.handle.create_comment_thread !== "function") {
         setCommentsError("Comments are not ready.");
         return;
       }
       try {
-        const anchor: CommentAnchor = { kind: "notebook" };
+        const projection = refreshCloudCommentsProjection() ?? commentsProjection;
+        const orderScope = commentAnchorThreadOrderScope(anchor);
+        const afterThreadId =
+          projection?.threads
+            .filter((thread) => commentAnchorThreadOrderScope(thread.anchor) === orderScope)
+            .at(-1)?.id ?? null;
         const event = liveRuntime.handle.create_comment_thread(
           createCloudCommentId("thread"),
           createCloudCommentId("message"),
           anchor,
           body,
-          null,
+          afterThreadId,
           new Date().toISOString(),
         );
         applyLocalCommentEvent(event);
@@ -1218,8 +1265,124 @@ export function NotebookViewer({
         setCommentsError(error instanceof Error ? error.message : String(error));
       }
     },
-    [applyLocalCommentEvent, canWriteComments, liveRuntimeRef],
+    [
+      applyLocalCommentEvent,
+      canWriteComments,
+      commentsProjection,
+      liveRuntimeRef,
+      refreshCloudCommentsProjection,
+    ],
   );
+
+  const handleCreateCommentThread = useCallback(
+    async (body: string) => {
+      await handleCreateAnchoredCommentThread({ kind: "notebook" }, body);
+    },
+    [handleCreateAnchoredCommentThread],
+  );
+
+  const handleCreatePanelComment = useCallback(
+    async (body: string) => {
+      if (!commentDraftTarget) {
+        await handleCreateCommentThread(body);
+        return;
+      }
+      if (
+        commentDraftTarget.anchor.kind === "source_range" &&
+        !sourceRangeAnchorMatchesCurrentCell(commentDraftTarget.anchor)
+      ) {
+        setCommentsError("Selected source changed. Select the text again before commenting.");
+        return;
+      }
+      await handleCreateAnchoredCommentThread(commentDraftTarget.anchor, body);
+      setCommentDraftTarget(null);
+    },
+    [commentDraftTarget, handleCreateAnchoredCommentThread, handleCreateCommentThread],
+  );
+
+  const handleRequestSourceComment = useCallback(
+    (anchor: SourceRangeCommentAnchor, rect: SourceCommentSelectionRect | null) => {
+      setCommentsError(null);
+      if (rect) {
+        setSourceCommentRequest({ anchor, rect });
+        return;
+      }
+      setSourceCommentRequest(null);
+      setCommentDraftTarget({ anchor, quote: anchor.exact_quote ?? null });
+      openNotebookRailPanel("comments");
+    },
+    [],
+  );
+
+  const handleSubmitSourceComment = useCallback(
+    async (body: string) => {
+      if (!sourceCommentRequest) return;
+      if (!sourceRangeAnchorMatchesCurrentCell(sourceCommentRequest.anchor)) {
+        setSourceCommentRequest(null);
+        setCommentsError("Selected source changed. Select the text again before commenting.");
+        return;
+      }
+      await handleCreateAnchoredCommentThread(sourceCommentRequest.anchor, body);
+      setSourceCommentRequest(null);
+    },
+    [handleCreateAnchoredCommentThread, sourceCommentRequest],
+  );
+
+  const handleCancelSourceComment = useCallback(() => {
+    setSourceCommentRequest(null);
+  }, []);
+
+  const handleClearCommentDraftTarget = useCallback(() => {
+    setCommentDraftTarget(null);
+  }, []);
+
+  const sourceCommentThreadsByCell = useMemo(() => {
+    const map = new Map<string, SourceCommentThread[]>();
+    for (const thread of commentsProjection?.threads ?? []) {
+      if (thread.anchor.kind !== "source_range") continue;
+      const list = map.get(thread.anchor.cell_id) ?? [];
+      const firstMessage = thread.messages[0];
+      const author = thread.created_by_actor_label
+        ? resolveCloudCommentAuthor(thread.created_by_actor_label)
+        : undefined;
+      list.push({
+        threadId: thread.id,
+        anchor: thread.anchor,
+        resolved: thread.status === "resolved",
+        color: author?.color,
+        preview: firstMessage
+          ? {
+              authorName: author?.displayName ?? "Unknown",
+              authorColor: author?.color,
+              isAgent: author?.isAgent,
+              onBehalfOf: author?.onBehalfOf,
+              onBehalfOfColor: author?.onBehalfOfColor,
+              body: firstMessage.body,
+              replyCount: Math.max(0, thread.messages.length - 1),
+            }
+          : undefined,
+      });
+      map.set(thread.anchor.cell_id, list);
+    }
+    return map;
+  }, [commentsProjection, resolveCloudCommentAuthor]);
+
+  useEffect(() => {
+    setSourceCommentThreads(sourceCommentThreadsByCell);
+  }, [sourceCommentThreadsByCell]);
+
+  const handleActivateCommentThread = useCallback((threadId: string) => {
+    openNotebookRailPanel("comments");
+    setCommentFocus((previous) => ({ threadId, nonce: (previous?.nonce ?? 0) + 1 }));
+  }, []);
+
+  const resolveCommentSourceLanguage = useCallback((cellId: string): string | undefined => {
+    const cell = getCellById(cellId);
+    if (cell?.cell_type !== "code") return undefined;
+    const language = typeof cell.metadata.language === "string" ? cell.metadata.language : null;
+    return cloudSourceLanguage(language);
+  }, []);
+
   const handleReplyCommentThread = useCallback(
     async (threadId: string, body: string) => {
       if (!canWriteComments) return;
@@ -1229,11 +1392,14 @@ export function NotebookViewer({
         return;
       }
       try {
+        const projection = refreshCloudCommentsProjection() ?? commentsProjection;
+        const afterMessageId =
+          projection?.threads.find((thread) => thread.id === threadId)?.messages.at(-1)?.id ?? null;
         const event = liveRuntime.handle.reply_comment_thread(
           threadId,
           createCloudCommentId("message"),
           body,
-          null,
+          afterMessageId,
           new Date().toISOString(),
         );
         applyLocalCommentEvent(event);
@@ -1241,7 +1407,13 @@ export function NotebookViewer({
         setCommentsError(error instanceof Error ? error.message : String(error));
       }
     },
-    [applyLocalCommentEvent, canWriteComments, liveRuntimeRef],
+    [
+      applyLocalCommentEvent,
+      canWriteComments,
+      commentsProjection,
+      liveRuntimeRef,
+      refreshCloudCommentsProjection,
+    ],
   );
   const handleResolveCommentThread = useCallback(
     async (threadId: string) => {
@@ -1506,18 +1678,24 @@ export function NotebookViewer({
     !shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"
       ? "outline"
       : activeRailPanel;
+  const commentsPanelStatus = commentsProjection ? null : "Syncing comments...";
   const commentsPanel = (
     <NotebookCommentsPanel
       projection={commentsProjection}
       readOnly={!canWriteComments}
-      statusMessage={commentsProjection ? null : "Syncing comments..."}
+      draftTarget={canWriteComments ? commentDraftTarget : null}
+      statusMessage={commentsPanelStatus}
       errorMessage={commentsError}
-      onCreateThread={canWriteComments ? handleCreateCommentThread : undefined}
+      onClearDraftTarget={commentDraftTarget ? handleClearCommentDraftTarget : undefined}
+      onCreateThread={canWriteComments ? handleCreatePanelComment : undefined}
       onReplyThread={canWriteComments ? handleReplyCommentThread : undefined}
       onResolveThread={canWriteComments ? handleResolveCommentThread : undefined}
       onReopenThread={canWriteComments ? handleReopenCommentThread : undefined}
       onFocusThreadAnchor={handleFocusCommentAnchor}
       resolveCommentAuthor={resolveCloudCommentAuthor}
+      focusedThreadId={commentFocus?.threadId ?? null}
+      focusNonce={commentFocus?.nonce ?? 0}
+      resolveSourceLanguage={resolveCommentSourceLanguage}
     />
   );
   const rail = (
@@ -1793,6 +1971,8 @@ export function NotebookViewer({
                 onMoveCell={handleCloudMoveCell}
                 onSetCellSourceHidden={handleCloudSetCellSourceHidden}
                 onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
+                onCreateSourceComment={canWriteComments ? handleRequestSourceComment : undefined}
+                onActivateCommentThread={handleActivateCommentThread}
                 markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
                 outputHostContext={outputHostContext}
                 deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
@@ -1803,6 +1983,15 @@ export function NotebookViewer({
           </CrdtBridgeProvider>
         </PresenceValueProvider>
       </NotebookDocumentShell>
+      {sourceCommentRequest ? (
+        <InlineCommentComposer
+          rect={sourceCommentRequest.rect}
+          quote={sourceCommentRequest.anchor.exact_quote}
+          disabled={!canWriteComments}
+          onSubmit={handleSubmitSourceComment}
+          onCancel={handleCancelSourceComment}
+        />
+      ) : null}
     </NotebookHostProvider>
   );
 }
@@ -1816,6 +2005,28 @@ function cloudNotebookEnvironmentManager(
     }
   }
   return null;
+}
+
+function commentAnchorThreadOrderScope(anchor: CommentAnchor): string {
+  switch (anchor.kind) {
+    case "notebook":
+      return "notebook";
+    case "cell":
+    case "source_range":
+      return `cell:${anchor.cell_id}`;
+    case "cell_range":
+      return `cell_range:${anchor.start_cell_id}:${anchor.end_cell_id}`;
+    case "output":
+      return `output:${anchor.cell_id}:${anchor.execution_id ?? ""}:${anchor.output_id ?? ""}`;
+  }
+}
+
+function sourceRangeAnchorMatchesCurrentCell(anchor: SourceRangeCommentAnchor): boolean {
+  const cell = getCellById(anchor.cell_id);
+  if (!cell || (cell.cell_type !== "code" && cell.cell_type !== "raw")) {
+    return false;
+  }
+  return resolveSourceRangeAnchor(cell.source, anchor) !== null;
 }
 
 function createCloudCommentId(prefix: string): string {

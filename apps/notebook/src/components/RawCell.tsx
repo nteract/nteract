@@ -18,6 +18,13 @@ import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry
 import { detectRawFormat } from "../lib/detect-raw-format";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { presenceSenderExtension } from "../lib/presence-sender";
+import { commentHighlightExtension } from "../lib/comment-highlight-extension";
+import { refreshCellCommentHighlights } from "../lib/comment-highlights";
+import type {
+  SourceCommentSelectionRect,
+  SourceRangeCommentAnchor,
+} from "../lib/comment-source-anchor";
+import { sourceCommentExtension } from "../lib/source-comment-extension";
 import type { RawCell as RawCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
@@ -36,6 +43,11 @@ interface RawCellProps {
   /** Content for the right gutter (e.g., delete button) */
   rightGutterContent?: ReactNode;
   readOnly?: boolean;
+  onCreateSourceComment?: (
+    anchor: SourceRangeCommentAnchor,
+    rect: SourceCommentSelectionRect | null,
+  ) => void;
+  onActivateCommentThread?: (threadId: string) => void;
 }
 
 export const RawCell = memo(function RawCell({
@@ -50,6 +62,8 @@ export const RawCell = memo(function RawCell({
   isDragging,
   rightGutterContent,
   readOnly = false,
+  onCreateSourceComment,
+  onActivateCommentThread,
 }: RawCellProps) {
   const isFocused = useIsCellFocused(cell.id);
   const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
@@ -68,6 +82,7 @@ export const RawCell = memo(function RawCell({
         registeredViewRef.current = view;
         registerCellEditor(cell.id, view);
         onEditorRegistered(cell.id);
+        refreshCellCommentHighlights(cell.id);
         return true;
       }
       return false;
@@ -153,15 +168,42 @@ export const RawCell = memo(function RawCell({
     ];
   }, [cell.id, presence]);
 
-  // Search highlight extension + remote cursors + presence sender
+  const sourceCommentExt = useMemo(() => {
+    // The create affordance (selection tooltip + keymap) needs editor focus,
+    // which a read-only editor never takes, so offer it only on editable cells.
+    // Reading existing threads stays open to everyone via commentHighlightExt.
+    if (readOnly || !onCreateSourceComment) return [];
+    return [sourceCommentExtension(cell.id, onCreateSourceComment)];
+  }, [cell.id, onCreateSourceComment, readOnly]);
+
+  const commentHighlightExt = useMemo(() => {
+    if (!onActivateCommentThread) return [];
+    return [
+      commentHighlightExtension({
+        onActivate: onActivateCommentThread,
+        onReady: () => refreshCellCommentHighlights(cell.id),
+      }),
+    ];
+  }, [cell.id, onActivateCommentThread]);
+
+  // Search highlight extension, remote cursors, presence, and comments.
   const searchExtensions = useMemo(
     () => [
       ...searchHighlight(searchQuery || ""),
       ...remoteCursorsExt,
       ...textAttributionExt,
       ...presenceSenderExt,
+      ...sourceCommentExt,
+      ...commentHighlightExt,
     ],
-    [searchQuery, remoteCursorsExt, textAttributionExt, presenceSenderExt],
+    [
+      searchQuery,
+      remoteCursorsExt,
+      textAttributionExt,
+      presenceSenderExt,
+      sourceCommentExt,
+      commentHighlightExt,
+    ],
   );
 
   // Get keyboard navigation bindings
