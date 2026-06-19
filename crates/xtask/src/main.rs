@@ -3056,6 +3056,12 @@ fn cmd_lint(fix: bool) {
     }
     println!();
 
+    println!("=== Raw control bytes ===");
+    if !check_raw_control_bytes() {
+        failed = true;
+    }
+    println!();
+
     // JavaScript/TypeScript with Vite Plus
     println!("=== JavaScript/TypeScript (vp check) ===");
     let vp_ok = if fix {
@@ -3126,6 +3132,194 @@ fn cmd_lint(fix: bool) {
     }
 
     println!("All checks passed!");
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawControlByte {
+    byte: u8,
+    offset: usize,
+    line: usize,
+    column: usize,
+}
+
+fn first_raw_control_byte(bytes: &[u8]) -> Option<RawControlByte> {
+    let mut line = 1usize;
+    let mut column = 1usize;
+
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r') {
+            return Some(RawControlByte {
+                byte,
+                offset,
+                line,
+                column,
+            });
+        }
+
+        if byte == b'\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+
+    None
+}
+
+fn normalized_repo_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn is_known_generated_text_bundle(path: &Path) -> bool {
+    let path = normalized_repo_path(path);
+    path.starts_with("apps/notebook/src/renderer-plugins/")
+        || path.starts_with("crates/runt-mcp/assets/plugins/")
+        || path.starts_with("apps/elements/public/wasm/")
+}
+
+fn should_scan_for_raw_control_bytes(path: &Path) -> bool {
+    if is_known_generated_text_bundle(path) {
+        return false;
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if matches!(
+        file_name,
+        ".env"
+            | ".env.example"
+            | ".gitattributes"
+            | ".gitignore"
+            | ".npmrc"
+            | ".yarnrc"
+            | "AGENTS.md"
+            | "Cargo.lock"
+            | "Dockerfile"
+            | "README.md"
+            | "package.json"
+            | "pnpm-lock.yaml"
+            | "pyproject.toml"
+    ) {
+        return true;
+    }
+
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some(
+            "bash"
+                | "cfg"
+                | "cjs"
+                | "css"
+                | "env"
+                | "fish"
+                | "html"
+                | "ini"
+                | "js"
+                | "json"
+                | "jsonl"
+                | "jsx"
+                | "lock"
+                | "md"
+                | "mdx"
+                | "mjs"
+                | "py"
+                | "rs"
+                | "sh"
+                | "sql"
+                | "toml"
+                | "ts"
+                | "tsx"
+                | "txt"
+                | "yaml"
+                | "yml"
+                | "zsh"
+        )
+    )
+}
+
+fn tracked_files() -> Result<Vec<PathBuf>, String> {
+    let output = Command::new("git")
+        .args(["ls-files", "-z"])
+        .output()
+        .map_err(|error| format!("failed to run git ls-files: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!("git ls-files failed with status {}", output.status));
+    }
+
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| PathBuf::from(String::from_utf8_lossy(path).into_owned()))
+        .collect())
+}
+
+fn check_raw_control_bytes() -> bool {
+    let files = match tracked_files() {
+        Ok(files) => files,
+        Err(error) => {
+            eprintln!("{error}");
+            return false;
+        }
+    };
+
+    let mut violations = Vec::new();
+    let mut read_errors = Vec::new();
+
+    for path in files {
+        if !should_scan_for_raw_control_bytes(&path) {
+            continue;
+        }
+
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                read_errors.push(format!("{}: {error}", path.display()));
+                continue;
+            }
+        };
+
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+
+        match fs::read(&path) {
+            Ok(bytes) => {
+                if let Some(control) = first_raw_control_byte(&bytes) {
+                    violations.push((path, control));
+                }
+            }
+            Err(error) => read_errors.push(format!("{}: {error}", path.display())),
+        }
+    }
+
+    if read_errors.is_empty() && violations.is_empty() {
+        println!("No raw control bytes found in tracked source text.");
+        return true;
+    }
+
+    for error in read_errors {
+        eprintln!("Failed to read tracked source text file: {error}");
+    }
+
+    for (path, control) in violations {
+        eprintln!(
+            "{}:{}:{}: raw control byte 0x{:02X}; use the \\u escape instead of a literal control character",
+            path.display(),
+            control.line,
+            control.column,
+            control.byte
+        );
+    }
+
+    false
 }
 
 fn cmd_clippy() {
@@ -4888,6 +5082,48 @@ mod tests {
                 skip_build: true,
             }
         );
+    }
+
+    #[test]
+    fn raw_control_byte_detector_allows_common_whitespace() {
+        assert_eq!(first_raw_control_byte(b"alpha\tbeta\r\ngamma"), None);
+    }
+
+    #[test]
+    fn raw_control_byte_detector_reports_literal_control_bytes() {
+        assert_eq!(
+            first_raw_control_byte(b"alpha\nbe\0ta"),
+            Some(RawControlByte {
+                byte: 0,
+                offset: 8,
+                line: 2,
+                column: 3,
+            })
+        );
+        assert_eq!(
+            first_raw_control_byte(b"alpha\x1fbeta").map(|control| control.byte),
+            Some(0x1f)
+        );
+    }
+
+    #[test]
+    fn raw_control_byte_path_filter_scans_source_not_generated_bundles() {
+        assert!(should_scan_for_raw_control_bytes(Path::new(
+            "apps/notebook/src/App.tsx"
+        )));
+        assert!(should_scan_for_raw_control_bytes(Path::new(
+            ".github/workflows/build.yml"
+        )));
+        assert!(should_scan_for_raw_control_bytes(Path::new("Cargo.lock")));
+        assert!(!should_scan_for_raw_control_bytes(Path::new(
+            "crates/comments-doc/assets/comments_doc_genesis_v1.am"
+        )));
+        assert!(!should_scan_for_raw_control_bytes(Path::new(
+            "apps/notebook/src/renderer-plugins/plotly.js"
+        )));
+        assert!(!should_scan_for_raw_control_bytes(Path::new(
+            "crates/runt-mcp/assets/plugins/plotly.js"
+        )));
     }
 
     #[test]

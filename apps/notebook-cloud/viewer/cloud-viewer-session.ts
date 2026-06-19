@@ -78,6 +78,10 @@ import {
   type OfflineMergeNoticeData,
 } from "./offline-merge-tracker";
 import {
+  SUSTAINED_RECONNECTING_DEBOUNCE_MS,
+  SustainedReconnectAccessDiagnosticTracker,
+} from "./use-sustained-reconnecting";
+import {
   cleanupNotebookProjectionForRemovedCells,
   projectNotebookCellsIntoViewStores,
   resetNotebookProjectionStores,
@@ -321,6 +325,34 @@ export function useCloudViewerSession({
   authRenewalKindRef.current = authRenewalKind;
   const previousAuthRenewalKindRef = useRef(authRenewalKind);
   const syncAuthConnectionKey = cloudSyncAuthConnectionKey(authState, { hasAppSession });
+
+  useEffect(() => {
+    const tracker = new SustainedReconnectAccessDiagnosticTracker({
+      debounceMs: SUSTAINED_RECONNECTING_DEBOUNCE_MS,
+      diagnose: () =>
+        diagnoseCloudConnectionAccess({
+          accessRequestsEndpoint: config.accessRequestsEndpoint,
+          authState: authStateRef.current,
+          hasAppSession: hasAppSessionRef.current,
+        }),
+      onDiagnostic: (diagnostic) => {
+        // Sustained reconnect diagnostics run after a runtime has gone live.
+        // Pre-ready access diagnostics still stop their scoped pendingTransport;
+        // once live, the runtime retry loop owns transport teardown while we
+        // replace generic reconnect copy with the access-specific failure.
+        setConnectionError((current) =>
+          cloudConnectionErrorWithAccessDiagnostic(current, diagnostic),
+        );
+      },
+    });
+    const subscription = connectionStatusBridge.subscribe((connectionStatus) => {
+      tracker.next(connectionStatus);
+    });
+    return () => {
+      subscription.unsubscribe();
+      tracker.dispose();
+    };
+  }, [connectionStatusBridge, config.accessRequestsEndpoint]);
 
   useEffect(() => {
     const previousKind = previousAuthRenewalKindRef.current;

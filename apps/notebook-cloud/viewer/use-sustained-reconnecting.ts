@@ -13,6 +13,12 @@ export interface ReconnectingStatusSource {
   subscribe(next: (status: ConnectionStatus) => void): { unsubscribe(): void };
 }
 
+export interface SustainedReconnectAccessDiagnosticTrackerOptions {
+  debounceMs: number;
+  diagnose: () => Promise<string | null>;
+  onDiagnostic: (diagnostic: string) => void;
+}
+
 /**
  * Debounce "reconnecting" into a single sustained flag:
  *
@@ -66,6 +72,60 @@ export class SustainedReconnectingTracker {
       clearTimeout(this.timer);
       this.timer = null;
     }
+  }
+}
+
+/**
+ * Runs at most one access diagnostic per sustained reconnect window.
+ *
+ * Transport reconnect errors are intentionally calm at first. If the room
+ * stays unreachable past the sustained-reconnect threshold, this probes the
+ * catalog/access endpoint so cookie revocation and lost sharing permissions
+ * can replace generic socket copy with an actionable diagnostic.
+ */
+export class SustainedReconnectAccessDiagnosticTracker {
+  private disposed = false;
+  private diagnosedThisCycle = false;
+  private generation = 0;
+  private readonly reconnecting: SustainedReconnectingTracker;
+
+  constructor(private readonly options: SustainedReconnectAccessDiagnosticTrackerOptions) {
+    this.reconnecting = new SustainedReconnectingTracker({
+      debounceMs: options.debounceMs,
+      onChange: (sustained) => {
+        if (sustained) {
+          this.runDiagnostic();
+        }
+      },
+    });
+  }
+
+  next(status: ConnectionStatus): void {
+    if (status === "online" || status === "offline") {
+      this.generation += 1;
+      this.diagnosedThisCycle = false;
+    }
+    this.reconnecting.next(status);
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.generation += 1;
+    this.reconnecting.dispose();
+  }
+
+  private runDiagnostic(): void {
+    if (this.diagnosedThisCycle) return;
+    this.diagnosedThisCycle = true;
+    const generation = this.generation;
+
+    void this.options
+      .diagnose()
+      .then((diagnostic) => {
+        if (this.disposed || generation !== this.generation || !diagnostic) return;
+        this.options.onDiagnostic(diagnostic);
+      })
+      .catch(() => undefined);
   }
 }
 
