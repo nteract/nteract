@@ -90,6 +90,7 @@ describe("createBrowserHost()", () => {
           cell_count: 0,
           ephemeral: true,
           comments_doc_id: "comments:local-room:nb-1",
+          comments_notebook_ref: { kind: "local_room", room_id: "nb-1" },
         },
         blob_port: 48124,
         daemon: config.daemon,
@@ -101,6 +102,7 @@ describe("createBrowserHost()", () => {
       cell_count: 0,
       ephemeral: true,
       comments_doc_id: "comments:local-room:nb-1",
+      comments_notebook_ref: { kind: "local_room", room_id: "nb-1" },
     });
     await expect(host.blobs.port()).resolves.toBe(48124);
     await expect(host.blobs.resolver()).resolves.toMatchObject({ port: 48124 });

@@ -71,6 +71,16 @@ function normalizeCommentsDocId(commentsDocId: string | null | undefined): strin
   return trimmed || null;
 }
 
+function serializeCommentsNotebookRef(commentsNotebookRef: unknown): string | null {
+  if (commentsNotebookRef === null || commentsNotebookRef === undefined) return null;
+  try {
+    return JSON.stringify(commentsNotebookRef);
+  } catch (error) {
+    logger.warn("[automerge-notebook] failed to serialize comments notebook ref", error);
+    return null;
+  }
+}
+
 let warnedMissingExecutionViewProjector = false;
 
 function projectExecutionViewChangeset(handle: NotebookHandle) {
@@ -129,6 +139,7 @@ export function useNotebook() {
   const prevPathRef = useRef<string | null>(null);
   const actorLabelRef = useRef(`desktop:${sessionIdRef.current}`);
   const commentsDocIdRef = useRef<string | null>(null);
+  const commentsNotebookRefJsonRef = useRef<string | null>(null);
   const [localActor, setLocalActor] = useState(actorLabelRef.current);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const canWriteNotebookRef = useRef(true);
@@ -140,9 +151,15 @@ export function useNotebook() {
         actorLabel: () => actorLabelRef.current,
         createHandle: (actorLabel) => {
           const commentsDocId = commentsDocIdRef.current;
-          return commentsDocId
-            ? NotebookHandle.create_bootstrap_with_comments(actorLabel, commentsDocId)
-            : NotebookHandle.create_empty_with_actor(actorLabel);
+          if (!commentsDocId) return NotebookHandle.create_empty_with_actor(actorLabel);
+          const commentsNotebookRefJson = commentsNotebookRefJsonRef.current;
+          return commentsNotebookRefJson
+            ? NotebookHandle.create_bootstrap_with_comments_ref(
+                actorLabel,
+                commentsDocId,
+                commentsNotebookRefJson,
+              )
+            : NotebookHandle.create_bootstrap_with_comments(actorLabel, commentsDocId);
         },
         getBlobPort,
         publishHandle: setNotebookHandle,
@@ -348,6 +365,9 @@ export function useNotebook() {
           setLocalActor(trigger.payload.actor_label);
         }
         commentsDocIdRef.current = normalizeCommentsDocId(trigger.payload.comments_doc_id);
+        commentsNotebookRefJsonRef.current = serializeCommentsNotebookRef(
+          trigger.payload.comments_notebook_ref,
+        );
         const connectionScope = trigger.payload.connection_scope ?? null;
         setConnectionScope(connectionScope);
         canWriteNotebookRef.current = scopeAllowsNotebookWrite(connectionScope);

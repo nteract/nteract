@@ -88,7 +88,14 @@ export interface DaemonReadyPayload {
   connection_scope?: string;
   /** Daemon-authoritative CommentsDoc identity for this room. */
   comments_doc_id?: string | null;
+  /** Daemon-authoritative notebook reference stored inside the CommentsDoc. */
+  comments_notebook_ref?: CommentsNotebookRef | null;
 }
+
+export type CommentsNotebookRef =
+  | { kind: "hosted_room"; room_locator: string }
+  | { kind: "local_path"; canonical_path: string }
+  | { kind: "local_room"; room_id: string };
 
 export interface DaemonProgressPayload {
   status: "checking" | "ready" | "failed" | string;

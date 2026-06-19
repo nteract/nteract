@@ -70,14 +70,24 @@ fn serialize_to_js<T: Serialize>(value: &T) -> Result<JsValue, serde_wasm_bindge
     value.serialize(&serializer)
 }
 
-fn create_comments_doc_sync_target(
+fn create_comments_doc_sync_target_with_ref(
     comments_doc_id: &str,
+    notebook_ref: &NotebookCommentRef,
     actor_label: &str,
 ) -> Result<CommentsDoc, JsError> {
-    let notebook_ref = comments_sync_target_ref(comments_doc_id);
-    CommentsDoc::try_new_with_actor(comments_doc_id, &notebook_ref, actor_label).map_err(|e| {
+    CommentsDoc::try_new_with_actor(comments_doc_id, notebook_ref, actor_label).map_err(|e| {
         JsError::new(&format!(
             "create comments doc sync target failed for {comments_doc_id}: {e}"
+        ))
+    })
+}
+
+fn parse_comments_notebook_ref_json(
+    notebook_ref_json: &str,
+) -> Result<NotebookCommentRef, JsError> {
+    serde_json::from_str(notebook_ref_json).map_err(|e| {
+        JsError::new(&format!(
+            "parse comments notebook ref failed for {notebook_ref_json}: {e}"
         ))
     })
 }
@@ -2431,6 +2441,17 @@ impl NotebookHandle {
         Ok(handle)
     }
 
+    /// Create a bootstrap handle with daemon-provided CommentsDoc identity and notebook ref.
+    pub fn create_bootstrap_with_comments_ref(
+        actor_label: &str,
+        comments_doc_id: &str,
+        notebook_ref_json: &str,
+    ) -> Result<NotebookHandle, JsError> {
+        let mut handle = Self::create_bootstrap(actor_label)?;
+        handle.init_comments_sync_target_ref(comments_doc_id, notebook_ref_json)?;
+        Ok(handle)
+    }
+
     /// Create a handle with the bootstrap skeleton for sync.
     ///
     /// Deprecated — use [`create_bootstrap()`](Self::create_bootstrap) which
@@ -3993,6 +4014,25 @@ impl NotebookHandle {
 
     /// Initialize CommentsDoc sync from daemon-provided room identity.
     pub fn init_comments_sync_target(&mut self, comments_doc_id: &str) -> Result<(), JsError> {
+        let notebook_ref = comments_sync_target_ref(comments_doc_id);
+        self.init_comments_sync_target_inner(comments_doc_id, &notebook_ref)
+    }
+
+    /// Initialize CommentsDoc sync from daemon-provided room identity and notebook ref.
+    pub fn init_comments_sync_target_ref(
+        &mut self,
+        comments_doc_id: &str,
+        notebook_ref_json: &str,
+    ) -> Result<(), JsError> {
+        let notebook_ref = parse_comments_notebook_ref_json(notebook_ref_json)?;
+        self.init_comments_sync_target_inner(comments_doc_id, &notebook_ref)
+    }
+
+    fn init_comments_sync_target_inner(
+        &mut self,
+        comments_doc_id: &str,
+        notebook_ref: &NotebookCommentRef,
+    ) -> Result<(), JsError> {
         let actor_label = self.doc.get_actor_id();
         if self
             .comments_doc
@@ -4008,8 +4048,9 @@ impl NotebookHandle {
             }
             return Ok(());
         }
-        self.comments_doc = Some(create_comments_doc_sync_target(
+        self.comments_doc = Some(create_comments_doc_sync_target_with_ref(
             comments_doc_id,
+            notebook_ref,
             &actor_label,
         )?);
         self.comments_sync_state = sync::State::new();
@@ -5068,6 +5109,43 @@ mod tests {
         val: serde_json::Value,
     ) -> (serde_json::Value, Vec<Vec<String>>, Vec<Vec<String>>) {
         resolve_comm_state_for_frontend(&val, 1234, true)
+    }
+
+    #[test]
+    fn comments_bootstrap_uses_daemon_provided_notebook_ref() {
+        for (comments_doc_id, notebook_ref) in [
+            (
+                "comments:local-room:room-1",
+                NotebookCommentRef::LocalRoom {
+                    room_id: "room-1".to_string(),
+                },
+            ),
+            (
+                "comments:local-path:63bbd3f2251d51b5bde4331cdcd8a860e338635079eb34f9572bd7d039113550",
+                NotebookCommentRef::LocalPath {
+                    canonical_path: "/tmp/notebook.ipynb".to_string(),
+                },
+            ),
+            (
+                "comments:hosted-room-1",
+                NotebookCommentRef::HostedRoom {
+                    room_locator: "hosted-room-1".to_string(),
+                },
+            ),
+        ] {
+            let notebook_ref_json =
+                serde_json::to_string(&notebook_ref).expect("serialize notebook ref");
+            let handle = NotebookHandle::create_bootstrap_with_comments_ref(
+                "user:dev:alice/browser:a",
+                comments_doc_id,
+                &notebook_ref_json,
+            )
+            .expect("create comments bootstrap handle");
+            assert_eq!(
+                handle.comments_doc.as_ref().and_then(CommentsDoc::notebook_ref),
+                Some(notebook_ref)
+            );
+        }
     }
 
     #[test]

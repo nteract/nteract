@@ -159,6 +159,9 @@ pub struct ProtocolCapabilities {
     /// Daemon-authoritative CommentsDoc identity for this notebook room.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comments_doc_id: Option<String>,
+    /// Daemon-authoritative notebook reference stored inside the CommentsDoc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comments_notebook_ref: Option<serde_json::Value>,
 }
 
 impl ProtocolCapabilities {
@@ -179,6 +182,7 @@ impl ProtocolCapabilities {
             actor_label: None,
             connection_scope: None,
             comments_doc_id: None,
+            comments_notebook_ref: None,
         }
     }
 
@@ -196,6 +200,17 @@ impl ProtocolCapabilities {
     /// Attach the daemon-authoritative CommentsDoc identity for this room.
     pub fn with_comments_doc_id(mut self, comments_doc_id: Option<String>) -> Self {
         self.comments_doc_id = comments_doc_id;
+        self
+    }
+
+    /// Attach the daemon-authoritative CommentsDoc identity and notebook ref.
+    pub fn with_comments_doc_identity(
+        mut self,
+        comments_doc_id: Option<String>,
+        comments_notebook_ref: Option<serde_json::Value>,
+    ) -> Self {
+        self.comments_doc_id = comments_doc_id;
+        self.comments_notebook_ref = comments_notebook_ref;
         self
     }
 }

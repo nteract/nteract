@@ -3080,6 +3080,13 @@ impl Daemon {
             .comments
             .read(|doc| doc.comments_doc_id())
             .context("read comments doc id for open notebook response")?;
+        let comments_notebook_ref = room
+            .comments
+            .read(|doc| doc.notebook_ref())
+            .context("read comments notebook ref for open notebook response")?
+            .map(serde_json::to_value)
+            .transpose()
+            .context("serialize comments notebook ref for open notebook response")?;
 
         // Send NotebookConnectionInfo response. The wire notebook_id is the
         // room's UUID (stable across the life of the room); the local
@@ -3092,7 +3099,7 @@ impl Daemon {
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
                 )
-                .with_comments_doc_id(comments_doc_id),
+                .with_comments_doc_identity(comments_doc_id, comments_notebook_ref),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
@@ -3324,13 +3331,20 @@ impl Daemon {
             .comments
             .read(|doc| doc.comments_doc_id())
             .context("read comments doc id for create notebook response")?;
+        let comments_notebook_ref = room
+            .comments
+            .read(|doc| doc.notebook_ref())
+            .context("read comments notebook ref for create notebook response")?
+            .map(serde_json::to_value)
+            .transpose()
+            .context("serialize comments notebook ref for create notebook response")?;
         let response = NotebookConnectionInfo {
             capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
                 .with_identity(
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
                 )
-                .with_comments_doc_id(comments_doc_id),
+                .with_comments_doc_identity(comments_doc_id, comments_notebook_ref),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,

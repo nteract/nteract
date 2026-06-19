@@ -46,6 +46,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           notebook_path: null,
           runtime: "python",
           comments_doc_id: "comments:local-room:nb-1",
+          comments_notebook_ref: { kind: "local_room", room_id: "nb-1" },
         });
       case "get_default_save_directory":
         return Promise.resolve("/tmp/notebooks");
@@ -333,6 +334,7 @@ describe("createTauriHost()", () => {
       notebook_path: null,
       runtime: "python",
       comments_doc_id: "comments:local-room:nb-1",
+      comments_notebook_ref: { kind: "local_room", room_id: "nb-1" },
     });
   });
 
