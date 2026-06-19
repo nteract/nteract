@@ -53,6 +53,12 @@ const catalogGroups = [
         icon: Cloud,
       },
       {
+        title: "Full shell composition",
+        description: "Full-space notebook workspace with rail, cells, comments, and compute.",
+        href: "/full-shell-composition",
+        icon: Frame,
+      },
+      {
         title: "Cloud dashboard",
         description: "Notebook home, continuation, workstation context, and sharing previews.",
         href: "/docs/cloud-dashboard",
