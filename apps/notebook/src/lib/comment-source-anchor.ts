@@ -3,6 +3,8 @@ import type { EditorView } from "@codemirror/view";
 import type { CommentAnchor } from "runtimed";
 
 export type SourceRangeCommentAnchor = Extract<CommentAnchor, { kind: "source_range" }>;
+// Single source of truth lives with the demote-on-detach logic that consumes it.
+export type { OutputCommentAnchor } from "@/components/notebook/output-comment-demotion";
 
 /**
  * Viewport-space rectangle bounding a comment-worthy selection. Used to anchor

@@ -62,6 +62,7 @@ import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
 import type { SourceCommentThread } from "../lib/comment-highlights";
 import type {
+  OutputCommentAnchor,
   SourceCommentSelectionRect,
   SourceRangeCommentAnchor,
 } from "../lib/comment-source-anchor";
@@ -93,6 +94,7 @@ export interface NotebookViewProps {
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
   ) => void;
+  onCreateOutputComment?: (anchor: OutputCommentAnchor) => void;
   onActivateCommentThread?: (threadId: string) => void;
   commentThreadsByCell?: ReadonlyMap<string, readonly SourceCommentThread[]>;
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
@@ -372,6 +374,7 @@ function NotebookViewContent({
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
   onCreateSourceComment,
+  onCreateOutputComment,
   onActivateCommentThread,
   commentThreadsByCell,
   markdownHeadingAnchorsByCellId,
@@ -949,6 +952,7 @@ function NotebookViewContent({
             readOnly={!canEditCodeCellSources}
             canExecute={canExecuteCells}
             onCreateSourceComment={onCreateSourceComment}
+            onCreateOutputComment={onCreateOutputComment}
             onActivateCommentThread={onActivateCommentThread}
             outputHostContext={outputHostContext}
             deferOutputIsolatedFrameUntilVisible={deferOutputIsolatedFramesUntilVisible}
@@ -1066,6 +1070,7 @@ function NotebookViewContent({
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
       onCreateSourceComment,
+      onCreateOutputComment,
       onActivateCommentThread,
       commentThreadsByCell,
       markdownHeadingAnchorsByCellId,

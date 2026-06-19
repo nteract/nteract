@@ -1741,6 +1741,7 @@ export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
     get_comments_doc_heads_hex: commentsSync.get_comments_doc_heads_hex,
     init_comments_sync_target: commentsSync.init_comments_sync_target,
     create_comment_thread: commentsSync.create_comment_thread,
+    demote_comment_thread_to_notebook: commentsSync.demote_comment_thread_to_notebook,
     reply_comment_thread: commentsSync.reply_comment_thread,
     resolve_comment_thread: commentsSync.resolve_comment_thread,
     reopen_comment_thread: commentsSync.reopen_comment_thread,
@@ -1817,6 +1818,7 @@ type CloudCommentsDocSyncMethods = Pick<
   | "get_comments_doc_heads_hex"
   | "init_comments_sync_target"
   | "create_comment_thread"
+  | "demote_comment_thread_to_notebook"
   | "reply_comment_thread"
   | "resolve_comment_thread"
   | "reopen_comment_thread"
@@ -1834,6 +1836,7 @@ function cloudCommentsDocSyncMethods(handle: NotebookHandle): CloudCommentsDocSy
         | "get_comments_doc_heads_hex"
         | "init_comments_sync_target"
         | "create_comment_thread"
+        | "demote_comment_thread_to_notebook"
         | "reply_comment_thread"
         | "resolve_comment_thread"
         | "reopen_comment_thread"
@@ -1876,6 +1879,10 @@ function cloudCommentsDocSyncMethods(handle: NotebookHandle): CloudCommentsDocSy
                 afterThreadId,
                 createdAt,
               ) as ReturnType<NonNullable<SyncableHandle["create_comment_thread"]>>
+          : undefined,
+      demote_comment_thread_to_notebook:
+        typeof candidate.demote_comment_thread_to_notebook === "function"
+          ? (threadId) => candidate.demote_comment_thread_to_notebook?.(threadId)
           : undefined,
       reply_comment_thread:
         typeof candidate.reply_comment_thread === "function"

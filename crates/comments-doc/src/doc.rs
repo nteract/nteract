@@ -281,9 +281,9 @@ impl CommentsDoc {
 
     /// Demote a thread's anchor to a notebook-level comment.
     ///
-    /// Used when a source-range thread's quoted text no longer exists. The
-    /// comment remains visible as a dangling document comment instead of
-    /// disappearing with its lost source target.
+    /// Used when an anchored thread's target no longer exists. The comment
+    /// remains visible as a document comment instead of staying attached to a
+    /// missing target.
     pub fn demote_thread_anchor_to_notebook(
         &mut self,
         thread_id: &str,
@@ -867,6 +867,18 @@ mod tests {
         }
     }
 
+    fn output_anchor(
+        cell_id: &str,
+        execution_id: Option<&str>,
+        output_id: Option<&str>,
+    ) -> CommentAnchor {
+        CommentAnchor::Output {
+            cell_id: cell_id.to_string(),
+            execution_id: execution_id.map(str::to_string),
+            output_id: output_id.map(str::to_string),
+        }
+    }
+
     fn change_hashes_for_actor(doc: &mut AutoCommit, actor: &str) -> Vec<automerge::ChangeHash> {
         doc.get_changes(&[])
             .into_iter()
@@ -945,6 +957,31 @@ mod tests {
             "msg-1",
             &source_anchor(0, 0, 0, 4, Some("beta")),
             "anchored comment",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+
+        doc.demote_thread_anchor_to_notebook("thread-1").unwrap();
+
+        let projection = doc.read_projection(None).unwrap();
+        let thread = projection
+            .threads
+            .iter()
+            .find(|thread| thread.id == "thread-1")
+            .expect("thread present after demote");
+        assert!(matches!(thread.anchor, CommentAnchor::Notebook));
+        assert!(thread.badge_cell_ids.is_empty());
+    }
+
+    #[test]
+    fn demote_output_thread_anchor_to_notebook_makes_it_a_document_comment() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), CLIENT);
+        doc.create_thread(
+            "thread-1",
+            "msg-1",
+            &output_anchor("cell-a", Some("execution-1"), Some("output-1")),
+            "anchored output comment",
             None,
             "2026-06-16T00:00:00Z",
         )

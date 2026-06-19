@@ -65,6 +65,7 @@ import { InlineCommentComposer } from "./components/InlineCommentComposer";
 import { setSourceCommentThreads, type SourceCommentThread } from "./lib/comment-highlights";
 import {
   resolveSourceRangeAnchor,
+  type OutputCommentAnchor,
   type SourceCommentSelectionRect,
   type SourceRangeCommentAnchor,
 } from "./lib/comment-source-anchor";
@@ -100,6 +101,10 @@ import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
 import { getBlobResolver, useBlobPort } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
+import {
+  outputCommentAnchorMatchesLiveState,
+  useDemoteDetachedOutputCommentThreads,
+} from "@/components/notebook/output-comment-demotion";
 import {
   flushCellUIState,
   getFocusedCellId,
@@ -230,6 +235,9 @@ function sourceRangeAnchorMatchesCurrentCell(anchor: CommentAnchor): boolean {
     return false;
   return resolveSourceRangeAnchor(cell.source, anchor) !== null;
 }
+
+const OUTPUT_COMMENT_STALE_MESSAGE =
+  "Selected outputs changed. Comment on the current outputs before submitting.";
 
 function markClientExecuteResponse(
   phase: string,
@@ -713,8 +721,18 @@ function AppContent() {
         await handleCreateDocumentComment(body);
         return;
       }
-      if (!sourceRangeAnchorMatchesCurrentCell(commentDraftTarget.anchor)) {
+      if (
+        commentDraftTarget.anchor.kind === "source_range" &&
+        !sourceRangeAnchorMatchesCurrentCell(commentDraftTarget.anchor)
+      ) {
         failCommentAction("Selected source changed. Select the text again before commenting.");
+        return;
+      }
+      if (
+        commentDraftTarget.anchor.kind === "output" &&
+        !outputCommentAnchorMatchesLiveState(commentDraftTarget.anchor)
+      ) {
+        failCommentAction(OUTPUT_COMMENT_STALE_MESSAGE);
         return;
       }
       await handleCreateCommentThread(commentDraftTarget.anchor, body);
@@ -736,6 +754,17 @@ function AppContent() {
     },
     [],
   );
+
+  const handleRequestOutputComment = useCallback((anchor: OutputCommentAnchor) => {
+    setCommentsError(null);
+    if (!outputCommentAnchorMatchesLiveState(anchor)) {
+      setCommentsError(OUTPUT_COMMENT_STALE_MESSAGE);
+      return;
+    }
+    setSourceCommentRequest(null);
+    setCommentDraftTarget({ anchor, quote: null });
+    openNotebookRailPanel("comments");
+  }, []);
 
   const handleSubmitSourceComment = useCallback(
     async (body: string) => {
@@ -914,6 +943,33 @@ function AppContent() {
     },
     [applyLocalCommentEvent, canMutateComments, failCommentAction, getHandle],
   );
+
+  const handleDemoteDetachedOutputCommentThread = useCallback(
+    (threadId: string): boolean => {
+      // Background auto-repair: report success so the hook only stops retrying
+      // once the demote commits, and stay quiet on the user-facing error state.
+      if (!canMutateComments) return false;
+      const handle = getHandle();
+      if (!handle || typeof handle.demote_comment_thread_to_notebook !== "function") {
+        return false;
+      }
+      try {
+        handle.demote_comment_thread_to_notebook(threadId);
+        refreshCommentsProjection();
+        getEngine()?.scheduleFlush();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [canMutateComments, getEngine, getHandle, refreshCommentsProjection],
+  );
+
+  useDemoteDetachedOutputCommentThreads({
+    commentsProjection,
+    enabled: canMutateComments,
+    demoteThreadToNotebook: handleDemoteDetachedOutputCommentThread,
+  });
 
   const handleFocusCommentThreadAnchor = useCallback((thread: CommentThreadSnapshot) => {
     const cellId = thread.badge_cell_ids[0];
@@ -2021,6 +2077,7 @@ function AppContent() {
                 onSetCellSourceHidden={setCellSourceHidden}
                 onSetCellOutputsHidden={setCellOutputsHidden}
                 onCreateSourceComment={canMutateComments ? handleRequestSourceComment : undefined}
+                onCreateOutputComment={canMutateComments ? handleRequestOutputComment : undefined}
                 onActivateCommentThread={handleActivateCommentThread}
                 commentThreadsByCell={sourceCommentThreadsByCell}
                 markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}

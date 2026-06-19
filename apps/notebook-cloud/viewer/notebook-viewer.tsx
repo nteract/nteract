@@ -50,6 +50,10 @@ import {
   setNotebookRailCollapsed,
   useNotebookRailUiState,
 } from "@/components/notebook/state/rail-ui-state";
+import {
+  outputCommentAnchorMatchesLiveState,
+  useDemoteDetachedOutputCommentThreads,
+} from "@/components/notebook/output-comment-demotion";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { EnvironmentSummary } from "@/components/environment";
@@ -88,6 +92,7 @@ import {
 } from "../../notebook/src/lib/comment-highlights";
 import {
   resolveSourceRangeAnchor,
+  type OutputCommentAnchor,
   type SourceCommentSelectionRect,
   type SourceRangeCommentAnchor,
 } from "../../notebook/src/lib/comment-source-anchor";
@@ -1295,6 +1300,13 @@ export function NotebookViewer({
         setCommentsError("Selected source changed. Select the text again before commenting.");
         return;
       }
+      if (
+        commentDraftTarget.anchor.kind === "output" &&
+        !outputCommentAnchorMatchesLiveState(commentDraftTarget.anchor)
+      ) {
+        setCommentsError(OUTPUT_COMMENT_STALE_MESSAGE);
+        return;
+      }
       await handleCreateAnchoredCommentThread(commentDraftTarget.anchor, body);
       setCommentDraftTarget(null);
     },
@@ -1314,6 +1326,17 @@ export function NotebookViewer({
     },
     [],
   );
+
+  const handleRequestOutputComment = useCallback((anchor: OutputCommentAnchor) => {
+    setCommentsError(null);
+    if (!outputCommentAnchorMatchesLiveState(anchor)) {
+      setCommentsError(OUTPUT_COMMENT_STALE_MESSAGE);
+      return;
+    }
+    setSourceCommentRequest(null);
+    setCommentDraftTarget({ anchor, quote: null });
+    openNotebookRailPanel("comments");
+  }, []);
 
   const handleSubmitSourceComment = useCallback(
     async (body: string) => {
@@ -1451,6 +1474,37 @@ export function NotebookViewer({
     },
     [applyLocalCommentEvent, canWriteComments, liveRuntimeRef],
   );
+
+  const handleDemoteDetachedOutputCommentThread = useCallback(
+    (threadId: string): boolean => {
+      // Background auto-repair: report success so the hook only stops retrying
+      // once the demote commits, and stay quiet on the user-facing error state.
+      if (!canWriteComments) return false;
+      const liveRuntime = liveRuntimeRef.current;
+      if (
+        !liveRuntime ||
+        typeof liveRuntime.handle.demote_comment_thread_to_notebook !== "function"
+      ) {
+        return false;
+      }
+      try {
+        liveRuntime.handle.demote_comment_thread_to_notebook(threadId);
+        refreshCloudCommentsProjection();
+        liveRuntime.engine.scheduleFlush();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [canWriteComments, liveRuntimeRef, refreshCloudCommentsProjection],
+  );
+
+  useDemoteDetachedOutputCommentThreads({
+    commentsProjection,
+    enabled: canWriteComments,
+    demoteThreadToNotebook: handleDemoteDetachedOutputCommentThread,
+  });
+
   const handleFocusCommentAnchor = useCallback(
     (thread: CommentThreadSnapshot) => {
       const cellId = thread.badge_cell_ids[0];
@@ -1974,6 +2028,7 @@ export function NotebookViewer({
                 onSetCellSourceHidden={handleCloudSetCellSourceHidden}
                 onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
                 onCreateSourceComment={canWriteComments ? handleRequestSourceComment : undefined}
+                onCreateOutputComment={canWriteComments ? handleRequestOutputComment : undefined}
                 onActivateCommentThread={handleActivateCommentThread}
                 commentThreadsByCell={sourceCommentThreadsByCell}
                 markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
@@ -2034,6 +2089,9 @@ function sourceRangeAnchorMatchesCurrentCell(anchor: SourceRangeCommentAnchor): 
   }
   return resolveSourceRangeAnchor(cell.source, anchor) !== null;
 }
+
+const OUTPUT_COMMENT_STALE_MESSAGE =
+  "Selected outputs changed. Comment on the current outputs before submitting.";
 
 function createCloudCommentId(prefix: string): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {

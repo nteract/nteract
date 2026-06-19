@@ -1,5 +1,5 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { ChevronRight, Code2, Eye, EyeOff, type LucideIcon } from "lucide-react";
+import { ChevronRight, Code2, Eye, EyeOff, MessageSquarePlus, type LucideIcon } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { cellOutputInnerInset } from "@/components/cell/cell-layout";
@@ -44,6 +44,7 @@ import { presenceSenderExtension } from "../lib/presence-sender";
 import { commentHighlightExtension } from "../lib/comment-highlight-extension";
 import { refreshCellCommentHighlights } from "../lib/comment-highlights";
 import type {
+  OutputCommentAnchor,
   SourceCommentSelectionRect,
   SourceRangeCommentAnchor,
 } from "../lib/comment-source-anchor";
@@ -108,6 +109,7 @@ interface CodeCellProps {
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
   ) => void;
+  onCreateOutputComment?: (anchor: OutputCommentAnchor) => void;
   onActivateCommentThread?: (threadId: string) => void;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFrameUntilVisible?: boolean;
@@ -361,6 +363,7 @@ export const CodeCell = memo(function CodeCell({
   readOnly = false,
   canExecute = !readOnly,
   onCreateSourceComment,
+  onCreateOutputComment,
   onActivateCommentThread,
   outputHostContext,
   deferOutputIsolatedFrameUntilVisible = false,
@@ -664,6 +667,14 @@ export const CodeCell = memo(function CodeCell({
   );
 
   const handleLinkClick = useCallback((url: string) => openUrl(url), []);
+  const handleCreateOutputComment = useCallback(() => {
+    onCreateOutputComment?.({
+      kind: "output",
+      cell_id: cell.id,
+      execution_id: executionId ?? undefined,
+      output_id: undefined,
+    });
+  }, [cell.id, executionId, onCreateOutputComment]);
   const handleOutputMouseDown = useCallback(() => {
     editorRef.current?.getEditor()?.contentDOM.blur();
     onFocus();
@@ -687,6 +698,8 @@ export const CodeCell = memo(function CodeCell({
     isExecutionErrored ||
     submittedByActorLabel !== null;
   const showExecutionControl = canExecute || hasExecutionReadout;
+  const canCreateOutputComment =
+    outputs.length > 0 && !isOutputsHidden && !readOnly && Boolean(onCreateOutputComment);
   const hasCurrentLine =
     !isSourceEmpty ||
     visibleOutputCount > 0 ||
@@ -878,16 +891,36 @@ export const CodeCell = memo(function CodeCell({
           )
         }
         outputRightGutterContent={
-          outputs.length > 0 && !isOutputsHidden && onToggleOutputsHidden && !readOnly ? (
-            <button
-              type="button"
-              tabIndex={-1}
-              onClick={() => onToggleOutputsHidden(true)}
-              className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
-              title="Hide outputs"
-            >
-              <EyeOff className="h-3.5 w-3.5" />
-            </button>
+          outputs.length > 0 &&
+          !isOutputsHidden &&
+          !readOnly &&
+          (canCreateOutputComment || onToggleOutputsHidden) ? (
+            <>
+              {canCreateOutputComment ? (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={handleCreateOutputComment}
+                  className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+                  title="Comment on outputs"
+                  aria-label="Comment on outputs"
+                >
+                  <MessageSquarePlus className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+              {onToggleOutputsHidden ? (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => onToggleOutputsHidden(true)}
+                  className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+                  title="Hide outputs"
+                  aria-label="Hide outputs"
+                >
+                  <EyeOff className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </>
           ) : undefined
         }
         hideOutput={outputs.length === 0 || bothHidden || (readOnly && isOutputsHidden)}
