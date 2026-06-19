@@ -130,14 +130,37 @@ impl CommentsSidecarStore {
     ) -> anyhow::Result<CommentsDocHandle> {
         let path = self.doc_path(comments_doc_id);
         let doc = match std::fs::read(&path) {
-            Ok(bytes) => CommentsDoc::load_with_actor(&bytes, comments_doc_id, COMMENTS_DOC_ACTOR)
+            Ok(bytes) => {
+                let (mut doc, repaired) = CommentsDoc::load_with_actor_repairing_identity(
+                    &bytes,
+                    comments_doc_id,
+                    notebook_ref,
+                    COMMENTS_DOC_ACTOR,
+                )
                 .with_context(|| {
                     format!(
                         "load CommentsDoc {} from {}",
                         comments_doc_id,
                         path.display()
                     )
-                })?,
+                })?;
+                if repaired {
+                    tracing::warn!(
+                        "[comments-store] repaired CommentsDoc identity for {} at {}",
+                        comments_doc_id,
+                        path.display()
+                    );
+                    let bytes = doc.save();
+                    write_file_atomic(&path, &bytes).with_context(|| {
+                        format!(
+                            "repair CommentsDoc {} at {}",
+                            comments_doc_id,
+                            path.display()
+                        )
+                    })?;
+                }
+                doc
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 CommentsDoc::try_new_with_actor(comments_doc_id, notebook_ref, COMMENTS_DOC_ACTOR)
                     .with_context(|| format!("create CommentsDoc {comments_doc_id}"))?
@@ -402,8 +425,27 @@ fn sibling_temp_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::ActorId;
+    use automerge::{sync::SyncDoc, transaction::Transactable, ActorId, ROOT};
     use comments_doc::CommentAnchor;
+
+    fn sync_pair_without_projection_check(a: &mut CommentsDoc, b: &mut CommentsDoc) {
+        let mut a_state = automerge::sync::State::new();
+        let mut b_state = automerge::sync::State::new();
+        for _ in 0..8 {
+            if let Some(message) = a.generate_sync_message(&mut a_state) {
+                b.doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut b_state, message)
+                    .unwrap();
+            }
+            if let Some(reply) = b.generate_sync_message(&mut b_state) {
+                a.doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut a_state, reply)
+                    .unwrap();
+            }
+        }
+    }
 
     #[test]
     fn comments_dir_is_sibling_of_notebook_docs_dir() {
@@ -660,5 +702,63 @@ mod tests {
             format!("{err:#}").contains("comments_doc_id mismatch"),
             "{err:#}"
         );
+    }
+
+    #[test]
+    fn load_repairs_conflicting_sidecar_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = CommentsSidecarStore::new(tmp.path().join("comments"));
+        let expected_id = "comments:local-room:room";
+        let expected_ref = NotebookCommentRef::LocalRoom {
+            room_id: "room".to_string(),
+        };
+        let stale_ref = NotebookCommentRef::HostedRoom {
+            room_locator: "room".to_string(),
+        };
+        let mut base = CommentsDoc::new_with_actor(expected_id, &stale_ref, "client:base");
+        base.create_thread(
+            "thread-1",
+            "message-1",
+            &CommentAnchor::Notebook,
+            "survives repair",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+        let bytes = base.save();
+        let mut base = CommentsDoc::load_with_actor(&bytes, expected_id, "client:base").unwrap();
+        let mut other = CommentsDoc::load_with_actor(&bytes, expected_id, "client:other").unwrap();
+        base.doc_mut()
+            .put(&ROOT, "comments_doc_id", "comments:stale")
+            .unwrap();
+        other
+            .doc_mut()
+            .put(&ROOT, "comments_doc_id", "comments:other")
+            .unwrap();
+        sync_pair_without_projection_check(&mut other, &mut base);
+
+        let path = store.doc_path(expected_id);
+        write_file_atomic(&path, &base.save()).unwrap();
+
+        let repaired = store.load_or_create(expected_id, &expected_ref).unwrap();
+        repaired
+            .read(|doc| {
+                assert_eq!(doc.comments_doc_id().as_deref(), Some(expected_id));
+                assert_eq!(doc.raw_comments_doc_id().as_deref(), Some(expected_id));
+                assert_eq!(doc.notebook_ref(), Some(expected_ref.clone()));
+                let projection = doc.read_projection(None).unwrap();
+                assert_eq!(projection.comments_doc_id, expected_id);
+                assert_eq!(projection.threads.len(), 1);
+                assert_eq!(projection.threads[0].messages[0].body, "survives repair");
+            })
+            .unwrap();
+
+        let persisted = std::fs::read(&path).unwrap();
+        let persisted = CommentsDoc::load_with_actor(&persisted, expected_id, "strict").unwrap();
+        assert_eq!(
+            persisted.raw_comments_doc_id().as_deref(),
+            Some(expected_id)
+        );
+        assert_eq!(persisted.notebook_ref(), Some(expected_ref));
     }
 }

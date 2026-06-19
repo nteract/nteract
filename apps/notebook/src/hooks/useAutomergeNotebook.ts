@@ -82,6 +82,15 @@ function serializeCommentsNotebookRef(commentsNotebookRef: unknown): string | nu
 }
 
 let warnedMissingExecutionViewProjector = false;
+let warnedCommentsBootstrapContractViolation = false;
+
+function warnCommentsBootstrapContractViolation(field: string, actorLabel: string) {
+  if (warnedCommentsBootstrapContractViolation) return;
+  warnedCommentsBootstrapContractViolation = true;
+  logger.warn(
+    `[automerge-notebook] daemon:ready did not provide ${field} before bootstrap for ${actorLabel}; comments sync is disabled for this handle`,
+  );
+}
 
 function projectExecutionViewChangeset(handle: NotebookHandle) {
   const projector = (handle as unknown as SyncableHandle).project_execution_view_changeset;
@@ -151,15 +160,20 @@ export function useNotebook() {
         actorLabel: () => actorLabelRef.current,
         createHandle: (actorLabel) => {
           const commentsDocId = commentsDocIdRef.current;
-          if (!commentsDocId) return NotebookHandle.create_empty_with_actor(actorLabel);
+          if (!commentsDocId) {
+            warnCommentsBootstrapContractViolation("comments_doc_id", actorLabel);
+            return NotebookHandle.create_empty_with_actor(actorLabel);
+          }
           const commentsNotebookRefJson = commentsNotebookRefJsonRef.current;
-          return commentsNotebookRefJson
-            ? NotebookHandle.create_bootstrap_with_comments_ref(
-                actorLabel,
-                commentsDocId,
-                commentsNotebookRefJson,
-              )
-            : NotebookHandle.create_bootstrap_with_comments(actorLabel, commentsDocId);
+          if (!commentsNotebookRefJson) {
+            warnCommentsBootstrapContractViolation("comments_notebook_ref", actorLabel);
+            return NotebookHandle.create_empty_with_actor(actorLabel);
+          }
+          return NotebookHandle.create_bootstrap_with_comments_ref(
+            actorLabel,
+            commentsDocId,
+            commentsNotebookRefJson,
+          );
         },
         getBlobPort,
         publishHandle: setNotebookHandle,
