@@ -28,8 +28,6 @@ export interface NotebookCommentDraftTarget {
   quote?: string | null;
 }
 
-export type ResolvedThreadPresentation = "timeline" | "receipt" | "header";
-
 /** Rendered attribution for a comment author. */
 export interface CommentAuthor {
   /** Display name (e.g. "Claude Code" or "kylekelley"). */
@@ -72,8 +70,6 @@ export interface NotebookCommentsPanelProps {
   focusedThreadId?: string | null;
   /** Bumped each focus request so repeat focuses of the same thread re-flash. */
   focusNonce?: number;
-  /** Design-system switch for resolved-thread treatment. */
-  resolvedThreadPresentation?: ResolvedThreadPresentation;
 }
 
 export function NotebookCommentsPanel({
@@ -92,7 +88,6 @@ export function NotebookCommentsPanel({
   resolveSourceLanguage,
   focusedThreadId = null,
   focusNonce = 0,
-  resolvedThreadPresentation = "timeline",
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
   const labeledThreads = labelCommentThreads(threads);
@@ -131,7 +126,6 @@ export function NotebookCommentsPanel({
       resolveSourceLanguage={resolveSourceLanguage}
       focused={thread.id === focusedThreadId}
       focusNonce={focusNonce}
-      resolvedThreadPresentation={resolvedThreadPresentation}
     />
   );
 
@@ -270,7 +264,6 @@ function CommentThreadItem({
   resolveSourceLanguage,
   focused,
   focusNonce,
-  resolvedThreadPresentation,
 }: {
   thread: CommentThreadSnapshot;
   threadLabel: string;
@@ -284,7 +277,6 @@ function CommentThreadItem({
   resolveSourceLanguage?: (cellId: string) => string | undefined;
   focused?: boolean;
   focusNonce?: number;
-  resolvedThreadPresentation: ResolvedThreadPresentation;
 }) {
   const itemRef = useRef<HTMLLIElement>(null);
   const [flashing, setFlashing] = useState(false);
@@ -330,7 +322,6 @@ function CommentThreadItem({
     ? resolveCommentAuthor?.(thread.created_by_actor_label)
     : undefined;
   const canShowCell = Boolean(commentThreadTargetCellId(thread) && onFocusThreadAnchor);
-  const showHeaderReceipt = thread.status === "resolved" && resolvedThreadPresentation === "header";
 
   return (
     <li
@@ -358,12 +349,6 @@ function CommentThreadItem({
               {anchorLabel(thread)}
             </div>
           )}
-          {showHeaderReceipt ? (
-            <CommentResolutionHeaderReceipt
-              thread={thread}
-              resolveCommentAuthor={resolveCommentAuthor}
-            />
-          ) : null}
           <div className="flex shrink-0 items-center gap-0.5">
             {canShowCell ? (
               <button
@@ -397,10 +382,7 @@ function CommentThreadItem({
               resolveCommentAuthor={resolveCommentAuthor}
             />
           ))}
-          {thread.status === "resolved" && resolvedThreadPresentation === "timeline" ? (
-            <CommentResolutionEvent thread={thread} resolveCommentAuthor={resolveCommentAuthor} />
-          ) : null}
-          {thread.status === "resolved" && resolvedThreadPresentation === "receipt" ? (
+          {thread.status === "resolved" ? (
             <CommentResolutionReceipt thread={thread} resolveCommentAuthor={resolveCommentAuthor} />
           ) : null}
         </div>
@@ -433,43 +415,6 @@ function resolveThreadResolutionAuthor(
   };
 }
 
-function CommentResolutionEvent({
-  thread,
-  resolveCommentAuthor,
-}: {
-  thread: CommentThreadSnapshot;
-  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
-}) {
-  const { actorLabel, author } = resolveThreadResolutionAuthor(thread, resolveCommentAuthor);
-  const resolvedTime = formatRelativeTime(thread.resolved_at);
-
-  return (
-    <article className="flex gap-2.5 text-muted-foreground" data-testid="comment-resolution-event">
-      {author ? (
-        <CommentAuthorAvatar author={author} />
-      ) : (
-        <div className="mt-0.5 size-5 shrink-0 rounded-full bg-muted" aria-hidden="true" />
-      )}
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex flex-wrap items-baseline gap-x-1.5">
-          <span className="text-xs font-semibold text-foreground" title={actorLabel ?? undefined}>
-            {author?.displayName ?? "Unknown"}
-          </span>
-          {author?.isAgent && author.onBehalfOf ? (
-            <span className="text-[10px] text-muted-foreground">· for {author.onBehalfOf}</span>
-          ) : null}
-          {resolvedTime ? (
-            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-              {resolvedTime}
-            </span>
-          ) : null}
-        </div>
-        <p className="text-sm leading-5">Marked as resolved</p>
-      </div>
-    </article>
-  );
-}
-
 function CommentResolutionReceipt({
   thread,
   resolveCommentAuthor,
@@ -499,30 +444,6 @@ function CommentResolutionReceipt({
       <span className="shrink-0">marked as resolved</span>
       {resolvedTime ? <span className="shrink-0">· {resolvedTime}</span> : null}
     </div>
-  );
-}
-
-function CommentResolutionHeaderReceipt({
-  thread,
-  resolveCommentAuthor,
-}: {
-  thread: CommentThreadSnapshot;
-  resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
-}) {
-  const { author } = resolveThreadResolutionAuthor(thread, resolveCommentAuthor);
-  const resolvedTime = formatRelativeTime(thread.resolved_at);
-  return (
-    <span
-      className="hidden max-w-24 shrink-0 truncate text-[11px] text-muted-foreground sm:inline"
-      title={[
-        author?.displayName ? `${author.displayName} marked as resolved` : "Marked as resolved",
-        resolvedTime,
-      ]
-        .filter(Boolean)
-        .join(" · ")}
-    >
-      {resolvedTime ? `Resolved ${resolvedTime}` : "Resolved"}
-    </span>
   );
 }
 

@@ -1,11 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import {
-  NotebookCommentsPanel,
-  type CommentAuthor,
-  type ResolvedThreadPresentation,
-} from "@/components/notebook";
+import { NotebookCommentsPanel, type CommentAuthor } from "@/components/notebook";
 import type { CommentsProjection } from "@/components/notebook/comment-types";
 import { cn } from "@/lib/utils";
 
@@ -16,14 +12,6 @@ const ADA = "local:ada/desktop:1";
 const CLAUDE = "local:ada/agent:claude-code:1";
 const ADA_COLOR = "#16a34a";
 const CLAUDE_COLOR = "#7c3aed";
-const RESOLVED_PRESENTATIONS: Array<{
-  value: ResolvedThreadPresentation;
-  label: string;
-}> = [
-  { value: "timeline", label: "Marked" },
-  { value: "receipt", label: "Compact" },
-  { value: "header", label: "Header" },
-];
 
 function resolveCommentAuthor(actorLabel: string): CommentAuthor {
   if (actorLabel === CLAUDE) {
@@ -136,8 +124,6 @@ function nextId(prefix: string): string {
 
 export function CommentSurfacesExample() {
   const [projection, setProjection] = useState<CommentsProjection>(INITIAL);
-  const [resolvedPresentation, setResolvedPresentation] =
-    useState<ResolvedThreadPresentation>("receipt");
   const nowRef = useRef("2026-06-18T15:30:00Z");
 
   // Quote syntax highlighting is theme-dependent, so the server (light) and the
@@ -195,74 +181,45 @@ export function CommentSurfacesExample() {
 
   return (
     <div className={cn("not-prose my-6 flex justify-center")}>
-      <div className="w-[340px] space-y-3">
-        <div
-          className="grid grid-cols-3 rounded-lg border bg-muted/30 p-1"
-          role="radiogroup"
-          aria-label="Resolved comment treatment"
-        >
-          {RESOLVED_PRESENTATIONS.map((option) => {
-            const selected = resolvedPresentation === option.value;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                onClick={() => setResolvedPresentation(option.value)}
-                className={cn(
-                  "rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors",
-                  selected
-                    ? "bg-background text-foreground shadow-sm"
-                    : "hover:bg-background/70 hover:text-foreground",
-                )}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="rounded-xl border bg-background p-3.5 shadow-sm">
-          {!mounted ? (
-            <div className="h-[420px]" aria-hidden />
-          ) : (
-            <NotebookCommentsPanel
-              projection={projection}
-              resolveCommentAuthor={resolveCommentAuthor}
-              resolveSourceLanguage={resolveSourceLanguage}
-              resolvedThreadPresentation={resolvedPresentation}
-              onCreateThread={(body) =>
-                setProjection((current) => ({
-                  ...current,
-                  threads: [
-                    ...current.threads,
-                    {
-                      id: nextId("thread"),
-                      anchor: { kind: "notebook" },
-                      position: nextId("p"),
-                      status: "open",
-                      badge_cell_ids: [],
-                      created_at: nowRef.current,
-                      created_by_actor_label: ADA,
-                      messages: [
-                        {
-                          id: nextId("m"),
-                          position: nextId("p"),
-                          body,
-                          created_at: nowRef.current,
-                          created_by_actor_label: ADA,
-                        },
-                      ],
-                    },
-                  ],
-                }))
-              }
-              onReplyThread={appendMessage}
-              onResolveThread={(id) => setStatus(id, "resolved")}
-              onReopenThread={(id) => setStatus(id, "open")}
-            />
-          )}
-        </div>
+      <div className="w-[340px] rounded-xl border bg-background p-3.5 shadow-sm">
+        {!mounted ? (
+          <div className="h-[420px]" aria-hidden />
+        ) : (
+          <NotebookCommentsPanel
+            projection={projection}
+            resolveCommentAuthor={resolveCommentAuthor}
+            resolveSourceLanguage={resolveSourceLanguage}
+            onCreateThread={(body) =>
+              setProjection((current) => ({
+                ...current,
+                threads: [
+                  ...current.threads,
+                  {
+                    id: nextId("thread"),
+                    anchor: { kind: "notebook" },
+                    position: nextId("p"),
+                    status: "open",
+                    badge_cell_ids: [],
+                    created_at: nowRef.current,
+                    created_by_actor_label: ADA,
+                    messages: [
+                      {
+                        id: nextId("m"),
+                        position: nextId("p"),
+                        body,
+                        created_at: nowRef.current,
+                        created_by_actor_label: ADA,
+                      },
+                    ],
+                  },
+                ],
+              }))
+            }
+            onReplyThread={appendMessage}
+            onResolveThread={(id) => setStatus(id, "resolved")}
+            onReopenThread={(id) => setStatus(id, "open")}
+          />
+        )}
       </div>
     </div>
   );

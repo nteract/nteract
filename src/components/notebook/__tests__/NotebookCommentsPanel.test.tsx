@@ -423,8 +423,10 @@ describe("NotebookCommentsPanel", () => {
     // Resolved threads are hidden until revealed.
     expect(screen.queryByRole("button", { name: "Reopen Document comment 1" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show resolved (1)" }));
-    expect(screen.getByTestId("comment-resolution-event")).toHaveTextContent("Marked as resolved");
-    expect(screen.getByText("Reviewer")).toBeVisible();
+    expect(screen.getByTestId("comment-resolution-receipt")).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("Reviewer marked as resolved"),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Reopen Document comment 1" }));
     expect(onReopenThread).toHaveBeenCalledWith("thread-1");
   });
@@ -443,7 +445,6 @@ describe("NotebookCommentsPanel", () => {
             },
           ],
         }}
-        resolvedThreadPresentation="receipt"
         resolveCommentAuthor={(actorLabel) => ({
           displayName: actorLabel === "reviewer" ? "Reviewer" : actorLabel,
         })}
@@ -471,7 +472,6 @@ describe("NotebookCommentsPanel", () => {
             },
           ],
         }}
-        resolvedThreadPresentation="receipt"
         resolveCommentAuthor={() => ({
           displayName: "Claude Code",
           isAgent: true,
