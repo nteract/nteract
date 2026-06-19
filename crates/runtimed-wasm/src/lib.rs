@@ -4113,6 +4113,14 @@ impl NotebookHandle {
         self.serialize_comments_projection_event()
     }
 
+    /// Demote a comment thread to a notebook-level comment.
+    pub fn demote_comment_thread_to_notebook(&mut self, thread_id: String) -> Result<(), JsError> {
+        let comments_doc = self.comments_doc_mut()?;
+        comments_doc
+            .demote_thread_anchor_to_notebook(&thread_id)
+            .map_err(|e| JsError::new(&format!("demote comment thread: {e}")))
+    }
+
     /// Add a local reply to a comment thread in CommentsDoc.
     pub fn reply_comment_thread(
         &mut self,

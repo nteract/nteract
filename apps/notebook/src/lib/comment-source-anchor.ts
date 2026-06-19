@@ -3,6 +3,7 @@ import type { EditorView } from "@codemirror/view";
 import type { CommentAnchor } from "runtimed";
 
 export type SourceRangeCommentAnchor = Extract<CommentAnchor, { kind: "source_range" }>;
+export type OutputCommentAnchor = Extract<CommentAnchor, { kind: "output" }>;
 
 /**
  * Viewport-space rectangle bounding a comment-worthy selection. Used to anchor

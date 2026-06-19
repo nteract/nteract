@@ -309,6 +309,9 @@ export interface SyncableHandle {
     createdAt: string,
   ): FrameEvent;
 
+  /** Demote a comment thread to a notebook-level comment. */
+  demote_comment_thread_to_notebook?(threadId: string): void;
+
   /** Add a local reply to a comment thread. */
   reply_comment_thread?(
     threadId: string,

@@ -65,6 +65,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
       afterThreadId: string | null | undefined,
       createdAt: string,
     ): unknown;
+    demote_comment_thread_to_notebook(threadId: string): void;
     flush_comms_doc_sync(): Uint8Array | undefined;
     flush_comments_doc_sync(): Uint8Array | undefined;
     flush_local_changes(): Uint8Array | undefined;
