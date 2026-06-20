@@ -1,11 +1,12 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { ChevronRight, Code2, Eye, EyeOff, MessageSquarePlus, type LucideIcon } from "lucide-react";
+import { ChevronRight, Code2, Eye, EyeOff, type LucideIcon } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { cellOutputInnerInset } from "@/components/cell/cell-layout";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 import { OutputArea } from "@/components/cell/OutputArea";
+import { CommentMarkIcon } from "@/components/comments/CommentMarkIcon";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { languageDisplayNames, type SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
@@ -905,7 +906,7 @@ export const CodeCell = memo(function CodeCell({
                   title="Comment on outputs"
                   aria-label="Comment on outputs"
                 >
-                  <MessageSquarePlus className="h-3.5 w-3.5" />
+                  <CommentMarkIcon className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
               ) : null}
               {onToggleOutputsHidden ? (

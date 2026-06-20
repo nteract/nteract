@@ -6,7 +6,6 @@ import {
   FileQuestion,
   Link2,
   Maximize2,
-  MessageSquarePlus,
   PackageCheck,
   Pencil,
   Play,
@@ -16,6 +15,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
+import { CommentMarkIcon } from "@/components/comments/CommentMarkIcon";
 import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
 import {
   NotebookCommandToolbar,
@@ -108,7 +108,7 @@ function groupsForTarget(
             id: "comment-selection",
             label: "Add comment",
             description: "Anchor a discussion to this source range.",
-            icon: icon(<MessageSquarePlus />),
+            icon: icon(<CommentMarkIcon />),
             shortcut: "C",
             onSelect: select("Add comment"),
           },
@@ -170,7 +170,7 @@ function groupsForTarget(
             id: "comment-heading",
             label: "Add comment",
             description: "Anchor feedback to the rendered heading.",
-            icon: icon(<MessageSquarePlus />),
+            icon: icon(<CommentMarkIcon />),
             shortcut: "C",
             onSelect: select("Add comment"),
           },
@@ -212,7 +212,7 @@ function groupsForTarget(
             id: "comment-output",
             label: "Add comment",
             description: "Attach discussion to the output frame.",
-            icon: icon(<MessageSquarePlus />),
+            icon: icon(<CommentMarkIcon />),
             shortcut: "C",
             onSelect: select("Add comment"),
           },
@@ -259,7 +259,7 @@ function groupsForTarget(
           id: "comment-package",
           label: "Add comment",
           description: "Start a dependency-specific discussion.",
-          icon: icon(<MessageSquarePlus />),
+          icon: icon(<CommentMarkIcon />),
           onSelect: select("Add comment"),
         },
       ],
@@ -346,7 +346,7 @@ export function ContextControlsExample() {
                   className="h-7 px-2 text-xs"
                   onClick={() => recordAction(activeTarget, "Add comment from toolbar")}
                 >
-                  <MessageSquarePlus className="size-3.5" aria-hidden="true" />
+                  <CommentMarkIcon className="size-3.5" aria-hidden="true" />
                   Comment
                 </Button>
                 <Button

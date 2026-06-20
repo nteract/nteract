@@ -1,5 +1,6 @@
-import { Copy, MessageSquarePlus } from "lucide-react";
+import { Copy } from "lucide-react";
 import { useCallback, useState, type ReactNode, type RefObject } from "react";
+import { CommentMarkIcon } from "@/components/comments/CommentMarkIcon";
 import {
   NotebookContextMenu,
   type NotebookContextMenuAction,
@@ -57,7 +58,7 @@ export function buildRenderedMarkdownContextGroups({
     actions.push({
       id: "add-comment",
       label: "Add comment",
-      icon: <MessageSquarePlus className="size-4" aria-hidden="true" />,
+      icon: <CommentMarkIcon className="size-4" aria-hidden="true" />,
       shortcut: "C",
       separatorBefore: actions.length > 0,
       onSelect: onAddComment,

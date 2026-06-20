@@ -1,6 +1,7 @@
 import type { EditorView } from "@codemirror/view";
-import { ClipboardPaste, Copy, MessageSquarePlus, Scissors } from "lucide-react";
+import { ClipboardPaste, Copy, Scissors } from "lucide-react";
 import { useCallback, useState, type ReactNode } from "react";
+import { CommentMarkIcon } from "@/components/comments/CommentMarkIcon";
 import {
   NotebookContextMenu,
   type NotebookContextMenuAction,
@@ -85,7 +86,7 @@ export function buildEditorContextGroups({
     actions.push({
       id: "add-comment",
       label: "Add comment",
-      icon: <MessageSquarePlus className="size-4" aria-hidden="true" />,
+      icon: <CommentMarkIcon className="size-4" aria-hidden="true" />,
       shortcut: "C",
       separatorBefore: actions.length > 0,
       onSelect: onAddComment,
