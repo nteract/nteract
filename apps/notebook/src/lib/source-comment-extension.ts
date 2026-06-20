@@ -100,7 +100,8 @@ function sourceCommentTooltips(
         const button = document.createElement("button");
         button.type = "button";
         button.className = "comment-affordance comment-affordance-peek";
-        button.title = "Comment on selection";
+        // No title attribute: the native browser tooltip duplicates the bubble's
+        // own "Comment" label. aria-label keeps it accessible.
         button.setAttribute("aria-label", "Comment on selection");
         button.setAttribute("data-testid", "source-comment-button");
         const dot = document.createElement("span");

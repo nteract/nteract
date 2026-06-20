@@ -303,6 +303,9 @@ export const MarkdownCell = memo(function MarkdownCell({
   const renderedCommentHighlights = useMemo(() => {
     if (editing || !projectionMatchesPreview || !commentThreads?.length) return undefined;
     const highlights = commentThreads.flatMap((thread) => {
+      // Resolved threads leave no rendered highlight; they stay in the rail
+      // under "Show resolved".
+      if (thread.resolved) return [];
       const range = resolveSourceRangeAnchor(previewSource, thread.anchor);
       if (!range) return [];
       return [

@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  colorForActorIdentity,
   deriveEnvManager,
   deriveRuntimeKind,
   NotebookClient,
@@ -794,6 +795,19 @@ function AppContent() {
     const [localPrincipal] = splitNotebookActorPrincipalOperator(localActor);
     return [{ participantKey: localPrincipal, label }];
   }, [localActor, peerLabel]);
+
+  // Tint the comment-on-selection affordance with the local author's canonical
+  // color (the same color as their cursor and edits), exposed as a CSS var the
+  // shared affordance styles read. Without it the dot falls back to --primary,
+  // a near-black neutral.
+  useEffect(() => {
+    if (!localActor) return;
+    const color = colorForActorIdentity(localActor);
+    document.documentElement.style.setProperty("--comment-author-color", color);
+    return () => {
+      document.documentElement.style.removeProperty("--comment-author-color");
+    };
+  }, [localActor]);
 
   const resolveCommentAuthor = useCallback(
     (actorLabel: string): CommentAuthor => {

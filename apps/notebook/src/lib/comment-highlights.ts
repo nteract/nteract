@@ -58,6 +58,9 @@ function dispatchCell(cellId: string): void {
   const source = view.state.doc.toString();
   const highlights: CommentHighlight[] = [];
   for (const thread of threads) {
+    // Resolved threads leave no highlight in the document. They stay reachable
+    // under "Show resolved" in the rail, but the inline mark goes away.
+    if (thread.resolved) continue;
     const range = resolveSourceRangeAnchor(source, thread.anchor);
     if (!range) continue;
     highlights.push({
