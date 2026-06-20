@@ -17,6 +17,10 @@ import {
   type SessionStatus,
 } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
+import type {
+  PanelRuntimeIframeMessage,
+  PanelRuntimeMessageContext,
+} from "@/components/cell/OutputArea";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import {
   applyWidgetCommBroadcastToStore,
@@ -1061,6 +1065,19 @@ function AppContent() {
     };
   }, [sendCommMessage]);
 
+  const handlePanelRuntimeMessage = useCallback(
+    (_message: PanelRuntimeIframeMessage, context: PanelRuntimeMessageContext) => {
+      const event = context.event;
+      logger.debug("[panel-runtime] Browser event reached notebook runtime boundary", {
+        type: event.type,
+        channelId: event.channel.channelId,
+        cellId: context.cellId ?? null,
+        outputIds: context.outputIds,
+      });
+    },
+    [],
+  );
+
   // Set up CRDT comm writer for widget state updates.
   // Writes directly to CommsDoc via WASM — no SendComm round-trip.
   useEffect(() => {
@@ -2088,6 +2105,7 @@ function AppContent() {
                 onAddCell={handleAddCell}
                 onMoveCell={moveCell}
                 onReportOutputMatchCount={globalFind.reportOutputMatchCount}
+                onPanelRuntimeMessage={handlePanelRuntimeMessage}
                 onSetCellSourceHidden={setCellSourceHidden}
                 onSetCellOutputsHidden={setCellOutputsHidden}
                 onCreateSourceComment={canMutateComments ? handleRequestSourceComment : undefined}

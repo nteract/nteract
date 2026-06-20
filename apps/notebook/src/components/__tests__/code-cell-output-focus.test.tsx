@@ -53,6 +53,7 @@ vi.mock("@/components/cell/OutputArea", () => ({
     preloadIframe,
     deferIsolatedFrameUntilVisible,
     deferredIsolatedFrameRootMargin,
+    onPanelRuntimeMessage,
   }: {
     focused?: boolean;
     useOutputWell?: boolean;
@@ -60,6 +61,7 @@ vi.mock("@/components/cell/OutputArea", () => ({
     preloadIframe?: boolean;
     deferIsolatedFrameUntilVisible?: boolean;
     deferredIsolatedFrameRootMargin?: string;
+    onPanelRuntimeMessage?: (message: unknown, context: unknown) => void;
   }) => (
     <button
       data-focused={String(focused)}
@@ -70,6 +72,35 @@ vi.mock("@/components/cell/OutputArea", () => ({
       data-testid="output"
       type="button"
       onMouseDown={onIframeMouseDown}
+      onClick={() =>
+        onPanelRuntimeMessage?.(
+          {
+            type: "panel_client_patch",
+            payload: { commId: "client-comm", plotId: "plot-1", data: { events: [] } },
+          },
+          {
+            event: {
+              protocol: "nteract.panel.runtime.v1",
+              version: 1,
+              type: "panel_client_patch",
+              direction: "iframe_to_kernel",
+              channel: {
+                channelId: "cell:code-1|output:output-1|plot:plot-1|comm:client-comm",
+                commId: "client-comm",
+                plotId: "plot-1",
+                cellId: "code-1",
+                executionCount: null,
+                outputId: "output-1",
+                outputIds: ["output-1"],
+              },
+              patch: { data: { events: [] }, metadata: {}, buffers: [] },
+            },
+            cellId: "code-1",
+            outputIds: ["output-1"],
+            outputs: [],
+          },
+        )
+      }
     >
       output
     </button>
@@ -757,5 +788,49 @@ describe("CodeCell output focus", () => {
     fireEvent.keyDown(getByTitle("Show hidden cell 2: second()"), { key: "ArrowDown" });
 
     expect(onFocusNext).not.toHaveBeenCalled();
+  });
+
+  it("forwards typed Panel runtime output messages", () => {
+    const onPanelRuntimeMessage = vi.fn();
+
+    const { getByTestId } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onPanelRuntimeMessage={onPanelRuntimeMessage}
+      />,
+    );
+
+    fireEvent.click(getByTestId("output"));
+
+    expect(onPanelRuntimeMessage).toHaveBeenCalledWith(
+      {
+        type: "panel_client_patch",
+        payload: { commId: "client-comm", plotId: "plot-1", data: { events: [] } },
+      },
+      {
+        event: {
+          protocol: "nteract.panel.runtime.v1",
+          version: 1,
+          type: "panel_client_patch",
+          direction: "iframe_to_kernel",
+          channel: {
+            channelId: "cell:code-1|output:output-1|plot:plot-1|comm:client-comm",
+            commId: "client-comm",
+            plotId: "plot-1",
+            cellId: "code-1",
+            executionCount: null,
+            outputId: "output-1",
+            outputIds: ["output-1"],
+          },
+          patch: { data: { events: [] }, metadata: {}, buffers: [] },
+        },
+        cellId: "code-1",
+        outputIds: ["output-1"],
+        outputs: [],
+      },
+    );
   });
 });

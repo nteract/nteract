@@ -178,11 +178,14 @@ and convert its events into explicit JSON-RPC notifications:
 - `nteract/panelAck`
 - `nteract/panelDisconnected`
 
-`OutputArea` should claim the iframe-to-parent Panel events before they reach
-`CommBridgeManager`, then surface them through a Panel-specific callback with
-the owning cell and output ids. This keeps the widget bridge widget-only and
-gives the daemon/runtime integration a single typed ingress for browser-origin
-Panel patches.
+`OutputArea` claims the iframe-to-parent Panel events before they reach
+`CommBridgeManager`, then surfaces them through a Panel-specific callback with
+the owning cell and output ids. `CodeCell` and `NotebookView` preserve that
+callback to the notebook app boundary, where browser-origin Panel events are now
+observable as typed `PanelRuntimeEvent` records without calling the widget
+`SendComm` path. This keeps the widget bridge widget-only and gives the
+daemon/runtime integration a single typed ingress for browser-origin Panel
+patches.
 
 The shared JavaScript contract now lives in `packages/runtimed/src/panel-runtime.ts`.
 It normalizes iframe and host notifications into `PanelRuntimeEvent` records
@@ -268,8 +271,8 @@ runtime output commits.
    narrowing, preserving marker, HTML, JavaScript, and fallback text as one
    coherent output record.
 4. Add the iframe `window.__nteractPanelRuntime` transport and parent
-   `OutputArea` ingress so browser-origin Panel events are typed and kept out
-   of `CommBridgeManager`.
+   `OutputArea`/app ingress so browser-origin Panel events are typed and kept
+   out of `CommBridgeManager` and the widget `SendComm` path.
 5. Add daemon/runtime protocol and CRDT state for Panel/Bokeh channel open,
    patch, ACK, close, and disconnected state. Use blob refs for binary buffers
    and make the write-authority policy explicit.

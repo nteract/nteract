@@ -5,7 +5,11 @@ import { CellContainer } from "@/components/cell/CellContainer";
 import { cellOutputInnerInset } from "@/components/cell/cell-layout";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
-import { OutputArea } from "@/components/cell/OutputArea";
+import {
+  OutputArea,
+  type PanelRuntimeIframeMessage,
+  type PanelRuntimeMessageContext,
+} from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { languageDisplayNames, type SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
@@ -114,6 +118,10 @@ interface CodeCellProps {
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFrameUntilVisible?: boolean;
   deferredOutputIsolatedFrameRootMargin?: string;
+  onPanelRuntimeMessage?: (
+    message: PanelRuntimeIframeMessage,
+    context: PanelRuntimeMessageContext,
+  ) => void;
 }
 
 export interface HiddenGroupCellSummary {
@@ -368,6 +376,7 @@ export const CodeCell = memo(function CodeCell({
   outputHostContext,
   deferOutputIsolatedFrameUntilVisible = false,
   deferredOutputIsolatedFrameRootMargin,
+  onPanelRuntimeMessage,
 }: CodeCellProps) {
   // Read transient UI state from the store
   const isFocused = useIsCellFocused(cell.id);
@@ -881,6 +890,7 @@ export const CodeCell = memo(function CodeCell({
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
               onDiagnostic={logNotebookIsolatedDiagnostic}
+              onPanelRuntimeMessage={onPanelRuntimeMessage}
               layoutInset="cell-output"
               hostContext={outputHostContext}
               resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
