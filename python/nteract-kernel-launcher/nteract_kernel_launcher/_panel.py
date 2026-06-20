@@ -197,6 +197,46 @@ def _panel_event_type_for_send(role: str, metadata: dict[str, Any] | None) -> st
     return "panel_message"
 
 
+def _panel_event_comm_id(event: dict[str, Any]) -> str | None:
+    comm_id = event.get("comm_id")
+    if isinstance(comm_id, str) and comm_id:
+        return comm_id
+
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        comm_id = payload.get("commId") or payload.get("comm_id")
+        if isinstance(comm_id, str) and comm_id:
+            return comm_id
+
+    channel = event.get("channel")
+    if isinstance(channel, dict):
+        comm_id = channel.get("commId") or channel.get("comm_id")
+        if isinstance(comm_id, str) and comm_id:
+            return comm_id
+
+    return None
+
+
+def _panel_event_patch(event: dict[str, Any], comm_id: str) -> dict[str, Any]:
+    patch = event.get("patch")
+    if not isinstance(patch, dict):
+        payload = event.get("payload")
+        patch = payload if isinstance(payload, dict) else event
+
+    data = patch.get("data") if isinstance(patch, dict) else None
+    metadata = patch.get("metadata") if isinstance(patch, dict) else None
+    buffers = patch.get("buffers") if isinstance(patch, dict) else None
+
+    content_data = dict(data) if isinstance(data, dict) else {"data": data}
+    content_data.setdefault("comm_id", comm_id)
+
+    return {
+        "content": {"data": content_data},
+        "metadata": metadata if isinstance(metadata, dict) else {},
+        "buffers": buffers if isinstance(buffers, list) else [],
+    }
+
+
 class NteractPanelServerComm(NteractPanelComm):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, role="server", **kwargs)
@@ -273,6 +313,24 @@ class NteractPanelCommManager:
         comm = cls.client_comm(id, on_msg, on_error, on_stdout, on_open, on_close=cls._forget_comm)
         cls._comms[comm.id] = comm
         return comm
+
+    @classmethod
+    def receive_runtime_event(cls, event: dict[str, Any]) -> bool:
+        """Deliver a typed nteract Panel runtime event into Panel's callbacks."""
+        event_type = event.get("type")
+        if event_type not in {"panel_client_patch", "client_patch"}:
+            return False
+
+        comm_id = _panel_event_comm_id(event)
+        if comm_id is None:
+            return False
+
+        comm = cls._comms.get(comm_id)
+        if comm is None:
+            return False
+
+        comm._handle_msg(_panel_event_patch(event, comm_id))
+        return True
 
 
 def _panel_runtime_marker(self: Any, model: Any, doc: Any, comm: Any) -> dict[str, Any]:

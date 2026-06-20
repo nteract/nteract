@@ -208,13 +208,41 @@ RuntimeStateDoc, CommsDoc, or a dedicated Panel/Bokeh runtime doc.
 
 The `PyViz.comm_manager` implementation in this branch should be treated as a
 compatibility adapter for Panel's current notebook API, not as the durable
-nteract architecture. If Panel exposes a clean backend registration hook while
-building the monkeypatch, use it. If not, keep the monkeypatch small and propose
-an upstream hook after the nteract shape is proven. The upstream hook we likely
-want is a notebook backend or Bokeh patch transport registration point: Panel
-should be able to ask a host for a typed channel carrying Bokeh `PATCH-DOC`
-messages, binary buffers, ACKs, and disconnect state without the host pretending
-to be an ipykernel comm manager outside the Panel compatibility boundary.
+nteract architecture. The architecture is a typed Bokeh document-patch
+transport. The adapter is only the current place where Panel lets a notebook
+host intercept `register_target`, `get_client_comm`, and comm `send` calls
+without forking Panel's Bokeh model. It should stay as small as possible and
+should not leak raw comm envelopes into nteract's iframe, widget bridge, daemon
+request path, or runtime-state documents.
+
+If Panel exposes a clean backend registration hook while building the
+monkeypatch, use it. The local source does not currently show one:
+`panel.config.config.comms` selects among `default`, `ipywidgets`, `vscode`,
+and `colab`; `panel.viewable.MimeRenderMixin` directly constructs Panel's
+Bokeh `CommManager` model and asks `state._comm_manager` for PyViz-shaped
+server/client comm objects. That makes the monkeypatch a useful proof tool, but
+not a shape nteract should standardize around. After the nteract transport is
+proven, the upstream hook we likely want is a notebook backend or Bokeh patch
+transport registration point: Panel should be able to ask a host for a typed
+channel carrying Bokeh `PATCH-DOC` messages, binary buffers, ACKs, and
+disconnect state without the host pretending to be an ipykernel comm manager
+outside the Panel compatibility boundary.
+
+That upstream hook would sit at a different abstraction level than ipykernel
+comms:
+
+- Python side: create a host channel after Panel has a Bokeh `Document`, root
+  model id, server comm id, client comm id, and optional output/execution
+  identity; deliver browser-origin Bokeh protocol messages into Panel's
+  existing `_on_msg` callback surface; return ACK metadata plus captured
+  callback stdout/stderr.
+- Browser side: let Panel's Bokeh `CommManager` continue to build and apply
+  Bokeh patches, but allow the host to provide a transport object with
+  `open`, `sendPatch`, `sendAck`, `close`, and `disconnect` semantics instead
+  of a global `window.PyViz.comm_manager` that resembles Jupyter.
+- Buffer side: surface binary buffers as structured parts that can become blob
+  refs when the host has a blob store, rather than forcing everything through
+  JSON or base64 comm envelopes.
 
 ## Frontend Integration
 
@@ -359,9 +387,10 @@ runtime output commits.
 
 1. Land this memo and a CI-visible output-lane guard that keeps Panel outside
    the widget bridge.
-2. Add a launcher-side Panel import hook and a minimal nteract Panel comm
-   manager replacement that logs typed channel events without enabling browser
-   interactivity yet.
+2. Add a launcher-side Panel import hook and a minimal PyViz compatibility
+   adapter that logs typed channel events without enabling browser
+   interactivity yet. Keep this adapter local to the Panel compatibility
+   boundary; do not model it as nteract's native runtime API.
 3. Add the nteract Panel marker MIME to Panel bundles and to Rust output
    narrowing, preserving marker, HTML, JavaScript, and fallback text as one
    coherent output record.
@@ -371,8 +400,9 @@ runtime output commits.
 5. Add daemon/runtime protocol and CRDT state for Panel/Bokeh channel open,
    patch, ACK, close, and disconnected state. Use blob refs for binary buffers
    and make the write-authority policy explicit.
-6. Connect the launcher-side Panel comm manager to the daemon/runtime channel
-   so server patches and ACKs no longer depend on a generic raw comm bridge.
+6. Connect the launcher-side Panel adapter to the daemon/runtime channel so
+   server patches and ACKs flow as typed Panel/Bokeh events. This should be the
+   last place that knows Panel currently calls a PyViz comm-manager-shaped API.
 7. Add tests for patch send, ACK unblocking, remount replay, and disconnected
    overlay.
 8. Route Panel callback stdout/errors into execution-scoped notebook stream
@@ -389,4 +419,6 @@ runtime output commits.
 - Whether the first transport can avoid ipykernel comm observation entirely, or
   whether the daemon must translate kernel comms into typed Panel events during
   the prototype.
-- Upstream API shape for registering notebook comm backends in Panel.
+- Upstream API shape for registering notebook Bokeh patch transports in Panel,
+  preferably without requiring hosts to expose a global PyViz/Jupyter comm
+  manager surface.

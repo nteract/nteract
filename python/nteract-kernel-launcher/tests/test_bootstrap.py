@@ -725,6 +725,116 @@ def test_panel_comm_manager_preserves_partial_stdout_on_error(monkeypatch):
     assert len(errors) == 1
 
 
+def test_panel_comm_manager_receives_typed_client_patch(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    events = []
+    received = []
+    stdout = []
+    monkeypatch.setattr(_panel.NteractPanelCommManager, "_comms", {})
+    _panel.set_panel_runtime_event_sink(events.append)
+
+    def on_msg(msg):
+        received.append(msg)
+        print("callback output")
+
+    try:
+        _panel.NteractPanelCommManager.get_client_comm(
+            id="client-comm",
+            on_msg=on_msg,
+            on_stdout=stdout.append,
+        )
+        handled = _panel.NteractPanelCommManager.receive_runtime_event(
+            {
+                "type": "client_patch",
+                "channel": {"commId": "client-comm"},
+                "patch": {
+                    "data": {"header": {}, "metadata": {}, "content": {"events": []}},
+                    "metadata": {"source": "browser"},
+                    "buffers": [b"abc"],
+                },
+            }
+        )
+    finally:
+        _panel.set_panel_runtime_event_sink(None)
+
+    assert handled is True
+    assert received == [
+        {
+            "header": {},
+            "metadata": {},
+            "content": {"events": []},
+            "_buffers": {0: b"abc"},
+        }
+    ]
+    assert stdout == [["callback output"]]
+
+    ack = events[-1]
+    assert ack["type"] == "panel_ack"
+    assert ack["comm_id"] == "client-comm"
+    assert ack["metadata"]["msg_type"] == "Ready"
+    assert ack["metadata"]["comm_id"] == "client-comm"
+    assert "callback output" in ack["metadata"]["content"]
+
+
+def test_panel_comm_manager_receives_iframe_client_patch_payload(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    received = []
+    monkeypatch.setattr(_panel.NteractPanelCommManager, "_comms", {})
+
+    _panel.NteractPanelCommManager.get_client_comm(
+        id="client-comm",
+        on_msg=received.append,
+    )
+
+    handled = _panel.NteractPanelCommManager.receive_runtime_event(
+        {
+            "type": "panel_client_patch",
+            "payload": {
+                "commId": "client-comm",
+                "data": {"content": {"events": [{"kind": "ModelChanged"}]}},
+                "metadata": {},
+            },
+        }
+    )
+
+    assert handled is True
+    assert received == [{"content": {"events": [{"kind": "ModelChanged"}]}}]
+
+
+def test_panel_comm_manager_ignores_unmatched_runtime_event(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    events = []
+    monkeypatch.setattr(_panel.NteractPanelCommManager, "_comms", {})
+    _panel.set_panel_runtime_event_sink(events.append)
+    try:
+        assert (
+            _panel.NteractPanelCommManager.receive_runtime_event(
+                {
+                    "type": "client_patch",
+                    "channel": {"commId": "missing-comm"},
+                    "patch": {"data": {}},
+                }
+            )
+            is False
+        )
+        assert (
+            _panel.NteractPanelCommManager.receive_runtime_event(
+                {
+                    "type": "channel_open",
+                    "channel": {"commId": "missing-comm"},
+                }
+            )
+            is False
+        )
+    finally:
+        _panel.set_panel_runtime_event_sink(None)
+
+    assert events == []
+
+
 def test_panel_comm_manager_uninstall_clears_comms(monkeypatch):
     from nteract_kernel_launcher import _panel
 
