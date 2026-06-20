@@ -1,3 +1,4 @@
+import { ArrowUp } from "lucide-react";
 import {
   type CSSProperties,
   type FormEvent,
@@ -6,7 +7,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { CommentMarkIcon } from "@/components/comments/CommentMarkIcon";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import type { SourceCommentSelectionRect } from "../lib/comment-source-anchor";
@@ -22,6 +22,11 @@ export interface InlineCommentComposerProps {
 }
 
 const MAX_QUOTE_PREVIEW_CHARS = 160;
+
+/** The author's canonical color, set on :root while a local actor exists, with a
+ *  neutral fallback. Every tint below mixes from this so the composer reads as
+ *  the author's own voice, not a generic popover. */
+const AUTHOR_COLOR = "var(--comment-author-color, var(--primary, #2563eb))";
 
 export function InlineCommentComposer({
   rect,
@@ -63,6 +68,9 @@ export function InlineCommentComposer({
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Cmd/Ctrl+Enter submits. There is no Cancel button: the input is the whole
+    // composer, and the Popover already backs out on Escape and click-away
+    // (onOpenChange -> onCancel), so we don't handle Escape here or it fires twice.
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       void submit();
@@ -78,7 +86,16 @@ export function InlineCommentComposer({
     pointerEvents: "none",
   };
 
+  // The popover surface is the input: a soft wash of the author's color with a
+  // slightly stronger edge. No drop shadow or focus ring; the tint and the
+  // colored caret carry identity, and a glow read as heavy in-app.
+  const surfaceStyle: CSSProperties = {
+    background: `color-mix(in srgb, ${AUTHOR_COLOR} 6%, var(--popover, #ffffff))`,
+    borderColor: `color-mix(in srgb, ${AUTHOR_COLOR} 36%, var(--border, #e5e5e5))`,
+  };
+
   const preview = formatQuotePreview(quote);
+  const canSubmit = !disabled && !submitting && body.trim().length > 0;
 
   return (
     <Popover
@@ -95,7 +112,8 @@ export function InlineCommentComposer({
         align="start"
         sideOffset={8}
         collisionPadding={12}
-        className="w-80 space-y-2 p-3"
+        className="w-80 rounded-2xl border p-2.5 shadow-none"
+        style={surfaceStyle}
         data-testid="inline-comment-composer"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
@@ -111,45 +129,45 @@ export function InlineCommentComposer({
           if (justOpenedRef.current) event.preventDefault();
         }}
       >
-        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-          <CommentMarkIcon className="size-3.5" aria-hidden="true" />
-          Comment on selection
-        </div>
         {preview ? (
-          <blockquote className="max-h-16 overflow-hidden whitespace-pre-wrap break-words border-l-2 border-border pl-2 text-xs leading-5 text-foreground">
+          <blockquote
+            className="mb-2 max-h-16 overflow-hidden whitespace-pre-wrap break-words pl-2 text-xs leading-5 text-foreground/80"
+            style={{
+              borderLeft: `2px solid color-mix(in srgb, ${AUTHOR_COLOR} 45%, transparent)`,
+            }}
+          >
             {preview}
           </blockquote>
         ) : null}
-        <form className="space-y-2" onSubmit={handleSubmit}>
-          <textarea
-            ref={textareaRef}
-            aria-label="Comment on selection"
-            value={body}
-            disabled={disabled || submitting}
-            placeholder="Add a comment"
-            onChange={(event) => setBody(event.target.value)}
-            onKeyDown={handleKeyDown}
-            rows={3}
-            className={cn(
-              "min-h-16 w-full resize-y rounded-md border bg-background px-2.5 py-2 text-sm leading-5",
-              "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-              (disabled || submitting) && "cursor-not-allowed opacity-60",
-            )}
-          />
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onCancel}
-              className="inline-flex min-h-8 items-center rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              Cancel
-            </button>
+        <form onSubmit={handleSubmit}>
+          <div className="relative">
+            <textarea
+              ref={textareaRef}
+              aria-label="Comment on selection"
+              value={body}
+              disabled={disabled || submitting}
+              placeholder="Add a comment"
+              onChange={(event) => setBody(event.target.value)}
+              onKeyDown={handleKeyDown}
+              rows={3}
+              style={{ caretColor: AUTHOR_COLOR }}
+              className={cn(
+                "min-h-16 w-full resize-none border-0 bg-transparent py-1 pl-1 pr-10 text-sm leading-5",
+                "placeholder:text-muted-foreground focus-visible:outline-none",
+                (disabled || submitting) && "cursor-not-allowed opacity-60",
+              )}
+            />
             <button
               type="submit"
-              disabled={disabled || submitting || body.trim().length === 0}
-              className="inline-flex min-h-8 items-center rounded-md border bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label="Comment"
+              disabled={!canSubmit}
+              style={{ background: AUTHOR_COLOR }}
+              className={cn(
+                "absolute bottom-1 right-0 inline-flex size-8 items-center justify-center rounded-full text-white transition-opacity",
+                !canSubmit && "cursor-not-allowed opacity-40",
+              )}
             >
-              Comment
+              <ArrowUp className="size-4" aria-hidden="true" />
             </button>
           </div>
         </form>
