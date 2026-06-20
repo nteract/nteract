@@ -15,6 +15,7 @@ import {
   PANEL_LOAD_MIME_TYPE,
 } from "@/components/outputs/panel-mime";
 import { measureDocumentHeight } from "./layout-measure";
+import { ensureNteractPanelCommManager } from "./panel-runtime-transport";
 
 type PanelPayload = {
   [NTERACT_PANEL_RUNTIME_MIME_TYPE]?: unknown;
@@ -317,6 +318,9 @@ function PanelRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
       }
 
       ensurePyViz();
+      if (mimeType === NTERACT_PANEL_RUNTIME_MIME_TYPE) {
+        ensureNteractPanelCommManager();
+      }
       const serverId = panelServerId(metadata);
       if (serverId) {
         const html = normalizeText(payload["text/html"]);

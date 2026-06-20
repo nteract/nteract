@@ -190,6 +190,10 @@ describe("Panel renderer plugin", () => {
         "window.__panelRuntimeRan = true;",
       );
     });
+    expect(
+      (window.PyViz as { comm_manager?: { __nteractPanelCommManager?: true } } | undefined)
+        ?.comm_manager?.__nteractPanelCommManager,
+    ).toBe(true);
   });
 
   it("executes id-less Panel exec bundles as auxiliary notebook setup", async () => {

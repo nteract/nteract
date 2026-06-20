@@ -161,6 +161,12 @@ without replacing Panel's render machinery or parsing generated JavaScript. The
 shared MIME priority list should treat that marker as the canonical Panel
 runtime type when it appears in a bundle.
 
+The browser-side `window.PyViz.comm_manager` implementation should live in the
+isolated renderer TypeScript bundle, not in the launcher's Python
+`js_manager` string. The launcher owns Panel's Python manager class and marker
+injection; the renderer owns the browser comm-manager surface because it is the
+piece that talks to the typed iframe transport and needs TypeScript coverage.
+
 That backend should emit and consume typed nteract Panel events at the daemon
 boundary. If the immediate transport still has to observe kernel comm messages,
 the translation should terminate inside the daemon/runtime layer; the isolated

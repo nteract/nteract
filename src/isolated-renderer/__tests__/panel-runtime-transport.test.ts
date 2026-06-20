@@ -8,6 +8,7 @@ import {
   NTERACT_PANEL_SERVER_PATCH,
 } from "@/components/isolated/rpc-methods";
 import {
+  ensureNteractPanelCommManager,
   installPanelRuntimeTransport,
   registerPanelRuntimeTransportHandlers,
 } from "../panel-runtime-transport";
@@ -28,6 +29,7 @@ function createTransport() {
 describe("Panel runtime transport", () => {
   afterEach(() => {
     delete window.__nteractPanelRuntime;
+    delete window.PyViz;
     vi.restoreAllMocks();
   });
 
@@ -58,6 +60,83 @@ describe("Panel runtime transport", () => {
       plotId: "plot-1",
       commId: "comm-1",
     });
+  });
+
+  it("installs the PyViz comm manager from TypeScript", () => {
+    const transport = createTransport();
+    installPanelRuntimeTransport(() => transport);
+
+    const manager = ensureNteractPanelCommManager() as {
+      __nteractPanelCommManager: true;
+      register_target: (plotId: string, commId: string, handler: NotificationHandler) => void;
+      get_client_comm: (
+        plotId: string,
+        commId: string,
+        handler?: NotificationHandler,
+      ) => {
+        active: boolean;
+        connected: boolean;
+        send: (data?: unknown, metadata?: Record<string, unknown>, buffers?: unknown[]) => void;
+        close: () => void;
+      };
+      receiveServerPatch: (payload: unknown) => void;
+      receiveAck: (payload: unknown) => void;
+      setDisconnected: (payload: { commId: string }) => void;
+    };
+    const serverHandler = vi.fn();
+    const ackHandler = vi.fn();
+
+    expect(window.PyViz?.comm_manager).toBe(manager);
+    expect(manager.__nteractPanelCommManager).toBe(true);
+
+    manager.register_target("plot-1", "server-comm", serverHandler);
+    const comm = manager.get_client_comm("plot-1", "client-comm", ackHandler);
+    comm.send({ events: [] }, { kind: "patch" }, ["buffer"]);
+    comm.close();
+
+    expect(transport.notify).toHaveBeenNthCalledWith(1, NTERACT_PANEL_CHANNEL_OPEN, {
+      plotId: "plot-1",
+      commId: "server-comm",
+    });
+    expect(transport.notify).toHaveBeenNthCalledWith(2, NTERACT_PANEL_CLIENT_PATCH, {
+      plotId: "plot-1",
+      commId: "client-comm",
+      data: { events: [] },
+      metadata: { kind: "patch" },
+      buffers: ["buffer"],
+    });
+    expect(transport.notify).toHaveBeenNthCalledWith(3, NTERACT_PANEL_CHANNEL_CLOSE, {
+      plotId: "plot-1",
+      commId: "client-comm",
+    });
+
+    manager.receiveServerPatch({
+      commId: "server-comm",
+      data: { events: [{ kind: "ModelChanged" }] },
+      metadata: { msgid: "server-patch" },
+      buffers: [],
+    });
+    expect(serverHandler).toHaveBeenCalledWith({
+      metadata: { msgid: "server-patch" },
+      content: { data: { events: [{ kind: "ModelChanged" }] } },
+      buffers: [],
+    });
+
+    manager.receiveAck({
+      commId: "client-comm",
+      metadata: { msg_type: "Ready" },
+    });
+    expect(ackHandler).toHaveBeenCalledWith({
+      metadata: { msg_type: "Ready" },
+      content: { data: undefined },
+      buffers: [],
+    });
+
+    expect(comm.active).toBe(false);
+    expect(comm.connected).toBe(false);
+    manager.setDisconnected({ commId: "client-comm" });
+    expect(comm.active).toBe(false);
+    expect(comm.connected).toBe(false);
   });
 
   it("routes host Panel notifications to the attached manager", () => {

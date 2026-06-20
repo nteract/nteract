@@ -661,16 +661,10 @@ def test_panel_comm_manager_clear_closes_comms(monkeypatch):
     assert comm.connected is False
 
 
-def test_panel_comm_manager_js_attaches_to_runtime():
+def test_panel_comm_manager_js_is_frontend_owned():
     from nteract_kernel_launcher import _panel
 
-    manager_js = _panel.NteractPanelCommManager.js_manager
-
-    assert "window.__nteractPanelRuntime" in manager_js
-    assert "attachCommManager" in manager_js
-    assert "receiveServerPatch" in manager_js
-    assert "receiveAck" in manager_js
-    assert "setDisconnected" in manager_js
+    assert _panel.NteractPanelCommManager.js_manager == ""
 
 
 def test_enable_third_party_renderers_configures_loaded_modules(monkeypatch):

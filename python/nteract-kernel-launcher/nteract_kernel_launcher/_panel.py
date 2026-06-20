@@ -200,112 +200,11 @@ class NteractPanelClientComm(NteractPanelComm):
 class NteractPanelCommManager:
     """Panel/PyViz comm manager backed by typed nteract runtime events."""
 
-    js_manager = """
-    (function() {
-      if ((window.PyViz === undefined) || (window.PyViz instanceof HTMLElement)) {
-        window.PyViz = {comms: {}, comm_status: {}, kernels: {}, receivers: {}, plot_index: []};
-      }
-
-      function runtime() {
-        return window.__nteractPanelRuntime || null;
-      }
-
-      function NteractPanelCommManager() {
-        this.targets = {};
-        this.comms = {};
-        var rt = runtime();
-        if (rt && rt.attachCommManager) {
-          rt.attachCommManager(this);
-        }
-      }
-
-      NteractPanelCommManager.prototype.register_target = function(plot_id, comm_id, msg_handler) {
-        this.targets[comm_id] = {plot_id: plot_id, msg_handler: msg_handler};
-        var rt = runtime();
-        if (rt && rt.registerTarget) {
-          rt.registerTarget({plotId: plot_id, commId: comm_id});
-        }
-      };
-
-      NteractPanelCommManager.prototype.get_client_comm = function(plot_id, comm_id, msg_handler) {
-        if (comm_id in this.comms) {
-          return this.comms[comm_id];
-        }
-        var comm = {
-          active: true,
-          connected: true,
-          onMsg: msg_handler,
-          on_msg: function(handler) { comm.onMsg = handler; },
-          send: function(data, metadata, buffers) {
-            var rt = runtime();
-            if (!rt || !rt.sendClientPatch) {
-              console.warn("nteract Panel runtime transport is not connected");
-              return;
-            }
-            rt.sendClientPatch({
-              plotId: plot_id,
-              commId: comm_id,
-              data: data,
-              metadata: metadata || {},
-              buffers: buffers || []
-            });
-          },
-          close: function() {
-            comm.active = false;
-            comm.connected = false;
-            var rt = runtime();
-            if (rt && rt.closeChannel) {
-              rt.closeChannel({plotId: plot_id, commId: comm_id});
-            }
-          }
-        };
-        if (msg_handler) {
-          comm.onMsg = msg_handler;
-        }
-        this.comms[comm_id] = comm;
-        window.PyViz.comms[comm_id] = comm;
-        return comm;
-      };
-
-      NteractPanelCommManager.prototype.receiveServerPatch = function(payload) {
-        var target = this.targets[payload.commId];
-        if (!target || !target.msg_handler) {
-          return;
-        }
-        target.msg_handler({
-          metadata: payload.metadata || {},
-          content: {data: payload.data},
-          buffers: payload.buffers || []
-        });
-      };
-
-      NteractPanelCommManager.prototype.receiveAck = function(payload) {
-        var comm = this.comms[payload.commId] || window.PyViz.comms[payload.commId];
-        if (!comm) {
-          return;
-        }
-        var handler = comm.onMsg || comm.on_msg;
-        if (handler) {
-          handler({
-            metadata: payload.metadata || {},
-            content: {data: payload.data},
-            buffers: payload.buffers || []
-          });
-        }
-      };
-
-      NteractPanelCommManager.prototype.setDisconnected = function(payload) {
-        var commId = payload && payload.commId;
-        if (commId && this.comms[commId]) {
-          this.comms[commId].active = false;
-          this.comms[commId].connected = false;
-        }
-        console.warn("Panel runtime channel disconnected", payload || {});
-      };
-
-      window.PyViz.comm_manager = new NteractPanelCommManager();
-    })();
-    """
+    # The browser-side comm manager is installed by the isolated renderer's
+    # TypeScript bundle so it can be type-checked and tested with the transport
+    # it uses. Panel still expects this attribute to exist when composing its
+    # extension JavaScript, so keep it as an empty no-op string.
+    js_manager = ""
 
     _comms: dict[str, NteractPanelComm] = {}
     server_comm = NteractPanelServerComm
