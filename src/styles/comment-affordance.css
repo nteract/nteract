@@ -2,31 +2,39 @@
    plane and the rendered-markdown plane. One definition so both surfaces match
    and the look is tunable in one place (cataloged in Elements).
 
-   Resting state is a small author-colored dot that breathes gently, sitting out
-   of the way while a reader selects and copies text. On appear it peeks open
-   once (so you can tell what it is), and on hover or keyboard focus it springs
-   into a labeled "Comment" speech bubble with a tail. The spring matches the
-   running motion (exec-squish). No icon: the bubble shape is the comment cue.
-
-   The reveal animates the bubble's own max-width while it clips its overflow, so
-   the bubble grows to its content (the label at its natural width) capped by a
-   generous ceiling. The word never clips, on every engine including iOS Safari
-   (grid fr tracks do not resolve to content width there). */
+   Resting state is a small, flat, author-colored dot, sitting quietly out of the
+   way while a reader selects and copies text. It never opens on its own: most
+   selection is for editing code, not commenting. On hover or keyboard focus it
+   morphs into a labeled "Comment" pill, a staged grow -> spread -> reveal driven
+   by the Web Animations API (comment-affordance-motion.ts) so it reads as one
+   motion and reverses cleanly. CSS owns the resting look; the helper owns the
+   open. No icon: the pill shape and label are the cue. */
 .comment-affordance {
   /* Tinted with the author's canonical color (the same color as their cursor and
      edits), set on an ancestor as --comment-author-color. Falls back to the
      theme accent only if no author color is in scope. --primary is a near-black
      neutral in the default theme, so it is the fallback, not the default. */
   --comment-affordance-color: var(--comment-author-color, var(--primary, #2563eb));
-  --comment-affordance-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* Per-stage easing for the open, read by comment-affordance-motion.ts. One
+     decelerating curve, no overshoot: a spring here read as thrashy. */
+  --comment-affordance-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Sizes are tokens so CSS and the motion helper share one source of truth;
+     the helper reads these to build the open keyframes. */
+  --comment-affordance-dot-size: 8px;
+  --comment-affordance-pill-height: 20px;
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* Content-sized with padding for the hit area. A fixed width would cap the
-     dot's growth: on WebKit/iOS Safari a flex child cannot exceed a fixed-width
-     flex parent, which clipped the open bubble to one glyph on mobile. */
+  /* Content-sized width with padding for the hit area. A fixed width would cap
+     the dot's growth: on WebKit/iOS Safari a flex child cannot exceed a
+     fixed-width flex parent, which clipped the open pill to one glyph on mobile.
+     Height is fixed to the open pill, though: it reserves the tooltip box so
+     CodeMirror measures and positions it once. Without it, growing the dot taller
+     re-anchors the tooltip above the line in an unanimated upward jump. The dot
+     is centered in the reserved height, so the open grows from the dot's center. */
   padding: 6px;
+  height: calc(var(--comment-affordance-pill-height) + 12px);
   margin: 0;
   border: none;
   background: transparent;
@@ -34,26 +42,23 @@
   cursor: pointer;
 }
 
+/* Resting dot and the box the open animates. The helper measures the label's
+   natural width and grows max-width to it, so the pill fits its content and the
+   word never clips (the overflow clip hides it until there is room). */
 .comment-affordance-dot {
-  position: relative;
   display: inline-flex;
   flex: none;
   align-items: center;
   justify-content: center;
-  height: 14px;
-  max-width: 14px;
+  height: 8px;
+  max-width: 8px;
   padding: 0;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: 999px; /* stadium: a circle at rest, a pill when open */
   background-color: var(--comment-affordance-color);
   color: #ffffff;
-  box-shadow: 0 1px 5px color-mix(in srgb, var(--comment-affordance-color) 50%, transparent);
-  transition:
-    max-width 280ms var(--comment-affordance-spring),
-    height 260ms var(--comment-affordance-spring),
-    padding 260ms var(--comment-affordance-spring),
-    border-radius 200ms ease;
-  animation: comment-affordance-breathe 2.8s ease-in-out infinite;
+  /* Flat at rest. No shadow, no breathe: a dot that pulses next to code is
+     noise, and the resting dot should read as barely there. */
 }
 
 .comment-affordance-label {
@@ -62,49 +67,15 @@
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1;
-  opacity: 0;
-  transition: opacity 130ms ease 60ms;
+  opacity: 0; /* revealed in the back half of the open animation */
 }
 
-/* Speech-bubble tail, only while open. */
-.comment-affordance-dot::after {
-  content: "";
-  position: absolute;
-  left: 9px;
-  bottom: -4px;
-  width: 0;
-  height: 0;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-top: 6px solid var(--comment-affordance-color);
-  opacity: 0;
-  transform: scale(0.4);
-  transition:
-    opacity 120ms ease,
-    transform 200ms var(--comment-affordance-spring);
-}
-
-/* OPEN: hover, keyboard focus, or the one-time appear peek. The bubble grows to
-   fit its label (capped at 9rem) and the word is fully revealed. */
-.comment-affordance:hover .comment-affordance-dot,
-.comment-affordance:focus-visible .comment-affordance-dot,
-.comment-affordance.comment-affordance-peek .comment-affordance-dot {
-  max-width: 9rem;
-  height: 22px;
-  padding: 0 10px;
-  border-radius: 11px;
-  animation: comment-affordance-open 320ms var(--comment-affordance-spring);
-}
-.comment-affordance:hover .comment-affordance-label,
-.comment-affordance:focus-visible .comment-affordance-label,
-.comment-affordance.comment-affordance-peek .comment-affordance-label {
-  opacity: 1;
-}
-.comment-affordance:hover .comment-affordance-dot::after,
-.comment-affordance:focus-visible .comment-affordance-dot::after,
-.comment-affordance.comment-affordance-peek .comment-affordance-dot::after {
-  opacity: 1;
-  transform: scale(1);
+/* Leftward selection (editor plane): the head is at the selection start, so
+   anchor the button's right edge at the head and let it grow leftward, keeping
+   the dot on the cursor's outer side and off the selected text. translateX is a
+   percentage of the button's own width, so it re-anchors as the pill grows. */
+.comment-affordance-flip {
+  transform: translateX(-100%);
 }
 
 .comment-affordance:focus-visible {
@@ -113,42 +84,6 @@
 .comment-affordance:focus-visible .comment-affordance-dot {
   outline: 2px solid var(--ring, #a3a3a3);
   outline-offset: 2px;
-}
-
-@keyframes comment-affordance-breathe {
-  0%,
-  100% {
-    box-shadow: 0 1px 4px color-mix(in srgb, var(--comment-affordance-color) 35%, transparent);
-    transform: scale(1);
-  }
-  50% {
-    box-shadow: 0 1px 9px color-mix(in srgb, var(--comment-affordance-color) 60%, transparent);
-    transform: scale(1.12);
-  }
-}
-
-@keyframes comment-affordance-open {
-  0% {
-    transform: scale(1, 1);
-  }
-  35% {
-    transform: scale(1.06, 0.94);
-  }
-  70% {
-    transform: scale(0.99, 1.01);
-  }
-  100% {
-    transform: scale(1, 1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .comment-affordance-dot,
-  .comment-affordance-label,
-  .comment-affordance-dot::after {
-    animation: none;
-    transition: none;
-  }
 }
 
 /* CodeMirror merges its tooltip classes onto the affordance button itself (the
