@@ -300,14 +300,27 @@ cleanest boundary:
 3. The daemon validates the channel against the output-local marker and
    runtime-owned channel topology, resolves any blob refs, and forwards a typed
    `RuntimeAgentRequest::PanelRuntimeEvent { event }`.
-4. The runtime agent delivers the event to the launcher-side Panel comm manager
-   through a nteract-specific event sink, where it is decoded into Panel's own
-   Bokeh `PATCH-DOC` callback surface.
-5. Python-origin server patches, ACKs, callback stdout/stderr, close, and
-   disconnect events return as typed Panel runtime events from the launcher to
-   the runtime agent, not as iframe-visible raw comm messages.
-6. The daemon commits runtime-owned channel state and callback outputs before
+4. The runtime agent or a sibling daemon-side Panel service delivers the event
+   to a nteract runtime channel owned by the Python kernel launcher. The
+   launcher is inside the kernel process, so this cannot be an in-process Rust
+   callback. The likely shape is a small per-kernel endpoint advertised through
+   launch environment variables, using the same room/runtime identity the
+   runtime agent already receives.
+5. The launcher decodes typed Panel client-patch events into Panel's own
+   Bokeh `PATCH-DOC` callback surface. The local `NteractPanelCommManager`
+   receive seam is the proof of that callback boundary; it is not the external
+   transport.
+6. Python-origin server patches, ACKs, callback stdout/stderr, close, and
+   disconnect events return as typed Panel runtime events from the launcher over
+   that nteract runtime channel, not as iframe-visible raw comm messages.
+7. The daemon commits runtime-owned channel state and callback outputs before
    notifying the app to deliver server patches/ACKs back to the iframe.
+
+This keeps the Rust runtime agent in its current role as kernel lifecycle,
+execution, and output owner while giving the launcher a native way to speak
+Panel/Bokeh runtime state. The endpoint should be scoped to one launched kernel
+and should authenticate with an unguessable token or inherited process-local
+capability so arbitrary user code cannot mutate unrelated notebook rooms.
 
 This keeps the frontend request surface semantically narrow: browser-origin
 Panel patches are commands addressed to an existing Panel runtime channel, not
