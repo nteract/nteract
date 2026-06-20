@@ -10,4 +10,5 @@ graduate into PRDs.
 | Audit | Status | Notes |
 |-------|--------|-------|
 | [Notebook Identity and Environment Surface Audit](notebook-identity-environment-surface-audit.md) | Audit | Current shared shell, Elements, desktop, and cloud gaps against the identity/environment PRD. |
+| [Reviewer Guidelines Consistency Audit](reviewer-guidelines-consistency-audit.md) | Audit | Codebase-wide host-boundary, generated-artifact, and planned-extraction gaps against the reviewer rubric. |
 | [Runtime Peer Contract and Blob Authority Audit](runtime-peer-and-blob-authority-audit.md) | Audit | Runtime-peer and blob-authority evidence plus follow-ups. |
