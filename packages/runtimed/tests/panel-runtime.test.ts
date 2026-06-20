@@ -10,10 +10,23 @@ import {
   panelRuntimeEventFromIframeMessage,
   type PanelRuntimeBlobRef,
 } from "../src/panel-runtime";
+import { DEFAULT_MIME_PRIORITY } from "../src/mime-priority";
 
 describe("Panel runtime event model", () => {
   it("exports the nteract-owned marker MIME", () => {
     expect(NTERACT_PANEL_RUNTIME_MIME_TYPE).toBe("application/vnd.nteract.panel-runtime.v1+json");
+  });
+
+  it("prioritizes the nteract Panel marker over legacy Panel MIME markers", () => {
+    expect(DEFAULT_MIME_PRIORITY.indexOf(NTERACT_PANEL_RUNTIME_MIME_TYPE)).toBeGreaterThanOrEqual(
+      0,
+    );
+    expect(DEFAULT_MIME_PRIORITY.indexOf(NTERACT_PANEL_RUNTIME_MIME_TYPE)).toBeLessThan(
+      DEFAULT_MIME_PRIORITY.indexOf("application/vnd.holoviews_exec.v0+json"),
+    );
+    expect(DEFAULT_MIME_PRIORITY.indexOf(NTERACT_PANEL_RUNTIME_MIME_TYPE)).toBeLessThan(
+      DEFAULT_MIME_PRIORITY.indexOf("application/vnd.holoviews_load.v0+json"),
+    );
   });
 
   it("derives a stable channel id from notebook output and Panel ids", () => {

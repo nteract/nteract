@@ -124,7 +124,10 @@ created the Bokeh root model, Bokeh `Document`, server comm, browser-side Bokeh
 `CommManager` model, and client comm. Wrapping
 `panel.viewable.MimeRenderMixin._render_mimebundle` lets the launcher detect
 Panel by type while preserving Panel's own notebook rendering path and stamping
-the returned bundle with the ids nteract needs.
+the returned bundle with the ids nteract needs. That is the render MIME
+boundary nteract should own: the frontend should prefer the explicit nteract
+marker MIME over legacy Panel/HoloViews markers, HTML, or JavaScript instead
+of sniffing generated output.
 
 ## Runtime Integration
 
@@ -154,7 +157,9 @@ The narrow marker-injection point is `panel.viewable.MimeRenderMixin._render_mim
 At that point Panel has already created the Bokeh root model, server comm, Bokeh
 `CommManager` model, and client comm, and it is about to return the notebook
 MIME bundle. A launcher wrapper can add `application/vnd.nteract.panel-runtime.v1+json`
-without replacing Panel's render machinery or parsing generated JavaScript.
+without replacing Panel's render machinery or parsing generated JavaScript. The
+shared MIME priority list should treat that marker as the canonical Panel
+runtime type when it appears in a bundle.
 
 That backend should emit and consume typed nteract Panel events at the daemon
 boundary. If the immediate transport still has to observe kernel comm messages,
@@ -238,6 +243,82 @@ RuntimeStateDoc. The first option is useful for compact channel topology and
 late-joiner discovery. A likely split is: channel topology and latest compacted
 snapshot pointer in RuntimeStateDoc; ordered patch records and binary buffer
 refs in a dedicated Panel runtime document or blob-indexed log.
+
+### Recommended Daemon Boundary
+
+The next implementation slice should add a typed Panel runtime request rather
+than reuse `NotebookRequest::SendComm`. This is an approval-gated wire change
+because it extends the notebook request/runtime-agent protocol, but it is the
+cleanest boundary:
+
+1. The isolated renderer emits `PanelRuntimeClientEvent` records only through
+   the Panel runtime callback path.
+2. The app sends those records with a new typed notebook request such as
+   `NotebookRequest::SendPanelRuntimeEvent { event }`.
+3. The daemon validates the channel against the output-local marker and
+   runtime-owned channel topology, resolves any blob refs, and forwards a typed
+   `RuntimeAgentRequest::PanelRuntimeEvent { event }`.
+4. The runtime agent delivers the event to the launcher-side Panel comm manager
+   through a nteract-specific event sink, where it is decoded into Panel's own
+   Bokeh `PATCH-DOC` callback surface.
+5. Python-origin server patches, ACKs, callback stdout/stderr, close, and
+   disconnect events return as typed Panel runtime events from the launcher to
+   the runtime agent, not as iframe-visible raw comm messages.
+6. The daemon commits runtime-owned channel state and callback outputs before
+   notifying the app to deliver server patches/ACKs back to the iframe.
+
+This keeps the frontend request surface semantically narrow: browser-origin
+Panel patches are commands addressed to an existing Panel runtime channel, not
+raw Jupyter comm envelopes. It also keeps `NotebookBroadcast::Comm` widget-only.
+If a low-latency delivery path is needed for Python-to-browser patches, add a
+dedicated `NotebookBroadcast::PanelRuntime` variant or an equivalent
+Panel-specific host event. Do not put Panel payloads on the existing generic
+comm broadcast.
+
+### Durable State Shape
+
+For performance, do not store an unbounded Bokeh patch log directly in
+RuntimeStateDoc. Use RuntimeStateDoc as the compact discovery and lifecycle
+index:
+
+- `panel_channels/{channel_id}/cell_id`
+- `panel_channels/{channel_id}/output_id`
+- `panel_channels/{channel_id}/execution_id`
+- `panel_channels/{channel_id}/plot_id`
+- `panel_channels/{channel_id}/document_id`
+- `panel_channels/{channel_id}/server_comm_id`
+- `panel_channels/{channel_id}/client_comm_id`
+- `panel_channels/{channel_id}/status`: `open`, `closed`, or `disconnected`
+- `panel_channels/{channel_id}/last_ack`
+- `panel_channels/{channel_id}/snapshot_ref`
+- `panel_channels/{channel_id}/patch_cursor`
+
+Patch bodies and binary buffers should live outside RuntimeStateDoc as
+blob-backed records. A compact snapshot blob should be written when the patch
+log grows past a small threshold or when an iframe unmount/remount boundary is
+observed. RuntimeStateDoc then points at the latest compacted snapshot and
+patch cursor. That gives late joiners and remounted iframes an O(1) discovery
+path, while preserving Bokeh patch ordering without amplifying the main runtime
+CRDT document.
+
+The daemon/runtime peer is the only author of this topology. The app may submit
+client patch commands, but it does not directly mutate RuntimeStateDoc. Hosted
+room policy should mirror the existing runtime-state authority model: editors
+can request a Panel channel mutation only through the notebook request path;
+runtime peers or the room host author accepted state.
+
+### Replay And Disconnect
+
+On iframe remount, the app should hydrate from the latest
+`snapshot_ref + patch_cursor` for the channel. If no snapshot exists yet, it can
+request a fresh kernel-side render only as a fallback; the native path should
+prefer replay from runtime-owned state so remounts do not execute user code.
+
+On kernel restart or runtime disconnect, the daemon should mark the channel
+`disconnected`, keep the last snapshot visible, and send a typed
+`panelDisconnected` host event to the iframe so the renderer can show an
+explicit frozen overlay. A later execution creates a new channel; it should not
+silently revive the old channel id.
 
 ## Output Semantics
 
