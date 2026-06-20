@@ -13,7 +13,11 @@
    generous ceiling. The word never clips, on every engine including iOS Safari
    (grid fr tracks do not resolve to content width there). */
 .comment-affordance {
-  --comment-affordance-color: var(--primary, #2563eb);
+  /* Tinted with the author's canonical color (the same color as their cursor and
+     edits), set on an ancestor as --comment-author-color. Falls back to the
+     theme accent only if no author color is in scope. --primary is a near-black
+     neutral in the default theme, so it is the fallback, not the default. */
+  --comment-affordance-color: var(--comment-author-color, var(--primary, #2563eb));
   --comment-affordance-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   box-sizing: border-box;
   display: inline-flex;
@@ -147,11 +151,13 @@
   }
 }
 
-/* The CodeMirror editor plane renders this button inside a CM tooltip wrapper.
-   Strip the default tooltip chrome so only the dot shows. */
-.cm-tooltip:has(.comment-affordance) {
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  padding: 0;
+/* CodeMirror merges its tooltip classes onto the affordance button itself (the
+   element is both .comment-affordance and .cm-tooltip), so the tooltip chrome
+   paints a box around the dot. Strip that chrome on the shared element. The
+   theme sets it with editor-scoped specificity, so !important wins the cascade.
+   The hit-area padding from .comment-affordance is intentionally left intact. */
+.cm-tooltip.comment-affordance {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }

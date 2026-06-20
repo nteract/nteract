@@ -47,7 +47,6 @@ export function CommentSelectionAffordance({
     <button
       type="button"
       aria-label={label}
-      title={label}
       data-testid={testId}
       className={cn("comment-affordance", peeking && "comment-affordance-peek", className)}
       style={style}
