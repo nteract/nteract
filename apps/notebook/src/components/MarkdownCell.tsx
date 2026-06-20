@@ -2,6 +2,7 @@ import type { EditorView, KeyBinding } from "@codemirror/view";
 import { Check, Pencil } from "lucide-react";
 import {
   memo,
+  type ClipboardEvent,
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
@@ -68,7 +69,11 @@ import {
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import type { MarkdownCell as MarkdownCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
-import { RenderedMarkdownContextMenu } from "./RenderedMarkdownContextMenu";
+import { EditorContextMenu } from "./EditorContextMenu";
+import {
+  cleanRenderedMarkdownClipboardHtml,
+  RenderedMarkdownContextMenu,
+} from "./RenderedMarkdownContextMenu";
 
 const handleIframeError = (err: { message: string; stack?: string }) =>
   logger.error("[MarkdownCell] iframe error:", err);
@@ -357,6 +362,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         registeredViewRef.current = view;
         registerCellEditor(cell.id, view);
         onEditorRegistered(cell.id);
+        refreshCellCommentHighlights(cell.id);
         return true;
       }
       return false;
@@ -585,25 +591,15 @@ export const MarkdownCell = memo(function MarkdownCell({
     [releasePreviewFrameInteraction],
   );
 
-  // Derived boundary flag: re-run the focus effect only when source crosses
-  // empty↔non-empty, not on every keystroke.
-  const hasContent = previewSource.trim().length > 0;
   useEffect(() => {
     if (readOnly) {
       setEditing(false);
       return;
     }
-    if (!isFocused && editing && hasContent) {
-      setEditing(false);
-    }
     if (!isFocused || editing) {
       setPreviewFrameInteractionActive(false);
     }
-  }, [hasContent, isFocused, editing, readOnly]);
-
-  const handleBlur = useCallback(() => {
-    exitEditingToPreview();
-  }, [exitEditingToPreview]);
+  }, [isFocused, editing, readOnly]);
 
   const renderMarkdownPreviewFrame = useCallback(
     async (frame: IsolatedFrameHandle | null = frameRef.current) => {
@@ -796,6 +792,32 @@ export const MarkdownCell = memo(function MarkdownCell({
       }
     },
     [enterEditing, onFocusNext, onFocusPrevious, readOnly, requestRenderedSourceComment],
+  );
+
+  const handleRenderedMarkdownCopy = useCallback(
+    (event: ClipboardEvent<HTMLDivElement>) => {
+      if (editing || !canRenderProjectionInHost || !markdownProjection) return;
+
+      const root = viewRef.current;
+      const selection = typeof window === "undefined" ? null : window.getSelection();
+      if (!root || !selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+
+      const range = selection.getRangeAt(0);
+      if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return;
+
+      const anchor = sourceRangeAnchorFromRenderedMarkdownSelection(
+        cell.id,
+        previewSource,
+        root,
+        selection,
+      );
+      if (!anchor?.exact_quote) return;
+
+      event.preventDefault();
+      event.clipboardData.setData("text/plain", anchor.exact_quote);
+      event.clipboardData.setData("text/html", cleanRenderedMarkdownClipboardHtml(range));
+    },
+    [canRenderProjectionInHost, cell.id, editing, markdownProjection, previewSource],
   );
 
   // Handle focus next, creating a new cell if at the end
@@ -1015,21 +1037,26 @@ export const MarkdownCell = memo(function MarkdownCell({
               <span className="text-xs text-muted-foreground font-mono">md</span>
             </div>
             <div>
-              <CodeMirrorEditor
-                ref={editorRef}
-                initialValue={cell.source}
-                language="markdown"
-                lineWrapping
-                onBlur={handleBlur}
-                onSelectionChange={noteEditorSourcePosition}
-                keyMap={keyMap}
-                extensions={editorExtensions}
-                contentAttributes={MARKDOWN_EDITOR_CONTENT_ATTRIBUTES}
-                placeholder="Enter markdown..."
-                className="min-h-[2rem]"
-                autoFocus={editing}
+              <EditorContextMenu
+                cellId={cell.id}
                 readOnly={readOnly}
-              />
+                onCreateSourceComment={onCreateSourceComment}
+              >
+                <CodeMirrorEditor
+                  ref={editorRef}
+                  initialValue={cell.source}
+                  language="markdown"
+                  lineWrapping
+                  onSelectionChange={noteEditorSourcePosition}
+                  keyMap={keyMap}
+                  extensions={editorExtensions}
+                  contentAttributes={MARKDOWN_EDITOR_CONTENT_ATTRIBUTES}
+                  placeholder="Enter markdown..."
+                  className="min-h-[2rem]"
+                  autoFocus={editing}
+                  readOnly={readOnly}
+                />
+              </EditorContextMenu>
             </div>
           </div>
 
@@ -1053,6 +1080,7 @@ export const MarkdownCell = memo(function MarkdownCell({
               onMouseUp={updateRenderedSourceCommentTarget}
               onKeyUp={updateRenderedSourceCommentTarget}
               onKeyDown={handleViewKeyDown}
+              onCopy={handleRenderedMarkdownCopy}
             >
               {previewSource && canRenderProjectionInHost && markdownProjection ? (
                 <ProjectedMarkdownView

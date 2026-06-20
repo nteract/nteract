@@ -106,6 +106,7 @@ vi.mock("@/components/editor/codemirror-editor", () => ({
       contentAttributes?: Readonly<Record<string, string>>;
       initialValue?: string;
       keyMap?: Array<{ key: string; run: () => boolean }>;
+      onBlur?: () => void;
     },
     ref,
   ) {
@@ -133,6 +134,7 @@ vi.mock("@/components/editor/codemirror-editor", () => ({
         data-autocorrect={props.contentAttributes?.autocorrect}
         data-spellcheck={props.contentAttributes?.spellcheck}
         tabIndex={0}
+        onBlur={props.onBlur}
         onKeyDown={(event) => {
           const key = event.ctrlKey && event.key === "Enter" ? "Ctrl-Enter" : event.key;
           const binding = props.keyMap?.find((entry) => entry.key === key);
@@ -630,6 +632,27 @@ describe("MarkdownCell theme sync", () => {
     });
   });
 
+  it("keeps markdown editing open when the editor blurs", async () => {
+    const cell = { ...makeCell(), source: "# Has content" };
+
+    const { getByLabelText, getByTestId, getByTitle } = render(
+      <MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    fireEvent.click(getByTitle("Edit"));
+
+    await waitFor(() => {
+      expect(preview.className).toContain("hidden");
+    });
+
+    fireEvent.blur(getByTestId("markdown-editor"));
+
+    await waitFor(() => {
+      expect(preview.className).toContain("hidden");
+    });
+  });
+
   it("Ctrl+Enter keeps markdown preview in view mode", () => {
     const { getByLabelText } = render(
       <MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />,
@@ -643,7 +666,7 @@ describe("MarkdownCell theme sync", () => {
     expect(preview.className).not.toContain("hidden");
   });
 
-  it("exits edit mode when a focused cell with content loses notebook focus", async () => {
+  it("keeps edit mode when a focused cell with content loses notebook focus", async () => {
     const cell = { ...makeCell(), source: "# Has content" };
     mockIsFocused = true;
 
@@ -659,13 +682,12 @@ describe("MarkdownCell theme sync", () => {
       expect(preview.className).toContain("hidden");
     });
 
-    // Notebook focus moves to another cell — the focus effect should drop
-    // this cell back to preview because it has content.
+    // Notebook focus can move away without rendering this cell.
     mockIsFocused = false;
     rerender(<MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />);
 
     await waitFor(() => {
-      expect(preview.className).not.toContain("hidden");
+      expect(preview.className).toContain("hidden");
     });
   });
 
@@ -737,6 +759,34 @@ describe("MarkdownCell theme sync", () => {
     fireEvent.click(getByRole("checkbox", { name: "Mark task complete: ship checkboxes" }));
 
     expect(onUpdateSource).toHaveBeenCalledWith("- [x] ship checkboxes");
+  });
+
+  it("copies projected markdown selections with raw source text and html", () => {
+    const { getByLabelText, getByText } = render(
+      <MarkdownCell cell={makeTaskCell()} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const run = getByText("ship checkboxes").closest("[data-markdown-source-run]");
+    expect(run).toBeInstanceOf(HTMLElement);
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(run as HTMLElement);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const clipboardData = { setData: vi.fn() };
+    const copyEvent = createEvent.copy(getByLabelText("Markdown cell content"));
+    Object.defineProperty(copyEvent, "clipboardData", { value: clipboardData });
+    fireEvent(getByLabelText("Markdown cell content"), copyEvent);
+    selection?.removeAllRanges();
+
+    expect(copyEvent.defaultPrevented).toBe(true);
+    expect(clipboardData.setData).toHaveBeenCalledWith("text/plain", "ship checkboxes");
+    expect(clipboardData.setData).toHaveBeenCalledWith(
+      "text/html",
+      expect.stringContaining("ship checkboxes"),
+    );
   });
 
   it("carries the latest markdown source cursor into projected preview", async () => {

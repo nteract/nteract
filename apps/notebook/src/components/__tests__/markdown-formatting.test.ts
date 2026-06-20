@@ -221,29 +221,28 @@ describe("applyQuoteFormatting", () => {
 
 describe("edit/view toggle conditions", () => {
   /**
-   * Mirrors the handleBlur logic from MarkdownCell.tsx:
-   * Only exit edit mode if cell.source.trim() is non-empty.
-   * This prevents empty cells from being "stuck" in view mode
-   * with no content and no way to type.
+   * Mirrors explicit render actions in MarkdownCell.tsx.
+   * Passive blur and notebook focus loss keep markdown source editing open.
    */
-  function shouldExitEditOnBlur(source: string): boolean {
-    return source.trim().length > 0;
+  function shouldExitEditOnExplicitRender(source: string, allowEmpty = false): boolean {
+    return source.trim().length > 0 || allowEmpty;
   }
 
-  it("exits edit mode when cell has content", () => {
-    expect(shouldExitEditOnBlur("# Hello")).toBe(true);
+  it("exits edit mode on explicit render when cell has content", () => {
+    expect(shouldExitEditOnExplicitRender("# Hello")).toBe(true);
   });
 
-  it("stays in edit mode when cell is empty", () => {
-    expect(shouldExitEditOnBlur("")).toBe(false);
+  it("stays in edit mode for empty source unless explicit render allows empty", () => {
+    expect(shouldExitEditOnExplicitRender("")).toBe(false);
+    expect(shouldExitEditOnExplicitRender("", true)).toBe(true);
   });
 
   it("stays in edit mode when cell is only whitespace", () => {
-    expect(shouldExitEditOnBlur("   \n\t  ")).toBe(false);
+    expect(shouldExitEditOnExplicitRender("   \n\t  ")).toBe(false);
   });
 
-  it("exits edit mode for single character content", () => {
-    expect(shouldExitEditOnBlur("a")).toBe(true);
+  it("exits edit mode for single character content on explicit render", () => {
+    expect(shouldExitEditOnExplicitRender("a")).toBe(true);
   });
 
   /**
