@@ -279,6 +279,7 @@ describe("output lane policy", () => {
     ]);
     expect(outputUsesPanel(outputs[1])).toBe(true);
     expect(outputUsesPanel(outputs[4])).toBe(true);
+    expect(hasWidgetOutputs(outputs)).toBe(false);
     expect(outputUsesWheelOwningFrame(outputs[4])).toBe(true);
     expect(outputs.map((output) => outputAllowsScrollPassthrough(output))).toEqual([
       true,
