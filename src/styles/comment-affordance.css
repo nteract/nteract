@@ -8,8 +8,10 @@
    into a labeled "Comment" speech bubble with a tail. The spring matches the
    running motion (exec-squish). No icon: the bubble shape is the comment cue.
 
-   The label reveal animates a grid column from 0fr to 1fr so the bubble always
-   grows to the label's true content width. The word never clips. */
+   The reveal animates the bubble's own max-width while it clips its overflow, so
+   the bubble grows to its content (the label at its natural width) capped by a
+   generous ceiling. The word never clips, on every engine including iOS Safari
+   (grid fr tracks do not resolve to content width there). */
 .comment-affordance {
   --comment-affordance-color: var(--primary, #2563eb);
   --comment-affordance-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -30,19 +32,19 @@
 
 .comment-affordance-dot {
   position: relative;
-  display: inline-grid;
-  grid-template-columns: 0fr;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
   height: 14px;
-  min-width: 14px;
+  max-width: 14px;
   padding: 0;
+  overflow: hidden;
   border-radius: 999px;
   background-color: var(--comment-affordance-color);
   color: #ffffff;
   box-shadow: 0 1px 5px color-mix(in srgb, var(--comment-affordance-color) 50%, transparent);
   transition:
-    grid-template-columns 260ms var(--comment-affordance-spring),
-    min-width 260ms var(--comment-affordance-spring),
+    max-width 280ms var(--comment-affordance-spring),
     height 260ms var(--comment-affordance-spring),
     padding 260ms var(--comment-affordance-spring),
     border-radius 200ms ease;
@@ -50,8 +52,6 @@
 }
 
 .comment-affordance-label {
-  overflow: hidden;
-  min-width: 0;
   white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
@@ -79,12 +79,12 @@
     transform 200ms var(--comment-affordance-spring);
 }
 
-/* OPEN: hover, keyboard focus, or the one-time appear peek. */
+/* OPEN: hover, keyboard focus, or the one-time appear peek. The bubble grows to
+   fit its label (capped at 9rem) and the word is fully revealed. */
 .comment-affordance:hover .comment-affordance-dot,
 .comment-affordance:focus-visible .comment-affordance-dot,
 .comment-affordance.comment-affordance-peek .comment-affordance-dot {
-  grid-template-columns: 1fr;
-  min-width: 0;
+  max-width: 9rem;
   height: 22px;
   padding: 0 10px;
   border-radius: 11px;
