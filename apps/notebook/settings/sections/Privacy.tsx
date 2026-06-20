@@ -1,4 +1,3 @@
-import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { ChevronDown } from "lucide-react";
 import { useCallback, useState } from "react";
 import { TelemetryDisclosureCard } from "@/components/TelemetryDisclosureCard";
@@ -23,13 +22,6 @@ function formatRelative(secs: number | null): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
-}
-
-function openOrFallThrough(url: string) {
-  openExternal(url).catch(() => {
-    // Tauri shell unavailable; the calling <a> tag's href covers the
-    // non-Tauri case.
-  });
 }
 
 export function PrivacySection({
@@ -68,7 +60,6 @@ export function PrivacySection({
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-3 pl-5">
         <TelemetryDisclosureCard
-          onOpenLearnMore={openOrFallThrough}
           footer={
             <div className="flex items-center justify-between pt-1">
               <span className="text-xs text-muted-foreground">Send anonymous daily ping</span>
