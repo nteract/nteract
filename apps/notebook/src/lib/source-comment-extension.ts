@@ -1,5 +1,6 @@
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, keymap, showTooltip, type Tooltip } from "@codemirror/view";
+import { wireCommentAffordanceMotion } from "@/components/comments/comment-affordance-motion";
 import {
   MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES,
   selectionRectFromView,
@@ -15,10 +16,6 @@ export type SourceCommentRequestHandler = (
 
 const setSourceCommentFocusEffect = StateEffect.define<boolean>();
 const utf8Encoder = new TextEncoder();
-
-// How long the affordance peeks open when it first appears, so a fresh
-// selection can tell what it is before it settles to a quiet dot.
-const SOURCE_COMMENT_PEEK_MS = 1400;
 
 interface SourceCommentTooltipState {
   focused: boolean;
@@ -86,6 +83,11 @@ function sourceCommentTooltips(
   if (selectedText.trim().length === 0) return [];
   if (utf8Encoder.encode(selectedText).length > MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES) return [];
 
+  // The tooltip anchors at the head, the moving end of the selection. When the
+  // selection runs leftward the head is at its start, so flip the dot to the left
+  // of the head instead of letting it sit on the right, over the selected text.
+  const leftward = selection.head < selection.anchor;
+
   return [
     {
       pos: selection.head,
@@ -94,12 +96,14 @@ function sourceCommentTooltips(
       create(view) {
         // Shared dot affordance (styles/comment-affordance.css), matching the
         // rendered-markdown plane. CodeMirror wraps this in a .cm-tooltip; the
-        // shared CSS strips that wrapper's chrome so only the dot shows. The dot
-        // peeks open once on appear so a fresh selection can tell what it is,
-        // then settles to a quiet dot.
+        // shared CSS strips that wrapper's chrome so only the dot shows. It stays
+        // a quiet dot while you select and folds out to a "Comment" pill only on
+        // hover or keyboard focus, so dragging a selection never flashes the pill.
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "comment-affordance comment-affordance-peek";
+        button.className = leftward
+          ? "comment-affordance comment-affordance-flip"
+          : "comment-affordance";
         // No title attribute: the native browser tooltip duplicates the bubble's
         // own "Comment" label. aria-label keeps it accessible.
         button.setAttribute("aria-label", "Comment on selection");
@@ -112,9 +116,7 @@ function sourceCommentTooltips(
         label.textContent = "Comment";
         dot.appendChild(label);
         button.appendChild(dot);
-        const peekTimer = setTimeout(() => {
-          button.classList.remove("comment-affordance-peek");
-        }, SOURCE_COMMENT_PEEK_MS);
+        const disposeMotion = wireCommentAffordanceMotion(button);
         button.addEventListener("mousedown", (event) => {
           event.preventDefault();
         });
@@ -125,7 +127,7 @@ function sourceCommentTooltips(
         return {
           dom: button,
           destroy() {
-            clearTimeout(peekTimer);
+            disposeMotion();
           },
         };
       },
