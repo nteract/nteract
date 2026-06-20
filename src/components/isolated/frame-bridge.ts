@@ -1,5 +1,11 @@
 import type { NteractEmbedHostContextPatch } from "./host-context";
 import type { WidgetViewStateHint } from "@/components/widgets/widget-state";
+import type {
+  PanelRuntimeAckPayload,
+  PanelRuntimeChannelPayload,
+  PanelRuntimeDisconnectedPayload,
+  PanelRuntimePatchPayload,
+} from "runtimed";
 
 export interface EvalMessage {
   type: "eval";
@@ -216,6 +222,21 @@ export interface BridgeReadyMessage {
   type: "bridge_ready";
 }
 
+export interface PanelServerPatchMessage {
+  type: "panel_server_patch";
+  payload: PanelRuntimePatchPayload;
+}
+
+export interface PanelAckMessage {
+  type: "panel_ack";
+  payload: PanelRuntimeAckPayload;
+}
+
+export interface PanelDisconnectedMessage {
+  type: "panel_disconnected";
+  payload: PanelRuntimeDisconnectedPayload;
+}
+
 // --- Global Find: Parent → Iframe ---
 
 /**
@@ -283,6 +304,9 @@ export type ParentToIframeMessage =
   | CommCloseMessage
   | WidgetSnapshotMessage
   | BridgeReadyMessage
+  | PanelServerPatchMessage
+  | PanelAckMessage
+  | PanelDisconnectedMessage
   | SearchMessage
   | SearchNavigateMessage
   | InteractionStateMessage
@@ -456,6 +480,21 @@ export interface WidgetCommCloseMessage {
   };
 }
 
+export interface PanelChannelOpenMessage {
+  type: "panel_channel_open";
+  payload: PanelRuntimeChannelPayload;
+}
+
+export interface PanelClientPatchMessage {
+  type: "panel_client_patch";
+  payload: PanelRuntimePatchPayload;
+}
+
+export interface PanelChannelCloseMessage {
+  type: "panel_channel_close";
+  payload: PanelRuntimeChannelPayload;
+}
+
 // --- Global Find: Iframe → Parent ---
 
 /**
@@ -488,6 +527,9 @@ export type IframeToParentMessage =
   | WidgetReadyMessage
   | WidgetCommMsgMessage
   | WidgetCommCloseMessage
+  | PanelChannelOpenMessage
+  | PanelClientPatchMessage
+  | PanelChannelCloseMessage
   | SearchResultsMessage;
 
 // --- Utility Types ---
@@ -525,6 +567,9 @@ export function isIframeMessage(data: unknown): data is IframeToParentMessage {
       "widget_ready",
       "widget_comm_msg",
       "widget_comm_close",
+      "panel_channel_open",
+      "panel_client_patch",
+      "panel_channel_close",
       "search_results",
     ].includes(msg.type)
   );

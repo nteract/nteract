@@ -1,3 +1,5 @@
+import { NTERACT_PANEL_RUNTIME_MIME_TYPE } from "./panel-runtime";
+
 /**
  * Default MIME type display priority for notebook outputs.
  *
@@ -13,6 +15,7 @@ export const DEFAULT_MIME_PRIORITY = [
   // text/html. These must win so the frontend can keep the bundle together.
   "application/vnd.bokehjs_exec.v0+json",
   "application/vnd.bokehjs_load.v0+json",
+  NTERACT_PANEL_RUNTIME_MIME_TYPE,
   "application/vnd.holoviews_exec.v0+json",
   "application/vnd.holoviews_load.v0+json",
   "application/vnd.vegalite.v6+json",

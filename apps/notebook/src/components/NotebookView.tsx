@@ -18,9 +18,14 @@ import {
 import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Eye, EyeOff, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { notebookCellAnchorId, type NotebookInteractionTarget } from "runtimed";
+import {
+  notebookCellAnchorId,
+  type NotebookInteractionTarget,
+  type PanelRuntimeIframeMessage,
+} from "runtimed";
 import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/CellInsertionRibbon";
 import { CellSkeleton } from "@/components/cell/CellSkeleton";
+import type { PanelRuntimeMessageContext } from "@/components/cell/OutputArea";
 import { Button } from "@/components/ui/button";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import type { NotebookShellCapabilities } from "@/components/notebook";
@@ -101,6 +106,10 @@ export interface NotebookViewProps {
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFramesUntilVisible?: boolean;
   deferredOutputIsolatedFrameRootMargin?: string;
+  onPanelRuntimeMessage?: (
+    message: PanelRuntimeIframeMessage,
+    context: PanelRuntimeMessageContext,
+  ) => void;
   autoFocusFirstCell?: boolean;
 }
 
@@ -381,6 +390,7 @@ function NotebookViewContent({
   outputHostContext,
   deferOutputIsolatedFramesUntilVisible = false,
   deferredOutputIsolatedFrameRootMargin,
+  onPanelRuntimeMessage,
   autoFocusFirstCell = true,
 }: NotebookViewProps) {
   const presence = usePresenceContext();
@@ -955,6 +965,7 @@ function NotebookViewContent({
             onCreateOutputComment={onCreateOutputComment}
             onActivateCommentThread={onActivateCommentThread}
             outputHostContext={outputHostContext}
+            onPanelRuntimeMessage={onPanelRuntimeMessage}
             deferOutputIsolatedFrameUntilVisible={deferOutputIsolatedFramesUntilVisible}
             deferredOutputIsolatedFrameRootMargin={deferredOutputIsolatedFrameRootMargin}
             onToggleSourceHidden={

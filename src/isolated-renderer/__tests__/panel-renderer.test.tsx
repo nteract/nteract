@@ -1,7 +1,11 @@
 import { cleanup, render, waitFor } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
+import {
+  NTERACT_PANEL_RUNTIME_MIME_TYPE,
+  PANEL_EXEC_MIME_TYPE,
+  PANEL_LOAD_MIME_TYPE,
+} from "@/components/outputs/panel-mime";
 import type { RendererProps } from "@/lib/renderer-registry";
 import { install } from "../panel-renderer";
 
@@ -100,7 +104,11 @@ describe("Panel renderer plugin", () => {
   it("registers Panel load and exec MIME types", () => {
     const { registeredMimeTypes } = installPanelRenderer();
 
-    expect(registeredMimeTypes).toEqual([PANEL_LOAD_MIME_TYPE, PANEL_EXEC_MIME_TYPE]);
+    expect(registeredMimeTypes).toEqual([
+      PANEL_LOAD_MIME_TYPE,
+      PANEL_EXEC_MIME_TYPE,
+      NTERACT_PANEL_RUNTIME_MIME_TYPE,
+    ]);
   });
 
   it("appends Panel load MIME JavaScript directly", async () => {
@@ -159,6 +167,33 @@ describe("Panel renderer plugin", () => {
     await waitFor(() => {
       expect(renderedScripts(container).at(-1)?.textContent).toBe("window.__panelExecRan = true;");
     });
+  });
+
+  it("renders nteract Panel runtime bundles with sibling HTML and JavaScript", async () => {
+    stubPanelRuntime();
+    const { Renderer } = installPanelRenderer();
+    const { container } = render(
+      <Renderer
+        data={{
+          "text/html": '<div id="panel-root"></div>',
+          "application/javascript": "window.__panelRuntimeRan = true;",
+          [NTERACT_PANEL_RUNTIME_MIME_TYPE]: { version: 1, channel_id: "panel-1" },
+        }}
+        metadata={{ id: "doc-1" }}
+        mimeType={NTERACT_PANEL_RUNTIME_MIME_TYPE}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("#panel-root")).not.toBeNull();
+      expect(renderedScripts(container).at(-1)?.textContent).toBe(
+        "window.__panelRuntimeRan = true;",
+      );
+    });
+    expect(
+      (window.PyViz as { comm_manager?: { __nteractPanelCommManager?: true } } | undefined)
+        ?.comm_manager?.__nteractPanelCommManager,
+    ).toBe(true);
   });
 
   it("executes id-less Panel exec bundles as auxiliary notebook setup", async () => {

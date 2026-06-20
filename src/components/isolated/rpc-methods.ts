@@ -15,6 +15,13 @@
  * Nteract extension methods use the "nteract/" namespace.
  */
 
+import type {
+  PanelRuntimeAckPayload,
+  PanelRuntimeChannelPayload,
+  PanelRuntimeDisconnectedPayload,
+  PanelRuntimePatchPayload,
+} from "runtimed";
+
 // ── Method Constants ────────────────────────────────────────────────
 
 // Host → Iframe (Requests — expect a response)
@@ -34,6 +41,9 @@ export const NTERACT_COMM_CLOSE = "nteract/commClose" as const;
 export const NTERACT_WIDGET_SNAPSHOT = "nteract/widgetSnapshot" as const;
 export const NTERACT_BRIDGE_READY = "nteract/bridgeReady" as const;
 export const NTERACT_WIDGET_STATE = "nteract/widgetState" as const;
+export const NTERACT_PANEL_SERVER_PATCH = "nteract/panelServerPatch" as const;
+export const NTERACT_PANEL_ACK = "nteract/panelAck" as const;
+export const NTERACT_PANEL_DISCONNECTED = "nteract/panelDisconnected" as const;
 
 // Host → Iframe (Notifications) — additional
 export const NTERACT_THEME = "nteract/theme" as const;
@@ -58,6 +68,9 @@ export const NTERACT_SEARCH_RESULTS = "nteract/searchResults" as const;
 export const NTERACT_MOUSE_DOWN = "nteract/mouseDown" as const;
 export const NTERACT_MOUSE_UP = "nteract/mouseUp" as const;
 export const NTERACT_WHEEL_BOUNDARY = "nteract/wheelBoundary" as const;
+export const NTERACT_PANEL_CHANNEL_OPEN = "nteract/panelChannelOpen" as const;
+export const NTERACT_PANEL_CLIENT_PATCH = "nteract/panelClientPatch" as const;
+export const NTERACT_PANEL_CHANNEL_CLOSE = "nteract/panelChannelClose" as const;
 
 // MCP Apps-compatible methods used by embedders. Notebook rendering commands
 // remain in the nteract/* namespace.
@@ -159,6 +172,12 @@ export interface NteractWidgetStateParams {
   buffers?: string[];
 }
 
+export type NteractPanelServerPatchParams = PanelRuntimePatchPayload;
+
+export type NteractPanelAckParams = PanelRuntimeAckPayload;
+
+export type NteractPanelDisconnectedParams = PanelRuntimeDisconnectedPayload;
+
 // ── Iframe → Host: Notification Params ──────────────────────────────
 
 export interface NteractRenderCompleteParams {
@@ -182,6 +201,12 @@ export interface NteractWidgetUpdateParams {
   state: Record<string, unknown>;
   buffers?: string[];
 }
+
+export type NteractPanelChannelOpenParams = PanelRuntimeChannelPayload;
+
+export type NteractPanelClientPatchParams = PanelRuntimePatchPayload;
+
+export type NteractPanelChannelCloseParams = PanelRuntimeChannelPayload;
 
 export interface NteractWheelBoundaryParams {
   deltaY?: number;

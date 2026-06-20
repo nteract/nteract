@@ -63,6 +63,10 @@ import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/w
 import { dispatchHostOutsideInteractionOnRelease } from "./host-interaction";
 import { measureDocumentHeight } from "./layout-measure";
 import { outputEntryIdForPayload } from "./output-identity";
+import {
+  installPanelRuntimeTransport,
+  registerPanelRuntimeTransportHandlers,
+} from "./panel-runtime-transport";
 // Import widget support
 import { IframeWidgetStoreProvider } from "./widget-provider";
 
@@ -405,6 +409,8 @@ function scheduleRendererLayoutPulses(): void {
 function setupMessageListener() {
   // Create JSON-RPC transport — handles nteract/* methods from the host
   rpcTransport = new JsonRpcTransport(window.parent, window.parent);
+  installPanelRuntimeTransport(() => rpcTransport);
+  registerPanelRuntimeTransportHandlers(rpcTransport);
 
   // Route JSON-RPC notifications to the React message handler
   rpcTransport.onNotification(NTERACT_RENDER_OUTPUT, (params) => {

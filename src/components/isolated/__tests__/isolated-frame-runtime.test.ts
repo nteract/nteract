@@ -8,6 +8,9 @@ import {
   MCP_UI_SIZE_CHANGED,
   NTERACT_MEASURE_ELEMENT,
   NTERACT_MOUSE_UP,
+  NTERACT_PANEL_CHANNEL_CLOSE,
+  NTERACT_PANEL_CHANNEL_OPEN,
+  NTERACT_PANEL_CLIENT_PATCH,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
   NTERACT_THEME,
@@ -162,6 +165,40 @@ describe("IsolatedFrameRuntime", () => {
     transport.notificationHandlers.get(NTERACT_MOUSE_UP)?.({ hasSelection: true });
 
     expect(callbacks.onMouseUp).toHaveBeenCalledWith({ hasSelection: true });
+  });
+
+  it("forwards iframe Panel runtime notifications as typed messages", () => {
+    const { callbacks, frameWindow, runtime } = createRuntime();
+
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const transport = MockJsonRpcTransport.instances[0];
+    expect(transport).toBeDefined();
+    callbacks.onMessage.mockClear();
+
+    const open = { plotId: "plot-1", commId: "comm-1" };
+    const patch = {
+      plotId: "plot-1",
+      commId: "comm-1",
+      data: { events: [{ kind: "ModelChanged" }] },
+    };
+    const close = { plotId: "plot-1", commId: "comm-1" };
+
+    transport.notificationHandlers.get(NTERACT_PANEL_CHANNEL_OPEN)?.(open);
+    transport.notificationHandlers.get(NTERACT_PANEL_CLIENT_PATCH)?.(patch);
+    transport.notificationHandlers.get(NTERACT_PANEL_CHANNEL_CLOSE)?.(close);
+
+    expect(callbacks.onMessage).toHaveBeenNthCalledWith(1, {
+      type: "panel_channel_open",
+      payload: open,
+    });
+    expect(callbacks.onMessage).toHaveBeenNthCalledWith(2, {
+      type: "panel_client_patch",
+      payload: patch,
+    });
+    expect(callbacks.onMessage).toHaveBeenNthCalledWith(3, {
+      type: "panel_channel_close",
+      payload: close,
+    });
   });
 
   it("sends host context once per channel for equivalent content", () => {

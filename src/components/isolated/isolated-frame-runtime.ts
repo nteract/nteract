@@ -23,6 +23,12 @@ import {
   NTERACT_MEASURE_ELEMENT,
   NTERACT_MOUSE_DOWN,
   NTERACT_MOUSE_UP,
+  NTERACT_PANEL_ACK,
+  NTERACT_PANEL_CHANNEL_CLOSE,
+  NTERACT_PANEL_CHANNEL_OPEN,
+  NTERACT_PANEL_CLIENT_PATCH,
+  NTERACT_PANEL_DISCONNECTED,
+  NTERACT_PANEL_SERVER_PATCH,
   NTERACT_PING,
   NTERACT_RENDER_BATCH,
   NTERACT_RENDER_COMPLETE,
@@ -59,6 +65,9 @@ export const TYPE_TO_METHOD: Record<string, string> = {
   widget_snapshot: NTERACT_WIDGET_SNAPSHOT,
   bridge_ready: NTERACT_BRIDGE_READY,
   widget_state: NTERACT_WIDGET_STATE,
+  panel_server_patch: NTERACT_PANEL_SERVER_PATCH,
+  panel_ack: NTERACT_PANEL_ACK,
+  panel_disconnected: NTERACT_PANEL_DISCONNECTED,
 };
 
 export type IsolatedFrameRuntimeDiagnosticLevel = "debug" | "info" | "warn" | "error";
@@ -660,6 +669,24 @@ export class IsolatedFrameRuntime {
     transport.onNotification(NTERACT_WIDGET_COMM_CLOSE, (params) => {
       this.callbacks.onMessage({
         type: "widget_comm_close",
+        payload: params,
+      } as IframeToParentMessage);
+    });
+    transport.onNotification(NTERACT_PANEL_CHANNEL_OPEN, (params) => {
+      this.callbacks.onMessage({
+        type: "panel_channel_open",
+        payload: params,
+      } as IframeToParentMessage);
+    });
+    transport.onNotification(NTERACT_PANEL_CLIENT_PATCH, (params) => {
+      this.callbacks.onMessage({
+        type: "panel_client_patch",
+        payload: params,
+      } as IframeToParentMessage);
+    });
+    transport.onNotification(NTERACT_PANEL_CHANNEL_CLOSE, (params) => {
+      this.callbacks.onMessage({
+        type: "panel_channel_close",
         payload: params,
       } as IframeToParentMessage);
     });

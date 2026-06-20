@@ -5,6 +5,7 @@ import {
   isBokehMimeType,
 } from "@/components/outputs/bokeh-mime";
 import {
+  NTERACT_PANEL_RUNTIME_MIME_TYPE,
   PANEL_EXEC_MIME_TYPE,
   PANEL_LOAD_MIME_TYPE,
   isPanelMimeType,
@@ -50,6 +51,7 @@ const SCROLL_PASSTHROUGH_MIME_TYPES = new Set([
   "application/javascript",
   BOKEHJS_LOAD_MIME_TYPE,
   BOKEHJS_EXEC_MIME_TYPE,
+  NTERACT_PANEL_RUNTIME_MIME_TYPE,
   PANEL_LOAD_MIME_TYPE,
   PANEL_EXEC_MIME_TYPE,
   // Sift's interactive tables are also click-to-engage (see SIFT_MIME_TYPES).

@@ -21,8 +21,9 @@ user code runs. Four things happen on ``load_ipython_extension``:
 
 4. Third-party visualization libraries (altair, plotly) are flipped to
    their ``"nteract"`` renderer if they are already imported, or lazily
-   when they are first imported by user code. The bootstrap never imports
-   these optional packages on the kernel startup path.
+   when they are first imported by user code. The Panel runtime-state hook
+   follows the same lazy shape. The bootstrap never imports these optional
+   packages on the kernel startup path.
 
 No ``ipython_display_formatter`` handlers. The dx wheel needed one to
 divert bare-``df``-on-last-line from the bufferless displayhook path
@@ -48,6 +49,9 @@ from traitlets import ObjectName, Unicode
 
 import nteract_kernel_launcher._buffer_hook as _buffer_hook
 import nteract_kernel_launcher._output_redaction as _output_redaction
+
+# nteract-internal; importing this module installs no third-party Panel package.
+import nteract_kernel_launcher._panel as _panel
 import nteract_kernel_launcher._traceback as _traceback
 from nteract_kernel_launcher._buffer_hook import pending_buffers
 from nteract_kernel_launcher._format import (
@@ -682,6 +686,7 @@ def load_ipython_extension(ip: Any) -> None:
     _run_bootstrap_step("buffer hook install", lambda: _install_buffer_hooks(ip))
     _run_bootstrap_step("output redaction install", lambda: _output_redaction.install(ip))
     _run_bootstrap_step("third-party renderer enable", _enable_third_party_renderers)
+    _run_bootstrap_step("panel runtime hook install", _panel.install)
 
     # Traceback install goes last so earlier failures can't prevent it.
     # The wrapper itself is bulletproof — see `_traceback.install`.
@@ -705,3 +710,4 @@ def unload_ipython_extension(ip: Any) -> None:
     except Exception as exc:  # noqa: BLE001
         log.debug("unload cleanup: %s", exc)
     _uninstall_renderer_import_hook()
+    _panel.uninstall()

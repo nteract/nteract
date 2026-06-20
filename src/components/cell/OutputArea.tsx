@@ -180,9 +180,24 @@ function useDeferredIsolatedFrame({
 }
 
 import type { JupyterOutput } from "./jupyter-output";
-import { notebookOutputAnchorId } from "runtimed";
+import {
+  isPanelRuntimeIframeMessage,
+  notebookOutputAnchorId,
+  panelRuntimeEventFromIframeMessage,
+  type PanelRuntimeClientEvent,
+  type PanelRuntimeIframeMessage,
+  type PanelRuntimeOutputContext,
+} from "runtimed";
 // Re-export so existing imports continue to work.
 export type { JupyterOutput } from "./jupyter-output";
+
+export interface PanelRuntimeMessageContext extends PanelRuntimeOutputContext {
+  event: PanelRuntimeClientEvent;
+  cellId?: string;
+  executionCount?: number | null;
+  outputIds: string[];
+  outputs: readonly JupyterOutput[];
+}
 
 interface OutputAreaProps {
   /**
@@ -300,6 +315,15 @@ interface OutputAreaProps {
    */
   onIsolatedFrameHandleChange?: (handle: IsolatedFrameHandle | null) => void;
   /**
+   * Callback for typed Panel runtime messages emitted from the isolated
+   * iframe. Panel uses this separate path because its Bokeh document patches
+   * are not ipywidget comm state.
+   */
+  onPanelRuntimeMessage?: (
+    message: PanelRuntimeIframeMessage,
+    context: PanelRuntimeMessageContext,
+  ) => void;
+  /**
    * Callback for structured isolated renderer diagnostics.
    */
   onDiagnostic?: IsolatedDiagnosticHandler;
@@ -365,6 +389,12 @@ function requireIdentifiedOutputs(outputs: JupyterOutput[]): IdentifiedJupyterOu
     }
   }
   return outputs as IdentifiedJupyterOutput[];
+}
+
+function isPanelRuntimeMessage(
+  message: IframeToParentMessage,
+): message is PanelRuntimeIframeMessage {
+  return isPanelRuntimeIframeMessage(message);
 }
 
 /**
@@ -607,6 +637,7 @@ function OutputAreaSingle({
   onSearchMatchCount,
   onIframeMouseDown,
   onIsolatedFrameHandleChange,
+  onPanelRuntimeMessage,
   onDiagnostic,
   hostContext,
   resolveTracebackExecutionTarget,
@@ -619,6 +650,8 @@ function OutputAreaSingle({
   const staticFrameInteractionRef = useRef<HTMLDivElement>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const renderGenRef = useRef(0);
+  const outputsRef = useRef(outputs);
+  outputsRef.current = outputs;
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
   const [staticFrameInteractionActive, setStaticFrameInteractionActive] = useState(false);
@@ -836,6 +869,26 @@ function OutputAreaSingle({
   // Handle messages from iframe, routing widget messages to comm bridge
   const handleIframeMessage = useCallback(
     (message: IframeToParentMessage) => {
+      if (isPanelRuntimeMessage(message) && onPanelRuntimeMessage) {
+        const currentOutputs = outputsRef.current;
+        const outputIds = currentOutputs.flatMap((output) =>
+          output.output_id ? [output.output_id] : [],
+        );
+        const event = panelRuntimeEventFromIframeMessage(message, {
+          cellId,
+          executionCount: executionCount ?? null,
+          outputIds,
+        });
+        onPanelRuntimeMessage(message, {
+          event,
+          cellId,
+          executionCount: executionCount ?? null,
+          outputIds,
+          outputs: currentOutputs,
+        });
+        return;
+      }
+
       // Route widget messages to bridge
       if (bridgeRef.current) {
         bridgeRef.current.handleIframeMessage(message);
@@ -855,7 +908,14 @@ function OutputAreaSingle({
         onNavigateToTracebackCell?.(message.payload.target);
       }
     },
-    [onWidgetUpdate, onSearchMatchCount, onNavigateToTracebackCell],
+    [
+      cellId,
+      executionCount,
+      onWidgetUpdate,
+      onSearchMatchCount,
+      onNavigateToTracebackCell,
+      onPanelRuntimeMessage,
+    ],
   );
 
   // Callback when frame is ready - set up bridge and render outputs

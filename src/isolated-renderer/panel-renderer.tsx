@@ -9,10 +9,16 @@
 
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import type { RendererProps } from "@/lib/renderer-registry";
-import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
+import {
+  NTERACT_PANEL_RUNTIME_MIME_TYPE,
+  PANEL_EXEC_MIME_TYPE,
+  PANEL_LOAD_MIME_TYPE,
+} from "@/components/outputs/panel-mime";
 import { measureDocumentHeight } from "./layout-measure";
+import { ensureNteractPanelCommManager } from "./panel-runtime-transport";
 
 type PanelPayload = {
+  [NTERACT_PANEL_RUNTIME_MIME_TYPE]?: unknown;
   [PANEL_LOAD_MIME_TYPE]?: unknown;
   [PANEL_EXEC_MIME_TYPE]?: unknown;
   "application/javascript"?: unknown;
@@ -307,9 +313,14 @@ function PanelRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
         return;
       }
 
-      if (mimeType !== PANEL_EXEC_MIME_TYPE) return;
+      if (mimeType !== PANEL_EXEC_MIME_TYPE && mimeType !== NTERACT_PANEL_RUNTIME_MIME_TYPE) {
+        return;
+      }
 
       ensurePyViz();
+      if (mimeType === NTERACT_PANEL_RUNTIME_MIME_TYPE) {
+        ensureNteractPanelCommManager();
+      }
       const serverId = panelServerId(metadata);
       if (serverId) {
         const html = normalizeText(payload["text/html"]);
@@ -386,5 +397,8 @@ function PanelRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
 export function install(ctx: {
   register: (mimeTypes: string[], component: ComponentType<RendererProps>) => void;
 }) {
-  ctx.register([PANEL_LOAD_MIME_TYPE, PANEL_EXEC_MIME_TYPE], PanelRenderer);
+  ctx.register(
+    [PANEL_LOAD_MIME_TYPE, PANEL_EXEC_MIME_TYPE, NTERACT_PANEL_RUNTIME_MIME_TYPE],
+    PanelRenderer,
+  );
 }

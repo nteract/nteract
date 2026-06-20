@@ -28,6 +28,9 @@ describe("TYPE_TO_METHOD mapping", () => {
       "widget_snapshot",
       "bridge_ready",
       "widget_state",
+      "panel_server_patch",
+      "panel_ack",
+      "panel_disconnected",
     ];
 
     for (const type of requiredTypes) {
@@ -56,6 +59,9 @@ describe("TYPE_TO_METHOD mapping", () => {
     expect(TYPE_TO_METHOD.widget_snapshot).toBe("nteract/widgetSnapshot");
     expect(TYPE_TO_METHOD.bridge_ready).toBe("nteract/bridgeReady");
     expect(TYPE_TO_METHOD.widget_state).toBe("nteract/widgetState");
+    expect(TYPE_TO_METHOD.panel_server_patch).toBe("nteract/panelServerPatch");
+    expect(TYPE_TO_METHOD.panel_ack).toBe("nteract/panelAck");
+    expect(TYPE_TO_METHOD.panel_disconnected).toBe("nteract/panelDisconnected");
   });
 
   it("has no duplicate method values", () => {

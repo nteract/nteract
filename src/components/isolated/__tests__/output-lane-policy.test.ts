@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
-import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
+import {
+  NTERACT_PANEL_RUNTIME_MIME_TYPE,
+  PANEL_EXEC_MIME_TYPE,
+  PANEL_LOAD_MIME_TYPE,
+} from "@/components/outputs/panel-mime";
 import {
   MARKDOWN_PROJECTION_MIME_TYPE,
   setMarkdownProjectionProjector,
@@ -296,6 +300,22 @@ describe("output lane policy", () => {
       "panel-root-html",
       "panel-exec-html",
     ]);
+  });
+
+  it("treats nteract Panel runtime outputs as Panel, not widget state", () => {
+    const output = displayOutput("panel-runtime", {
+      [NTERACT_PANEL_RUNTIME_MIME_TYPE]: { version: 1, channel_id: "panel-1" },
+      [PANEL_EXEC_MIME_TYPE]: "",
+      "text/html": '<div id="panel-root"></div>',
+      "application/javascript": 'document.getElementById("panel-root").textContent = "widget";',
+    });
+
+    expect(selectedOutputMimeType(output)).toBe(NTERACT_PANEL_RUNTIME_MIME_TYPE);
+    expect(outputUsesPanel(output)).toBe(true);
+    expect(hasWidgetOutputs([output])).toBe(false);
+    expect(outputUsesWheelOwningFrame(output)).toBe(true);
+    expect(outputAllowsScrollPassthrough(output)).toBe(true);
+    expect(outputSegmentLane(output)).toBe("static-frame");
   });
 
   it("keeps pan/zoom charts standalone instead of coalescing with sibling document outputs", () => {
