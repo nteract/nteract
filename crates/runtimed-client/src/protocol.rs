@@ -613,6 +613,7 @@ mod tests {
         let broadcast = NotebookBroadcast::Comm {
             msg_type: "comm_msg".into(),
             content: serde_json::json!({"comm_id": "abc"}),
+            metadata: serde_json::json!({}),
             buffers: vec![],
         };
         let json = serde_json::to_string(&broadcast).unwrap();

@@ -18,6 +18,7 @@
 //! - Frame 0x00: AutomergeSync (NotebookDoc sync, for completions context)
 //! - Frame 0x01: RuntimeAgentRequest (coordinator -> runtime agent)
 //! - Frame 0x02: RuntimeAgentResponse (runtime agent -> coordinator)
+//! - Frame 0x03: NotebookBroadcast (runtime agent -> coordinator)
 //! - Frame 0x05: RuntimeStateSync (bidirectional, carries execution queue + outputs)
 //! - Frame 0x09: CommsDocSync (bidirectional, carries widget comm state)
 //!
@@ -450,7 +451,7 @@ where
     // -- 3. Create local infrastructure -------------------------------------
 
     let blob_store = Arc::new(BlobStore::new(blob_root.clone()));
-    let (broadcast_tx, _broadcast_rx) =
+    let (broadcast_tx, mut kernel_broadcast_rx) =
         broadcast::channel::<notebook_protocol::protocol::NotebookBroadcast>(16);
     let presence = Arc::new(RwLock::new(PresenceState::new()));
     let (presence_tx, _presence_rx) = broadcast::channel::<(String, Vec<u8>)>(16);
@@ -1256,6 +1257,67 @@ where
                 }
                 if let Err(e) = handle_work_command(command, &mut kernel).await {
                     warn!("[runtime-agent] Error handling work command: {}", e);
+                }
+            }
+
+            // Forward ephemeral kernel broadcasts (completion progress,
+            // kernel-originated widget comms) to the coordinator so notebook
+            // peers can receive them through the room broadcast bus.
+            broadcast = kernel_broadcast_rx.recv() => {
+                match broadcast {
+                    Ok(broadcast) => {
+                        let encoded = match serde_json::to_vec(&broadcast) {
+                            Ok(encoded) => encoded,
+                            Err(e) => {
+                                warn!("[runtime-agent] Failed to serialize kernel broadcast: {}", e);
+                                continue;
+                            }
+                        };
+                        if let Err(e) = frame_sink.send_frame(
+                            NotebookFrameType::Broadcast,
+                            &encoded,
+                        ).await {
+                            if !transport.clean_eof_is_recoverable() {
+                                warn!("[runtime-agent] Closing after kernel broadcast send failure: {}", e);
+                                break;
+                            }
+                            warn!(
+                                "[runtime-agent] Kernel broadcast send failed: {} — reconnecting \
+                                 (kernel stays running)",
+                                e
+                            );
+                            drop(frame_source);
+                            match reconnect_after_writer_error(
+                                &transport,
+                                &mut last_recoverable_reconnect,
+                            ).await {
+                                Ok((new_source, new_sink)) => {
+                                    frame_source = new_source;
+                                    frame_sink = new_sink;
+                                    coordinator_sync_state = automerge::sync::State::new();
+                                    comms_sync_state = automerge::sync::State::new();
+                                    let _ = state_kick_tx.send(());
+                                    let _ = comms_kick_tx.send(());
+                                    info!("[runtime-agent] Reconnected after kernel broadcast send failure");
+                                    continue;
+                                }
+                                Err(reconnect_err) => {
+                                    error!(
+                                        "[runtime-agent] Reconnect failed after retries: {}",
+                                        reconnect_err
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(count)) => {
+                        warn!("[runtime-agent] Dropped {count} lagged kernel broadcast(s)");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        warn!("[runtime-agent] Kernel broadcast channel closed");
+                        break;
+                    }
                 }
             }
 

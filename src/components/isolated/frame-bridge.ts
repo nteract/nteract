@@ -160,10 +160,12 @@ export interface CommMsgMessage {
   payload: {
     /** Comm ID of the widget */
     commId: string;
-    /** Message method: "update" or "custom" */
-    method: "update" | "custom";
-    /** State patch (for update) or custom content (for custom) */
-    data: Record<string, unknown>;
+    /** Message method: widget "update"/"custom" or raw Jupyter comm payload */
+    method: "update" | "custom" | "raw";
+    /** State patch/custom content for widgets, raw Jupyter payload for raw comms. */
+    data: unknown;
+    /** Jupyter comm message metadata for raw comm payloads. */
+    metadata?: Record<string, unknown>;
     /**
      * JSON paths in `data` where binary blob URLs live. Only populated for
      * `method: "update"` — custom-method messages carry their own transient
@@ -456,6 +458,48 @@ export interface WidgetCommCloseMessage {
   };
 }
 
+/**
+ * Iframe opened a raw Jupyter comm.
+ * Used by renderer protocols such as PyViz/Panel that do not use the
+ * ipywidgets state-store method wrapper.
+ */
+export interface RawCommOpenMessage {
+  type: "raw_comm_open";
+  payload: {
+    commId: string;
+    targetName: string;
+    data?: unknown;
+    metadata?: Record<string, unknown>;
+    buffers?: ArrayBuffer[];
+  };
+}
+
+/**
+ * Iframe sent a raw Jupyter comm_msg payload.
+ */
+export interface RawCommMsgMessage {
+  type: "raw_comm_msg";
+  payload: {
+    commId: string;
+    data: unknown;
+    metadata?: Record<string, unknown>;
+    buffers?: ArrayBuffer[];
+  };
+}
+
+/**
+ * Iframe closed a raw Jupyter comm.
+ */
+export interface RawCommCloseMessage {
+  type: "raw_comm_close";
+  payload: {
+    commId: string;
+    data?: unknown;
+    metadata?: Record<string, unknown>;
+    buffers?: ArrayBuffer[];
+  };
+}
+
 // --- Global Find: Iframe → Parent ---
 
 /**
@@ -488,6 +532,9 @@ export type IframeToParentMessage =
   | WidgetReadyMessage
   | WidgetCommMsgMessage
   | WidgetCommCloseMessage
+  | RawCommOpenMessage
+  | RawCommMsgMessage
+  | RawCommCloseMessage
   | SearchResultsMessage;
 
 // --- Utility Types ---
@@ -525,6 +572,9 @@ export function isIframeMessage(data: unknown): data is IframeToParentMessage {
       "widget_ready",
       "widget_comm_msg",
       "widget_comm_close",
+      "raw_comm_open",
+      "raw_comm_msg",
+      "raw_comm_close",
       "search_results",
     ].includes(msg.type)
   );

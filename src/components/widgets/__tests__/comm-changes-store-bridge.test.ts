@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyWidgetCommBroadcastToStore,
   applyWidgetCommChangesToStore,
+  RAW_COMM_BROADCAST_MARKER,
 } from "../comm-changes-store-bridge";
 import { createWidgetStore } from "../widget-store";
 
@@ -148,6 +149,34 @@ describe("comm changes store bridge", () => {
 
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toEqual({ event: "click" });
+    expect(messages[0].buffers?.[0].byteLength).toBe(3);
+  });
+
+  it("routes non-custom comm broadcasts as raw messages with metadata", () => {
+    const store = createWidgetStore();
+    const messages: Array<{ content: Record<string, unknown>; buffers?: DataView[] }> = [];
+
+    store.subscribeToCustomMessage("panel-comm", (content, buffers) => {
+      messages.push({ content, buffers });
+    });
+
+    applyWidgetCommBroadcastToStore(store, {
+      event: "comm",
+      msg_type: "comm_msg",
+      content: {
+        comm_id: "panel-comm",
+        data: "PATCH-DOC",
+      },
+      metadata: { msg_type: "Ready" },
+      buffers: [[4, 5, 6]],
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toEqual({
+      [RAW_COMM_BROADCAST_MARKER]: true,
+      data: "PATCH-DOC",
+      metadata: { msg_type: "Ready" },
+    });
     expect(messages[0].buffers?.[0].byteLength).toBe(3);
   });
 });

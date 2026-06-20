@@ -167,6 +167,13 @@ export function outputUsesWidget(
   return mimeType === "application/vnd.jupyter.widget-view+json";
 }
 
+export function outputUsesCommBridge(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  return outputUsesWidget(output, priority) || outputUsesPanel(output, priority);
+}
+
 function outputMarkdownCanRenderInHost(
   output: JupyterOutput,
   priority: readonly string[] = DEFAULT_PRIORITY,
@@ -210,6 +217,13 @@ export function hasWidgetOutputs(
   priority: readonly string[] = DEFAULT_PRIORITY,
 ): boolean {
   return outputs.some((output) => outputUsesWidget(output, priority));
+}
+
+export function hasCommBridgeOutputs(
+  outputs: readonly JupyterOutput[],
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  return outputs.some((output) => outputUsesCommBridge(output, priority));
 }
 
 export function outputSegmentLane(

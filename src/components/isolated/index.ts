@@ -103,6 +103,7 @@ export {
 export type { OutputFrameSizingPolicy } from "./output-frame-sizing";
 export {
   anyOutputNeedsIsolation,
+  hasCommBridgeOutputs,
   hasWidgetOutputs,
   isScrollPassthroughMimeType,
   isSiftMimeType,
@@ -112,6 +113,7 @@ export {
   outputUsesSift,
   outputUsesVega,
   outputUsesWheelOwningFrame,
+  outputUsesCommBridge,
   outputUsesWidget,
   segmentedOutputLanes,
   selectedOutputMimeType,

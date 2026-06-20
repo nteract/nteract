@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use notebook_protocol::connection::{send_typed_frame, FramedReader, NotebookFrameType};
-use notebook_protocol::protocol::RuntimeAgentResponse;
+use notebook_protocol::protocol::{NotebookBroadcast, RuntimeAgentResponse};
 use tracing::{debug, info, warn};
 
 use crate::async_outcome::{flatten_joined_result, JoinedResult};
@@ -380,6 +380,19 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                 let _ = reply.send(envelope.response);
                             } else {
                                 debug!("[notebook-sync] Agent response for unknown id: {}", envelope.id);
+                            }
+                        }
+                    }
+                    NotebookFrameType::Broadcast => {
+                        match serde_json::from_slice::<NotebookBroadcast>(&typed_frame.payload) {
+                            Ok(broadcast) => {
+                                let _ = room.broadcasts.kernel_broadcast_tx.send(broadcast);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "[notebook-sync] Agent broadcast decode failed: {}",
+                                    e
+                                );
                             }
                         }
                     }

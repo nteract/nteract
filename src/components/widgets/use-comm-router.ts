@@ -43,15 +43,7 @@ interface OutgoingJupyterCommMessage {
   header: JupyterMessageHeader;
   parent_header: null;
   metadata: Record<string, unknown>;
-  content: {
-    comm_id: string;
-    data?: {
-      state?: Record<string, unknown>;
-      method?: string;
-      content?: Record<string, unknown>;
-      buffer_paths: string[][];
-    };
-  };
+  content: Record<string, unknown>;
   buffers: ArrayBuffer[];
   channel: string;
 }
@@ -59,7 +51,7 @@ interface OutgoingJupyterCommMessage {
 /**
  * Function type for sending messages to the kernel.
  */
-export type SendMessage = (msg: OutgoingJupyterCommMessage) => void;
+export type SendMessage = (msg: OutgoingJupyterCommMessage) => void | Promise<void>;
 
 export interface UseCommRouterOptions {
   /** Function to send messages to the kernel (used for custom messages and comm_close). */
@@ -79,6 +71,28 @@ export interface UseCommRouterReturn {
   sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Close a comm channel */
   closeComm: (commId: string) => void;
+  /** Open a raw Jupyter comm channel. */
+  openRawComm: (
+    commId: string,
+    targetName: string,
+    data?: unknown,
+    metadata?: Record<string, unknown>,
+    buffers?: ArrayBuffer[],
+  ) => Promise<void>;
+  /** Send a raw Jupyter comm_msg payload. */
+  sendRawComm: (
+    commId: string,
+    data: unknown,
+    metadata?: Record<string, unknown>,
+    buffers?: ArrayBuffer[],
+  ) => Promise<void>;
+  /** Close a raw Jupyter comm channel. */
+  closeRawComm: (
+    commId: string,
+    data?: unknown,
+    metadata?: Record<string, unknown>,
+    buffers?: ArrayBuffer[],
+  ) => Promise<void>;
 }
 
 // Session ID for this frontend instance (stable across messages)
@@ -131,6 +145,68 @@ function createCloseMessage(commId: string, username: string): OutgoingJupyterCo
   };
 }
 
+function createRawOpenMessage(
+  commId: string,
+  targetName: string,
+  data: unknown,
+  metadata: Record<string, unknown> | undefined,
+  buffers: ArrayBuffer[] | undefined,
+  username: string,
+): OutgoingJupyterCommMessage {
+  return {
+    header: createHeader("comm_open", username),
+    parent_header: null,
+    metadata: metadata ?? {},
+    content: {
+      comm_id: commId,
+      target_name: targetName,
+      data: data ?? {},
+    },
+    buffers: buffers ?? [],
+    channel: "shell",
+  };
+}
+
+function createRawMessage(
+  commId: string,
+  data: unknown,
+  metadata: Record<string, unknown> | undefined,
+  buffers: ArrayBuffer[] | undefined,
+  username: string,
+): OutgoingJupyterCommMessage {
+  return {
+    header: createHeader("comm_msg", username),
+    parent_header: null,
+    metadata: metadata ?? {},
+    content: {
+      comm_id: commId,
+      data,
+    },
+    buffers: buffers ?? [],
+    channel: "shell",
+  };
+}
+
+function createRawCloseMessage(
+  commId: string,
+  data: unknown,
+  metadata: Record<string, unknown> | undefined,
+  buffers: ArrayBuffer[] | undefined,
+  username: string,
+): OutgoingJupyterCommMessage {
+  return {
+    header: createHeader("comm_close", username),
+    parent_header: null,
+    metadata: metadata ?? {},
+    content: {
+      comm_id: commId,
+      data: data ?? {},
+    },
+    buffers: buffers ?? [],
+    channel: "shell",
+  };
+}
+
 /**
  * Hook exposing outbound comm helpers.
  *
@@ -173,9 +249,61 @@ export function useCommRouter({
     storeRef.current.deleteModel(commId);
   }, []);
 
+  const openRawComm = useCallback(
+    (
+      commId: string,
+      targetName: string,
+      data?: unknown,
+      metadata?: Record<string, unknown>,
+      buffers?: ArrayBuffer[],
+    ) => {
+      return Promise.resolve(
+        sendMessageRef.current(
+          createRawOpenMessage(commId, targetName, data, metadata, buffers, usernameRef.current),
+        ),
+      );
+    },
+    [],
+  );
+
+  const sendRawComm = useCallback(
+    (
+      commId: string,
+      data: unknown,
+      metadata?: Record<string, unknown>,
+      buffers?: ArrayBuffer[],
+    ) => {
+      return Promise.resolve(
+        sendMessageRef.current(
+          createRawMessage(commId, data, metadata, buffers, usernameRef.current),
+        ),
+      );
+    },
+    [],
+  );
+
+  const closeRawComm = useCallback(
+    (
+      commId: string,
+      data?: unknown,
+      metadata?: Record<string, unknown>,
+      buffers?: ArrayBuffer[],
+    ) => {
+      return Promise.resolve(
+        sendMessageRef.current(
+          createRawCloseMessage(commId, data, metadata, buffers, usernameRef.current),
+        ),
+      );
+    },
+    [],
+  );
+
   return {
     sendUpdate,
     sendCustom,
     closeComm,
+    openRawComm,
+    sendRawComm,
+    closeRawComm,
   };
 }

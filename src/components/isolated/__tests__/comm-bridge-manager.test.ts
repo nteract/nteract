@@ -7,6 +7,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { RAW_COMM_BROADCAST_MARKER } from "@/components/widgets/comm-changes-store-bridge";
 import type { WidgetModel, WidgetStore } from "@/components/widgets/widget-store";
 import { CommBridgeManager, createCommBridgeManager } from "../comm-bridge-manager";
 import type { IsolatedFrameHandle } from "../isolated-frame";
@@ -58,6 +59,10 @@ function createMockStore(initialModels: Map<string, WidgetModel> = new Map()): {
   };
 }
 
+async function flushQueuedPromises(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 // Helper to create a mock IsolatedFrameHandle
 function createMockFrame(): {
   frame: IsolatedFrameHandle;
@@ -104,6 +109,9 @@ describe("CommBridgeManager", () => {
   let sendUpdate: ReturnType<typeof vi.fn>;
   let sendCustom: ReturnType<typeof vi.fn>;
   let closeComm: ReturnType<typeof vi.fn>;
+  let openRawComm: ReturnType<typeof vi.fn>;
+  let sendRawComm: ReturnType<typeof vi.fn>;
+  let closeRawComm: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     mockStore = createMockStore();
@@ -111,6 +119,9 @@ describe("CommBridgeManager", () => {
     sendUpdate = vi.fn().mockResolvedValue(undefined);
     sendCustom = vi.fn();
     closeComm = vi.fn();
+    openRawComm = vi.fn();
+    sendRawComm = vi.fn();
+    closeRawComm = vi.fn();
     vi.clearAllMocks();
   });
 
@@ -121,6 +132,9 @@ describe("CommBridgeManager", () => {
       sendUpdate,
       sendCustom,
       closeComm,
+      openRawComm,
+      sendRawComm,
+      closeRawComm,
     });
   }
 
@@ -392,6 +406,97 @@ describe("CommBridgeManager", () => {
 
       expect(mockStore.store.deleteModel).toHaveBeenCalledWith("comm-1");
       expect(closeComm).toHaveBeenCalledWith("comm-1");
+    });
+
+    it("forwards raw comm messages to kernel callbacks", async () => {
+      const manager = createManager();
+
+      manager.handleIframeMessage({
+        type: "raw_comm_open",
+        payload: {
+          commId: "pyviz-client",
+          targetName: "pyviz-client",
+          data: "open-payload",
+          metadata: { opened: true },
+        },
+      });
+      manager.handleIframeMessage({
+        type: "raw_comm_msg",
+        payload: {
+          commId: "pyviz-client",
+          data: "patch-json",
+          metadata: { msg_type: "Ready" },
+        },
+      });
+      manager.handleIframeMessage({
+        type: "raw_comm_close",
+        payload: {
+          commId: "pyviz-client",
+          data: { reason: "done" },
+          metadata: { closed: true },
+        },
+      });
+
+      await flushQueuedPromises();
+
+      expect(openRawComm).toHaveBeenCalledWith(
+        "pyviz-client",
+        "pyviz-client",
+        "open-payload",
+        { opened: true },
+        undefined,
+      );
+      expect(sendRawComm).toHaveBeenCalledWith(
+        "pyviz-client",
+        "patch-json",
+        {
+          msg_type: "Ready",
+        },
+        undefined,
+      );
+      expect(closeRawComm).toHaveBeenCalledWith(
+        "pyviz-client",
+        { reason: "done" },
+        { closed: true },
+        undefined,
+      );
+    });
+
+    it("serializes raw comm messages per comm id", async () => {
+      const calls: string[] = [];
+      let resolveOpen: (() => void) | null = null;
+      openRawComm.mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            calls.push("open:start");
+            resolveOpen = () => {
+              calls.push("open:end");
+              resolve();
+            };
+          }),
+      );
+      sendRawComm.mockImplementation(() => {
+        calls.push("msg");
+      });
+
+      const manager = createManager();
+      manager.handleIframeMessage({
+        type: "raw_comm_open",
+        payload: { commId: "panel-client", targetName: "panel-client", data: {}, metadata: {} },
+      });
+      manager.handleIframeMessage({
+        type: "raw_comm_msg",
+        payload: { commId: "panel-client", data: "PATCH-DOC", metadata: {} },
+      });
+
+      await flushQueuedPromises();
+      expect(calls).toEqual(["open:start"]);
+
+      resolveOpen?.();
+      await flushQueuedPromises();
+
+      expect(calls).toEqual(["open:start", "open:end", "msg"]);
+      expect(sendRawComm).toHaveBeenCalledWith("panel-client", "PATCH-DOC", {}, undefined);
     });
 
     it("ignores unknown message types", () => {
@@ -685,6 +790,119 @@ describe("CommBridgeManager", () => {
       expect(commMsg).toBeDefined();
       // The buffer should be converted to ArrayBuffer
       expect(commMsg.payload.buffers?.[0]).toBe(buffer);
+    });
+
+    it("forwards marked raw comm broadcasts with metadata", () => {
+      const models = new Map<string, WidgetModel>([
+        ["pyviz-server", createModel("pyviz-server", {}, "", "pyviz-server")],
+      ]);
+      const storeWithModels = createMockStore(models);
+      const manager = new CommBridgeManager({
+        frame: mockFrame.frame,
+        store: storeWithModels.store,
+        sendUpdate,
+        sendCustom,
+        closeComm,
+      });
+
+      manager.handleIframeMessage({ type: "widget_ready" });
+
+      const subscribeCall = (
+        storeWithModels.store.subscribeToCustomMessage as ReturnType<typeof vi.fn>
+      ).mock.calls[0];
+      const callback = subscribeCall[1] as (
+        content: Record<string, unknown>,
+        buffers?: DataView[],
+      ) => void;
+      const buffer = new ArrayBuffer(4);
+
+      callback(
+        {
+          [RAW_COMM_BROADCAST_MARKER]: true,
+          data: "PATCH-DOC",
+          metadata: { msg_type: "Ready" },
+        },
+        [new DataView(buffer)],
+      );
+
+      const commMsg = mockFrame.sendCalls.find(
+        (msg: unknown) =>
+          (msg as { type: string; payload?: { method: string } }).type === "comm_msg" &&
+          (msg as { payload: { method: string } }).payload.method === "raw",
+      ) as {
+        payload: {
+          commId: string;
+          data: unknown;
+          metadata?: Record<string, unknown>;
+          buffers?: ArrayBuffer[];
+        };
+      };
+
+      expect(commMsg).toBeDefined();
+      expect(commMsg.payload.commId).toBe("pyviz-server");
+      expect(commMsg.payload.data).toBe("PATCH-DOC");
+      expect(commMsg.payload.metadata).toEqual({ msg_type: "Ready" });
+      expect(commMsg.payload.buffers?.[0]).toBe(buffer);
+    });
+
+    it("subscribes raw comm ids without requiring WidgetStore models", async () => {
+      const manager = createManager();
+      manager.handleIframeMessage({ type: "widget_ready" });
+
+      manager.handleIframeMessage({
+        type: "raw_comm_open",
+        payload: {
+          commId: "panel-client",
+          targetName: "panel-client",
+          data: {},
+          metadata: {},
+        },
+      });
+
+      await flushQueuedPromises();
+      expect(openRawComm).toHaveBeenCalledWith("panel-client", "panel-client", {}, {}, undefined);
+      expect(mockStore.store.subscribeToCustomMessage).toHaveBeenCalledWith(
+        "panel-client",
+        expect.any(Function),
+      );
+
+      const listeners = mockStore.customMessageListeners.get("panel-client");
+      expect(listeners?.size).toBe(1);
+      listeners?.forEach((listener) =>
+        listener({
+          [RAW_COMM_BROADCAST_MARKER]: true,
+          data: {},
+          metadata: { msg_type: "Ready", comm_id: "panel-client" },
+        }),
+      );
+
+      const commMsg = mockFrame.sendCalls.find(
+        (msg: unknown) =>
+          (msg as { type: string; payload?: { method: string } }).type === "comm_msg" &&
+          (msg as { payload: { method: string } }).payload.method === "raw",
+      ) as {
+        payload: {
+          commId: string;
+          data: unknown;
+          metadata?: Record<string, unknown>;
+        };
+      };
+
+      expect(commMsg).toBeDefined();
+      expect(commMsg.payload.commId).toBe("panel-client");
+      expect(commMsg.payload.metadata).toEqual({
+        msg_type: "Ready",
+        comm_id: "panel-client",
+      });
+
+      manager.handleIframeMessage({
+        type: "raw_comm_close",
+        payload: { commId: "panel-client", data: {}, metadata: {} },
+      });
+
+      await flushQueuedPromises();
+      expect(closeRawComm).toHaveBeenCalledWith("panel-client", {}, {}, undefined);
+      expect(mockStore.customMessageListeners.get("panel-client")?.size).toBe(0);
     });
 
     it("handles undefined buffers gracefully", () => {

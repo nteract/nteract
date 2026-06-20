@@ -13,6 +13,7 @@ import {
 import {
   anyOutputNeedsIsolation,
   CommBridgeManager,
+  hasCommBridgeOutputs,
   hasWidgetOutputs,
   type IframeToParentMessage,
   IsolatedFrame,
@@ -691,6 +692,7 @@ function OutputAreaSingle({
 
   // Check if we have widgets and should set up comm bridge
   const hasWidgets = hasWidgetOutputs(outputs, priority);
+  const hasCommBridge = hasCommBridgeOutputs(outputs, priority);
   const hasSiftOutputs = outputs.some((output) => outputUsesSift(output, priority));
   // Sift tables and Vega/Altair charts must own the wheel once engaged so the
   // page does not steal pan/zoom (the source of unintended Altair zoom while
@@ -698,7 +700,7 @@ function OutputAreaSingle({
   const hasWheelOwningOutputs = outputs.some((output) =>
     outputUsesWheelOwningFrame(output, priority),
   );
-  const shouldUseBridge = shouldIsolate && hasWidgets && widgetContext !== null;
+  const shouldUseBridge = shouldIsolate && hasCommBridge && widgetContext !== null;
   const shouldUseScrollPassthroughFrame =
     shouldIsolate &&
     !focused &&
@@ -867,7 +869,7 @@ function OutputAreaSingle({
       // previous outputs snapshot will bail out after it awaits.
       const gen = ++renderGenRef.current;
 
-      // Set up comm bridge if we have widgets and widget context
+      // Set up comm bridge if the iframe may emit widget or raw Panel comms.
       if (shouldUseBridge && widgetContext && !bridgeRef.current) {
         bridgeRef.current = new CommBridgeManager({
           frame: frameRef.current,
@@ -875,6 +877,9 @@ function OutputAreaSingle({
           sendUpdate: widgetContext.sendUpdate,
           sendCustom: widgetContext.sendCustom,
           closeComm: widgetContext.closeComm,
+          openRawComm: widgetContext.openRawComm,
+          sendRawComm: widgetContext.sendRawComm,
+          closeRawComm: widgetContext.closeRawComm,
         });
       }
 

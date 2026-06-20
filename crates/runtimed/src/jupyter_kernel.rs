@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 use anyhow::Result;
 use bytes::Bytes;
 use jupyter_protocol::{
-    CompleteRequest, ConnectionInfo, ExecuteRequest, HistoryRequest, InterruptRequest,
-    JupyterMessage, JupyterMessageContent, KernelInfoRequest, ShutdownRequest,
+    Channel, CompleteRequest, ConnectionInfo, ExecuteRequest, HistoryRequest, InterruptRequest,
+    JupyterMessage, JupyterMessageContent, KernelInfoRequest, ShutdownRequest, UnknownMessage,
 };
 use runtime_doc::{KernelActivity, RuntimeLifecycle};
 use tokio::net::TcpListener;
@@ -27,6 +27,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use zeromq::SocketRecv as _;
 
 use crate::async_outcome::{
     await_result_with_timeout, recv_oneshot_with_timeout, TimedOneShot, TimedResult,
@@ -66,6 +67,61 @@ fn is_tolerated_kernel_info_reply_parse_error(error: &jupyter_zmq_client::Runtim
         }
         _ => false,
     }
+}
+
+async fn read_iopub_message_lenient(
+    iopub: &mut jupyter_zmq_client::ClientIoPubConnection,
+) -> anyhow::Result<JupyterMessage> {
+    let raw_message =
+        jupyter_zmq_client::RawMessage::from_multipart(iopub.socket.recv().await?, &iopub.mac)?;
+    jupyter_message_from_raw_lenient(raw_message)
+}
+
+fn jupyter_message_from_raw_lenient(
+    raw_message: jupyter_zmq_client::RawMessage,
+) -> anyhow::Result<JupyterMessage> {
+    let jupyter_zmq_client::RawMessage {
+        zmq_identities,
+        jparts,
+    } = raw_message;
+    if jparts.len() < 4 {
+        anyhow::bail!("insufficient Jupyter message parts: {}", jparts.len());
+    }
+
+    let header: jupyter_protocol::Header = serde_json::from_slice(&jparts[0])?;
+    let parent_header = serde_json::from_slice(&jparts[1]).ok();
+    let metadata: serde_json::Value = serde_json::from_slice(&jparts[2])?;
+    let raw_content: serde_json::Value = serde_json::from_slice(&jparts[3])?;
+    let content =
+        match JupyterMessageContent::from_type_and_content(&header.msg_type, raw_content.clone()) {
+            Ok(content) => content,
+            Err(error) if header.msg_type == "comm_msg" => {
+                warn!(
+                    "[jupyter-kernel] Treating non-standard comm_msg payload as raw: {}",
+                    error
+                );
+                JupyterMessageContent::UnknownMessage(UnknownMessage {
+                    msg_type: header.msg_type.clone(),
+                    content: raw_content,
+                })
+            }
+            Err(error) => {
+                anyhow::bail!(
+                    "Error deserializing content for msg_type `{}`: {}",
+                    header.msg_type,
+                    error
+                );
+            }
+        };
+    Ok(JupyterMessage {
+        zmq_identities,
+        header,
+        parent_header,
+        metadata,
+        content,
+        buffers: jparts.into_iter().skip(4).collect(),
+        channel: Some(Channel::IOPub),
+    })
 }
 
 #[cfg(unix)]
@@ -1411,7 +1467,7 @@ impl KernelConnection for JupyterKernel {
                 let mut stream_flushes = StreamFlushBuffer::default();
 
                 loop {
-                    match iopub.read().await {
+                    match read_iopub_message_lenient(&mut iopub).await {
                         Ok(message) => {
                             let iopub_start = std::time::Instant::now();
                             let msg_type = message.header.msg_type.clone();
@@ -2298,9 +2354,44 @@ impl KernelConnection for JupyterKernel {
                                         let _ = broadcast_tx.send(NotebookBroadcast::Comm {
                                             msg_type: message.header.msg_type.clone(),
                                             content: content.clone(),
+                                            metadata: serde_json::to_value(&message.metadata)
+                                                .unwrap_or_default(),
                                             buffers: buffers.clone(),
                                         });
                                     }
+                                }
+
+                                JupyterMessageContent::UnknownMessage(raw)
+                                    if raw.msg_type == "comm_msg" =>
+                                {
+                                    let content = raw.content.clone();
+                                    let comm_id = content
+                                        .get("comm_id")
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or_default();
+                                    if comm_targets
+                                        .get(comm_id)
+                                        .map(|target_name| {
+                                            crate::dx_blob_comm::is_dx_target(target_name)
+                                        })
+                                        .unwrap_or(false)
+                                    {
+                                        debug!(
+                                            "[dx] raw comm_msg on reserved target for comm_id={} (dropped)",
+                                            comm_id
+                                        );
+                                        continue;
+                                    }
+
+                                    let buffers: Vec<Vec<u8>> =
+                                        message.buffers.iter().map(|b| b.to_vec()).collect();
+                                    let _ = broadcast_tx.send(NotebookBroadcast::Comm {
+                                        msg_type: message.header.msg_type.clone(),
+                                        content,
+                                        metadata: serde_json::to_value(&message.metadata)
+                                            .unwrap_or_default(),
+                                        buffers,
+                                    });
                                 }
 
                                 JupyterMessageContent::CommClose(close) => {
@@ -3461,6 +3552,45 @@ mod tests {
         };
 
         assert!(!is_tolerated_kernel_info_reply_parse_error(&error));
+    }
+
+    #[test]
+    fn lenient_iopub_reader_preserves_non_standard_comm_msg_payloads() {
+        let header = serde_json::json!({
+            "msg_id": "panel-msg",
+            "username": "kernel",
+            "session": "session",
+            "date": "2026-06-20T00:00:00Z",
+            "msg_type": "comm_msg",
+            "version": "5.3"
+        });
+        let content = serde_json::json!({
+            "comm_id": "panel-comm",
+            "data": "{\"msgid\":\"patch\",\"msgtype\":\"PATCH-DOC\"}"
+        });
+        let raw = jupyter_zmq_client::RawMessage {
+            zmq_identities: Vec::new(),
+            jparts: vec![
+                Bytes::from(serde_json::to_vec(&header).expect("header json")),
+                Bytes::from(b"{}".to_vec()),
+                Bytes::from(b"{}".to_vec()),
+                Bytes::from(serde_json::to_vec(&content).expect("content json")),
+            ],
+        };
+
+        let message = jupyter_message_from_raw_lenient(raw).expect("lenient comm_msg parse");
+
+        match message.content {
+            JupyterMessageContent::UnknownMessage(raw) => {
+                assert_eq!(raw.msg_type, "comm_msg");
+                assert_eq!(raw.content["comm_id"], "panel-comm");
+                assert_eq!(
+                    raw.content["data"],
+                    "{\"msgid\":\"patch\",\"msgtype\":\"PATCH-DOC\"}"
+                );
+            }
+            other => panic!("expected raw comm_msg fallback, got {other:?}"),
+        }
     }
 
     #[test]

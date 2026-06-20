@@ -51,6 +51,9 @@ export const NTERACT_ERROR = "nteract/error" as const;
 export const NTERACT_WIDGET_READY = "nteract/widgetReady" as const;
 export const NTERACT_WIDGET_COMM_MSG = "nteract/widgetCommMsg" as const;
 export const NTERACT_WIDGET_COMM_CLOSE = "nteract/widgetCommClose" as const;
+export const NTERACT_RAW_COMM_OPEN = "nteract/rawCommOpen" as const;
+export const NTERACT_RAW_COMM_MSG = "nteract/rawCommMsg" as const;
+export const NTERACT_RAW_COMM_CLOSE = "nteract/rawCommClose" as const;
 export const NTERACT_WIDGET_UPDATE = "nteract/widgetUpdate" as const;
 export const NTERACT_EVAL_RESULT = "nteract/evalResult" as const;
 export const NTERACT_PONG = "nteract/pong" as const;
@@ -134,8 +137,9 @@ export interface NteractCommOpenParams {
 
 export interface NteractCommMsgParams {
   commId: string;
-  method: "update" | "custom";
-  data: Record<string, unknown>;
+  method: "update" | "custom" | "raw";
+  data: unknown;
+  metadata?: Record<string, unknown>;
   bufferPaths?: string[][];
   buffers?: ArrayBuffer[];
 }
@@ -175,6 +179,28 @@ export interface NteractWidgetCommMsgParams {
 
 export interface NteractWidgetCommCloseParams {
   commId: string;
+}
+
+export interface NteractRawCommOpenParams {
+  commId: string;
+  targetName: string;
+  data?: unknown;
+  metadata?: Record<string, unknown>;
+  buffers?: ArrayBuffer[];
+}
+
+export interface NteractRawCommMsgParams {
+  commId: string;
+  data: unknown;
+  metadata?: Record<string, unknown>;
+  buffers?: ArrayBuffer[];
+}
+
+export interface NteractRawCommCloseParams {
+  commId: string;
+  data?: unknown;
+  metadata?: Record<string, unknown>;
+  buffers?: ArrayBuffer[];
 }
 
 export interface NteractWidgetUpdateParams {

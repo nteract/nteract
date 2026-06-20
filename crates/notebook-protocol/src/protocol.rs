@@ -795,6 +795,9 @@ pub enum NotebookBroadcast {
         msg_type: String,
         /// Message content (comm_id, data, target_name, etc.)
         content: serde_json::Value,
+        /// Message metadata from the Jupyter envelope.
+        #[serde(default)]
+        metadata: serde_json::Value,
         /// Binary buffers (base64-encoded when serialized to JSON)
         #[serde(default)]
         buffers: Vec<Vec<u8>>,

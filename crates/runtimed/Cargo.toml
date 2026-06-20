@@ -47,6 +47,7 @@ aho-corasick = "1"
 jupyter-protocol = { workspace = true }
 nbformat = { workspace = true }
 jupyter-zmq-client = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
+zeromq = "0.6"
 petname = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4", features = ["derive"] }
@@ -133,4 +134,3 @@ serial_test = "3"
 tokio = { version = "1.36.0", features = ["full", "test-util"] }
 notebook-sync = { path = "../notebook-sync" }
 async-rust-lsp = "0.3"
-zeromq = "0.6"

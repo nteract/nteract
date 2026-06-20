@@ -17,6 +17,7 @@ export interface CommBroadcast {
   event: "comm";
   msg_type: string;
   content: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   buffers: number[][];
 }
 

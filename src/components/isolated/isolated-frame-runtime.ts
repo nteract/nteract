@@ -24,6 +24,9 @@ import {
   NTERACT_MOUSE_DOWN,
   NTERACT_MOUSE_UP,
   NTERACT_PING,
+  NTERACT_RAW_COMM_CLOSE,
+  NTERACT_RAW_COMM_MSG,
+  NTERACT_RAW_COMM_OPEN,
   NTERACT_RENDER_BATCH,
   NTERACT_RENDER_COMPLETE,
   NTERACT_RENDER_OUTPUT,
@@ -660,6 +663,24 @@ export class IsolatedFrameRuntime {
     transport.onNotification(NTERACT_WIDGET_COMM_CLOSE, (params) => {
       this.callbacks.onMessage({
         type: "widget_comm_close",
+        payload: params,
+      } as IframeToParentMessage);
+    });
+    transport.onNotification(NTERACT_RAW_COMM_OPEN, (params) => {
+      this.callbacks.onMessage({
+        type: "raw_comm_open",
+        payload: params,
+      } as IframeToParentMessage);
+    });
+    transport.onNotification(NTERACT_RAW_COMM_MSG, (params) => {
+      this.callbacks.onMessage({
+        type: "raw_comm_msg",
+        payload: params,
+      } as IframeToParentMessage);
+    });
+    transport.onNotification(NTERACT_RAW_COMM_CLOSE, (params) => {
+      this.callbacks.onMessage({
+        type: "raw_comm_close",
         payload: params,
       } as IframeToParentMessage);
     });

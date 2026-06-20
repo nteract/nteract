@@ -39,6 +39,28 @@ interface WidgetStoreContextValue {
   sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Close a comm channel via the daemon shell channel. */
   closeComm: (commId: string) => void;
+  /** Open a raw Jupyter comm channel via the daemon shell channel. */
+  openRawComm?: (
+    commId: string,
+    targetName: string,
+    data?: unknown,
+    metadata?: Record<string, unknown>,
+    buffers?: ArrayBuffer[],
+  ) => Promise<void>;
+  /** Send a raw Jupyter comm_msg payload via the daemon shell channel. */
+  sendRawComm?: (
+    commId: string,
+    data: unknown,
+    metadata?: Record<string, unknown>,
+    buffers?: ArrayBuffer[],
+  ) => Promise<void>;
+  /** Close a raw Jupyter comm channel via the daemon shell channel. */
+  closeRawComm?: (
+    commId: string,
+    data?: unknown,
+    metadata?: Record<string, unknown>,
+    buffers?: ArrayBuffer[],
+  ) => Promise<void>;
 }
 
 // === Context ===
@@ -75,11 +97,12 @@ export function WidgetStoreProvider({
   const store = storeRef.current;
 
   // Outbound comm helpers (inbound is driven by SyncEngine.commChanges$)
-  const { sendUpdate, sendCustom, closeComm } = useCommRouter({
-    sendMessage,
-    store,
-    updateManager,
-  });
+  const { sendUpdate, sendCustom, closeComm, openRawComm, sendRawComm, closeRawComm } =
+    useCommRouter({
+      sendMessage,
+      store,
+      updateManager,
+    });
 
   // Manage link subscriptions (jslink/jsdlink) at the store level.
   // Headless widgets like LinkModel have _view_name: null and won't be
@@ -94,8 +117,11 @@ export function WidgetStoreProvider({
       sendUpdate,
       sendCustom,
       closeComm,
+      openRawComm,
+      sendRawComm,
+      closeRawComm,
     }),
-    [store, sendUpdate, sendCustom, closeComm],
+    [store, sendUpdate, sendCustom, closeComm, openRawComm, sendRawComm, closeRawComm],
   );
 
   return <WidgetStoreContext.Provider value={value}>{children}</WidgetStoreContext.Provider>;

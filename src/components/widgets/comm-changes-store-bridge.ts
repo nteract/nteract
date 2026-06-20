@@ -1,6 +1,8 @@
 import type { CommBroadcast, CommChanges } from "runtimed";
 import type { WidgetStore } from "./widget-store";
 
+export const RAW_COMM_BROADCAST_MARKER = "__nteract_raw_comm_broadcast__";
+
 export interface ApplyWidgetCommChangesOptions {
   /**
    * Return a filtered patch after suppressing optimistic CRDT echoes.
@@ -79,15 +81,30 @@ export function applyWidgetCommBroadcastToStore(
   store: WidgetStore,
   broadcast: CommBroadcast,
 ): void {
-  const data = broadcast.content.data as Record<string, unknown> | undefined;
-  if (data?.method !== "custom") return;
-
+  const data = broadcast.content.data;
   const commId = broadcast.content.comm_id;
   if (typeof commId !== "string") return;
 
-  const inner = (data.content as Record<string, unknown> | undefined) ?? {};
   const arrayBuffers = broadcast.buffers?.map((arr: number[]) => new Uint8Array(arr).buffer);
-  store.emitCustomMessage(commId, inner, arrayBuffers);
+  if (isRecord(data) && data.method === "custom") {
+    const inner = isRecord(data.content) ? data.content : {};
+    store.emitCustomMessage(commId, inner, arrayBuffers);
+    return;
+  }
+
+  store.emitCustomMessage(
+    commId,
+    {
+      [RAW_COMM_BROADCAST_MARKER]: true,
+      data: data ?? {},
+      metadata: broadcast.metadata ?? {},
+    },
+    arrayBuffers,
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
 }
 
 function widgetStateWithMetadata(comm: {

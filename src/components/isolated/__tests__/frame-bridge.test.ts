@@ -24,6 +24,9 @@ describe("isIframeMessage", () => {
     "widget_ready",
     "widget_comm_msg",
     "widget_comm_close",
+    "raw_comm_open",
+    "raw_comm_msg",
+    "raw_comm_close",
   ] as const;
 
   it.each(validMessageTypes)('returns true for valid message type "%s"', (type) => {
@@ -125,6 +128,9 @@ describe("message type whitelist completeness", () => {
       "widget_ready",
       "widget_comm_msg",
       "widget_comm_close",
+      "raw_comm_open",
+      "raw_comm_msg",
+      "raw_comm_close",
       "search_results",
     ];
 

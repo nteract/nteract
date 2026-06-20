@@ -1,4 +1,5 @@
 import type { WidgetStore } from "@/components/widgets/widget-store";
+import { RAW_COMM_BROADCAST_MARKER } from "@/components/widgets/comm-changes-store-bridge";
 import type {
   CommCloseMessage,
   CommMsgMessage,
@@ -34,6 +35,28 @@ type SendCustom = (
 
 type CloseComm = (commId: string) => void;
 
+type OpenRawComm = (
+  commId: string,
+  targetName: string,
+  data?: unknown,
+  metadata?: Record<string, unknown>,
+  buffers?: ArrayBuffer[],
+) => void | Promise<void>;
+
+type SendRawComm = (
+  commId: string,
+  data: unknown,
+  metadata?: Record<string, unknown>,
+  buffers?: ArrayBuffer[],
+) => void | Promise<void>;
+
+type CloseRawComm = (
+  commId: string,
+  data?: unknown,
+  metadata?: Record<string, unknown>,
+  buffers?: ArrayBuffer[],
+) => void | Promise<void>;
+
 interface CommBridgeManagerOptions {
   /** The isolated frame handle for sending messages */
   frame: IsolatedFrameHandle;
@@ -45,6 +68,12 @@ interface CommBridgeManagerOptions {
   sendCustom: SendCustom;
   /** Function to close a comm with kernel */
   closeComm: CloseComm;
+  /** Function to open a raw Jupyter comm with kernel */
+  openRawComm?: OpenRawComm;
+  /** Function to send a raw Jupyter comm_msg to kernel */
+  sendRawComm?: SendRawComm;
+  /** Function to close a raw Jupyter comm with kernel */
+  closeRawComm?: CloseRawComm;
 }
 
 /**
@@ -62,6 +91,9 @@ export class CommBridgeManager {
   private sendUpdateToKernel: SendUpdate;
   private sendCustomToKernel: SendCustom;
   private closeCommWithKernel: CloseComm;
+  private openRawCommWithKernel: OpenRawComm;
+  private sendRawCommToKernel: SendRawComm;
+  private closeRawCommWithKernel: CloseRawComm;
 
   private isWidgetReady = false;
   private messageBuffer: Array<CommOpenMessage | CommMsgMessage | CommCloseMessage> = [];
@@ -79,12 +111,20 @@ export class CommBridgeManager {
   // Track custom message subscriptions for each model
   private customMessageUnsubscribers = new Map<string, () => void>();
 
+  // Keep raw comm shell messages ordered per comm id. Panel opens a client
+  // comm and immediately sends its initial PATCH-DOC; the kernel must see
+  // comm_open before comm_msg so PyViz can install the Python message handler.
+  private rawCommQueues = new Map<string, Promise<void>>();
+
   constructor(options: CommBridgeManagerOptions) {
     this.frame = options.frame;
     this.store = options.store;
     this.sendUpdateToKernel = options.sendUpdate;
     this.sendCustomToKernel = options.sendCustom;
     this.closeCommWithKernel = options.closeComm;
+    this.openRawCommWithKernel = options.openRawComm ?? (() => {});
+    this.sendRawCommToKernel = options.sendRawComm ?? (() => {});
+    this.closeRawCommWithKernel = options.closeRawComm ?? (() => {});
 
     // Subscribe to store changes to forward to iframe
     this.storeUnsubscribe = this.store.subscribe(() => {
@@ -115,6 +155,43 @@ export class CommBridgeManager {
 
       case "widget_comm_close":
         this.handleWidgetCommClose(message.payload);
+        break;
+
+      case "raw_comm_open":
+        this.subscribeToModelCustomMessages(message.payload.commId);
+        this.enqueueRawCommMessage(message.payload.commId, () =>
+          this.openRawCommWithKernel(
+            message.payload.commId,
+            message.payload.targetName,
+            message.payload.data,
+            message.payload.metadata,
+            message.payload.buffers,
+          ),
+        );
+        break;
+
+      case "raw_comm_msg":
+        this.subscribeToModelCustomMessages(message.payload.commId);
+        this.enqueueRawCommMessage(message.payload.commId, () =>
+          this.sendRawCommToKernel(
+            message.payload.commId,
+            message.payload.data,
+            message.payload.metadata,
+            message.payload.buffers,
+          ),
+        );
+        break;
+
+      case "raw_comm_close":
+        this.enqueueRawCommMessage(message.payload.commId, () =>
+          this.closeRawCommWithKernel(
+            message.payload.commId,
+            message.payload.data,
+            message.payload.metadata,
+            message.payload.buffers,
+          ),
+        );
+        this.unsubscribeFromModelCustomMessages(message.payload.commId);
         break;
     }
   }
@@ -171,6 +248,32 @@ export class CommBridgeManager {
         method,
         data,
         bufferPaths: opts.bufferPaths,
+        buffers: opts.buffers,
+      },
+    };
+
+    if (this.isWidgetReady) {
+      this.frame.send(msg);
+    } else {
+      this.messageBuffer.push(msg);
+    }
+  }
+
+  /**
+   * Forward a raw Jupyter comm_msg to the iframe.
+   */
+  sendRawCommMsg(
+    commId: string,
+    data: unknown,
+    opts: { metadata?: Record<string, unknown>; buffers?: ArrayBuffer[] } = {},
+  ): void {
+    const msg: CommMsgMessage = {
+      type: "comm_msg",
+      payload: {
+        commId,
+        method: "raw",
+        data,
+        metadata: opts.metadata,
         buffers: opts.buffers,
       },
     };
@@ -288,24 +391,25 @@ export class CommBridgeManager {
   private handleWidgetCommMsg(payload: {
     commId: string;
     method: "update" | "custom";
-    data: Record<string, unknown>;
+    data: unknown;
     bufferPaths?: string[][];
     buffers?: ArrayBuffer[];
   }): void {
     const { commId, method, data, buffers } = payload;
 
     if (method === "update") {
+      const patch = asRecord(data);
       // Set flag to prevent echoing this update back to iframe
       this.isProcessingIframeUpdate = true;
       try {
         // Update parent store first (so UI stays in sync). Binary state leaves
         // travel inside `data` and are extracted by WidgetUpdateManager.
-        this.store.updateModel(commId, data);
+        this.store.updateModel(commId, patch);
         // Update our tracked state
         const current = this.previousState.get(commId) ?? {};
-        this.previousState.set(commId, this.cloneStateSnapshot({ ...current, ...data }));
+        this.previousState.set(commId, this.cloneStateSnapshot({ ...current, ...patch }));
         // Then forward to kernel
-        void this.sendUpdateToKernel(commId, data).catch((error: unknown) => {
+        void this.sendUpdateToKernel(commId, patch).catch((error: unknown) => {
           console.error("[widgets] failed to persist iframe widget state update:", error);
         });
       } finally {
@@ -313,7 +417,7 @@ export class CommBridgeManager {
       }
     } else if (method === "custom") {
       // Custom messages go directly to kernel (no store update)
-      this.sendCustomToKernel(commId, data, buffers);
+      this.sendCustomToKernel(commId, asRecord(data), buffers);
     }
   }
 
@@ -392,6 +496,12 @@ export class CommBridgeManager {
     const unsubscribe = this.store.subscribeToCustomMessage(commId, (content, buffers) => {
       // Convert DataView[] to ArrayBuffer[] for postMessage
       const arrayBuffers = buffers?.map((dv) => dv.buffer as ArrayBuffer);
+      if (content[RAW_COMM_BROADCAST_MARKER] === true) {
+        const data = content.data;
+        const metadata = asRecord(content.metadata);
+        this.sendRawCommMsg(commId, data, { metadata, buffers: arrayBuffers });
+        return;
+      }
       // Forward custom message to iframe
       this.sendCommMsg(commId, "custom", content, { buffers: arrayBuffers });
     });
@@ -408,6 +518,21 @@ export class CommBridgeManager {
       unsubscribe();
       this.customMessageUnsubscribers.delete(commId);
     }
+  }
+
+  private enqueueRawCommMessage(commId: string, task: () => void | Promise<void>): Promise<void> {
+    const previous = this.rawCommQueues.get(commId) ?? Promise.resolve();
+    const runTask = () => Promise.resolve(task());
+    const next = previous.then(runTask, runTask).catch((error: unknown) => {
+      console.error("[widgets] failed to forward raw comm message:", error);
+    });
+    const queued = next.finally(() => {
+      if (this.rawCommQueues.get(commId) === queued) {
+        this.rawCommQueues.delete(commId);
+      }
+    });
+    this.rawCommQueues.set(commId, queued);
+    return next;
   }
 
   /**
@@ -468,4 +593,8 @@ export class CommBridgeManager {
  */
 export function createCommBridgeManager(options: CommBridgeManagerOptions): CommBridgeManager {
   return new CommBridgeManager(options);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }

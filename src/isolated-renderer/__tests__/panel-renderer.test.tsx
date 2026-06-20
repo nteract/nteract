@@ -28,11 +28,16 @@ function stubAnimationFrames() {
 }
 
 function stubPanelRuntime() {
-  (window as typeof window & { Bokeh?: unknown }).Bokeh = { Panel: {}, index: {} };
+  (window as typeof window & { Bokeh?: unknown }).Bokeh = {
+    Panel: {},
+    index: {},
+    require: vi.fn(),
+  };
 }
 
 function stubPanelResourceLoads() {
   const appendedSrcs: string[] = [];
+  let widgetsReady = false;
   const appendChild = vi.spyOn(HTMLHeadElement.prototype, "appendChild");
 
   appendChild.mockImplementation(function appendPanelScript(
@@ -41,10 +46,16 @@ function stubPanelResourceLoads() {
   ): Node {
     if (node instanceof HTMLScriptElement && node.src) {
       appendedSrcs.push(node.src);
+      if (node.src.includes("bokeh-widgets-3.9.1.min.js")) {
+        widgetsReady = true;
+      }
       if (node.src.includes("cdn.bokeh.org/bokeh/release/")) {
         (window as typeof window & { Bokeh?: unknown }).Bokeh = {
           version: "3.9.1",
           index: {},
+          require: vi.fn(() => {
+            if (!widgetsReady) throw new Error("module missing");
+          }),
         };
       }
       if (node.src.includes("panel.min.js")) {
@@ -82,6 +93,8 @@ describe("Panel renderer plugin", () => {
       .__nteractBokehLoadPromise__;
     delete (window as typeof window & { __nteractPanelLoadPromises__?: unknown })
       .__nteractPanelLoadPromises__;
+    delete (window as typeof window & { __nteractEnsurePyVizCommManager?: unknown })
+      .__nteractEnsurePyVizCommManager;
   });
 
   afterEach(() => {
@@ -95,6 +108,8 @@ describe("Panel renderer plugin", () => {
       .__nteractBokehLoadPromise__;
     delete (window as typeof window & { __nteractPanelLoadPromises__?: unknown })
       .__nteractPanelLoadPromises__;
+    delete (window as typeof window & { __nteractEnsurePyVizCommManager?: unknown })
+      .__nteractEnsurePyVizCommManager;
   });
 
   it("registers Panel load and exec MIME types", () => {
@@ -104,6 +119,10 @@ describe("Panel renderer plugin", () => {
   });
 
   it("appends Panel load MIME JavaScript directly", async () => {
+    const ensureCommManager = vi.fn();
+    (
+      window as typeof window & { __nteractEnsurePyVizCommManager?: () => void }
+    ).__nteractEnsurePyVizCommManager = ensureCommManager;
     const { Renderer } = installPanelRenderer();
     const { container } = render(
       <Renderer
@@ -117,6 +136,7 @@ describe("Panel renderer plugin", () => {
 
     await waitFor(() => {
       expect(renderedScripts(container).at(-1)?.textContent).toBe("window.__panelLoadRan = true;");
+      expect(ensureCommManager).toHaveBeenCalled();
     });
   });
 
@@ -216,6 +236,77 @@ describe("Panel renderer plugin", () => {
     ]);
   });
 
+  it("waits for Panel's notebook autoload before executing the widget bundle", async () => {
+    let modulesReady = false;
+    const bokeh = {
+      version: "3.9.1",
+      index: {},
+      require: vi.fn(() => {
+        if (!modulesReady) throw new Error("module missing");
+      }),
+    };
+    (
+      window as typeof window & {
+        Bokeh?: unknown;
+        _bokeh_is_initializing?: boolean;
+        _bokeh_is_loading?: number;
+      }
+    ).Bokeh = bokeh;
+    (
+      window as typeof window & {
+        _bokeh_is_initializing?: boolean;
+        _bokeh_is_loading?: number;
+      }
+    )._bokeh_is_initializing = true;
+    (
+      window as typeof window & {
+        _bokeh_is_initializing?: boolean;
+        _bokeh_is_loading?: number;
+      }
+    )._bokeh_is_loading = 2;
+    const appendedSrcs = stubPanelResourceLoads();
+    const { Renderer } = installPanelRenderer();
+    const { container } = render(
+      <Renderer
+        data={{
+          "text/html": [
+            '<div id="panel-root"></div>',
+            '<script type="application/javascript">',
+            'var docs_json = {"docid":{"version":"3.9.1","roots":[{"attributes":{"stylesheets":[{"attributes":{"url":"https://cdn.holoviz.org/panel/1.9.3/dist/css/loading.css"}}]}}]}};',
+            "window.__panelHtmlRan = true;",
+            "</script>",
+          ].join(""),
+          [PANEL_EXEC_MIME_TYPE]: "",
+        }}
+        metadata={{ id: "p1011" }}
+        mimeType={PANEL_EXEC_MIME_TYPE}
+      />,
+    );
+
+    await Promise.resolve();
+    expect(appendedSrcs).toEqual([]);
+
+    modulesReady = true;
+    (bokeh as typeof bokeh & { Panel?: unknown }).Panel = {};
+    (
+      window as typeof window & {
+        _bokeh_is_initializing?: boolean;
+        _bokeh_is_loading?: number;
+      }
+    )._bokeh_is_initializing = false;
+    (
+      window as typeof window & {
+        _bokeh_is_initializing?: boolean;
+        _bokeh_is_loading?: number;
+      }
+    )._bokeh_is_loading = 0;
+
+    await waitFor(() => {
+      expect(renderedScripts(container).at(-1)?.textContent).toContain("__panelHtmlRan");
+    });
+    expect(appendedSrcs).toEqual([]);
+  });
+
   it("executes code-only Panel exec bundles after loading BokehJS", async () => {
     const appendedSrcs = stubPanelResourceLoads();
     const { Renderer } = installPanelRenderer();
@@ -255,10 +346,17 @@ describe("Panel renderer plugin", () => {
     const view = { model: { document: { clear: vi.fn() } } };
     (
       window as typeof window & {
-        Bokeh?: { Panel?: unknown; index?: { get_by_id: () => unknown; delete: () => void } };
+        Bokeh?: {
+          Panel?: unknown;
+          version?: string;
+          require?: () => unknown;
+          index?: { get_by_id: () => unknown; delete: () => void };
+        };
       }
     ).Bokeh = {
       Panel: {},
+      version: "3.9.1",
+      require: vi.fn(),
       index: {
         get_by_id: () => view,
         delete: vi.fn(),

@@ -1955,6 +1955,7 @@ mod tests {
                 &NotebookBroadcast::Comm {
                     msg_type: "comm_msg".into(),
                     content: json!({"comm_id": "abc", "data": {}}),
+                    metadata: json!({}),
                     buffers: Vec::new(),
                 },
             )

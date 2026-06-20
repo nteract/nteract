@@ -11,6 +11,7 @@ import { useEffect, useRef, useState, type ComponentType } from "react";
 import type { RendererProps } from "@/lib/renderer-registry";
 import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
 import { measureDocumentHeight } from "./layout-measure";
+import { ensurePyVizCommManagerProxy, registerPyVizKernelProxy } from "./widget-bridge-client";
 
 type PanelPayload = {
   [PANEL_LOAD_MIME_TYPE]?: unknown;
@@ -50,13 +51,18 @@ type PanelWindow = Window &
         has?: (version: string) => boolean;
       };
       index?: BokehIndex;
+      require?: (name: string) => unknown;
     };
     PyViz?: PyVizGlobal | HTMLElement;
     __nteractBokehLoadPromise__?: Promise<void>;
+    __nteractPanelNotebookLoadStarted__?: boolean;
     __nteractPanelLoadPromises__?: Record<string, Promise<void>>;
+    _bokeh_is_initializing?: boolean;
+    _bokeh_is_loading?: number;
   };
 
 const BOKEH_RESOURCE_SUFFIXES = ["", "-gl", "-widgets", "-tables", "-mathjax"];
+const REQUIRED_BOKEH_MODULES = ["models/widgets/widget"];
 const PANEL_DIST_BASE_RE = /https:\/\/cdn\.holoviz\.org\/panel\/[^/]+\/dist\//;
 
 function panelWindow(): PanelWindow {
@@ -78,6 +84,20 @@ function panelDocumentId(metadata?: Record<string, unknown>): string | null {
   return typeof id === "string" ? id : null;
 }
 
+function extractPanelPlotIds(...values: Array<string | null>): string[] {
+  const plotIds = new Set<string>();
+  const plotIdPattern = /"plot_id"\s*:\s*"([^"]+)"/g;
+
+  for (const value of values) {
+    if (!value) continue;
+    for (const match of value.matchAll(plotIdPattern)) {
+      plotIds.add(match[1]);
+    }
+  }
+
+  return Array.from(plotIds);
+}
+
 function panelServerId(metadata?: Record<string, unknown>): string | null {
   const serverId = metadata?.server_id;
   return typeof serverId === "string" ? serverId : null;
@@ -95,6 +115,67 @@ function normalizeBokehVersion(version: string | null): string | null {
 function extractPanelDistBase(html: string | null): string | null {
   if (!html) return null;
   return html.match(PANEL_DIST_BASE_RE)?.[0] ?? null;
+}
+
+function bokehVersionMatches(version: string | null): boolean {
+  const bokeh = panelWindow().Bokeh;
+  return (
+    bokeh !== undefined && (!version || bokeh.version === version || bokeh.versions?.has?.(version))
+  );
+}
+
+function hasRequiredBokehModules(): boolean {
+  const bokeh = panelWindow().Bokeh;
+  if (!bokehVersionMatches(null) || !bokeh?.require) return false;
+
+  return REQUIRED_BOKEH_MODULES.every((moduleName) => {
+    try {
+      bokeh.require?.(moduleName);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function bokehAutoloadInProgress(): boolean {
+  const target = panelWindow();
+  return target._bokeh_is_initializing === true || (target._bokeh_is_loading ?? 0) > 0;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForPanelNotebookAutoloadStart(): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 250) {
+    const target = panelWindow();
+    if (
+      target.Bokeh?.Panel !== undefined ||
+      bokehAutoloadInProgress() ||
+      hasRequiredBokehModules()
+    ) {
+      return;
+    }
+    await delay(25);
+  }
+}
+
+function waitForBokehAutoload(): Promise<void> {
+  if (!bokehAutoloadInProgress()) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const poll = () => {
+      if (!bokehAutoloadInProgress() || Date.now() - startedAt > 30_000) {
+        resolve();
+        return;
+      }
+      setTimeout(poll, 25);
+    };
+    poll();
+  });
 }
 
 function ensurePyViz(): PyVizGlobal {
@@ -156,18 +237,60 @@ function appendHtmlWithExecutableScripts(container: HTMLElement, html: string): 
   return wrapper;
 }
 
-function loadScript(src: string, required: boolean): Promise<void> {
+function findExistingScript(src: string): HTMLScriptElement | null {
+  for (const script of Array.from(document.scripts)) {
+    if (script.dataset.nteractPanelSrc === src || script.src === src) return script;
+  }
+  return null;
+}
+
+function waitForReadiness(
+  readiness: (() => boolean) | undefined,
+  timeoutMs: number,
+  label: string,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[data-nteract-panel-src="${src}"]`);
-    if (existing) {
+    const startedAt = Date.now();
+    const poll = () => {
+      if (!readiness || readiness()) {
+        resolve();
+        return;
+      }
+      if (Date.now() - startedAt > timeoutMs) {
+        reject(new Error(`Timed out waiting for Panel/BokehJS resource readiness: ${label}`));
+        return;
+      }
+      setTimeout(poll, 25);
+    };
+    poll();
+  });
+}
+
+function loadScript(src: string, required: boolean, readiness?: () => boolean): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (readiness?.()) {
       resolve();
+      return;
+    }
+
+    const existing = findExistingScript(src);
+    if (existing) {
+      void waitForReadiness(readiness, 30_000, src).then(resolve, (error) => {
+        if (required) reject(error);
+        else resolve();
+      });
       return;
     }
 
     const script = document.createElement("script");
     script.async = false;
     script.dataset.nteractPanelSrc = src;
-    script.onload = () => resolve();
+    script.onload = () => {
+      void waitForReadiness(readiness, 30_000, src).then(resolve, (error) => {
+        if (required) reject(error);
+        else resolve();
+      });
+    };
     script.onerror = () => {
       const error = new Error(`Failed to load Panel/BokehJS resource: ${src}`);
       if (required) reject(error);
@@ -184,14 +307,14 @@ function loadScript(src: string, required: boolean): Promise<void> {
 async function ensureBokeh(version: string | null): Promise<void> {
   const target = panelWindow();
   const normalizedVersion = normalizeBokehVersion(version);
-  const bokeh = target.Bokeh;
-  if (
-    bokeh !== undefined &&
-    (!normalizedVersion ||
-      bokeh.version === normalizedVersion ||
-      bokeh.versions?.has?.(normalizedVersion))
-  ) {
+  if (bokehVersionMatches(normalizedVersion) && hasRequiredBokehModules()) {
     return;
+  }
+  if (bokehAutoloadInProgress()) {
+    await waitForBokehAutoload();
+    if (bokehVersionMatches(normalizedVersion) && hasRequiredBokehModules()) {
+      return;
+    }
   }
   if (target.__nteractBokehLoadPromise__) return target.__nteractBokehLoadPromise__;
   if (!normalizedVersion) {
@@ -201,10 +324,19 @@ async function ensureBokeh(version: string | null): Promise<void> {
   target.__nteractBokehLoadPromise__ = (async () => {
     for (const [index, suffix] of BOKEH_RESOURCE_SUFFIXES.entries()) {
       const src = `https://cdn.bokeh.org/bokeh/release/bokeh${suffix}-${normalizedVersion}.min.js`;
-      await loadScript(src, index === 0);
+      const readiness =
+        suffix === ""
+          ? () => bokehVersionMatches(normalizedVersion)
+          : suffix === "-widgets"
+            ? hasRequiredBokehModules
+            : undefined;
+      await loadScript(src, index === 0 || suffix === "-widgets", readiness);
     }
     if (panelWindow().Bokeh === undefined) {
       throw new Error(`BokehJS ${normalizedVersion} loaded without defining window.Bokeh`);
+    }
+    if (!hasRequiredBokehModules()) {
+      throw new Error(`BokehJS ${normalizedVersion} loaded without required widget modules`);
     }
   })().catch((error) => {
     target.__nteractBokehLoadPromise__ = undefined;
@@ -217,6 +349,7 @@ async function ensureBokeh(version: string | null): Promise<void> {
 async function ensurePanelRuntime(html: string | null, code: string | null): Promise<void> {
   const target = panelWindow();
   const version = extractBokehVersion(code ?? html);
+  await waitForPanelNotebookAutoloadStart();
   await ensureBokeh(version);
 
   if (target.Bokeh?.Panel !== undefined) return;
@@ -226,7 +359,11 @@ async function ensurePanelRuntime(html: string | null, code: string | null): Pro
 
   target.__nteractPanelLoadPromises__ ??= {};
   const panelSrc = `${panelDistBase}panel.min.js`;
-  target.__nteractPanelLoadPromises__[panelSrc] ??= loadScript(panelSrc, true).catch((error) => {
+  target.__nteractPanelLoadPromises__[panelSrc] ??= loadScript(
+    panelSrc,
+    true,
+    () => target.Bokeh?.Panel !== undefined,
+  ).catch((error) => {
     delete target.__nteractPanelLoadPromises__?.[panelSrc];
     throw error;
   });
@@ -266,7 +403,6 @@ function cleanupPanelDocument(documentId: string | null): void {
   if (!documentId) return;
   const target = panelWindow();
   const pyviz = target.PyViz instanceof HTMLElement ? undefined : target.PyViz;
-  delete pyviz?.kernels?.[documentId];
   delete pyviz?.plot_index?.[documentId];
 
   const index = target.Bokeh?.index;
@@ -290,11 +426,19 @@ function PanelRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
     const payload = asPanelPayload(rawData);
     const documentId = panelDocumentId(metadata);
     const appendedNodes: ChildNode[] = [];
+    const registeredPlotIds = new Set<string>();
+    const unregisterPyVizKernels: Array<() => void> = [];
     let cancelled = false;
 
     function trackNode<T extends ChildNode>(node: T): T {
       appendedNodes.push(node);
       return node;
+    }
+
+    function registerPanelPlotId(plotId: string | null): void {
+      if (!plotId || registeredPlotIds.has(plotId)) return;
+      registeredPlotIds.add(plotId);
+      unregisterPyVizKernels.push(registerPyVizKernelProxy(plotId));
     }
 
     async function renderPanel() {
@@ -303,7 +447,9 @@ function PanelRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
           normalizeText(payload[PANEL_LOAD_MIME_TYPE]) ??
           normalizeText(payload["application/javascript"]);
         if (!code) return;
+        panelWindow().__nteractPanelNotebookLoadStarted__ = true;
         trackNode(appendExecutableScript(container, code));
+        ensurePyVizCommManagerProxy();
         return;
       }
 
@@ -327,6 +473,11 @@ function PanelRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
         throw new Error("Panel output did not include text/html or application/javascript data");
       }
 
+      registerPanelPlotId(documentId);
+      for (const plotId of extractPanelPlotIds(html, code)) {
+        registerPanelPlotId(plotId);
+      }
+
       if (!documentId) {
         if (html) {
           trackNode(appendHtmlWithExecutableScripts(container, html));
@@ -340,10 +491,12 @@ function PanelRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
       if (html) {
         await ensurePanelRuntime(html, code);
         if (cancelled) return;
+        ensurePyVizCommManagerProxy();
         trackNode(appendHtmlWithExecutableScripts(container, html));
       } else if (code) {
         await ensurePanelRuntime(null, code);
         if (cancelled) return;
+        ensurePyVizCommManagerProxy();
       }
       if (code) {
         trackNode(appendExecutableScript(container, code));
@@ -369,6 +522,9 @@ function PanelRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
         }
       }
       cleanupPanelDocument(documentId);
+      for (const unregisterPyVizKernel of unregisterPyVizKernels) {
+        unregisterPyVizKernel();
+      }
     };
   }, [rawData, metadata, mimeType]);
 

@@ -41,6 +41,8 @@ interface IframeWidgetStoreContextValue {
   sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Close a comm channel via parent */
   closeComm: (commId: string) => void;
+  /** Register a PyViz-compatible kernel proxy for Panel document comms. */
+  registerPyVizKernel: (plotId: string) => () => void;
 }
 
 // === Context ===
@@ -101,6 +103,7 @@ export function IframeWidgetStoreProvider({ children }: IframeWidgetStoreProvide
       sendUpdate: client.sendUpdate,
       sendCustom: client.sendCustom,
       closeComm: client.closeComm,
+      registerPyVizKernel: client.registerPyVizKernel,
     }),
     [client],
   );
