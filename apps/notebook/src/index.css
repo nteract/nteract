@@ -8,6 +8,7 @@
 @import "../../../src/styles/notebook-base.css";
 @import "../../../src/styles/cream-theme.css";
 @import "../../../src/styles/comment-highlight.css";
+@import "../../../src/styles/comment-affordance.css";
 
 html,
 body,

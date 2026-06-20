@@ -2,21 +2,26 @@
    plane and the rendered-markdown plane. One definition so both surfaces match
    and the look is tunable in one place (cataloged in Elements).
 
-   Resting state is a small unobtrusive dot that sits out of the way while a
-   reader selects and copies text. On hover or keyboard focus the dot grows in
-   place into a labeled comment button. Growing the same element (rather than
-   revealing a separate floating panel) keeps the target under the cursor, so
-   there is no gap to cross and nothing to flicker out as you reach for it. */
+   Resting state is a small author-colored dot that breathes gently, sitting out
+   of the way while a reader selects and copies text. On appear it peeks open
+   once (so you can tell what it is), and on hover or keyboard focus it springs
+   into a labeled "Comment" speech bubble with a tail. The spring matches the
+   running motion (exec-squish). No icon: the bubble shape is the comment cue.
+
+   The reveal animates the bubble's own max-width while it clips its overflow, so
+   the bubble grows to its content (the label at its natural width) capped by a
+   generous ceiling. The word never clips, on every engine including iOS Safari
+   (grid fr tracks do not resolve to content width there). */
 .comment-affordance {
   --comment-affordance-color: var(--primary, #2563eb);
+  --comment-affordance-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* A stable 22px hit area around a 9px dot: easy to hit without enlarging the
-     resting footprint. */
-  width: 22px;
-  height: 22px;
+  /* Generous transparent hit area around the resting dot. */
+  width: 26px;
+  height: 26px;
   padding: 0;
   margin: 0;
   border: none;
@@ -26,49 +31,119 @@
 }
 
 .comment-affordance-dot {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 9px;
-  height: 9px;
-  border-radius: 9999px;
-  background-color: color-mix(in srgb, var(--comment-affordance-color) 50%, transparent);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+  height: 14px;
+  max-width: 14px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background-color: var(--comment-affordance-color);
+  color: #ffffff;
+  box-shadow: 0 1px 5px color-mix(in srgb, var(--comment-affordance-color) 50%, transparent);
   transition:
-    width 120ms ease,
-    height 120ms ease,
-    border-radius 120ms ease,
-    background-color 120ms ease;
+    max-width 280ms var(--comment-affordance-spring),
+    height 260ms var(--comment-affordance-spring),
+    padding 260ms var(--comment-affordance-spring),
+    border-radius 200ms ease;
+  animation: comment-affordance-breathe 2.8s ease-in-out infinite;
 }
 
-.comment-affordance-icon {
-  width: 14px;
-  height: 14px;
+.comment-affordance-label {
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1;
   opacity: 0;
-  transform: scale(0.6);
+  transition: opacity 130ms ease 60ms;
+}
+
+/* Speech-bubble tail, only while open. */
+.comment-affordance-dot::after {
+  content: "";
+  position: absolute;
+  left: 9px;
+  bottom: -4px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid var(--comment-affordance-color);
+  opacity: 0;
+  transform: scale(0.4);
   transition:
     opacity 120ms ease,
-    transform 120ms ease;
+    transform 200ms var(--comment-affordance-spring);
 }
 
+/* OPEN: hover, keyboard focus, or the one-time appear peek. The bubble grows to
+   fit its label (capped at 9rem) and the word is fully revealed. */
 .comment-affordance:hover .comment-affordance-dot,
-.comment-affordance:focus-visible .comment-affordance-dot {
-  width: 22px;
+.comment-affordance:focus-visible .comment-affordance-dot,
+.comment-affordance.comment-affordance-peek .comment-affordance-dot {
+  max-width: 9rem;
   height: 22px;
-  border-radius: 0.5rem;
-  background-color: var(--comment-affordance-color);
+  padding: 0 10px;
+  border-radius: 11px;
+  animation: comment-affordance-open 320ms var(--comment-affordance-spring);
 }
-
-.comment-affordance:hover .comment-affordance-icon,
-.comment-affordance:focus-visible .comment-affordance-icon {
+.comment-affordance:hover .comment-affordance-label,
+.comment-affordance:focus-visible .comment-affordance-label,
+.comment-affordance.comment-affordance-peek .comment-affordance-label {
+  opacity: 1;
+}
+.comment-affordance:hover .comment-affordance-dot::after,
+.comment-affordance:focus-visible .comment-affordance-dot::after,
+.comment-affordance.comment-affordance-peek .comment-affordance-dot::after {
   opacity: 1;
   transform: scale(1);
 }
 
 .comment-affordance:focus-visible {
+  outline: none;
+}
+.comment-affordance:focus-visible .comment-affordance-dot {
   outline: 2px solid var(--ring, #a3a3a3);
   outline-offset: 2px;
-  border-radius: 0.5rem;
+}
+
+@keyframes comment-affordance-breathe {
+  0%,
+  100% {
+    box-shadow: 0 1px 4px color-mix(in srgb, var(--comment-affordance-color) 35%, transparent);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 1px 9px color-mix(in srgb, var(--comment-affordance-color) 60%, transparent);
+    transform: scale(1.12);
+  }
+}
+
+@keyframes comment-affordance-open {
+  0% {
+    transform: scale(1, 1);
+  }
+  35% {
+    transform: scale(1.06, 0.94);
+  }
+  70% {
+    transform: scale(0.99, 1.01);
+  }
+  100% {
+    transform: scale(1, 1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comment-affordance-dot,
+  .comment-affordance-label,
+  .comment-affordance-dot::after {
+    animation: none;
+    transition: none;
+  }
 }
 
 /* The CodeMirror editor plane renders this button inside a CM tooltip wrapper.
