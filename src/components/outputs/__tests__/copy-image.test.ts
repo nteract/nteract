@@ -40,8 +40,8 @@ describe("copyRasterImageToClipboard", () => {
   it("writes a base64 data URL image through ClipboardItem", async () => {
     const write = vi.fn().mockResolvedValue(undefined);
     const ClipboardItemMock = vi.fn(function ClipboardItem(
-      this: { items: Record<string, Blob> },
-      items: Record<string, Blob>,
+      this: { items: Record<string, Promise<Blob> | Blob> },
+      items: Record<string, Promise<Blob> | Blob>,
     ) {
       this.items = items;
     });
@@ -55,14 +55,21 @@ describe("copyRasterImageToClipboard", () => {
       value: ClipboardItemMock,
     });
 
-    await copyRasterImageToClipboard("data:image/png;base64,AQID", "image/png");
+    // Synchronous call: write() must be invoked inside the gesture, with the
+    // blob deferred as a promise so the user activation is not lost.
+    copyRasterImageToClipboard("data:image/png;base64,AQID", "image/png");
 
     expect(ClipboardItemMock).toHaveBeenCalledTimes(1);
-    const itemPayload = ClipboardItemMock.mock.calls[0]?.[0] as Record<string, Blob>;
-    const blob = itemPayload["image/png"];
+    expect(write).toHaveBeenCalledWith([expect.any(ClipboardItemMock)]);
+    const itemPayload = ClipboardItemMock.mock.calls[0]?.[0] as Record<
+      string,
+      Promise<Blob> | Blob
+    >;
+    const value = itemPayload["image/png"];
+    expect(typeof (value as Promise<Blob>).then).toBe("function");
+    const blob = await value;
     expect(blob.type).toBe("image/png");
     expect(await readBlobBytes(blob)).toEqual([1, 2, 3]);
-    expect(write).toHaveBeenCalledWith([expect.any(ClipboardItemMock)]);
   });
 
   it("logs and swallows clipboard failures", async () => {
@@ -78,9 +85,10 @@ describe("copyRasterImageToClipboard", () => {
       value: vi.fn(function ClipboardItem() {}),
     });
 
-    await expect(
-      copyRasterImageToClipboard("data:image/png;base64,AQID", "image/png"),
-    ).resolves.toBeUndefined();
+    copyRasterImageToClipboard("data:image/png;base64,AQID", "image/png");
+    await Promise.resolve();
+    await Promise.resolve();
+
     expect(logger.warn).toHaveBeenCalledWith("[copy-image] Failed to copy raster image:", failure);
   });
 });
