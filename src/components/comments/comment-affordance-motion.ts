@@ -101,12 +101,17 @@ export function wireCommentAffordanceMotion(button: HTMLElement): () => void {
 
   button.addEventListener("pointerenter", open);
   button.addEventListener("pointerleave", close);
+  // pointercancel: an interrupted touch (the system takes over the pointer for a
+  // scroll or gesture) fires no pointerleave, so close here too or the pill
+  // would stay open.
+  button.addEventListener("pointercancel", close);
   button.addEventListener("focus", open);
   button.addEventListener("blur", close);
 
   return () => {
     button.removeEventListener("pointerenter", open);
     button.removeEventListener("pointerleave", close);
+    button.removeEventListener("pointercancel", close);
     button.removeEventListener("focus", open);
     button.removeEventListener("blur", close);
     dotAnim?.cancel();

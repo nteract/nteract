@@ -18,10 +18,11 @@ export function CommentSelectionAffordanceExample() {
     <div className="not-prose my-6">
       <div className="mx-auto max-w-[760px] border border-border bg-background px-6 py-5 text-foreground shadow-sm max-sm:px-4">
         <p className="mb-5 text-sm text-muted-foreground">
-          A small author-colored dot that breathes at rest, peeks open once when it appears so you
-          can tell what it is, then springs into a "Comment" speech bubble on hover or keyboard
-          focus. No icon: the bubble shape is the cue. The editor and rendered-markdown planes share
-          this one surface, tunable here via <code>--comment-affordance-color</code>.
+          A small, flat, author-colored dot that stays out of the way while you select. It opens
+          into a "Comment" pill only on hover or keyboard focus, a staged grow then spread then
+          reveal driven by the Web Animations API. No icon: the pill shape and label are the cue.
+          The editor and rendered-markdown planes share this one surface, tunable here via{" "}
+          <code>--comment-affordance-color</code>.
         </p>
         <div className="flex flex-wrap items-center gap-x-8 gap-y-4 text-sm">
           {SAMPLES.map((sample) => (
