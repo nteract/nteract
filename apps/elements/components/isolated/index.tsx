@@ -16,12 +16,14 @@ import { useWidgetStore } from "@/components/widgets/widget-store-context";
 import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 import {
   anyOutputNeedsIsolation,
+  hasCommBridgeOutputs,
   hasWidgetOutputs,
   isScrollPassthroughMimeType,
   isSiftMimeType,
   outputAllowsScrollPassthrough,
   outputNeedsIsolation,
   outputSegmentLane,
+  outputUsesCommBridge,
   outputUsesSift,
   outputUsesVega,
   outputUsesWheelOwningFrame,
@@ -44,12 +46,14 @@ import type { NteractMeasureElementResult } from "../../../../src/components/iso
 
 export {
   anyOutputNeedsIsolation,
+  hasCommBridgeOutputs,
   hasWidgetOutputs,
   isScrollPassthroughMimeType,
   isSiftMimeType,
   outputAllowsScrollPassthrough,
   outputNeedsIsolation,
   outputSegmentLane,
+  outputUsesCommBridge,
   outputUsesSift,
   outputUsesVega,
   outputUsesWheelOwningFrame,
