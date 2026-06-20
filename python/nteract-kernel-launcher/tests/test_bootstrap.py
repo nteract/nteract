@@ -359,6 +359,8 @@ def _isolate_renderer_import_hook(monkeypatch, _bootstrap):
             or name.startswith("altair.")
             or name == "plotly"
             or name.startswith("plotly.")
+            or name == "panel"
+            or name.startswith("panel.")
         ):
             monkeypatch.delitem(sys.modules, name, raising=False)
 
@@ -377,10 +379,11 @@ def test_load_extension_invokes_the_install_steps(monkeypatch):
     monkeypatch.setattr(
         _bootstrap, "_enable_third_party_renderers", lambda: calls.append("renderers")
     )
+    monkeypatch.setattr(_bootstrap._panel, "install", lambda: calls.append("panel"))
     monkeypatch.setattr(_bootstrap._traceback, "install", lambda ip: calls.append("traceback"))
 
     _bootstrap.load_ipython_extension(SimpleNamespace())
-    assert calls == ["llm", "formatters", "hooks", "redact", "renderers", "traceback"]
+    assert calls == ["llm", "formatters", "hooks", "redact", "renderers", "panel", "traceback"]
 
 
 def test_load_extension_swallows_per_step_failures(monkeypatch):
@@ -397,11 +400,118 @@ def test_load_extension_swallows_per_step_failures(monkeypatch):
     monkeypatch.setattr(_bootstrap, "_install_buffer_hooks", lambda ip: called.append("hooks"))
     monkeypatch.setattr(_bootstrap._output_redaction, "install", lambda ip: called.append("redact"))
     monkeypatch.setattr(_bootstrap, "_enable_third_party_renderers", lambda: called.append("r"))
+    monkeypatch.setattr(_bootstrap._panel, "install", lambda: called.append("panel"))
     monkeypatch.setattr(_bootstrap._traceback, "install", lambda ip: called.append("traceback"))
 
     # Must not raise.
     _bootstrap.load_ipython_extension(SimpleNamespace())
-    assert called == ["hooks", "redact", "r", "traceback"]
+    assert called == ["hooks", "redact", "r", "panel", "traceback"]
+
+
+def _isolate_panel_import_hook(monkeypatch, _panel):
+    monkeypatch.setattr(
+        sys,
+        "meta_path",
+        [
+            finder
+            for finder in sys.meta_path
+            if not getattr(finder, "_nteract_panel_import_hook", False)
+        ],
+    )
+    monkeypatch.setattr(_panel, "_panel_import_hook", None)
+    for name in list(sys.modules):
+        if name == "panel" or name.startswith("panel."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+
+def test_panel_runtime_hook_does_not_import_panel(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    _isolate_panel_import_hook(monkeypatch, _panel)
+    _panel.install()
+
+    assert "panel" not in sys.modules
+    assert any(getattr(finder, "_nteract_panel_import_hook", False) for finder in sys.meta_path)
+
+
+def test_panel_runtime_hook_patches_loaded_panel_when_enabled(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    _isolate_panel_import_hook(monkeypatch, _panel)
+    monkeypatch.setenv(_panel.PANEL_RUNTIME_STATE_ENV, "1")
+
+    class OriginalManager:
+        pass
+
+    panel = types.ModuleType("panel")
+    notebook = types.ModuleType("panel.io.notebook")
+    notebook.JupyterCommManagerBinary = OriginalManager
+    notebook._JupyterCommManager = OriginalManager
+    viewable = types.ModuleType("panel.viewable")
+    viewable.JupyterCommManager = OriginalManager
+    state_mod = types.ModuleType("panel.io.state")
+    state_mod.state = SimpleNamespace(_comm_manager=OriginalManager)
+
+    monkeypatch.setitem(sys.modules, "panel", panel)
+    monkeypatch.setitem(sys.modules, "panel.io.notebook", notebook)
+    monkeypatch.setitem(sys.modules, "panel.viewable", viewable)
+    monkeypatch.setitem(sys.modules, "panel.io.state", state_mod)
+
+    _panel.install()
+
+    assert notebook.JupyterCommManagerBinary is _panel.NteractPanelCommManager
+    assert notebook._JupyterCommManager is _panel.NteractPanelCommManager
+    assert viewable.JupyterCommManager is _panel.NteractPanelCommManager
+    assert state_mod.state._comm_manager is _panel.NteractPanelCommManager
+    assert _panel.NteractPanelCommManager._nteract_original_manager is OriginalManager
+
+
+def test_panel_runtime_hook_ignores_loaded_panel_by_default(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    _isolate_panel_import_hook(monkeypatch, _panel)
+    monkeypatch.delenv(_panel.PANEL_RUNTIME_STATE_ENV, raising=False)
+
+    class OriginalManager:
+        pass
+
+    viewable = types.ModuleType("panel.viewable")
+    viewable.JupyterCommManager = OriginalManager
+    monkeypatch.setitem(sys.modules, "panel.viewable", viewable)
+
+    _panel.install()
+
+    assert viewable.JupyterCommManager is OriginalManager
+
+
+def test_panel_comm_manager_emits_typed_events(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    events = []
+    monkeypatch.setattr(_panel.NteractPanelCommManager, "_comms", {})
+    _panel.set_panel_runtime_event_sink(events.append)
+    try:
+        opened = []
+        comm = _panel.NteractPanelCommManager.get_server_comm(
+            id="server-comm",
+            on_open=lambda msg: opened.append(msg),
+        )
+        comm.init()
+        comm.send({"content": []}, metadata={"msg_type": "PATCH-DOC"}, buffers=[b"abc"])
+        comm.close()
+    finally:
+        _panel.set_panel_runtime_event_sink(None)
+
+    assert opened == [{}]
+    assert [event["type"] for event in events] == [
+        "panel_channel_open",
+        "panel_comm_init",
+        "panel_server_patch",
+        "panel_channel_close",
+    ]
+    assert events[2]["protocol"] == "nteract.panel.runtime.v1"
+    assert events[2]["comm_id"] == "server-comm"
+    assert events[2]["buffers"] == [b"abc"]
 
 
 def test_enable_third_party_renderers_configures_loaded_modules(monkeypatch):

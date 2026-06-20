@@ -45,6 +45,46 @@ accepted pieces into ADRs once the prototype proves the shape.
   is only for ephemeral widget custom messages (`crates/notebook-protocol/src/protocol.rs`,
   `src/components/widgets/comm-changes-store-bridge.ts`).
 
+## Panel/PyViz/Bokeh Communication Model
+
+Panel is not an ipywidgets trait-state protocol. It renders Panel objects into
+a Bokeh `Document`, then uses PyViz comms as a transport for Bokeh document
+patches.
+
+The useful mental model is:
+
+1. **Bokeh `Document`**: a graph of Bokeh `Model` objects, with roots attached
+   to a document. A slider, layout, plot, or Panel component becomes one or
+   more Bokeh models with ids and properties.
+2. **Document change events**: when browser-side BokehJS changes a syncable
+   model property, the document records a `DocumentChangedEvent`. Panel's
+   browser `CommManager` ignores unsyncable properties, buffers the remaining
+   events, and turns them into a Bokeh JSON patch with
+   `document.create_json_patch`.
+3. **Bokeh protocol message**: the JSON patch is wrapped in a Bokeh
+   `PATCH-DOC` message. That message has `header`, `metadata`, `content`, and
+   optional binary buffers. Bokeh's `Receiver` can reassemble chunked messages
+   and buffers before applying the patch.
+4. **PyViz comm transport**: PyViz supplies two comms around that Bokeh message:
+   a server comm for Python-to-browser patches and a client comm for
+   browser-to-Python patches. In Jupyter, those are implemented with
+   ipykernel comm targets, but the payload is still Bokeh document protocol.
+5. **ACK and callback output**: Python callbacks may print or fail while
+   applying a browser patch. PyViz captures stdout/errors and sends a `Ready`
+   or `Error` ACK so the browser-side `CommManager` can unblock its event
+   queue.
+
+That means the nteract-native boundary should be a Bokeh patch channel:
+channel open, client patch, server patch, ACK, close, and disconnected state.
+The browser should still let Panel/BokehJS compute and apply Bokeh patches.
+nteract should own transport, ordering, durability, blob references, execution
+output routing, and reconnect semantics.
+
+This is also why mapping Panel to CommsDoc one Bokeh property at a time is the
+wrong grain. CommsDoc is a good fit for ipywidget model state because widget
+state already is a trait map keyed by comm id. Panel's coherent unit is the
+Bokeh document patch, including event ordering and binary buffers.
+
 ## Proposed Model
 
 Model Panel as a typed Bokeh patch channel, not as raw `comm_open`,
@@ -76,6 +116,12 @@ already auto-loads `nteract_kernel_launcher._bootstrap` before user code and
 uses lazy import hooks for optional renderers. The Panel hook should avoid
 importing Panel on kernel startup; when Panel is imported, it can replace the
 comm manager class that Panel's display path assigns.
+
+The first launcher slice lands as an opt-in scaffold behind
+`NTERACT_PANEL_RUNTIME_STATE`. It installs the lazy import hook by default but
+does not patch Panel unless the flag is enabled. That keeps current static
+Panel rendering unchanged until the daemon and iframe sides of the typed
+channel exist.
 
 Because Panel's `viewable.py` assigns the imported `JupyterCommManager` during
 rendering, patching only `state._comm_manager` is likely insufficient. The
