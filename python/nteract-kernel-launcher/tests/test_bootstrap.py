@@ -530,6 +530,37 @@ def test_panel_runtime_hook_keeps_first_original_manager(monkeypatch):
     assert state_mod.state._comm_manager is _panel.NteractPanelCommManager
 
 
+def test_panel_runtime_hook_patches_distinct_state_manager(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    _isolate_panel_import_hook(monkeypatch, _panel)
+    monkeypatch.setenv(_panel.PANEL_RUNTIME_STATE_ENV, "1")
+
+    class NotebookManager:
+        pass
+
+    class ViewableManager:
+        pass
+
+    class StateManager:
+        pass
+
+    notebook = types.ModuleType("panel.io.notebook")
+    notebook.JupyterCommManagerBinary = NotebookManager
+    viewable = types.ModuleType("panel.viewable")
+    viewable.JupyterCommManager = ViewableManager
+    state_mod = types.ModuleType("panel.io.state")
+    state_mod.state = SimpleNamespace(_comm_manager=StateManager)
+
+    monkeypatch.setitem(sys.modules, "panel.io.notebook", notebook)
+    monkeypatch.setitem(sys.modules, "panel.viewable", viewable)
+    monkeypatch.setitem(sys.modules, "panel.io.state", state_mod)
+
+    _panel.install()
+
+    assert state_mod.state._comm_manager is _panel.NteractPanelCommManager
+
+
 def test_panel_runtime_hook_ignores_loaded_panel_by_default(monkeypatch):
     from nteract_kernel_launcher import _panel
 
@@ -579,17 +610,55 @@ def test_panel_comm_manager_emits_typed_events(monkeypatch):
     assert "server-comm" not in _panel.NteractPanelCommManager._comms
 
 
+def test_panel_stdout_capture_restores_stdout_on_capture_error(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    def raise_capture_error():
+        raise RuntimeError("boom")
+
+    original_stdout = sys.stdout
+    captured = _panel._CapturedStdout()
+    captured._stdout = original_stdout
+    captured._stringio = SimpleNamespace(getvalue=raise_capture_error)
+    sentinel_stdout = object()
+    monkeypatch.setattr(sys, "stdout", sentinel_stdout)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        captured.__exit__(None, None, None)
+
+    assert sys.stdout is original_stdout
+
+
 def test_panel_comm_manager_uninstall_clears_comms(monkeypatch):
     from nteract_kernel_launcher import _panel
 
     _isolate_panel_import_hook(monkeypatch, _panel)
-    _panel.NteractPanelCommManager.get_client_comm(id="client-comm")
+    comm = _panel.NteractPanelCommManager.get_client_comm(id="client-comm")
+    _panel.NteractPanelCommManager._nteract_original_manager = object()
 
     assert "client-comm" in _panel.NteractPanelCommManager._comms
+    assert comm.active is True
+    assert comm.connected is True
 
     _panel.uninstall()
 
     assert _panel.NteractPanelCommManager._comms == {}
+    assert comm.active is False
+    assert comm.connected is False
+    assert _panel.NteractPanelCommManager._nteract_original_manager is None
+
+
+def test_panel_comm_manager_clear_closes_comms(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    _isolate_panel_import_hook(monkeypatch, _panel)
+    comm = _panel.NteractPanelCommManager.get_server_comm(id="server-comm")
+
+    _panel.NteractPanelCommManager.clear_comms()
+
+    assert _panel.NteractPanelCommManager._comms == {}
+    assert comm.active is False
+    assert comm.connected is False
 
 
 def test_panel_comm_manager_js_attaches_to_runtime():

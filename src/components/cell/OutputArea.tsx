@@ -651,6 +651,8 @@ function OutputAreaSingle({
   const staticFrameInteractionRef = useRef<HTMLDivElement>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const renderGenRef = useRef(0);
+  const outputsRef = useRef(outputs);
+  outputsRef.current = outputs;
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
   const [staticFrameInteractionActive, setStaticFrameInteractionActive] = useState(false);
@@ -869,7 +871,10 @@ function OutputAreaSingle({
   const handleIframeMessage = useCallback(
     (message: IframeToParentMessage) => {
       if (isPanelRuntimeMessage(message)) {
-        const outputIds = outputs.flatMap((output) => (output.output_id ? [output.output_id] : []));
+        const currentOutputs = outputsRef.current;
+        const outputIds = currentOutputs.flatMap((output) =>
+          output.output_id ? [output.output_id] : [],
+        );
         const event = panelRuntimeEventFromIframeMessage(message, {
           cellId,
           executionCount: executionCount ?? null,
@@ -880,7 +885,7 @@ function OutputAreaSingle({
           cellId,
           executionCount: executionCount ?? null,
           outputIds,
-          outputs,
+          outputs: currentOutputs,
         });
         return;
       }
@@ -911,7 +916,6 @@ function OutputAreaSingle({
       onSearchMatchCount,
       onNavigateToTracebackCell,
       onPanelRuntimeMessage,
-      outputs,
     ],
   );
 

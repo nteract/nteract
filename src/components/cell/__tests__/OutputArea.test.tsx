@@ -1318,6 +1318,68 @@ describe("OutputArea iframe theme sync", () => {
     });
   });
 
+  it("uses current outputs when an existing Panel iframe handler receives a message", async () => {
+    const onPanelRuntimeMessage = vi.fn();
+    const outputs = makePanelDocumentOutputs();
+    const nextOutputs: JupyterOutput[] = [
+      ...outputs,
+      {
+        output_type: "display_data",
+        output_id: "panel-extra-output",
+        data: { "text/html": "<div>extra</div>" },
+        metadata: {},
+      },
+    ];
+
+    const { rerender } = render(
+      <OutputArea
+        cellId="panel-cell"
+        executionCount={7}
+        outputs={outputs}
+        onPanelRuntimeMessage={onPanelRuntimeMessage}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(lastFrameMessageHandler).toBeDefined();
+    });
+    const handler = lastFrameMessageHandler;
+
+    rerender(
+      <OutputArea
+        cellId="panel-cell"
+        executionCount={7}
+        outputs={nextOutputs}
+        onPanelRuntimeMessage={onPanelRuntimeMessage}
+      />,
+    );
+
+    const message = {
+      type: "panel_channel_open",
+      payload: {
+        plotId: "p1011",
+        commId: "panel-client-comm",
+      },
+    } as const;
+
+    handler?.(message);
+
+    expect(onPanelRuntimeMessage).toHaveBeenCalledWith(
+      message,
+      expect.objectContaining({
+        outputIds: [
+          "panel-loading-html",
+          "panel-load-js",
+          "panel-empty-placeholder",
+          "panel-root-html",
+          "panel-exec-html",
+          "panel-extra-output",
+        ],
+        outputs: nextOutputs,
+      }),
+    );
+  });
+
   it("keeps Panel runtime messages out of the widget comm bridge", async () => {
     const onPanelRuntimeMessage = vi.fn();
 

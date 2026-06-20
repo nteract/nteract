@@ -63,8 +63,10 @@ class _CapturedStdout(list[str]):
         return self
 
     def __exit__(self, *_args: Any) -> None:
-        self.extend(self._stringio.getvalue().splitlines())
-        sys.stdout = self._stdout
+        try:
+            self.extend(self._stringio.getvalue().splitlines())
+        finally:
+            sys.stdout = self._stdout
 
 
 class NteractPanelComm:
@@ -324,6 +326,9 @@ class NteractPanelCommManager:
 
     @classmethod
     def clear_comms(cls) -> None:
+        for comm in list(cls._comms.values()):
+            with suppress(Exception):
+                comm.close()
         cls._comms.clear()
 
     @classmethod
@@ -427,7 +432,6 @@ def _patch_panel_modules() -> bool:
         return False
 
     patched = False
-    original_manager: Any | None = None
     notebook = sys.modules.get("panel.io.notebook")
     if notebook is not None:
         original_manager = getattr(notebook, "JupyterCommManagerBinary", None) or getattr(
@@ -443,7 +447,6 @@ def _patch_panel_modules() -> bool:
     if viewable is not None and hasattr(viewable, "JupyterCommManager"):
         current = viewable.JupyterCommManager
         if not getattr(current, "_nteract_panel_comm_manager", False):
-            original_manager = current
             # Keep the first original binding so a future restore path knows
             # which manager Panel exposed before nteract patched any module.
             NteractPanelCommManager._remember_original_manager(current)
@@ -455,7 +458,8 @@ def _patch_panel_modules() -> bool:
     state = getattr(state_module, "state", None) if state_module is not None else None
     if state is not None:
         current = getattr(state, "_comm_manager", None)
-        if current is original_manager or getattr(current, "_nteract_panel_comm_manager", False):
+        if not getattr(current, "_nteract_panel_comm_manager", False):
+            NteractPanelCommManager._remember_original_manager(current)
             state._comm_manager = NteractPanelCommManager
             patched = True
 
@@ -548,4 +552,5 @@ def install() -> None:
 def uninstall() -> None:
     """Remove the lazy import hook. Existing Panel monkeypatches are left intact."""
     NteractPanelCommManager.clear_comms()
+    NteractPanelCommManager._nteract_original_manager = None
     _uninstall_panel_import_hook()

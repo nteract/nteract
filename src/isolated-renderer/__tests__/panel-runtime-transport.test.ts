@@ -97,11 +97,12 @@ describe("Panel runtime transport", () => {
     expect(manager.setDisconnected).toHaveBeenCalledWith(disconnected);
   });
 
-  it("reuses the installed runtime while rebinding host notification handlers", () => {
+  it("reuses the installed runtime while rebinding outbound transport and handlers", () => {
     const firstTransport = createTransport();
     const secondTransport = createTransport();
     const runtime = installPanelRuntimeTransport(() => firstTransport);
 
+    installPanelRuntimeTransport(() => secondTransport);
     registerPanelRuntimeTransportHandlers(secondTransport);
 
     expect(window.__nteractPanelRuntime).toBe(runtime);
@@ -114,5 +115,23 @@ describe("Panel runtime transport", () => {
     expect(secondTransport.notify).toHaveBeenCalledWith(NTERACT_PANEL_CHANNEL_OPEN, {
       commId: "comm-1",
     });
+  });
+
+  it("does not replace outbound transport while registering notification handlers", () => {
+    const firstTransport = createTransport();
+    const secondTransport = createTransport();
+    const runtime = installPanelRuntimeTransport(() => firstTransport);
+
+    registerPanelRuntimeTransportHandlers(secondTransport);
+
+    runtime.registerTarget({ commId: "comm-1" });
+    expect(firstTransport.notify).toHaveBeenCalledWith(NTERACT_PANEL_CHANNEL_OPEN, {
+      commId: "comm-1",
+    });
+    expect(secondTransport.notify).not.toHaveBeenCalled();
+    expect(secondTransport.onNotification).toHaveBeenCalledWith(
+      NTERACT_PANEL_SERVER_PATCH,
+      expect.any(Function),
+    );
   });
 });

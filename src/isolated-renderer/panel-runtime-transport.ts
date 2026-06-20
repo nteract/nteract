@@ -78,7 +78,9 @@ export function installPanelRuntimeTransport(
 }
 
 export function registerPanelRuntimeTransportHandlers(transport: PanelRuntimeTransport): void {
-  const runtime = installPanelRuntimeTransport(() => transport);
+  const runtime = window.__nteractPanelRuntime;
+  if (!runtime) return;
+
   transport.onNotification(NTERACT_PANEL_SERVER_PATCH, (params) => {
     runtime.receiveServerPatch(params as NteractPanelServerPatchParams);
   });
