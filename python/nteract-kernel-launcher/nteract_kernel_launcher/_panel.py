@@ -15,12 +15,14 @@ import traceback
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
+from functools import wraps
 from io import StringIO
 from typing import Any
 
 log = logging.getLogger("nteract_kernel_launcher")
 
 PANEL_RUNTIME_STATE_ENV = "NTERACT_PANEL_RUNTIME_STATE"
+NTERACT_PANEL_RUNTIME_MIME = "application/vnd.nteract.panel-runtime.v1+json"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on", "enabled"})
 _PANEL_IMPORT_TARGETS = frozenset(
     {"panel", "panel.viewable", "panel.io.notebook", "panel.io.state"}
@@ -204,6 +206,10 @@ class NteractPanelCommManager:
       function NteractPanelCommManager() {
         this.targets = {};
         this.comms = {};
+        var rt = runtime();
+        if (rt && rt.attachCommManager) {
+          rt.attachCommManager(this);
+        }
       }
 
       NteractPanelCommManager.prototype.register_target = function(plot_id, comm_id, msg_handler) {
@@ -254,6 +260,42 @@ class NteractPanelCommManager:
         return comm;
       };
 
+      NteractPanelCommManager.prototype.receiveServerPatch = function(payload) {
+        var target = this.targets[payload.commId];
+        if (!target || !target.msg_handler) {
+          return;
+        }
+        target.msg_handler({
+          metadata: payload.metadata || {},
+          content: {data: payload.data},
+          buffers: payload.buffers || []
+        });
+      };
+
+      NteractPanelCommManager.prototype.receiveAck = function(payload) {
+        var comm = this.comms[payload.commId] || window.PyViz.comms[payload.commId];
+        if (!comm) {
+          return;
+        }
+        var handler = comm.onMsg || comm.on_msg;
+        if (handler) {
+          handler({
+            metadata: payload.metadata || {},
+            content: {data: payload.data},
+            buffers: payload.buffers || []
+          });
+        }
+      };
+
+      NteractPanelCommManager.prototype.setDisconnected = function(payload) {
+        var commId = payload && payload.commId;
+        if (commId && this.comms[commId]) {
+          this.comms[commId].active = false;
+          this.comms[commId].connected = false;
+        }
+        console.warn("Panel runtime channel disconnected", payload || {});
+      };
+
       window.PyViz.comm_manager = new NteractPanelCommManager();
     })();
     """
@@ -291,6 +333,75 @@ class NteractPanelCommManager:
         return comm
 
 
+def _panel_runtime_marker(self: Any, model: Any, doc: Any, comm: Any) -> dict[str, Any]:
+    ref = getattr(model, "ref", {})
+    plot_id = ref.get("id") if isinstance(ref, dict) else getattr(ref, "id", None)
+    comms = getattr(self, "_comms", {})
+    pair = comms.get(plot_id) if plot_id is not None and hasattr(comms, "get") else None
+    client_comm = pair[1] if isinstance(pair, tuple) and len(pair) > 1 else None
+
+    marker = {
+        "version": 1,
+        "protocol": "nteract.panel.runtime.v1",
+        "plot_id": plot_id,
+        "server_comm_id": getattr(comm, "id", None),
+        "client_comm_id": getattr(client_comm, "id", None),
+    }
+    document_id = getattr(doc, "id", None)
+    if document_id is not None:
+        marker["document_id"] = document_id
+    return {key: value for key, value in marker.items() if value is not None}
+
+
+def _add_panel_runtime_marker(
+    mimebundle: tuple[dict[str, Any], dict[str, Any]],
+    self: Any,
+    model: Any,
+    doc: Any,
+    comm: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    data, metadata = mimebundle
+    if not isinstance(data, dict) or not isinstance(metadata, dict):
+        return mimebundle
+
+    marker = _panel_runtime_marker(self, model, doc, comm)
+    data[NTERACT_PANEL_RUNTIME_MIME] = marker
+    metadata[NTERACT_PANEL_RUNTIME_MIME] = {
+        "id": marker.get("plot_id"),
+        "server_comm_id": marker.get("server_comm_id"),
+        "client_comm_id": marker.get("client_comm_id"),
+    }
+    metadata[NTERACT_PANEL_RUNTIME_MIME] = {
+        key: value
+        for key, value in metadata[NTERACT_PANEL_RUNTIME_MIME].items()
+        if value is not None
+    }
+    return data, metadata
+
+
+def _patch_panel_mimebundle(viewable: Any) -> bool:
+    mixin = getattr(viewable, "MimeRenderMixin", None)
+    render_mimebundle = getattr(mixin, "_render_mimebundle", None) if mixin is not None else None
+    if render_mimebundle is None or getattr(
+        render_mimebundle, "_nteract_panel_runtime_mime", False
+    ):
+        return False
+
+    @wraps(render_mimebundle)
+    def _nteract_render_mimebundle(
+        self: Any, model: Any, doc: Any, comm: Any, location: Any = None
+    ):
+        mimebundle = render_mimebundle(self, model, doc, comm, location)
+        if isinstance(mimebundle, tuple) and len(mimebundle) == 2:
+            return _add_panel_runtime_marker(mimebundle, self, model, doc, comm)
+        return mimebundle
+
+    _nteract_render_mimebundle._nteract_panel_runtime_mime = True  # type: ignore[attr-defined]
+    _nteract_render_mimebundle._nteract_original = render_mimebundle  # type: ignore[attr-defined]
+    type.__setattr__(mixin, "_render_mimebundle", _nteract_render_mimebundle)
+    return True
+
+
 def _patch_panel_modules() -> bool:
     if not panel_runtime_state_enabled():
         return False
@@ -319,6 +430,7 @@ def _patch_panel_modules() -> bool:
             NteractPanelCommManager._nteract_original_manager = current
         viewable.JupyterCommManager = NteractPanelCommManager
         patched = True
+        patched = _patch_panel_mimebundle(viewable) or patched
 
     state_module = sys.modules.get("panel.io.state")
     state = getattr(state_module, "state", None) if state_module is not None else None

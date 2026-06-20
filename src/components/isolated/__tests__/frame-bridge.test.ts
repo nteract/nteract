@@ -24,6 +24,9 @@ describe("isIframeMessage", () => {
     "widget_ready",
     "widget_comm_msg",
     "widget_comm_close",
+    "panel_channel_open",
+    "panel_client_patch",
+    "panel_channel_close",
   ] as const;
 
   it.each(validMessageTypes)('returns true for valid message type "%s"', (type) => {
@@ -74,6 +77,9 @@ describe("isIframeMessage", () => {
     "comm_msg",
     "comm_close",
     "widget_snapshot",
+    "panel_server_patch",
+    "panel_ack",
+    "panel_disconnected",
   ];
 
   it.each(parentMessageTypes)('returns false for parent message type "%s"', (type) => {
@@ -125,6 +131,9 @@ describe("message type whitelist completeness", () => {
       "widget_ready",
       "widget_comm_msg",
       "widget_comm_close",
+      "panel_channel_open",
+      "panel_client_patch",
+      "panel_channel_close",
       "search_results",
     ];
 

@@ -1,5 +1,9 @@
 import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "./bokeh-mime";
-import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "./panel-mime";
+import {
+  NTERACT_PANEL_RUNTIME_MIME_TYPE,
+  PANEL_EXEC_MIME_TYPE,
+  PANEL_LOAD_MIME_TYPE,
+} from "./panel-mime";
 
 /**
  * Default MIME type priority order for rendering.
@@ -18,9 +22,11 @@ export const DEFAULT_PRIORITY = [
   "application/vnd.plotly.v1+json",
   // Bokeh and Panel emit marker MIMEs alongside text/html and
   // application/javascript. They must win so renderer plugins can coordinate
-  // the sibling payloads.
+  // the sibling payloads. The nteract Panel marker outranks the legacy
+  // HoloViews marker because it carries runtime channel identity.
   BOKEHJS_EXEC_MIME_TYPE,
   BOKEHJS_LOAD_MIME_TYPE,
+  NTERACT_PANEL_RUNTIME_MIME_TYPE,
   PANEL_EXEC_MIME_TYPE,
   PANEL_LOAD_MIME_TYPE,
   "application/vnd.vegalite.v6+json",

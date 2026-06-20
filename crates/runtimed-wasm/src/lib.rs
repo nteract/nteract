@@ -39,6 +39,7 @@ const BOKEHJS_EXEC_MIME: &str = "application/vnd.bokehjs_exec.v0+json";
 const BOKEHJS_LOAD_MIME: &str = "application/vnd.bokehjs_load.v0+json";
 const BOKEHJS_SCRIPT_MIME: &str = "application/javascript";
 const BOKEHJS_HTML_MIME: &str = "text/html";
+const NTERACT_PANEL_RUNTIME_MIME: &str = "application/vnd.nteract.panel-runtime.v1+json";
 const PANEL_EXEC_MIME: &str = "application/vnd.holoviews_exec.v0+json";
 const PANEL_LOAD_MIME: &str = "application/vnd.holoviews_load.v0+json";
 const RUNT_OUTPUT_CACHE_KEY: &str = "_runt_output_cache_key";
@@ -2941,8 +2942,10 @@ impl NotebookHandle {
                     || winner_mime == BOKEHJS_LOAD_MIME;
                 let panel_bundle = data.contains_key(PANEL_EXEC_MIME)
                     || data.contains_key(PANEL_LOAD_MIME)
+                    || data.contains_key(NTERACT_PANEL_RUNTIME_MIME)
                     || winner_mime == PANEL_EXEC_MIME
-                    || winner_mime == PANEL_LOAD_MIME;
+                    || winner_mime == PANEL_LOAD_MIME
+                    || winner_mime == NTERACT_PANEL_RUNTIME_MIME;
 
                 for (mime, val) in data {
                     if mime == winner_mime
@@ -2960,7 +2963,8 @@ impl NotebookHandle {
                         || (panel_bundle
                             && matches!(
                                 mime.as_str(),
-                                PANEL_EXEC_MIME
+                                NTERACT_PANEL_RUNTIME_MIME
+                                    | PANEL_EXEC_MIME
                                     | PANEL_LOAD_MIME
                                     | BOKEHJS_SCRIPT_MIME
                                     | BOKEHJS_HTML_MIME
@@ -6390,6 +6394,38 @@ mod tests {
         let data = narrowed["data"].as_object().expect("narrowed data object");
 
         assert!(data.contains_key(PANEL_EXEC_MIME));
+        assert!(data.contains_key(BOKEHJS_SCRIPT_MIME));
+        assert!(data.contains_key(BOKEHJS_HTML_MIME));
+        assert!(data.contains_key("text/plain"));
+    }
+
+    #[test]
+    fn nteract_panel_runtime_narrowing_keeps_marker_javascript_and_html_bundle() {
+        let mut handle = NotebookHandle::create_empty().expect("create handle");
+        handle.mime_priority = vec![
+            NTERACT_PANEL_RUNTIME_MIME.to_string(),
+            PANEL_EXEC_MIME.to_string(),
+            PANEL_LOAD_MIME.to_string(),
+            "text/html".to_string(),
+            BOKEHJS_SCRIPT_MIME.to_string(),
+            "text/plain".to_string(),
+        ];
+
+        let narrowed = handle.narrow_output_data(json!({
+            "output_type": "display_data",
+            "data": {
+                NTERACT_PANEL_RUNTIME_MIME: { "inline": "{\"version\":1,\"document_id\":\"doc-1\",\"channel_id\":\"panel-1\"}" },
+                BOKEHJS_SCRIPT_MIME: { "inline": "window.__panelExecRan = true;" },
+                BOKEHJS_HTML_MIME: { "inline": "<div id=\"p1011\"></div><script>window.__panelHtmlRan = true;</script>" },
+                "text/plain": { "inline": "fallback" },
+            },
+            "metadata": {
+                NTERACT_PANEL_RUNTIME_MIME: { "id": "p1011" },
+            },
+        }));
+        let data = narrowed["data"].as_object().expect("narrowed data object");
+
+        assert!(data.contains_key(NTERACT_PANEL_RUNTIME_MIME));
         assert!(data.contains_key(BOKEHJS_SCRIPT_MIME));
         assert!(data.contains_key(BOKEHJS_HTML_MIME));
         assert!(data.contains_key("text/plain"));

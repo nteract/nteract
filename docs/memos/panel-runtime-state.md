@@ -109,6 +109,14 @@ scoped to live visualization state, but a dedicated Panel/Bokeh runtime doc is
 also viable if patch-log ownership or retention diverges from ipywidget comm
 state.
 
+The initial display bundle can use a nteract-owned marker MIME:
+`application/vnd.nteract.panel-runtime.v1+json`. That marker should travel with
+Panel's HTML, JavaScript, and legacy HoloViews markers in the same output bundle,
+but it gives the Rust/runtime output path a typed place to carry channel identity
+and replay metadata. The marker is not the live patch transport; it is the
+output-local anchor that lets the renderer, runtime doc, and blob-backed patch
+records agree on the same Panel runtime instance.
+
 ## Runtime Integration
 
 The first Python integration can be a launcher-hosted monkeypatch. The launcher
@@ -133,10 +141,22 @@ bootstrap should patch the imported class binding or provide an equivalent
 - comm objects with `id`, `send`, `close`, `init`, and ACK behavior equivalent
   to PyViz comms.
 
+The narrow marker-injection point is `panel.viewable.MimeRenderMixin._render_mimebundle`.
+At that point Panel has already created the Bokeh root model, server comm, Bokeh
+`CommManager` model, and client comm, and it is about to return the notebook
+MIME bundle. A launcher wrapper can add `application/vnd.nteract.panel-runtime.v1+json`
+without replacing Panel's render machinery or parsing generated JavaScript.
+
 That backend should emit and consume typed nteract Panel events at the daemon
 boundary. If the immediate transport still has to observe kernel comm messages,
 the translation should terminate inside the daemon/runtime layer; the isolated
 iframe and widget bridge should never see generic raw comm traffic for Panel.
+
+The Rust output narrowing path should recognize the nteract Panel runtime MIME
+as a Panel bundle marker. When it wins MIME priority, the narrowed manifest must
+retain the marker payload, `text/html`, `application/javascript`, and fallback
+text together so browser rendering and later runtime replay have one coherent
+output record instead of detached siblings.
 
 If Panel exposes a clean backend registration hook while building the monkeypatch,
 use it. If not, keep the monkeypatch small and propose an upstream hook after

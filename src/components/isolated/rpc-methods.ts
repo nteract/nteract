@@ -34,6 +34,9 @@ export const NTERACT_COMM_CLOSE = "nteract/commClose" as const;
 export const NTERACT_WIDGET_SNAPSHOT = "nteract/widgetSnapshot" as const;
 export const NTERACT_BRIDGE_READY = "nteract/bridgeReady" as const;
 export const NTERACT_WIDGET_STATE = "nteract/widgetState" as const;
+export const NTERACT_PANEL_SERVER_PATCH = "nteract/panelServerPatch" as const;
+export const NTERACT_PANEL_ACK = "nteract/panelAck" as const;
+export const NTERACT_PANEL_DISCONNECTED = "nteract/panelDisconnected" as const;
 
 // Host → Iframe (Notifications) — additional
 export const NTERACT_THEME = "nteract/theme" as const;
@@ -58,6 +61,9 @@ export const NTERACT_SEARCH_RESULTS = "nteract/searchResults" as const;
 export const NTERACT_MOUSE_DOWN = "nteract/mouseDown" as const;
 export const NTERACT_MOUSE_UP = "nteract/mouseUp" as const;
 export const NTERACT_WHEEL_BOUNDARY = "nteract/wheelBoundary" as const;
+export const NTERACT_PANEL_CHANNEL_OPEN = "nteract/panelChannelOpen" as const;
+export const NTERACT_PANEL_CLIENT_PATCH = "nteract/panelClientPatch" as const;
+export const NTERACT_PANEL_CHANNEL_CLOSE = "nteract/panelChannelClose" as const;
 
 // MCP Apps-compatible methods used by embedders. Notebook rendering commands
 // remain in the nteract/* namespace.
@@ -159,6 +165,31 @@ export interface NteractWidgetStateParams {
   buffers?: string[];
 }
 
+export interface NteractPanelServerPatchParams {
+  plotId?: string | null;
+  commId: string;
+  data?: unknown;
+  metadata?: Record<string, unknown>;
+  buffers?: ArrayBuffer[];
+}
+
+export interface NteractPanelAckParams {
+  plotId?: string | null;
+  commId: string;
+  metadata: {
+    msg_type: "Ready" | "Error";
+    content?: string;
+    traceback?: string;
+    comm_id?: string;
+  };
+}
+
+export interface NteractPanelDisconnectedParams {
+  plotId?: string | null;
+  commId?: string | null;
+  reason?: string;
+}
+
 // ── Iframe → Host: Notification Params ──────────────────────────────
 
 export interface NteractRenderCompleteParams {
@@ -181,6 +212,24 @@ export interface NteractWidgetUpdateParams {
   commId: string;
   state: Record<string, unknown>;
   buffers?: string[];
+}
+
+export interface NteractPanelChannelOpenParams {
+  plotId?: string | null;
+  commId: string;
+}
+
+export interface NteractPanelClientPatchParams {
+  plotId?: string | null;
+  commId: string;
+  data?: unknown;
+  metadata?: Record<string, unknown>;
+  buffers?: ArrayBuffer[];
+}
+
+export interface NteractPanelChannelCloseParams {
+  plotId?: string | null;
+  commId: string;
 }
 
 export interface NteractWheelBoundaryParams {

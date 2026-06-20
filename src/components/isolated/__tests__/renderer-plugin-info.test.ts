@@ -5,7 +5,11 @@ import {
   rendererPluginNameForMime,
 } from "../renderer-plugin-info";
 import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
-import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
+import {
+  NTERACT_PANEL_RUNTIME_MIME_TYPE,
+  PANEL_EXEC_MIME_TYPE,
+  PANEL_LOAD_MIME_TYPE,
+} from "@/components/outputs/panel-mime";
 
 describe("renderer plugin metadata", () => {
   it("maps exact MIME types to the shared renderer plugin names", () => {
@@ -30,6 +34,10 @@ describe("renderer plugin metadata", () => {
       hasCss: false,
     });
     expect(rendererPluginInfoForMime(PANEL_EXEC_MIME_TYPE)).toEqual({
+      name: "panel",
+      hasCss: false,
+    });
+    expect(rendererPluginInfoForMime(NTERACT_PANEL_RUNTIME_MIME_TYPE)).toEqual({
       name: "panel",
       hasCss: false,
     });

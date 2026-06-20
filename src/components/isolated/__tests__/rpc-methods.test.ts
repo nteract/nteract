@@ -27,6 +27,12 @@ import {
   NTERACT_MEASURE_ELEMENT,
   NTERACT_MOUSE_DOWN,
   NTERACT_MOUSE_UP,
+  NTERACT_PANEL_ACK,
+  NTERACT_PANEL_CHANNEL_CLOSE,
+  NTERACT_PANEL_CHANNEL_OPEN,
+  NTERACT_PANEL_CLIENT_PATCH,
+  NTERACT_PANEL_DISCONNECTED,
+  NTERACT_PANEL_SERVER_PATCH,
   NTERACT_PING,
   NTERACT_PONG,
   NTERACT_READY,
@@ -76,6 +82,12 @@ describe("nteract JSON-RPC method constants", () => {
     NTERACT_WIDGET_COMM_MSG,
     NTERACT_WIDGET_COMM_CLOSE,
     NTERACT_WIDGET_UPDATE,
+    NTERACT_PANEL_SERVER_PATCH,
+    NTERACT_PANEL_ACK,
+    NTERACT_PANEL_DISCONNECTED,
+    NTERACT_PANEL_CHANNEL_OPEN,
+    NTERACT_PANEL_CLIENT_PATCH,
+    NTERACT_PANEL_CHANNEL_CLOSE,
     NTERACT_EVAL_RESULT,
     NTERACT_PONG,
     NTERACT_SEARCH_RESULTS,
@@ -133,5 +145,11 @@ describe("nteract JSON-RPC method constants", () => {
     expect(NTERACT_WIDGET_UPDATE).toBe("nteract/widgetUpdate");
     expect(NTERACT_WIDGET_STATE).toBe("nteract/widgetState");
     expect(NTERACT_SEARCH_NAVIGATE).toBe("nteract/searchNavigate");
+    expect(NTERACT_PANEL_SERVER_PATCH).toBe("nteract/panelServerPatch");
+    expect(NTERACT_PANEL_ACK).toBe("nteract/panelAck");
+    expect(NTERACT_PANEL_DISCONNECTED).toBe("nteract/panelDisconnected");
+    expect(NTERACT_PANEL_CHANNEL_OPEN).toBe("nteract/panelChannelOpen");
+    expect(NTERACT_PANEL_CLIENT_PATCH).toBe("nteract/panelClientPatch");
+    expect(NTERACT_PANEL_CHANNEL_CLOSE).toBe("nteract/panelChannelClose");
   });
 });

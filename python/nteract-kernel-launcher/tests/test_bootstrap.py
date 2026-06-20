@@ -449,6 +449,19 @@ def test_panel_runtime_hook_patches_loaded_panel_when_enabled(monkeypatch):
     notebook._JupyterCommManager = OriginalManager
     viewable = types.ModuleType("panel.viewable")
     viewable.JupyterCommManager = OriginalManager
+
+    class MimeRenderMixin:
+        def __init__(self):
+            self._comms = {}
+
+        def _render_mimebundle(self, model, doc, comm, location=None):
+            self._comms[model.ref["id"]] = (comm, SimpleNamespace(id="client-comm"))
+            return (
+                {"text/html": "<div id='panel-root'></div>"},
+                {"application/vnd.holoviews_exec.v0+json": {"id": model.ref["id"]}},
+            )
+
+    viewable.MimeRenderMixin = MimeRenderMixin
     state_mod = types.ModuleType("panel.io.state")
     state_mod.state = SimpleNamespace(_comm_manager=OriginalManager)
 
@@ -464,6 +477,26 @@ def test_panel_runtime_hook_patches_loaded_panel_when_enabled(monkeypatch):
     assert viewable.JupyterCommManager is _panel.NteractPanelCommManager
     assert state_mod.state._comm_manager is _panel.NteractPanelCommManager
     assert _panel.NteractPanelCommManager._nteract_original_manager is OriginalManager
+
+    mixin = viewable.MimeRenderMixin()
+    data, metadata = mixin._render_mimebundle(
+        SimpleNamespace(ref={"id": "plot-1"}),
+        SimpleNamespace(id="doc-1"),
+        SimpleNamespace(id="server-comm"),
+    )
+    assert data[_panel.NTERACT_PANEL_RUNTIME_MIME] == {
+        "version": 1,
+        "protocol": "nteract.panel.runtime.v1",
+        "plot_id": "plot-1",
+        "server_comm_id": "server-comm",
+        "client_comm_id": "client-comm",
+        "document_id": "doc-1",
+    }
+    assert metadata[_panel.NTERACT_PANEL_RUNTIME_MIME] == {
+        "id": "plot-1",
+        "server_comm_id": "server-comm",
+        "client_comm_id": "client-comm",
+    }
 
 
 def test_panel_runtime_hook_ignores_loaded_panel_by_default(monkeypatch):
@@ -512,6 +545,18 @@ def test_panel_comm_manager_emits_typed_events(monkeypatch):
     assert events[2]["protocol"] == "nteract.panel.runtime.v1"
     assert events[2]["comm_id"] == "server-comm"
     assert events[2]["buffers"] == [b"abc"]
+
+
+def test_panel_comm_manager_js_attaches_to_runtime():
+    from nteract_kernel_launcher import _panel
+
+    manager_js = _panel.NteractPanelCommManager.js_manager
+
+    assert "window.__nteractPanelRuntime" in manager_js
+    assert "attachCommManager" in manager_js
+    assert "receiveServerPatch" in manager_js
+    assert "receiveAck" in manager_js
+    assert "setDisconnected" in manager_js
 
 
 def test_enable_third_party_renderers_configures_loaded_modules(monkeypatch):

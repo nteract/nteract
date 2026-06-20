@@ -216,6 +216,40 @@ export interface BridgeReadyMessage {
   type: "bridge_ready";
 }
 
+export interface PanelServerPatchMessage {
+  type: "panel_server_patch";
+  payload: {
+    plotId?: string | null;
+    commId: string;
+    data?: unknown;
+    metadata?: Record<string, unknown>;
+    buffers?: ArrayBuffer[];
+  };
+}
+
+export interface PanelAckMessage {
+  type: "panel_ack";
+  payload: {
+    plotId?: string | null;
+    commId: string;
+    metadata: {
+      msg_type: "Ready" | "Error";
+      content?: string;
+      traceback?: string;
+      comm_id?: string;
+    };
+  };
+}
+
+export interface PanelDisconnectedMessage {
+  type: "panel_disconnected";
+  payload: {
+    plotId?: string | null;
+    commId?: string | null;
+    reason?: string;
+  };
+}
+
 // --- Global Find: Parent → Iframe ---
 
 /**
@@ -283,6 +317,9 @@ export type ParentToIframeMessage =
   | CommCloseMessage
   | WidgetSnapshotMessage
   | BridgeReadyMessage
+  | PanelServerPatchMessage
+  | PanelAckMessage
+  | PanelDisconnectedMessage
   | SearchMessage
   | SearchNavigateMessage
   | InteractionStateMessage
@@ -456,6 +493,33 @@ export interface WidgetCommCloseMessage {
   };
 }
 
+export interface PanelChannelOpenMessage {
+  type: "panel_channel_open";
+  payload: {
+    plotId?: string | null;
+    commId: string;
+  };
+}
+
+export interface PanelClientPatchMessage {
+  type: "panel_client_patch";
+  payload: {
+    plotId?: string | null;
+    commId: string;
+    data?: unknown;
+    metadata?: Record<string, unknown>;
+    buffers?: ArrayBuffer[];
+  };
+}
+
+export interface PanelChannelCloseMessage {
+  type: "panel_channel_close";
+  payload: {
+    plotId?: string | null;
+    commId: string;
+  };
+}
+
 // --- Global Find: Iframe → Parent ---
 
 /**
@@ -488,6 +552,9 @@ export type IframeToParentMessage =
   | WidgetReadyMessage
   | WidgetCommMsgMessage
   | WidgetCommCloseMessage
+  | PanelChannelOpenMessage
+  | PanelClientPatchMessage
+  | PanelChannelCloseMessage
   | SearchResultsMessage;
 
 // --- Utility Types ---
@@ -525,6 +592,9 @@ export function isIframeMessage(data: unknown): data is IframeToParentMessage {
       "widget_ready",
       "widget_comm_msg",
       "widget_comm_close",
+      "panel_channel_open",
+      "panel_client_patch",
+      "panel_channel_close",
       "search_results",
     ].includes(msg.type)
   );
