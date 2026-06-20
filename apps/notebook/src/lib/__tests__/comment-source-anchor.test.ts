@@ -106,7 +106,7 @@ describe("comment-source-anchor", () => {
     });
   });
 
-  it("maps rendered markdown text selections back to source_range anchors", () => {
+  it("maps plain rendered markdown text selections back to exact source text", () => {
     const root = document.createElement("div");
     root.innerHTML = `
       <p>
@@ -144,7 +144,7 @@ describe("comment-source-anchor", () => {
     root.remove();
   });
 
-  it("rejects rendered markdown selections when hidden source markup changes selected text", () => {
+  it("snaps styled rendered markdown selections to the full source markup run", () => {
     const root = document.createElement("div");
     root.innerHTML = `
       <p>
@@ -169,7 +169,51 @@ describe("comment-source-anchor", () => {
         root,
         window.getSelection(),
       ),
-    ).toBeNull();
+    ).toMatchObject({
+      kind: "source_range",
+      cell_id: "cell-1",
+      start_line: 0,
+      start_column: 0,
+      end_line: 0,
+      end_column: 8,
+      exact_quote: "**bold**",
+    });
+
+    root.remove();
+  });
+
+  it("maps rendered markdown selections spanning styled runs to the full source range", () => {
+    const source = "Intro **bold** and *em* outro";
+    const root = document.createElement("div");
+    root.innerHTML =
+      '<p><span data-markdown-source-run="true" data-rendered-start="0" data-rendered-end="6" data-source-start="0" data-source-end="6">Intro </span><span data-markdown-source-run="true" data-rendered-start="6" data-rendered-end="10" data-source-start="6" data-source-end="14"><strong>bold</strong></span><span data-markdown-source-run="true" data-rendered-start="10" data-rendered-end="15" data-source-start="14" data-source-end="19"> and </span><span data-markdown-source-run="true" data-rendered-start="15" data-rendered-end="17" data-source-start="19" data-source-end="23"><em>em</em></span><span data-markdown-source-run="true" data-rendered-start="17" data-rendered-end="23" data-source-start="23" data-source-end="29"> outro</span></p>';
+    document.body.append(root);
+    const strongText = root.querySelector("strong")?.firstChild;
+    const emText = root.querySelector("em")?.firstChild;
+    if (!strongText || !emText) throw new Error("missing styled text");
+
+    const range = document.createRange();
+    range.setStart(strongText, 0);
+    range.setEnd(emText, "em".length);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    expect(
+      sourceRangeAnchorFromRenderedMarkdownSelection(
+        "cell-1",
+        source,
+        root,
+        window.getSelection(),
+      ),
+    ).toMatchObject({
+      kind: "source_range",
+      cell_id: "cell-1",
+      start_line: 0,
+      start_column: source.indexOf("**bold**"),
+      end_line: 0,
+      end_column: source.indexOf(" outro"),
+      exact_quote: "**bold** and *em*",
+    });
 
     root.remove();
   });
@@ -195,7 +239,7 @@ describe("comment-source-anchor", () => {
     });
   });
 
-  it("rejects rendered markdown runs when hidden source markup changes selected text", () => {
+  it("maps styled rendered markdown runs back to source markup", () => {
     expect(
       sourceRangeAnchorFromRenderedMarkdownRuns("cell-1", "**bold**", [
         {
@@ -209,7 +253,15 @@ describe("comment-source-anchor", () => {
           sourceSpanUtf16: [0, 8],
         },
       ]),
-    ).toBeNull();
+    ).toMatchObject({
+      kind: "source_range",
+      cell_id: "cell-1",
+      start_line: 0,
+      start_column: 0,
+      end_line: 0,
+      end_column: 8,
+      exact_quote: "**bold**",
+    });
   });
 });
 

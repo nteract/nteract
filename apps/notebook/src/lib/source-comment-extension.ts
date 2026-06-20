@@ -84,7 +84,7 @@ function sourceCommentTooltips(
 
   return [
     {
-      pos: selection.to,
+      pos: selection.head,
       above: true,
       strictSide: false,
       create(view) {
