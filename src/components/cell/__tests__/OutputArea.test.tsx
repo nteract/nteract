@@ -1,8 +1,11 @@
 import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
 import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
 import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
+import type { WidgetStore } from "@/components/widgets/widget-store";
+import { WidgetStoreContext } from "@/components/widgets/widget-store-context";
 import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 import { OutputArea, type JupyterOutput } from "../OutputArea";
 
@@ -13,6 +16,8 @@ let lastFrameMouseDown: (() => void) | undefined;
 let lastFrameMouseUp: ((params: { hasSelection?: boolean }) => void) | undefined;
 let isolatedFrameMountCount = 0;
 let restoreMarkdownProjector: (() => void) | undefined;
+const mockCommBridgeHandleIframeMessage = vi.fn();
+const mockCommBridgeDispose = vi.fn();
 
 const mockFrameHandle = {
   send: vi.fn(),
@@ -122,7 +127,10 @@ vi.mock("@/components/isolated", async (importOriginal) => {
 
   return {
     ...actual,
-    CommBridgeManager: class CommBridgeManager {},
+    CommBridgeManager: class CommBridgeManager {
+      handleIframeMessage = mockCommBridgeHandleIframeMessage;
+      dispose = mockCommBridgeDispose;
+    },
     IsolatedFrame: MockIsolatedFrame,
   };
 });
@@ -198,6 +206,36 @@ function makeWidgetOutput(outputId = "widget-output", modelId = "widget-model"):
     },
     metadata: {},
   };
+}
+
+function makeWidgetStoreStub(): WidgetStore {
+  return {
+    subscribe: vi.fn(() => () => {}),
+    getSnapshot: vi.fn(() => new Map()),
+    getModel: vi.fn(() => undefined),
+    createModel: vi.fn(),
+    updateModel: vi.fn(),
+    deleteModel: vi.fn(),
+    wasModelClosed: vi.fn(() => false),
+    subscribeToKey: vi.fn(() => () => {}),
+    emitCustomMessage: vi.fn(),
+    subscribeToCustomMessage: vi.fn(() => () => {}),
+  };
+}
+
+function renderWithWidgetContext(children: ReactElement) {
+  return render(
+    <WidgetStoreContext.Provider
+      value={{
+        store: makeWidgetStoreStub(),
+        sendUpdate: vi.fn(async () => {}),
+        sendCustom: vi.fn(),
+        closeComm: vi.fn(),
+      }}
+    >
+      {children}
+    </WidgetStoreContext.Provider>,
+  );
 }
 
 function makeMixedDocumentOutputs(): JupyterOutput[] {
@@ -410,6 +448,8 @@ describe("OutputArea iframe theme sync", () => {
     mockFrameHandle.search.mockClear();
     mockFrameHandle.searchNavigate.mockClear();
     mockFrameHandle.measureElement.mockClear();
+    mockCommBridgeHandleIframeMessage.mockClear();
+    mockCommBridgeDispose.mockClear();
     lastFrameMessageHandler = undefined;
     lastFrameMouseDown = undefined;
     lastFrameMouseUp = undefined;
@@ -1208,6 +1248,79 @@ describe("OutputArea iframe theme sync", () => {
     });
 
     expect(onSearchMatchCount).toHaveBeenLastCalledWith(3);
+  });
+
+  it("forwards Panel runtime messages with cell and output context", async () => {
+    const onPanelRuntimeMessage = vi.fn();
+    const outputs = makePanelDocumentOutputs();
+
+    render(
+      <OutputArea
+        cellId="panel-cell"
+        executionCount={7}
+        outputs={outputs}
+        onPanelRuntimeMessage={onPanelRuntimeMessage}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(lastFrameMessageHandler).toBeDefined();
+    });
+
+    const message = {
+      type: "panel_client_patch",
+      payload: {
+        plotId: "p1011",
+        commId: "panel-client-comm",
+        data: { events: [{ kind: "ModelChanged", attr: "value" }] },
+      },
+    } as const;
+
+    lastFrameMessageHandler?.(message);
+
+    expect(onPanelRuntimeMessage).toHaveBeenCalledWith(message, {
+      cellId: "panel-cell",
+      executionCount: 7,
+      outputIds: [
+        "panel-loading-html",
+        "panel-load-js",
+        "panel-empty-placeholder",
+        "panel-root-html",
+        "panel-exec-html",
+      ],
+      outputs,
+    });
+  });
+
+  it("keeps Panel runtime messages out of the widget comm bridge", async () => {
+    const onPanelRuntimeMessage = vi.fn();
+
+    renderWithWidgetContext(
+      <OutputArea outputs={[makeWidgetOutput()]} onPanelRuntimeMessage={onPanelRuntimeMessage} />,
+    );
+
+    await waitFor(() => {
+      expect(lastFrameMessageHandler).toBeDefined();
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalled();
+    });
+
+    const panelMessage = {
+      type: "panel_channel_open",
+      payload: { plotId: "p1011", commId: "panel-client-comm" },
+    } as const;
+    lastFrameMessageHandler?.(panelMessage);
+
+    expect(onPanelRuntimeMessage).toHaveBeenCalledWith(panelMessage, {
+      cellId: undefined,
+      executionCount: null,
+      outputIds: ["widget-output"],
+      outputs: [makeWidgetOutput()],
+    });
+    expect(mockCommBridgeHandleIframeMessage).not.toHaveBeenCalled();
+
+    const widgetMessage = { type: "widget_ready" } as const;
+    lastFrameMessageHandler?.(widgetMessage);
+    expect(mockCommBridgeHandleIframeMessage).toHaveBeenCalledWith(widgetMessage);
   });
 
   it("does not preload hidden iframes for DOM-only segments", () => {

@@ -117,6 +117,15 @@ and replay metadata. The marker is not the live patch transport; it is the
 output-local anchor that lets the renderer, runtime doc, and blob-backed patch
 records agree on the same Panel runtime instance.
 
+The marker belongs at Panel's render-mimebundle point rather than in a broad
+global IPython formatter. nteract controls the kernel launcher and can register
+display hooks, but the useful Panel identities do not exist until Panel has
+created the Bokeh root model, Bokeh `Document`, server comm, browser-side Bokeh
+`CommManager` model, and client comm. Wrapping
+`panel.viewable.MimeRenderMixin._render_mimebundle` lets the launcher detect
+Panel by type while preserving Panel's own notebook rendering path and stamping
+the returned bundle with the ids nteract needs.
+
 ## Runtime Integration
 
 The first Python integration can be a launcher-hosted monkeypatch. The launcher
@@ -158,6 +167,23 @@ retain the marker payload, `text/html`, `application/javascript`, and fallback
 text together so browser rendering and later runtime replay have one coherent
 output record instead of detached siblings.
 
+The parent-side iframe boundary should also stay typed. The isolated renderer
+can expose `window.__nteractPanelRuntime` to Panel's browser-side comm manager
+and convert its events into explicit JSON-RPC notifications:
+
+- `nteract/panelChannelOpen`
+- `nteract/panelClientPatch`
+- `nteract/panelChannelClose`
+- `nteract/panelServerPatch`
+- `nteract/panelAck`
+- `nteract/panelDisconnected`
+
+`OutputArea` should claim the iframe-to-parent Panel events before they reach
+`CommBridgeManager`, then surface them through a Panel-specific callback with
+the owning cell and output ids. This keeps the widget bridge widget-only and
+gives the daemon/runtime integration a single typed ingress for browser-origin
+Panel patches.
+
 If Panel exposes a clean backend registration hook while building the monkeypatch,
 use it. If not, keep the monkeypatch small and propose an upstream hook after
 the nteract shape is proven.
@@ -181,6 +207,26 @@ compact it when safe so remounts do not require replaying an unbounded history.
 When the kernel restarts while a Panel output is visible, keep the last rendered
 state frozen and show an explicit disconnected overlay. The next cell execution
 can open a new channel and replace the frozen state.
+
+The runtime-state write boundary needs its own explicit schema and policy
+decision. Today regular frontend clients read `RuntimeStateDoc`; they do not
+author it. Runtime peers may update accepted execution progress, outputs,
+kernel lifecycle, and empty comm topology, while room-host/daemon-owned facts
+and raw root-key changes are rejected. A durable Panel state map therefore
+should not be smuggled in as generic comm state or as an arbitrary root-key
+change. It needs either:
+
+- a `RuntimeStateDoc.panel_channels` subtree whose topology and patch cursors
+  are owned by the daemon/runtime peer under an updated policy, paired with
+  blob-backed patch payloads in a dedicated Panel/Bokeh runtime doc; or
+- a new dedicated Panel/Bokeh runtime doc synced alongside RuntimeStateDoc,
+  referenced by output marker ids and execution ids.
+
+The second option avoids unbounded patch logs inside the already busy
+RuntimeStateDoc. The first option is useful for compact channel topology and
+late-joiner discovery. A likely split is: channel topology and latest compacted
+snapshot pointer in RuntimeStateDoc; ordered patch records and binary buffer
+refs in a dedicated Panel runtime document or blob-indexed log.
 
 ## Output Semantics
 
@@ -210,20 +256,29 @@ runtime output commits.
 2. Add a launcher-side Panel import hook and a minimal nteract Panel comm
    manager replacement that logs typed channel events without enabling browser
    interactivity yet.
-3. Add daemon/runtime protocol types for Panel/Bokeh channel open, patch, ACK,
-   close, and disconnected state. Use blob refs for binary buffers.
-4. Add an iframe `window.PyViz.comm_manager` implementation backed by typed
-   Panel channel RPC, with tests for patch send, ACK unblocking, remount replay,
-   and disconnected overlay.
-5. Route Panel callback stdout/errors into execution-scoped notebook stream
+3. Add the nteract Panel marker MIME to Panel bundles and to Rust output
+   narrowing, preserving marker, HTML, JavaScript, and fallback text as one
+   coherent output record.
+4. Add the iframe `window.__nteractPanelRuntime` transport and parent
+   `OutputArea` ingress so browser-origin Panel events are typed and kept out
+   of `CommBridgeManager`.
+5. Add daemon/runtime protocol and CRDT state for Panel/Bokeh channel open,
+   patch, ACK, close, and disconnected state. Use blob refs for binary buffers
+   and make the write-authority policy explicit.
+6. Connect the launcher-side Panel comm manager to the daemon/runtime channel
+   so server patches and ACKs no longer depend on a generic raw comm bridge.
+7. Add tests for patch send, ACK unblocking, remount replay, and disconnected
+   overlay.
+8. Route Panel callback stdout/errors into execution-scoped notebook stream
    outputs.
-6. Evaluate whether Bokeh and Panel can share the typed patch channel, and
+9. Evaluate whether Bokeh and Panel can share the typed patch channel, and
    whether this model maps cleanly onto an anywidget-like state adapter that
    could be proposed upstream.
 
 ## Open Points
 
-- Exact CRDT placement: CommsDoc sub-tree versus a new Panel/Bokeh runtime doc.
+- Exact CRDT placement: RuntimeStateDoc topology plus a new Panel/Bokeh runtime
+  doc versus a single RuntimeStateDoc subtree.
 - Patch compaction strategy and retention policy.
 - Whether the first transport can avoid ipykernel comm observation entirely, or
   whether the daemon must translate kernel comms into typed Panel events during

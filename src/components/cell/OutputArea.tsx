@@ -184,6 +184,18 @@ import { notebookOutputAnchorId } from "runtimed";
 // Re-export so existing imports continue to work.
 export type { JupyterOutput } from "./jupyter-output";
 
+export type PanelRuntimeIframeMessage = Extract<
+  IframeToParentMessage,
+  { type: "panel_channel_open" | "panel_client_patch" | "panel_channel_close" }
+>;
+
+export interface PanelRuntimeMessageContext {
+  cellId?: string;
+  executionCount?: number | null;
+  outputIds: string[];
+  outputs: readonly JupyterOutput[];
+}
+
 interface OutputAreaProps {
   /**
    * Array of Jupyter outputs to render.
@@ -300,6 +312,15 @@ interface OutputAreaProps {
    */
   onIsolatedFrameHandleChange?: (handle: IsolatedFrameHandle | null) => void;
   /**
+   * Callback for typed Panel runtime messages emitted from the isolated
+   * iframe. Panel uses this separate path because its Bokeh document patches
+   * are not ipywidget comm state.
+   */
+  onPanelRuntimeMessage?: (
+    message: PanelRuntimeIframeMessage,
+    context: PanelRuntimeMessageContext,
+  ) => void;
+  /**
    * Callback for structured isolated renderer diagnostics.
    */
   onDiagnostic?: IsolatedDiagnosticHandler;
@@ -365,6 +386,16 @@ function requireIdentifiedOutputs(outputs: JupyterOutput[]): IdentifiedJupyterOu
     }
   }
   return outputs as IdentifiedJupyterOutput[];
+}
+
+function isPanelRuntimeMessage(
+  message: IframeToParentMessage,
+): message is PanelRuntimeIframeMessage {
+  return (
+    message.type === "panel_channel_open" ||
+    message.type === "panel_client_patch" ||
+    message.type === "panel_channel_close"
+  );
 }
 
 /**
@@ -607,6 +638,7 @@ function OutputAreaSingle({
   onSearchMatchCount,
   onIframeMouseDown,
   onIsolatedFrameHandleChange,
+  onPanelRuntimeMessage,
   onDiagnostic,
   hostContext,
   resolveTracebackExecutionTarget,
@@ -836,6 +868,16 @@ function OutputAreaSingle({
   // Handle messages from iframe, routing widget messages to comm bridge
   const handleIframeMessage = useCallback(
     (message: IframeToParentMessage) => {
+      if (isPanelRuntimeMessage(message)) {
+        onPanelRuntimeMessage?.(message, {
+          cellId,
+          executionCount: executionCount ?? null,
+          outputIds: outputs.flatMap((output) => (output.output_id ? [output.output_id] : [])),
+          outputs,
+        });
+        return;
+      }
+
       // Route widget messages to bridge
       if (bridgeRef.current) {
         bridgeRef.current.handleIframeMessage(message);
@@ -855,7 +897,15 @@ function OutputAreaSingle({
         onNavigateToTracebackCell?.(message.payload.target);
       }
     },
-    [onWidgetUpdate, onSearchMatchCount, onNavigateToTracebackCell],
+    [
+      cellId,
+      executionCount,
+      onWidgetUpdate,
+      onSearchMatchCount,
+      onNavigateToTracebackCell,
+      onPanelRuntimeMessage,
+      outputs,
+    ],
   );
 
   // Callback when frame is ready - set up bridge and render outputs
