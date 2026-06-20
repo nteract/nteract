@@ -49,6 +49,8 @@ from traitlets import ObjectName, Unicode
 
 import nteract_kernel_launcher._buffer_hook as _buffer_hook
 import nteract_kernel_launcher._output_redaction as _output_redaction
+
+# nteract-internal; importing this module installs no third-party Panel package.
 import nteract_kernel_launcher._panel as _panel
 import nteract_kernel_launcher._traceback as _traceback
 from nteract_kernel_launcher._buffer_hook import pending_buffers

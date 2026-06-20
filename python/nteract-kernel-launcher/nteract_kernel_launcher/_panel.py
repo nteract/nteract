@@ -77,6 +77,7 @@ class NteractPanelComm:
         on_error: Callable[[Exception], None] | None = None,
         on_stdout: Callable[[list[str]], None] | None = None,
         on_open: Callable[[dict[str, Any]], None] | None = None,
+        on_close: Callable[[str], None] | None = None,
         *,
         role: str,
     ) -> None:
@@ -85,6 +86,7 @@ class NteractPanelComm:
         self._on_error = on_error
         self._on_stdout = on_stdout
         self._on_open = on_open
+        self._on_close = on_close
         self.role = role
         self.active = True
         self.connected = True
@@ -101,6 +103,9 @@ class NteractPanelComm:
         self.active = False
         self.connected = False
         _emit_panel_event({"type": "panel_channel_close", "comm_id": self.id, "role": self.role})
+        if self._on_close:
+            with suppress(Exception):
+                self._on_close(self.id)
 
     def send(
         self,
@@ -307,6 +312,21 @@ class NteractPanelCommManager:
     _nteract_original_manager: Any | None = None
 
     @classmethod
+    def _remember_original_manager(cls, manager: Any | None) -> None:
+        if manager is None or getattr(manager, "_nteract_panel_comm_manager", False):
+            return
+        if cls._nteract_original_manager is None:
+            cls._nteract_original_manager = manager
+
+    @classmethod
+    def _forget_comm(cls, comm_id: str) -> None:
+        cls._comms.pop(comm_id, None)
+
+    @classmethod
+    def clear_comms(cls) -> None:
+        cls._comms.clear()
+
+    @classmethod
     def get_server_comm(
         cls,
         on_msg: Callable[[dict[str, Any]], None] | None = None,
@@ -315,7 +335,7 @@ class NteractPanelCommManager:
         on_stdout: Callable[[list[str]], None] | None = None,
         on_open: Callable[[dict[str, Any]], None] | None = None,
     ) -> NteractPanelComm:
-        comm = cls.server_comm(id, on_msg, on_error, on_stdout, on_open)
+        comm = cls.server_comm(id, on_msg, on_error, on_stdout, on_open, on_close=cls._forget_comm)
         cls._comms[comm.id] = comm
         return comm
 
@@ -328,7 +348,7 @@ class NteractPanelCommManager:
         on_stdout: Callable[[list[str]], None] | None = None,
         on_open: Callable[[dict[str, Any]], None] | None = None,
     ) -> NteractPanelComm:
-        comm = cls.client_comm(id, on_msg, on_error, on_stdout, on_open)
+        comm = cls.client_comm(id, on_msg, on_error, on_stdout, on_open, on_close=cls._forget_comm)
         cls._comms[comm.id] = comm
         return comm
 
@@ -413,10 +433,7 @@ def _patch_panel_modules() -> bool:
         original_manager = getattr(notebook, "JupyterCommManagerBinary", None) or getattr(
             notebook, "_JupyterCommManager", None
         )
-        if original_manager is not None and not getattr(
-            original_manager, "_nteract_panel_comm_manager", False
-        ):
-            NteractPanelCommManager._nteract_original_manager = original_manager
+        NteractPanelCommManager._remember_original_manager(original_manager)
         for name in ("JupyterCommManagerBinary", "_JupyterCommManager"):
             if hasattr(notebook, name):
                 setattr(notebook, name, NteractPanelCommManager)
@@ -427,7 +444,9 @@ def _patch_panel_modules() -> bool:
         current = viewable.JupyterCommManager
         if not getattr(current, "_nteract_panel_comm_manager", False):
             original_manager = current
-            NteractPanelCommManager._nteract_original_manager = current
+            # Keep the first original binding so a future restore path knows
+            # which manager Panel exposed before nteract patched any module.
+            NteractPanelCommManager._remember_original_manager(current)
         viewable.JupyterCommManager = NteractPanelCommManager
         patched = True
         patched = _patch_panel_mimebundle(viewable) or patched
@@ -528,4 +547,5 @@ def install() -> None:
 
 def uninstall() -> None:
     """Remove the lazy import hook. Existing Panel monkeypatches are left intact."""
+    NteractPanelCommManager.clear_comms()
     _uninstall_panel_import_hook()

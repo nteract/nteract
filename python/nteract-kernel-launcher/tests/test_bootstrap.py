@@ -419,6 +419,8 @@ def _isolate_panel_import_hook(monkeypatch, _panel):
         ],
     )
     monkeypatch.setattr(_panel, "_panel_import_hook", None)
+    monkeypatch.setattr(_panel.NteractPanelCommManager, "_comms", {})
+    monkeypatch.setattr(_panel.NteractPanelCommManager, "_nteract_original_manager", None)
     for name in list(sys.modules):
         if name == "panel" or name.startswith("panel."):
             monkeypatch.delitem(sys.modules, name, raising=False)
@@ -499,6 +501,35 @@ def test_panel_runtime_hook_patches_loaded_panel_when_enabled(monkeypatch):
     }
 
 
+def test_panel_runtime_hook_keeps_first_original_manager(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    _isolate_panel_import_hook(monkeypatch, _panel)
+    monkeypatch.setenv(_panel.PANEL_RUNTIME_STATE_ENV, "1")
+
+    class NotebookManager:
+        pass
+
+    class ViewableManager:
+        pass
+
+    notebook = types.ModuleType("panel.io.notebook")
+    notebook.JupyterCommManagerBinary = NotebookManager
+    viewable = types.ModuleType("panel.viewable")
+    viewable.JupyterCommManager = ViewableManager
+    state_mod = types.ModuleType("panel.io.state")
+    state_mod.state = SimpleNamespace(_comm_manager=ViewableManager)
+
+    monkeypatch.setitem(sys.modules, "panel.io.notebook", notebook)
+    monkeypatch.setitem(sys.modules, "panel.viewable", viewable)
+    monkeypatch.setitem(sys.modules, "panel.io.state", state_mod)
+
+    _panel.install()
+
+    assert _panel.NteractPanelCommManager._nteract_original_manager is NotebookManager
+    assert state_mod.state._comm_manager is _panel.NteractPanelCommManager
+
+
 def test_panel_runtime_hook_ignores_loaded_panel_by_default(monkeypatch):
     from nteract_kernel_launcher import _panel
 
@@ -545,6 +576,20 @@ def test_panel_comm_manager_emits_typed_events(monkeypatch):
     assert events[2]["protocol"] == "nteract.panel.runtime.v1"
     assert events[2]["comm_id"] == "server-comm"
     assert events[2]["buffers"] == [b"abc"]
+    assert "server-comm" not in _panel.NteractPanelCommManager._comms
+
+
+def test_panel_comm_manager_uninstall_clears_comms(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    _isolate_panel_import_hook(monkeypatch, _panel)
+    _panel.NteractPanelCommManager.get_client_comm(id="client-comm")
+
+    assert "client-comm" in _panel.NteractPanelCommManager._comms
+
+    _panel.uninstall()
+
+    assert _panel.NteractPanelCommManager._comms == {}
 
 
 def test_panel_comm_manager_js_attaches_to_runtime():
