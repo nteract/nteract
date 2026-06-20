@@ -16,6 +16,10 @@ export type SourceCommentRequestHandler = (
 const setSourceCommentFocusEffect = StateEffect.define<boolean>();
 const utf8Encoder = new TextEncoder();
 
+// How long the affordance peeks open when it first appears, so a fresh
+// selection can tell what it is before it settles to a quiet dot.
+const SOURCE_COMMENT_PEEK_MS = 1400;
+
 interface SourceCommentTooltipState {
   focused: boolean;
   tooltips: readonly Tooltip[];
@@ -90,18 +94,26 @@ function sourceCommentTooltips(
       create(view) {
         // Shared dot affordance (styles/comment-affordance.css), matching the
         // rendered-markdown plane. CodeMirror wraps this in a .cm-tooltip; the
-        // shared CSS strips that wrapper's chrome so only the dot shows.
+        // shared CSS strips that wrapper's chrome so only the dot shows. The dot
+        // peeks open once on appear so a fresh selection can tell what it is,
+        // then settles to a quiet dot.
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "comment-affordance";
+        button.className = "comment-affordance comment-affordance-peek";
         button.title = "Comment on selection";
         button.setAttribute("aria-label", "Comment on selection");
         button.setAttribute("data-testid", "source-comment-button");
         const dot = document.createElement("span");
         dot.className = "comment-affordance-dot";
         dot.setAttribute("aria-hidden", "true");
-        dot.appendChild(createCommentIcon());
+        const label = document.createElement("span");
+        label.className = "comment-affordance-label";
+        label.textContent = "Comment";
+        dot.appendChild(label);
         button.appendChild(dot);
+        const peekTimer = setTimeout(() => {
+          button.classList.remove("comment-affordance-peek");
+        }, SOURCE_COMMENT_PEEK_MS);
         button.addEventListener("mousedown", (event) => {
           event.preventDefault();
         });
@@ -109,39 +121,15 @@ function sourceCommentTooltips(
           event.preventDefault();
           requestSourceComment(cellId, view, onCreateSourceComment);
         });
-        return { dom: button };
+        return {
+          dom: button,
+          destroy() {
+            clearTimeout(peekTimer);
+          },
+        };
       },
     },
   ];
-}
-
-function createCommentIcon(): SVGSVGElement {
-  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  icon.setAttribute("class", "comment-affordance-icon");
-  icon.setAttribute("width", "14");
-  icon.setAttribute("height", "14");
-  icon.setAttribute("viewBox", "0 0 24 24");
-  icon.setAttribute("fill", "none");
-  icon.setAttribute("stroke", "currentColor");
-  icon.setAttribute("stroke-width", "2");
-  icon.setAttribute("stroke-linecap", "round");
-  icon.setAttribute("stroke-linejoin", "round");
-  icon.setAttribute("aria-hidden", "true");
-  icon.setAttribute("focusable", "false");
-
-  const bubble = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  bubble.setAttribute("d", "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z");
-  icon.appendChild(bubble);
-
-  const vertical = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  vertical.setAttribute("d", "M12 7v6");
-  icon.appendChild(vertical);
-
-  const horizontal = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  horizontal.setAttribute("d", "M9 10h6");
-  icon.appendChild(horizontal);
-
-  return icon;
 }
 
 function requestSourceComment(
