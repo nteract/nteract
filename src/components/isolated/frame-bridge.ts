@@ -1,5 +1,11 @@
 import type { NteractEmbedHostContextPatch } from "./host-context";
 import type { WidgetViewStateHint } from "@/components/widgets/widget-state";
+import type {
+  PanelRuntimeAckPayload,
+  PanelRuntimeChannelPayload,
+  PanelRuntimeDisconnectedPayload,
+  PanelRuntimePatchPayload,
+} from "runtimed";
 
 export interface EvalMessage {
   type: "eval";
@@ -218,36 +224,17 @@ export interface BridgeReadyMessage {
 
 export interface PanelServerPatchMessage {
   type: "panel_server_patch";
-  payload: {
-    plotId?: string | null;
-    commId: string;
-    data?: unknown;
-    metadata?: Record<string, unknown>;
-    buffers?: ArrayBuffer[];
-  };
+  payload: PanelRuntimePatchPayload;
 }
 
 export interface PanelAckMessage {
   type: "panel_ack";
-  payload: {
-    plotId?: string | null;
-    commId: string;
-    metadata: {
-      msg_type: "Ready" | "Error";
-      content?: string;
-      traceback?: string;
-      comm_id?: string;
-    };
-  };
+  payload: PanelRuntimeAckPayload;
 }
 
 export interface PanelDisconnectedMessage {
   type: "panel_disconnected";
-  payload: {
-    plotId?: string | null;
-    commId?: string | null;
-    reason?: string;
-  };
+  payload: PanelRuntimeDisconnectedPayload;
 }
 
 // --- Global Find: Parent → Iframe ---
@@ -495,29 +482,17 @@ export interface WidgetCommCloseMessage {
 
 export interface PanelChannelOpenMessage {
   type: "panel_channel_open";
-  payload: {
-    plotId?: string | null;
-    commId: string;
-  };
+  payload: PanelRuntimeChannelPayload;
 }
 
 export interface PanelClientPatchMessage {
   type: "panel_client_patch";
-  payload: {
-    plotId?: string | null;
-    commId: string;
-    data?: unknown;
-    metadata?: Record<string, unknown>;
-    buffers?: ArrayBuffer[];
-  };
+  payload: PanelRuntimePatchPayload;
 }
 
 export interface PanelChannelCloseMessage {
   type: "panel_channel_close";
-  payload: {
-    plotId?: string | null;
-    commId: string;
-  };
+  payload: PanelRuntimeChannelPayload;
 }
 
 // --- Global Find: Iframe → Parent ---

@@ -184,6 +184,14 @@ the owning cell and output ids. This keeps the widget bridge widget-only and
 gives the daemon/runtime integration a single typed ingress for browser-origin
 Panel patches.
 
+The shared JavaScript contract now lives in `packages/runtimed/src/panel-runtime.ts`.
+It normalizes iframe and host notifications into `PanelRuntimeEvent` records
+with a stable channel id derived from the notebook cell, output id, Panel plot
+id, and Bokeh/PyViz comm id. This is still a volatile transport contract rather
+than a CRDT schema commitment, but it gives the daemon and frontend the same
+typed state language before deciding whether the durable record belongs in
+RuntimeStateDoc, CommsDoc, or a dedicated Panel/Bokeh runtime doc.
+
 If Panel exposes a clean backend registration hook while building the monkeypatch,
 use it. If not, keep the monkeypatch small and propose an upstream hook after
 the nteract shape is proven.

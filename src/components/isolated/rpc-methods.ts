@@ -15,6 +15,13 @@
  * Nteract extension methods use the "nteract/" namespace.
  */
 
+import type {
+  PanelRuntimeAckPayload,
+  PanelRuntimeChannelPayload,
+  PanelRuntimeDisconnectedPayload,
+  PanelRuntimePatchPayload,
+} from "runtimed";
+
 // ── Method Constants ────────────────────────────────────────────────
 
 // Host → Iframe (Requests — expect a response)
@@ -165,30 +172,11 @@ export interface NteractWidgetStateParams {
   buffers?: string[];
 }
 
-export interface NteractPanelServerPatchParams {
-  plotId?: string | null;
-  commId: string;
-  data?: unknown;
-  metadata?: Record<string, unknown>;
-  buffers?: ArrayBuffer[];
-}
+export interface NteractPanelServerPatchParams extends PanelRuntimePatchPayload {}
 
-export interface NteractPanelAckParams {
-  plotId?: string | null;
-  commId: string;
-  metadata: {
-    msg_type: "Ready" | "Error";
-    content?: string;
-    traceback?: string;
-    comm_id?: string;
-  };
-}
+export interface NteractPanelAckParams extends PanelRuntimeAckPayload {}
 
-export interface NteractPanelDisconnectedParams {
-  plotId?: string | null;
-  commId?: string | null;
-  reason?: string;
-}
+export interface NteractPanelDisconnectedParams extends PanelRuntimeDisconnectedPayload {}
 
 // ── Iframe → Host: Notification Params ──────────────────────────────
 
@@ -214,23 +202,11 @@ export interface NteractWidgetUpdateParams {
   buffers?: string[];
 }
 
-export interface NteractPanelChannelOpenParams {
-  plotId?: string | null;
-  commId: string;
-}
+export interface NteractPanelChannelOpenParams extends PanelRuntimeChannelPayload {}
 
-export interface NteractPanelClientPatchParams {
-  plotId?: string | null;
-  commId: string;
-  data?: unknown;
-  metadata?: Record<string, unknown>;
-  buffers?: ArrayBuffer[];
-}
+export interface NteractPanelClientPatchParams extends PanelRuntimePatchPayload {}
 
-export interface NteractPanelChannelCloseParams {
-  plotId?: string | null;
-  commId: string;
-}
+export interface NteractPanelChannelCloseParams extends PanelRuntimeChannelPayload {}
 
 export interface NteractWheelBoundaryParams {
   deltaY?: number;

@@ -202,6 +202,50 @@ export {
   diffExecutions,
 } from "./runtime-state";
 
+// Panel/Bokeh runtime event model
+export {
+  NTERACT_PANEL_RUNTIME_MIME_TYPE,
+  PANEL_RUNTIME_PROTOCOL,
+  PANEL_RUNTIME_PROTOCOL_VERSION,
+  createPanelRuntimeChannelRef,
+  createPanelRuntimePatchRecord,
+  isPanelRuntimeHostMessage,
+  isPanelRuntimeIframeMessage,
+  panelRuntimeChannelId,
+  panelRuntimeEventFromHostMessage,
+  panelRuntimeEventFromIframeMessage,
+  type PanelRuntimeAckEvent,
+  type PanelRuntimeAckMessage,
+  type PanelRuntimeAckMetadata,
+  type PanelRuntimeAckPayload,
+  type PanelRuntimeBlobRef,
+  type PanelRuntimeBuffer,
+  type PanelRuntimeChannelCloseEvent,
+  type PanelRuntimeChannelCloseMessage,
+  type PanelRuntimeChannelOpenEvent,
+  type PanelRuntimeChannelOpenMessage,
+  type PanelRuntimeChannelPayload,
+  type PanelRuntimeChannelRef,
+  type PanelRuntimeClientEvent,
+  type PanelRuntimeClientEventType,
+  type PanelRuntimeClientPatchEvent,
+  type PanelRuntimeClientPatchMessage,
+  type PanelRuntimeDirection,
+  type PanelRuntimeDisconnectedEvent,
+  type PanelRuntimeDisconnectedMessage,
+  type PanelRuntimeDisconnectedPayload,
+  type PanelRuntimeEvent,
+  type PanelRuntimeHostEvent,
+  type PanelRuntimeHostEventType,
+  type PanelRuntimeHostMessage,
+  type PanelRuntimeIframeMessage,
+  type PanelRuntimeOutputContext,
+  type PanelRuntimePatchPayload,
+  type PanelRuntimePatchRecord,
+  type PanelRuntimeServerPatchEvent,
+  type PanelRuntimeServerPatchMessage,
+} from "./panel-runtime";
+
 // Pool state
 export { type PoolState, type RuntimePoolState, DEFAULT_POOL_STATE } from "./pool-state";
 

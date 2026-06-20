@@ -1279,6 +1279,32 @@ describe("OutputArea iframe theme sync", () => {
     lastFrameMessageHandler?.(message);
 
     expect(onPanelRuntimeMessage).toHaveBeenCalledWith(message, {
+      event: {
+        protocol: "nteract.panel.runtime.v1",
+        version: 1,
+        direction: "iframe_to_kernel",
+        type: "client_patch",
+        channel: {
+          channelId: "cell:panel-cell|output:panel-loading-html|plot:p1011|comm:panel-client-comm",
+          commId: "panel-client-comm",
+          plotId: "p1011",
+          cellId: "panel-cell",
+          executionCount: 7,
+          outputId: "panel-loading-html",
+          outputIds: [
+            "panel-loading-html",
+            "panel-load-js",
+            "panel-empty-placeholder",
+            "panel-root-html",
+            "panel-exec-html",
+          ],
+        },
+        patch: {
+          data: { events: [{ kind: "ModelChanged", attr: "value" }] },
+          metadata: {},
+          buffers: [],
+        },
+      },
       cellId: "panel-cell",
       executionCount: 7,
       outputIds: [
@@ -1311,6 +1337,21 @@ describe("OutputArea iframe theme sync", () => {
     lastFrameMessageHandler?.(panelMessage);
 
     expect(onPanelRuntimeMessage).toHaveBeenCalledWith(panelMessage, {
+      event: {
+        protocol: "nteract.panel.runtime.v1",
+        version: 1,
+        direction: "iframe_to_kernel",
+        type: "channel_open",
+        channel: {
+          channelId: "output:widget-output|plot:p1011|comm:panel-client-comm",
+          commId: "panel-client-comm",
+          plotId: "p1011",
+          cellId: undefined,
+          executionCount: null,
+          outputId: "widget-output",
+          outputIds: ["widget-output"],
+        },
+      },
       cellId: undefined,
       executionCount: null,
       outputIds: ["widget-output"],

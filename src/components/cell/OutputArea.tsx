@@ -180,16 +180,20 @@ function useDeferredIsolatedFrame({
 }
 
 import type { JupyterOutput } from "./jupyter-output";
-import { notebookOutputAnchorId } from "runtimed";
+import {
+  isPanelRuntimeIframeMessage,
+  notebookOutputAnchorId,
+  panelRuntimeEventFromIframeMessage,
+  type PanelRuntimeClientEvent,
+  type PanelRuntimeIframeMessage,
+  type PanelRuntimeOutputContext,
+} from "runtimed";
 // Re-export so existing imports continue to work.
 export type { JupyterOutput } from "./jupyter-output";
+export type { PanelRuntimeIframeMessage } from "runtimed";
 
-export type PanelRuntimeIframeMessage = Extract<
-  IframeToParentMessage,
-  { type: "panel_channel_open" | "panel_client_patch" | "panel_channel_close" }
->;
-
-export interface PanelRuntimeMessageContext {
+export interface PanelRuntimeMessageContext extends PanelRuntimeOutputContext {
+  event: PanelRuntimeClientEvent;
   cellId?: string;
   executionCount?: number | null;
   outputIds: string[];
@@ -391,11 +395,7 @@ function requireIdentifiedOutputs(outputs: JupyterOutput[]): IdentifiedJupyterOu
 function isPanelRuntimeMessage(
   message: IframeToParentMessage,
 ): message is PanelRuntimeIframeMessage {
-  return (
-    message.type === "panel_channel_open" ||
-    message.type === "panel_client_patch" ||
-    message.type === "panel_channel_close"
-  );
+  return isPanelRuntimeIframeMessage(message);
 }
 
 /**
@@ -869,10 +869,17 @@ function OutputAreaSingle({
   const handleIframeMessage = useCallback(
     (message: IframeToParentMessage) => {
       if (isPanelRuntimeMessage(message)) {
-        onPanelRuntimeMessage?.(message, {
+        const outputIds = outputs.flatMap((output) => (output.output_id ? [output.output_id] : []));
+        const event = panelRuntimeEventFromIframeMessage(message, {
           cellId,
           executionCount: executionCount ?? null,
-          outputIds: outputs.flatMap((output) => (output.output_id ? [output.output_id] : [])),
+          outputIds,
+        });
+        onPanelRuntimeMessage?.(message, {
+          event,
+          cellId,
+          executionCount: executionCount ?? null,
+          outputIds,
           outputs,
         });
         return;
