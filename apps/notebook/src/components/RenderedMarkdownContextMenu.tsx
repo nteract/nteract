@@ -30,6 +30,11 @@ export interface BuildRenderedMarkdownContextGroupsOptions {
   onAddComment?: () => void;
 }
 
+export interface RenderedMarkdownClipboardPayload {
+  text: string;
+  html: string;
+}
+
 export function buildRenderedMarkdownContextGroups({
   hasSelection,
   canComment,
@@ -83,15 +88,21 @@ export function RenderedMarkdownContextMenu({
     const selection = currentDomSelection();
     const hasSelection = !!root && selectionIsInsideRoot(root, selection);
     const selectedText = hasSelection ? (selection?.toString() ?? "") : "";
+    const selectionRange = hasSelection && selection?.rangeCount ? selection.getRangeAt(0) : null;
     const anchor = root
       ? sourceRangeAnchorFromRenderedMarkdownSelection(cellId, source, root, selection)
       : null;
+    const clipboardPayload = buildRenderedMarkdownClipboardPayload({
+      anchor,
+      selectedText,
+      range: selectionRange,
+    });
 
     setGroups(
       buildRenderedMarkdownContextGroups({
         hasSelection,
         canComment: !!anchor && !!onCreateSourceComment,
-        onCopy: hasSelection ? () => copyRenderedSelection(selectedText) : undefined,
+        onCopy: clipboardPayload ? () => copyRenderedSelection(clipboardPayload) : undefined,
         onAddComment:
           anchor && onCreateSourceComment
             ? () =>
@@ -125,10 +136,73 @@ function selectionIsInsideRoot(root: HTMLElement, selection: Selection | null): 
   return root.contains(range.startContainer) && root.contains(range.endContainer);
 }
 
-function copyRenderedSelection(selectedText: string): void {
+export function buildRenderedMarkdownClipboardPayload({
+  anchor,
+  selectedText,
+  range,
+}: {
+  anchor: SourceRangeCommentAnchor | null;
+  selectedText: string;
+  range: Range | null;
+}): RenderedMarkdownClipboardPayload | null {
+  const text = anchor?.exact_quote ?? selectedText;
+  if (text.length === 0) return null;
+  return {
+    text,
+    html: range ? cleanRenderedMarkdownClipboardHtml(range) : "",
+  };
+}
+
+export function cleanRenderedMarkdownClipboardHtml(range: Range): string {
+  const container = document.createElement("div");
+  container.append(range.cloneContents());
+
+  container.querySelectorAll("a").forEach((anchor) => {
+    const label = anchor.getAttribute("aria-label") ?? "";
+    const href = anchor.getAttribute("href") ?? "";
+    if (
+      anchor.textContent?.trim() === "#" &&
+      href.startsWith("#") &&
+      label.startsWith("Link to ")
+    ) {
+      anchor.remove();
+    }
+  });
+
+  container.querySelectorAll("ul, ol, li").forEach((element) => {
+    element.classList.remove(
+      "list-disc",
+      "list-decimal",
+      "marker:text-primary/65",
+      "marker:font-semibold",
+    );
+    const existingStyle = element.getAttribute("style");
+    const markerlessStyle = "list-style-type: none";
+    element.setAttribute(
+      "style",
+      existingStyle ? `${existingStyle}; ${markerlessStyle}` : markerlessStyle,
+    );
+  });
+
+  return container.innerHTML;
+}
+
+function copyRenderedSelection(payload: RenderedMarkdownClipboardPayload): void {
   const clipboard = currentClipboard();
-  if (!clipboard || selectedText.length === 0) return;
-  void clipboard.writeText(selectedText).catch(() => undefined);
+  if (!clipboard) return;
+
+  if (typeof ClipboardItem !== "undefined" && typeof clipboard.write === "function") {
+    const item = new ClipboardItem({
+      "text/plain": new Blob([payload.text], { type: "text/plain" }),
+      "text/html": new Blob([payload.html], { type: "text/html" }),
+    });
+    void clipboard.write([item]).catch(() => {
+      void clipboard.writeText(payload.text).catch(() => undefined);
+    });
+    return;
+  }
+
+  void clipboard.writeText(payload.text).catch(() => undefined);
 }
 
 function currentDomSelection(): Selection | null {

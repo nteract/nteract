@@ -107,7 +107,7 @@ export const markdownFootnoteRefClassName =
   "mx-0.5 inline-flex min-w-4 translate-y-[-0.22em] justify-center rounded-full border border-primary/20 bg-primary/6 px-1 font-[var(--output-ui-font)] text-[0.68em] leading-4 text-primary no-underline decoration-transparent hover:bg-primary/10 hover:decoration-transparent";
 
 export const markdownHeadingAnchorClassName =
-  "ml-2 inline-flex translate-y-[-0.08em] rounded-[2px] font-[var(--output-ui-font)] text-[0.58em] font-medium text-muted-foreground/40 no-underline decoration-transparent transition-colors hover:bg-primary/5 hover:text-primary focus-visible:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
+  "ml-2 inline-flex select-none translate-y-[-0.08em] rounded-[2px] font-[var(--output-ui-font)] text-[0.58em] font-medium text-muted-foreground/40 no-underline decoration-transparent transition-colors hover:bg-primary/5 hover:text-primary focus-visible:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
 
 export function markdownHeadingClassName(element: string) {
   if (element === "h1") {

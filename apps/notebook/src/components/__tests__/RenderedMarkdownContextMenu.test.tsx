@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  buildRenderedMarkdownClipboardPayload,
   buildRenderedMarkdownContextGroups,
+  cleanRenderedMarkdownClipboardHtml,
   type BuildRenderedMarkdownContextGroupsOptions,
 } from "../RenderedMarkdownContextMenu";
+import type { SourceRangeCommentAnchor } from "../../lib/comment-source-anchor";
 
 function buildActions(overrides: Partial<BuildRenderedMarkdownContextGroupsOptions> = {}) {
   const groups = buildRenderedMarkdownContextGroups({
@@ -44,5 +47,67 @@ describe("buildRenderedMarkdownContextGroups", () => {
         canComment: true,
       }),
     ).toEqual([]);
+  });
+});
+
+describe("rendered markdown clipboard payload", () => {
+  function selectContents(element: HTMLElement): Range {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return range;
+  }
+
+  it("uses the raw markdown exact quote for plain text", () => {
+    const root = document.createElement("div");
+    root.textContent = "Heading item";
+    const anchor = {
+      kind: "source_range",
+      cell_id: "md-1",
+      start_line: 0,
+      start_column: 0,
+      end_line: 1,
+      end_column: 8,
+      exact_quote: "## Heading\n- **item**",
+    } as SourceRangeCommentAnchor;
+
+    expect(
+      buildRenderedMarkdownClipboardPayload({
+        anchor,
+        selectedText: "Heading item",
+        range: selectContents(root),
+      })?.text,
+    ).toBe("## Heading\n- **item**");
+  });
+
+  it("falls back to selected visible text without an exact source anchor", () => {
+    expect(
+      buildRenderedMarkdownClipboardPayload({
+        anchor: null,
+        selectedText: "visible text",
+        range: null,
+      })?.text,
+    ).toBe("visible text");
+  });
+
+  it("cleans decorative heading anchors and rendered list markers from html", () => {
+    const root = document.createElement("div");
+    root.innerHTML = `
+      <h2>
+        Heading
+        <a href="#heading" aria-label="Link to Heading">#</a>
+      </h2>
+      <ul class="list-disc marker:text-primary/65">
+        <li class="marker:font-semibold">item</li>
+      </ul>
+    `;
+
+    const html = cleanRenderedMarkdownClipboardHtml(selectContents(root));
+
+    expect(html).toContain("Heading");
+    expect(html).toContain("item");
+    expect(html).not.toContain(">#</a>");
+    expect(html).not.toContain("list-disc");
+    expect(html).not.toContain("marker:text-primary/65");
+    expect(html).toContain("list-style-type: none");
   });
 });
