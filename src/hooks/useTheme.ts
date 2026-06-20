@@ -1,15 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type ThemeMode = "light" | "dark" | "system";
-type NativeTheme = "light" | "dark" | null;
-
-function isTauriRuntime(): boolean {
-  const globalWindow = window as Window & {
-    __TAURI__?: unknown;
-    __TAURI_INTERNALS__?: unknown;
-  };
-  return "__TAURI_INTERNALS__" in globalWindow || "__TAURI__" in globalWindow;
-}
 
 function getStoredTheme(storageKey: string): ThemeMode {
   try {
@@ -41,22 +32,6 @@ function applyThemeToDOM(resolved: "light" | "dark") {
   }
 }
 
-/**
- * Sync the native Tauri window theme with the app theme.
- * - "light" / "dark": Force that theme on the native window
- * - "system" (null): Follow OS preference and auto-update when OS changes
- */
-async function syncNativeWindowTheme(theme: ThemeMode): Promise<void> {
-  try {
-    if (!isTauriRuntime()) return;
-    const tauriTheme: NativeTheme = theme === "system" ? null : theme;
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().setTheme(tauriTheme);
-  } catch {
-    // Silently fail if not in Tauri context (e.g., dev server in browser)
-  }
-}
-
 export function useTheme(storageKey = "theme") {
   const [theme, setThemeState] = useState<ThemeMode>(() => getStoredTheme(storageKey));
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
@@ -79,7 +54,6 @@ export function useTheme(storageKey = "theme") {
     const resolved = resolveTheme(theme);
     setResolvedTheme(resolved);
     applyThemeToDOM(resolved);
-    syncNativeWindowTheme(theme);
 
     if (theme !== "system") return;
 
