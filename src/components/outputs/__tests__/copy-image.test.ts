@@ -86,9 +86,15 @@ describe("copyRasterImageToClipboard", () => {
     });
 
     copyRasterImageToClipboard("data:image/png;base64,AQID", "image/png");
-    await Promise.resolve();
-    await Promise.resolve();
 
-    expect(logger.warn).toHaveBeenCalledWith("[copy-image] Failed to copy raster image:", failure);
+    // Poll instead of counting microtask ticks: the write rejection propagates
+    // through the deferred ClipboardItem promise, so the exact tick count is not
+    // something the test should depend on.
+    await vi.waitFor(() => {
+      expect(logger.warn).toHaveBeenCalledWith(
+        "[copy-image] Failed to copy raster image:",
+        failure,
+      );
+    });
   });
 });
