@@ -1,4 +1,3 @@
-import { MessageSquarePlus } from "lucide-react";
 import {
   type CSSProperties,
   type FormEvent,
@@ -7,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { CommentMarkIcon } from "@/components/comments/CommentMarkIcon";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import type { SourceCommentSelectionRect } from "../lib/comment-source-anchor";
@@ -112,7 +112,7 @@ export function InlineCommentComposer({
         }}
       >
         <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-          <MessageSquarePlus className="size-3.5" aria-hidden="true" />
+          <CommentMarkIcon className="size-3.5" aria-hidden="true" />
           Comment on selection
         </div>
         {preview ? (
