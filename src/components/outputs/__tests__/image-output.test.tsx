@@ -4,7 +4,9 @@ import { ImageOutput } from "../image-output";
 import { copyRasterImageToClipboard } from "../copy-image";
 
 vi.mock("../copy-image", () => ({
-  copyRasterImageToClipboard: vi.fn().mockResolvedValue(undefined),
+  // copyRasterImageToClipboard is synchronous (void); it writes to the clipboard
+  // inside the user gesture and resolves the blob inside the ClipboardItem.
+  copyRasterImageToClipboard: vi.fn(),
 }));
 
 describe("ImageOutput", () => {

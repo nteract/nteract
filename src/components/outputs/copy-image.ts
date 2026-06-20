@@ -63,10 +63,17 @@ async function toPngBlob(blob: Blob): Promise<Blob> {
   }
 }
 
-export async function copyRasterImageToClipboard(src: string, mimeType: string): Promise<void> {
+export function copyRasterImageToClipboard(src: string, mimeType: string): void {
   try {
-    const png = await toPngBlob(await sourceToBlob(src, mimeType));
-    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    // Resolve the PNG inside the ClipboardItem and call write() synchronously, so
+    // the clipboard write stays inside the user gesture. Safari drops the
+    // transient activation across an awaited fetch or canvas encode, which would
+    // silently reject the write; passing a Promise<Blob> to ClipboardItem defers
+    // that async work without leaving the gesture.
+    const png = (async () => toPngBlob(await sourceToBlob(src, mimeType)))();
+    void navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).catch((error) => {
+      logger.warn("[copy-image] Failed to copy raster image:", error);
+    });
   } catch (error) {
     logger.warn("[copy-image] Failed to copy raster image:", error);
   }
