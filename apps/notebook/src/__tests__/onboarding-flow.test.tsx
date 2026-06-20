@@ -11,10 +11,6 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
 
-vi.mock("@tauri-apps/plugin-shell", () => ({
-  open: vi.fn(),
-}));
-
 const invokeMock = vi.mocked(invoke);
 
 function chooseUvRuntime() {

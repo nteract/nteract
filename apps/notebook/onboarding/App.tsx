@@ -1,8 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { AlertTriangle, ArrowLeft, Check, Loader2 } from "lucide-react";
-import { type MouseEvent, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
@@ -373,13 +372,6 @@ export default function App() {
     setPage((current) => (current === 3 ? 2 : 1));
   }, []);
 
-  const openTelemetryDetails = useCallback((e: MouseEvent<HTMLAnchorElement>) => {
-    e.preventDefault();
-    openExternal(LEARN_MORE_URL).catch(() => {
-      window.open(LEARN_MORE_URL, "_blank", "noopener,noreferrer");
-    });
-  }, []);
-
   // Record the user's telemetry decision and complete onboarding. Called from
   // either CTA on page 3. Both paths flip `telemetry_consent_recorded` to true
   // so heartbeats can fire when enabled.
@@ -597,7 +589,6 @@ export default function App() {
               </p>
               <a
                 href={LEARN_MORE_URL}
-                onClick={openTelemetryDetails}
                 rel="noreferrer"
                 target="_blank"
                 className="inline-block text-xs text-primary underline hover:text-foreground"
