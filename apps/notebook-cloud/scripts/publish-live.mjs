@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { collectArrowStreamManifestBlobRefs, collectBlobRefs } from "../src/blob-refs.ts";
 import { createLiveNotebookFixture } from "./live-notebook-fixture.mjs";
@@ -14,6 +13,10 @@ import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
 import { loadRuntimedNode } from "./runtimed-node-loader.mjs";
 import { summarizeCatalog } from "./hosted-render-smoke-catalog.mjs";
+import {
+  assertRuntimedWasmBuildExists,
+  initializeRuntimedWasmSyncForNode,
+} from "./runtimed-wasm-artifact.mjs";
 
 const rt = loadRuntimedNode();
 
@@ -24,16 +27,8 @@ const notebookId = notebookIdFromEnvOrGenerated();
 const vanityName = vanityNameFromEnvOrNotebookName(
   defaultLiveNotebookName({ preset, sourceNotebookId }),
 );
-const wasmJsUrl = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
-  import.meta.url,
-);
-const wasmBytesUrl = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
-  import.meta.url,
-);
 
-await assertWasmBuildExists();
+await assertRuntimedWasmBuildExists();
 
 const session = sourceNotebookId
   ? await rt.openNotebook(sourceNotebookId, {
@@ -136,9 +131,7 @@ try {
 }
 
 async function snapshotPairMetadata(notebookBytes, runtimeStateBytes, commsBytes) {
-  const { initSync, NotebookHandle } = await import(wasmJsUrl.href);
-  const wasmBytes = await readFile(wasmBytesUrl);
-  initSync({ module: wasmBytes });
+  const { NotebookHandle } = await initializeRuntimedWasmSyncForNode();
   const handle = NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
   if (commsBytes) {
     handle.load_comms_doc(commsBytes);
@@ -268,17 +261,6 @@ async function fetchJson(pathname) {
 async function assertOk(response, pathname) {
   if (response.ok) return;
   throw new Error(`${pathname} returned ${response.status}: ${await response.text()}`);
-}
-
-async function assertWasmBuildExists() {
-  try {
-    await access(fileURLToPath(wasmJsUrl));
-    await access(fileURLToPath(wasmBytesUrl));
-  } catch {
-    throw new Error(
-      "Missing apps/notebook/src/wasm/runtimed-wasm output. Run `cargo xtask wasm runtimed --skip-renderer-plugins` first.",
-    );
-  }
 }
 
 function assert(condition, message) {

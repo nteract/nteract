@@ -19,28 +19,12 @@ import {
   assertEquals,
   assertExists,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { loadRuntimedWasm } from "./wasm_loader.ts";
 
 // @ts-nocheck — wasm-bindgen output doesn't have Deno-compatible type declarations
 
-// Import the WASM module
 // deno-lint-ignore no-explicit-any
-let init: any, NotebookHandle: any;
-
-const wasmJsPath = new URL(
-  "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
-  import.meta.url,
-);
-const wasmBinPath = new URL(
-  "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
-  import.meta.url,
-);
-
-const mod = await import(wasmJsPath.href);
-init = mod.default;
-NotebookHandle = mod.NotebookHandle;
-
-const wasmBytes = await Deno.readFile(wasmBinPath);
-await init({ module_or_path: wasmBytes });
+const { NotebookHandle }: any = await loadRuntimedWasm();
 
 // ── Helpers ──────────────────────────────────────────────────────────
 

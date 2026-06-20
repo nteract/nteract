@@ -3,13 +3,12 @@ import {
   type NotebookInteractionTarget,
 } from "runtimed";
 import { setMarkdownProjectionProjector } from "../../../src/lib/markdown-projection";
-import type { NotebookHandle } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
+import type { NotebookHandle, RuntimedWasmModule } from "../src/runtimed-wasm.ts";
 import {
   asRuntimedWasmAssetFailure,
   RUNTIMED_WASM_ASSET_FAILURE_PREFIX,
 } from "./runtimed-wasm-failure";
 
-type RuntimedWasmModule = typeof import("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js");
 type WasmModuleOrPath = string | URL | Request | Response | ArrayBuffer | WebAssembly.Module;
 
 let loadedModule: Promise<RuntimedWasmModule> | undefined;

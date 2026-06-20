@@ -1,6 +1,5 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import type { CloudflareWebSocket, DurableObjectState, Env } from "../src/cloudflare-types.ts";
 import {
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
@@ -26,19 +25,12 @@ import {
   encodeTypedFrame,
   splitTypedFrame,
 } from "../src/protocol.ts";
-import {
-  decodePresenceFrame,
-  encodePresenceFrame,
-  initializeRuntimedWasm,
-} from "../src/runtimed-wasm.ts";
+import { decodePresenceFrame, encodePresenceFrame } from "../src/runtimed-wasm.ts";
 import type { RoomHostFrameResult } from "../src/room-materializer.ts";
-
-const wasmBytes = await readFile(
-  new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
-);
+import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 
 before(async () => {
-  await initializeRuntimedWasm(wasmBytes);
+  await initializeTestRuntimedWasm();
 });
 
 describe("NotebookRoom presence rewrite", () => {

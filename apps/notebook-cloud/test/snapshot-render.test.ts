@@ -1,20 +1,18 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { initializeRuntimedWasm, RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
+import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import { materializeSnapshotPairRender } from "../src/snapshot-render.ts";
 import {
   createNotebookCloudBlobResolver,
   notebookCloudBlobBasePath,
 } from "../src/blob-resolver.ts";
+import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 
-const wasmBytes = await readFile(
-  new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
-);
 const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
 
 before(async () => {
-  await initializeRuntimedWasm(wasmBytes);
+  await initializeTestRuntimedWasm();
 });
 
 describe("snapshot pair render materialization", () => {

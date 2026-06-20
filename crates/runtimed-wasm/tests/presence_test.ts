@@ -9,21 +9,11 @@ import {
   assertEquals,
   assertThrows,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { loadRuntimedWasm } from "./wasm_loader.ts";
 
 // @ts-nocheck - wasm-bindgen output is browser-shaped, but Deno can run it.
 
-const wasmJsPath = new URL(
-  "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
-  import.meta.url,
-);
-const wasmBinPath = new URL(
-  "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
-  import.meta.url,
-);
-
-const mod = await import(wasmJsPath.href);
-const wasmBytes = await Deno.readFile(wasmBinPath);
-await mod.default({ module_or_path: wasmBytes });
+const mod = await loadRuntimedWasm();
 
 Deno.test("Presence: standalone decoder reads real cursor CBOR", () => {
   const payload = mod.encode_cursor_presence(

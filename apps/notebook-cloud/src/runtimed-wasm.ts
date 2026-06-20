@@ -11,6 +11,9 @@ import initWasm, {
   RuntimeStatePeerHandle,
 } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 
+export type RuntimedWasmModule =
+  typeof import("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js");
+
 let initialized: Promise<void> | undefined;
 
 type RuntimedWasmInitInput = Parameters<typeof initWasm>[0];

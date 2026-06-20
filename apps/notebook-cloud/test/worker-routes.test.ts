@@ -29,7 +29,7 @@ import type {
   R2ObjectBody,
   R2PutOptions,
 } from "../src/cloudflare-types.ts";
-import { initializeRuntimedWasm, RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
+import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import {
   WORKSTATION_ATTACH_JOB_STALE_MS,
   blobKey,
@@ -49,14 +49,12 @@ import type {
 } from "../src/workstation-credentials.ts";
 import { workstationEventsObjectName } from "../src/workstation-events.ts";
 import { oidcTokenFixture } from "./oidc-jwt-fixture.ts";
+import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 
-const wasmBytes = await readFile(
-  new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
-);
 const APP_SESSION_SECRET = "0123456789abcdef0123456789abcdef";
 
 before(async () => {
-  await initializeRuntimedWasm(wasmBytes);
+  await initializeTestRuntimedWasm();
 });
 
 describe("Worker artifact routes", () => {

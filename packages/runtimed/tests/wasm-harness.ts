@@ -16,20 +16,24 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { VirtualAction, VirtualTimeScheduler } from "rxjs";
-import type { NotebookHandle } from "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm";
 import { DirectTransport, type ServerHandle } from "../src/direct-transport";
 import type { SyncableHandle } from "../src/handle";
 import { SyncEngine } from "../src/sync-engine";
 
 // ── WASM initialization ──────────────────────────────────────────────
 
+type RuntimedWasmModule =
+  typeof import("../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm");
+type NotebookHandleConstructor = RuntimedWasmModule["NotebookHandle"];
+export type NotebookHandle = InstanceType<NotebookHandleConstructor>;
+
 let wasmInitialized = false;
-let WasmNotebookHandle: typeof NotebookHandle;
+let WasmNotebookHandle: NotebookHandleConstructor;
 
 /**
  * Load and initialize the WASM module once. Subsequent calls are no-ops.
  */
-export async function initWasm(): Promise<typeof NotebookHandle> {
+export async function initWasm(): Promise<NotebookHandleConstructor> {
   if (wasmInitialized) return WasmNotebookHandle;
 
   const wasmPath = resolve(
@@ -47,7 +51,7 @@ export async function initWasm(): Promise<typeof NotebookHandle> {
     wasmBuffer.byteOffset,
     wasmBuffer.byteOffset + wasmBuffer.byteLength,
   );
-  const mod = await import(jsPath);
+  const mod = (await import(jsPath)) as RuntimedWasmModule;
   mod.initSync({ module: new Uint8Array(wasmBytes) });
 
   wasmInitialized = true;

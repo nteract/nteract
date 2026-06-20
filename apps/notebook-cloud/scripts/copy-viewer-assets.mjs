@@ -5,16 +5,13 @@ import { copyRendererSidecarAssets } from "./renderer-sidecar-assets.mjs";
 import { copyRuntimeWasmAssets } from "./runtime-wasm-assets.mjs";
 import { writeNotebookRouteAssetsManifest } from "./notebook-route-assets.mjs";
 import { writeViewerCssManifest } from "./viewer-css-assets.mjs";
+import {
+  assertRuntimedWasmBuildExists,
+  runtimedWasmBinaryUrl,
+  runtimedWasmModuleUrl,
+} from "./runtimed-wasm-artifact.mjs";
 
 const siftWasmUrl = new URL("../../../crates/sift-wasm/pkg/sift_wasm_bg.wasm", import.meta.url);
-const runtimedWasmModuleUrl = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
-  import.meta.url,
-);
-const runtimedWasmUrl = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
-  import.meta.url,
-);
 const isolatedRendererModuleUrl = new URL(
   "../../notebook/src/renderer-plugins/isolated-renderer.js",
   import.meta.url,
@@ -30,8 +27,7 @@ const outputDocumentFrameUrl = new URL(
 const outputDocumentOutputUrl = new URL("../dist-output-document/index.html", import.meta.url);
 
 await assertExists(siftWasmUrl);
-await assertExists(runtimedWasmModuleUrl);
-await assertExists(runtimedWasmUrl);
+await assertRuntimedWasmBuildExists();
 await assertExists(isolatedRendererModuleUrl);
 await assertExists(isolatedRendererCssUrl);
 await assertExists(outputDocumentFrameUrl);
@@ -47,7 +43,7 @@ const rendererSidecarAssets = await copyRendererSidecarAssets({
 });
 const runtimeWasmAssets = await copyRuntimeWasmAssets({
   moduleUrl: runtimedWasmModuleUrl,
-  wasmUrl: runtimedWasmUrl,
+  wasmUrl: runtimedWasmBinaryUrl,
   assetsDirUrl: new URL("../dist/assets/", import.meta.url),
   pluginsDirUrl: new URL("../dist/plugins/", import.meta.url),
 });
