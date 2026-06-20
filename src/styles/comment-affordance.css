@@ -6,7 +6,10 @@
    of the way while a reader selects and copies text. On appear it peeks open
    once (so you can tell what it is), and on hover or keyboard focus it springs
    into a labeled "Comment" speech bubble with a tail. The spring matches the
-   running motion (exec-squish). No icon: the bubble shape is the comment cue. */
+   running motion (exec-squish). No icon: the bubble shape is the comment cue.
+
+   The label reveal animates a grid column from 0fr to 1fr so the bubble always
+   grows to the label's true content width. The word never clips. */
 .comment-affordance {
   --comment-affordance-color: var(--primary, #2563eb);
   --comment-affordance-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -27,20 +30,19 @@
 
 .comment-affordance-dot {
   position: relative;
-  display: inline-flex;
+  display: inline-grid;
+  grid-template-columns: 0fr;
   align-items: center;
-  justify-content: center;
   height: 14px;
-  width: 14px;
+  min-width: 14px;
   padding: 0;
   border-radius: 999px;
   background-color: var(--comment-affordance-color);
   color: #ffffff;
-  overflow: hidden;
-  white-space: nowrap;
   box-shadow: 0 1px 5px color-mix(in srgb, var(--comment-affordance-color) 50%, transparent);
   transition:
-    width 260ms var(--comment-affordance-spring),
+    grid-template-columns 260ms var(--comment-affordance-spring),
+    min-width 260ms var(--comment-affordance-spring),
     height 260ms var(--comment-affordance-spring),
     padding 260ms var(--comment-affordance-spring),
     border-radius 200ms ease;
@@ -48,17 +50,15 @@
 }
 
 .comment-affordance-label {
+  overflow: hidden;
+  min-width: 0;
+  white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1;
-  max-width: 0;
   opacity: 0;
-  transform: translateY(2px);
-  transition:
-    opacity 130ms ease 60ms,
-    max-width 220ms var(--comment-affordance-spring),
-    transform 220ms var(--comment-affordance-spring) 40ms;
+  transition: opacity 130ms ease 60ms;
 }
 
 /* Speech-bubble tail, only while open. */
@@ -83,7 +83,8 @@
 .comment-affordance:hover .comment-affordance-dot,
 .comment-affordance:focus-visible .comment-affordance-dot,
 .comment-affordance.comment-affordance-peek .comment-affordance-dot {
-  width: auto;
+  grid-template-columns: 1fr;
+  min-width: 0;
   height: 22px;
   padding: 0 10px;
   border-radius: 11px;
@@ -92,9 +93,7 @@
 .comment-affordance:hover .comment-affordance-label,
 .comment-affordance:focus-visible .comment-affordance-label,
 .comment-affordance.comment-affordance-peek .comment-affordance-label {
-  max-width: 140px;
   opacity: 1;
-  transform: translateY(0);
 }
 .comment-affordance:hover .comment-affordance-dot::after,
 .comment-affordance:focus-visible .comment-affordance-dot::after,
