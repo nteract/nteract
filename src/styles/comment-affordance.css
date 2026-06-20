@@ -19,10 +19,10 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* Generous transparent hit area around the resting dot. */
-  width: 26px;
-  height: 26px;
-  padding: 0;
+  /* Content-sized with padding for the hit area. A fixed width would cap the
+     dot's growth: on WebKit/iOS Safari a flex child cannot exceed a fixed-width
+     flex parent, which clipped the open bubble to one glyph on mobile. */
+  padding: 6px;
   margin: 0;
   border: none;
   background: transparent;
@@ -33,6 +33,7 @@
 .comment-affordance-dot {
   position: relative;
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   height: 14px;
