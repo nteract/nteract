@@ -133,6 +133,10 @@ Reviewer category: `async_ordering`
 
 `src/hooks/useSyncedSettings.ts` performs an initial async settings load and then
 writes many local state values. This is not a high-severity correctness issue,
-but if the hook is refactored behind a host/settings adapter, include
-stale-unmount guards or move the data into a store with an explicit subscription
-lifecycle.
+but lifecycle guards are still worthwhile while the hook waits for the larger
+host/settings adapter.
+
+Follow-up:
+
+- PR #3786 adds stale-unmount guards for the initial load and event listener
+  callback paths.
