@@ -46,11 +46,11 @@ describe("InlineCommentComposer", () => {
     expect(onSubmit).toHaveBeenCalledWith("ship it");
   });
 
-  it("cancels without submitting", () => {
+  it("cancels on Escape without submitting", () => {
     const onSubmit = vi.fn();
     const onCancel = vi.fn();
     render(<InlineCommentComposer rect={rect} onSubmit={onSubmit} onCancel={onCancel} />);
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(screen.getByLabelText("Comment on selection"), { key: "Escape" });
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onSubmit).not.toHaveBeenCalled();
   });
