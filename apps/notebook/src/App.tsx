@@ -13,14 +13,12 @@ import {
   type ExecuteCellOptions,
   type NotebookResponse,
   type NotebookOutlineItem,
+  type PanelRuntimeIframeMessage,
   putBlob,
   type SessionStatus,
 } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
-import type {
-  PanelRuntimeIframeMessage,
-  PanelRuntimeMessageContext,
-} from "@/components/cell/OutputArea";
+import type { PanelRuntimeMessageContext } from "@/components/cell/OutputArea";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import {
   applyWidgetCommBroadcastToStore,
@@ -1068,6 +1066,7 @@ function AppContent() {
   const handlePanelRuntimeMessage = useCallback(
     (_message: PanelRuntimeIframeMessage, context: PanelRuntimeMessageContext) => {
       const event = context.event;
+      // TODO(next slice): forward this typed event to the daemon Panel runtime transport.
       logger.debug("[panel-runtime] Browser event reached notebook runtime boundary", {
         type: event.type,
         channelId: event.channel.channelId,

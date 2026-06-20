@@ -69,6 +69,7 @@ export interface NteractPanelRuntime {
 }
 
 let activeTransport: PanelRuntimeTransportGetter = () => null;
+const registeredPanelRuntimeTransports = new WeakSet<PanelRuntimeTransport>();
 
 declare global {
   interface Window {
@@ -250,6 +251,8 @@ export function installPanelRuntimeTransport(
 export function registerPanelRuntimeTransportHandlers(transport: PanelRuntimeTransport): void {
   const runtime = window.__nteractPanelRuntime;
   if (!runtime) return;
+  if (registeredPanelRuntimeTransports.has(transport)) return;
+  registeredPanelRuntimeTransports.add(transport);
 
   transport.onNotification(NTERACT_PANEL_SERVER_PATCH, (params) => {
     runtime.receiveServerPatch(params as NteractPanelServerPatchParams);

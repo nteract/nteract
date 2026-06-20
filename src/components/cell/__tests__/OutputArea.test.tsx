@@ -1426,6 +1426,23 @@ describe("OutputArea iframe theme sync", () => {
     expect(mockCommBridgeHandleIframeMessage).toHaveBeenCalledWith(widgetMessage);
   });
 
+  it("falls back to the iframe bridge for Panel messages when no Panel handler exists", async () => {
+    renderWithWidgetContext(<OutputArea outputs={[makeWidgetOutput()]} />);
+
+    await waitFor(() => {
+      expect(lastFrameMessageHandler).toBeDefined();
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalled();
+    });
+
+    const panelMessage = {
+      type: "panel_channel_open",
+      payload: { plotId: "p1011", commId: "panel-client-comm" },
+    } as const;
+    lastFrameMessageHandler?.(panelMessage);
+
+    expect(mockCommBridgeHandleIframeMessage).toHaveBeenCalledWith(panelMessage);
+  });
+
   it("does not preload hidden iframes for DOM-only segments", () => {
     render(
       <OutputArea

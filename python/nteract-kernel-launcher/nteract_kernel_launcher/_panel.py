@@ -2,8 +2,9 @@
 
 This module deliberately does not import Panel on kernel startup. It installs a
 small import hook that can patch Panel after user code imports it. The patched
-comm manager exposes Panel/PyViz's expected Python and JavaScript surfaces while
-emitting typed Panel/Bokeh channel events for a future daemon-backed transport.
+manager is a compatibility adapter for Panel/PyViz's current notebook backend:
+it preserves the API Panel calls today while emitting typed Panel/Bokeh channel
+events for a future daemon-backed transport.
 """
 
 from __future__ import annotations
@@ -66,7 +67,8 @@ class _CapturedStdout(list[str]):
         try:
             self.extend(self._stringio.getvalue().splitlines())
         finally:
-            sys.stdout = self._stdout
+            if sys.stdout is self._stringio:
+                sys.stdout = self._stdout
 
 
 class NteractPanelComm:
@@ -149,14 +151,22 @@ class NteractPanelComm:
             decoded = self.decode(msg)
             comm_id = decoded.pop("comm_id", None)
             if self._on_msg:
-                with _CapturedStdout() as captured:
-                    self._on_msg(decoded)
-                stdout = list(captured)
+                captured = None
+                try:
+                    with _CapturedStdout() as captured:
+                        self._on_msg(decoded)
+                finally:
+                    if captured is not None:
+                        stdout = list(captured)
                 if stdout:
                     with suppress(Exception):
                         if self._on_stdout:
                             self._on_stdout(stdout)
         except Exception as exc:  # noqa: BLE001
+            if stdout:
+                with suppress(Exception):
+                    if self._on_stdout:
+                        self._on_stdout(stdout)
             with suppress(Exception):
                 if self._on_error:
                     self._on_error(exc)
@@ -198,7 +208,7 @@ class NteractPanelClientComm(NteractPanelComm):
 
 
 class NteractPanelCommManager:
-    """Panel/PyViz comm manager backed by typed nteract runtime events."""
+    """Panel/PyViz compatibility adapter backed by typed nteract runtime events."""
 
     # The browser-side comm manager is installed by the isolated renderer's
     # TypeScript bundle so it can be type-checked and tested with the transport
@@ -211,6 +221,7 @@ class NteractPanelCommManager:
     client_comm = NteractPanelClientComm
     _nteract_panel_comm_manager = True
     _nteract_original_manager: Any | None = None
+    _nteract_original_bindings: dict[tuple[str, str], Any] = {}
 
     @classmethod
     def _remember_original_manager(cls, manager: Any | None) -> None:
@@ -218,6 +229,13 @@ class NteractPanelCommManager:
             return
         if cls._nteract_original_manager is None:
             cls._nteract_original_manager = manager
+
+    @classmethod
+    def _remember_original_binding(cls, module_name: str, attr: str, value: Any) -> None:
+        if getattr(value, "_nteract_panel_comm_manager", False):
+            return
+        cls._remember_original_manager(value)
+        cls._nteract_original_bindings.setdefault((module_name, attr), value)
 
     @classmethod
     def _forget_comm(cls, comm_id: str) -> None:
@@ -290,15 +308,13 @@ def _add_panel_runtime_marker(
 
     marker = _panel_runtime_marker(self, model, doc, comm)
     data[NTERACT_PANEL_RUNTIME_MIME] = marker
-    metadata[NTERACT_PANEL_RUNTIME_MIME] = {
+    marker_metadata = {
         "id": marker.get("plot_id"),
         "server_comm_id": marker.get("server_comm_id"),
         "client_comm_id": marker.get("client_comm_id"),
     }
     metadata[NTERACT_PANEL_RUNTIME_MIME] = {
-        key: value
-        for key, value in metadata[NTERACT_PANEL_RUNTIME_MIME].items()
-        if value is not None
+        key: value for key, value in marker_metadata.items() if value is not None
     }
     return data, metadata
 
@@ -326,6 +342,17 @@ def _patch_panel_mimebundle(viewable: Any) -> bool:
     return True
 
 
+def _unpatch_panel_mimebundle(viewable: Any) -> bool:
+    mixin = getattr(viewable, "MimeRenderMixin", None)
+    render_mimebundle = getattr(mixin, "_render_mimebundle", None) if mixin is not None else None
+    original = getattr(render_mimebundle, "_nteract_original", None)
+    if original is None:
+        return False
+
+    type.__setattr__(mixin, "_render_mimebundle", original)
+    return True
+
+
 def _patch_panel_modules() -> bool:
     if not panel_runtime_state_enabled():
         return False
@@ -333,12 +360,13 @@ def _patch_panel_modules() -> bool:
     patched = False
     notebook = sys.modules.get("panel.io.notebook")
     if notebook is not None:
-        original_manager = getattr(notebook, "JupyterCommManagerBinary", None) or getattr(
-            notebook, "_JupyterCommManager", None
-        )
-        NteractPanelCommManager._remember_original_manager(original_manager)
         for name in ("JupyterCommManagerBinary", "_JupyterCommManager"):
             if hasattr(notebook, name):
+                NteractPanelCommManager._remember_original_binding(
+                    "panel.io.notebook",
+                    name,
+                    getattr(notebook, name),
+                )
                 setattr(notebook, name, NteractPanelCommManager)
                 patched = True
 
@@ -348,7 +376,11 @@ def _patch_panel_modules() -> bool:
         if not getattr(current, "_nteract_panel_comm_manager", False):
             # Keep the first original binding so a future restore path knows
             # which manager Panel exposed before nteract patched any module.
-            NteractPanelCommManager._remember_original_manager(current)
+            NteractPanelCommManager._remember_original_binding(
+                "panel.viewable",
+                "JupyterCommManager",
+                current,
+            )
         viewable.JupyterCommManager = NteractPanelCommManager
         patched = True
         patched = _patch_panel_mimebundle(viewable) or patched
@@ -358,13 +390,40 @@ def _patch_panel_modules() -> bool:
     if state is not None:
         current = getattr(state, "_comm_manager", None)
         if not getattr(current, "_nteract_panel_comm_manager", False):
-            NteractPanelCommManager._remember_original_manager(current)
+            NteractPanelCommManager._remember_original_binding(
+                "panel.io.state",
+                "state._comm_manager",
+                current,
+            )
             state._comm_manager = NteractPanelCommManager
             patched = True
 
     if patched:
         log.debug("patched Panel comm manager for nteract runtime state")
     return patched
+
+
+def _restore_panel_modules() -> None:
+    viewable = sys.modules.get("panel.viewable")
+    if viewable is not None:
+        _unpatch_panel_mimebundle(viewable)
+
+    for (module_name, attr), original in list(
+        NteractPanelCommManager._nteract_original_bindings.items()
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        if attr == "state._comm_manager":
+            state = getattr(module, "state", None)
+            if (
+                state is not None
+                and getattr(state, "_comm_manager", None) is NteractPanelCommManager
+            ):
+                state._comm_manager = original
+            continue
+        if getattr(module, attr, None) is NteractPanelCommManager:
+            setattr(module, attr, original)
 
 
 class _PanelLoader:
@@ -449,7 +508,9 @@ def install() -> None:
 
 
 def uninstall() -> None:
-    """Remove the lazy import hook. Existing Panel monkeypatches are left intact."""
+    """Remove the lazy import hook and restore any loaded Panel monkeypatches."""
+    _restore_panel_modules()
     NteractPanelCommManager.clear_comms()
     NteractPanelCommManager._nteract_original_manager = None
+    NteractPanelCommManager._nteract_original_bindings.clear()
     _uninstall_panel_import_hook()

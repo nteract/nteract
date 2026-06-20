@@ -176,6 +176,16 @@ describe("Panel runtime transport", () => {
     expect(manager.setDisconnected).toHaveBeenCalledWith(disconnected);
   });
 
+  it("registers host Panel notification handlers once per transport", () => {
+    const transport = createTransport();
+    installPanelRuntimeTransport(() => transport);
+
+    registerPanelRuntimeTransportHandlers(transport);
+    registerPanelRuntimeTransportHandlers(transport);
+
+    expect(transport.onNotification).toHaveBeenCalledTimes(3);
+  });
+
   it("reuses the installed runtime while rebinding outbound transport and handlers", () => {
     const firstTransport = createTransport();
     const secondTransport = createTransport();

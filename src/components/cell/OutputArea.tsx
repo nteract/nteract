@@ -190,7 +190,6 @@ import {
 } from "runtimed";
 // Re-export so existing imports continue to work.
 export type { JupyterOutput } from "./jupyter-output";
-export type { PanelRuntimeIframeMessage } from "runtimed";
 
 export interface PanelRuntimeMessageContext extends PanelRuntimeOutputContext {
   event: PanelRuntimeClientEvent;
@@ -870,7 +869,7 @@ function OutputAreaSingle({
   // Handle messages from iframe, routing widget messages to comm bridge
   const handleIframeMessage = useCallback(
     (message: IframeToParentMessage) => {
-      if (isPanelRuntimeMessage(message)) {
+      if (isPanelRuntimeMessage(message) && onPanelRuntimeMessage) {
         const currentOutputs = outputsRef.current;
         const outputIds = currentOutputs.flatMap((output) =>
           output.output_id ? [output.output_id] : [],
@@ -880,7 +879,7 @@ function OutputAreaSingle({
           executionCount: executionCount ?? null,
           outputIds,
         });
-        onPanelRuntimeMessage?.(message, {
+        onPanelRuntimeMessage(message, {
           event,
           cellId,
           executionCount: executionCount ?? null,

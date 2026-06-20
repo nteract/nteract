@@ -206,15 +206,23 @@ than a CRDT schema commitment, but it gives the daemon and frontend the same
 typed state language before deciding whether the durable record belongs in
 RuntimeStateDoc, CommsDoc, or a dedicated Panel/Bokeh runtime doc.
 
-If Panel exposes a clean backend registration hook while building the monkeypatch,
-use it. If not, keep the monkeypatch small and propose an upstream hook after
-the nteract shape is proven.
+The `PyViz.comm_manager` implementation in this branch should be treated as a
+compatibility adapter for Panel's current notebook API, not as the durable
+nteract architecture. If Panel exposes a clean backend registration hook while
+building the monkeypatch, use it. If not, keep the monkeypatch small and propose
+an upstream hook after the nteract shape is proven. The upstream hook we likely
+want is a notebook backend or Bokeh patch transport registration point: Panel
+should be able to ask a host for a typed channel carrying Bokeh `PATCH-DOC`
+messages, binary buffers, ACKs, and disconnect state without the host pretending
+to be an ipykernel comm manager outside the Panel compatibility boundary.
 
 ## Frontend Integration
 
-The Panel iframe should extend `window.PyViz.comm_manager` with a nteract
-implementation that sends and receives typed Panel channel events. It should
-still let Panel's own Bokeh `CommManager` construct and apply JSON patches, so
+The Panel iframe currently has to expose `window.PyViz.comm_manager` because
+Panel's browser-side Bokeh model looks for that name. Keep that surface as thin
+as possible: it should translate Panel's current calls into typed nteract Panel
+channel events, not become a general-purpose Jupyter comm layer. It should still
+let Panel's own Bokeh `CommManager` construct and apply JSON patches, so
 nteract does not need to model every Bokeh model property as a separate trait.
 
 This can share a typed Bokeh patch channel with the current Bokeh output

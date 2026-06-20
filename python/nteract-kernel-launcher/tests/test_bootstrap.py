@@ -421,6 +421,7 @@ def _isolate_panel_import_hook(monkeypatch, _panel):
     monkeypatch.setattr(_panel, "_panel_import_hook", None)
     monkeypatch.setattr(_panel.NteractPanelCommManager, "_comms", {})
     monkeypatch.setattr(_panel.NteractPanelCommManager, "_nteract_original_manager", None)
+    monkeypatch.setattr(_panel.NteractPanelCommManager, "_nteract_original_bindings", {})
     for name in list(sys.modules):
         if name == "panel" or name.startswith("panel."):
             monkeypatch.delitem(sys.modules, name, raising=False)
@@ -530,6 +531,50 @@ def test_panel_runtime_hook_keeps_first_original_manager(monkeypatch):
     assert state_mod.state._comm_manager is _panel.NteractPanelCommManager
 
 
+def test_panel_runtime_hook_uninstall_restores_loaded_panel(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    _isolate_panel_import_hook(monkeypatch, _panel)
+    monkeypatch.setenv(_panel.PANEL_RUNTIME_STATE_ENV, "1")
+
+    class OriginalManager:
+        pass
+
+    notebook = types.ModuleType("panel.io.notebook")
+    notebook.JupyterCommManagerBinary = OriginalManager
+    notebook._JupyterCommManager = OriginalManager
+    viewable = types.ModuleType("panel.viewable")
+    viewable.JupyterCommManager = OriginalManager
+
+    class MimeRenderMixin:
+        def _render_mimebundle(self, model, doc, comm, location=None):
+            return ({"text/html": "<div></div>"}, {})
+
+    original_render = MimeRenderMixin._render_mimebundle
+    viewable.MimeRenderMixin = MimeRenderMixin
+    state_mod = types.ModuleType("panel.io.state")
+    state_mod.state = SimpleNamespace(_comm_manager=OriginalManager)
+
+    monkeypatch.setitem(sys.modules, "panel.io.notebook", notebook)
+    monkeypatch.setitem(sys.modules, "panel.viewable", viewable)
+    monkeypatch.setitem(sys.modules, "panel.io.state", state_mod)
+
+    _panel.install()
+    assert notebook.JupyterCommManagerBinary is _panel.NteractPanelCommManager
+    assert viewable.JupyterCommManager is _panel.NteractPanelCommManager
+    assert state_mod.state._comm_manager is _panel.NteractPanelCommManager
+    assert viewable.MimeRenderMixin._render_mimebundle is not original_render
+
+    _panel.uninstall()
+
+    assert notebook.JupyterCommManagerBinary is OriginalManager
+    assert notebook._JupyterCommManager is OriginalManager
+    assert viewable.JupyterCommManager is OriginalManager
+    assert state_mod.state._comm_manager is OriginalManager
+    assert viewable.MimeRenderMixin._render_mimebundle is original_render
+    assert _panel.NteractPanelCommManager._nteract_original_bindings == {}
+
+
 def test_panel_runtime_hook_patches_distinct_state_manager(monkeypatch):
     from nteract_kernel_launcher import _panel
 
@@ -610,7 +655,7 @@ def test_panel_comm_manager_emits_typed_events(monkeypatch):
     assert "server-comm" not in _panel.NteractPanelCommManager._comms
 
 
-def test_panel_stdout_capture_restores_stdout_on_capture_error(monkeypatch):
+def test_panel_stdout_capture_leaves_nested_stdout_alone_on_capture_error(monkeypatch):
     from nteract_kernel_launcher import _panel
 
     def raise_capture_error():
@@ -626,7 +671,58 @@ def test_panel_stdout_capture_restores_stdout_on_capture_error(monkeypatch):
     with pytest.raises(RuntimeError, match="boom"):
         captured.__exit__(None, None, None)
 
+    assert sys.stdout is sentinel_stdout
+
+
+def test_panel_stdout_capture_restores_own_stdout_on_capture_error(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    def raise_capture_error():
+        raise RuntimeError("boom")
+
+    original_stdout = sys.stdout
+    captured = _panel._CapturedStdout()
+    captured._stdout = original_stdout
+    captured._stringio = SimpleNamespace(getvalue=raise_capture_error)
+    monkeypatch.setattr(sys, "stdout", captured._stringio)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        captured.__exit__(None, None, None)
+
     assert sys.stdout is original_stdout
+
+
+def test_panel_comm_manager_preserves_partial_stdout_on_error(monkeypatch):
+    from nteract_kernel_launcher import _panel
+
+    events = []
+    stdout = []
+    errors = []
+    monkeypatch.setattr(_panel.NteractPanelCommManager, "_comms", {})
+    _panel.set_panel_runtime_event_sink(events.append)
+
+    def fail(_msg):
+        print("before failure")
+        raise ValueError("callback failed")
+
+    try:
+        comm = _panel.NteractPanelCommManager.get_client_comm(
+            id="client-comm",
+            on_msg=fail,
+            on_stdout=stdout.append,
+            on_error=errors.append,
+        )
+        comm._handle_msg({"content": {"data": {"comm_id": "client-comm"}}})
+    finally:
+        _panel.set_panel_runtime_event_sink(None)
+
+    ack = events[-1]
+    assert ack["type"] == "panel_ack"
+    assert ack["metadata"]["msg_type"] == "Error"
+    assert "before failure" in ack["metadata"]["traceback"]
+    assert ack["metadata"]["comm_id"] == "client-comm"
+    assert stdout == [["before failure"]]
+    assert len(errors) == 1
 
 
 def test_panel_comm_manager_uninstall_clears_comms(monkeypatch):

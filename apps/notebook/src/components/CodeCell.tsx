@@ -1,15 +1,12 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
 import { ChevronRight, Code2, Eye, EyeOff, MessageSquarePlus, type LucideIcon } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PanelRuntimeIframeMessage } from "runtimed";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { cellOutputInnerInset } from "@/components/cell/cell-layout";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
-import {
-  OutputArea,
-  type PanelRuntimeIframeMessage,
-  type PanelRuntimeMessageContext,
-} from "@/components/cell/OutputArea";
+import { OutputArea, type PanelRuntimeMessageContext } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { languageDisplayNames, type SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";

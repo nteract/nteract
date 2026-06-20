@@ -172,11 +172,11 @@ export interface NteractWidgetStateParams {
   buffers?: string[];
 }
 
-export interface NteractPanelServerPatchParams extends PanelRuntimePatchPayload {}
+export type NteractPanelServerPatchParams = PanelRuntimePatchPayload;
 
-export interface NteractPanelAckParams extends PanelRuntimeAckPayload {}
+export type NteractPanelAckParams = PanelRuntimeAckPayload;
 
-export interface NteractPanelDisconnectedParams extends PanelRuntimeDisconnectedPayload {}
+export type NteractPanelDisconnectedParams = PanelRuntimeDisconnectedPayload;
 
 // ── Iframe → Host: Notification Params ──────────────────────────────
 
@@ -202,11 +202,11 @@ export interface NteractWidgetUpdateParams {
   buffers?: string[];
 }
 
-export interface NteractPanelChannelOpenParams extends PanelRuntimeChannelPayload {}
+export type NteractPanelChannelOpenParams = PanelRuntimeChannelPayload;
 
-export interface NteractPanelClientPatchParams extends PanelRuntimePatchPayload {}
+export type NteractPanelClientPatchParams = PanelRuntimePatchPayload;
 
-export interface NteractPanelChannelCloseParams extends PanelRuntimeChannelPayload {}
+export type NteractPanelChannelCloseParams = PanelRuntimeChannelPayload;
 
 export interface NteractWheelBoundaryParams {
   deltaY?: number;
