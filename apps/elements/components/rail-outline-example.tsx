@@ -247,16 +247,16 @@ function ScenarioNotice({
 }) {
   return (
     <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(280px,420px)]">
-      <div className="border-l border-fd-border py-1 pl-3 text-xs leading-5 text-fd-muted-foreground">
-        <div className="mb-1 flex items-center gap-2 font-semibold">
+      <section className="border-l border-fd-border py-1 pl-4 text-fd-muted-foreground">
+        <div className="mb-1 flex items-center gap-2 text-xs font-semibold leading-5">
           <ShieldCheck className="size-3.5" aria-hidden="true" />
           NotebookDocumentShell, NotebookRail, and NotebookView render from current sources.
         </div>
-        <p>
+        <p className="text-xs leading-5">
           The docs app owns only scenario facts: capabilities, fixture cells, package details,
           focused cell, active panel, and inert navigation callbacks.
         </p>
-      </div>
+      </section>
 
       <div className="rounded-lg border border-fd-border bg-fd-background p-3 text-xs leading-5 text-fd-muted-foreground">
         <div className="mb-2 flex flex-wrap gap-1.5">

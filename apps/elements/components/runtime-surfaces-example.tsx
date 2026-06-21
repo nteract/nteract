@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import { asyncTrue, noop } from "@/components/fixture-notebook-host";
+import { asyncTrue, noop } from "./fixture-notebook-host";
 import {
   DaemonStatusBanner,
   DebugBanner,
@@ -258,7 +258,7 @@ function RuntimeBanners() {
         >
           <NotebookNotice
             tone="warning"
-            icon={<AlertTriangle className="h-4 w-4" />}
+            icon={<AlertTriangle className="size-4" aria-hidden="true" />}
             title="Document attention needed."
             actions={<NotebookNoticeAction onClick={noop}>Review</NotebookNoticeAction>}
           >

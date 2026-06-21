@@ -19,6 +19,7 @@ import {
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { Eyebrow } from "@/components/surface-primitives";
 
 type ComputePlacementId = "rail" | "environment" | "launcher";
 
@@ -230,15 +231,9 @@ function ComputeSourceBoundaryTable() {
     <section className="border-y border-fd-border" aria-label="Compute source boundaries">
       <div className="grid gap-2 border-b border-fd-border py-3 md:grid-cols-[minmax(10rem,0.24fr)_minmax(0,1fr)_minmax(8rem,0.18fr)_minmax(10rem,0.22fr)]">
         <h2 className="text-sm font-semibold">Compute source boundaries</h2>
-        <div className="hidden text-[10px] font-semibold uppercase tracking-normal text-fd-muted-foreground md:block">
-          Runtime boundary
-        </div>
-        <div className="hidden text-[10px] font-semibold uppercase tracking-normal text-fd-muted-foreground md:block">
-          Security
-        </div>
-        <div className="hidden text-[10px] font-semibold uppercase tracking-normal text-fd-muted-foreground md:block">
-          Protocol
-        </div>
+        <Eyebrow className="hidden md:block">Runtime boundary</Eyebrow>
+        <Eyebrow className="hidden md:block">Security</Eyebrow>
+        <Eyebrow className="hidden md:block">Protocol</Eyebrow>
       </div>
       <div className="divide-y divide-fd-border">
         {computeSourceGroups.map((group) => (
@@ -267,9 +262,7 @@ function ComputeSourceBoundaryRow({ group }: { group: (typeof computeSourceGroup
 function BoundaryFact({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 text-xs">
-      <div className="font-semibold uppercase tracking-normal text-fd-muted-foreground md:hidden">
-        {label}
-      </div>
+      <Eyebrow className="md:hidden">{label}</Eyebrow>
       <div className="truncate text-xs font-semibold">{value}</div>
     </div>
   );
@@ -286,9 +279,7 @@ function PlacementComparison({
     <section className="border-y border-fd-border" aria-label="Placement comparison">
       <div className="grid gap-2 border-b border-fd-border py-3 md:grid-cols-[minmax(10rem,0.26fr)_minmax(0,1fr)]">
         <h2 className="text-sm font-semibold">Placement comparison</h2>
-        <div className="hidden text-[10px] font-semibold uppercase tracking-normal text-fd-muted-foreground md:block">
-          Read
-        </div>
+        <Eyebrow className="hidden md:block">Read</Eyebrow>
       </div>
       <div className="divide-y divide-fd-border">
         {placements.map((placement) => (
@@ -471,9 +462,7 @@ function PanelHeader({
     <div className="flex items-start gap-2">
       <Icon className="mt-0.5 size-4 text-fd-muted-foreground" aria-hidden="true" />
       <div>
-        <div className="text-xs font-semibold uppercase tracking-normal text-fd-muted-foreground">
-          {detail}
-        </div>
+        <Eyebrow>{detail}</Eyebrow>
         <h3 className="text-sm font-semibold">{label}</h3>
       </div>
     </div>
@@ -503,9 +492,9 @@ function EnvironmentBlock({
 function ComputeTargetGroup({ group }: { group: string }) {
   return (
     <section>
-      <h4 className="mb-1.5 text-[10px] font-semibold uppercase tracking-normal text-fd-muted-foreground">
+      <Eyebrow as="h4" className="mb-1.5">
         {group}
-      </h4>
+      </Eyebrow>
       <div className="grid gap-1.5">
         {computeTargets
           .filter((target) => target.group === group)

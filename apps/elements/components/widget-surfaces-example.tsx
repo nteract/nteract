@@ -28,6 +28,7 @@ import { WidgetUpdateManager, type ContentRef } from "@/components/widgets/widge
 import { WidgetView } from "@/components/widgets/widget-view";
 import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 import { cn } from "@/lib/utils";
+import { Eyebrow } from "@/components/surface-primitives";
 
 type FixtureModel = {
   id: string;
@@ -1662,7 +1663,7 @@ function WidgetFixtureProvider({ children }: { children: ReactNode }) {
             className="rounded-lg border border-fd-border bg-fd-background p-3"
             data-testid="widget-event-log"
           >
-            <div className="text-xs font-medium uppercase text-fd-muted-foreground">Comm log</div>
+            <Eyebrow>Comm log</Eyebrow>
             <div className="mt-2 space-y-1 font-mono text-xs text-fd-muted-foreground">
               {events.length > 0
                 ? events.map((event, index) => <div key={`${index}-${event}`}>{event}</div>)
@@ -1911,7 +1912,7 @@ export function WidgetSurfacesExample() {
         ))}
       </section>
 
-      <section className="border-l border-fd-border py-1 pl-4">
+      <section className="border-l border-fd-border py-1 pl-4 text-fd-muted-foreground">
         <div className="flex items-start gap-3">
           <CircleDotDashed className="mt-0.5 size-4 flex-none text-amber-600" aria-hidden="true" />
           <div className="min-w-0 flex-1">

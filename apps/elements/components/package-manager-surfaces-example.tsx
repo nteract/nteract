@@ -1,10 +1,10 @@
 "use client";
 
 import { CheckCircle2, FileCode2, PackageCheck } from "lucide-react";
-import type { ReactNode } from "react";
 import { EnvironmentPackageSummaryPanel } from "@/components/environment";
 import { NotebookPackageSummaryPanel } from "@/components/notebook";
 import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
+import { Eyebrow, SurfaceFrame } from "@/components/surface-primitives";
 
 const packageSurfaces = [
   {
@@ -54,9 +54,7 @@ export function PackageManagerSurfacesExample() {
         {packageSurfaces.map((surface) => (
           <div key={surface.name} className="rounded-lg border border-fd-border bg-fd-card p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
-              <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-                {surface.manager}
-              </span>
+              <Eyebrow>{surface.manager}</Eyebrow>
               <CheckCircle2 className="size-4 text-emerald-500" aria-hidden="true" />
             </div>
             <h2 className="break-words text-sm font-semibold [overflow-wrap:anywhere]">
@@ -74,7 +72,7 @@ export function PackageManagerSurfacesExample() {
 
       <section className="grid items-start gap-4 xl:grid-cols-2">
         <SurfaceFrame
-          icon={<PackageCheck className="size-4 text-sky-500" aria-hidden="true" />}
+          iconSlot={<PackageCheck className="size-4 text-sky-500" aria-hidden="true" />}
           title="Shared package summary"
           detail="Pure package projection with no rail wrapper or host actions."
         >
@@ -84,7 +82,7 @@ export function PackageManagerSurfacesExample() {
         </SurfaceFrame>
 
         <SurfaceFrame
-          icon={<PackageCheck className="size-4 text-fuchsia-500" aria-hidden="true" />}
+          iconSlot={<PackageCheck className="size-4 text-fuchsia-500" aria-hidden="true" />}
           title="Notebook rail package listing"
           detail="Shared package listing inside the notebook rail wrapper."
         >
@@ -144,34 +142,5 @@ export function PackageManagerSurfacesExample() {
         </div>
       </section>
     </div>
-  );
-}
-
-function SurfaceFrame({
-  children,
-  detail,
-  icon,
-  title,
-}: {
-  children: ReactNode;
-  detail: string;
-  icon: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-      <div className="border-b border-fd-border p-4">
-        <div className="flex items-start gap-3">
-          <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-fd-border bg-fd-muted">
-            {icon}
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold">{title}</h2>
-            <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">{detail}</p>
-          </div>
-        </div>
-      </div>
-      {children}
-    </section>
   );
 }

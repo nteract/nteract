@@ -25,7 +25,8 @@ import {
 } from "@/components/notebook";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { getElementsNotebookScenario } from "./notebook-scenarios";
+import { Eyebrow } from "@/components/surface-primitives";
+import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
 
 type ContextTargetKind = "source" | "markdown" | "output" | "package";
 
@@ -492,9 +493,7 @@ export function ContextControlsExample() {
 function CellHeader({ detail, label }: { detail: string; label: string }) {
   return (
     <div className="flex min-w-0 items-center justify-between gap-3">
-      <div className="text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
-        {label}
-      </div>
+      <Eyebrow>{label}</Eyebrow>
       <div className="truncate text-xs text-fd-muted-foreground">{detail}</div>
     </div>
   );

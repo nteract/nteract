@@ -49,7 +49,10 @@ import { resetNotebookOutputs, setOutput } from "@/components/notebook/state/out
 import { cn } from "@/lib/utils";
 import { NotebookView } from "../../notebook/src/notebook-surface";
 import { createFixtureNotebookHost } from "./fixture-notebook-host";
-import { getElementsNotebookScenario, type ElementsNotebookScenario } from "./notebook-scenarios";
+import {
+  getElementsNotebookScenario,
+  type ElementsNotebookScenario,
+} from "@/components/notebook-scenarios";
 import type {
   MarkdownProjectionAnchor,
   MarkdownProjectionBlock,
