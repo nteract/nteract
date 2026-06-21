@@ -21,14 +21,7 @@ export interface InlineCommentComposerProps {
   onCancel: () => void;
 }
 
-type ComposerStyleVariant = "border" | "solid";
-
-const COMMENT_COMPOSER_STYLE_STORAGE_KEY = "nteract.commentComposerStyle";
 const AUTHOR_COLOR = "var(--comment-author-color, var(--primary, #2563eb))";
-// Legible foreground for the author color. Set once on :root next to
-// --comment-author-color (App and the cloud viewer); the white fallback covers
-// the neutral --primary fallback in AUTHOR_COLOR.
-const AUTHOR_CONTRAST = "var(--comment-author-contrast, #ffffff)";
 
 export function InlineCommentComposer({
   rect,
@@ -38,7 +31,6 @@ export function InlineCommentComposer({
 }: InlineCommentComposerProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [composerStyle] = useState<ComposerStyleVariant>(readComposerStylePreference);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const justOpenedRef = useRef(true);
 
@@ -88,26 +80,20 @@ export function InlineCommentComposer({
     pointerEvents: "none",
   };
 
-  const isSolidStyle = composerStyle === "solid";
-  const surfaceStyle: CSSProperties = isSolidStyle
-    ? {
-        background: AUTHOR_COLOR,
-        color: AUTHOR_CONTRAST,
-      }
-    : {
-        background: "var(--popover, #ffffff)",
-        border: `1.5px solid ${AUTHOR_COLOR}`,
-      };
-  const textareaStyle: CSSProperties = isSolidStyle
-    ? ({
-        "--comment-composer-placeholder-color": AUTHOR_CONTRAST,
-        caretColor: AUTHOR_CONTRAST,
-        color: AUTHOR_CONTRAST,
-      } as CSSProperties)
-    : { caretColor: AUTHOR_COLOR };
-  const buttonStyle: CSSProperties = isSolidStyle
-    ? { background: AUTHOR_CONTRAST, color: AUTHOR_COLOR }
-    : { background: AUTHOR_COLOR, color: AUTHOR_CONTRAST };
+  // The composer fills with the author color and reads as a colored button:
+  // white text and arrow, rather than the marginally-higher-contrast dark, which
+  // looks muddy on the saturated palette colors. The send chip is a subtle dark
+  // veil so the white arrow stays visible on any author color.
+  const surfaceStyle: CSSProperties = {
+    background: AUTHOR_COLOR,
+    color: "#ffffff",
+  };
+  const textareaStyle: CSSProperties = {
+    "--comment-composer-placeholder-color": "rgba(255, 255, 255, 0.72)",
+    caretColor: "#ffffff",
+    color: "#ffffff",
+  } as CSSProperties;
+  const buttonStyle: CSSProperties = { background: "rgba(0, 0, 0, 0.2)", color: "#ffffff" };
   const canSubmit = !disabled && !submitting && body.trim().length > 0;
 
   return (
@@ -125,10 +111,7 @@ export function InlineCommentComposer({
         align="start"
         sideOffset={8}
         collisionPadding={12}
-        className={cn(
-          "w-80 rounded-2xl p-2.5 shadow-none focus-visible:outline-none",
-          isSolidStyle ? "border-0" : "border",
-        )}
+        className="w-80 rounded-2xl border-0 p-2.5 shadow-none focus-visible:outline-none"
         style={surfaceStyle}
         data-testid="inline-comment-composer"
         onOpenAutoFocus={(event) => {
@@ -159,9 +142,7 @@ export function InlineCommentComposer({
               style={textareaStyle}
               className={cn(
                 "min-h-16 w-full resize-none border-0 bg-transparent py-1 pl-1 pr-10 text-sm leading-5",
-                isSolidStyle
-                  ? "placeholder:text-[var(--comment-composer-placeholder-color)]"
-                  : "text-foreground placeholder:text-muted-foreground",
+                "placeholder:text-[var(--comment-composer-placeholder-color)]",
                 "focus-visible:outline-none",
                 (disabled || submitting) && "cursor-not-allowed opacity-60",
               )}
@@ -183,15 +164,4 @@ export function InlineCommentComposer({
       </PopoverContent>
     </Popover>
   );
-}
-
-function readComposerStylePreference(): ComposerStyleVariant {
-  if (typeof window === "undefined") return "border";
-  try {
-    return window.localStorage?.getItem(COMMENT_COMPOSER_STYLE_STORAGE_KEY) === "solid"
-      ? "solid"
-      : "border";
-  } catch {
-    return "border";
-  }
 }
