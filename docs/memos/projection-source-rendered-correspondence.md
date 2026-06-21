@@ -77,46 +77,73 @@ assumption. The projector does **not** fold delimiters into styled runs:
   run is emitted with the content-only span `[2,6]` and `renderedText` `"good"`.
   The `**` regions become `syntaxSpans` on the block, not runs (`add_run` ~745,
   `add_outer_syntax_spans` ~585).
-- Inline code and inline math strip their delimiters too
-  (`collect_delimited_inline` ~515): a run's source span points at the content
-  inside the ticks or dollars.
-- The exception is images. `![alt](url)` emits one run whose source span covers
-  the full markup but whose `renderedText` is just the alt text. There is no
-  interior correspondence.
+- Inline code strips its delimiters too (`collect_delimited_inline` ~515): the
+  run's source span points at the content inside the ticks, and `renderedText`
+  is that same content.
+- Inline math also strips its `$` delimiters, but it is NOT character-faithful:
+  the run renders as KaTeX HTML, not as `renderedText` characters, so there is no
+  rendered character to map a source offset onto. Display math is further out:
+  `MathBlock` emits a run over the full `$$...$$` span and the host renders it
+  from `block.text` with no run spans at all (`ProjectedMarkdownView.tsx` ~195
+  and ~891, `crates/nteract-markdown-wasm/src/lib.rs:176`). Treat inline math as
+  atomic and display math as outside anchoring scope until a KaTeX-source
+  correspondence is designed.
+- Images are opaque. `![alt](url)` emits one run whose source span covers the
+  full markup but whose `renderedText` is just the alt text. Reference-style
+  links and images (`[label][ref]`, `![alt][ref]`) are the same: the source span
+  covers `[label][ref]` while `renderedText` is only the label. No interior
+  correspondence.
 
-So for the common cases (plain text, strong, emphasis, delete, inline code,
-math) a run is already **transparent**: its rendered text equals its source
-slice, one to one. The host can sub-slice it by character with no projector
-change. The work is to make the consumers do that, plus a small marker so the
-host stops guessing which runs are transparent.
+So for the genuinely character-faithful cases (plain text, strong, emphasis,
+delete, inline code, and inline links written as `[label](url)`) a run is already
+**transparent**: its rendered text equals its source slice, one to one. The host
+can sub-slice those by character with no projector change. Math, images,
+reference links, and runs that decode entities or escapes are not transparent and
+must be handled as atomic or piecewise. The work is to make the consumers respect
+that split, plus a small marker so the host stops guessing.
 
 ## Run fidelity classes
 
-Make the distinction explicit rather than inferred:
+Make the distinction explicit rather than inferred. There are three kinds, not
+two:
 
 - **Transparent run**. `renderedText` is the verbatim source slice of
-  `sourceSpan`. Character offsets interpolate linearly in both directions. The
-  majority of runs.
-- **Opaque run**. `renderedText` differs from the source slice (images today;
-  future: entities like `&amp;`, escapes like `\*`, autolinks where the label
-  differs from the target, hard breaks). No meaningful interior mapping.
+  `sourceSpan`, one to one. Character offsets interpolate linearly in both
+  directions. Plain text, strong, emphasis, delete, inline code, inline links.
+  The majority of prose.
+- **Piecewise run**. Partly verbatim, partly remapped: a text run that decodes an
+  entity (`&amp;` to `&`), unescapes a character (`\*` to `*`), or collapses a
+  soft line break (`\n` to a space). These keep useful prefix/suffix
+  correspondence around the remapped span, so they are not opaque, but a single
+  boolean cannot describe them; they need explicit `(sourceSpan, renderedSpan)`
+  segments to be character-faithful. A soft break is length-preserving (the `\n`
+  and the space are both one code unit), so positions still line up one to one
+  even though the displayed character differs.
+- **Opaque run**. No interior correspondence at all: images, reference-style
+  links and images, inline math (KaTeX HTML), and any host-rendered widget.
   Selection, highlight, and caret snap to run boundaries, which is acceptable
   because there is no sub-position to land on.
 
-Today the host infers this with `renderedLength === sourceLength`. That is a
+Today the host infers fidelity with `renderedLength === sourceLength`. That is a
 heuristic, not ground truth: a run can have equal lengths yet not be a verbatim
-slice, or unequal lengths yet be a clean substring. The projector knows the
-truth (it built both strings). It should say so.
+slice (a soft break), or unequal lengths yet be a clean substring. A stronger
+host-only guard is the content check `plan.source.slice(run.sourceSpan) ===
+run.renderedText`, but the host does not always carry `source`. The projector
+built both strings and knows the truth, so it should say so.
 
-**Contract change (the durable decision):** add an authoritative per-run
-fidelity signal to the projection. Smallest form is a boolean (`linearMap` /
-`transparent`); a richer form emits explicit `(sourceSpan, renderedSpan)`
-segments for runs that are piecewise-linear. Start with the boolean. It is an
-additive field on `MarkdownProjectionRun`, hand-mirrored on both sides (no
-ts-rs; `markdown-projection.ts:44` and `WasmRun::push_json` ~826). Bump the
-payload envelope `version` to `2` so prerendered
-`application/vnd.nteract.markdown+json` consumers do not silently misread it
-(`markdownProjectionPlanFromMimeData` ~279 currently rejects anything but `1`).
+**Contract change (the durable decision):** add an authoritative per-run fidelity
+signal to the projection. A boolean (`transparent`) is the narrow starter, honest
+only for plain text and strong/emphasis/delete/inline-code; piecewise runs
+(entities, escapes, soft breaks) and reference links need the richer form,
+explicit `(sourceSpan, renderedSpan)` segments. The field is **additive and
+optional** on `MarkdownProjectionRun`, hand-mirrored on both sides (no ts-rs;
+`markdown-projection.ts:44` and `WasmRun::push_json` ~826). Because it is
+additive it stays under payload `version: 1`: old consumers ignore an unknown
+field, so do NOT bump to `version: 2` for it. A bump is only warranted by a
+breaking run-granularity change, and even then note the gate is asymmetric, the
+MIME path rejects `version !== 1` (`markdown-projection.ts:279`) but direct
+`projectMarkdownPlan` does not validate version at all, so a bump must update both
+paths together.
 
 ## Both consumers, one primitive
 
@@ -126,23 +153,36 @@ character level.*
 
 - **Highlight (source span → rendered):** for each covered run, compute the
   intra-run overlap `[max(anchorFrom, runStart), min(anchorTo, runEnd)]`. For a
-  transparent run, map those source offsets to rendered offsets linearly and
-  wrap only those characters in the highlight element. For an opaque run, wrap
-  the whole run. No more whole-paragraph balloon.
-- **Display quote (source span → rendered text):** concatenate the covered
-  runs' `renderedText`, sub-sliced for partial transparent runs. The reader sees
-  "is some markdown text it is good", not `me markdown text it is **good**`. The
-  raw-source `exact_quote` stays on the anchor for re-resolution; it is just no
-  longer what we display.
+  transparent run, map those source offsets to rendered offsets linearly and wrap
+  only those characters in the highlight element. For a piecewise or opaque run,
+  wrap the whole run (acceptable, never beyond the run). Guard the transparent
+  path with a length (or, where `source` is available, content) check so a
+  remapped run never produces a wrong sub-range. No more whole-paragraph balloon.
+- **Display quote (source span → rendered text):** at creation, prefer the live
+  `Selection.toString()`; the browser already collapses CSS whitespace, so it is
+  exactly what the user saw. When re-deriving later without a selection (the
+  rail), concatenate the covered runs' `renderedText`, sub-sliced for partial
+  transparent runs, then normalize whitespace to match `white-space: normal`
+  (collapse runs of whitespace, trim). Deriving from `renderedText` rather than
+  `source.slice` is what keeps `**`, image markup, and `<url>` autolink brackets
+  out of the quote. The raw-source `exact_quote` stays on the anchor for
+  re-resolution; it is just no longer what we display.
 - **Selection → anchor (rendered → source):** already character-correct for
   transparent runs. Formalize it against the fidelity classes and delete the
   generic snap fallback in `sourceOffsetForRenderedPoint`, replacing it with the
   explicit transparent-interpolate / opaque-snap split.
 
-Note that the dominant fix (highlight no longer balloons, quote no longer shows
-syntax) is **host-side only** and needs no projector change, because the common
-runs are already transparent. The fidelity marker is what makes the opaque cases
-correct and removes the host heuristic. Sequence accordingly.
+Deriving from `renderedText` handles the cases that would otherwise leak source:
+an image-alt selection yields the alt text (opaque run, whole `renderedText`), an
+autolink yields the bare URL, and a soft-break selection yields a space. The
+residual imprecision is sub-run quote fidelity inside a piecewise run (an entity
+mid-selection), which waits on the segment form of the fidelity marker.
+
+The dominant fix (highlight no longer balloons, quote no longer shows syntax) is
+**host-side only** and needs no projector change, because the character-faithful
+runs are already transparent and the length guard keeps everything else at run
+granularity. The fidelity marker is what later makes piecewise runs
+character-faithful and removes the host heuristic. Sequence accordingly.
 
 ## Why this is the rich-editing primitive
 
@@ -156,10 +196,10 @@ exactly this correspondence, just exercised for writes:
 - re-project and map the new source position back to a rendered caret
 
 Highlight and quote are the read-only consumers of that map. Building it at
-character granularity now, with an authoritative fidelity marker, means the
-editing work inherits a tested correspondence instead of reinventing it. The
-opaque-run set is also the set a rich editor must treat as atomic widgets
-(images, entities, components), so naming it here pays forward.
+character granularity now means the editing work inherits a tested correspondence
+instead of reinventing it. The opaque-run set is also the set a rich editor must
+treat as atomic widgets (images, math, reference links, components), so naming it
+here pays forward.
 
 ## Open questions
 
@@ -168,31 +208,41 @@ opaque-run set is also the set a rich editor must treat as atomic widgets
   entities are also character-faithful? Boolean covers the comment bug; segments
   are what editing eventually wants. Lean boolean now, segments when the first
   opaque-interior case actually blocks something.
-- **OQ-2 Highlight element shape.** Sub-wrapping a run means injecting highlight
-  spans inside the run span. Confirm this does not fight selection, copy
-  (`handleRenderedMarkdownCopy`), or the shared `--cm-comment-color` /
-  `.comment-highlight` surface used by both planes
-  (`src/styles/comment-highlight.css`).
+- **OQ-2 Highlight element shape (required for step 1, not deferred).** Character
+  granularity means injecting highlight `<span>`s inside the run span. This is a
+  step-1 design item: the outer run span and its `data-markdown-source-run` /
+  `data-source-*` attributes must stay intact (selection mapping reads them), and
+  the nested spans must not change the run's text content, so
+  `handleRenderedMarkdownCopy` and the context-menu copy (both build the
+  clipboard from `exact_quote` via a `Selection`/`Range` measurement) keep
+  working. Verify copy explicitly. The shared `--cm-comment-color` /
+  `.comment-highlight` surface (`src/styles/comment-highlight.css`) moves from the
+  run span to the inner highlight span.
 - **OQ-3 Overlapping anchors.** Two comments overlapping the same characters
   need nested or layered highlights. Run-granular code sidestepped this by
   picking the shortest overlapping highlight; character-granular has to decide
-  stacking.
+  stacking. Step 1 keeps the single-best-highlight-per-run choice and highlights
+  only that sub-range; multiple-per-run is deferred.
 - **OQ-4 IsolatedFrame.** Cells that fall back to `IsolatedFrame` have no
   comment affordance at all today. Out of scope here, tracked separately.
-- **OQ-5 Version handshake.** Confirm every `application/vnd.nteract.markdown+json`
-  producer and consumer moves to `version: 2` together; no older-daemon
-  fallback (repo policy is ship-together schema changes).
+- **OQ-5 Marker rollout.** The fidelity marker is additive under `version: 1`, so
+  there is no daemon or consumer handshake to coordinate for it. Only a breaking
+  run-granularity change would need a `version` bump, and that bump must cover
+  both the MIME path and direct `projectMarkdownPlan` together (the version gate
+  is asymmetric today).
 
 ## Suggested next steps
 
 1. Host-side character-granular highlight in `ProjectedMarkdownView`
    (`commentHighlightForRun` / `renderRuns`): wrap only the overlapping
    characters of each covered run. Fixes the balloon with no projector change.
-2. Host-side run-derived display quote: build the preview from covered runs'
-   rendered text; keep `exact_quote` as the anchor's re-resolution key.
-3. Projector fidelity marker (boolean) + payload `version: 2`; replace the host
+2. Host-side display quote: `Selection.toString()` at creation, run-derived plus
+   whitespace-normalized when re-deriving in the rail; keep `exact_quote` as the
+   anchor's re-resolution key.
+3. Projector fidelity marker, additive under `version: 1` (no bump): a boolean
+   for the transparent runs, segments for piecewise runs. Replace the host
    `renderedLength === sourceLength` heuristic. Update the WASM delimiter-span
    tests (`projects_multi_character_delimiter_source_spans` ~1347).
 4. Fold the read path onto the same fidelity classes; delete the generic snap.
-5. If this holds up, graduate the contract (run granularity, fidelity marker,
-   payload version) into an ADR and cross-link OC-2.
+5. If this holds up, graduate the contract (run fidelity classes, the marker
+   shape) into an ADR and cross-link OC-2.
