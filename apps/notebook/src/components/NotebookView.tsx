@@ -1026,7 +1026,9 @@ function NotebookViewContent({
             rightGutterContent={rightGutterContent}
             headingAnchors={markdownHeadingAnchorsByCellId?.get(cell.id)}
             commentThreads={commentThreadsByCell?.get(cell.id)}
-            pendingCommentAnchor={pendingCommentAnchor}
+            pendingCommentAnchor={
+              pendingCommentAnchor?.cell_id === cell.id ? pendingCommentAnchor : null
+            }
             readOnly={!canEditMarkdownSources}
             onCreateSourceComment={onCreateSourceComment}
             onActivateCommentThread={onActivateCommentThread}

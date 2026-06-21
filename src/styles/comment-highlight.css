@@ -17,3 +17,16 @@
      "needs attention" cue, so a resolved thread drops it. */
   border-bottom: none;
 }
+
+/* Compose preview: the range the open composer will attach to. It is tentative
+   and not yet a real comment, so it reads as a softer, dashed version of a
+   committed highlight and is not interactive. */
+.comment-highlight-pending {
+  background-color: color-mix(in srgb, var(--cm-comment-color) 14%, transparent);
+  border-bottom-style: dashed;
+  cursor: text;
+}
+
+.comment-highlight-pending:hover {
+  background-color: color-mix(in srgb, var(--cm-comment-color) 14%, transparent);
+}
