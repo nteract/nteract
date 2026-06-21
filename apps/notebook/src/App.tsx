@@ -2122,6 +2122,7 @@ function AppContent() {
                 onCreateOutputComment={canMutateComments ? handleRequestOutputComment : undefined}
                 onActivateCommentThread={handleActivateCommentThread}
                 commentThreadsByCell={sourceCommentThreadsByCell}
+                pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
                 markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
               />
             </CrdtBridgeProvider>

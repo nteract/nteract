@@ -58,6 +58,7 @@ import { openUrl } from "../lib/open-url";
 import { toggleMarkdownTaskMarker } from "../lib/markdown-task-source";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import { sourceRangeAnchorFromRenderedMarkdownSelection } from "../lib/rendered-markdown-source-comment";
+import { buildRenderedCommentHighlights } from "../lib/rendered-comment-highlights";
 import { commentHighlightExtension } from "../lib/comment-highlight-extension";
 import { refreshCellCommentHighlights, type SourceCommentThread } from "../lib/comment-highlights";
 import {
@@ -163,6 +164,7 @@ interface MarkdownCellProps {
   ) => void;
   onActivateCommentThread?: (threadId: string) => void;
   commentThreads?: readonly SourceCommentThread[];
+  pendingCommentAnchor?: SourceRangeCommentAnchor | null;
   outputHostContext?: NteractEmbedHostContextPatch;
 }
 
@@ -183,6 +185,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   onCreateSourceComment,
   onActivateCommentThread,
   commentThreads,
+  pendingCommentAnchor,
   outputHostContext,
 }: MarkdownCellProps) {
   const isFocused = useIsCellFocused(cell.id);
@@ -302,26 +305,25 @@ export const MarkdownCell = memo(function MarkdownCell({
     markdownProjectionMatchesSource(markdownProjection, previewSource);
   const canCommentOnRenderedMarkdown =
     Boolean(onCreateSourceComment) && !readOnly && !editing && projectionMatchesPreview;
-  const renderedCommentHighlights = useMemo(() => {
-    if (editing || !projectionMatchesPreview || !commentThreads?.length) return undefined;
-    const highlights = commentThreads.flatMap((thread) => {
-      // Resolved threads leave no rendered highlight; they stay in the rail
-      // under "Show resolved".
-      if (thread.resolved) return [];
-      const range = resolveSourceRangeAnchor(previewSource, thread.anchor);
-      if (!range) return [];
-      return [
-        {
-          from: range.from,
-          to: range.to,
-          threadId: thread.threadId,
-          resolved: thread.resolved,
-          ...(thread.color ? { color: thread.color } : {}),
-        },
-      ];
-    });
-    return highlights.length > 0 ? highlights : undefined;
-  }, [commentThreads, editing, previewSource, projectionMatchesPreview]);
+  const renderedCommentHighlights = useMemo(
+    () =>
+      buildRenderedCommentHighlights({
+        cellId: cell.id,
+        source: previewSource,
+        editing,
+        projectionMatchesPreview,
+        commentThreads,
+        pendingCommentAnchor,
+      }),
+    [
+      cell.id,
+      commentThreads,
+      editing,
+      pendingCommentAnchor,
+      previewSource,
+      projectionMatchesPreview,
+    ],
+  );
   const previewMinHeight = useMemo(
     () =>
       projectedMarkdownPreviewHeight(
