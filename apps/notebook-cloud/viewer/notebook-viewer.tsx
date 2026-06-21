@@ -49,6 +49,7 @@ import {
   type CommentsProjection,
   type NotebookCommentDraftTarget,
 } from "@/components/notebook";
+import { resolveCommentsUiSurface } from "@/components/notebook/comments-ui-gate";
 import {
   openNotebookRailPanel,
   setActiveNotebookRailPanel,
@@ -256,6 +257,8 @@ export function NotebookViewer({
   );
   const loadingPolicy = useMemo(() => cloudViewerLoadingPolicy(config), [config.headsHash]);
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const disableComments = config.featureFlags?.disable_comments === true;
+  const commentsUiEnabled = !disableComments;
   const { store: widgetStore } = useWidgetStoreRequired();
   const appSessionStatus = useCloudAppSessionStatus(config.session ?? null);
   const hasAppSession = Boolean(appSessionStatus.session);
@@ -1758,9 +1761,11 @@ export function NotebookViewer({
     [],
   );
   const renderedActiveRailPanel =
-    !shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"
+    !commentsUiEnabled && activeRailPanel === "comments"
       ? "outline"
-      : activeRailPanel;
+      : !shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"
+        ? "outline"
+        : activeRailPanel;
   const commentsPanelStatus = commentsProjection ? null : "Syncing comments...";
   const resolveSourceQuote = useCallback((anchor: SourceRangeCommentAnchor): string | null => {
     const cell = getCellById(anchor.cell_id);
@@ -1793,6 +1798,14 @@ export function NotebookViewer({
       resolveSourceQuote={resolveSourceQuote}
     />
   );
+  const commentsUiSurface = resolveCommentsUiSurface({
+    commentsUiEnabled,
+    canCreateComments: canWriteComments,
+    commentsPanel,
+    onCreateSourceComment: handleRequestSourceComment,
+    onCreateOutputComment: handleRequestOutputComment,
+    onActivateCommentThread: handleActivateCommentThread,
+  });
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
@@ -1802,7 +1815,7 @@ export function NotebookViewer({
       activeOutlineItemId={activeOutlineItemId}
       selectedOutlineItemId={selectedOutlineItemId}
       selectedOutlineCellId={focusedCellId}
-      commentsPanel={commentsPanel}
+      commentsPanel={commentsUiSurface.commentsPanel}
       workstationsPanel={
         shouldShowCloudWorkstationsPanel ? (
           <NotebookWorkstationsPanel
@@ -2066,9 +2079,9 @@ export function NotebookViewer({
                 onMoveCell={handleCloudMoveCell}
                 onSetCellSourceHidden={handleCloudSetCellSourceHidden}
                 onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
-                onCreateSourceComment={canWriteComments ? handleRequestSourceComment : undefined}
-                onCreateOutputComment={canWriteComments ? handleRequestOutputComment : undefined}
-                onActivateCommentThread={handleActivateCommentThread}
+                onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
+                onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
+                onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
                 commentThreadsByCell={sourceCommentThreadsByCell}
                 pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
                 markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
@@ -2081,7 +2094,7 @@ export function NotebookViewer({
           </CrdtBridgeProvider>
         </PresenceValueProvider>
       </NotebookDocumentShell>
-      {sourceCommentRequest ? (
+      {commentsUiEnabled && sourceCommentRequest ? (
         <InlineCommentComposer
           rect={sourceCommentRequest.rect}
           quote={sourceCommentRequest.quote ?? sourceCommentRequest.anchor.exact_quote}

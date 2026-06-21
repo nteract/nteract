@@ -57,6 +57,9 @@ function loadConfig(): CloudViewerConfig {
       canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
       canSubmitExecutionRequests: Boolean(parsed.hostCapabilities?.canSubmitExecutionRequests),
     },
+    featureFlags: {
+      disable_comments: parsed.featureFlags?.disable_comments === true,
+    },
     session: isCloudAppSession(parsed.session) ? parsed.session : null,
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,

@@ -100,6 +100,10 @@ export const FEATURE_FLAG_METADATA = {
     label: "Use Legacy IPython Launcher",
     description: "Launch Python kernels with ipykernel_launcher instead of the nteract launcher.",
   },
+  disable_comments: {
+    label: "Disable Comments UI",
+    description: "Hide comment panels and creation affordances while keeping comments sync active.",
+  },
 } as const satisfies Record<string, { label: string; description: string }>;
 
 export type FeatureFlagId = keyof typeof FEATURE_FLAG_METADATA;
@@ -107,6 +111,7 @@ export type FeatureFlagValues = Record<FeatureFlagId, boolean>;
 
 const FEATURE_FLAG_DEFAULTS: FeatureFlagValues = {
   disable_nteract_launcher: false,
+  disable_comments: false,
 };
 
 export const FEATURE_FLAGS: ReadonlyArray<{
@@ -525,7 +530,8 @@ function numOrBigint(v: unknown): number | null {
  */
 export function useSyncedTheme() {
   const host = useNotebookHost();
-  const { theme, setTheme, colorTheme, setColorTheme, defaultPythonEnv } = useSyncedSettings();
+  const { theme, setTheme, colorTheme, setColorTheme, defaultPythonEnv, featureFlags } =
+    useSyncedSettings();
 
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => resolveTheme(theme));
 
@@ -558,5 +564,13 @@ export function useSyncedTheme() {
     }
   }, [colorTheme]);
 
-  return { theme, setTheme, colorTheme, setColorTheme, resolvedTheme, defaultPythonEnv };
+  return {
+    theme,
+    setTheme,
+    colorTheme,
+    setColorTheme,
+    resolvedTheme,
+    defaultPythonEnv,
+    featureFlags,
+  };
 }
