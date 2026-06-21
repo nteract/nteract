@@ -175,8 +175,18 @@ pub(crate) async fn handle_notebook_request(
             cell_id,
             execution_id,
         } => {
-            execute_cell::handle_with_submitter(room, cell_id, execution_id, submitter_actor_label)
-                .await
+            let disable_auto_format = {
+                let settings = daemon.settings.read().await;
+                settings.get_all().disable_auto_format
+            };
+            execute_cell::handle_with_submitter(
+                room,
+                cell_id,
+                execution_id,
+                disable_auto_format,
+                submitter_actor_label,
+            )
+            .await
         }
 
         NotebookRequest::ExecuteCellGuarded {
@@ -184,11 +194,16 @@ pub(crate) async fn handle_notebook_request(
             execution_id,
             observed_heads,
         } => {
+            let disable_auto_format = {
+                let settings = daemon.settings.read().await;
+                settings.get_all().disable_auto_format
+            };
             execute_cell::handle_guarded_with_submitter(
                 room,
                 cell_id,
                 execution_id,
                 observed_heads,
+                disable_auto_format,
                 submitter_actor_label,
             )
             .await

@@ -1244,6 +1244,34 @@ fn test_room_with_path_and_store(
     (room, notebook_path)
 }
 
+fn test_daemon_config(tmp: &tempfile::TempDir) -> crate::daemon::DaemonConfig {
+    #[cfg(windows)]
+    let socket_path = {
+        let unique = tmp.path().file_name().unwrap_or_default().to_string_lossy();
+        std::path::PathBuf::from(format!(r"\\.\pipe\runtimed-format-test-{unique}"))
+    };
+    #[cfg(not(windows))]
+    let socket_path = tmp.path().join("runtimed-format-test.sock");
+
+    crate::daemon::DaemonConfig {
+        socket_path,
+        cache_dir: tmp.path().join("envs"),
+        blob_store_dir: tmp.path().join("daemon-blobs"),
+        execution_store_dir: tmp.path().join("executions"),
+        notebook_docs_dir: tmp.path().join("daemon-notebook-docs"),
+        trusted_packages_db_path: tmp.path().join("trusted-packages.sqlite"),
+        uv_pool_size: 0,
+        conda_pool_size: 0,
+        pixi_pool_size: 0,
+        max_age_secs: 3600,
+        lock_dir: Some(tmp.path().to_path_buf()),
+        room_eviction_delay_ms: Some(50),
+        use_preferred_blob_port: false,
+        settings_json_path: Some(tmp.path().join("settings.json")),
+        ..Default::default()
+    }
+}
+
 fn notebook_text_mime(value: Option<&serde_json::Value>) -> Option<String> {
     match value? {
         serde_json::Value::String(text) => Some(text.clone()),
@@ -2490,6 +2518,7 @@ async fn execute_cell_queues_in_runtime_doc_while_kernel_launch_is_resolving() {
         &room,
         "cell-1".to_string(),
         None,
+        false,
         Some("local:kyle/agent:codex:s1"),
     )
     .await;
@@ -3976,6 +4005,65 @@ async fn test_format_notebook_cells_skips_unknown_runtime() {
         doc.get_cells()
     };
     assert_eq!(cells[0].source, "x=1", "Source should remain unchanged");
+}
+
+#[tokio::test]
+async fn test_save_notebook_skips_format_when_disable_auto_format_enabled() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "disable-format.ipynb");
+    let room = Arc::new(room);
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+
+    assert_eq!(
+        format_source("x=1", "python").await.as_deref(),
+        Some("x = 1"),
+        "test requires the Python formatter to be available"
+    );
+
+    {
+        let mut settings = daemon.settings.write().await;
+        settings.put_bool("disable_auto_format", true);
+    }
+
+    {
+        let mut doc = room.doc.write().await;
+        let metadata = build_new_notebook_metadata(
+            "python",
+            "test-env-id",
+            crate::settings_doc::PythonEnvType::Uv,
+            None,
+            &[],
+        );
+        doc.set_metadata_snapshot(&metadata).unwrap();
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source("cell1", "x=1").unwrap();
+    }
+
+    let response = crate::requests::save_notebook::handle(&room, &daemon, true, None).await;
+    assert!(
+        matches!(
+            response,
+            crate::protocol::NotebookResponse::NotebookSaved { .. }
+        ),
+        "expected NotebookSaved, got {response:?}"
+    );
+
+    let cells = {
+        let doc = room.doc.read().await;
+        doc.get_cells()
+    };
+    assert_eq!(
+        cells[0].source, "x=1",
+        "CRDT source should remain unformatted"
+    );
+
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&notebook_path).unwrap()).unwrap();
+    assert_eq!(
+        notebook_text_mime(saved["cells"][0].get("source")).as_deref(),
+        Some("x=1"),
+        "saved file source should remain unformatted"
+    );
 }
 
 // ========================================================================

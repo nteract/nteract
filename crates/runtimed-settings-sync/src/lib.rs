@@ -599,6 +599,8 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         disable_nteract_launcher: get_bool("disable_nteract_launcher")
             .unwrap_or(defaults.disable_nteract_launcher),
         disable_comments: get_bool("disable_comments").unwrap_or(defaults.disable_comments),
+        disable_auto_format: get_bool("disable_auto_format")
+            .unwrap_or(defaults.disable_auto_format),
         redact_env_values_in_outputs: get_bool("redact_env_values_in_outputs")
             .unwrap_or(defaults.redact_env_values_in_outputs),
         import_shell_environment: get_bool("import_shell_environment")
@@ -824,6 +826,16 @@ mod tests {
 
         let settings = get_all_from_doc(&doc);
         assert!(settings.disable_comments);
+    }
+
+    #[test]
+    fn test_get_all_reads_disable_auto_format() {
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "disable_auto_format", true)
+            .unwrap();
+
+        let settings = get_all_from_doc(&doc);
+        assert!(settings.disable_auto_format);
     }
 
     #[test]

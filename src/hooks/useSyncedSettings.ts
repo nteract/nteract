@@ -104,6 +104,11 @@ export const FEATURE_FLAG_METADATA = {
     label: "Disable Comments UI",
     description: "Hide comment panels and creation affordances while keeping comments sync active.",
   },
+  disable_auto_format: {
+    label: "Disable automatic formatting",
+    description:
+      "Stop nteract from running ruff / deno fmt automatically when you run or save a cell.",
+  },
 } as const satisfies Record<string, { label: string; description: string }>;
 
 export type FeatureFlagId = keyof typeof FEATURE_FLAG_METADATA;
@@ -112,6 +117,7 @@ export type FeatureFlagValues = Record<FeatureFlagId, boolean>;
 const FEATURE_FLAG_DEFAULTS: FeatureFlagValues = {
   disable_nteract_launcher: false,
   disable_comments: false,
+  disable_auto_format: false,
 };
 
 export const FEATURE_FLAGS: ReadonlyArray<{

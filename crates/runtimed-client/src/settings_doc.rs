@@ -16,6 +16,7 @@
 //!   install_default_data_packages: true
 //!   disable_nteract_launcher: false
 //!   disable_comments: false
+//!   disable_auto_format: false
 //!   uv/                           ← nested Map
 //!     default_packages: List[…]   ← List of Str
 //!   conda/                        ← nested Map
@@ -304,6 +305,10 @@ pub struct SyncedSettings {
     #[serde(default)]
     pub disable_comments: bool,
 
+    /// Disable automatic code formatting on cell execution and notebook save.
+    #[serde(default)]
+    pub disable_auto_format: bool,
+
     /// Redact eligible environment variable values from text outputs for newly
     /// launched or restarted kernels.
     ///
@@ -380,6 +385,7 @@ impl Default for SyncedSettings {
             install_default_data_packages: true,
             disable_nteract_launcher: false,
             disable_comments: false,
+            disable_auto_format: false,
             redact_env_values_in_outputs: true,
             import_shell_environment: true,
             install_id: String::new(),
@@ -590,6 +596,11 @@ impl SettingsDoc {
         );
         let _ = doc.put(
             automerge::ROOT,
+            "disable_auto_format",
+            defaults.disable_auto_format,
+        );
+        let _ = doc.put(
+            automerge::ROOT,
             "redact_env_values_in_outputs",
             defaults.redact_env_values_in_outputs,
         );
@@ -730,6 +741,10 @@ impl SettingsDoc {
         // disable_comments: boolean
         if let Some(disabled) = json.get("disable_comments").and_then(|v| v.as_bool()) {
             settings.put_bool("disable_comments", disabled);
+        }
+        // disable_auto_format: boolean
+        if let Some(disabled) = json.get("disable_auto_format").and_then(|v| v.as_bool()) {
+            settings.put_bool("disable_auto_format", disabled);
         }
         if let Some(enabled) = json
             .get("redact_env_values_in_outputs")
@@ -1195,6 +1210,9 @@ impl SettingsDoc {
             disable_comments: self
                 .get_bool("disable_comments")
                 .unwrap_or(defaults.disable_comments),
+            disable_auto_format: self
+                .get_bool("disable_auto_format")
+                .unwrap_or(defaults.disable_auto_format),
             redact_env_values_in_outputs: self
                 .get_bool("redact_env_values_in_outputs")
                 .unwrap_or(defaults.redact_env_values_in_outputs),
@@ -1414,6 +1432,18 @@ impl SettingsDoc {
                     current, disabled
                 );
                 self.put_bool("disable_comments", disabled);
+                changed = true;
+            }
+        }
+        // disable_auto_format: boolean
+        if let Some(disabled) = json.get("disable_auto_format").and_then(|v| v.as_bool()) {
+            let current = self.get_bool("disable_auto_format");
+            if current != Some(disabled) {
+                info!(
+                    "[settings] apply_json_changes: disable_auto_format changed {:?} -> {}",
+                    current, disabled
+                );
+                self.put_bool("disable_auto_format", disabled);
                 changed = true;
             }
         }
@@ -1649,6 +1679,7 @@ mod tests {
         assert!(settings.install_default_data_packages);
         assert!(!settings.disable_nteract_launcher);
         assert!(!settings.disable_comments);
+        assert!(!settings.disable_auto_format);
         assert!(settings.feature_flags().bootstrap_dx);
         assert!(settings.redact_env_values_in_outputs);
     }
@@ -1738,6 +1769,19 @@ mod tests {
         let settings = doc.get_all();
         assert_eq!(doc.get_bool("disable_comments"), Some(true));
         assert!(settings.disable_comments);
+    }
+
+    #[test]
+    fn test_disable_auto_format_can_be_enabled_from_json() {
+        let mut doc = SettingsDoc::new();
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "disable_auto_format": true
+        })));
+
+        let settings = doc.get_all();
+        assert_eq!(doc.get_bool("disable_auto_format"), Some(true));
+        assert!(settings.disable_auto_format);
     }
 
     #[test]
@@ -2132,6 +2176,7 @@ mod tests {
         assert!(schema_str.contains("install_default_data_packages"));
         assert!(schema_str.contains("disable_nteract_launcher"));
         assert!(schema_str.contains("disable_comments"));
+        assert!(schema_str.contains("disable_auto_format"));
         assert!(schema_str.contains("redact_env_values_in_outputs"));
         // Should have known values as examples for editor autocomplete
         assert!(schema_str.contains("python"));
