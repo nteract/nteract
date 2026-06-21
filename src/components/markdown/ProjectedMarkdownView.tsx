@@ -1,4 +1,10 @@
-import { type CSSProperties, type ReactNode } from "react";
+import {
+  type CSSProperties,
+  type HTMLAttributes,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import katex from "katex";
 import type {
   MarkdownProjectionBlock,
@@ -48,6 +54,7 @@ import "katex/dist/katex.min.css";
 export interface MarkdownCommentHighlight {
   from: number;
   to: number;
+  threadId: string;
   color?: string;
   resolved: boolean;
 }
@@ -59,6 +66,7 @@ interface ProjectedMarkdownViewProps {
   commentHighlights?: ReadonlyArray<MarkdownCommentHighlight>;
   colorTheme?: "classic" | "cream";
   headingAnchors?: readonly MarkdownHeadingAnchor[];
+  onActivateCommentThread?: (threadId: string) => void;
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }
@@ -70,6 +78,7 @@ export function ProjectedMarkdownView({
   commentHighlights,
   colorTheme: colorThemeOverride,
   headingAnchors = [],
+  onActivateCommentThread,
   onLinkClick,
   onTaskCheckedChange,
 }: ProjectedMarkdownViewProps) {
@@ -105,6 +114,7 @@ export function ProjectedMarkdownView({
           commentHighlights={commentHighlights}
           isDark={isDark}
           runs={runsByBlock.get(block.blockId) ?? []}
+          onActivateCommentThread={onActivateCommentThread}
           onLinkClick={onLinkClick}
           onTaskCheckedChange={onTaskCheckedChange}
         />
@@ -122,6 +132,7 @@ interface ProjectedMarkdownBlockProps {
   commentHighlights?: ReadonlyArray<MarkdownCommentHighlight>;
   isDark: boolean;
   runs: MarkdownProjectionRun[];
+  onActivateCommentThread?: (threadId: string) => void;
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }
@@ -135,6 +146,7 @@ function ProjectedMarkdownBlock({
   commentHighlights,
   isDark,
   runs,
+  onActivateCommentThread,
   onLinkClick,
   onTaskCheckedChange,
 }: ProjectedMarkdownBlockProps) {
@@ -152,7 +164,12 @@ function ProjectedMarkdownBlock({
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(activeBlockId === block.blockId && sourceActiveBlockClass)}
       >
-        {renderRuns(runs, { activeInlineId, commentHighlights, onLinkClick })}
+        {renderRuns(runs, {
+          activeInlineId,
+          commentHighlights,
+          onActivateCommentThread,
+          onLinkClick,
+        })}
       </MarkdownHeading>
     );
   }
@@ -167,6 +184,7 @@ function ProjectedMarkdownBlock({
         activeInlineId={activeInlineId}
         commentHighlights={commentHighlights}
         ordered={ordered}
+        onActivateCommentThread={onActivateCommentThread}
         onLinkClick={onLinkClick}
         onTaskCheckedChange={onTaskCheckedChange}
       />
@@ -209,7 +227,12 @@ function ProjectedMarkdownBlock({
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(activeBlockId === block.blockId && sourceActiveBlockClass)}
       >
-        {renderRuns(runs, { activeInlineId, commentHighlights, onLinkClick })}
+        {renderRuns(runs, {
+          activeInlineId,
+          commentHighlights,
+          onActivateCommentThread,
+          onLinkClick,
+        })}
       </MarkdownBlockquote>
     );
   }
@@ -226,6 +249,7 @@ function ProjectedMarkdownBlock({
         commentHighlights={commentHighlights}
         runs={runs}
         fallbackText={block.text}
+        onActivateCommentThread={onActivateCommentThread}
         onLinkClick={onLinkClick}
       />
     );
@@ -243,6 +267,7 @@ function ProjectedMarkdownBlock({
           active={activeBlockId === block.blockId}
           activeInlineId={activeInlineId}
           commentHighlights={commentHighlights}
+          onActivateCommentThread={onActivateCommentThread}
           run={figureRun}
         />
       );
@@ -256,7 +281,12 @@ function ProjectedMarkdownBlock({
           activeBlockId === block.blockId && sourceActiveBlockClass,
         )}
       >
-        {renderRuns(runs, { activeInlineId, commentHighlights, onLinkClick })}
+        {renderRuns(runs, {
+          activeInlineId,
+          commentHighlights,
+          onActivateCommentThread,
+          onLinkClick,
+        })}
       </p>
     );
   }
@@ -266,7 +296,12 @@ function ProjectedMarkdownBlock({
       data-source-active={activeBlockId === block.blockId ? "true" : undefined}
       className={cn("my-2", activeBlockId === block.blockId && sourceActiveBlockClass)}
     >
-      {renderRuns(runs, { activeInlineId, commentHighlights, onLinkClick })}
+      {renderRuns(runs, {
+        activeInlineId,
+        commentHighlights,
+        onActivateCommentThread,
+        onLinkClick,
+      })}
     </div>
   ) : null;
 }
@@ -301,6 +336,7 @@ function ProjectedList({
   activeInlineId,
   commentHighlights,
   ordered,
+  onActivateCommentThread,
   onLinkClick,
   onTaskCheckedChange,
 }: {
@@ -309,6 +345,7 @@ function ProjectedList({
   activeInlineId?: string;
   commentHighlights?: ReadonlyArray<MarkdownCommentHighlight>;
   ordered: boolean;
+  onActivateCommentThread?: (threadId: string) => void;
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }) {
@@ -336,6 +373,7 @@ function ProjectedList({
           activeInlineId={activeInlineId}
           commentHighlights={commentHighlights}
           taskProtocol={allItemsAreTasks}
+          onActivateCommentThread={onActivateCommentThread}
           onLinkClick={onLinkClick}
           onTaskCheckedChange={onTaskCheckedChange}
         />
@@ -349,6 +387,7 @@ function ProjectedListItem({
   activeInlineId,
   commentHighlights,
   taskProtocol,
+  onActivateCommentThread,
   onLinkClick,
   onTaskCheckedChange,
 }: {
@@ -356,6 +395,7 @@ function ProjectedListItem({
   activeInlineId?: string;
   commentHighlights?: ReadonlyArray<MarkdownCommentHighlight>;
   taskProtocol: boolean;
+  onActivateCommentThread?: (threadId: string) => void;
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }) {
@@ -379,7 +419,12 @@ function ProjectedListItem({
         />
       ) : null}
       <ProjectedTaskContent checked={checked}>
-        {renderRuns(item.runs, { activeInlineId, commentHighlights, onLinkClick })}
+        {renderRuns(item.runs, {
+          activeInlineId,
+          commentHighlights,
+          onActivateCommentThread,
+          onLinkClick,
+        })}
       </ProjectedTaskContent>
     </>
   );
@@ -414,6 +459,7 @@ function ProjectedListItem({
           activeInlineId={activeInlineId}
           commentHighlights={commentHighlights}
           ordered={item.children[0]?.ordered ?? false}
+          onActivateCommentThread={onActivateCommentThread}
           onLinkClick={onLinkClick}
           onTaskCheckedChange={onTaskCheckedChange}
         />
@@ -538,6 +584,7 @@ function ProjectedTable({
   activeInlineId,
   commentHighlights,
   fallbackText,
+  onActivateCommentThread,
   onLinkClick,
   runs,
 }: {
@@ -545,6 +592,7 @@ function ProjectedTable({
   activeInlineId?: string;
   commentHighlights?: ReadonlyArray<MarkdownCommentHighlight>;
   fallbackText: string;
+  onActivateCommentThread?: (threadId: string) => void;
   onLinkClick?: (url: string) => void;
   runs: MarkdownProjectionRun[];
 }) {
@@ -585,6 +633,7 @@ function ProjectedTable({
                   {renderRuns(cell.runs, {
                     activeInlineId,
                     commentHighlights,
+                    onActivateCommentThread,
                     onLinkClick,
                   })}
                 </MarkdownTableHeaderCell>
@@ -603,6 +652,7 @@ function ProjectedTable({
                   {renderRuns(cell.runs, {
                     activeInlineId,
                     commentHighlights,
+                    onActivateCommentThread,
                     onLinkClick,
                   })}
                 </MarkdownTableCell>
@@ -695,13 +745,14 @@ function tableCellStyle(align: MarkdownProjectionRun["tableCellAlign"]): CSSProp
 interface RenderRunsOptions {
   activeInlineId?: string;
   commentHighlights?: ReadonlyArray<MarkdownCommentHighlight>;
+  onActivateCommentThread?: (threadId: string) => void;
   onLinkClick?: (url: string) => void;
 }
 
 function renderRuns(runs: MarkdownProjectionRun[], options: RenderRunsOptions = {}) {
   if (runs.length === 0) return null;
 
-  const { activeInlineId, commentHighlights, onLinkClick } = options;
+  const { activeInlineId, commentHighlights, onActivateCommentThread, onLinkClick } = options;
   return runs.map((run) => {
     // Keep choosing one best highlight per run for now; multiple disjoint
     // highlight fragments in the same run are intentionally deferred.
@@ -717,7 +768,7 @@ function renderRuns(runs: MarkdownProjectionRun[], options: RenderRunsOptions = 
         data-source-active-run={activeInlineId === run.inlineId ? "true" : undefined}
         className={cn(activeInlineId === run.inlineId && sourceActiveRunClass)}
       >
-        {renderRunWithHighlight(run, highlight, onLinkClick)}
+        {renderRunWithHighlight(run, highlight, onLinkClick, onActivateCommentThread)}
       </span>
     );
   });
@@ -756,6 +807,35 @@ function commentHighlightStyle(
   return { "--cm-comment-color": highlight.color } as CSSProperties;
 }
 
+type CommentHighlightActivationProps = Pick<
+  HTMLAttributes<HTMLSpanElement>,
+  "aria-label" | "onClick" | "onKeyDown" | "role" | "tabIndex"
+>;
+
+function commentHighlightActivationProps(
+  highlight: MarkdownCommentHighlight | null,
+  onActivateCommentThread?: (threadId: string) => void,
+): CommentHighlightActivationProps {
+  if (!highlight?.threadId || !onActivateCommentThread) return {};
+
+  const activate = () => onActivateCommentThread(highlight.threadId);
+  return {
+    "aria-label": "Open comment thread",
+    onClick: (event: MouseEvent<HTMLSpanElement>) => {
+      event.stopPropagation();
+      activate();
+    },
+    onKeyDown: (event: KeyboardEvent<HTMLSpanElement>) => {
+      if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
+      event.stopPropagation();
+      event.preventDefault();
+      activate();
+    },
+    role: "button",
+    tabIndex: 0,
+  };
+}
+
 const splittableRunSemantics = new Set([
   "text",
   "heading-text",
@@ -772,6 +852,7 @@ function renderRunWithHighlight(
   run: MarkdownProjectionRun,
   highlight: MarkdownCommentHighlight | null,
   onLinkClick?: (url: string) => void,
+  onActivateCommentThread?: (threadId: string) => void,
 ) {
   if (!highlight) return renderRun(run, onLinkClick);
 
@@ -779,6 +860,7 @@ function renderRunWithHighlight(
     return (
       <span
         className={cn("comment-highlight", highlight.resolved && "comment-highlight-resolved")}
+        {...commentHighlightActivationProps(highlight, onActivateCommentThread)}
         style={commentHighlightStyle(highlight)}
       >
         {renderRun(run, onLinkClick)}
@@ -806,6 +888,7 @@ function renderRunWithHighlight(
       {before ? renderRunText(run, before, onLinkClick) : null}
       <span
         className={cn("comment-highlight", highlight.resolved && "comment-highlight-resolved")}
+        {...commentHighlightActivationProps(highlight, onActivateCommentThread)}
         style={commentHighlightStyle(highlight)}
       >
         {renderRunText(run, highlighted, onLinkClick)}
@@ -890,11 +973,13 @@ function ProjectedFigure({
   active,
   activeInlineId,
   commentHighlights,
+  onActivateCommentThread,
   run,
 }: {
   active: boolean;
   activeInlineId?: string;
   commentHighlights?: ReadonlyArray<MarkdownCommentHighlight>;
+  onActivateCommentThread?: (threadId: string) => void;
   run: MarkdownProjectionRun;
 }) {
   const image = <ProjectedImage run={run} />;
@@ -913,6 +998,7 @@ function ProjectedFigure({
             highlight && "comment-highlight",
             highlight?.resolved && "comment-highlight-resolved",
           )}
+          {...commentHighlightActivationProps(highlight, onActivateCommentThread)}
           style={commentHighlightStyle(highlight)}
         >
           {image}

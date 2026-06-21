@@ -314,6 +314,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         {
           from: range.from,
           to: range.to,
+          threadId: thread.id,
           resolved: thread.resolved,
           ...(thread.color ? { color: thread.color } : {}),
         },
@@ -1104,6 +1105,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                   plan={markdownProjection}
                   commentHighlights={renderedCommentHighlights}
                   headingAnchors={headingAnchors}
+                  onActivateCommentThread={onActivateCommentThread}
                   onLinkClick={handleLinkClick}
                   onTaskCheckedChange={
                     readOnly || !onUpdateSource ? undefined : handleTaskCheckedChange
