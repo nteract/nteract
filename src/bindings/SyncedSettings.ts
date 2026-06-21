@@ -81,6 +81,10 @@ export type SyncedSettings = {
    */
   disable_nteract_launcher: boolean;
   /**
+   * Disable comments UI surfaces while keeping comments sync active.
+   */
+  disable_comments: boolean;
+  /**
    * Redact eligible environment variable values from text outputs for newly
    * launched or restarted kernels.
    *

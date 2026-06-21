@@ -15,6 +15,7 @@
 //!   default_python_env: "uv"
 //!   install_default_data_packages: true
 //!   disable_nteract_launcher: false
+//!   disable_comments: false
 //!   uv/                           ← nested Map
 //!     default_packages: List[…]   ← List of Str
 //!   conda/                        ← nested Map
@@ -299,6 +300,10 @@ pub struct SyncedSettings {
     #[serde(default)]
     pub disable_nteract_launcher: bool,
 
+    /// Disable comments UI surfaces while keeping comments sync active.
+    #[serde(default)]
+    pub disable_comments: bool,
+
     /// Redact eligible environment variable values from text outputs for newly
     /// launched or restarted kernels.
     ///
@@ -374,6 +379,7 @@ impl Default for SyncedSettings {
             pixi_pool_size: pool_sizes.pixi_pool_size,
             install_default_data_packages: true,
             disable_nteract_launcher: false,
+            disable_comments: false,
             redact_env_values_in_outputs: true,
             import_shell_environment: true,
             install_id: String::new(),
@@ -579,6 +585,11 @@ impl SettingsDoc {
         );
         let _ = doc.put(
             automerge::ROOT,
+            "disable_comments",
+            defaults.disable_comments,
+        );
+        let _ = doc.put(
+            automerge::ROOT,
             "redact_env_values_in_outputs",
             defaults.redact_env_values_in_outputs,
         );
@@ -715,6 +726,10 @@ impl SettingsDoc {
             .and_then(|v| v.as_bool())
         {
             settings.put_bool("disable_nteract_launcher", disabled);
+        }
+        // disable_comments: boolean
+        if let Some(disabled) = json.get("disable_comments").and_then(|v| v.as_bool()) {
+            settings.put_bool("disable_comments", disabled);
         }
         if let Some(enabled) = json
             .get("redact_env_values_in_outputs")
@@ -1177,6 +1192,9 @@ impl SettingsDoc {
             disable_nteract_launcher: self
                 .get_bool("disable_nteract_launcher")
                 .unwrap_or(defaults.disable_nteract_launcher),
+            disable_comments: self
+                .get_bool("disable_comments")
+                .unwrap_or(defaults.disable_comments),
             redact_env_values_in_outputs: self
                 .get_bool("redact_env_values_in_outputs")
                 .unwrap_or(defaults.redact_env_values_in_outputs),
@@ -1384,6 +1402,18 @@ impl SettingsDoc {
                     current, disabled
                 );
                 self.put_bool("disable_nteract_launcher", disabled);
+                changed = true;
+            }
+        }
+        // disable_comments: boolean
+        if let Some(disabled) = json.get("disable_comments").and_then(|v| v.as_bool()) {
+            let current = self.get_bool("disable_comments");
+            if current != Some(disabled) {
+                info!(
+                    "[settings] apply_json_changes: disable_comments changed {:?} -> {}",
+                    current, disabled
+                );
+                self.put_bool("disable_comments", disabled);
                 changed = true;
             }
         }
@@ -1618,6 +1648,7 @@ mod tests {
         assert!(settings.pixi.default_packages.is_empty());
         assert!(settings.install_default_data_packages);
         assert!(!settings.disable_nteract_launcher);
+        assert!(!settings.disable_comments);
         assert!(settings.feature_flags().bootstrap_dx);
         assert!(settings.redact_env_values_in_outputs);
     }
@@ -1694,6 +1725,19 @@ mod tests {
         assert_eq!(doc.get_bool("disable_nteract_launcher"), Some(true));
         assert!(settings.disable_nteract_launcher);
         assert!(!settings.feature_flags().bootstrap_dx);
+    }
+
+    #[test]
+    fn test_disable_comments_can_be_enabled_from_json() {
+        let mut doc = SettingsDoc::new();
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "disable_comments": true
+        })));
+
+        let settings = doc.get_all();
+        assert_eq!(doc.get_bool("disable_comments"), Some(true));
+        assert!(settings.disable_comments);
     }
 
     #[test]
@@ -2087,6 +2131,7 @@ mod tests {
         assert!(schema_str.contains("default_python_env"));
         assert!(schema_str.contains("install_default_data_packages"));
         assert!(schema_str.contains("disable_nteract_launcher"));
+        assert!(schema_str.contains("disable_comments"));
         assert!(schema_str.contains("redact_env_values_in_outputs"));
         // Should have known values as examples for editor autocomplete
         assert!(schema_str.contains("python"));

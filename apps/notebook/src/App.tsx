@@ -2138,7 +2138,7 @@ function AppContent() {
                 onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
                 onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
                 onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
-                commentThreadsByCell={sourceCommentThreadsByCell}
+                commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
                 pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
                 markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
               />

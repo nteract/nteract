@@ -14,6 +14,7 @@ import {
   useHasIsolatedOutputs,
   useIsolatedRenderer,
 } from "@/components/isolated/isolated-renderer-context";
+import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import {
   markdownProjectionMatchesSource,
@@ -707,6 +708,13 @@ export function NotebookViewer({
     }
     openNotebookRailPanel("packages");
   }, [activeRailPanel, railCollapsed]);
+  const handleRailPanelChange = useCallback(
+    (panelId: NotebookRailPanelId) => {
+      if (!commentsUiEnabled && panelId === "comments") return;
+      setActiveNotebookRailPanel(panelId);
+    },
+    [commentsUiEnabled],
+  );
   const handleOpenMobileRail = useCallback(() => {
     setNotebookRailCollapsed(false);
   }, []);
@@ -1847,7 +1855,7 @@ export function NotebookViewer({
           />
         </>
       }
-      onActivePanelChange={setActiveNotebookRailPanel}
+      onActivePanelChange={handleRailPanelChange}
       onCollapsedChange={setNotebookRailCollapsed}
       onSelectOutlineItem={handleSelectOutlineItem}
       onNavigateOutlineItem={handleNavigateOutlineItem}
@@ -2082,7 +2090,7 @@ export function NotebookViewer({
                 onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
                 onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
                 onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
-                commentThreadsByCell={sourceCommentThreadsByCell}
+                commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
                 pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
                 markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
                 outputHostContext={outputHostContext}
