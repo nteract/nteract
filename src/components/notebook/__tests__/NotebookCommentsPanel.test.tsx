@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { NotebookCommentsPanel } from "../NotebookCommentsPanel";
 import type { CommentsProjection } from "../comment-types";
 
+const DOCUMENT_COMMENT_LABEL = "Add a comment on the document";
+
 const projection: CommentsProjection = {
   comments_doc_id: "comments:local-room:notebook-1",
   threads: [
@@ -79,7 +81,7 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Comments sync unavailable.");
     expect(screen.getByRole("alert")).toHaveTextContent("Comment request failed.");
     expect(screen.queryByText("No comments yet.")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("New document comment")).toBeDisabled();
+    expect(screen.getByLabelText(DOCUMENT_COMMENT_LABEL)).toBeDisabled();
   });
 
   it("submits a new document comment", async () => {
@@ -91,7 +93,10 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("New document comment"), {
+    const composer = screen.getByLabelText(DOCUMENT_COMMENT_LABEL);
+    expect(composer).toHaveAttribute("placeholder", "Add a comment");
+
+    fireEvent.change(composer, {
       target: { value: "Add this to the review notes" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
@@ -99,7 +104,7 @@ describe("NotebookCommentsPanel", () => {
     await waitFor(() =>
       expect(onCreateThread).toHaveBeenCalledWith("Add this to the review notes"),
     );
-    expect(screen.getByLabelText("New document comment")).toHaveValue("");
+    expect(screen.getByLabelText(DOCUMENT_COMMENT_LABEL)).toHaveValue("");
   });
 
   it("focuses the document composer when opened", async () => {
@@ -110,7 +115,7 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByLabelText("New document comment")).toHaveFocus());
+    await waitFor(() => expect(screen.getByLabelText(DOCUMENT_COMMENT_LABEL)).toHaveFocus());
   });
 
   it("submits a new document comment with Cmd Enter", async () => {
@@ -122,7 +127,7 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    const composer = screen.getByLabelText("New document comment");
+    const composer = screen.getByLabelText(DOCUMENT_COMMENT_LABEL);
     fireEvent.change(composer, {
       target: { value: "Submit from the keyboard" },
     });
@@ -156,6 +161,12 @@ describe("NotebookCommentsPanel", () => {
 
     expect(screen.getByTestId("comment-draft-target")).toHaveTextContent("Source selection");
     expect(screen.getByTestId("comment-draft-target")).toHaveTextContent("beta");
+    expect(screen.getByTestId("notebook-comments-composer-dock")).toContainElement(
+      screen.getByTestId("comment-draft-target"),
+    );
+    expect(screen.getByTestId("notebook-comments-thread-scroll")).not.toContainElement(
+      screen.getByTestId("comment-draft-target"),
+    );
     await waitFor(() => expect(screen.getByLabelText("New source comment")).toHaveFocus());
 
     fireEvent.change(screen.getByLabelText("New source comment"), {
@@ -225,7 +236,7 @@ describe("NotebookCommentsPanel", () => {
     expect(onClearDraftTarget).toHaveBeenCalled();
 
     rerender(renderPanel(null));
-    expect(screen.getByLabelText("New document comment")).toHaveValue(
+    expect(screen.getByLabelText(DOCUMENT_COMMENT_LABEL)).toHaveValue(
       "Keep this body while retargeting",
     );
 
@@ -250,7 +261,7 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("New document comment"), {
+    fireEvent.change(screen.getByLabelText(DOCUMENT_COMMENT_LABEL), {
       target: { value: "Do not leave duplicate text in the composer" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
@@ -258,11 +269,11 @@ describe("NotebookCommentsPanel", () => {
     await waitFor(() =>
       expect(onCreateThread).toHaveBeenCalledWith("Do not leave duplicate text in the composer"),
     );
-    expect(screen.getByLabelText("New document comment")).toHaveValue("");
+    expect(screen.getByLabelText(DOCUMENT_COMMENT_LABEL)).toHaveValue("");
     expect(screen.getByRole("button", { name: "Add comment" })).toBeDisabled();
 
     resolveCreate?.();
-    await waitFor(() => expect(screen.getByLabelText("New document comment")).toBeEnabled());
+    await waitFor(() => expect(screen.getByLabelText(DOCUMENT_COMMENT_LABEL)).toBeEnabled());
   });
 
   it("restores submitted text when a comment request fails", async () => {
@@ -274,7 +285,7 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("New document comment"), {
+    fireEvent.change(screen.getByLabelText(DOCUMENT_COMMENT_LABEL), {
       target: { value: "Keep this draft if submit fails" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
@@ -283,10 +294,23 @@ describe("NotebookCommentsPanel", () => {
       expect(onCreateThread).toHaveBeenCalledWith("Keep this draft if submit fails"),
     );
     await waitFor(() =>
-      expect(screen.getByLabelText("New document comment")).toHaveValue(
+      expect(screen.getByLabelText(DOCUMENT_COMMENT_LABEL)).toHaveValue(
         "Keep this draft if submit fails",
       ),
     );
+  });
+
+  it("docks the document composer below the scrollable thread list", () => {
+    render(<NotebookCommentsPanel projection={projection} onCreateThread={vi.fn()} />);
+
+    const scroll = screen.getByTestId("notebook-comments-thread-scroll");
+    const dock = screen.getByTestId("notebook-comments-composer-dock");
+    const composer = screen.getByLabelText(DOCUMENT_COMMENT_LABEL);
+
+    expect(scroll).toContainElement(screen.getByText("Check the framing before publishing."));
+    expect(dock).toContainElement(composer);
+    expect(scroll).not.toContainElement(composer);
+    expect(composer).toHaveAttribute("placeholder", "Add a comment");
   });
 
   it("renders threads and submits replies", async () => {
