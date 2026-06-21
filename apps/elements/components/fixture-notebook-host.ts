@@ -73,6 +73,7 @@ export function createFixtureNotebookHost({
     window: {
       getTitle: async () => "fixture.ipynb",
       setTitle: asyncNoop,
+      setTheme: asyncNoop,
       onFocusChange: () => unlisten,
     },
     system: {
@@ -94,6 +95,10 @@ export function createFixtureNotebookHost({
     },
     settings: {
       openWindow: asyncNoop,
+      getSynced: async () => ({}),
+      setSynced: asyncNoop,
+      rotateInstallId: async () => "fixture-install-id",
+      onChanged: () => unlisten,
     },
     commands: {
       register: () => unlisten,
