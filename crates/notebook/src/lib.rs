@@ -15,7 +15,6 @@ pub mod typosquat;
 extern crate runtimed_client as runtimed;
 pub use runtimed::runtime::Runtime;
 
-use notebook_protocol::connection::LaunchSpec;
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveErrorKind};
 use notebook_sync::RelayHandle;
 
@@ -134,21 +133,23 @@ impl WindowNotebookRegistry {
         None
     }
 
-    /// Find the first live window that has no file path (untitled/empty notebook).
+    /// Find the first live pathless window. Only use this for deferred
+    /// file-open events delivered during startup, before the user can
+    /// reasonably edit the default placeholder notebook.
     #[cfg(target_os = "macos")]
-    fn find_empty_window_label(&self, app: &tauri::AppHandle) -> Option<String> {
+    fn find_pathless_window_label(&self, app: &tauri::AppHandle) -> Option<String> {
         let contexts = self.contexts.lock().ok()?;
         for (label, ctx) in contexts.iter() {
             if app.get_webview_window(label).is_some() {
                 if let Ok(guard) = ctx.path.lock() {
                     if guard.is_none() {
-                        log::info!("[registry] find_empty_window_label: found '{}'", label);
+                        log::info!("[registry] find_pathless_window_label: found '{}'", label);
                         return Some(label.clone());
                     }
                 }
             }
         }
-        log::debug!("[registry] find_empty_window_label: no empty window found");
+        log::debug!("[registry] find_pathless_window_label: no pathless window found");
         None
     }
 }
@@ -460,6 +461,25 @@ enum OpenMode {
         working_dir: Option<PathBuf>,
         runtime: String,
     },
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathlessFileOpenPolicy {
+    ReuseStartupPlaceholder,
+    OpenNewWindow,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn pathless_file_open_policy(
+    allow_startup_placeholder_reuse: bool,
+    has_pathless_window: bool,
+) -> PathlessFileOpenPolicy {
+    if allow_startup_placeholder_reuse && has_pathless_window {
+        PathlessFileOpenPolicy::ReuseStartupPlaceholder
+    } else {
+        PathlessFileOpenPolicy::OpenNewWindow
+    }
 }
 
 /// Git information for debug banner display.
@@ -1029,8 +1049,8 @@ async fn setup_sync_receivers(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_commit_hash, next_available_sample_path, reopen_action, ReopenAction,
-        SyncReadyState,
+        extract_commit_hash, next_available_sample_path, pathless_file_open_policy, reopen_action,
+        PathlessFileOpenPolicy, ReopenAction, SyncReadyState,
     };
     use tempfile::TempDir;
 
@@ -1061,6 +1081,29 @@ mod tests {
         let path = next_available_sample_path(temp_dir.path(), "example.ipynb");
 
         assert_eq!(path, temp_dir.path().join("example-2.ipynb"));
+    }
+
+    #[test]
+    fn ordinary_file_open_does_not_reuse_pathless_window() {
+        assert_eq!(
+            pathless_file_open_policy(false, true),
+            PathlessFileOpenPolicy::OpenNewWindow,
+            "opening a file after startup must not overwrite an untitled window"
+        );
+    }
+
+    #[test]
+    fn deferred_startup_file_open_can_reuse_placeholder_window() {
+        assert_eq!(
+            pathless_file_open_policy(true, true),
+            PathlessFileOpenPolicy::ReuseStartupPlaceholder,
+            "Finder launch may retarget the startup placeholder before user edits"
+        );
+        assert_eq!(
+            pathless_file_open_policy(true, false),
+            PathlessFileOpenPolicy::OpenNewWindow,
+            "without a live placeholder the file opens in a new window"
+        );
     }
 
     #[test]
@@ -2211,41 +2254,11 @@ async fn save_notebook_as(
     runt_workspace::recent::record_open(&saved_path);
     refresh_native_menu(window.app_handle(), registry.inner());
 
-    // Restart the kernel only if one was already running. This preserves
-    // trust: if the user had a kernel, trust was already approved. If not,
-    // we don't bypass the trust dialog by launching one now.
-    let saved_path_str = saved_path.to_string_lossy().to_string();
-    let notebook_sync_for_kernel = notebook_sync.clone();
-    tokio::spawn(async move {
-        let guard = notebook_sync_for_kernel.lock().await;
-        if let Some(ref handle) = *guard {
-            match handle
-                .send_request(NotebookRequest::ShutdownKernel {})
-                .await
-            {
-                Ok(NotebookResponse::KernelShuttingDown {}) => {
-                    // Had a running kernel — relaunch with the correct path.
-                    match handle
-                        .send_request(NotebookRequest::LaunchKernel {
-                            kernel_type: "auto".to_string(),
-                            env_source: LaunchSpec::Auto,
-                            notebook_path: Some(saved_path_str),
-                        })
-                        .await
-                    {
-                        Ok(resp) => {
-                            info!("[save-as] Kernel launched for saved notebook: {:?}", resp)
-                        }
-                        Err(e) => warn!("[save-as] Kernel launch failed: {}", e),
-                    }
-                }
-                _ => {
-                    // No kernel was running — don't launch one (trust not yet approved).
-                    info!("[save-as] No kernel was running, skipping launch");
-                }
-            }
-        }
-    });
+    // Keep the existing kernel/session alive. The daemon's SaveNotebook handler
+    // owns the UUID-stable room transition: it rebinds the path, updates
+    // RuntimeStateDoc.path, refreshes project context, and publishes workstation
+    // attachment facts. Restarting here would discard live kernel state on a
+    // pure file-system rename/save-as operation.
 
     Ok(())
 }
@@ -2551,13 +2564,14 @@ fn open_notebook_window(
     Ok(())
 }
 
-/// Process a single file-open URL: focus existing window, reuse empty window, or open new.
+/// Process a single file-open URL: focus an existing matching window or open new.
 /// Extracted from RunEvent::Opened handler so it can be reused for deferred URLs.
 #[cfg(target_os = "macos")]
 fn handle_open_url(
     app_handle: &tauri::AppHandle,
     registry: &WindowNotebookRegistry,
     url: &tauri::Url,
+    allow_startup_placeholder_reuse: bool,
 ) {
     let path = match url.scheme() {
         "file" => url.to_file_path().ok(),
@@ -2581,56 +2595,72 @@ fn handle_open_url(
         }
     }
 
-    // Reuse an empty (untitled) window if one exists, otherwise open new.
-    if let Some(empty_label) = registry.find_empty_window_label(app_handle) {
-        if let Ok(context) = registry.get(&empty_label) {
-            // Update path in context
-            if let Ok(mut p) = context.path.lock() {
-                log::info!(
-                    "[file-open] context.path mutation (reuse empty window): {:?} -> {:?} (label={})",
-                    *p,
-                    path,
-                    empty_label
-                );
-                *p = Some(path.clone());
-            }
+    let pathless_label = if allow_startup_placeholder_reuse {
+        registry.find_pathless_window_label(app_handle)
+    } else {
+        None
+    };
+    if pathless_file_open_policy(allow_startup_placeholder_reuse, pathless_label.is_some())
+        == PathlessFileOpenPolicy::ReuseStartupPlaceholder
+    {
+        if let Some(empty_label) = pathless_label {
+            if let Ok(context) = registry.get(&empty_label) {
+                // Update path in context.
+                if let Ok(mut p) = context.path.lock() {
+                    log::info!(
+                        "[file-open] context.path mutation (reuse startup placeholder): {:?} -> {:?} (label={})",
+                        *p,
+                        path,
+                        empty_label
+                    );
+                    *p = Some(path.clone());
+                }
 
-            if let Some(window) = app_handle.get_webview_window(&empty_label) {
-                log::info!(
-                    "[file-open] Reusing empty window '{}' for {}",
-                    empty_label,
-                    path.display()
-                );
-                let title = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("Untitled.ipynb");
-                let _ = window.set_title(title);
-                refresh_native_menu(app_handle, registry);
+                if let Some(window) = app_handle.get_webview_window(&empty_label) {
+                    log::info!(
+                        "[file-open] Reusing startup placeholder '{}' for {}",
+                        empty_label,
+                        path.display()
+                    );
+                    let title = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Untitled.ipynb");
+                    let _ = window.set_title(title);
+                    refresh_native_menu(app_handle, registry);
 
-                // Disconnect existing sync and reconnect with the file path
-                let notebook_sync = context.notebook_sync.clone();
-                let sync_generation = context.sync_generation.clone();
-                let notebook_id = context.notebook_id.clone();
-                let open_path = path.clone();
-                tauri::async_runtime::spawn(async move {
-                    // Clear existing handle
-                    *notebook_sync.lock().await = None;
-                    if let Err(e) = initialize_notebook_sync_open(
-                        window,
-                        open_path,
-                        notebook_sync,
-                        sync_generation,
-                        notebook_id,
-                    )
-                    .await
-                    {
-                        log::error!("[file-open] Daemon sync failed for reused window: {}", e);
-                    }
-                });
+                    let notebook_sync = context.notebook_sync.clone();
+                    let sync_generation = context.sync_generation.clone();
+                    let notebook_id = context.notebook_id.clone();
+                    let open_path = path.clone();
+                    tauri::async_runtime::spawn(async move {
+                        *notebook_sync.lock().await = None;
+                        if let Err(e) = initialize_notebook_sync_open(
+                            window,
+                            open_path,
+                            notebook_sync,
+                            sync_generation,
+                            notebook_id,
+                        )
+                        .await
+                        {
+                            log::error!(
+                                "[file-open] Daemon sync failed for reused startup placeholder: {}",
+                                e
+                            );
+                        }
+                    });
+                    return;
+                }
             }
         }
-    } else if let Err(e) = open_notebook_window(app_handle, registry, &path) {
+    }
+
+    // Do not retarget an untitled window for ordinary file-open events. A
+    // pathless window may still contain unsaved work, and the registry has no
+    // reliable dirty/placeholder bit. Opening a separate window is the only
+    // safe default after startup.
+    if let Err(e) = open_notebook_window(app_handle, registry, &path) {
         log::error!("[file-open] Failed to open notebook in new window: {}", e);
     }
 }
@@ -4717,7 +4747,7 @@ pub fn run(
                     );
                     registry_for_open.prune_stale_entries(app_handle);
                     for url in &urls {
-                        handle_open_url(app_handle, &registry_for_open, url);
+                        handle_open_url(app_handle, &registry_for_open, url, true);
                     }
                 }
             }
@@ -4819,7 +4849,7 @@ pub fn run(
             } else {
                 registry_for_open.prune_stale_entries(app_handle);
                 for url in urls {
-                    handle_open_url(app_handle, &registry_for_open, url);
+                    handle_open_url(app_handle, &registry_for_open, url, false);
                 }
             }
         }
