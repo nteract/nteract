@@ -4,17 +4,9 @@ import { FrameType } from "runtimed";
 import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import { openWebSocket } from "./raw-websocket-client.mjs";
 import { credentialedSmokeOrigin } from "./wasm-roundtrip-env.mjs";
+import { initializeRuntimedWasmForNode } from "./runtimed-wasm-artifact.mjs";
 
-const wasmJsPath = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
-  import.meta.url,
-);
-const wasmBinPath = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
-  import.meta.url,
-);
-const wasm = await import(wasmJsPath.href);
-await wasm.default({ module_or_path: await readFile(wasmBinPath) });
+const wasm = await initializeRuntimedWasmForNode();
 
 const baseUrl = notebookCloudBaseUrl();
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;

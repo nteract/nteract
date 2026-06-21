@@ -1,6 +1,5 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import type {
   D1Database,
   D1PreparedStatement,
@@ -18,18 +17,14 @@ import { FrameType, encodeTypedFrame, type FrameTypeValue } from "../src/protoco
 import { RoomMaterializer } from "../src/room-materializer.ts";
 import {
   createEmptyRoomHost,
-  initializeRuntimedWasm,
   loadRoomHostSnapshot,
   NotebookHandle,
   RuntimeStatePeerHandle,
 } from "../src/runtimed-wasm.ts";
-
-const wasmBytes = await readFile(
-  new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
-);
+import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 
 before(async () => {
-  await initializeRuntimedWasm(wasmBytes);
+  await initializeTestRuntimedWasm();
 });
 
 type TestConnectionScope = "viewer" | "editor" | "runtime_peer" | "owner";

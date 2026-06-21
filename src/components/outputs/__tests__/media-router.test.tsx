@@ -7,16 +7,12 @@
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import initMarkdownWasm, {
-  project_markdown_json,
-} from "../../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 import {
   MARKDOWN_PROJECTION_MIME_TYPE,
   setMarkdownProjectionProjector,
 } from "@/lib/markdown-projection";
+import { initializeMarkdownProjectionWasm } from "@/test/runtimed-wasm";
 import { MediaProvider } from "../media-provider";
 import { DEFAULT_PRIORITY, getSelectedMimeType, MediaRouter } from "../media-router";
 
@@ -24,16 +20,7 @@ let restoreMarkdownProjector: (() => void) | undefined;
 const originalMatchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia");
 
 beforeAll(async () => {
-  const wasmBytes = readFileSync(
-    join(process.cwd(), "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm"),
-  );
-  await initMarkdownWasm({
-    module_or_path: wasmBytes.buffer.slice(
-      wasmBytes.byteOffset,
-      wasmBytes.byteOffset + wasmBytes.byteLength,
-    ),
-  });
-  setMarkdownProjectionProjector(project_markdown_json);
+  await initializeMarkdownProjectionWasm();
 });
 
 function withMarkdownProjection({

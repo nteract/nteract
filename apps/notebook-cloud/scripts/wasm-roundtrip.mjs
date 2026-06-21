@@ -1,6 +1,4 @@
-import { access, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { FrameType } from "runtimed";
 import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import {
@@ -11,20 +9,16 @@ import {
   sendBinaryFrame,
 } from "./raw-websocket-client.mjs";
 import { assertWasmRoundtripAuthEnv, credentialedSmokeOrigin } from "./wasm-roundtrip-env.mjs";
+import {
+  assertRuntimedWasmBuildExists,
+  initializeRuntimedWasmSyncForNode,
+} from "./runtimed-wasm-artifact.mjs";
 
 const baseUrl = notebookCloudBaseUrl();
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const roomId = `wasm-${Date.now()}`;
 const runtimeStateDocId = `runtime-state:${randomUUID()}`;
 const timingsMs = {};
-const wasmJsUrl = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
-  import.meta.url,
-);
-const wasmBytesUrl = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
-  import.meta.url,
-);
 
 if (typeof WebSocket === "undefined") {
   throw new Error("This smoke script requires Node.js with a global WebSocket implementation");
@@ -32,11 +26,11 @@ if (typeof WebSocket === "undefined") {
 
 const startedAt = performance.now();
 assertWasmRoundtripAuthEnv({ baseUrl, devAuthToken });
-await assertWasmBuildExists();
+await assertRuntimedWasmBuildExists();
 
-const { initSync, NotebookHandle } = await import(wasmJsUrl.href);
-const wasmBytes = await readFile(wasmBytesUrl);
-await timed("runtimed_wasm_init", () => initSync({ module: wasmBytes }));
+const { NotebookHandle } = await timed("runtimed_wasm_init", () =>
+  initializeRuntimedWasmSyncForNode(),
+);
 
 await timed("owner_seed", () => seedNotebookOwner(roomId));
 await timed("acl_grants", async () => {
@@ -156,17 +150,6 @@ async function timed(name, fn) {
 
 function elapsedMs(started) {
   return Math.max(0, Math.round((performance.now() - started) * 100) / 100);
-}
-
-async function assertWasmBuildExists() {
-  try {
-    await access(fileURLToPath(wasmJsUrl));
-    await access(fileURLToPath(wasmBytesUrl));
-  } catch {
-    throw new Error(
-      "Missing apps/notebook/src/wasm/runtimed-wasm output. Run `cargo xtask wasm runtimed --skip-renderer-plugins` first.",
-    );
-  }
 }
 
 async function seedNotebookOwner(notebookId) {

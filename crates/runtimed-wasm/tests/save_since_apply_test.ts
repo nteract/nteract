@@ -8,26 +8,12 @@
  */
 
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { loadRuntimedWasm } from "./wasm_loader.ts";
 
 // @ts-nocheck — wasm-bindgen output doesn't have Deno-compatible type declarations
 
 // deno-lint-ignore no-explicit-any
-let NotebookHandle: any;
-
-const wasmJsPath = new URL(
-  "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
-  import.meta.url,
-);
-const wasmBinPath = new URL(
-  "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
-  import.meta.url,
-);
-
-const mod = await import(wasmJsPath.href);
-NotebookHandle = mod.NotebookHandle;
-
-const wasmBytes = await Deno.readFile(wasmBinPath);
-await mod.default({ module_or_path: wasmBytes });
+const { NotebookHandle }: any = await loadRuntimedWasm();
 
 function concat(...parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((sum, part) => sum + part.byteLength, 0);

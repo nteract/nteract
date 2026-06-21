@@ -22,11 +22,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { VirtualAction, VirtualTimeScheduler } from "rxjs";
 import { describe, expect, it } from "vite-plus/test";
-import type { NotebookHandle } from "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm";
 import { DirectTransport, type ServerHandle } from "../src/direct-transport";
 import type { ExecutionViewChangeset, SyncableHandle } from "../src/handle";
 import { SyncEngine } from "../src/sync-engine";
-import { initWasm } from "./wasm-harness";
+import { initWasm, type NotebookHandle } from "./wasm-harness";
 
 // ── Fixture loading ──────────────────────────────────────────────────
 

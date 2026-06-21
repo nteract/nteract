@@ -9,7 +9,6 @@
 
 import { Subject } from "rxjs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { NotebookHandle } from "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm";
 import type { SyncableHandle } from "../src/handle";
 import {
   NotebookTabBridge,
@@ -19,7 +18,7 @@ import {
 } from "../src/notebook-tab-bridge";
 import { SyncEngine } from "../src/sync-engine";
 import type { NotebookTransport } from "../src/transport";
-import { initWasm } from "./wasm-harness";
+import { initWasm, type NotebookHandle } from "./wasm-harness";
 
 // ── In-memory channel bus (deterministic, no realm hops) ─────────────
 

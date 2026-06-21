@@ -10,6 +10,7 @@ import {
 } from "./publish-notebook-id.mjs";
 import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
+import { initializeRuntimedWasmSyncForNode } from "./runtimed-wasm-artifact.mjs";
 
 const baseUrl = notebookCloudBaseUrl();
 const fixtureName = process.env.NOTEBOOK_CLOUD_FIXTURE ?? "output_streaming";
@@ -20,24 +21,12 @@ const fixtureRoot = new URL(
   `../../../packages/runtimed/tests/fixtures/${fixtureName}/`,
   import.meta.url,
 );
-const wasmJsUrl = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
-  import.meta.url,
-);
-const wasmBytesUrl = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
-  import.meta.url,
-);
 
-await assertExists(wasmJsUrl);
-await assertExists(wasmBytesUrl);
 await assertExists(new URL("manifest.json", fixtureRoot));
 await assertExists(new URL("doc.bin", fixtureRoot));
 await assertExists(new URL("state_doc.bin", fixtureRoot));
 
-const { initSync, NotebookHandle } = await import(wasmJsUrl.href);
-const wasmBytes = await readFile(wasmBytesUrl);
-initSync({ module: wasmBytes });
+const { NotebookHandle } = await initializeRuntimedWasmSyncForNode();
 
 const [snapshotBytes, runtimeSnapshotBytes] = await Promise.all([
   readFile(new URL("doc.bin", fixtureRoot)),

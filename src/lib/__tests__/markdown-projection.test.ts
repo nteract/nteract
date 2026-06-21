@@ -1,9 +1,7 @@
-import initMarkdownWasm, {
-  project_markdown_json,
-} from "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
+import { initializeMarkdownProjectionWasm } from "../../test/runtimed-wasm";
 import {
   canRenderMarkdownProjectionInHost,
   findMarkdownProjectionAtSourcePosition,
@@ -54,16 +52,7 @@ function testPlan(runs: readonly MarkdownProjectionRun[]): MarkdownProjectionPla
 
 describe("markdown projection", () => {
   beforeAll(async () => {
-    const wasmBytes = readFileSync(
-      join(process.cwd(), "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm"),
-    );
-    await initMarkdownWasm({
-      module_or_path: wasmBytes.buffer.slice(
-        wasmBytes.byteOffset,
-        wasmBytes.byteOffset + wasmBytes.byteLength,
-      ),
-    });
-    setMarkdownProjectionProjector(project_markdown_json);
+    await initializeMarkdownProjectionWasm();
   });
 
   it("projects GFM task state from literal markdown source", () => {

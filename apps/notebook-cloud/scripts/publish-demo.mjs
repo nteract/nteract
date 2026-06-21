@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 
 import {
   canonicalViewerUrl,
@@ -10,26 +8,15 @@ import {
 } from "./publish-notebook-id.mjs";
 import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
+import { initializeRuntimedWasmSyncForNode } from "./runtimed-wasm-artifact.mjs";
 
 const baseUrl = notebookCloudBaseUrl();
 const notebookId = notebookIdFromEnvOrGenerated();
 const vanityName = vanityNameFromEnvOrNotebookName("demo.ipynb");
 const runtimeStateDocIdOverride = runtimeStateDocIdFromEnvOrDefault(notebookId);
 const actorLabel = "user:dev:demo/agent:publish-demo";
-const wasmJsUrl = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
-  import.meta.url,
-);
-const wasmBytesUrl = new URL(
-  "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
-  import.meta.url,
-);
 
-await assertWasmBuildExists();
-
-const { initSync, NotebookHandle } = await import(wasmJsUrl.href);
-const wasmBytes = await readFile(wasmBytesUrl);
-initSync({ module: wasmBytes });
+const { NotebookHandle } = await initializeRuntimedWasmSyncForNode();
 
 const handle = new NotebookHandle(notebookId);
 handle.set_actor(actorLabel);
@@ -127,17 +114,6 @@ function requiredRuntimeStateDocId(handle) {
     "NotebookDoc snapshot is missing runtime_state_doc_id",
   );
   return runtimeStateDocId;
-}
-
-async function assertWasmBuildExists() {
-  try {
-    await access(fileURLToPath(wasmJsUrl));
-    await access(fileURLToPath(wasmBytesUrl));
-  } catch {
-    throw new Error(
-      "Missing apps/notebook/src/wasm/runtimed-wasm output. Run `cargo xtask wasm runtimed --skip-renderer-plugins` first.",
-    );
-  }
 }
 
 async function putBytes(pathname, body, contentType, extraHeaders = {}) {
