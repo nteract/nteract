@@ -61,6 +61,17 @@ Restart Codex, then open the plugin directory, choose the nteract marketplace, a
 
 The distribution repository also includes a `nightly` plugin entry for pre-release builds.
 
+If Codex still does not show notebook tools after restarting, refresh the marketplace and reinstall the selected plugin:
+
+```
+codex plugin marketplace upgrade nteract-plugins
+codex plugin remove nteract@nteract-plugins      # or nightly@nteract-plugins
+codex plugin add nteract@nteract-plugins         # or nightly@nteract-plugins
+codex mcp list
+```
+
+Start a new Codex session after reinstalling; running sessions do not hot-load newly installed MCP tools.
+
 ### Install the Claude Code plugin
 
 ```
