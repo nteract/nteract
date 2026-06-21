@@ -48,12 +48,12 @@ function PoolErrorItem({ envType, error, onDismiss, onOpenSettings }: PoolErrorI
   return (
     <NotebookNotice
       tone="warning"
-      icon={isTimeout ? <Clock className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
+      icon={isTimeout ? <Clock className="size-3" /> : <AlertTriangle className="size-3" />}
       title={error.message}
       onDismiss={onDismiss}
       actions={
         showSettingsButton(error) && onOpenSettings ? (
-          <NotebookNoticeAction onClick={onOpenSettings} icon={<Settings className="h-3 w-3" />}>
+          <NotebookNoticeAction onClick={onOpenSettings} icon={<Settings className="size-3" />}>
             Settings
           </NotebookNoticeAction>
         ) : null

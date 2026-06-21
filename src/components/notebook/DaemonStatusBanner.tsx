@@ -40,12 +40,12 @@ export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusB
     return (
       <NotebookNotice
         tone="warning"
-        icon={<AlertTriangle className="h-3 w-3" />}
+        icon={<AlertTriangle className="size-3" />}
         title="Runtime unavailable"
         onDismiss={onDismiss}
         actions={
           onRetry ? (
-            <NotebookNoticeAction onClick={onRetry} icon={<RefreshCw className="h-3 w-3" />}>
+            <NotebookNoticeAction onClick={onRetry} icon={<RefreshCw className="size-3" />}>
               Retry
             </NotebookNoticeAction>
           ) : null
@@ -61,11 +61,7 @@ export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusB
   const message = getProgressMessage(status);
 
   return (
-    <NotebookNotice
-      tone="info"
-      icon={<Loader2 className="h-3 w-3 animate-spin" />}
-      className="py-1"
-    >
+    <NotebookNotice tone="info" icon={<Loader2 className="size-3 animate-spin" />} className="py-1">
       {message}
     </NotebookNotice>
   );

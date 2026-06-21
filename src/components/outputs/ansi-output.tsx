@@ -396,7 +396,7 @@ export function AnsiErrorOutput({
       )}
     >
       <div className="flex items-center gap-2 px-1 py-1.5 font-mono">
-        <X aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-destructive" strokeWidth={2.5} />
+        <X aria-hidden="true" className="size-3.5 shrink-0 text-destructive" strokeWidth={2.5} />
         <div className="min-w-0 truncate font-semibold text-destructive">{headline}</div>
         <div className="h-px min-w-6 flex-1 bg-destructive/10" />
       </div>

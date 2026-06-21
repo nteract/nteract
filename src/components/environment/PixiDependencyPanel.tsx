@@ -97,7 +97,7 @@ export function PixiDependencyPanel({
         >
           <div className={cn("flex min-w-0 items-center gap-2", isRail && "shrink-0")}>
             <span className="flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
-              <PixiIcon className="h-2.5 w-2.5" />
+              <PixiIcon className="size-2.5" />
               Pixi
             </span>
             <span
@@ -119,7 +119,7 @@ export function PixiDependencyPanel({
         {/* Success feedback after sync */}
         {justSynced && (
           <div className="mb-3 flex items-center gap-2 rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-            <Check className="h-3.5 w-3.5 shrink-0" />
+            <Check className="size-3.5 shrink-0" />
             <span>Kernel restarted — environment updated</span>
           </div>
         )}
@@ -135,7 +135,7 @@ export function PixiDependencyPanel({
             )}
           >
             <div className="flex items-start gap-2">
-              <Info className="h-3.5 w-3.5 shrink-0" />
+              <Info className="size-3.5 shrink-0" />
               <span>Dependencies changed.</span>
             </div>
             <button
@@ -147,7 +147,7 @@ export function PixiDependencyPanel({
                 isRail && "self-start py-1",
               )}
             >
-              <RefreshCw className={`h-3 w-3 ${isLoading ? "animate-spin" : ""}`} />
+              <RefreshCw className={`size-3 ${isLoading ? "animate-spin" : ""}`} />
               Restart
             </button>
           </div>
@@ -157,7 +157,7 @@ export function PixiDependencyPanel({
         {pixiInfo && !isInlineMode && (
           <div className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
             <div className="flex items-center gap-2">
-              <FileText className="h-3.5 w-3.5 shrink-0" />
+              <FileText className="size-3.5 shrink-0" />
               <span>
                 Using <code className="rounded bg-muted px-1">{pixiInfo.relative_path}</code>
                 {pixiInfo.workspace_name && (
@@ -253,7 +253,7 @@ export function PixiDependencyPanel({
                         disabled={isLoading}
                         className="text-amber-500/50 hover:text-amber-700 dark:hover:text-amber-300 transition-colors disabled:opacity-50"
                       >
-                        <X className="h-3 w-3" />
+                        <X className="size-3" />
                       </button>
                     )}
                   </div>
@@ -278,7 +278,7 @@ export function PixiDependencyPanel({
                   disabled={isLoading || !newDep.trim()}
                   className="flex items-center gap-1 rounded bg-amber-500/20 px-2 py-1 text-xs text-amber-600 dark:text-amber-400 hover:bg-amber-500/30 transition-colors disabled:opacity-50"
                 >
-                  <Plus className="h-3 w-3" />
+                  <Plus className="size-3" />
                   Add
                 </button>
               </div>
@@ -289,7 +289,7 @@ export function PixiDependencyPanel({
         {/* No pixi.toml and no inline deps — show init tip */}
         {!pixiInfo && inlineDependencyValues.length === 0 && (
           <div className="mb-3 flex items-start gap-2 rounded bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <Info className="size-3.5 mt-0.5 shrink-0" />
             <span>
               No <code className="rounded bg-muted px-1">pixi.toml</code> found. Add packages above
               or run <code className="rounded bg-muted px-1">pixi init</code> in your terminal.
@@ -300,7 +300,7 @@ export function PixiDependencyPanel({
         {/* Tip for pixi:toml mode */}
         {!isInlineMode && !isRail && (
           <div className="flex items-start gap-2 rounded bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
-            <Terminal className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <Terminal className="size-3.5 mt-0.5 shrink-0" />
             <span>
               Manage dependencies with{" "}
               <code className="rounded bg-muted px-1">pixi add &lt;package&gt;</code> in your

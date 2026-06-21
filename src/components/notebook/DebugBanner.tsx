@@ -21,7 +21,7 @@ export function DebugBanner({
 
   return (
     <div className="@container flex items-center justify-center gap-2 bg-violet-600/90 px-3 py-1 text-xs text-white">
-      <GitBranch className="h-3 w-3" />
+      <GitBranch className="size-3" />
       <span className="font-medium">{branch}</span>
       <span className="text-violet-200">@</span>
       <span className="font-mono text-violet-200">{commit}</span>
@@ -34,7 +34,7 @@ export function DebugBanner({
       {daemonVersion && (
         <span className="hidden @[40rem]:contents">
           <span className="text-violet-300">|</span>
-          <Server className="h-3 w-3 text-emerald-300" />
+          <Server className="size-3 text-emerald-300" />
           <span className="text-violet-100">
             {daemonLabel}
             {daemonCommit && (

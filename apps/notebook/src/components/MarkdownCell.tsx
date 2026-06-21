@@ -1027,7 +1027,7 @@ export const MarkdownCell = memo(function MarkdownCell({
               title="View rendered markdown"
               aria-label="View rendered markdown"
             >
-              <Check className="h-3.5 w-3.5" />
+              <Check className="size-3.5" />
             </button>
             {rightGutterContent}
           </div>
@@ -1040,7 +1040,7 @@ export const MarkdownCell = memo(function MarkdownCell({
               className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
               title="Edit"
             >
-              <Pencil className="h-3.5 w-3.5" />
+              <Pencil className="size-3.5" />
             </button>
             {rightGutterContent}
           </div>

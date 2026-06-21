@@ -137,7 +137,7 @@ function DefaultLoading() {
   return (
     <div className="flex items-center justify-center py-4 text-gray-400">
       <svg
-        className="h-5 w-5 animate-spin"
+        className="size-5 animate-spin"
         xmlns="http://www.w3.org/2000/svg"
         fill="none"
         viewBox="0 0 24 24"

@@ -60,7 +60,7 @@ export function GlobalFindBar({
       className="flex items-center gap-2 border-b bg-background/95 px-3 py-1.5"
     >
       <div className="flex min-w-0 max-w-md flex-[1_1_24rem] items-center gap-2">
-        <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" aria-hidden="true" />
+        <Search className="size-3.5 shrink-0 text-muted-foreground/70" aria-hidden="true" />
         <input
           ref={inputRef}
           type="text"
@@ -93,30 +93,30 @@ export function GlobalFindBar({
         type="button"
         onClick={onPrevMatch}
         disabled={matchCount === 0}
-        className="flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+        className="flex size-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
         title="Previous match (Shift+Enter)"
         aria-label="Previous match"
       >
-        <ChevronUp className="h-4 w-4" />
+        <ChevronUp className="size-4" />
       </button>
       <button
         type="button"
         onClick={onNextMatch}
         disabled={matchCount === 0}
-        className="flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+        className="flex size-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
         title="Next match (Enter)"
         aria-label="Next match"
       >
-        <ChevronDown className="h-4 w-4" />
+        <ChevronDown className="size-4" />
       </button>
       <button
         type="button"
         onClick={onClose}
-        className="flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        className="flex size-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         title="Close (Escape)"
         aria-label="Close find bar"
       >
-        <X className="h-4 w-4" />
+        <X className="size-4" />
       </button>
     </div>
   );

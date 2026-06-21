@@ -74,7 +74,7 @@ export function DenoDependencyPanel({
         {/* Success feedback after sync completed */}
         {justSynced && (
           <div className="mb-3 flex items-center gap-2 rounded bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
-            <Check className="h-3.5 w-3.5 shrink-0" />
+            <Check className="size-3.5 shrink-0" />
             <span>Kernel restarted — configuration applied</span>
           </div>
         )}
@@ -90,7 +90,7 @@ export function DenoDependencyPanel({
             )}
           >
             <div className="flex items-start gap-2">
-              <Info className="h-3.5 w-3.5 shrink-0" />
+              <Info className="size-3.5 shrink-0" />
               <span>Configuration changed — restart kernel to apply</span>
             </div>
             <button
@@ -102,7 +102,7 @@ export function DenoDependencyPanel({
                 isRail && "self-start py-1",
               )}
             >
-              <RefreshCw className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`} />
+              <RefreshCw className={`size-3 ${syncing ? "animate-spin" : ""}`} />
               Restart
             </button>
           </div>
@@ -112,7 +112,7 @@ export function DenoDependencyPanel({
         {denoConfigInfo && (
           <div className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
             <div className="flex items-center gap-2">
-              <FileText className="h-3.5 w-3.5 shrink-0" />
+              <FileText className="size-3.5 shrink-0" />
               <span>
                 Using <code className="rounded bg-muted px-1">{denoConfigInfo.relative_path}</code>
                 {denoConfigInfo.name && (
@@ -136,7 +136,7 @@ export function DenoDependencyPanel({
         {/* No config file - explain how Deno handles deps */}
         {!denoConfigInfo && (
           <div className="mb-3 flex items-start gap-2 rounded bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <Info className="size-3.5 mt-0.5 shrink-0" />
             <span>
               No <code className="rounded bg-muted px-1">deno.json</code> found. Deno can import
               modules directly without configuration.
@@ -184,7 +184,7 @@ export function DenoDependencyPanel({
           {/* npm packages */}
           <div className="rounded border bg-background px-2.5 py-2">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Package className="h-3 w-3" />
+              <Package className="size-3" />
               <span className="font-medium">npm packages</span>
             </div>
             <code className="text-xs text-emerald-600 dark:text-emerald-400">
@@ -195,7 +195,7 @@ export function DenoDependencyPanel({
           {/* JSR (recommended) */}
           <div className="rounded border bg-background px-2.5 py-2">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Package className="h-3 w-3" />
+              <Package className="size-3" />
               <span className="font-medium">JSR</span>
               <span className="rounded bg-emerald-500/20 px-1 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-400">
                 recommended
@@ -209,7 +209,7 @@ export function DenoDependencyPanel({
           {/* URL imports */}
           <div className="rounded border bg-background px-2.5 py-2">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <ExternalLink className="h-3 w-3" />
+              <ExternalLink className="size-3" />
               <span className="font-medium">URL imports</span>
             </div>
             <code className="text-xs text-emerald-600 dark:text-emerald-400 break-all">
