@@ -16,6 +16,11 @@ import {
 } from "@/components/isolated/isolated-renderer-context";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import {
+  markdownProjectionMatchesSource,
+  renderedTextForSourceRange,
+  resolveMarkdownProjection,
+} from "@/lib/markdown-projection";
+import {
   NotebookConnectionIdentity,
   NotebookCommentsPanel,
   NotebookDocumentToolbar,
@@ -294,6 +299,7 @@ export function NotebookViewer({
   const [sourceCommentRequest, setSourceCommentRequest] = useState<{
     anchor: SourceRangeCommentAnchor;
     rect: SourceCommentSelectionRect;
+    quote?: string | null;
   } | null>(null);
   const [commentFocus, setCommentFocus] = useState<{ threadId: string; nonce: number } | null>(
     null,
@@ -1314,14 +1320,18 @@ export function NotebookViewer({
   );
 
   const handleRequestSourceComment = useCallback(
-    (anchor: SourceRangeCommentAnchor, rect: SourceCommentSelectionRect | null) => {
+    (
+      anchor: SourceRangeCommentAnchor,
+      rect: SourceCommentSelectionRect | null,
+      quote?: string | null,
+    ) => {
       setCommentsError(null);
       if (rect) {
-        setSourceCommentRequest({ anchor, rect });
+        setSourceCommentRequest({ anchor, rect, quote });
         return;
       }
       setSourceCommentRequest(null);
-      setCommentDraftTarget({ anchor, quote: anchor.exact_quote ?? null });
+      setCommentDraftTarget({ anchor, quote: quote ?? anchor.exact_quote ?? null });
       openNotebookRailPanel("comments");
     },
     [],
@@ -1735,6 +1745,17 @@ export function NotebookViewer({
       ? "outline"
       : activeRailPanel;
   const commentsPanelStatus = commentsProjection ? null : "Syncing comments...";
+  const resolveSourceQuote = useCallback((anchor: SourceRangeCommentAnchor): string | null => {
+    const cell = getCellById(anchor.cell_id);
+    if (cell?.cell_type !== "markdown") return anchor.exact_quote ?? null;
+    const range = resolveSourceRangeAnchor(cell.source, anchor);
+    if (!range) return anchor.exact_quote ?? null;
+    const plan = resolveMarkdownProjection(cell.markdownProjection, cell.source);
+    if (!plan || !markdownProjectionMatchesSource(plan, cell.source)) {
+      return anchor.exact_quote ?? null;
+    }
+    return renderedTextForSourceRange(plan, range.from, range.to) ?? anchor.exact_quote ?? null;
+  }, []);
   const commentsPanel = (
     <NotebookCommentsPanel
       projection={commentsProjection}
@@ -1752,6 +1773,7 @@ export function NotebookViewer({
       focusedThreadId={commentFocus?.threadId ?? null}
       focusNonce={commentFocus?.nonce ?? 0}
       resolveSourceLanguage={resolveCommentSourceLanguage}
+      resolveSourceQuote={resolveSourceQuote}
     />
   );
   const rail = (
@@ -2044,7 +2066,7 @@ export function NotebookViewer({
       {sourceCommentRequest ? (
         <InlineCommentComposer
           rect={sourceCommentRequest.rect}
-          quote={sourceCommentRequest.anchor.exact_quote}
+          quote={sourceCommentRequest.quote ?? sourceCommentRequest.anchor.exact_quote}
           disabled={!canWriteComments}
           onSubmit={handleSubmitSourceComment}
           onCancel={handleCancelSourceComment}

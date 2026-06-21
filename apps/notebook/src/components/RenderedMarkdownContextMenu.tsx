@@ -7,19 +7,26 @@ import {
   type NotebookContextMenuGroup,
 } from "@/components/notebook/NotebookContextMenu";
 import {
+  resolveSourceRangeAnchor,
   selectionRectFromDomSelection,
   type SourceCommentSelectionRect,
   type SourceRangeCommentAnchor,
 } from "../lib/comment-source-anchor";
+import {
+  renderedTextForSourceRange,
+  type MarkdownProjectionPlan,
+} from "../lib/markdown-projection";
 import { sourceRangeAnchorFromRenderedMarkdownSelection } from "../lib/rendered-markdown-source-comment";
 
 interface RenderedMarkdownContextMenuProps {
   cellId: string;
   source: string;
+  markdownProjection: MarkdownProjectionPlan | null;
   viewRef: RefObject<HTMLDivElement | null>;
   onCreateSourceComment?: (
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
+    quote?: string | null,
   ) => void;
   children: ReactNode;
 }
@@ -78,6 +85,7 @@ export function buildRenderedMarkdownContextGroups({
 export function RenderedMarkdownContextMenu({
   cellId,
   source,
+  markdownProjection,
   viewRef,
   onCreateSourceComment,
   children,
@@ -106,12 +114,21 @@ export function RenderedMarkdownContextMenu({
         onCopy: clipboardPayload ? () => copyRenderedSelection(clipboardPayload) : undefined,
         onAddComment:
           anchor && onCreateSourceComment
-            ? () =>
-                onCreateSourceComment(anchor, selectionRectFromDomSelection(currentDomSelection()))
+            ? () => {
+                const range = resolveSourceRangeAnchor(source, anchor);
+                const quote = range
+                  ? renderedTextForSourceRange(markdownProjection, range.from, range.to)
+                  : null;
+                onCreateSourceComment(
+                  anchor,
+                  selectionRectFromDomSelection(currentDomSelection()),
+                  quote,
+                );
+              }
             : undefined,
       }),
     );
-  }, [cellId, onCreateSourceComment, source, viewRef]);
+  }, [cellId, markdownProjection, onCreateSourceComment, source, viewRef]);
 
   const handleOpenChange = useCallback(
     (open: boolean) => {

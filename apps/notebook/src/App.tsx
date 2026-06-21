@@ -35,6 +35,11 @@ import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import {
+  markdownProjectionMatchesSource,
+  renderedTextForSourceRange,
+  resolveMarkdownProjection,
+} from "@/lib/markdown-projection";
+import {
   NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY,
   NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
   NotebookPackagesPanel,
@@ -383,6 +388,7 @@ function AppContent() {
   const [sourceCommentRequest, setSourceCommentRequest] = useState<{
     anchor: SourceRangeCommentAnchor;
     rect: SourceCommentSelectionRect;
+    quote?: string | null;
   } | null>(null);
   const [commentFocus, setCommentFocus] = useState<{ threadId: string; nonce: number } | null>(
     null,
@@ -743,14 +749,18 @@ function AppContent() {
   );
 
   const handleRequestSourceComment = useCallback(
-    (anchor: SourceRangeCommentAnchor, rect: SourceCommentSelectionRect | null) => {
+    (
+      anchor: SourceRangeCommentAnchor,
+      rect: SourceCommentSelectionRect | null,
+      quote?: string | null,
+    ) => {
       setCommentsError(null);
       if (rect) {
-        setSourceCommentRequest({ anchor, rect });
+        setSourceCommentRequest({ anchor, rect, quote });
         return;
       }
       setSourceCommentRequest(null);
-      setCommentDraftTarget({ anchor, quote: anchor.exact_quote ?? null });
+      setCommentDraftTarget({ anchor, quote: quote ?? anchor.exact_quote ?? null });
       openNotebookRailPanel("comments");
     },
     [],
@@ -836,6 +846,18 @@ function AppContent() {
     },
     [runtime],
   );
+
+  const resolveSourceQuote = useCallback((anchor: SourceRangeCommentAnchor): string | null => {
+    const cell = getCellById(anchor.cell_id);
+    if (cell?.cell_type !== "markdown") return anchor.exact_quote ?? null;
+    const range = resolveSourceRangeAnchor(cell.source, anchor);
+    if (!range) return anchor.exact_quote ?? null;
+    const plan = resolveMarkdownProjection(cell.markdownProjection, cell.source);
+    if (!plan || !markdownProjectionMatchesSource(plan, cell.source)) {
+      return anchor.exact_quote ?? null;
+    }
+    return renderedTextForSourceRange(plan, range.from, range.to) ?? anchor.exact_quote ?? null;
+  }, []);
 
   const sourceCommentThreadsByCell = useMemo(() => {
     const map = new Map<string, SourceCommentThread[]>();
@@ -1010,6 +1032,7 @@ function AppContent() {
       focusedThreadId={commentFocus?.threadId ?? null}
       focusNonce={commentFocus?.nonce ?? 0}
       resolveSourceLanguage={resolveSourceLanguage}
+      resolveSourceQuote={resolveSourceQuote}
     />
   );
 
@@ -2103,7 +2126,7 @@ function AppContent() {
       {sourceCommentRequest ? (
         <InlineCommentComposer
           rect={sourceCommentRequest.rect}
-          quote={sourceCommentRequest.anchor.exact_quote}
+          quote={sourceCommentRequest.quote ?? sourceCommentRequest.anchor.exact_quote}
           disabled={!canMutateComments}
           onSubmit={handleSubmitSourceComment}
           onCancel={handleCancelSourceComment}

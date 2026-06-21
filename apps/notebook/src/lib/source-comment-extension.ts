@@ -12,6 +12,7 @@ import {
 export type SourceCommentRequestHandler = (
   anchor: SourceRangeCommentAnchor,
   rect: SourceCommentSelectionRect | null,
+  quote?: string | null,
 ) => void;
 
 const setSourceCommentFocusEffect = StateEffect.define<boolean>();

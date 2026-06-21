@@ -703,6 +703,8 @@ function renderRuns(runs: MarkdownProjectionRun[], options: RenderRunsOptions = 
 
   const { activeInlineId, commentHighlights, onLinkClick } = options;
   return runs.map((run) => {
+    // Keep choosing one best highlight per run for now; multiple disjoint
+    // highlight fragments in the same run are intentionally deferred.
     const highlight = commentHighlightForRun(run, commentHighlights);
     return (
       <span
@@ -713,14 +715,9 @@ function renderRuns(runs: MarkdownProjectionRun[], options: RenderRunsOptions = 
         data-source-start={run.sourceSpanUtf16[0]}
         data-source-end={run.sourceSpanUtf16[1]}
         data-source-active-run={activeInlineId === run.inlineId ? "true" : undefined}
-        className={cn(
-          activeInlineId === run.inlineId && sourceActiveRunClass,
-          highlight && "comment-highlight",
-          highlight?.resolved && "comment-highlight-resolved",
-        )}
-        style={commentHighlightStyle(highlight)}
+        className={cn(activeInlineId === run.inlineId && sourceActiveRunClass)}
       >
-        {renderRun(run, onLinkClick)}
+        {renderRunWithHighlight(run, highlight, onLinkClick)}
       </span>
     );
   });
@@ -759,6 +756,78 @@ function commentHighlightStyle(
   return { "--cm-comment-color": highlight.color } as CSSProperties;
 }
 
+const splittableRunSemantics = new Set([
+  "text",
+  "heading-text",
+  "list-item",
+  "table-cell",
+  "strong",
+  "emphasis",
+  "delete",
+  "inline-code",
+  "link-label",
+]);
+
+function renderRunWithHighlight(
+  run: MarkdownProjectionRun,
+  highlight: MarkdownCommentHighlight | null,
+  onLinkClick?: (url: string) => void,
+) {
+  if (!highlight) return renderRun(run, onLinkClick);
+
+  if (!canSplitRunForHighlight(run)) {
+    return (
+      <span
+        className={cn("comment-highlight", highlight.resolved && "comment-highlight-resolved")}
+        style={commentHighlightStyle(highlight)}
+      >
+        {renderRun(run, onLinkClick)}
+      </span>
+    );
+  }
+
+  const [runStart, runEnd] = run.sourceSpanUtf16;
+  const highlightStart = Math.min(highlight.from, highlight.to);
+  const highlightEnd = Math.max(highlight.from, highlight.to);
+  const overlapStart = Math.max(highlightStart, runStart);
+  const overlapEnd = Math.min(highlightEnd, runEnd);
+  const length = run.renderedText.length;
+  const start = clamp(overlapStart - runStart, 0, length);
+  const end = clamp(overlapEnd - runStart, 0, length);
+
+  if (end <= start) return renderRun(run, onLinkClick);
+
+  const before = run.renderedText.slice(0, start);
+  const highlighted = run.renderedText.slice(start, end);
+  const after = run.renderedText.slice(end);
+
+  return (
+    <>
+      {before ? renderRunText(run, before, onLinkClick) : null}
+      <span
+        className={cn("comment-highlight", highlight.resolved && "comment-highlight-resolved")}
+        style={commentHighlightStyle(highlight)}
+      >
+        {renderRunText(run, highlighted, onLinkClick)}
+      </span>
+      {after ? renderRunText(run, after, onLinkClick) : null}
+    </>
+  );
+}
+
+function canSplitRunForHighlight(run: MarkdownProjectionRun) {
+  const sourceLength = run.sourceSpanUtf16[1] - run.sourceSpanUtf16[0];
+  return (
+    run.renderedText.length > 0 &&
+    run.renderedText.length === sourceLength &&
+    splittableRunSemantics.has(run.semantic)
+  );
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => void) {
   const text = run.renderedText;
   if (run.semantic === "image" && run.imageSrc) {
@@ -775,6 +844,14 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
 
   if (!text) return null;
 
+  return renderRunText(run, text, onLinkClick);
+}
+
+function renderRunText(
+  run: MarkdownProjectionRun,
+  text: string,
+  onLinkClick?: (url: string) => void,
+) {
   if (run.href) {
     return (
       <a
