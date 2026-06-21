@@ -47,6 +47,27 @@ describe("InlineCommentComposer", () => {
     expect(onSubmit).toHaveBeenCalledWith("ship it");
   });
 
+  it("restores focus to the previously focused element when it unmounts", () => {
+    const previousFocus = document.createElement("button");
+    previousFocus.textContent = "Editor";
+    document.body.appendChild(previousFocus);
+    previousFocus.focus();
+
+    try {
+      const { unmount } = render(
+        <InlineCommentComposer rect={rect} onSubmit={vi.fn()} onCancel={vi.fn()} />,
+      );
+
+      expect(screen.getByLabelText("Comment on selection")).toHaveFocus();
+
+      unmount();
+
+      expect(previousFocus).toHaveFocus();
+    } finally {
+      previousFocus.remove();
+    }
+  });
+
   it("cancels on Escape without submitting", () => {
     const onSubmit = vi.fn();
     const onCancel = vi.fn();

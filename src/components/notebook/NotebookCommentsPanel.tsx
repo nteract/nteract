@@ -710,6 +710,15 @@ function CommentComposer({
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setBody("");
+      setFocused(false);
+      onCollapse?.();
+      textareaRef.current?.blur();
+      return;
+    }
+
     if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
     event.preventDefault();
     void submitBody();
