@@ -28,6 +28,7 @@ import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import {
   canRenderMarkdownProjectionInHost,
   markdownProjectionMatchesSource,
+  renderedTextForSourceRange,
   type MarkdownProjectionRun,
   projectedMarkdownPreviewHeight,
   projectMarkdownPlan,
@@ -158,6 +159,7 @@ interface MarkdownCellProps {
   onCreateSourceComment?: (
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
+    quote?: string | null,
   ) => void;
   onActivateCommentThread?: (threadId: string) => void;
   commentThreads?: readonly SourceCommentThread[];
@@ -534,7 +536,11 @@ export const MarkdownCell = memo(function MarkdownCell({
 
     if (!anchor) return false;
     const rect = selectionRectFromDomSelection(window.getSelection());
-    onCreateSourceComment(anchor, rect);
+    const range = resolveSourceRangeAnchor(previewSource, anchor);
+    const quote = range
+      ? renderedTextForSourceRange(markdownProjection, range.from, range.to)
+      : null;
+    onCreateSourceComment(anchor, rect, quote);
     window.getSelection()?.removeAllRanges();
     clearRenderedSourceCommentTarget();
     return true;
@@ -542,6 +548,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     canCommentOnRenderedMarkdown,
     cell.id,
     clearRenderedSourceCommentTarget,
+    markdownProjection,
     onCreateSourceComment,
     previewSource,
   ]);
@@ -557,7 +564,11 @@ export const MarkdownCell = memo(function MarkdownCell({
         selectionRectFromDomSelection(
           typeof window !== "undefined" ? window.getSelection() : null,
         ) ?? selectionRectFromDomRect(event.currentTarget.getBoundingClientRect());
-      onCreateSourceComment(anchor, rect);
+      const range = resolveSourceRangeAnchor(previewSource, anchor);
+      const quote = range
+        ? renderedTextForSourceRange(markdownProjection, range.from, range.to)
+        : null;
+      onCreateSourceComment(anchor, rect, quote);
       if (typeof window !== "undefined") {
         window.getSelection()?.removeAllRanges();
       }
@@ -565,7 +576,9 @@ export const MarkdownCell = memo(function MarkdownCell({
     },
     [
       clearRenderedSourceCommentTarget,
+      markdownProjection,
       onCreateSourceComment,
+      previewSource,
       renderedSourceCommentTarget,
       requestRenderedSourceComment,
     ],
@@ -1066,6 +1079,7 @@ export const MarkdownCell = memo(function MarkdownCell({
           <RenderedMarkdownContextMenu
             cellId={cell.id}
             source={previewSource}
+            markdownProjection={markdownProjection}
             viewRef={viewRef}
             onCreateSourceComment={canCommentOnRenderedMarkdown ? onCreateSourceComment : undefined}
           >

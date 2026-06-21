@@ -24,6 +24,8 @@ import { cn } from "@/lib/utils";
 import { highlight } from "@/components/editor/static-highlight";
 import { ProjectedMarkdownView } from "../markdown/ProjectedMarkdownView";
 
+type SourceRangeCommentAnchor = Extract<CommentAnchor, { kind: "source_range" }>;
+
 export interface NotebookCommentDraftTarget {
   anchor: CommentAnchor;
   quote?: string | null;
@@ -69,6 +71,11 @@ export interface NotebookCommentsPanelProps {
    * (e.g. markdown prose, raw cells).
    */
   resolveSourceLanguage?: (cellId: string) => string | undefined;
+  /**
+   * Rendered display quote for source-range anchors when the host can resolve
+   * the live cell projection. Falls back to the anchor's exact quote.
+   */
+  resolveSourceQuote?: (anchor: SourceRangeCommentAnchor) => string | null | undefined;
   /** Thread to scroll to and flash (e.g. after clicking its editor highlight). */
   focusedThreadId?: string | null;
   /** Bumped each focus request so repeat focuses of the same thread re-flash. */
@@ -89,6 +96,7 @@ export function NotebookCommentsPanel({
   onFocusThreadAnchor,
   resolveCommentAuthor,
   resolveSourceLanguage,
+  resolveSourceQuote,
   focusedThreadId = null,
   focusNonce = 0,
 }: NotebookCommentsPanelProps) {
@@ -127,6 +135,7 @@ export function NotebookCommentsPanel({
       onFocusThreadAnchor={onFocusThreadAnchor}
       resolveCommentAuthor={resolveCommentAuthor}
       resolveSourceLanguage={resolveSourceLanguage}
+      resolveSourceQuote={resolveSourceQuote}
       focused={thread.id === focusedThreadId}
       focusNonce={focusNonce}
     />
@@ -152,7 +161,11 @@ export function NotebookCommentsPanel({
       ) : null}
 
       {draftTarget ? (
-        <CommentDraftTargetView target={draftTarget} onClear={onClearDraftTarget} />
+        <CommentDraftTargetView
+          target={draftTarget}
+          onClear={onClearDraftTarget}
+          resolveSourceQuote={resolveSourceQuote}
+        />
       ) : null}
 
       <CommentComposer
@@ -216,11 +229,15 @@ export function NotebookCommentsPanel({
 function CommentDraftTargetView({
   target,
   onClear,
+  resolveSourceQuote,
 }: {
   target: NotebookCommentDraftTarget;
   onClear?: () => void;
+  resolveSourceQuote?: (anchor: SourceRangeCommentAnchor) => string | null | undefined;
 }) {
-  const quote = formatQuotePreview(target.quote ?? sourceQuoteFromAnchor(target.anchor));
+  const quote = formatQuotePreview(
+    target.quote ?? sourceQuoteFromAnchor(target.anchor, resolveSourceQuote),
+  );
 
   return (
     <div
@@ -265,6 +282,7 @@ function CommentThreadItem({
   onFocusThreadAnchor,
   resolveCommentAuthor,
   resolveSourceLanguage,
+  resolveSourceQuote,
   focused,
   focusNonce,
 }: {
@@ -278,6 +296,7 @@ function CommentThreadItem({
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
   resolveSourceLanguage?: (cellId: string) => string | undefined;
+  resolveSourceQuote?: (anchor: SourceRangeCommentAnchor) => string | null | undefined;
   focused?: boolean;
   focusNonce?: number;
 }) {
@@ -320,7 +339,7 @@ function CommentThreadItem({
     }
   };
 
-  const quote = sourceQuoteFromAnchor(thread.anchor);
+  const quote = sourceQuoteFromAnchor(thread.anchor, resolveSourceQuote);
   const threadAuthor = thread.created_by_actor_label
     ? resolveCommentAuthor?.(thread.created_by_actor_label)
     : undefined;
@@ -722,8 +741,12 @@ function anchorLabelForDraft(anchor: CommentAnchor): string {
   }
 }
 
-function sourceQuoteFromAnchor(anchor: CommentAnchor): string | null {
-  return anchor.kind === "source_range" ? (anchor.exact_quote ?? null) : null;
+function sourceQuoteFromAnchor(
+  anchor: CommentAnchor,
+  resolveSourceQuote?: (anchor: SourceRangeCommentAnchor) => string | null | undefined,
+): string | null {
+  if (anchor.kind !== "source_range") return null;
+  return resolveSourceQuote?.(anchor) ?? anchor.exact_quote ?? null;
 }
 
 function commentThreadTargetCellId(thread: CommentThreadSnapshot): string | null {

@@ -47,6 +47,7 @@ interface RawCellProps {
   onCreateSourceComment?: (
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
+    quote?: string | null,
   ) => void;
   onActivateCommentThread?: (threadId: string) => void;
 }

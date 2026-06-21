@@ -27,6 +27,7 @@ interface EditorContextMenuProps {
   onCreateSourceComment?: (
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
+    quote?: string | null,
   ) => void;
   children: ReactNode;
 }

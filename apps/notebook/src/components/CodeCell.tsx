@@ -109,6 +109,7 @@ interface CodeCellProps {
   onCreateSourceComment?: (
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
+    quote?: string | null,
   ) => void;
   onCreateOutputComment?: (anchor: OutputCommentAnchor) => void;
   onActivateCommentThread?: (threadId: string) => void;

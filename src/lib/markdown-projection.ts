@@ -272,6 +272,43 @@ export function markdownRunsForSourceRange(
   });
 }
 
+function clampSourceOffset(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+export function renderedTextForSourceRange(
+  plan: MarkdownProjectionPlan | null,
+  from: number,
+  to: number,
+): string | null {
+  if (!plan) return null;
+
+  const start = Math.min(from, to);
+  const end = Math.max(from, to);
+  const parts: string[] = [];
+
+  for (const run of markdownRunsForSourceRange(plan, start, end)) {
+    const [runStart, runEnd] = run.sourceSpanUtf16;
+    const sourceLength = Math.max(0, runEnd - runStart);
+    const renderedLength = run.renderedText.length;
+    const transparent = renderedLength === sourceLength;
+
+    if (transparent) {
+      const sliceStart = clampSourceOffset(start - runStart, 0, renderedLength);
+      const sliceEnd = clampSourceOffset(end - runStart, 0, renderedLength);
+      if (sliceEnd > sliceStart) {
+        parts.push(run.renderedText.slice(sliceStart, sliceEnd));
+      }
+      continue;
+    }
+
+    parts.push(run.renderedText);
+  }
+
+  const rendered = parts.join("").replace(/\s+/g, " ").trim();
+  return rendered.length > 0 ? rendered : null;
+}
+
 export function canRenderMarkdownProjectionInHost(plan: MarkdownProjectionPlan | null): boolean {
   return plan != null;
 }
