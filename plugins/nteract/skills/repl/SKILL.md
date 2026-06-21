@@ -19,6 +19,17 @@ If only MCP tools are available, use `create_notebook`, `create_cell`, `execute_
 
 If you loaded this skill but neither the direct pi tools (`python`, `python_add_dependencies`) nor the MCP notebook tools are available, don't fall back to `python3 -c`. Ask the user to verify that the nteract plugin is installed and enabled in Codex, then restart Codex after any plugin or marketplace changes. The most common cause is that the plugin was installed or updated after the current Codex session started.
 
+If Codex reports the plugin is installed but the tools still do not appear, ask the user to refresh and reinstall the selected plugin to clear stale local cache state:
+
+```sh
+codex plugin marketplace upgrade nteract-plugins
+codex plugin remove nteract@nteract-plugins      # or nightly@nteract-plugins
+codex plugin add nteract@nteract-plugins         # or nightly@nteract-plugins
+codex mcp list
+```
+
+Start a new Codex session after reinstalling; running sessions do not hot-load newly installed MCP tools.
+
 If tools still don't appear after restarting Codex:
 
 - Confirm the nteract desktop app/daemon is running.

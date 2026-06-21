@@ -317,6 +317,17 @@ codex plugin marketplace upgrade nteract-plugins   # refresh to latest tag
 codex plugin marketplace remove  nteract-plugins   # uninstall
 ```
 
+If notebook tools still do not appear after restarting Codex, refresh the marketplace and reinstall the selected plugin:
+
+```
+codex plugin marketplace upgrade nteract-plugins
+codex plugin remove nteract@nteract-plugins      # or nightly@nteract-plugins
+codex plugin add nteract@nteract-plugins         # or nightly@nteract-plugins
+codex mcp list
+```
+
+Start a new Codex session after reinstalling; running sessions do not hot-load newly installed MCP tools.
+
 ## Install in Claude Code
 
 ```
