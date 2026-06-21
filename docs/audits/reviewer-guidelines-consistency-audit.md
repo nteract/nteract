@@ -47,32 +47,29 @@ Evidence:
 - `apps/notebook/src/AGENTS.md` defines `NotebookHost` as the host-platform
   side-effect boundary and lists direct `@tauri-apps/*` imports outside the
   Tauri host implementation as an invariant violation.
-- `src/hooks/useSyncedSettings.ts` dynamically imports Tauri `invoke`, event
-  `listen`, and `getCurrentWindow`.
-- `apps/notebook/onboarding/App.tsx` imports Tauri `invoke`, event `listen`, and
-  shell APIs, then writes synced settings through direct IPC.
+- `apps/notebook/onboarding/App.tsx` imports Tauri `invoke` and event `listen`,
+  then writes synced settings through direct IPC.
 - `apps/notebook/upgrade/App.tsx` imports Tauri core, event, window, process,
   and updater APIs, then runs upgrade IPC directly.
 - `apps/notebook/diagnostics/App.tsx` imports Tauri core/window APIs and manages
   diagnostics IPC directly.
 - `apps/notebook/feedback/App.tsx` imports Tauri core/window/shell APIs and opens
   feedback directly.
-- `apps/notebook/settings/sections/Privacy.tsx` imports the Tauri shell plugin
-  for telemetry links.
 
 Suggested PR sequence:
 
-1. Add a small auxiliary-window host adapter in `@nteract/notebook-host` rather
-   than expanding the notebook-room host with upgrade/onboarding-specific
-   methods.
-2. Move shared synced-settings IPC behind that package first; this unlocks
-   settings, onboarding, and desktop theme behavior.
-3. Move diagnostics, feedback, and upgrade as follow-ups with narrow adapters
-   instead of one large host-boundary PR.
+1. Move onboarding synced-setting writes and completion events behind a narrow
+   host adapter.
+2. Move diagnostics and feedback behind narrow adapters that cover their IPC and
+   window-close flows.
+3. Move upgrade behind a dedicated adapter for updater/process/window IPC rather
+   than growing the notebook-room host surface.
 
-PRs #3782 and #3783 only remove link-opening shell dependencies. The core
-onboarding, diagnostics, feedback, upgrade, and synced-settings IPC boundaries
-remain the higher-value host adapter work.
+PRs #3782 and #3783 only remove link-opening shell dependencies. PR #3788 moves
+`useSyncedSettings()` and `useSyncedTheme()` behind `@nteract/notebook-host` and
+wraps the settings, diagnostics, and feedback entrypoints in
+`NotebookHostProvider`. The remaining host-boundary work is onboarding,
+diagnostics, feedback, and upgrade IPC.
 
 ## Generated Artifact Ownership
 

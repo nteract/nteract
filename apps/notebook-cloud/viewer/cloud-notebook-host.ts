@@ -210,6 +210,7 @@ export function createCloudNotebookHost({
       setTitle: async (title) => {
         document.title = title;
       },
+      setTheme: async () => {},
       onFocusChange: (callback) => {
         const onFocus = () => callback(true);
         const onBlur = () => callback(false);
@@ -240,6 +241,10 @@ export function createCloudNotebookHost({
     },
     settings: {
       openWindow: asyncNoop,
+      getSynced: async () => ({}),
+      setSynced: asyncNoop,
+      rotateInstallId: async () => "",
+      onChanged: () => unlisten,
     },
     commands: createCommandRegistry(),
     log: {

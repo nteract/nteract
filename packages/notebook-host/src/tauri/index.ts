@@ -46,6 +46,7 @@ import type {
   HostNotebook,
   HostRelay,
   HostSettings,
+  HostSyncedSettings,
   HostSystem,
   HostTrust,
   HostUpdater,
@@ -260,6 +261,9 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     async setTitle(title) {
       await getCurrentWindow().setTitle(title);
     },
+    async setTheme(theme) {
+      await getCurrentWindow().setTheme(theme);
+    },
     onFocusChange(cb) {
       let unlisten: Unlisten | null = null;
       let cancelled = false;
@@ -404,6 +408,18 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
   const settings: HostSettings = {
     async openWindow() {
       await invoke("open_settings_window");
+    },
+    async getSynced() {
+      return invoke<HostSyncedSettings>("get_synced_settings");
+    },
+    async setSynced(key, value) {
+      await invoke("set_synced_setting", { key, value });
+    },
+    async rotateInstallId() {
+      return invoke<string>("rotate_install_id");
+    },
+    onChanged(cb) {
+      return listenWebview<HostSyncedSettings>("settings:changed", cb);
     },
   };
 

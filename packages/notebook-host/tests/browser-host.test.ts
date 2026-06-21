@@ -159,4 +159,38 @@ describe("createBrowserHost()", () => {
     );
     await expect(result).resolves.toEqual({ result: "ok", entries: [] });
   });
+
+  it("keeps browser synced settings in memory and notifies subscribers", async () => {
+    FakeWebSocket.instances = [];
+    const host = await createBrowserHost({
+      fetchImpl: fetchConfig(),
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    });
+
+    const changed = vi.fn();
+    const unlisten = host.settings.onChanged(changed);
+
+    await expect(host.settings.getSynced()).resolves.toEqual({});
+    await host.settings.setSynced("theme", "dark");
+    await expect(host.settings.getSynced()).resolves.toEqual({ theme: "dark" });
+    expect(changed).toHaveBeenCalledWith({ theme: "dark" });
+
+    await host.settings.setSynced("uv.default_packages", ["numpy", "pandas"]);
+    await expect(host.settings.getSynced()).resolves.toEqual({
+      theme: "dark",
+      uv: { default_packages: ["numpy", "pandas"] },
+    });
+    expect(changed).toHaveBeenLastCalledWith({
+      theme: "dark",
+      uv: { default_packages: ["numpy", "pandas"] },
+    });
+
+    await expect(host.settings.rotateInstallId()).resolves.toEqual(expect.any(String));
+    const snapshot = await host.settings.getSynced();
+    expect(snapshot.install_id).toEqual(expect.any(String));
+
+    unlisten();
+    await host.settings.setSynced("theme", "light");
+    expect(changed).toHaveBeenCalledTimes(3);
+  });
 });

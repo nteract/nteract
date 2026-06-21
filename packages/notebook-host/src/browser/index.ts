@@ -27,6 +27,7 @@ import type {
   GitInfo,
   HostBlobResolver,
   HostBlobs,
+  HostSyncedSettings,
   HostUpdaterState,
   NotebookHost,
   TyposquatWarning,
@@ -133,6 +134,34 @@ function makeUnavailable(message: string): DaemonUnavailablePayload {
     message,
     guidance: "Start the dev daemon with `cargo xtask dev-daemon`, then run `cargo xtask vite`.",
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function setSyncedSettingValue(
+  snapshot: HostSyncedSettings,
+  key: string,
+  value: unknown,
+): HostSyncedSettings {
+  const path = key.split(".");
+  if (path.length === 1 || path.some((part) => part.length === 0)) {
+    return { ...snapshot, [key]: value };
+  }
+
+  const nextSnapshot: Record<string, unknown> = { ...snapshot };
+  let target = nextSnapshot;
+
+  for (const part of path.slice(0, -1)) {
+    const current = target[part];
+    const next = isRecord(current) ? { ...current } : {};
+    target[part] = next;
+    target = next;
+  }
+
+  target[path[path.length - 1]] = value;
+  return nextSnapshot as HostSyncedSettings;
 }
 
 class BrowserDevTransport implements NotebookTransport {
@@ -416,6 +445,13 @@ export async function createBrowserHost(
 
   const idleUpdaterState: HostUpdaterState = { status: "idle", version: null, error: null };
   const commands = createCommandRegistry();
+  let syncedSettingsSnapshot: HostSyncedSettings = {};
+  const settingsSubscribers = new Set<(settings: HostSyncedSettings) => void>();
+
+  const emitSettingsChanged = () => {
+    const snapshot = { ...syncedSettingsSnapshot };
+    for (const cb of settingsSubscribers) cb(snapshot);
+  };
 
   const browserBlobHost: HostBlobs = {
     async port() {
@@ -520,6 +556,7 @@ export async function createBrowserHost(
       async setTitle(title) {
         document.title = title;
       },
+      async setTheme() {},
       onFocusChange(cb) {
         const onFocus = () => cb(true);
         const onBlur = () => cb(false);
@@ -569,6 +606,25 @@ export async function createBrowserHost(
     settings: {
       async openWindow() {
         window.open("/settings/", "_blank", "noopener,noreferrer");
+      },
+      async getSynced() {
+        return { ...syncedSettingsSnapshot };
+      },
+      async setSynced(key, value) {
+        syncedSettingsSnapshot = setSyncedSettingValue(syncedSettingsSnapshot, key, value);
+        emitSettingsChanged();
+      },
+      async rotateInstallId() {
+        const installId = crypto.randomUUID();
+        syncedSettingsSnapshot = { ...syncedSettingsSnapshot, install_id: installId };
+        emitSettingsChanged();
+        return installId;
+      },
+      onChanged(cb) {
+        settingsSubscribers.add(cb);
+        return () => {
+          settingsSubscribers.delete(cb);
+        };
       },
     },
     commands,

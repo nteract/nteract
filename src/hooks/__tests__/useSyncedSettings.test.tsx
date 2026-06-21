@@ -1,18 +1,37 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { useSyncedSettings } from "../useSyncedSettings";
+import { useSyncedSettings, useSyncedTheme } from "../useSyncedSettings";
 
-const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
-  listen: vi.fn(),
-}));
+const mocks = vi.hoisted(() => {
+  const getSynced = vi.fn();
+  const onChanged = vi.fn();
+  const rotateInstallId = vi.fn();
+  const setNativeTheme = vi.fn();
+  const setSynced = vi.fn();
+  const unlisten = vi.fn();
+  return {
+    getSynced,
+    host: {
+      settings: {
+        getSynced,
+        onChanged,
+        rotateInstallId,
+        setSynced,
+      },
+      window: {
+        setTheme: setNativeTheme,
+      },
+    },
+    onChanged,
+    rotateInstallId,
+    setNativeTheme,
+    setSynced,
+    unlisten,
+  };
+});
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: mocks.invoke,
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: mocks.listen,
+vi.mock("@nteract/notebook-host", () => ({
+  useNotebookHost: () => mocks.host,
 }));
 
 type Deferred<T> = {
@@ -33,29 +52,32 @@ function deferred<T>(): Deferred<T> {
 
 describe("useSyncedSettings", () => {
   beforeEach(() => {
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      configurable: true,
-      value: {},
-    });
     localStorage.clear();
-    mocks.invoke.mockReset();
-    mocks.listen.mockReset();
-    mocks.listen.mockResolvedValue(() => {});
+    mocks.getSynced.mockReset();
+    mocks.onChanged.mockReset();
+    mocks.rotateInstallId.mockReset();
+    mocks.setNativeTheme.mockReset();
+    mocks.setSynced.mockReset();
+    mocks.unlisten.mockReset();
+    mocks.getSynced.mockResolvedValue({});
+    mocks.onChanged.mockReturnValue(mocks.unlisten);
+    mocks.rotateInstallId.mockResolvedValue("install-2");
+    mocks.setNativeTheme.mockResolvedValue(undefined);
+    mocks.setSynced.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
-    delete (window as Partial<Window> & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     localStorage.clear();
   });
 
-  it("ignores initial daemon settings that resolve after unmount", async () => {
+  it("ignores initial host settings that resolve after unmount", async () => {
     const load = deferred<unknown>();
-    mocks.invoke.mockReturnValue(load.promise);
+    mocks.getSynced.mockReturnValue(load.promise);
 
     const { unmount } = renderHook(() => useSyncedSettings());
 
     await waitFor(() => {
-      expect(mocks.invoke).toHaveBeenCalledWith("get_synced_settings", undefined);
+      expect(mocks.getSynced).toHaveBeenCalled();
     });
 
     unmount();
@@ -69,36 +91,89 @@ describe("useSyncedSettings", () => {
     expect(localStorage.getItem("notebook-color-theme")).toBeNull();
   });
 
-  it("ignores settings events after unmount while listener teardown is pending", async () => {
-    const listenReady = deferred<() => void>();
-    const unlisten = vi.fn();
-    let handler: ((event: { payload: unknown }) => void) | undefined;
-    mocks.invoke.mockResolvedValue({});
-    mocks.listen.mockImplementation((_eventName, eventHandler) => {
+  it("ignores settings events after unmount", async () => {
+    let handler: ((settings: unknown) => void) | undefined;
+    mocks.onChanged.mockImplementation((eventHandler: (settings: unknown) => void) => {
       handler = eventHandler;
-      return listenReady.promise;
+      return mocks.unlisten;
     });
 
     const { unmount } = renderHook(() => useSyncedSettings());
 
     await waitFor(() => {
-      expect(mocks.listen).toHaveBeenCalledWith("settings:changed", expect.any(Function));
+      expect(mocks.onChanged).toHaveBeenCalledWith(expect.any(Function));
     });
 
     unmount();
 
     act(() => {
-      handler?.({ payload: { color_theme: "cream", theme: "dark" } });
+      handler?.({ color_theme: "cream", theme: "dark" });
     });
 
     expect(localStorage.getItem("notebook-theme")).toBeNull();
     expect(localStorage.getItem("notebook-color-theme")).toBeNull();
+    expect(mocks.unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists setting writes through the host settings namespace", async () => {
+    const { result } = renderHook(() => useSyncedSettings());
 
     await act(async () => {
-      listenReady.resolve(unlisten);
-      await listenReady.promise;
+      result.current.setTheme("dark");
+      result.current.setColorTheme("cream");
+      await result.current.rotateInstallId();
     });
 
-    expect(unlisten).toHaveBeenCalledTimes(1);
+    expect(mocks.setSynced).toHaveBeenCalledWith("theme", "dark");
+    expect(mocks.setSynced).toHaveBeenCalledWith("color_theme", "cream");
+    expect(mocks.rotateInstallId).toHaveBeenCalledTimes(1);
+    expect(result.current.installId).toBe("install-2");
+  });
+});
+
+describe("useSyncedTheme", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mocks.getSynced.mockReset();
+    mocks.onChanged.mockReset();
+    mocks.rotateInstallId.mockReset();
+    mocks.setNativeTheme.mockReset();
+    mocks.setSynced.mockReset();
+    mocks.unlisten.mockReset();
+    mocks.getSynced.mockResolvedValue({});
+    mocks.onChanged.mockReturnValue(mocks.unlisten);
+    mocks.setNativeTheme.mockResolvedValue(undefined);
+    mocks.setSynced.mockResolvedValue(undefined);
+
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn(() => ({
+        addEventListener: vi.fn(),
+        matches: false,
+        removeEventListener: vi.fn(),
+      })),
+    });
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    delete (window as Partial<Window>).matchMedia;
+  });
+
+  it("syncs native window theme through the host window namespace", async () => {
+    const { result } = renderHook(() => useSyncedTheme());
+
+    await waitFor(() => {
+      expect(mocks.setNativeTheme).toHaveBeenCalledWith(null);
+    });
+    mocks.setNativeTheme.mockClear();
+
+    await act(async () => {
+      result.current.setTheme("dark");
+    });
+
+    await waitFor(() => {
+      expect(mocks.setNativeTheme).toHaveBeenCalledWith("dark");
+    });
   });
 });
