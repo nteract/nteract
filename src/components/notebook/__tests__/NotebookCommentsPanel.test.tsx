@@ -94,12 +94,15 @@ describe("NotebookCommentsPanel", () => {
     );
 
     const composer = screen.getByLabelText(DOCUMENT_COMMENT_LABEL);
-    expect(composer).toHaveAttribute("placeholder", "Add a comment");
+    const submit = screen.getByRole("button", { name: "Add comment" });
+    expect(composer).toHaveAttribute("placeholder", "Add to the discussion");
+    expect(submit).toHaveAttribute("aria-label", "Add comment");
+    expect(submit).toBeDisabled();
 
     fireEvent.change(composer, {
       target: { value: "Add this to the review notes" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+    fireEvent.click(submit);
 
     await waitFor(() =>
       expect(onCreateThread).toHaveBeenCalledWith("Add this to the review notes"),
@@ -310,7 +313,7 @@ describe("NotebookCommentsPanel", () => {
     expect(scroll).toContainElement(screen.getByText("Check the framing before publishing."));
     expect(dock).toContainElement(composer);
     expect(scroll).not.toContainElement(composer);
-    expect(composer).toHaveAttribute("placeholder", "Add a comment");
+    expect(composer).toHaveAttribute("placeholder", "Add to the discussion");
   });
 
   it("renders threads and submits replies", async () => {
@@ -327,7 +330,10 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByText("Check the framing before publishing.")).toBeVisible();
     expect(screen.getByText("alice")).toBeVisible();
     expect(screen.getByText("Cell-scoped comment")).toBeVisible();
+    expect(screen.queryByLabelText("Reply to Document comment 1")).not.toBeInTheDocument();
 
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Reply to Document comment 1")).toHaveFocus());
     fireEvent.change(screen.getByLabelText("Reply to Document comment 1"), {
       target: { value: "Looks ready locally" },
     });
@@ -341,7 +347,7 @@ describe("NotebookCommentsPanel", () => {
     expect(onResolveThread).toHaveBeenCalledWith("thread-1");
   });
 
-  it("focuses the reply composer for a focused thread", async () => {
+  it("does not open the reply composer for a focused thread", () => {
     render(
       <NotebookCommentsPanel
         projection={projection}
@@ -351,13 +357,16 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByLabelText("Reply to Document comment 1")).toHaveFocus());
+    expect(screen.queryByLabelText("Reply to Document comment 1")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Reply" })[0]).toBeVisible();
   });
 
   it("submits replies with Ctrl Enter", async () => {
     const onReplyThread = vi.fn();
     render(<NotebookCommentsPanel projection={projection} onReplyThread={onReplyThread} />);
 
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Reply to Document comment 1")).toHaveFocus());
     const reply = screen.getByLabelText("Reply to Document comment 1");
     fireEvent.change(reply, {
       target: { value: "Reply from the keyboard" },
@@ -572,7 +581,7 @@ describe("NotebookCommentsPanel", () => {
     const { container } = render(
       <NotebookCommentsPanel projection={projection} focusedThreadId="thread-1" focusNonce={1} />,
     );
-    // The focused thread's card gets the flash ring.
-    expect(container.querySelector("li.ring-2")).not.toBeNull();
+    // The focused thread gets a soft background flash.
+    expect(container.querySelector("li")?.className).toContain("bg-primary/5");
   });
 });

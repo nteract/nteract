@@ -150,6 +150,7 @@ export function InlineCommentComposer({
             <button
               type="submit"
               aria-label="Comment"
+              title="Comment (⌘↵)"
               disabled={!canSubmit}
               style={buttonStyle}
               className={cn(

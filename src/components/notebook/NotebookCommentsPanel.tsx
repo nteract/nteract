@@ -1,13 +1,12 @@
 import {
+  ArrowUp,
   Bot,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  LocateFixed,
+  CornerDownRight,
   MessageSquare,
-  Plus,
   RotateCcw,
-  Send,
   X,
 } from "lucide-react";
 import { actorInitials, onBehalfOfText } from "runtimed";
@@ -223,14 +222,13 @@ export function NotebookCommentsPanel({
               ? `New ${anchorLabelForDraft(draftTarget.anchor)} comment`
               : "Add a comment on the document"
           }
-          buttonLabel="Add comment"
-          icon="plus"
+          submitAriaLabel="Add comment"
           disabled={!canCreate}
           autoFocusKey={draftTarget ? draftAutoFocusKey(draftTarget) : "document"}
           placeholder={
             draftTarget
               ? `Add a ${anchorLabelForDraft(draftTarget.anchor)} comment`
-              : "Add a comment"
+              : "Add to the discussion"
           }
           compact={!draftTarget}
           onSubmit={onCreateThread}
@@ -316,7 +314,8 @@ function CommentThreadItem({
 }) {
   const itemRef = useRef<HTMLLIElement>(null);
   const [flashing, setFlashing] = useState(false);
-  // On a focus request for this thread, scroll it into view and flash a ring.
+  const [replying, setReplying] = useState(false);
+  // On a focus request for this thread, scroll it into view and flash softly.
   useEffect(() => {
     if (!focused) return;
     itemRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
@@ -358,59 +357,67 @@ function CommentThreadItem({
     ? resolveCommentAuthor?.(thread.created_by_actor_label)
     : undefined;
   const canShowCell = Boolean(commentThreadTargetCellId(thread) && onFocusThreadAnchor);
+  // Document-level threads carry no anchor context, so they show no header and
+  // read as a plain conversation; source/cell/output threads keep their label.
+  const showAnchorHeader = Boolean(quote) || thread.anchor.kind !== "notebook";
 
   return (
     <li
       ref={itemRef}
       className={cn(
-        "rounded-md border bg-card text-card-foreground shadow-sm transition-shadow duration-700",
-        thread.status === "resolved" && "border-border/70 bg-muted/10 shadow-none",
-        flashing && "ring-2 ring-primary/60",
+        "group relative rounded-lg px-2.5 py-2 transition-colors duration-700 hover:bg-muted/40",
+        thread.status === "resolved" && "opacity-70",
+        flashing && "bg-primary/5 hover:bg-primary/5",
       )}
     >
-      <div className="space-y-3.5 p-3">
-        <div className="flex items-center gap-2">
-          {quote ? (
-            <CommentSourceQuote
-              quote={quote}
-              language={
-                resolveSourceLanguage
-                  ? resolveSourceLanguage(commentThreadTargetCellId(thread) ?? "")
-                  : undefined
-              }
-              color={threadAuthor?.color}
-            />
-          ) : (
-            <div className="min-w-0 flex-1 text-xs text-muted-foreground">
-              {anchorLabel(thread)}
-            </div>
-          )}
-          <div className="flex shrink-0 items-center gap-0.5">
-            {canShowCell ? (
+      <button
+        type="button"
+        onClick={handleStatusAction}
+        disabled={statusAction.disabled || statusSubmitting}
+        aria-label={statusAction.ariaLabel}
+        title={statusAction.label}
+        className="absolute right-1.5 top-1.5 inline-grid size-7 place-items-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <StatusIcon className="size-3.5" aria-hidden="true" />
+      </button>
+      <div className="space-y-2.5 pr-7">
+        {showAnchorHeader ? (
+          quote ? (
+            canShowCell ? (
               <button
                 type="button"
                 onClick={() => onFocusThreadAnchor?.(thread)}
                 aria-label={`Show cell for ${threadLabel}`}
                 title="Show cell"
-                className="inline-grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className="block w-full rounded-sm py-0.5 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
               >
-                <LocateFixed className="size-3.5" aria-hidden="true" />
+                <CommentSourceQuote
+                  quote={quote}
+                  language={
+                    resolveSourceLanguage
+                      ? resolveSourceLanguage(commentThreadTargetCellId(thread) ?? "")
+                      : undefined
+                  }
+                  color={threadAuthor?.color}
+                />
               </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={handleStatusAction}
-              disabled={statusAction.disabled || statusSubmitting}
-              aria-label={statusAction.ariaLabel}
-              title={statusAction.label}
-              className="inline-grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <StatusIcon className="size-3.5" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
+            ) : (
+              <CommentSourceQuote
+                quote={quote}
+                language={
+                  resolveSourceLanguage
+                    ? resolveSourceLanguage(commentThreadTargetCellId(thread) ?? "")
+                    : undefined
+                }
+                color={threadAuthor?.color}
+              />
+            )
+          ) : (
+            <div className="text-xs text-muted-foreground">{anchorLabel(thread)}</div>
+          )
+        ) : null}
 
-        <div className="space-y-3.5">
+        <div className="space-y-3">
           {thread.messages.map((message) => (
             <CommentMessage
               key={message.id}
@@ -423,17 +430,36 @@ function CommentThreadItem({
           ) : null}
         </div>
 
-        <CommentComposer
-          ariaLabel={`Reply to ${threadLabel}`}
-          buttonAriaLabel={`Submit reply to ${threadLabel}`}
-          buttonLabel="Reply"
-          icon="send"
-          disabled={!canReply}
-          autoFocusKey={focused ? `${thread.id}:${focusNonce}` : null}
-          placeholder={thread.status === "resolved" ? "Reply to reopen…" : "Reply…"}
-          compact
-          onSubmit={onReplyThread ? (body) => onReplyThread(thread.id, body) : undefined}
-        />
+        {canReply ? (
+          replying ? (
+            <CommentComposer
+              ariaLabel={`Reply to ${threadLabel}`}
+              submitAriaLabel={`Submit reply to ${threadLabel}`}
+              disabled={!canReply}
+              autoFocusKey={`${thread.id}:reply`}
+              placeholder={thread.status === "resolved" ? "Reply to reopen…" : "Reply…"}
+              compact
+              onCollapse={() => setReplying(false)}
+              onSubmit={
+                onReplyThread
+                  ? async (body) => {
+                      await onReplyThread(thread.id, body);
+                      setReplying(false);
+                    }
+                  : undefined
+              }
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setReplying(true)}
+              className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <CornerDownRight className="size-3.5" aria-hidden="true" />
+              Reply
+            </button>
+          )
+        ) : null}
       </div>
     </li>
   );
@@ -592,7 +618,7 @@ function CommentSourceQuote({
   const nodes = highlight(quote, language, isDark, colorTheme);
   return (
     <code
-      className="min-w-0 flex-1 truncate border-l-2 pl-2 font-mono text-xs"
+      className="block min-w-0 flex-1 truncate border-l-2 pl-2 font-mono text-xs"
       style={{ borderColor: color ?? "hsl(var(--border))" }}
       data-testid="comment-thread-source-quote"
       title={quote}
@@ -614,33 +640,31 @@ function CommentBody({ body }: { body: string }) {
 
 function CommentComposer({
   ariaLabel,
-  buttonAriaLabel,
-  buttonLabel,
-  icon,
+  submitAriaLabel,
   disabled,
   autoFocusKey = null,
   placeholder,
   compact = false,
   onSubmit,
+  onCollapse,
 }: {
   ariaLabel: string;
-  buttonAriaLabel?: string;
-  buttonLabel: string;
-  icon: "plus" | "send";
+  submitAriaLabel: string;
   disabled: boolean;
   autoFocusKey?: string | null;
   placeholder: string;
   /** Collapse to a single line until focused or non-empty (used for replies). */
   compact?: boolean;
   onSubmit?: (body: string) => void | Promise<void>;
+  onCollapse?: () => void;
 }) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const Icon = icon === "plus" ? Plus : Send;
   // Collapsed only while compact, blurred, empty, and idle.
   const expanded = !compact || focused || submitting || body.length > 0;
+  const canSubmit = !disabled && !submitting && body.trim().length > 0 && Boolean(onSubmit);
 
   useEffect(() => {
     if (!autoFocusKey || disabled) return;
@@ -675,6 +699,11 @@ function CommentComposer({
     }
   };
 
+  const handleBlur = () => {
+    setFocused(false);
+    if (body.trim().length === 0) onCollapse?.();
+  };
+
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     await submitBody();
@@ -687,38 +716,45 @@ function CommentComposer({
   };
 
   return (
-    <form className="space-y-2" onSubmit={handleSubmit}>
-      <textarea
-        ref={textareaRef}
-        aria-label={ariaLabel}
-        value={body}
-        disabled={disabled || submitting}
-        placeholder={placeholder}
-        onChange={(event) => setBody(event.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        onKeyDown={handleKeyDown}
-        rows={expanded ? 3 : 1}
-        className={cn(
-          "w-full resize-y border bg-background px-3 text-sm leading-5",
-          expanded ? "min-h-20 rounded-md py-2" : "min-h-0 resize-none rounded-full py-1.5",
-          "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-          (disabled || submitting) && "cursor-not-allowed opacity-60",
-        )}
-      />
-      {expanded ? (
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            disabled={disabled || submitting || body.trim().length === 0}
-            aria-label={buttonAriaLabel}
-            className="inline-flex min-h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Icon className="size-3.5" aria-hidden="true" />
-            {buttonLabel}
-          </button>
-        </div>
-      ) : null}
+    <form onSubmit={handleSubmit}>
+      <div className="relative">
+        <textarea
+          ref={textareaRef}
+          aria-label={ariaLabel}
+          value={body}
+          disabled={disabled || submitting}
+          placeholder={placeholder}
+          onChange={(event) => setBody(event.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={handleBlur}
+          onKeyDown={handleKeyDown}
+          rows={expanded ? 3 : 1}
+          className={cn(
+            "block w-full border bg-background pl-3 pr-10 text-sm leading-5",
+            expanded
+              ? "min-h-20 resize-y rounded-md py-2"
+              : "min-h-10 resize-none rounded-full py-2",
+            "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+            (disabled || submitting) && "cursor-not-allowed opacity-60",
+          )}
+        />
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          aria-label={submitAriaLabel}
+          title={`${submitAriaLabel} (⌘↵)`}
+          style={{
+            background: "var(--comment-author-color, var(--primary, #2563eb))",
+            color: "var(--comment-author-contrast, #ffffff)",
+          }}
+          className={cn(
+            "absolute bottom-1.5 right-1.5 inline-flex size-7 items-center justify-center rounded-full transition-opacity",
+            !canSubmit && "cursor-not-allowed opacity-40",
+          )}
+        >
+          <ArrowUp className="size-4" aria-hidden="true" />
+        </button>
+      </div>
     </form>
   );
 }
