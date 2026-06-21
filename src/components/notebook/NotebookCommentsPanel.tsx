@@ -142,86 +142,100 @@ export function NotebookCommentsPanel({
   );
 
   return (
-    <section className="flex min-h-0 flex-col gap-3" data-testid="notebook-comments-panel">
-      {statusMessage ? (
-        <div
-          className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground"
-          role="status"
-        >
-          {statusMessage}
-        </div>
-      ) : null}
-      {errorMessage ? (
-        <div
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-          role="alert"
-        >
-          {errorMessage}
-        </div>
-      ) : null}
-
-      {draftTarget ? (
-        <CommentDraftTargetView
-          target={draftTarget}
-          onClear={onClearDraftTarget}
-          resolveSourceQuote={resolveSourceQuote}
-        />
-      ) : null}
-
-      <CommentComposer
-        ariaLabel={
-          draftTarget
-            ? `New ${anchorLabelForDraft(draftTarget.anchor)} comment`
-            : "New document comment"
-        }
-        buttonLabel="Add comment"
-        icon="plus"
-        disabled={!canCreate}
-        autoFocusKey={draftTarget ? draftAutoFocusKey(draftTarget) : "document"}
-        placeholder={
-          draftTarget
-            ? `Add a ${anchorLabelForDraft(draftTarget.anchor)} comment`
-            : "Add a document comment"
-        }
-        compact={!draftTarget}
-        onSubmit={onCreateThread}
-      />
-
-      {projection && threads.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
-          <MessageSquare className="size-4" aria-hidden="true" />
-          <span>No comments yet.</span>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {openThreads.length > 0 ? (
-            <ol className="space-y-3">{openThreads.map(renderThread)}</ol>
-          ) : resolvedThreads.length > 0 ? (
-            <p className="px-1 py-4 text-center text-sm text-muted-foreground">No open comments.</p>
-          ) : null}
-
-          {resolvedThreads.length > 0 ? (
-            <div className="space-y-3">
-              <button
-                type="button"
-                onClick={() => setShowResolved((value) => !value)}
-                aria-expanded={showResolved}
-                className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-              >
-                {showResolved ? (
-                  <ChevronDown className="size-3.5" aria-hidden="true" />
-                ) : (
-                  <ChevronRight className="size-3.5" aria-hidden="true" />
-                )}
-                {showResolved ? "Hide" : "Show"} resolved ({resolvedThreads.length})
-              </button>
-              {showResolved ? (
-                <ol className="space-y-3">{resolvedThreads.map(renderThread)}</ol>
-              ) : null}
+    <section className="flex h-full min-h-0 flex-col" data-testid="notebook-comments-panel">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto pr-1"
+        data-testid="notebook-comments-thread-scroll"
+      >
+        <div className="space-y-3 pb-3">
+          {statusMessage ? (
+            <div
+              className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground"
+              role="status"
+            >
+              {statusMessage}
             </div>
           ) : null}
+          {errorMessage ? (
+            <div
+              className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+              role="alert"
+            >
+              {errorMessage}
+            </div>
+          ) : null}
+
+          {projection && threads.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+              <MessageSquare className="size-4" aria-hidden="true" />
+              <span>No comments yet.</span>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {openThreads.length > 0 ? (
+                <ol className="space-y-4">{openThreads.map(renderThread)}</ol>
+              ) : resolvedThreads.length > 0 ? (
+                <p className="px-1 py-4 text-center text-sm text-muted-foreground">
+                  No open comments.
+                </p>
+              ) : null}
+
+              {resolvedThreads.length > 0 ? (
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowResolved((value) => !value)}
+                    aria-expanded={showResolved}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    {showResolved ? (
+                      <ChevronDown className="size-3.5" aria-hidden="true" />
+                    ) : (
+                      <ChevronRight className="size-3.5" aria-hidden="true" />
+                    )}
+                    {showResolved ? "Hide" : "Show"} resolved ({resolvedThreads.length})
+                  </button>
+                  {showResolved ? (
+                    <ol className="space-y-4">{resolvedThreads.map(renderThread)}</ol>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
-      )}
+      </div>
+
+      <div
+        className="shrink-0 space-y-2 border-t bg-background pt-3"
+        data-testid="notebook-comments-composer-dock"
+      >
+        {draftTarget ? (
+          <CommentDraftTargetView
+            target={draftTarget}
+            onClear={onClearDraftTarget}
+            resolveSourceQuote={resolveSourceQuote}
+          />
+        ) : null}
+
+        <CommentComposer
+          ariaLabel={
+            draftTarget
+              ? `New ${anchorLabelForDraft(draftTarget.anchor)} comment`
+              : "Add a comment on the document"
+          }
+          buttonLabel="Add comment"
+          icon="plus"
+          disabled={!canCreate}
+          autoFocusKey={draftTarget ? draftAutoFocusKey(draftTarget) : "document"}
+          placeholder={
+            draftTarget
+              ? `Add a ${anchorLabelForDraft(draftTarget.anchor)} comment`
+              : "Add a comment"
+          }
+          compact={!draftTarget}
+          onSubmit={onCreateThread}
+        />
+      </div>
     </section>
   );
 }
@@ -349,12 +363,12 @@ function CommentThreadItem({
     <li
       ref={itemRef}
       className={cn(
-        "rounded-lg border bg-card text-card-foreground shadow-sm transition-shadow duration-700",
+        "rounded-md border bg-card text-card-foreground shadow-sm transition-shadow duration-700",
         thread.status === "resolved" && "border-border/70 bg-muted/10 shadow-none",
         flashing && "ring-2 ring-primary/60",
       )}
     >
-      <div className="space-y-3 p-3">
+      <div className="space-y-3.5 p-3">
         <div className="flex items-center gap-2">
           {quote ? (
             <CommentSourceQuote
@@ -396,7 +410,7 @@ function CommentThreadItem({
           </div>
         </div>
 
-        <div className="space-y-3">
+        <div className="space-y-3.5">
           {thread.messages.map((message) => (
             <CommentMessage
               key={message.id}

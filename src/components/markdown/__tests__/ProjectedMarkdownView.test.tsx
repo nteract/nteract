@@ -84,8 +84,8 @@ describe("ProjectedMarkdownView", () => {
     const { container } = render(
       <ProjectedMarkdownView
         commentHighlights={[
-          { from: 0, to: 20, color: "#d97706", resolved: false },
-          { from: 6, to: 10, color: "#52525b", resolved: true },
+          { from: 0, to: 20, threadId: "thread-open", color: "#d97706", resolved: false },
+          { from: 6, to: 10, threadId: "thread-resolved", color: "#52525b", resolved: true },
         ]}
         plan={plan({
           blocks: [
@@ -142,12 +142,111 @@ describe("ProjectedMarkdownView", () => {
     expect(highlights[1]?.style.getPropertyValue("--cm-comment-color")).toBe("#52525b");
   });
 
+  it("activates rendered comment highlights on click", () => {
+    const onActivateCommentThread = vi.fn();
+    const onOuterClick = vi.fn();
+    const { container } = render(
+      <div onClick={onOuterClick}>
+        <ProjectedMarkdownView
+          onActivateCommentThread={onActivateCommentThread}
+          commentHighlights={[
+            { from: 0, to: 5, threadId: "thread-alpha", color: "#d97706", resolved: false },
+          ]}
+          plan={plan({
+            blocks: [
+              {
+                blockId: "p0",
+                blockIndex: 0,
+                element: "p",
+                kind: "paragraph",
+                measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+                sourceSpanByte: [0, 10],
+                sourceSpanUtf16: [0, 10],
+                syntaxSpans: [],
+                text: "alpha beta",
+              },
+            ],
+            runs: [
+              {
+                blockId: "p0",
+                inlineId: "r0",
+                listItemIndex: null,
+                renderedText: "alpha beta",
+                renderedTextUtf16: [0, 10],
+                semantic: "text",
+                sourceSpanByte: [0, 10],
+                sourceSpanUtf16: [0, 10],
+              },
+            ],
+          })}
+        />
+      </div>,
+    );
+
+    const highlighted = container.querySelector<HTMLElement>(".comment-highlight");
+    expect(highlighted).not.toBeNull();
+
+    fireEvent.click(highlighted!);
+
+    expect(onActivateCommentThread).toHaveBeenCalledTimes(1);
+    expect(onActivateCommentThread).toHaveBeenCalledWith("thread-alpha");
+    expect(onOuterClick).not.toHaveBeenCalled();
+  });
+
+  it("activates rendered comment highlights with Enter", () => {
+    const onActivateCommentThread = vi.fn();
+    render(
+      <ProjectedMarkdownView
+        onActivateCommentThread={onActivateCommentThread}
+        commentHighlights={[
+          { from: 0, to: 5, threadId: "thread-alpha", color: "#d97706", resolved: false },
+        ]}
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 10],
+              sourceSpanUtf16: [0, 10],
+              syntaxSpans: [],
+              text: "alpha beta",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "r0",
+              listItemIndex: null,
+              renderedText: "alpha beta",
+              renderedTextUtf16: [0, 10],
+              semantic: "text",
+              sourceSpanByte: [0, 10],
+              sourceSpanUtf16: [0, 10],
+            },
+          ],
+        })}
+      />,
+    );
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Open comment thread" }), {
+      key: "Enter",
+    });
+
+    expect(onActivateCommentThread).toHaveBeenCalledTimes(1);
+    expect(onActivateCommentThread).toHaveBeenCalledWith("thread-alpha");
+  });
+
   it("wraps only the selected characters for partial paragraph highlights", () => {
     const source = "This is some markdown text it is good";
     const selected = "some markdown";
     const { container } = render(
       <ProjectedMarkdownView
-        commentHighlights={[{ from: 8, to: 21, color: "#d97706", resolved: false }]}
+        commentHighlights={[
+          { from: 8, to: 21, threadId: "thread-partial", color: "#d97706", resolved: false },
+        ]}
         plan={plan({
           blocks: [
             {
@@ -191,7 +290,9 @@ describe("ProjectedMarkdownView", () => {
   it("highlights transparent strong run characters without ballooning to siblings", () => {
     const { container } = render(
       <ProjectedMarkdownView
-        commentHighlights={[{ from: 8, to: 12, color: "#d97706", resolved: false }]}
+        commentHighlights={[
+          { from: 8, to: 12, threadId: "thread-strong", color: "#d97706", resolved: false },
+        ]}
         plan={plan({
           blocks: [
             {
@@ -257,7 +358,9 @@ describe("ProjectedMarkdownView", () => {
     const source = "before ![Plot alt](attachment:plot.png) after";
     const { container } = render(
       <ProjectedMarkdownView
-        commentHighlights={[{ from: 10, to: 20, color: "#d97706", resolved: false }]}
+        commentHighlights={[
+          { from: 10, to: 20, threadId: "thread-image", color: "#d97706", resolved: false },
+        ]}
         plan={plan({
           blocks: [
             {

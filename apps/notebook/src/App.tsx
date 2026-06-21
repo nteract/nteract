@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   colorForActorIdentity,
+  contrastColorForActorIdentity,
   deriveEnvManager,
   deriveRuntimeKind,
   NotebookClient,
@@ -806,16 +807,20 @@ function AppContent() {
     return [{ participantKey: localPrincipal, label }];
   }, [localActor, peerLabel]);
 
-  // Tint the comment-on-selection affordance with the local author's canonical
-  // color (the same color as their cursor and edits), exposed as a CSS var the
-  // shared affordance styles read. Without it the dot falls back to --primary,
-  // a near-black neutral.
+  // Tint the comment surfaces with the local author's canonical color (the same
+  // color as their cursor and edits), plus a legible foreground for text/icons
+  // painted on that color. Both are CSS vars the shared affordance and composer
+  // styles read. Without them the affordance falls back to --primary (a
+  // near-black neutral) and white.
   useEffect(() => {
     if (!localActor) return;
     const color = colorForActorIdentity(localActor);
+    const contrast = contrastColorForActorIdentity(localActor);
     document.documentElement.style.setProperty("--comment-author-color", color);
+    document.documentElement.style.setProperty("--comment-author-contrast", contrast);
     return () => {
       document.documentElement.style.removeProperty("--comment-author-color");
+      document.documentElement.style.removeProperty("--comment-author-contrast");
     };
   }, [localActor]);
 

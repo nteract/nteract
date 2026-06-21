@@ -297,8 +297,10 @@ export {
 export {
   CURSOR_COLORS,
   colorForActorIdentity,
+  contrastColorForActorIdentity,
   identityColorKey,
   peerColor,
+  readableForegroundForColor,
 } from "./notebook-actor-color";
 
 // Notebook actor display

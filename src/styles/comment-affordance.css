@@ -38,7 +38,10 @@
   margin: 0;
   border: none;
   background: transparent;
-  color: var(--primary-foreground, #ffffff);
+  /* The open pill paints the label on the author color, so the label needs the
+     author's legible foreground (set with --comment-author-color), not a flat
+     white that fails contrast on light author colors. */
+  color: var(--comment-author-contrast, var(--primary-foreground, #ffffff));
   cursor: pointer;
 }
 

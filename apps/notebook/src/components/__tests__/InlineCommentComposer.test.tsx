@@ -5,8 +5,8 @@ import { InlineCommentComposer } from "../InlineCommentComposer";
 const rect = { left: 20, top: 40, right: 120, bottom: 60 };
 
 describe("InlineCommentComposer", () => {
-  it("shows the selected source as a quote preview", () => {
-    render(
+  it("does not render the selected source as a quote preview", () => {
+    const { container } = render(
       <InlineCommentComposer
         rect={rect}
         quote="sp.diff(f, x)"
@@ -14,7 +14,8 @@ describe("InlineCommentComposer", () => {
         onCancel={vi.fn()}
       />,
     );
-    expect(screen.getByText("sp.diff(f, x)")).toBeVisible();
+    expect(container.querySelector("blockquote")).toBeNull();
+    expect(screen.queryByText("sp.diff(f, x)")).toBeNull();
   });
 
   it("keeps submit disabled until the body has content", () => {
