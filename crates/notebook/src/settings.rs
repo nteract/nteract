@@ -113,6 +113,10 @@ pub fn load_settings() -> SyncedSettings {
             .get("disable_nteract_launcher")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.disable_nteract_launcher),
+        disable_comments: json
+            .get("disable_comments")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.disable_comments),
         redact_env_values_in_outputs: json
             .get("redact_env_values_in_outputs")
             .and_then(|v| v.as_bool())
@@ -179,6 +183,7 @@ mod tests {
         assert!(settings.conda.default_packages.is_empty());
         assert!(settings.install_default_data_packages);
         assert!(!settings.disable_nteract_launcher);
+        assert!(!settings.disable_comments);
         assert!(settings.redact_env_values_in_outputs);
     }
 
@@ -201,6 +206,7 @@ mod tests {
             pixi_pool_size: 6,
             install_default_data_packages: true,
             disable_nteract_launcher: false,
+            disable_comments: true,
             ..SyncedSettings::default()
         };
 
@@ -211,6 +217,7 @@ mod tests {
         assert_eq!(parsed.default_runtime, Runtime::Deno);
         assert_eq!(parsed.default_python_env, PythonEnvType::Uv);
         assert_eq!(parsed.uv.default_packages, vec!["numpy", "pandas"]);
+        assert!(parsed.disable_comments);
     }
 
     #[test]
@@ -393,6 +400,7 @@ mod tests {
             pixi_pool_size: defaults.pixi_pool_size,
             install_default_data_packages: defaults.install_default_data_packages,
             disable_nteract_launcher: defaults.disable_nteract_launcher,
+            disable_comments: defaults.disable_comments,
             ..defaults
         };
         // Valid fields are preserved

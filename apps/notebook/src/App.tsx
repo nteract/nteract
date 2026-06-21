@@ -67,6 +67,7 @@ import {
   type CommentAuthor,
   type NotebookCommentDraftTarget,
 } from "@/components/notebook";
+import { resolveCommentsUiSurface } from "@/components/notebook/comments-ui-gate";
 import { GlobalFindBar } from "@/components/search";
 import { InlineCommentComposer } from "./components/InlineCommentComposer";
 import { setSourceCommentThreads, type SourceCommentThread } from "./lib/comment-highlights";
@@ -324,7 +325,9 @@ function AppContent() {
   const daemonInfo = useDaemonInfo();
 
   // Apply theme to this window
-  const { defaultPythonEnv } = useSyncedTheme();
+  const { defaultPythonEnv, featureFlags } = useSyncedTheme();
+  const disableComments = featureFlags.disable_comments;
+  const commentsUiEnabled = !disableComments;
 
   // Stable peer ID for presence (generated once per window lifetime)
   const peerIdRef = useRef(crypto.randomUUID());
@@ -1040,6 +1043,14 @@ function AppContent() {
       resolveSourceQuote={resolveSourceQuote}
     />
   );
+  const commentsUiSurface = resolveCommentsUiSurface({
+    commentsUiEnabled,
+    canCreateComments: canMutateComments,
+    commentsPanel,
+    onCreateSourceComment: handleRequestSourceComment,
+    onCreateOutputComment: handleRequestOutputComment,
+    onActivateCommentThread: handleActivateCommentThread,
+  });
 
   // Connection/identity slot source: daemon lifecycle, stable for the
   // app's lifetime (the dot must transition on daemon restarts).
@@ -1325,11 +1336,17 @@ function AppContent() {
     return null;
   }, [envSource, envSyncState]);
 
-  const packagesRailOpen = !railCollapsed && activeRailPanel === "packages";
+  const renderedActiveRailPanel =
+    !commentsUiEnabled && activeRailPanel === "comments" ? "outline" : activeRailPanel;
+  const packagesRailOpen = !railCollapsed && renderedActiveRailPanel === "packages";
 
-  const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
-    openNotebookRailPanel(panelId);
-  }, []);
+  const handleRailPanelChange = useCallback(
+    (panelId: NotebookRailPanelId) => {
+      if (!commentsUiEnabled && panelId === "comments") return;
+      openNotebookRailPanel(panelId);
+    },
+    [commentsUiEnabled],
+  );
 
   const handleTogglePackagesRail = useCallback(() => {
     if (!shellCapabilities.canViewPackages) {
@@ -1955,7 +1972,7 @@ function AppContent() {
           rail={
             <NotebookDocumentRail
               viewModel={notebookViewModel}
-              activePanelId={activeRailPanel}
+              activePanelId={renderedActiveRailPanel}
               collapsed={railCollapsed}
               outlineCellIds={cellIds}
               activeOutlineItemId={activeOutlineItemId}
@@ -1965,7 +1982,7 @@ function AppContent() {
               onCollapsedChange={setNotebookRailCollapsed}
               onSelectOutlineItem={handleSelectOutlineItem}
               onNavigateOutlineItem={handleNavigateOutlineItem}
-              commentsPanel={commentsPanel}
+              commentsPanel={commentsUiSurface.commentsPanel}
               packagesPanel={
                 <NotebookPackagesPanel readOnly={!shellCapabilities.canManagePackages}>
                   {runtime === "python" && hasUvDependencies && hasCondaDependencies && (
@@ -2118,10 +2135,10 @@ function AppContent() {
                 onReportOutputMatchCount={globalFind.reportOutputMatchCount}
                 onSetCellSourceHidden={setCellSourceHidden}
                 onSetCellOutputsHidden={setCellOutputsHidden}
-                onCreateSourceComment={canMutateComments ? handleRequestSourceComment : undefined}
-                onCreateOutputComment={canMutateComments ? handleRequestOutputComment : undefined}
-                onActivateCommentThread={handleActivateCommentThread}
-                commentThreadsByCell={sourceCommentThreadsByCell}
+                onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
+                onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
+                onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
+                commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
                 pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
                 markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
               />
@@ -2129,7 +2146,7 @@ function AppContent() {
           </div>
         </NotebookDocumentShell>
       </div>
-      {sourceCommentRequest ? (
+      {commentsUiEnabled && sourceCommentRequest ? (
         <InlineCommentComposer
           rect={sourceCommentRequest.rect}
           quote={sourceCommentRequest.quote ?? sourceCommentRequest.anchor.exact_quote}

@@ -131,6 +131,9 @@ export interface CloudViewerConfig {
     canManageSharing?: boolean;
     canSubmitExecutionRequests?: boolean;
   };
+  featureFlags?: {
+    disable_comments?: boolean;
+  };
   session?: CloudAppSession | null;
   syncEndpoint: string;
   blobBasePath: string;
