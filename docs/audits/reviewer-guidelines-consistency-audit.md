@@ -23,6 +23,10 @@ host-neutral.
 Follow-up:
 
 - PR #3780 removes the Tauri branch from `useTheme`.
+- PR #3782 removes the direct Tauri shell dependency from the settings privacy
+  telemetry link.
+- PR #3783 removes the direct Tauri shell dependency from the onboarding
+  telemetry link.
 
 ## Highest-Value Target
 
@@ -66,6 +70,10 @@ Suggested PR sequence:
 3. Move diagnostics, feedback, and upgrade as follow-ups with narrow adapters
    instead of one large host-boundary PR.
 
+PRs #3782 and #3783 only remove link-opening shell dependencies. The core
+onboarding, diagnostics, feedback, upgrade, and synced-settings IPC boundaries
+remain the higher-value host adapter work.
+
 ## Generated Artifact Ownership
 
 ### Shared Tests and Cloud Import App-Owned WASM Output
@@ -95,6 +103,10 @@ Suggested PR sequence:
 3. Keep app-local generated output as a consumer artifact, not the path other
    packages depend on.
 
+PR #3784 centralizes the repeated test and script loaders around explicit
+helpers. It reduces call-site drift, but it intentionally leaves the larger
+package-owned artifact extraction as follow-up work.
+
 ## Planned Extraction To Track
 
 ### Cloud Renders Through the Temporary Desktop `notebook-surface`
@@ -121,6 +133,10 @@ Reviewer category: `async_ordering`
 
 `src/hooks/useSyncedSettings.ts` performs an initial async settings load and then
 writes many local state values. This is not a high-severity correctness issue,
-but if the hook is refactored behind a host/settings adapter, include
-stale-unmount guards or move the data into a store with an explicit subscription
-lifecycle.
+but lifecycle guards are still worthwhile while the hook waits for the larger
+host/settings adapter.
+
+Follow-up:
+
+- PR #3786 adds stale-unmount guards for the initial load and event listener
+  callback paths.
