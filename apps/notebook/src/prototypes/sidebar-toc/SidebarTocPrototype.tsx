@@ -224,12 +224,12 @@ function ActivityButton({
       aria-label={label}
       title={label}
       className={cn(
-        "flex h-9 w-9 items-center justify-center rounded text-muted-foreground transition-colors",
+        "flex size-9 items-center justify-center rounded text-muted-foreground transition-colors",
         "hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         selected && "bg-foreground text-background hover:bg-foreground hover:text-background",
       )}
     >
-      <Icon className="h-4 w-4" />
+      <Icon className="size-4" />
     </button>
   );
 }
@@ -387,16 +387,16 @@ function TopNotebookBar({ title = "forecast_readthrough.ipynb" }: { title?: stri
     <header className="flex h-10 shrink-0 items-center gap-2 border-b bg-background/95 px-3">
       <button
         type="button"
-        className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+        className="flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
         title="Run all cells"
         aria-label="Run all cells"
       >
-        <Play className="h-3.5 w-3.5" />
+        <Play className="size-3.5" />
       </button>
       <div className="h-4 w-px bg-border" />
       <div className="min-w-0 truncate text-xs font-medium text-foreground">{title}</div>
       <div className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground">
-        <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500" />
+        <Circle className="size-2 fill-emerald-500 text-emerald-500" />
         Python · idle
       </div>
     </header>
@@ -512,13 +512,13 @@ function VariantB({
                   activePanel === tab.key && "bg-background text-foreground shadow-sm",
                 )}
               >
-                <tab.icon className="h-4 w-4" />
+                <tab.icon className="size-4" />
               </button>
             ))}
           </div>
           <div className="border-b p-3">
             <div className="flex items-center gap-2 rounded border bg-background px-2 py-1.5 text-muted-foreground">
-              <Search className="h-3.5 w-3.5" />
+              <Search className="size-3.5" />
               <span className="text-xs">Search headings, packages, variables</span>
             </div>
           </div>
@@ -558,7 +558,7 @@ function VariantC({ activeHeading, setActiveHeading }: ReturnType<typeof useProt
       <aside className="flex min-h-0 flex-col border-r bg-zinc-950 text-zinc-100 dark:bg-zinc-950">
         <div className="border-b border-white/10 p-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
-            <FileText className="h-4 w-4 text-sky-300" />
+            <FileText className="size-4 text-sky-300" />
             forecast_readthrough
           </div>
           <div className="mt-1 text-[11px] text-zinc-400">Reader map · Python idle</div>
@@ -585,7 +585,7 @@ function VariantC({ activeHeading, setActiveHeading }: ReturnType<typeof useProt
               >
                 <span
                   className={cn(
-                    "h-2.5 w-2.5 shrink-0 rounded-full border border-white/40 bg-zinc-950",
+                    "size-2.5 shrink-0 rounded-full border border-white/40 bg-zinc-950",
                     activeHeading === item.id && "border-sky-200 bg-sky-300",
                   )}
                 />
@@ -622,7 +622,7 @@ function VariantC({ activeHeading, setActiveHeading }: ReturnType<typeof useProt
 function Pill({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
   return (
     <div className="flex min-w-0 items-center gap-1 rounded bg-white/10 px-1.5 py-1 text-[10px] text-zinc-300">
-      <Icon className="h-3 w-3 shrink-0" />
+      <Icon className="size-3 shrink-0" />
       <span className="truncate">{label}</span>
     </div>
   );
@@ -683,11 +683,11 @@ function PrototypeSwitcher({
         <button
           type="button"
           onClick={() => move(-1)}
-          className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-300 hover:bg-white/10 hover:text-white"
+          className="flex size-8 items-center justify-center rounded-full text-zinc-300 hover:bg-white/10 hover:text-white"
           title="Previous variant"
           aria-label="Previous variant"
         >
-          <ChevronLeft className="h-4 w-4" />
+          <ChevronLeft className="size-4" />
         </button>
         <div className="min-w-0 px-2 text-center">
           <div className="truncate text-xs font-semibold">
@@ -701,11 +701,11 @@ function PrototypeSwitcher({
         <button
           type="button"
           onClick={() => move(1)}
-          className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-300 hover:bg-white/10 hover:text-white"
+          className="flex size-8 items-center justify-center rounded-full text-zinc-300 hover:bg-white/10 hover:text-white"
           title="Next variant"
           aria-label="Next variant"
         >
-          <ChevronRight className="h-4 w-4" />
+          <ChevronRight className="size-4" />
         </button>
       </div>
     </div>

@@ -83,7 +83,7 @@ export function NotebookNotice({
       {icon ? (
         <span
           className={cn(
-            "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center",
+            "mt-0.5 flex size-4 shrink-0 items-center justify-center",
             iconClassName[tone],
           )}
           aria-hidden="true"
@@ -114,7 +114,7 @@ export function NotebookNotice({
               )}
               aria-label={dismissLabel}
             >
-              <X className="h-3 w-3" />
+              <X className="size-3" />
             </button>
           ) : null}
         </div>

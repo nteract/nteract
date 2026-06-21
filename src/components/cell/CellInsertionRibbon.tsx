@@ -259,7 +259,7 @@ export function CellInsertionRibbon({
                 aria-hidden="true"
               />
             ) : null}
-            <Code className="h-3 w-3" aria-hidden="true" />
+            <Code className="size-3" aria-hidden="true" />
             <span>Code</span>
           </button>
           <button
@@ -272,7 +272,7 @@ export function CellInsertionRibbon({
             onClick={() => onInsert("markdown")}
             className={actionButtonClass("markdown")}
           >
-            <LetterText className="h-3 w-3" aria-hidden="true" />
+            <LetterText className="size-3" aria-hidden="true" />
             <span>Markdown</span>
           </button>
         </div>

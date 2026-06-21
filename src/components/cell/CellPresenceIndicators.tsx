@@ -62,7 +62,7 @@ export function CellPresenceIndicators({
 function PresenceDot({ peer }: { peer: CellPresencePeer }) {
   return (
     <div
-      className="w-2 h-2 rounded-full shrink-0 transition-colors"
+      className="size-2 rounded-full shrink-0 transition-colors"
       style={{ backgroundColor: peer.color }}
       title={peer.peerLabel || "Peer"}
     />

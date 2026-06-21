@@ -82,7 +82,7 @@ export function KernelLaunchErrorBanner({
   return (
     <NotebookNotice
       tone="error"
-      icon={<AlertCircle className="h-4 w-4" />}
+      icon={<AlertCircle className="size-4" />}
       title="Kernel failed to start"
       onDismiss={onDismiss}
       details={
@@ -99,11 +99,11 @@ export function KernelLaunchErrorBanner({
             onClick={copyDetails}
             data-testid="copy-kernel-launch-error"
           >
-            {copied ? <Check className="h-3 w-3 mr-1" /> : <Copy className="h-3 w-3 mr-1" />}
+            {copied ? <Check className="size-3 mr-1" /> : <Copy className="size-3 mr-1" />}
             {copied ? "Copied" : "Copy"}
           </Button>
           <Button size="sm" variant="secondary" className="h-6 px-2 text-xs" onClick={onRetry}>
-            <RotateCw className="h-3 w-3 mr-1" />
+            <RotateCw className="size-3 mr-1" />
             Retry
           </Button>
         </>

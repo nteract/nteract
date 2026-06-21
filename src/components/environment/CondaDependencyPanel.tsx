@@ -179,7 +179,7 @@ export function CondaDependencyPanel({
         {envProgress?.error && (
           <div className="mb-3 rounded bg-red-500/10 border border-red-200 dark:border-red-900 px-2 py-2">
             <div className="flex items-start gap-2 text-xs text-red-700 dark:text-red-400">
-              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+              <AlertCircle className="size-4 mt-0.5 shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="font-medium">Environment creation failed</div>
                 <pre className="mt-1 whitespace-pre-wrap font-mono text-[10px] opacity-80 overflow-x-auto">
@@ -203,7 +203,7 @@ export function CondaDependencyPanel({
                     className="flex items-center gap-1 rounded bg-red-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     title="Retry environment creation"
                   >
-                    <RefreshCw className="h-3 w-3" />
+                    <RefreshCw className="size-3" />
                     Retry
                   </button>
                   {onResetProgress && (
@@ -213,7 +213,7 @@ export function CondaDependencyPanel({
                       className="text-red-500 hover:text-red-700 dark:hover:text-red-300"
                       title="Dismiss"
                     >
-                      <X className="h-3 w-3" />
+                      <X className="size-3" />
                     </button>
                   )}
                 </div>
@@ -225,7 +225,7 @@ export function CondaDependencyPanel({
         {/* Success feedback after sync completed */}
         {justSynced && (
           <div className="mb-3 flex items-center gap-2 rounded bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
-            <Check className="h-3.5 w-3.5 shrink-0" />
+            <Check className="size-3.5 shrink-0" />
             <span>Environment synced — dependencies are ready to use</span>
           </div>
         )}
@@ -234,7 +234,7 @@ export function CondaDependencyPanel({
         {environmentYmlInfo && (
           <div className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
             <div className="flex items-center gap-2">
-              <FileText className="h-3.5 w-3.5 shrink-0" />
+              <FileText className="size-3.5 shrink-0" />
               <span>
                 Using{" "}
                 <code className="rounded bg-muted px-1">{environmentYmlInfo.relative_path}</code>
@@ -311,7 +311,7 @@ export function CondaDependencyPanel({
             )}
           >
             <div className="flex items-start gap-2">
-              <Info className="h-3.5 w-3.5 shrink-0" />
+              <Info className="size-3.5 shrink-0" />
               <span>Dependencies changed — re-initialize environment to apply</span>
             </div>
             <button
@@ -324,7 +324,7 @@ export function CondaDependencyPanel({
                 isRail && "self-start py-1",
               )}
             >
-              <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+              <RefreshCw className={`size-3 ${loading ? "animate-spin" : ""}`} />
               Re-initialize
             </button>
           </div>
@@ -353,7 +353,7 @@ export function CondaDependencyPanel({
                         disabled={loading}
                         title={`Remove ${channel}`}
                       >
-                        <X className="h-3 w-3" />
+                        <X className="size-3" />
                       </button>
                     )}
                   </div>
@@ -396,7 +396,7 @@ export function CondaDependencyPanel({
                     className="flex items-center gap-0.5 rounded bg-background px-1.5 py-0.5 text-xs border hover:bg-muted transition-colors"
                     disabled={loading}
                   >
-                    <Plus className="h-3 w-3" />
+                    <Plus className="size-3" />
                     channel
                   </button>
                 ) : null}
@@ -460,7 +460,7 @@ export function CondaDependencyPanel({
                         disabled={loading}
                         title={`Remove ${dep}`}
                       >
-                        <X className="h-3 w-3" />
+                        <X className="size-3" />
                       </button>
                     )}
                   </div>
@@ -494,7 +494,7 @@ export function CondaDependencyPanel({
                   data-testid="conda-deps-add-button"
                   className="flex items-center gap-1 rounded bg-emerald-600 px-2 py-1 text-xs text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
                 >
-                  <Plus className="h-3 w-3" />
+                  <Plus className="size-3" />
                   Add
                 </button>
               </div>

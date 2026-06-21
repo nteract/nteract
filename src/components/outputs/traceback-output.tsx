@@ -310,7 +310,7 @@ function Header({
   const canInline = inlineEvalue && Boolean(evalue);
   return (
     <div className="flex items-center gap-2 px-1 py-1.5 font-mono">
-      <X aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-destructive" strokeWidth={2.5} />
+      <X aria-hidden="true" className="size-3.5 shrink-0 text-destructive" strokeWidth={2.5} />
       <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
         {canInline ? (
           <>
@@ -454,9 +454,9 @@ function CopyButton({
     >
       <span className="flex items-center gap-1">
         {copied ? (
-          <Check aria-hidden="true" className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+          <Check aria-hidden="true" className="size-3.5 text-green-600 dark:text-green-400" />
         ) : (
-          <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+          <Copy aria-hidden="true" className="size-3.5" />
         )}
         <span className="hidden sm:inline">{copied ? "Copied" : "Copy"}</span>
       </span>
@@ -610,7 +610,7 @@ function LocationLabel({
           aria-label={`Go to ${navigationLabel}, line ${line}`}
           title={`Go to ${navigationLabel}, line ${line}`}
         >
-          <LocateFixed aria-hidden="true" className="h-3.5 w-3.5" />
+          <LocateFixed aria-hidden="true" className="size-3.5" />
         </button>
       )}
     </span>

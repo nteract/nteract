@@ -125,7 +125,7 @@ export function UvDependencyPanel({
         {/* Success feedback after sync completed */}
         {justSynced && (
           <div className="mb-3 flex items-center gap-2 rounded bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
-            <Check className="h-3.5 w-3.5 shrink-0" />
+            <Check className="size-3.5 shrink-0" />
             <span>Environment synced — dependencies are ready to use</span>
           </div>
         )}
@@ -141,7 +141,7 @@ export function UvDependencyPanel({
             )}
           >
             <div className="flex items-start gap-2">
-              <Info className="h-3.5 w-3.5 shrink-0" />
+              <Info className="size-3.5 shrink-0" />
               <span>Re-initialize the environment to apply dependency changes.</span>
             </div>
             <button
@@ -154,7 +154,7 @@ export function UvDependencyPanel({
                 isRail && "self-start py-1",
               )}
             >
-              <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+              <RefreshCw className={`size-3 ${loading ? "animate-spin" : ""}`} />
               Re-initialize
             </button>
           </div>
@@ -170,7 +170,7 @@ export function UvDependencyPanel({
               className={cn(isRail ? "flex flex-col gap-2" : "flex items-center justify-between")}
             >
               <div className="flex min-w-0 items-start gap-2">
-                <FileText className="h-3.5 w-3.5 shrink-0" />
+                <FileText className="size-3.5 shrink-0" />
                 <span className="min-w-0">
                   <code className="rounded bg-muted px-1">{pyprojectPath}</code>
                   {pyprojectInfo?.project_name && (
@@ -208,7 +208,7 @@ export function UvDependencyPanel({
                     className="flex items-center gap-1 text-uv/70 hover:text-uv transition-colors disabled:opacity-50"
                     title="Copy deps into notebook metadata for portable sharing"
                   >
-                    <Download className="h-3 w-3" />
+                    <Download className="size-3" />
                     Copy to notebook
                   </button>
                 )}
@@ -255,7 +255,7 @@ export function UvDependencyPanel({
         {/* Project-managed state: read-only view when using uv run */}
         {isUsingProjectEnv && (
           <div className="mb-3 flex items-start gap-2 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <Info className="size-3.5 mt-0.5 shrink-0" />
             <div className="min-w-0 flex-1 space-y-1 leading-5">
               <div>
                 Using <code className="rounded bg-muted px-1">{pyprojectPath}</code>
@@ -341,7 +341,7 @@ export function UvDependencyPanel({
                       disabled={loading}
                       title={`Remove ${dep}`}
                     >
-                      <X className="h-3 w-3" />
+                      <X className="size-3" />
                     </button>
                   )}
                 </div>
@@ -375,7 +375,7 @@ export function UvDependencyPanel({
               data-testid="deps-add-button"
               className="flex items-center gap-1 rounded bg-uv px-2 py-1 text-xs text-white transition-colors hover:bg-uv/90 disabled:opacity-50"
             >
-              <Plus className="h-3 w-3" />
+              <Plus className="size-3" />
               Add
             </button>
           </div>

@@ -906,7 +906,7 @@ export const CodeCell = memo(function CodeCell({
                   title="Comment on outputs"
                   aria-label="Comment on outputs"
                 >
-                  <CommentMarkIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                  <CommentMarkIcon className="size-3.5" aria-hidden="true" />
                 </button>
               ) : null}
               {onToggleOutputsHidden ? (
@@ -918,7 +918,7 @@ export const CodeCell = memo(function CodeCell({
                   title="Hide outputs"
                   aria-label="Hide outputs"
                 >
-                  <EyeOff className="h-3.5 w-3.5" />
+                  <EyeOff className="size-3.5" />
                 </button>
               ) : null}
             </>

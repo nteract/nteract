@@ -154,7 +154,7 @@ export function NotebookCommandToolbar({
             aria-label="Add code cell"
             data-testid="add-code-cell-button"
           >
-            <Code className="h-3 w-3" />
+            <Code className="size-3" />
             <span className="hidden @[40rem]:inline">Code</span>
           </button>
           <button
@@ -166,7 +166,7 @@ export function NotebookCommandToolbar({
             aria-label="Add markdown cell"
             data-testid="add-markdown-cell-button"
           >
-            <LetterText className="h-3 w-3" />
+            <LetterText className="size-3" />
             <span className="hidden @[40rem]:inline">Markdown</span>
           </button>
         </>
@@ -186,7 +186,7 @@ export function NotebookCommandToolbar({
           aria-label="Start kernel"
           data-testid="start-kernel-button"
         >
-          <Play className="h-3 w-3" fill="currentColor" />
+          <Play className="size-3" fill="currentColor" />
           <span className="hidden @[40rem]:inline">Start kernel</span>
         </button>
       ) : null}
@@ -200,7 +200,7 @@ export function NotebookCommandToolbar({
           aria-label="Run all cells"
           data-testid="run-all-button"
         >
-          <ChevronsRight className="h-3.5 w-3.5" />
+          <ChevronsRight className="size-3.5" />
           <span className="hidden @[40rem]:inline">Run all</span>
         </button>
       ) : null}
@@ -214,7 +214,7 @@ export function NotebookCommandToolbar({
           aria-label="Restart kernel"
           data-testid="restart-kernel-button"
         >
-          <RotateCcw className="h-3 w-3" />
+          <RotateCcw className="size-3" />
           <span className="hidden @[40rem]:inline">Restart</span>
         </button>
       ) : null}
@@ -236,8 +236,8 @@ export function NotebookCommandToolbar({
           }
           data-testid="restart-run-all-button"
         >
-          <RotateCcw className="h-3 w-3" />
-          <ChevronsRight className="h-3 w-3 -ml-1" />
+          <RotateCcw className="size-3" />
+          <ChevronsRight className="size-3 -ml-1" />
         </button>
       ) : null}
 
@@ -256,7 +256,7 @@ export function NotebookCommandToolbar({
           data-testid="interrupt-kernel-button"
         >
           <Square
-            className="h-3 w-3"
+            className="size-3"
             fill={runtimeStatus?.state === "busy" ? "currentColor" : "none"}
           />
           <span className="hidden @[40rem]:inline">Interrupt</span>
@@ -274,9 +274,9 @@ export function NotebookCommandToolbar({
           data-testid="workstation-setup-button"
         >
           {workstationAction.pending ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
+            <Loader2 className="size-3 animate-spin" />
           ) : (
-            <ServerCog className="h-3 w-3" />
+            <ServerCog className="size-3" />
           )}
           <span className="hidden @[40rem]:inline">{workstationAction.label}</span>
         </button>
@@ -294,7 +294,7 @@ export function NotebookCommandToolbar({
           className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/10 text-violet-600 hover:bg-violet-500/20 dark:text-violet-400 transition-colors"
           title={updateAction.title}
         >
-          <ArrowDownToLine className="h-3 w-3" />
+          <ArrowDownToLine className="size-3" />
           <span>{updateAction.label}</span>
         </button>
       ) : null}
@@ -324,12 +324,12 @@ export function NotebookCommandToolbar({
         >
           {runtime === "deno" ? (
             <>
-              <DenoIcon className="h-3 w-3" />
+              <DenoIcon className="size-3" />
               <span>Deno</span>
             </>
           ) : (
             <>
-              <PythonIcon className="h-3 w-3" />
+              <PythonIcon className="size-3" />
               <span>Python</span>
             </>
           )}
@@ -337,20 +337,20 @@ export function NotebookCommandToolbar({
             <>
               <span className="opacity-40">/</span>
               {environmentManager === "uv" ? (
-                <UvIcon className="h-2 w-2 text-fuchsia-600 dark:text-fuchsia-400" />
+                <UvIcon className="size-2 text-fuchsia-600 dark:text-fuchsia-400" />
               ) : null}
               {environmentManager === "conda" ? (
-                <CondaIcon className="h-2.5 w-2.5 text-emerald-600 dark:text-emerald-400" />
+                <CondaIcon className="size-2.5 text-emerald-600 dark:text-emerald-400" />
               ) : null}
               {environmentManager === "pixi" ? (
-                <PixiIcon className="h-2.5 w-2.5 text-amber-600 dark:text-amber-400" />
+                <PixiIcon className="size-2.5 text-amber-600 dark:text-amber-400" />
               ) : null}
             </>
           ) : null}
           {showRuntimePeerIndicator ? (
             <>
               <span className="opacity-40">/</span>
-              <ServerCog className="h-2.5 w-2.5" aria-hidden="true" />
+              <ServerCog className="size-2.5" aria-hidden="true" />
             </>
           ) : null}
         </button>
@@ -367,7 +367,7 @@ export function NotebookCommandToolbar({
         >
           <div
             className={cn(
-              "h-2 w-2 shrink-0 rounded-full",
+              "size-2 shrink-0 rounded-full",
               runtimeStatus.state === "idle" && "bg-green-500",
               runtimeStatus.state === "busy" && "bg-amber-500",
               (runtimeStatus.state === "starting" || runtimeStatus.state === "not_started") &&

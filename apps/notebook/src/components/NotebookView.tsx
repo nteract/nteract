@@ -143,7 +143,7 @@ function CellErrorFallback({
             className="h-7 gap-1 px-2 text-xs"
             title="Retry rendering"
           >
-            <RotateCcw className="h-3 w-3" />
+            <RotateCcw className="size-3" />
             Retry
           </Button>
           {onDelete ? (
@@ -154,7 +154,7 @@ function CellErrorFallback({
               className="h-7 gap-1 px-2 text-xs text-destructive hover:text-destructive"
               title="Delete cell"
             >
-              <X className="h-3 w-3" />
+              <X className="size-3" />
               Delete
             </Button>
           ) : null}
@@ -833,7 +833,7 @@ function NotebookViewContent({
           className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-destructive"
           title="Delete cell"
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="size-3.5" />
         </button>
       ) : null;
 
@@ -860,11 +860,7 @@ function NotebookViewContent({
               )}
               title={isSourceHidden ? "Show input" : "Hide input"}
             >
-              {isSourceHidden ? (
-                <Eye className="h-3.5 w-3.5" />
-              ) : (
-                <EyeOff className="h-3.5 w-3.5" />
-              )}
+              {isSourceHidden ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
             </button>
           ) : null;
         const visibleDeleteButton = !isSourceHidden ? deleteButton : null;
@@ -1139,7 +1135,7 @@ function NotebookViewContent({
                     onClick={() => onAddCell("code")}
                     className="gap-1"
                   >
-                    <Plus className="h-3 w-3" />
+                    <Plus className="size-3" />
                     Code Cell
                   </Button>
                   <Button
@@ -1148,7 +1144,7 @@ function NotebookViewContent({
                     onClick={() => onAddCell("markdown")}
                     className="gap-1"
                   >
-                    <Plus className="h-3 w-3" />
+                    <Plus className="size-3" />
                     Markdown Cell
                   </Button>
                 </div>
