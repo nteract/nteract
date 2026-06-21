@@ -63,6 +63,8 @@ import { useWidgetStoreRequired } from "@/components/widgets/widget-store-contex
 import { useTheme } from "@/hooks/useTheme";
 import { EnvironmentSummary } from "@/components/environment";
 import {
+  colorForActorIdentity,
+  contrastColorForActorIdentity,
   NotebookClient,
   resolveActorDisplay,
   workstationAttachmentCanExecute,
@@ -528,6 +530,21 @@ export function NotebookViewer({
     resolveSyncAuth,
     widgetStore,
   });
+  // Mirror the desktop app: expose the local author's comment color and a
+  // legible foreground as CSS vars the shared affordance and composer styles
+  // read. The cloud viewer previously set neither, so cloud create surfaces fell
+  // back to the neutral --primary.
+  useEffect(() => {
+    if (!connectionActorLabel) return;
+    const color = colorForActorIdentity(connectionActorLabel);
+    const contrast = contrastColorForActorIdentity(connectionActorLabel);
+    document.documentElement.style.setProperty("--comment-author-color", color);
+    document.documentElement.style.setProperty("--comment-author-contrast", contrast);
+    return () => {
+      document.documentElement.style.removeProperty("--comment-author-color");
+      document.documentElement.style.removeProperty("--comment-author-contrast");
+    };
+  }, [connectionActorLabel]);
   useEffect(() => {
     const liveRuntime = liveRuntimeRef.current;
     if (!liveRuntime) {
