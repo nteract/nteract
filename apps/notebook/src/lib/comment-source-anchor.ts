@@ -222,6 +222,10 @@ export function resolveSourceRangeAnchor(
     return { from: best, to: best + quote.length };
   }
 
+  // Context tied across these occurrences, so fall back to proximity. This is a
+  // weak last resort: expectedFrom is the stored (pre-repair) offset, so a large
+  // edit above the quote skews it. Refuse (null) if the closest distance is
+  // itself shared, rather than arbitrarily picking one equidistant match.
   let best: number | null = null;
   let bestDistance = Number.POSITIVE_INFINITY;
   let tiedClosest = false;
