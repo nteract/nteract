@@ -53,6 +53,7 @@ import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
 } from "@/components/notebook-scenarios";
+import { Eyebrow } from "@/components/surface-primitives";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 
 type CloudConnectionState = "live" | "reconnecting" | "offline";
@@ -872,9 +873,7 @@ function CloudWorkstationSurface() {
 function WorkstationMetric({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 rounded-md border border-emerald-500/20 bg-background/70 px-2 py-1.5">
-      <div className="truncate text-[10px] font-medium uppercase tracking-normal text-muted-foreground">
-        {label}
-      </div>
+      <Eyebrow className="truncate">{label}</Eyebrow>
       <div className="truncate text-xs font-semibold text-foreground">{value}</div>
     </div>
   );
@@ -971,9 +970,7 @@ function CloudEntrySurface() {
       </div>
       <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,0.85fr)]">
         <div className="grid content-start gap-3">
-          <p className="m-0 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
-            Notebook cloud
-          </p>
+          <Eyebrow as="p">Notebook cloud</Eyebrow>
           <h3 className="m-0 max-w-[12ch] text-4xl font-bold leading-none text-foreground">
             nteract
           </h3>
@@ -1061,9 +1058,7 @@ function CloudAuthHandoffSurface() {
 
       <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.9fr)]">
         <div className="grid content-start gap-3">
-          <p className="m-0 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
-            Cloud sign-in
-          </p>
+          <Eyebrow as="p">Cloud sign-in</Eyebrow>
           <h3 className="m-0 max-w-[18ch] text-4xl font-bold leading-none text-foreground">
             Returning to the notebook.
           </h3>
@@ -1284,9 +1279,7 @@ function CloudSharePanel({ variant }: { variant: CloudSharePanelVariant }) {
 
       <section className="border-t border-border/70 px-4 py-3" aria-label="Current access">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-            Current access
-          </h4>
+          <Eyebrow as="h4">Current access</Eyebrow>
           <span className="text-xs text-muted-foreground">2 people, public link, 1 invite</span>
         </div>
         <div className="divide-y divide-border/70">
@@ -1413,9 +1406,7 @@ function CloudAccessPathways() {
   return (
     <section className="border-t border-fd-border px-4 py-3" aria-label="Cloud access pathways">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-          What each role sees
-        </h3>
+        <Eyebrow as="h3">What each role sees</Eyebrow>
         <span className="text-xs text-muted-foreground">
           sharing appears only where the role can act
         </span>

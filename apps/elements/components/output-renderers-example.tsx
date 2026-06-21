@@ -39,6 +39,7 @@ import { VegaOutput } from "@/components/outputs/vega-output";
 import { VideoOutput } from "@/components/outputs/video-output";
 import { OutputArea } from "@/components/cell/OutputArea";
 import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
+import { SurfaceFrame } from "@/components/surface-primitives";
 import "@/components/widgets/controls";
 import { WidgetStoreContext } from "@/components/widgets/widget-store-context";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
@@ -798,23 +799,21 @@ function RendererCard({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-lg border border-fd-border bg-fd-card">
-      <div className="flex items-start justify-between gap-3 border-b border-fd-border p-4">
-        <div className="flex min-w-0 items-center gap-2">
-          <Icon className="size-4 flex-none text-fd-muted-foreground" aria-hidden="true" />
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">{title}</h2>
-            <div className="mt-1 break-words font-mono text-[11px] leading-4 text-fd-muted-foreground [overflow-wrap:anywhere]">
-              {source}
-            </div>
-          </div>
-        </div>
-        <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
-          rendered
-        </span>
-      </div>
-      <div className="p-4">{children}</div>
-    </section>
+    <SurfaceFrame
+      title={title}
+      source={source}
+      icon={<Icon aria-hidden="true" />}
+      badge={<RenderedBadge />}
+      bodyClassName="p-4"
+    >
+      {children}
+    </SurfaceFrame>
+  );
+}
+
+function RenderedBadge() {
+  return (
+    <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">rendered</span>
   );
 }
 

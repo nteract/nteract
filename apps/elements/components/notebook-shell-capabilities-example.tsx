@@ -39,6 +39,7 @@ import {
   type ElementsNotebookScenario,
   type ElementsNotebookScenarioId,
 } from "@/components/notebook-scenarios";
+import { Eyebrow } from "@/components/surface-primitives";
 
 type BooleanCapabilityKey = {
   [Key in keyof NotebookShellCapabilities]-?: NotebookShellCapabilities[Key] extends boolean
@@ -232,23 +233,17 @@ export function NotebookShellCapabilitiesExample() {
             <h2 className="text-sm font-semibold">{flow.title}</h2>
             <dl className="mt-3 space-y-3 text-xs leading-5">
               <div>
-                <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-                  Source facts
-                </dt>
+                <Eyebrow as="dt">Source facts</Eyebrow>
                 <dd className="mt-1 text-fd-muted-foreground">{flow.facts}</dd>
               </div>
               <div>
-                <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-                  Adapter
-                </dt>
+                <Eyebrow as="dt">Adapter</Eyebrow>
                 <dd className="mt-1 break-words font-mono text-[11px] text-fd-foreground">
                   {flow.adapter}
                 </dd>
               </div>
               <div>
-                <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-                  Shared surface
-                </dt>
+                <Eyebrow as="dt">Shared surface</Eyebrow>
                 <dd className="mt-1 text-fd-muted-foreground">{flow.sharedSurface}</dd>
               </div>
             </dl>
@@ -337,15 +332,11 @@ export function NotebookShellCapabilitiesExample() {
                 </div>
                 <div className="grid gap-3 text-xs leading-5 md:grid-cols-2">
                   <div>
-                    <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-                      Shared use
-                    </div>
+                    <Eyebrow>Shared use</Eyebrow>
                     <p className="mt-1 text-fd-muted-foreground">{row.use}</p>
                   </div>
                   <div>
-                    <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-                      Host keeps
-                    </div>
+                    <Eyebrow>Host keeps</Eyebrow>
                     <p className="mt-1 text-fd-muted-foreground">{row.hostBoundary}</p>
                   </div>
                 </div>
@@ -439,9 +430,7 @@ function ElementsFixtureEnvironmentCard() {
           ) : null}
         </div>
         <div className="rounded-md border border-fd-border bg-fd-background p-3">
-          <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-            Inert host callbacks
-          </div>
+          <Eyebrow>Inert host callbacks</Eyebrow>
           <div className="mt-3 flex flex-wrap gap-2">
             <FixtureActionButton
               label="Open packages"
@@ -479,9 +468,7 @@ function ElementsFixtureEnvironmentCard() {
 function FixtureFact({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-        {label}
-      </dt>
+      <Eyebrow as="dt">{label}</Eyebrow>
       <dd className="mt-1 text-fd-foreground">{value}</dd>
     </div>
   );
@@ -564,18 +551,14 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
       <dl className="grid gap-2 px-3 pt-3">
         {scenario.sourceFacts.map((fact) => (
           <div key={fact.label}>
-            <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-              {fact.label}
-            </dt>
+            <Eyebrow as="dt">{fact.label}</Eyebrow>
             <dd className="mt-0.5 text-[11px] leading-4 text-fd-foreground">{fact.value}</dd>
           </div>
         ))}
       </dl>
       {scenario.notices.length ? (
         <div className="mt-3 border-t border-fd-border px-3 pt-3">
-          <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-            Projected notices
-          </div>
+          <Eyebrow>Projected notices</Eyebrow>
           <ul className="mt-2 space-y-1.5">
             {scenario.notices.map((notice) => (
               <li key={`${notice.tone}-${notice.title}`} className="text-[11px] leading-4">
@@ -587,9 +570,7 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
         </div>
       ) : null}
       <div className="mt-3 border-t border-fd-border px-3 py-3">
-        <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-          Host boundary
-        </div>
+        <Eyebrow>Host boundary</Eyebrow>
         <ul className="mt-2 space-y-2">
           {scenario.hostBoundaries.map((boundary) => (
             <li key={boundary.surface} className="text-[11px] leading-4">
@@ -620,9 +601,7 @@ function NoticeIcon({ tone }: { tone: NotebookNoticeTone }) {
 function ScenarioSignal({ label, value }: { label: string; value: string }) {
   return (
     <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-3 px-3 py-1.5">
-      <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-        {label}
-      </div>
+      <Eyebrow>{label}</Eyebrow>
       <div className="min-w-0 text-[11px] text-fd-foreground">{value}</div>
     </div>
   );

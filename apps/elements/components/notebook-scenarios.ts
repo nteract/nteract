@@ -1091,9 +1091,9 @@ export const elementsNotebookScenarios: Record<
     eyebrow: "workstation fixture",
     summary:
       "A hosted owner has selected an nteract workstation backed by Outerbounds current Python.",
-    runtimeLabel: "Outerbounds workstation - current Python",
+    runtimeLabel: "Outerbounds workstation · current Python",
     runtimeStatus: "ready",
-    packageSummary: "current Python - package mutation disabled",
+    packageSummary: "current Python · package mutation disabled",
     packageSourceLabel: "provider current Python",
     syncLabel: "Workstation target ready",
     syncStatus: "synced",
@@ -1155,8 +1155,8 @@ export const elementsNotebookScenarios: Record<
     eyebrow: "operator fixture",
     summary:
       "A delegated Codex operator submits edits for Kyle through the cloud shell; the label records execution provenance, not model lineage.",
-    runtimeLabel: "Cloud notebook - delegated operator active",
-    packageSummary: "visible - 8 packages",
+    runtimeLabel: "Cloud notebook · delegated operator active",
+    packageSummary: "visible · 8 packages",
     capabilities: {
       canRead: true,
       canEditMarkdown: true,

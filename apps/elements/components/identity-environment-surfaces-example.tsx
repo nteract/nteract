@@ -24,6 +24,7 @@ import {
   type ElementsNotebookScenario,
   type ElementsNotebookScenarioId,
 } from "@/components/notebook-scenarios";
+import { Eyebrow } from "@/components/surface-primitives";
 
 const identityScenarioIds: ElementsNotebookScenarioId[] = [
   "desktop-local-owner",
@@ -276,9 +277,7 @@ function IdentityScenarioCard({ scenario }: { scenario: ElementsNotebookScenario
     <article className="rounded-lg border border-fd-border bg-fd-card p-4">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-            {scenario.eyebrow}
-          </div>
+          <Eyebrow>{scenario.eyebrow}</Eyebrow>
           <h2 className="mt-1 truncate text-sm font-semibold">{scenario.title}</h2>
         </div>
         <AccessPill scenario={scenario} />

@@ -16,6 +16,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Eyebrow } from "@/components/surface-primitives";
 
 type NotebookAccess = "owner" | "editor" | "viewer";
 type ShareState = "private" | "shared" | "published";
@@ -184,10 +185,10 @@ function DashboardReviewFrame() {
     <div className="min-h-[48rem] bg-fd-background text-fd-foreground">
       <header className="flex flex-col gap-4 border-b border-fd-border px-4 py-4 md:flex-row md:items-end md:justify-between md:px-6">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
+          <Eyebrow className="flex items-center gap-2">
             <Command className="size-3.5" aria-hidden="true" />
             Notebook home
-          </div>
+          </Eyebrow>
           <h2 className="mt-2 text-2xl font-semibold tracking-normal md:text-3xl">
             Find a notebook
           </h2>
@@ -259,10 +260,10 @@ function DashboardReviewFrame() {
 
         <aside className="grid content-start gap-4">
           <section className="rounded-lg border border-fd-border p-4">
-            <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
+            <Eyebrow className="flex items-center gap-2">
               <Server className="size-3.5" aria-hidden="true" />
               Workstation context
-            </div>
+            </Eyebrow>
             <h3 className="mt-2 text-base font-semibold">Default workstation</h3>
             <p className="mt-2 text-sm leading-6 text-fd-muted-foreground">
               Host-owned readiness only. Run, restart, and interrupt controls stay inside the opened
@@ -270,10 +271,10 @@ function DashboardReviewFrame() {
             </p>
           </section>
           <section className="rounded-lg border border-fd-border p-4">
-            <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
+            <Eyebrow className="flex items-center gap-2">
               <Share2 className="size-3.5" aria-hidden="true" />
               Sharing metadata
-            </div>
+            </Eyebrow>
             <p className="mt-2 text-sm leading-6 text-fd-muted-foreground">
               Safe counts for inventory scan. Preview content comes only from explicit published
               revisions.
@@ -320,9 +321,7 @@ function FilterChip({
         active && "border-fd-foreground",
       )}
     >
-      <span className="text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
-        {label}
-      </span>
+      <Eyebrow>{label}</Eyebrow>
       <strong className="text-xl font-semibold leading-none tracking-normal">{value}</strong>
     </button>
   );
