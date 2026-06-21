@@ -54,7 +54,9 @@ import "katex/dist/katex.min.css";
 export interface MarkdownCommentHighlight {
   from: number;
   to: number;
-  threadId: string;
+  /** Thread to open on click. Optional: static catalog/demo highlights and any
+   *  non-interactive surface can omit it; activation is wired only when present. */
+  threadId?: string;
   color?: string;
   resolved: boolean;
 }
@@ -816,9 +818,10 @@ function commentHighlightActivationProps(
   highlight: MarkdownCommentHighlight | null,
   onActivateCommentThread?: (threadId: string) => void,
 ): CommentHighlightActivationProps {
-  if (!highlight?.threadId || !onActivateCommentThread) return {};
+  const threadId = highlight?.threadId;
+  if (!threadId || !onActivateCommentThread) return {};
 
-  const activate = () => onActivateCommentThread(highlight.threadId);
+  const activate = () => onActivateCommentThread(threadId);
   return {
     "aria-label": "Open comment thread",
     onClick: (event: MouseEvent<HTMLSpanElement>) => {

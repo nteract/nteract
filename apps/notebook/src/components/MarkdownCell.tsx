@@ -314,7 +314,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         {
           from: range.from,
           to: range.to,
-          threadId: thread.id,
+          threadId: thread.threadId,
           resolved: thread.resolved,
           ...(thread.color ? { color: thread.color } : {}),
         },
