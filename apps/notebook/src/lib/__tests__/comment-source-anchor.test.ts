@@ -285,6 +285,34 @@ describe("resolveSourceRangeAnchor", () => {
     };
   }
 
+  function anchorFromOccurrence(
+    sourceText: string,
+    quote: string,
+    occurrenceIndex: number,
+    contextChars = 12,
+  ): SourceRangeCommentAnchor {
+    let from = -1;
+    let searchFrom = 0;
+    for (let index = 0; index <= occurrenceIndex; index += 1) {
+      from = sourceText.indexOf(quote, searchFrom);
+      if (from === -1) throw new Error(`missing quote occurrence: ${quote}`);
+      searchFrom = from + quote.length;
+    }
+    const start = sourcePointFromStringOffset(sourceText, from);
+    const end = sourcePointFromStringOffset(sourceText, from + quote.length);
+    return {
+      kind: "source_range",
+      cell_id: "cell-1",
+      start_line: start.line,
+      start_column: start.column,
+      end_line: end.line,
+      end_column: end.column,
+      prefix_quote: sourceText.slice(Math.max(0, from - contextChars), from),
+      exact_quote: quote,
+      suffix_quote: sourceText.slice(from + quote.length, from + quote.length + contextChars),
+    };
+  }
+
   it("maps stored line/column straight through when the text is unchanged", () => {
     const anchor = anchorFor("sp.diff(f, x)");
     const expected = source.indexOf("sp.diff(f, x)");
@@ -294,7 +322,7 @@ describe("resolveSourceRangeAnchor", () => {
     });
   });
 
-  it("repairs the offset after the document shifts above the quote", () => {
+  it("repairs a single occurrence after the document shifts above the quote", () => {
     const anchor = anchorFor("sp.diff(f, x)");
     const shifted = `# added a comment line\n${source}`;
     const expected = shifted.indexOf("sp.diff(f, x)");
@@ -304,21 +332,56 @@ describe("resolveSourceRangeAnchor", () => {
     });
   });
 
-  it("uses prefix/suffix to disambiguate repeated quotes", () => {
-    const repeated = "value = 1\nvalue = 1\n";
-    const second = repeated.lastIndexOf("value");
+  it("uses context to reanchor a shifted repeated quote instead of a nearby stale occurrence", () => {
+    const original = "left foo right\nother foo other\n";
+    const anchor = anchorFromOccurrence(original, "foo", 1, 6);
+    const shifted = "left foo right\ninserted foo line\nother foo other\n";
+    const expected = shifted.lastIndexOf("foo");
+
+    expect(offsetFromSourcePoint(shifted, anchor.start_line, anchor.start_column)).not.toBe(
+      expected,
+    );
+    expect(resolveSourceRangeAnchor(shifted, anchor)).toEqual({
+      from: expected,
+      to: expected + "foo".length,
+    });
+  });
+
+  it("returns null for repeated quotes with no distinguishing prefix or suffix context", () => {
+    const repeated = "same\nsame\n";
     const anchor: SourceRangeCommentAnchor = {
       kind: "source_range",
       cell_id: "cell-1",
-      start_line: 1,
+      start_line: 99,
       start_column: 0,
-      end_line: 1,
-      end_column: 5,
-      prefix_quote: "value = 1\n",
-      exact_quote: "value",
-      suffix_quote: " = 1",
+      end_line: 99,
+      end_column: 4,
+      prefix_quote: "",
+      exact_quote: "same",
+      suffix_quote: "",
     };
-    expect(resolveSourceRangeAnchor(repeated, anchor)).toEqual({ from: second, to: second + 5 });
+
+    expect(resolveSourceRangeAnchor(repeated, anchor)).toBeNull();
+  });
+
+  it("uses prefix/suffix context to disambiguate repeated quotes", () => {
+    const repeated = "alpha foo\nbeta foo\n";
+    const second = repeated.lastIndexOf("foo");
+    const anchor: SourceRangeCommentAnchor = {
+      kind: "source_range",
+      cell_id: "cell-1",
+      start_line: 99,
+      start_column: 0,
+      end_line: 99,
+      end_column: 3,
+      prefix_quote: "beta ",
+      exact_quote: "foo",
+      suffix_quote: "\n",
+    };
+    expect(resolveSourceRangeAnchor(repeated, anchor)).toEqual({
+      from: second,
+      to: second + "foo".length,
+    });
   });
 
   it("returns null when the quoted text no longer exists", () => {
