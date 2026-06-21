@@ -95,7 +95,7 @@ assumption. The projector does **not** fold delimiters into styled runs:
   correspondence.
 
 So for the genuinely character-faithful cases (plain text, strong, emphasis,
-delete, inline code, and inline links written as `[label](url)`) a run is already
+delete, inline code, and inline links of the `[label]` + `(url)` form) a run is
 **transparent**: its rendered text equals its source slice, one to one. The host
 can sub-slice those by character with no projector change. Math, images,
 reference links, and runs that decode entities or escapes are not transparent and
