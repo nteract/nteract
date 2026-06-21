@@ -1,4 +1,4 @@
-import { NotebookHostProvider, type NotebookHost } from "@nteract/notebook-host";
+import { NotebookHostProvider } from "@nteract/notebook-host";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
@@ -10,6 +10,7 @@ import { logger, setLoggerHost } from "./lib/logger";
 import { setMetadataTransport } from "./lib/notebook-metadata";
 import { setOpenUrlHost } from "./lib/open-url";
 import { ensureNotebookWasmReady } from "./lib/runtimed-wasm";
+import { createNotebookHost, isTauriRuntime } from "./host/create-notebook-host";
 
 // Register built-in widget components
 import "@/components/widgets/controls";
@@ -29,11 +30,6 @@ const loadRendererBundle = async () => {
   return { rendererCode, rendererCss };
 };
 
-function isTauriRuntime(): boolean {
-  const w = window as Window & { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown };
-  return "__TAURI_INTERNALS__" in w || "__TAURI__" in w;
-}
-
 // Capture original console methods BEFORE wrapping. The Rust-log mirror
 // below uses these originals to avoid re-entering the `console.error`
 // wrapper (which would immediately feed back into plugin-log → Rust →
@@ -43,16 +39,6 @@ const originalConsoleWarn = console.warn.bind(console);
 const originalConsoleInfo = console.info.bind(console);
 const originalConsoleDebug = console.debug.bind(console);
 const originalConsoleLog = console.log.bind(console);
-
-async function createNotebookHost(): Promise<NotebookHost> {
-  if (isTauriRuntime()) {
-    const { createTauriHost } = await import("@nteract/notebook-host/tauri");
-    return createTauriHost();
-  }
-
-  const { createBrowserHost } = await import("@nteract/notebook-host/browser");
-  return createBrowserHost();
-}
 
 async function attachTauriDevLogMirror(): Promise<void> {
   if (!isTauriRuntime() || !import.meta.env.DEV) return;

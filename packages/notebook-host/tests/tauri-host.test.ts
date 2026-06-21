@@ -52,6 +52,10 @@ vi.mock("@tauri-apps/api/core", () => ({
         return Promise.resolve("/tmp/notebooks");
       case "clone_notebook_to_ephemeral":
         return Promise.resolve("clone-1");
+      case "get_synced_settings":
+        return Promise.resolve({ theme: "system", color_theme: "classic" });
+      case "rotate_install_id":
+        return Promise.resolve("install-2");
       default:
         return Promise.resolve(undefined);
     }
@@ -72,12 +76,16 @@ vi.mock("@tauri-apps/api/webview", () => ({
 const mockWindowUnlisten = vi.fn();
 let capturedFocusCb: ((ev: { payload: boolean }) => void) | null = null;
 let mockWindowTitle = "notebook";
+let mockWindowTheme: "light" | "dark" | null = null;
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     title: vi.fn(async () => mockWindowTitle),
     setTitle: vi.fn(async (t: string) => {
       mockWindowTitle = t;
+    }),
+    setTheme: vi.fn(async (theme: "light" | "dark" | null) => {
+      mockWindowTheme = theme;
     }),
     onFocusChanged: vi.fn(async (cb: (ev: { payload: boolean }) => void) => {
       capturedFocusCb = cb;
@@ -168,6 +176,7 @@ beforeEach(() => {
   vi.mocked(stubTransport.sendRequest).mockReset();
   capturedFocusCb = null;
   mockWindowTitle = "notebook";
+  mockWindowTheme = null;
 });
 
 describe("createTauriHost()", () => {
@@ -501,6 +510,14 @@ describe("createTauriHost()", () => {
     await expect(host.window.getTitle()).resolves.toBe("* notebook");
   });
 
+  it("window.setTheme routes to getCurrentWindow theme chrome", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await host.window.setTheme("dark");
+    expect(mockWindowTheme).toBe("dark");
+    await host.window.setTheme(null);
+    expect(mockWindowTheme).toBeNull();
+  });
+
   it("window.onFocusChange forwards focused boolean and returns a working unlisten", async () => {
     const host = createTauriHost({ transport: stubTransport });
     const seen: boolean[] = [];
@@ -646,6 +663,32 @@ describe("createTauriHost()", () => {
     await host.updater.beginUpgrade();
     await host.settings.openWindow();
     expect(capturedInvokes.map((x) => x.cmd)).toEqual(["begin_upgrade", "open_settings_window"]);
+  });
+
+  it("settings routes synced settings through host IPC and events", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const settings = await host.settings.getSynced();
+    await host.settings.setSynced("theme", "dark");
+    await expect(host.settings.rotateInstallId()).resolves.toBe("install-2");
+
+    expect(settings).toEqual({ theme: "system", color_theme: "classic" });
+    expect(capturedInvokes.map((x) => x.cmd)).toEqual([
+      "get_synced_settings",
+      "set_synced_setting",
+      "rotate_install_id",
+    ]);
+    expect(capturedInvokes[1].args).toEqual({ key: "theme", value: "dark" });
+
+    const received: unknown[] = [];
+    mockUnlisten.mockClear();
+    const unlisten = host.settings.onChanged((payload) => received.push(payload));
+    await Promise.resolve();
+    const entry = capturedListens.find((x) => x.event === "settings:changed");
+    entry?.cb({ payload: { theme: "light" } });
+    expect(received).toEqual([{ theme: "light" }]);
+    unlisten();
+    await Promise.resolve();
+    expect(mockUnlisten).toHaveBeenCalled();
   });
 
   it("host.log forwards each level to plugin-log", () => {

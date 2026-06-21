@@ -250,6 +250,8 @@ export interface HostNotebook {
 export interface HostWindow {
   getTitle(): Promise<string>;
   setTitle(title: string): Promise<void>;
+  /** Set native window theme when the host supports it. `null` follows the OS. */
+  setTheme(theme: HostNativeTheme): Promise<void>;
   onFocusChange(cb: (focused: boolean) => void): Unlisten;
 }
 
@@ -343,9 +345,44 @@ export interface HostLog {
   error(message: string): void;
 }
 
-/** Host-owned settings window. */
+export type HostNativeTheme = "light" | "dark" | null;
+
+/**
+ * Structural snapshot of host-owned synced settings.
+ *
+ * The canonical Rust schema is exported into `src/bindings`. The host package
+ * intentionally keeps a structural shape so it does not import app-level
+ * generated bindings back into the host boundary.
+ */
+export interface HostSyncedSettings {
+  theme?: unknown;
+  color_theme?: unknown;
+  default_runtime?: unknown;
+  default_python_env?: unknown;
+  uv?: { default_packages?: unknown };
+  conda?: { default_packages?: unknown };
+  pixi?: { default_packages?: unknown };
+  keep_alive_secs?: unknown;
+  install_default_data_packages?: unknown;
+  disable_nteract_launcher?: unknown;
+  redact_env_values_in_outputs?: unknown;
+  import_shell_environment?: unknown;
+  install_id?: unknown;
+  telemetry_enabled?: unknown;
+  telemetry_consent_recorded?: unknown;
+  telemetry_last_daemon_ping_at?: unknown;
+  telemetry_last_app_ping_at?: unknown;
+  telemetry_last_mcp_ping_at?: unknown;
+  [key: string]: unknown;
+}
+
+/** Host-owned settings window and synced-settings IPC. */
 export interface HostSettings {
   openWindow(): Promise<void>;
+  getSynced(): Promise<HostSyncedSettings>;
+  setSynced(key: string, value: unknown): Promise<void>;
+  rotateInstallId(): Promise<string>;
+  onChanged(cb: (settings: HostSyncedSettings) => void): Unlisten;
 }
 
 // ── Host ──────────────────────────────────────────────────────────────────

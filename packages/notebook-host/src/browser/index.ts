@@ -27,6 +27,7 @@ import type {
   GitInfo,
   HostBlobResolver,
   HostBlobs,
+  HostSyncedSettings,
   HostUpdaterState,
   NotebookHost,
   TyposquatWarning,
@@ -416,6 +417,13 @@ export async function createBrowserHost(
 
   const idleUpdaterState: HostUpdaterState = { status: "idle", version: null, error: null };
   const commands = createCommandRegistry();
+  let syncedSettingsSnapshot: HostSyncedSettings = {};
+  const settingsSubscribers = new Set<(settings: HostSyncedSettings) => void>();
+
+  const emitSettingsChanged = () => {
+    const snapshot = { ...syncedSettingsSnapshot };
+    for (const cb of settingsSubscribers) cb(snapshot);
+  };
 
   const browserBlobHost: HostBlobs = {
     async port() {
@@ -520,6 +528,7 @@ export async function createBrowserHost(
       async setTitle(title) {
         document.title = title;
       },
+      async setTheme() {},
       onFocusChange(cb) {
         const onFocus = () => cb(true);
         const onBlur = () => cb(false);
@@ -569,6 +578,25 @@ export async function createBrowserHost(
     settings: {
       async openWindow() {
         window.open("/settings/", "_blank", "noopener,noreferrer");
+      },
+      async getSynced() {
+        return { ...syncedSettingsSnapshot };
+      },
+      async setSynced(key, value) {
+        syncedSettingsSnapshot = { ...syncedSettingsSnapshot, [key]: value };
+        emitSettingsChanged();
+      },
+      async rotateInstallId() {
+        const installId = crypto.randomUUID();
+        syncedSettingsSnapshot = { ...syncedSettingsSnapshot, install_id: installId };
+        emitSettingsChanged();
+        return installId;
+      },
+      onChanged(cb) {
+        settingsSubscribers.add(cb);
+        return () => {
+          settingsSubscribers.delete(cb);
+        };
       },
     },
     commands,
