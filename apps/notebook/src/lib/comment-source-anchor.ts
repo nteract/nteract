@@ -202,19 +202,39 @@ export function resolveSourceRangeAnchor(
 
   const prefix = anchor.prefix_quote ?? "";
   const suffix = anchor.suffix_quote ?? "";
-  let best = occurrences[0];
-  let bestScore = Number.NEGATIVE_INFINITY;
-  for (const index of occurrences) {
+  const scoredOccurrences = occurrences.map((index) => {
     const before = source.slice(Math.max(0, index - prefix.length), index);
     const after = source.slice(index + quote.length, index + quote.length + suffix.length);
-    let score = 0;
-    if (prefix.length > 0 && before.endsWith(prefix)) score += 2;
-    if (suffix.length > 0 && after.startsWith(suffix)) score += 2;
-    score -= Math.abs(index - expectedFrom) / Math.max(1, source.length);
-    if (score > bestScore) {
-      bestScore = score;
-      best = index;
+    let contextScore = 0;
+    if (prefix.length > 0 && before.endsWith(prefix)) contextScore += 2;
+    if (suffix.length > 0 && after.startsWith(suffix)) contextScore += 2;
+    return { index, contextScore };
+  });
+
+  const maxContext = Math.max(...scoredOccurrences.map((occurrence) => occurrence.contextScore));
+  if (maxContext === 0) return null;
+
+  const bestContextMatches = scoredOccurrences.filter(
+    (occurrence) => occurrence.contextScore === maxContext,
+  );
+  if (bestContextMatches.length === 1) {
+    const best = bestContextMatches[0].index;
+    return { from: best, to: best + quote.length };
+  }
+
+  let best: number | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let tiedClosest = false;
+  for (const occurrence of bestContextMatches) {
+    const distance = Math.abs(occurrence.index - expectedFrom);
+    if (distance < bestDistance) {
+      best = occurrence.index;
+      bestDistance = distance;
+      tiedClosest = false;
+    } else if (distance === bestDistance) {
+      tiedClosest = true;
     }
   }
+  if (best === null || tiedClosest) return null;
   return { from: best, to: best + quote.length };
 }
