@@ -95,7 +95,7 @@ describe("NotebookCommentsPanel", () => {
 
     const composer = screen.getByLabelText(DOCUMENT_COMMENT_LABEL);
     const submit = screen.getByRole("button", { name: "Add comment" });
-    expect(composer).toHaveAttribute("placeholder", "Add a comment");
+    expect(composer).toHaveAttribute("placeholder", "Add to the discussion");
     expect(submit).toHaveAttribute("aria-label", "Add comment");
     expect(submit).toBeDisabled();
 
@@ -313,7 +313,7 @@ describe("NotebookCommentsPanel", () => {
     expect(scroll).toContainElement(screen.getByText("Check the framing before publishing."));
     expect(dock).toContainElement(composer);
     expect(scroll).not.toContainElement(composer);
-    expect(composer).toHaveAttribute("placeholder", "Add a comment");
+    expect(composer).toHaveAttribute("placeholder", "Add to the discussion");
   });
 
   it("renders threads and submits replies", async () => {

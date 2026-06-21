@@ -228,7 +228,7 @@ export function NotebookCommentsPanel({
           placeholder={
             draftTarget
               ? `Add a ${anchorLabelForDraft(draftTarget.anchor)} comment`
-              : "Add a comment"
+              : "Add to the discussion"
           }
           compact={!draftTarget}
           onSubmit={onCreateThread}
@@ -357,26 +357,39 @@ function CommentThreadItem({
     ? resolveCommentAuthor?.(thread.created_by_actor_label)
     : undefined;
   const canShowCell = Boolean(commentThreadTargetCellId(thread) && onFocusThreadAnchor);
+  // Document-level threads carry no anchor context, so they show no header and
+  // read as a plain conversation; source/cell/output threads keep their label.
+  const showAnchorHeader = Boolean(quote) || thread.anchor.kind !== "notebook";
 
   return (
     <li
       ref={itemRef}
       className={cn(
-        "group rounded-lg px-2.5 py-2 transition-colors duration-700 hover:bg-muted/40",
+        "group relative rounded-lg px-2.5 py-2 transition-colors duration-700 hover:bg-muted/40",
         thread.status === "resolved" && "opacity-70",
         flashing && "bg-primary/5 hover:bg-primary/5",
       )}
     >
-      <div className="space-y-2.5">
-        <div className="flex items-center gap-2">
-          {quote ? (
+      <button
+        type="button"
+        onClick={handleStatusAction}
+        disabled={statusAction.disabled || statusSubmitting}
+        aria-label={statusAction.ariaLabel}
+        title={statusAction.label}
+        className="absolute right-1.5 top-1.5 inline-grid size-7 place-items-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <StatusIcon className="size-3.5" aria-hidden="true" />
+      </button>
+      <div className="space-y-2.5 pr-7">
+        {showAnchorHeader ? (
+          quote ? (
             canShowCell ? (
               <button
                 type="button"
                 onClick={() => onFocusThreadAnchor?.(thread)}
                 aria-label={`Show cell for ${threadLabel}`}
                 title="Show cell"
-                className="min-w-0 flex-1 rounded-sm py-0.5 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                className="block w-full rounded-sm py-0.5 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
               >
                 <CommentSourceQuote
                   quote={quote}
@@ -400,23 +413,9 @@ function CommentThreadItem({
               />
             )
           ) : (
-            <div className="min-w-0 flex-1 text-xs text-muted-foreground">
-              {anchorLabel(thread)}
-            </div>
-          )}
-          <div className="flex shrink-0 items-center gap-0.5">
-            <button
-              type="button"
-              onClick={handleStatusAction}
-              disabled={statusAction.disabled || statusSubmitting}
-              aria-label={statusAction.ariaLabel}
-              title={statusAction.label}
-              className="inline-grid size-7 place-items-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <StatusIcon className="size-3.5" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
+            <div className="text-xs text-muted-foreground">{anchorLabel(thread)}</div>
+          )
+        ) : null}
 
         <div className="space-y-3">
           {thread.messages.map((message) => (
@@ -743,6 +742,7 @@ function CommentComposer({
           type="submit"
           disabled={!canSubmit}
           aria-label={submitAriaLabel}
+          title={`${submitAriaLabel} (⌘↵)`}
           style={{
             background: "var(--comment-author-color, var(--primary, #2563eb))",
             color: "var(--comment-author-contrast, #ffffff)",
