@@ -502,6 +502,13 @@ export function useNotebook() {
     [notebookController],
   );
 
+  const setCellType = useCallback(
+    (cellId: string, cellType: "code" | "markdown" | "raw") => {
+      notebookController.setCellType(cellId, cellType);
+    },
+    [notebookController],
+  );
+
   const setCellSourceHidden = useCallback(
     (cellId: string, hidden: boolean) => {
       notebookController.setCellSourceHidden(cellId, hidden);
@@ -596,6 +603,7 @@ export function useNotebook() {
     moveCell,
     deleteCell,
     clearOutputs,
+    setCellType,
     save,
     openNotebook,
     cloneNotebook,

@@ -394,6 +394,11 @@ export interface SyncableHandle {
 
   clear_outputs_with_changeset?(cell_id: string): LocalMutationResult<boolean>;
 
+  set_cell_type_with_changeset?(
+    cell_id: string,
+    cell_type: "code" | "markdown" | "raw",
+  ): LocalMutationResult<boolean>;
+
   set_cell_source_hidden_with_changeset?(
     cell_id: string,
     hidden: boolean,

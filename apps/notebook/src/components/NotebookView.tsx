@@ -69,6 +69,7 @@ import type {
 
 type AddCellResult = NotebookCell | null;
 type AddCellHandler = (type: CellInsertionType, afterCellId?: string | null) => AddCellResult;
+type ChangeCellTypeHandler = (cellId: string, type: "code" | "markdown") => void;
 
 export interface NotebookViewProps {
   cellIds: string[];
@@ -87,6 +88,7 @@ export interface NotebookViewProps {
   onUpdateCellSource?: (cellId: string, source: string) => void;
   onAddCell: AddCellHandler;
   onMoveCell: (cellId: string, afterCellId?: string | null) => void;
+  onChangeCellType?: ChangeCellTypeHandler;
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
@@ -372,6 +374,7 @@ function NotebookViewContent({
   onUpdateCellSource,
   onAddCell,
   onMoveCell,
+  onChangeCellType,
   onReportOutputMatchCount,
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
@@ -944,6 +947,11 @@ function NotebookViewContent({
             onFocusNext={onFocusNext}
             onNavigateToCell={onNavigateToCell}
             onInsertCellAfter={canMutateCells ? () => onAddCell("code", cell.id) : undefined}
+            onChangeCellType={
+              canMutateCells && onChangeCellType
+                ? (type: "code" | "markdown") => onChangeCellType(cell.id, type)
+                : undefined
+            }
             isLastCell={index === cellIdsRef.current.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
@@ -1020,6 +1028,11 @@ function NotebookViewContent({
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
             onInsertCellAfter={canMutateCells ? () => onAddCell("markdown", cell.id) : undefined}
+            onChangeCellType={
+              canMutateCells && onChangeCellType
+                ? (type: "code" | "markdown") => onChangeCellType(cell.id, type)
+                : undefined
+            }
             isLastCell={index === cellIdsRef.current.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
@@ -1049,6 +1062,11 @@ function NotebookViewContent({
           onFocusPrevious={onFocusPrevious}
           onFocusNext={onFocusNext}
           onInsertCellAfter={canMutateCells ? () => onAddCell("code", cell.id) : undefined}
+          onChangeCellType={
+            canMutateCells && onChangeCellType
+              ? (type: "code" | "markdown") => onChangeCellType(cell.id, type)
+              : undefined
+          }
           isLastCell={index === cellIdsRef.current.length - 1}
           dragHandleProps={dragHandleProps}
           isDragging={isDragging}
@@ -1068,6 +1086,7 @@ function NotebookViewContent({
       onDeleteCell,
       onUpdateCellSource,
       onAddCell,
+      onChangeCellType,
       onReportOutputMatchCount,
       onSetCellSourceHidden,
       onSetCellOutputsHidden,

@@ -48,6 +48,17 @@ describe("buildRenderedMarkdownContextGroups", () => {
       }),
     ).toEqual([]);
   });
+
+  it("shows change to Code when a change-type handler is available", () => {
+    const actions = buildActions({
+      hasSelection: false,
+      canComment: false,
+      onChangeCellType: vi.fn(),
+    });
+
+    expect(actions.map((action) => action.id)).toEqual(["change-to-code"]);
+    expect(actions[0]?.label).toBe("Change to Code");
+  });
 });
 
 describe("rendered markdown clipboard payload", () => {

@@ -35,6 +35,11 @@ export interface NotebookControllerHandle {
   delete_cell_with_changeset?(cellId: string): LocalMutationResult<boolean>;
   clear_outputs(cellId: string): boolean;
   clear_outputs_with_changeset?(cellId: string): LocalMutationResult<boolean>;
+  set_cell_type(cellId: string, cellType: NotebookControllerCellType): boolean;
+  set_cell_type_with_changeset?(
+    cellId: string,
+    cellType: NotebookControllerCellType,
+  ): LocalMutationResult<boolean>;
   set_cell_source_hidden(cellId: string, hidden: boolean): boolean;
   set_cell_source_hidden_with_changeset?(
     cellId: string,
@@ -75,6 +80,7 @@ export interface NotebookController {
   moveCell: (cellId: string, afterCellId?: string | null) => void;
   deleteCell: (cellId: string) => void;
   clearOutputs: (cellIds: string | string[]) => boolean;
+  setCellType: (cellId: string, cellType: NotebookControllerCellType) => void;
   setCellSourceHidden: (cellId: string, hidden: boolean) => void;
   setCellOutputsHidden: (cellId: string, hidden: boolean) => void;
 }
@@ -260,6 +266,18 @@ export function createNotebookController<THandle extends NotebookControllerHandl
           if (cellChanged) eventApplied = false;
         }
         return { changed, eventApplied: changed && eventApplied };
+      });
+    },
+
+    setCellType(cellId, cellType) {
+      commit("structure", canEditStructure, (handle) => {
+        if (handle.set_cell_type_with_changeset && applyMutationEvent) {
+          return localMutationOutcome(
+            handle.set_cell_type_with_changeset(cellId, cellType),
+            Boolean,
+          );
+        }
+        return { changed: !!handle.set_cell_type(cellId, cellType), eventApplied: false };
       });
     },
 

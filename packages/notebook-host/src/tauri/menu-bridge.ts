@@ -86,6 +86,14 @@ export function wireTauriMenuBridge(host: NotebookHost): () => void {
         return null; // unknown cell type — drop the event
       },
     }),
+    bind({
+      menuEvent: "menu:change-cell-type",
+      commandId: "notebook.changeCellType",
+      parse: (ev) => {
+        if (ev === "code" || ev === "markdown") return { type: ev };
+        return null; // unknown cell type — drop the event
+      },
+    }),
     bind({ menuEvent: "menu:clear-outputs", commandId: "notebook.clearOutputs" }),
     bind({ menuEvent: "menu:clear-all-outputs", commandId: "notebook.clearAllOutputs" }),
     bind({ menuEvent: "menu:run-all", commandId: "notebook.runAll" }),

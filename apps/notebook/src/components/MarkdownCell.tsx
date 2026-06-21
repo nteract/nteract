@@ -147,6 +147,7 @@ interface MarkdownCellProps {
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onInsertCellAfter?: () => void;
+  onChangeCellType?: (type: "code" | "markdown") => void;
   onUpdateSource?: (source: string) => void;
   isLastCell?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
@@ -175,6 +176,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   onFocusPrevious,
   onFocusNext,
   onInsertCellAfter,
+  onChangeCellType,
   onUpdateSource,
   isLastCell = false,
   dragHandleProps,
@@ -1058,7 +1060,9 @@ export const MarkdownCell = memo(function MarkdownCell({
             <div>
               <EditorContextMenu
                 cellId={cell.id}
+                cellType="markdown"
                 readOnly={readOnly}
+                onChangeCellType={onChangeCellType}
                 onCreateSourceComment={onCreateSourceComment}
               >
                 <CodeMirrorEditor
@@ -1084,6 +1088,7 @@ export const MarkdownCell = memo(function MarkdownCell({
             source={previewSource}
             markdownProjection={markdownProjection}
             viewRef={viewRef}
+            onChangeCellType={onChangeCellType}
             onCreateSourceComment={canCommentOnRenderedMarkdown ? onCreateSourceComment : undefined}
           >
             {/* View section - hidden when editing */}

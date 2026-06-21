@@ -6053,6 +6053,28 @@ mod tests {
     }
 
     #[test]
+    fn test_set_cell_type_preserves_cell_identity_source_and_position() {
+        let mut doc = NotebookDoc::new("nb-set-cell-type");
+
+        doc.add_cell_after("cell-a", "code", None).unwrap();
+        doc.add_cell_after("cell-b", "markdown", Some("cell-a"))
+            .unwrap();
+        doc.update_source("cell-a", "print('hello')").unwrap();
+        let position_before = doc.get_cell_position("cell-a");
+
+        assert!(doc.set_cell_type("cell-a", "markdown").unwrap());
+
+        assert_eq!(doc.get_cell_type("cell-a"), Some("markdown".to_string()));
+        assert_eq!(
+            doc.get_cell_source("cell-a"),
+            Some("print('hello')".to_string())
+        );
+        assert_eq!(doc.get_cell_position("cell-a"), position_before);
+        assert_eq!(doc.get_cell_ids(), vec!["cell-a", "cell-b"]);
+        assert!(!doc.set_cell_type("missing", "code").unwrap());
+    }
+
+    #[test]
     fn test_metadata_fingerprint_stable_when_unchanged() {
         let mut doc = NotebookDoc::new("nb-fp-stable");
 

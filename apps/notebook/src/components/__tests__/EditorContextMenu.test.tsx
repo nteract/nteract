@@ -61,4 +61,47 @@ describe("buildEditorContextGroups", () => {
       }),
     ).toEqual([]);
   });
+
+  it("shows change to Markdown for code cells", () => {
+    const actions = buildActions({
+      editable: true,
+      cellType: "code",
+      onChangeCellType: vi.fn(),
+    });
+
+    expect(actions.map((action) => action.id)).toEqual(["paste", "change-to-markdown"]);
+    expect(actions.find((action) => action.id === "change-to-markdown")?.label).toBe(
+      "Change to Markdown",
+    );
+  });
+
+  it("shows change to Code for markdown cells", () => {
+    const actions = buildActions({
+      editable: true,
+      cellType: "markdown",
+      onChangeCellType: vi.fn(),
+    });
+
+    expect(actions.map((action) => action.id)).toEqual(["paste", "change-to-code"]);
+    expect(actions.find((action) => action.id === "change-to-code")?.label).toBe("Change to Code");
+  });
+
+  it("shows both code and Markdown targets for raw cells", () => {
+    const actions = buildActions({
+      editable: true,
+      cellType: "raw",
+      onChangeCellType: vi.fn(),
+    });
+
+    expect(actions.map((action) => action.id)).toEqual([
+      "paste",
+      "change-to-code",
+      "change-to-markdown",
+    ]);
+    expect(actions.map((action) => action.label)).toEqual([
+      "Paste",
+      "Change to Code",
+      "Change to Markdown",
+    ]);
+  });
 });

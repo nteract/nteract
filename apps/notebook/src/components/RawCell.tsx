@@ -36,6 +36,7 @@ interface RawCellProps {
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onInsertCellAfter?: () => void;
+  onChangeCellType?: (type: "code" | "markdown") => void;
   isLastCell?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
@@ -59,6 +60,7 @@ export const RawCell = memo(function RawCell({
   onFocusPrevious,
   onFocusNext,
   onInsertCellAfter,
+  onChangeCellType,
   isLastCell = false,
   dragHandleProps,
   isDragging,
@@ -251,7 +253,9 @@ export const RawCell = memo(function RawCell({
           <div>
             <EditorContextMenu
               cellId={cell.id}
+              cellType="raw"
               readOnly={readOnly}
+              onChangeCellType={onChangeCellType}
               onCreateSourceComment={onCreateSourceComment}
             >
               <CodeMirrorEditor
