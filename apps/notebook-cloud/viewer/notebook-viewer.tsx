@@ -2070,6 +2070,7 @@ export function NotebookViewer({
                 onCreateOutputComment={canWriteComments ? handleRequestOutputComment : undefined}
                 onActivateCommentThread={handleActivateCommentThread}
                 commentThreadsByCell={sourceCommentThreadsByCell}
+                pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
                 markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
                 outputHostContext={outputHostContext}
                 deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}

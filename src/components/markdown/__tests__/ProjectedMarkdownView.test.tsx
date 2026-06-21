@@ -287,6 +287,125 @@ describe("ProjectedMarkdownView", () => {
     expect(run).not.toHaveClass("comment-highlight");
   });
 
+  it("renders two non-overlapping highlights in one transparent run", () => {
+    const source = "alpha beta gamma";
+    const { container } = render(
+      <ProjectedMarkdownView
+        commentHighlights={[
+          { from: 0, to: 5, threadId: "thread-alpha", color: "#d97706", resolved: false },
+          {
+            from: 11,
+            to: 16,
+            threadId: "thread-gamma",
+            color: "#2563eb",
+            resolved: false,
+            pending: true,
+          },
+        ]}
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, source.length],
+              sourceSpanUtf16: [0, source.length],
+              syntaxSpans: [],
+              text: source,
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "r0",
+              listItemIndex: null,
+              renderedText: source,
+              renderedTextUtf16: [0, source.length],
+              semantic: "text",
+              sourceSpanByte: [0, source.length],
+              sourceSpanUtf16: [0, source.length],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const run = container.querySelector<HTMLElement>("[data-markdown-source-run='true']");
+    const highlights = Array.from(container.querySelectorAll<HTMLElement>(".comment-highlight"));
+    const plainText = Array.from(run?.childNodes ?? [])
+      .filter((node) => node.nodeType === 3)
+      .map((node) => node.textContent)
+      .join("");
+
+    expect(highlights).toHaveLength(2);
+    expect(highlights.map((highlight) => highlight.textContent)).toEqual(["alpha", "gamma"]);
+    expect(plainText).toBe(" beta ");
+    expect(highlights[0]).not.toHaveTextContent("beta");
+    expect(highlights[1]).not.toHaveTextContent("beta");
+    expect(highlights[1]).toHaveClass("comment-highlight-pending");
+    expect(run).not.toHaveClass("comment-highlight");
+  });
+
+  it("uses the narrower highlight for overlapping segments in one transparent run", () => {
+    const source = "alpha beta gamma";
+    const onActivateCommentThread = vi.fn();
+    const { container } = render(
+      <ProjectedMarkdownView
+        onActivateCommentThread={onActivateCommentThread}
+        commentHighlights={[
+          { from: 0, to: 16, threadId: "thread-wide", color: "#d97706", resolved: false },
+          { from: 6, to: 10, threadId: "thread-beta", color: "#2563eb", resolved: false },
+        ]}
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, source.length],
+              sourceSpanUtf16: [0, source.length],
+              syntaxSpans: [],
+              text: source,
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "r0",
+              listItemIndex: null,
+              renderedText: source,
+              renderedTextUtf16: [0, source.length],
+              semantic: "text",
+              sourceSpanByte: [0, source.length],
+              sourceSpanUtf16: [0, source.length],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const highlights = Array.from(container.querySelectorAll<HTMLElement>(".comment-highlight"));
+    const betaHighlight = highlights.find((highlight) => highlight.textContent === "beta");
+
+    expect(highlights).toHaveLength(3);
+    expect(highlights.map((highlight) => highlight.textContent).join("")).toBe(source);
+    expect(highlights[0]?.textContent).toBe("alpha ");
+    expect(highlights[0]?.style.getPropertyValue("--cm-comment-color")).toBe("#d97706");
+    expect(betaHighlight).not.toBeUndefined();
+    expect(betaHighlight?.style.getPropertyValue("--cm-comment-color")).toBe("#2563eb");
+    expect(highlights[2]?.textContent).toBe(" gamma");
+    expect(highlights[2]?.style.getPropertyValue("--cm-comment-color")).toBe("#d97706");
+
+    fireEvent.click(betaHighlight!);
+
+    expect(onActivateCommentThread).toHaveBeenCalledTimes(1);
+    expect(onActivateCommentThread).toHaveBeenCalledWith("thread-beta");
+  });
+
   it("highlights transparent strong run characters without ballooning to siblings", () => {
     const { container } = render(
       <ProjectedMarkdownView

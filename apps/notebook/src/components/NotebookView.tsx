@@ -98,6 +98,7 @@ export interface NotebookViewProps {
   onCreateOutputComment?: (anchor: OutputCommentAnchor) => void;
   onActivateCommentThread?: (threadId: string) => void;
   commentThreadsByCell?: ReadonlyMap<string, readonly SourceCommentThread[]>;
+  pendingCommentAnchor?: SourceRangeCommentAnchor | null;
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
   outputHostContext?: NteractEmbedHostContextPatch;
   deferOutputIsolatedFramesUntilVisible?: boolean;
@@ -378,6 +379,7 @@ function NotebookViewContent({
   onCreateOutputComment,
   onActivateCommentThread,
   commentThreadsByCell,
+  pendingCommentAnchor,
   markdownHeadingAnchorsByCellId,
   outputHostContext,
   deferOutputIsolatedFramesUntilVisible = false,
@@ -1024,6 +1026,9 @@ function NotebookViewContent({
             rightGutterContent={rightGutterContent}
             headingAnchors={markdownHeadingAnchorsByCellId?.get(cell.id)}
             commentThreads={commentThreadsByCell?.get(cell.id)}
+            pendingCommentAnchor={
+              pendingCommentAnchor?.cell_id === cell.id ? pendingCommentAnchor : null
+            }
             readOnly={!canEditMarkdownSources}
             onCreateSourceComment={onCreateSourceComment}
             onActivateCommentThread={onActivateCommentThread}
@@ -1070,6 +1075,7 @@ function NotebookViewContent({
       onCreateOutputComment,
       onActivateCommentThread,
       commentThreadsByCell,
+      pendingCommentAnchor,
       markdownHeadingAnchorsByCellId,
       canEditCodeCellSources,
       canEditMarkdownSources,
