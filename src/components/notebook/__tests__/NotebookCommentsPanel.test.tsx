@@ -378,6 +378,29 @@ describe("NotebookCommentsPanel", () => {
     );
   });
 
+  it("collapses a reply composer and discards its draft on Escape", async () => {
+    const onReplyThread = vi.fn();
+    render(<NotebookCommentsPanel projection={projection} onReplyThread={onReplyThread} />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Reply to Document comment 1")).toHaveFocus());
+    const reply = screen.getByLabelText("Reply to Document comment 1");
+    fireEvent.change(reply, {
+      target: { value: "Do not keep this draft" },
+    });
+
+    fireEvent.keyDown(reply, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Reply to Document comment 1")).not.toBeInTheDocument(),
+    );
+    expect(onReplyThread).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Reply to Document comment 1")).toHaveFocus());
+    expect(screen.getByLabelText("Reply to Document comment 1")).toHaveValue("");
+  });
+
   it("renders source excerpts on source range threads", () => {
     const onFocusThreadAnchor = vi.fn();
     const sourceThread = {

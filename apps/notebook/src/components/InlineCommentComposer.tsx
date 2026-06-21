@@ -23,6 +23,25 @@ export interface InlineCommentComposerProps {
 
 const AUTHOR_COLOR = "var(--comment-author-color, var(--primary, #2563eb))";
 
+function activeElementForFocusRestore(): HTMLElement | null {
+  if (typeof document === "undefined" || typeof HTMLElement === "undefined") return null;
+  const activeElement = document.activeElement;
+  if (!(activeElement instanceof HTMLElement) || activeElement === document.body) return null;
+  return activeElement;
+}
+
+function canRestoreFocus(element: HTMLElement): boolean {
+  if (!element.isConnected) return false;
+  if (element.getAttribute("aria-hidden") === "true") return false;
+  if (element.hasAttribute("disabled")) return false;
+  if (typeof element.matches === "function" && element.matches(":disabled")) return false;
+  if (typeof window !== "undefined") {
+    const style = window.getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+  }
+  return typeof element.focus === "function";
+}
+
 export function InlineCommentComposer({
   rect,
   disabled = false,
@@ -33,6 +52,13 @@ export function InlineCommentComposer({
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const justOpenedRef = useRef(true);
+  const restoreFocusTargetRef = useRef<HTMLElement | null>(null);
+  const didCaptureFocusRef = useRef(false);
+
+  if (!didCaptureFocusRef.current) {
+    restoreFocusTargetRef.current = activeElementForFocusRestore();
+    didCaptureFocusRef.current = true;
+  }
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -42,7 +68,13 @@ export function InlineCommentComposer({
     const settle = window.setTimeout(() => {
       justOpenedRef.current = false;
     }, 300);
-    return () => window.clearTimeout(settle);
+    // On close, return focus to whatever the user came from (the Popover anchor
+    // is aria-hidden, so it cannot restore focus itself).
+    return () => {
+      window.clearTimeout(settle);
+      const restoreTarget = restoreFocusTargetRef.current;
+      if (restoreTarget && canRestoreFocus(restoreTarget)) restoreTarget.focus();
+    };
   }, []);
 
   const submit = async () => {

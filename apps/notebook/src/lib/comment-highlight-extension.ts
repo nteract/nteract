@@ -100,11 +100,18 @@ const commentHighlightTheme = EditorView.baseTheme({
   },
 });
 
-function highlightAt(view: EditorView, pos: number): CommentHighlight | undefined {
+function highlightAt(
+  view: EditorView,
+  pos: number,
+  options: { endExclusive?: boolean } = {},
+): CommentHighlight | undefined {
   const highlights = view.state.field(highlightsField, false);
   if (!highlights) return undefined;
+  const contains = options.endExclusive
+    ? (highlight: CommentHighlight) => pos >= highlight.from && pos < highlight.to
+    : (highlight: CommentHighlight) => pos >= highlight.from && pos <= highlight.to;
   return highlights
-    .filter((highlight) => pos >= highlight.from && pos <= highlight.to)
+    .filter(contains)
     .sort((a, b) => a.to - a.from - (b.to - b.from))[0];
 }
 
@@ -113,7 +120,7 @@ function activateThreadAt(
   pos: number,
   onActivateThread: CommentHighlightActivateHandler,
 ): boolean {
-  const match = highlightAt(view, pos);
+  const match = highlightAt(view, pos, { endExclusive: true });
   if (!match) return false;
   onActivateThread(match.threadId);
   return true;

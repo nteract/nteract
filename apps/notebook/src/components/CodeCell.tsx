@@ -901,9 +901,8 @@ export const CodeCell = memo(function CodeCell({
               {canCreateOutputComment ? (
                 <button
                   type="button"
-                  tabIndex={-1}
                   onClick={handleCreateOutputComment}
-                  className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+                  className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:text-foreground"
                   title="Comment on outputs"
                   aria-label="Comment on outputs"
                 >
