@@ -206,8 +206,12 @@ export function useSyncedSettings() {
 
   // Load initial settings from daemon
   useEffect(() => {
+    let active = true;
+
     invokeTauri<SyncedSettings>("get_synced_settings")
       .then((settings) => {
+        if (!active) return;
+
         if (isValidTheme(settings.theme)) {
           setThemeState(settings.theme);
           setStoredTheme(settings.theme);
@@ -269,11 +273,19 @@ export function useSyncedSettings() {
       .catch(() => {
         // Daemon unavailable — defaults are fine
       });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Listen for cross-window settings changes via Tauri events
   useEffect(() => {
+    let active = true;
+
     const unlisten = listenTauri<SyncedSettings>("settings:changed", (event) => {
+      if (!active) return;
+
       const {
         theme: newTheme,
         color_theme: newColorTheme,
@@ -332,6 +344,7 @@ export function useSyncedSettings() {
       // Last-ping timestamps change rarely; we only refresh them on mount.
     });
     return () => {
+      active = false;
       unlisten.then((u) => u());
     };
   }, []);
