@@ -14,29 +14,31 @@ import type { SourceCommentSelectionRect } from "../lib/comment-source-anchor";
 export interface InlineCommentComposerProps {
   /** Viewport-space rectangle of the selection the comment is anchored to. */
   rect: SourceCommentSelectionRect;
-  /** Selected source text, shown as a quote preview above the input. */
+  /** Selected source text; selection highlighting in the document carries the preview. */
   quote?: string | null;
   disabled?: boolean;
   onSubmit: (body: string) => void | Promise<void>;
   onCancel: () => void;
 }
 
-const MAX_QUOTE_PREVIEW_CHARS = 160;
+type ComposerStyleVariant = "border" | "solid";
 
-/** The author's canonical color, set on :root while a local actor exists, with a
- *  neutral fallback. Every tint below mixes from this so the composer reads as
- *  the author's own voice, not a generic popover. */
+const COMMENT_COMPOSER_STYLE_STORAGE_KEY = "nteract.commentComposerStyle";
 const AUTHOR_COLOR = "var(--comment-author-color, var(--primary, #2563eb))";
+// Legible foreground for the author color. Set once on :root next to
+// --comment-author-color (App and the cloud viewer); the white fallback covers
+// the neutral --primary fallback in AUTHOR_COLOR.
+const AUTHOR_CONTRAST = "var(--comment-author-contrast, #ffffff)";
 
 export function InlineCommentComposer({
   rect,
-  quote,
   disabled = false,
   onSubmit,
   onCancel,
 }: InlineCommentComposerProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [composerStyle] = useState<ComposerStyleVariant>(readComposerStylePreference);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const justOpenedRef = useRef(true);
 
@@ -86,15 +88,26 @@ export function InlineCommentComposer({
     pointerEvents: "none",
   };
 
-  // The popover surface is the input: a soft wash of the author's color with a
-  // slightly stronger edge. No drop shadow or focus ring; the tint and the
-  // colored caret carry identity, and a glow read as heavy in-app.
-  const surfaceStyle: CSSProperties = {
-    background: `color-mix(in srgb, ${AUTHOR_COLOR} 6%, var(--popover, #ffffff))`,
-    borderColor: `color-mix(in srgb, ${AUTHOR_COLOR} 36%, var(--border, #e5e5e5))`,
-  };
-
-  const preview = formatQuotePreview(quote);
+  const isSolidStyle = composerStyle === "solid";
+  const surfaceStyle: CSSProperties = isSolidStyle
+    ? {
+        background: AUTHOR_COLOR,
+        color: AUTHOR_CONTRAST,
+      }
+    : {
+        background: "var(--popover, #ffffff)",
+        border: `1.5px solid ${AUTHOR_COLOR}`,
+      };
+  const textareaStyle: CSSProperties = isSolidStyle
+    ? ({
+        "--comment-composer-placeholder-color": AUTHOR_CONTRAST,
+        caretColor: AUTHOR_CONTRAST,
+        color: AUTHOR_CONTRAST,
+      } as CSSProperties)
+    : { caretColor: AUTHOR_COLOR };
+  const buttonStyle: CSSProperties = isSolidStyle
+    ? { background: AUTHOR_CONTRAST, color: AUTHOR_COLOR }
+    : { background: AUTHOR_COLOR, color: AUTHOR_CONTRAST };
   const canSubmit = !disabled && !submitting && body.trim().length > 0;
 
   return (
@@ -112,7 +125,10 @@ export function InlineCommentComposer({
         align="start"
         sideOffset={8}
         collisionPadding={12}
-        className="w-80 rounded-2xl border p-2.5 shadow-none"
+        className={cn(
+          "w-80 rounded-2xl p-2.5 shadow-none focus-visible:outline-none",
+          isSolidStyle ? "border-0" : "border",
+        )}
         style={surfaceStyle}
         data-testid="inline-comment-composer"
         onOpenAutoFocus={(event) => {
@@ -129,16 +145,6 @@ export function InlineCommentComposer({
           if (justOpenedRef.current) event.preventDefault();
         }}
       >
-        {preview ? (
-          <blockquote
-            className="mb-2 max-h-16 overflow-hidden whitespace-pre-wrap break-words pl-2 text-xs leading-5 text-foreground/80"
-            style={{
-              borderLeft: `2px solid color-mix(in srgb, ${AUTHOR_COLOR} 45%, transparent)`,
-            }}
-          >
-            {preview}
-          </blockquote>
-        ) : null}
         <form onSubmit={handleSubmit}>
           <div className="relative">
             <textarea
@@ -150,10 +156,13 @@ export function InlineCommentComposer({
               onChange={(event) => setBody(event.target.value)}
               onKeyDown={handleKeyDown}
               rows={3}
-              style={{ caretColor: AUTHOR_COLOR }}
+              style={textareaStyle}
               className={cn(
                 "min-h-16 w-full resize-none border-0 bg-transparent py-1 pl-1 pr-10 text-sm leading-5",
-                "placeholder:text-muted-foreground focus-visible:outline-none",
+                isSolidStyle
+                  ? "placeholder:text-[var(--comment-composer-placeholder-color)]"
+                  : "text-foreground placeholder:text-muted-foreground",
+                "focus-visible:outline-none",
                 (disabled || submitting) && "cursor-not-allowed opacity-60",
               )}
             />
@@ -161,9 +170,9 @@ export function InlineCommentComposer({
               type="submit"
               aria-label="Comment"
               disabled={!canSubmit}
-              style={{ background: AUTHOR_COLOR }}
+              style={buttonStyle}
               className={cn(
-                "absolute bottom-1 right-0 inline-flex size-8 items-center justify-center rounded-full text-white transition-opacity",
+                "absolute bottom-1 right-0 inline-flex size-8 items-center justify-center rounded-full transition-opacity",
                 !canSubmit && "cursor-not-allowed opacity-40",
               )}
             >
@@ -176,10 +185,13 @@ export function InlineCommentComposer({
   );
 }
 
-function formatQuotePreview(quote: string | null | undefined): string | null {
-  if (!quote) return null;
-  const trimmed = quote.trim();
-  if (trimmed.length === 0) return null;
-  if (quote.length <= MAX_QUOTE_PREVIEW_CHARS) return quote;
-  return `${quote.slice(0, MAX_QUOTE_PREVIEW_CHARS - 3)}...`;
+function readComposerStylePreference(): ComposerStyleVariant {
+  if (typeof window === "undefined") return "border";
+  try {
+    return window.localStorage?.getItem(COMMENT_COMPOSER_STYLE_STORAGE_KEY) === "solid"
+      ? "solid"
+      : "border";
+  } catch {
+    return "border";
+  }
 }
