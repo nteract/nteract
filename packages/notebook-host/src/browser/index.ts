@@ -136,6 +136,34 @@ function makeUnavailable(message: string): DaemonUnavailablePayload {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function setSyncedSettingValue(
+  snapshot: HostSyncedSettings,
+  key: string,
+  value: unknown,
+): HostSyncedSettings {
+  const path = key.split(".");
+  if (path.length === 1 || path.some((part) => part.length === 0)) {
+    return { ...snapshot, [key]: value };
+  }
+
+  const nextSnapshot: Record<string, unknown> = { ...snapshot };
+  let target = nextSnapshot;
+
+  for (const part of path.slice(0, -1)) {
+    const current = target[part];
+    const next = isRecord(current) ? { ...current } : {};
+    target[part] = next;
+    target = next;
+  }
+
+  target[path[path.length - 1]] = value;
+  return nextSnapshot as HostSyncedSettings;
+}
+
 class BrowserDevTransport implements NotebookTransport {
   private readonly url: string;
   private readonly WebSocketImpl: typeof WebSocket;
@@ -583,7 +611,7 @@ export async function createBrowserHost(
         return { ...syncedSettingsSnapshot };
       },
       async setSynced(key, value) {
-        syncedSettingsSnapshot = { ...syncedSettingsSnapshot, [key]: value };
+        syncedSettingsSnapshot = setSyncedSettingValue(syncedSettingsSnapshot, key, value);
         emitSettingsChanged();
       },
       async rotateInstallId() {
