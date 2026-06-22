@@ -1618,6 +1618,10 @@ async function routeNotebookWorkstationAttachment(
   const eventPresence = await workstationEventPresence(env, ownerPrincipal, workstationId);
   const projectedStatus = workstationStatusForResponse(workstation, Date.now(), eventPresence);
   if (projectedStatus !== "online") {
+    await repairNotebookRuntimeStateIfNoRuntimePeer(env, notebookId, {
+      reason: `workstation ${workstationId} is not online while attaching compute`,
+      operation: "offline_workstation_attach",
+    });
     return json(
       {
         error: "workstation is not online",
@@ -1766,7 +1770,13 @@ async function routeWorkstationEvents(
   }
 
   const stub = workstationEventsStub(env, ownerPrincipal, workstationId);
-  const response = await stub.fetch(new Request("https://workstation-events.internal/stream"));
+  const response = await stub.fetch(
+    new Request(
+      `https://workstation-events.internal/stream?workstation_id=${encodeURIComponent(
+        workstationId,
+      )}`,
+    ),
+  );
   return withCors(new Response(response.body, response));
 }
 
@@ -1915,7 +1925,11 @@ async function workstationEventPresence(
   }
   try {
     const response = await workstationEventsStub(env, ownerPrincipal, workstationId).fetch(
-      new Request("https://workstation-events.internal/status"),
+      new Request(
+        `https://workstation-events.internal/status?workstation_id=${encodeURIComponent(
+          workstationId,
+        )}`,
+      ),
     );
     if (!response.ok) {
       cloudLog("warn", "workstation.events.status_failed", {
@@ -2020,6 +2034,13 @@ async function routeWorkstationAttachJob(
   const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
   if (workstation) {
     await publishWorkstationAttachJobRuntimeState(env, job, workstation);
+  }
+  if (job.status === "failed" || job.status === "cancelled") {
+    await repairNotebookRuntimeStateIfNoRuntimePeer(env, job.notebook_id, {
+      reason:
+        job.error_message ?? `workstation attach job ${job.status} before a runtime peer attached`,
+      operation: `workstation_attach_job_${job.status}`,
+    });
   }
   return json({
     ok: true,
@@ -2385,6 +2406,50 @@ async function publishWorkstationAttachJobRuntimeState(
       status: job.status,
       error: error instanceof Error ? error.message : String(error),
       counter: "workstation_attach_runtime_state_publish_failed",
+      counter_delta: 1,
+    });
+  }
+}
+
+async function repairNotebookRuntimeStateIfNoRuntimePeer(
+  env: Env,
+  notebookId: string,
+  options: {
+    operation: string;
+    reason: string;
+  },
+): Promise<void> {
+  const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
+  const room = env.NOTEBOOK_ROOMS.get(id);
+  try {
+    const response = await room.fetch(
+      new Request(
+        `https://notebook-room.internal/internal/n/${encodeURIComponent(
+          notebookId,
+        )}/runtime-state-repair`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: options.reason }),
+        },
+      ),
+    );
+    if (response.ok || response.status === 409) {
+      return;
+    }
+    cloudLog("warn", "workstation.attach.runtime_state_repair_failed", {
+      notebook_id: notebookId,
+      operation: options.operation,
+      response_status: response.status,
+      counter: "workstation_attach_runtime_state_repair_failed",
+      counter_delta: 1,
+    });
+  } catch (error) {
+    cloudLog("warn", "workstation.attach.runtime_state_repair_failed", {
+      notebook_id: notebookId,
+      operation: options.operation,
+      error: error instanceof Error ? error.message : String(error),
+      counter: "workstation_attach_runtime_state_repair_failed",
       counter_delta: 1,
     });
   }

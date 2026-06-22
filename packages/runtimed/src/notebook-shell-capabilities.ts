@@ -136,6 +136,13 @@ export interface ProjectNotebookRuntimeTargetFromWorkstationAttachmentOptions {
    */
   kind?: NotebookShellRuntimeTargetKind;
   kernelStatusLabel?: string | null;
+  /**
+   * Hosted rooms can observe whether the runtime peer that owns a ready/busy
+   * attachment is still present. When this is true, a ready RuntimeStateDoc
+   * attachment without a live runtime peer is a previous compute session that
+   * needs attention, not an executable runtime.
+   */
+  requireRuntimePeer?: boolean;
   runtimePeerCount?: number | null;
 }
 
@@ -278,12 +285,19 @@ export function projectNotebookRuntimeTargetFromWorkstationAttachment(
 ): NotebookShellRuntimeTargetProjection | null {
   if (!attachment) return null;
 
-  const statusProjection = workstationAttachmentStatusProjection(attachment.status);
+  const runtimePeerCount = normalizePositiveInteger(options.runtimePeerCount);
+  const missingRequiredRuntimePeer =
+    Boolean(options.requireRuntimePeer) &&
+    workstationAttachmentCanExecute(attachment) &&
+    runtimePeerCount === null;
+  const statusProjection = workstationAttachmentStatusProjection(
+    attachment.status,
+    missingRequiredRuntimePeer,
+  );
   const defaultEnvironmentLabel =
     trimToNull(attachment.default_environment_label) ??
     trimToNull(attachment.environment_policy) ??
     "Notebook runtime";
-  const runtimePeerCount = normalizePositiveInteger(options.runtimePeerCount);
 
   return {
     id: trimToNull(attachment.workstation_id) ?? "attached-workstation",
@@ -292,7 +306,9 @@ export function projectNotebookRuntimeTargetFromWorkstationAttachment(
     status: statusProjection.status,
     label: trimToNull(attachment.display_name) ?? "Attached workstation",
     statusLabel: statusProjection.statusLabel,
-    detail: trimToNull(attachment.status_message) ?? statusProjection.detail,
+    detail: missingRequiredRuntimePeer
+      ? statusProjection.detail
+      : (trimToNull(attachment.status_message) ?? statusProjection.detail),
     providerLabel: workstationAttachmentProviderLabel(attachment.provider),
     defaultEnvironmentLabel,
     environmentLabel: defaultEnvironmentLabel,
@@ -847,11 +863,22 @@ function notebookActorOperatorCacheKey(actor: NotebookActorProjection["operator"
   return projectionCacheKey(actor, NOTEBOOK_ACTOR_OPERATOR_CACHE_FIELDS);
 }
 
-function workstationAttachmentStatusProjection(status: string): {
+function workstationAttachmentStatusProjection(
+  status: string,
+  missingRequiredRuntimePeer = false,
+): {
   status: NotebookShellRuntimeTargetStatus;
   statusLabel: string;
   detail: string | null;
 } {
+  if (missingRequiredRuntimePeer) {
+    return {
+      status: "attention",
+      statusLabel: "Needs attention",
+      detail: "Runtime peer disconnected: no compute session is currently attached to the room.",
+    };
+  }
+
   switch (status) {
     case "ready":
       return { status: "ready", statusLabel: "Ready", detail: null };

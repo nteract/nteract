@@ -483,4 +483,24 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
       detail: "Waiting for runtime peer heartbeat",
     });
   });
+
+  it("can project stale ready hosted attachments as needing attention", () => {
+    const target = projectNotebookRuntimeTargetFromWorkstationAttachment(
+      attachment({
+        status_message: "stale ready status message",
+      }),
+      {
+        requireRuntimePeer: true,
+        runtimePeerCount: 0,
+      },
+    );
+
+    expect(target).toMatchObject({
+      id: "ws-lab2",
+      status: "attention",
+      statusLabel: "Needs attention",
+      detail: "Runtime peer disconnected: no compute session is currently attached to the room.",
+      runtimePeerCount: null,
+    });
+  });
 });

@@ -861,7 +861,7 @@ export function NotebookViewer({
     ? workstationAttachmentIsConnected(workstationAttachment)
     : runtimePeerAvailable;
   const cloudRuntimeExecutionAvailableForStatus = workstationAttachment
-    ? workstationAttachmentCanExecute(workstationAttachment)
+    ? workstationAttachmentCanExecute(workstationAttachment) && runtimePeerAvailable
     : runtimePeerAvailable;
   const cloudRuntimeStatus = useMemo<NotebookCommandToolbarStatus | null>(() => {
     if (!cloudRuntimeConnectedForStatus && !cloudRuntimeExecutionAvailableForStatus) {

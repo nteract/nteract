@@ -2431,6 +2431,131 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(rejected.reason, "no runtime peer is attached for interrupt_execution");
   });
 
+  it("rejects hosted execution requests and repairs stale ready attachments with no runtime peer", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    let materialized = 0;
+    let reconciledReason: string | null = null;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab",
+        display_name: "Lab",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "ready",
+        status_message: null,
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: null,
+        updated_at: "2026-05-22T00:00:00.000Z",
+        runtime_session_id: "job-old",
+      }),
+      reconcileRuntimePeerGone: async (reason: string) => {
+        reconciledReason = reason;
+        return { ...noopMaterializedResult(), changed: true, runtime_state_changed: true };
+      },
+    } as never);
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+
+    assert.equal(materialized, 0, "stale execution request should not queue new work");
+    assert.equal(reconciledReason, "no runtime peer is attached for execute_cell");
+    assert.equal(peer.consecutiveRejectedFrames, 0);
+    assert.equal(socket.sent.length, 1);
+    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(rejected.type, "cloud_frame_rejected");
+    assert.equal(rejected.reason, "no runtime peer is attached for execute_cell");
+  });
+
+  it("allows hosted execution requests to queue while attach is connecting", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    let materialized = 0;
+    let reconciled = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab",
+        display_name: "Lab",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "connecting",
+        status_message: "Lab accepted the request and is starting compute.",
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: null,
+        updated_at: "2026-05-22T00:00:00.000Z",
+        runtime_session_id: "job-new",
+      }),
+      reconcileRuntimePeerGone: async () => {
+        reconciled += 1;
+        return noopMaterializedResult();
+      },
+    } as never);
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+
+    assert.equal(materialized, 1, "connecting attach may queue initial execution");
+    assert.equal(reconciled, 0);
+    assert.equal(peer.consecutiveRejectedFrames, 0);
+    assert.equal(socket.sent.length, 1);
+    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
   it("rejects response-bearing runtime REQUEST frames instead of acknowledging no-ops", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
