@@ -1,5 +1,5 @@
 import type { EditorView } from "@codemirror/view";
-import { ClipboardPaste, Copy, Scissors } from "lucide-react";
+import { ClipboardPaste, Code2, Copy, FileText, Scissors } from "lucide-react";
 import { useCallback, useState, type ReactNode } from "react";
 import { CommentMarkIcon } from "@/components/comments/CommentMarkIcon";
 import {
@@ -23,7 +23,9 @@ interface EditorSelectionRange {
 
 interface EditorContextMenuProps {
   cellId: string;
+  cellType: "code" | "markdown" | "raw";
   readOnly?: boolean;
+  onChangeCellType?: (type: "code" | "markdown") => void;
   onCreateSourceComment?: (
     anchor: SourceRangeCommentAnchor,
     rect: SourceCommentSelectionRect | null,
@@ -40,6 +42,8 @@ export interface BuildEditorContextGroupsOptions {
   onCut?: () => void;
   onPaste?: () => void;
   onAddComment?: () => void;
+  cellType?: "code" | "markdown" | "raw";
+  onChangeCellType?: (type: "code" | "markdown") => void;
 }
 
 export function buildEditorContextGroups({
@@ -50,6 +54,8 @@ export function buildEditorContextGroups({
   onCut,
   onPaste,
   onAddComment,
+  cellType,
+  onChangeCellType,
 }: BuildEditorContextGroupsOptions): NotebookContextMenuGroup[] {
   const actions: NotebookContextMenuAction[] = [];
 
@@ -94,6 +100,26 @@ export function buildEditorContextGroups({
     });
   }
 
+  if (onChangeCellType && (cellType === "markdown" || cellType === "raw")) {
+    actions.push({
+      id: "change-to-code",
+      label: "Change to Code",
+      icon: <Code2 className="size-4" aria-hidden="true" />,
+      separatorBefore: actions.length > 0,
+      onSelect: () => onChangeCellType("code"),
+    });
+  }
+
+  if (onChangeCellType && (cellType === "code" || cellType === "raw")) {
+    actions.push({
+      id: "change-to-markdown",
+      label: "Change to Markdown",
+      icon: <FileText className="size-4" aria-hidden="true" />,
+      separatorBefore: actions.length > 0,
+      onSelect: () => onChangeCellType("markdown"),
+    });
+  }
+
   if (actions.length === 0) return [];
 
   return [
@@ -106,7 +132,9 @@ export function buildEditorContextGroups({
 
 export function EditorContextMenu({
   cellId,
+  cellType,
   readOnly,
+  onChangeCellType,
   onCreateSourceComment,
   children,
 }: EditorContextMenuProps) {
@@ -126,6 +154,8 @@ export function EditorContextMenu({
         onCopy: view && selection ? () => copySelection(view, selection) : undefined,
         onCut: editable && view && selection ? () => cutSelection(view, selection) : undefined,
         onPaste: editable && view ? () => pasteIntoSelection(view) : undefined,
+        cellType: onChangeCellType ? cellType : undefined,
+        onChangeCellType,
         onAddComment:
           editable && view && onCreateSourceComment
             ? () => {
@@ -136,7 +166,7 @@ export function EditorContextMenu({
             : undefined,
       }),
     );
-  }, [cellId, onCreateSourceComment, readOnly]);
+  }, [cellId, cellType, onChangeCellType, onCreateSourceComment, readOnly]);
 
   const handleOpenChange = useCallback(
     (open: boolean) => {

@@ -476,6 +476,7 @@ describe("createTauriHost()", () => {
         "menu:open",
         "menu:clone",
         "menu:insert-cell",
+        "menu:change-cell-type",
         "menu:clear-outputs",
         "menu:clear-all-outputs",
         "menu:run-all",
@@ -726,6 +727,28 @@ describe("createTauriHost()", () => {
     entry?.cb({ payload: "gibberish" });
     await Promise.resolve();
     expect(handler).toHaveBeenCalledTimes(3); // still 3 — the 4th was skipped
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("menu bridge accepts code/markdown payloads on menu:change-cell-type and drops the rest", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const handler = vi.fn();
+    host.commands.register("notebook.changeCellType", handler);
+    const entry = capturedListens.find((x) => x.event === "menu:change-cell-type");
+    await Promise.resolve();
+
+    entry?.cb({ payload: "markdown" });
+    entry?.cb({ payload: "code" });
+    await Promise.resolve();
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(handler).toHaveBeenNthCalledWith(1, { type: "markdown" });
+    expect(handler).toHaveBeenNthCalledWith(2, { type: "code" });
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    entry?.cb({ payload: "raw" });
+    await Promise.resolve();
+    expect(handler).toHaveBeenCalledTimes(2);
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
   });

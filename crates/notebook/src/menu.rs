@@ -37,6 +37,8 @@ pub const MENU_RESTART_AND_RUN_ALL: &str = "restart_and_run_all";
 pub const MENU_INSERT_CODE_CELL: &str = "insert_code_cell";
 pub const MENU_INSERT_MARKDOWN_CELL: &str = "insert_markdown_cell";
 pub const MENU_INSERT_RAW_CELL: &str = "insert_raw_cell";
+pub const MENU_CHANGE_CELL_TO_CODE: &str = "change_cell_to_code";
+pub const MENU_CHANGE_CELL_TO_MARKDOWN: &str = "change_cell_to_markdown";
 pub const MENU_CLEAR_OUTPUTS: &str = "clear_outputs";
 pub const MENU_CLEAR_ALL_OUTPUTS: &str = "clear_all_outputs";
 
@@ -287,6 +289,21 @@ pub fn create_menu(
         "Insert Raw Cell",
         true,
         Some("CmdOrCtrl+Shift+R"),
+    )?)?;
+    cell_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    cell_menu.append(&MenuItem::with_id(
+        app,
+        MENU_CHANGE_CELL_TO_CODE,
+        "Change Cell to Code",
+        true,
+        None::<&str>,
+    )?)?;
+    cell_menu.append(&MenuItem::with_id(
+        app,
+        MENU_CHANGE_CELL_TO_MARKDOWN,
+        "Change Cell to Markdown",
+        true,
+        None::<&str>,
     )?)?;
     cell_menu.append(&PredefinedMenuItem::separator(app)?)?;
     cell_menu.append(&MenuItem::with_id(

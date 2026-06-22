@@ -30,6 +30,7 @@ export interface CommandPayloads {
   "notebook.open": void;
   "notebook.clone": void;
   "notebook.insertCell": { type: "code" | "markdown" | "raw" };
+  "notebook.changeCellType": { type: "code" | "markdown" };
   "notebook.clearOutputs": void;
   "notebook.clearAllOutputs": void;
   "notebook.runAll": void;

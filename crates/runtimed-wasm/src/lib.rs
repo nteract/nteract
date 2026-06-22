@@ -3143,6 +3143,14 @@ impl NotebookHandle {
         })
     }
 
+    fn set_cell_type_with_changeset_inner(
+        &mut self,
+        cell_id: &str,
+        cell_type: &str,
+    ) -> Result<LocalMutationResult<bool>, JsError> {
+        self.run_local_mutation("set_cell_type", |doc| doc.set_cell_type(cell_id, cell_type))
+    }
+
     fn set_cell_outputs_hidden_with_changeset_inner(
         &mut self,
         cell_id: &str,
@@ -3254,6 +3262,16 @@ impl NotebookHandle {
         hidden: bool,
     ) -> Result<JsValue, JsError> {
         let result = self.set_cell_source_hidden_with_changeset_inner(cell_id, hidden)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize local mutation result: {e}")))
+    }
+
+    pub fn set_cell_type_with_changeset(
+        &mut self,
+        cell_id: &str,
+        cell_type: &str,
+    ) -> Result<JsValue, JsError> {
+        let result = self.set_cell_type_with_changeset_inner(cell_id, cell_type)?;
         serialize_to_js(&result)
             .map_err(|e| JsError::new(&format!("serialize local mutation result: {e}")))
     }
@@ -3450,6 +3468,15 @@ impl NotebookHandle {
         self.doc
             .set_cell_source_hidden(cell_id, hidden)
             .map_err(|e| JsError::new(&format!("set_cell_source_hidden failed: {}", e)))
+    }
+
+    /// Set the cell type for an existing cell. Valid values: "code", "markdown", or "raw".
+    ///
+    /// Returns true if the cell was found and updated.
+    pub fn set_cell_type(&mut self, cell_id: &str, cell_type: &str) -> Result<bool, JsError> {
+        self.doc
+            .set_cell_type(cell_id, cell_type)
+            .map_err(|e| JsError::new(&format!("set_cell_type failed: {}", e)))
     }
 
     /// Set whether the cell outputs should be hidden (JupyterLab convention).

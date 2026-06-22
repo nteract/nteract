@@ -1,4 +1,4 @@
-import { Copy } from "lucide-react";
+import { Code2, Copy } from "lucide-react";
 import { useCallback, useState, type ReactNode, type RefObject } from "react";
 import { CommentMarkIcon } from "@/components/comments/CommentMarkIcon";
 import {
@@ -28,6 +28,7 @@ interface RenderedMarkdownContextMenuProps {
     rect: SourceCommentSelectionRect | null,
     quote?: string | null,
   ) => void;
+  onChangeCellType?: (type: "code" | "markdown") => void;
   children: ReactNode;
 }
 
@@ -36,6 +37,7 @@ export interface BuildRenderedMarkdownContextGroupsOptions {
   canComment: boolean;
   onCopy?: () => void;
   onAddComment?: () => void;
+  onChangeCellType?: (type: "code" | "markdown") => void;
 }
 
 export interface RenderedMarkdownClipboardPayload {
@@ -48,6 +50,7 @@ export function buildRenderedMarkdownContextGroups({
   canComment,
   onCopy,
   onAddComment,
+  onChangeCellType,
 }: BuildRenderedMarkdownContextGroupsOptions): NotebookContextMenuGroup[] {
   const actions: NotebookContextMenuAction[] = [];
 
@@ -72,6 +75,16 @@ export function buildRenderedMarkdownContextGroups({
     });
   }
 
+  if (onChangeCellType) {
+    actions.push({
+      id: "change-to-code",
+      label: "Change to Code",
+      icon: <Code2 className="size-4" aria-hidden="true" />,
+      separatorBefore: actions.length > 0,
+      onSelect: () => onChangeCellType("code"),
+    });
+  }
+
   if (actions.length === 0) return [];
 
   return [
@@ -88,6 +101,7 @@ export function RenderedMarkdownContextMenu({
   markdownProjection,
   viewRef,
   onCreateSourceComment,
+  onChangeCellType,
   children,
 }: RenderedMarkdownContextMenuProps) {
   const [groups, setGroups] = useState<NotebookContextMenuGroup[]>([]);
@@ -112,6 +126,7 @@ export function RenderedMarkdownContextMenu({
         hasSelection,
         canComment: !!anchor && !!onCreateSourceComment,
         onCopy: clipboardPayload ? () => copyRenderedSelection(clipboardPayload) : undefined,
+        onChangeCellType,
         onAddComment:
           anchor && onCreateSourceComment
             ? () => {
@@ -128,7 +143,7 @@ export function RenderedMarkdownContextMenu({
             : undefined,
       }),
     );
-  }, [cellId, markdownProjection, onCreateSourceComment, source, viewRef]);
+  }, [cellId, markdownProjection, onChangeCellType, onCreateSourceComment, source, viewRef]);
 
   const handleOpenChange = useCallback(
     (open: boolean) => {

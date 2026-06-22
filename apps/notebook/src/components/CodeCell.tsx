@@ -75,6 +75,7 @@ interface CodeCellProps {
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onNavigateToCell?: (target: TracebackCellTarget) => void;
   onInsertCellAfter?: () => void;
+  onChangeCellType?: (type: "code" | "markdown") => void;
   isLastCell?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
@@ -347,6 +348,7 @@ export const CodeCell = memo(function CodeCell({
   onFocusNext,
   onNavigateToCell,
   onInsertCellAfter,
+  onChangeCellType,
   isLastCell = false,
   dragHandleProps,
   isDragging,
@@ -838,7 +840,9 @@ export const CodeCell = memo(function CodeCell({
               <>
                 <EditorContextMenu
                   cellId={cell.id}
+                  cellType="code"
                   readOnly={readOnly}
+                  onChangeCellType={onChangeCellType}
                   onCreateSourceComment={onCreateSourceComment}
                 >
                   <CodeMirrorEditor

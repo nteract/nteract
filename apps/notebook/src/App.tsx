@@ -361,6 +361,7 @@ function AppContent() {
     moveCell,
     deleteCell,
     clearOutputs,
+    setCellType,
     save,
     openNotebook,
     cloneNotebook,
@@ -1635,6 +1636,7 @@ function AppContent() {
     openNotebook,
     cloneNotebook,
     handleAddCell,
+    setCellType,
     clearOutputs,
     handleRunAllCells,
     handleRestartAndRunAll,
@@ -1645,6 +1647,7 @@ function AppContent() {
     openNotebook,
     cloneNotebook,
     handleAddCell,
+    setCellType,
     clearOutputs,
     handleRunAllCells,
     handleRestartAndRunAll,
@@ -1665,6 +1668,13 @@ function AppContent() {
       host.commands.register("notebook.insertCell", ({ type }) => {
         const h = commandHandlersRef.current;
         h.handleAddCell(type, getFocusedCellId());
+      }),
+      host.commands.register("notebook.changeCellType", ({ type }) => {
+        const focusedCellId = getFocusedCellId();
+        if (!focusedCellId) return;
+        const cell = getNotebookCellsSnapshot().find((c) => c.id === focusedCellId);
+        if (cell?.cell_type === type) return;
+        commandHandlersRef.current.setCellType(focusedCellId, type);
       }),
       host.commands.register("notebook.clearOutputs", async () => {
         const h = commandHandlersRef.current;
@@ -2132,6 +2142,7 @@ function AppContent() {
                 onUpdateCellSource={updateCellSource}
                 onAddCell={handleAddCell}
                 onMoveCell={moveCell}
+                onChangeCellType={setCellType}
                 onReportOutputMatchCount={globalFind.reportOutputMatchCount}
                 onSetCellSourceHidden={setCellSourceHidden}
                 onSetCellOutputsHidden={setCellOutputsHidden}

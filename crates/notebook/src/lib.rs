@@ -4581,6 +4581,26 @@ pub fn run(
                             emit_to_label::<_, _, _>(&window, window.label(), "menu:insert-cell", "raw");
                     }
                 }
+                crate::menu::MENU_CHANGE_CELL_TO_CODE => {
+                    if let Some(window) = focused_window(app) {
+                        let _ = emit_to_label::<_, _, _>(
+                            &window,
+                            window.label(),
+                            "menu:change-cell-type",
+                            "code",
+                        );
+                    }
+                }
+                crate::menu::MENU_CHANGE_CELL_TO_MARKDOWN => {
+                    if let Some(window) = focused_window(app) {
+                        let _ = emit_to_label::<_, _, _>(
+                            &window,
+                            window.label(),
+                            "menu:change-cell-type",
+                            "markdown",
+                        );
+                    }
+                }
                 crate::menu::MENU_CLEAR_OUTPUTS => {
                     if let Some(window) = focused_window(app) {
                         let _ =

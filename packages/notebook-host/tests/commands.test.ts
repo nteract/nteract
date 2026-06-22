@@ -6,15 +6,19 @@ describe("createCommandRegistry()", () => {
     const registry = createCommandRegistry();
     const saved = vi.fn();
     const inserted = vi.fn();
+    const changedType = vi.fn();
     registry.register("notebook.save", saved);
     registry.register("notebook.insertCell", inserted);
+    registry.register("notebook.changeCellType", changedType);
 
     await registry.run("notebook.save", undefined);
     await registry.run("notebook.insertCell", { type: "markdown" });
+    await registry.run("notebook.changeCellType", { type: "code" });
 
     expect(saved).toHaveBeenCalledTimes(1);
     expect(saved).toHaveBeenCalledWith(undefined);
     expect(inserted).toHaveBeenCalledWith({ type: "markdown" });
+    expect(changedType).toHaveBeenCalledWith({ type: "code" });
   });
 
   it("awaits async handlers", async () => {
