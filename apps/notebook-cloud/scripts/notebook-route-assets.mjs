@@ -2,17 +2,10 @@ import { readdir, writeFile } from "node:fs/promises";
 
 export const NOTEBOOK_ROUTE_ASSETS_MANIFEST = "notebook-route-assets.json";
 
-const MODULE_PRELOAD_STEMS = [
-  "notebook-route",
-  "MarkdownText",
-  "markdown",
-  "markdown-output",
-  "katex.min",
-  "utils",
-];
-const STYLE_PRELOAD_STEMS = ["notebook-route", "katex"];
-const REQUIRED_MODULE_PRELOAD_STEMS = ["notebook-route", "katex.min"];
-const REQUIRED_STYLE_PRELOAD_STEMS = ["notebook-route", "katex"];
+const MODULE_PRELOAD_STEMS = ["notebook-route", "MarkdownText", "markdown", "utils"];
+const STYLE_PRELOAD_STEMS = ["notebook-route"];
+const REQUIRED_MODULE_PRELOAD_STEMS = ["notebook-route"];
+const REQUIRED_STYLE_PRELOAD_STEMS = ["notebook-route"];
 
 export async function collectNotebookRouteAssets(
   assetsDirUrl,
@@ -73,5 +66,12 @@ function missingAssetStems(names, stems, extension) {
 }
 
 function assetNameMatchesStem(name, stem, extension) {
-  return name === `${stem}${extension}` || name.startsWith(`${stem}-`);
+  if (name === `${stem}${extension}`) {
+    return true;
+  }
+  const prefix = `${stem}-`;
+  if (!name.startsWith(prefix) || !name.endsWith(extension)) {
+    return false;
+  }
+  return /^[A-Za-z0-9_]+$/.test(name.slice(prefix.length, -extension.length));
 }

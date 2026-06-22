@@ -4560,6 +4560,9 @@ async function viewer(
     hostCapabilities: {
       canManageSharing: true,
     },
+    featureFlags: {
+      enable_comments: true,
+    },
     session: session ? appSessionResponse(session) : null,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),

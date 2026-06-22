@@ -177,6 +177,6 @@ describe("useCloudPrototypeAuth", () => {
     rerender({ autoRefreshOidc: true });
 
     await waitFor(() => expect(mocks.refreshStoredOidcToken).toHaveBeenCalledTimes(1));
-    expect(result.current.authRenewal.kind).toBe("idle");
+    await waitFor(() => expect(result.current.authRenewal.kind).toBe("idle"));
   });
 });

@@ -620,11 +620,18 @@ describe("Worker artifact routes", () => {
     assert.match(html, /rel="modulepreload" href="\/assets\/notebook-route\.0123456789abcdef\.js"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/MarkdownText\.0123456789abcdef\.js"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/markdown\.0123456789abcdef\.js"/);
+    assert.doesNotMatch(
+      html,
+      /rel="modulepreload" href="\/assets\/katex\.min\.0123456789abcdef\.js"/,
+    );
     assert.match(
       html,
       /rel="prefetch" href="\/assets\/notebook-route\.0123456789abcdef\.css" as="style"/,
     );
-    assert.match(html, /rel="prefetch" href="\/assets\/katex\.0123456789abcdef\.css" as="style"/);
+    assert.doesNotMatch(
+      html,
+      /rel="prefetch" href="\/assets\/katex\.0123456789abcdef\.css" as="style"/,
+    );
     assert.doesNotMatch(
       html,
       /rel="preload" href="\/assets\/notebook-route\.0123456789abcdef\.css" as="style"/,
@@ -657,6 +664,7 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 200);
     const html = await response.text();
     const config = notebookViewerConfig(html);
+    assert.equal(config.featureFlags?.enable_comments, true);
     assert.equal(config.session?.provider, "oidc");
     assert.equal(typeof config.session?.expires_at, "number");
     assert.equal(typeof config.session?.cache_key, "string");
@@ -6120,9 +6128,8 @@ function fakeNotebookRouteAssets(seenPaths: string[] = []): Env["ASSETS"] {
             "notebook-route.0123456789abcdef.js",
             "MarkdownText.0123456789abcdef.js",
             "markdown.0123456789abcdef.js",
-            "katex.min.0123456789abcdef.js",
           ],
-          stylepreload: ["notebook-route.0123456789abcdef.css", "katex.0123456789abcdef.css"],
+          stylepreload: ["notebook-route.0123456789abcdef.css"],
         });
       }
       return new Response("not found", { status: 404 });
@@ -6179,6 +6186,9 @@ function notebookHomeBootstrap(html: string): {
 }
 
 function notebookViewerConfig(html: string): {
+  featureFlags?: {
+    enable_comments?: boolean;
+  };
   session?: {
     provider: string;
     expires_at: number;
@@ -6190,6 +6200,9 @@ function notebookViewerConfig(html: string): {
   );
   assert.ok(match?.[1], "expected notebook viewer config script");
   return JSON.parse(match[1]) as {
+    featureFlags?: {
+      enable_comments?: boolean;
+    };
     session?: {
       provider: string;
       expires_at: number;

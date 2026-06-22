@@ -18,19 +18,15 @@ describe("notebook route asset manifest", () => {
     await writeFile(new URL("notebook-route-abc123.css", assetsUrl), "");
     await writeFile(new URL("MarkdownText-def456.js", assetsUrl), "");
     await writeFile(new URL("markdown-ghi789.js", assetsUrl), "");
+    await writeFile(new URL("markdown-output-lazy.js", assetsUrl), "");
     await writeFile(new URL("katex.min-jkl012.js", assetsUrl), "");
     await writeFile(new URL("katex-mno345.css", assetsUrl), "");
     await writeFile(new URL("plotly-pqr678.js", assetsUrl), "");
     await writeFile(new URL("notebook-cloud-viewer.js", assetsUrl), "");
 
     assert.deepEqual(await collectNotebookRouteAssets(assetsUrl), {
-      modulepreload: [
-        "notebook-route-abc123.js",
-        "MarkdownText-def456.js",
-        "markdown-ghi789.js",
-        "katex.min-jkl012.js",
-      ],
-      stylepreload: ["notebook-route-abc123.css", "katex-mno345.css"],
+      modulepreload: ["notebook-route-abc123.js", "MarkdownText-def456.js", "markdown-ghi789.js"],
+      stylepreload: ["notebook-route-abc123.css"],
     });
   });
 
@@ -40,16 +36,16 @@ describe("notebook route asset manifest", () => {
 
     await writeFile(new URL("notebook-route-abc123.js", assetsUrl), "");
     await writeFile(new URL("notebook-route-abc123.css", assetsUrl), "");
-    await writeFile(new URL("katex.min-jkl012.js", assetsUrl), "");
-    await writeFile(new URL("katex-mno345.css", assetsUrl), "");
+    await writeFile(new URL("MarkdownText-def456.js", assetsUrl), "");
+    await writeFile(new URL("markdown-ghi789.js", assetsUrl), "");
 
     const { manifest, manifestUrl } = await writeNotebookRouteAssetsManifest(assetsUrl);
     const written = JSON.parse(await readFile(manifestUrl, "utf8"));
 
     assert.deepEqual(written, manifest);
     assert.deepEqual(written, {
-      modulepreload: ["notebook-route-abc123.js", "katex.min-jkl012.js"],
-      stylepreload: ["notebook-route-abc123.css", "katex-mno345.css"],
+      modulepreload: ["notebook-route-abc123.js", "MarkdownText-def456.js", "markdown-ghi789.js"],
+      stylepreload: ["notebook-route-abc123.css"],
     });
   });
 
@@ -62,7 +58,7 @@ describe("notebook route asset manifest", () => {
 
     await assert.rejects(
       writeNotebookRouteAssetsManifest(assetsUrl),
-      /missing required route preload assets: notebook-route\.js, katex\.min\.js, notebook-route\.css, katex\.css/,
+      /missing required route preload assets: notebook-route\.js, notebook-route\.css/,
     );
   });
 });
