@@ -110,8 +110,11 @@ export function cloudNotebookShellCapabilities({
     ? cloudVisiblePeerLabel(connectionPeerLabel, connectionActorLabel)
     : cloudIdentityDisplayLabel(authState, connectionActorLabel);
   const identityImageUrl = cloudIdentityImageUrl(authState);
+  const visibleRuntimePeerCount = Math.max(0, Math.floor(runtimePeerCount));
+  const hasRuntimePeer = visibleRuntimePeerCount > 0;
   const attachmentConnected = workstationAttachmentIsConnected(workstationAttachment);
-  const attachmentExecutionAvailable = workstationAttachmentCanExecute(workstationAttachment);
+  const attachmentExecutionAvailable =
+    workstationAttachmentCanExecute(workstationAttachment) && hasRuntimePeer;
   const hasAttachmentSnapshot = workstationAttachment !== null;
   const effectiveRuntimeConnected = hasAttachmentSnapshot ? attachmentConnected : runtimeAvailable;
   const effectiveRuntimeAvailable = hasAttachmentSnapshot
@@ -219,7 +222,7 @@ function cloudRuntimeTarget({
   }
   const attachmentTarget = projectNotebookRuntimeTargetFromWorkstationAttachment(
     workstationAttachment,
-    { runtimePeerCount: visibleRuntimePeerCount, kernelStatusLabel },
+    { runtimePeerCount: visibleRuntimePeerCount, kernelStatusLabel, requireRuntimePeer: true },
   );
   if (attachmentTarget) {
     return attachmentTarget;

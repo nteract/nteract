@@ -220,6 +220,43 @@ test("cloud shell capabilities prefer RuntimeStateDoc workstation attachment ove
   assert.equal(capabilities.canExecute, true);
 });
 
+test("cloud shell capabilities require live runtime peer presence for executable attachments", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: false,
+    runtimePeerCount: 0,
+    workstationAttachment: {
+      workstation_id: "ws-lab2",
+      display_name: "Lab 2",
+      provider: "local_daemon",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: 8,
+      memory_bytes: 32 * 1024 ** 3,
+      working_directory: "/home/ubuntu/notebooks",
+      updated_at: "2026-06-07T21:00:00Z",
+    },
+  });
+
+  assert.equal(capabilities.runtime.connected, true);
+  assert.equal(capabilities.runtime.executionAvailable, false);
+  assert.equal(capabilities.runtime.target?.id, "ws-lab2");
+  assert.equal(capabilities.runtime.target?.label, "Lab 2");
+  assert.equal(capabilities.runtime.target?.status, "attention");
+  assert.equal(capabilities.runtime.target?.statusLabel, "Needs attention");
+  assert.equal(
+    capabilities.runtime.target?.detail,
+    "Runtime peer disconnected: no compute session is currently attached to the room.",
+  );
+  assert.equal(capabilities.runtime.target?.runtimePeerCount, null);
+  assert.equal(capabilities.canExecute, false);
+});
+
 test("cloud shell capabilities surface RuntimeStateDoc kernel status on workstation targets", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "owner"),
@@ -336,6 +373,7 @@ test("cloud shell capabilities hide execution in view mode even for owners with 
     connectionScope: "owner",
     hasCodeCells: true,
     selectedMode: "view",
+    runtimePeerCount: 1,
     workstationAttachment: {
       workstation_id: "ws-lab2",
       display_name: "Lab 2",
@@ -355,6 +393,7 @@ test("cloud shell capabilities hide execution in view mode even for owners with 
     connectionScope: "owner",
     hasCodeCells: true,
     selectedMode: "edit",
+    runtimePeerCount: 1,
     workstationAttachment: {
       workstation_id: "ws-lab2",
       display_name: "Lab 2",
