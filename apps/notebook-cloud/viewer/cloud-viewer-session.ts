@@ -133,6 +133,7 @@ export interface CloudViewerConfig {
   };
   featureFlags?: {
     disable_comments?: boolean;
+    disable_auto_format?: boolean;
   };
   session?: CloudAppSession | null;
   syncEndpoint: string;

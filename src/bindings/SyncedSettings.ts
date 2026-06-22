@@ -85,6 +85,10 @@ export type SyncedSettings = {
    */
   disable_comments: boolean;
   /**
+   * Disable automatic code formatting on cell execution and notebook save.
+   */
+  disable_auto_format: boolean;
+  /**
    * Redact eligible environment variable values from text outputs for newly
    * launched or restarted kernels.
    *

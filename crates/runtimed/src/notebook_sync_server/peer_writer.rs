@@ -647,6 +647,7 @@ mod tests {
                 &request_room,
                 "cell-1".to_string(),
                 None,
+                false,
                 Some("user:test/agent"),
             )
             .await

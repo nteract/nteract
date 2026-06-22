@@ -59,6 +59,7 @@ function loadConfig(): CloudViewerConfig {
     },
     featureFlags: {
       disable_comments: parsed.featureFlags?.disable_comments === true,
+      disable_auto_format: parsed.featureFlags?.disable_auto_format === true,
     },
     session: isCloudAppSession(parsed.session) ? parsed.session : null,
     syncEndpoint: parsed.syncEndpoint,

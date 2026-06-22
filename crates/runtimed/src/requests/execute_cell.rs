@@ -46,9 +46,18 @@ pub(crate) async fn handle_with_submitter(
     room: &Arc<NotebookRoom>,
     cell_id: String,
     execution_id: Option<String>,
+    disable_auto_format: bool,
     submitter_actor_label: Option<&str>,
 ) -> NotebookResponse {
-    handle_inner(room, cell_id, execution_id, None, submitter_actor_label).await
+    handle_inner(
+        room,
+        cell_id,
+        execution_id,
+        None,
+        disable_auto_format,
+        submitter_actor_label,
+    )
+    .await
 }
 
 pub(crate) async fn handle_guarded_with_submitter(
@@ -56,6 +65,7 @@ pub(crate) async fn handle_guarded_with_submitter(
     cell_id: String,
     execution_id: Option<String>,
     observed_heads: Vec<String>,
+    disable_auto_format: bool,
     submitter_actor_label: Option<&str>,
 ) -> NotebookResponse {
     if let Err(rejection) = guarded::ensure_trusted(room).await {
@@ -66,6 +76,7 @@ pub(crate) async fn handle_guarded_with_submitter(
         cell_id,
         execution_id,
         Some(observed_heads),
+        disable_auto_format,
         submitter_actor_label,
     )
     .await
@@ -76,6 +87,7 @@ async fn handle_inner(
     cell_id: String,
     requested_execution_id: Option<String>,
     observed_heads: Option<Vec<String>>,
+    disable_auto_format: bool,
     submitter_actor_label: Option<&str>,
 ) -> NotebookResponse {
     // Agent-backed kernel: write execution to RuntimeStateDoc queue. During
@@ -128,33 +140,35 @@ async fn handle_inner(
                 QueueCellResult::Response(response) => return *response,
             };
 
-            let room_clone = Arc::clone(room);
-            let cell_id_clone = cell_id.clone();
-            let source_clone = source.clone();
-            spawn_best_effort("cell-formatter", async move {
-                if let Some(runtime) = detect_room_runtime(&room_clone).await {
-                    if let Some(formatted) = format_source(&source_clone, &runtime).await {
-                        let mut doc = room_clone.doc.write().await;
-                        match doc.transact_at_heads_recovering(
-                            &format_heads,
-                            Some(&formatter_actor(&runtime)),
-                            "format-transaction",
-                            |doc| {
-                                let changed = doc.update_source(&cell_id_clone, &formatted)?;
-                                Ok(changed)
-                            },
-                        ) {
-                            Ok(true) => {
-                                let _ = room_clone.broadcasts.changed_tx.send(());
-                            }
-                            Ok(false) => {}
-                            Err(e) => {
-                                warn!("[format] transaction failed: {}", e);
+            if !disable_auto_format {
+                let room_clone = Arc::clone(room);
+                let cell_id_clone = cell_id.clone();
+                let source_clone = source.clone();
+                spawn_best_effort("cell-formatter", async move {
+                    if let Some(runtime) = detect_room_runtime(&room_clone).await {
+                        if let Some(formatted) = format_source(&source_clone, &runtime).await {
+                            let mut doc = room_clone.doc.write().await;
+                            match doc.transact_at_heads_recovering(
+                                &format_heads,
+                                Some(&formatter_actor(&runtime)),
+                                "format-transaction",
+                                |doc| {
+                                    let changed = doc.update_source(&cell_id_clone, &formatted)?;
+                                    Ok(changed)
+                                },
+                            ) {
+                                Ok(true) => {
+                                    let _ = room_clone.broadcasts.changed_tx.send(());
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    warn!("[format] transaction failed: {}", e);
+                                }
                             }
                         }
                     }
-                }
-            });
+                });
+            }
 
             return NotebookResponse::CellQueued {
                 cell_id,

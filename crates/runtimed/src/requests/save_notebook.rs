@@ -18,8 +18,13 @@ pub(crate) async fn handle(
     format_cells: bool,
     path: Option<String>,
 ) -> NotebookResponse {
+    let disable_auto_format = {
+        let settings = daemon.settings.read().await;
+        settings.get_all().disable_auto_format
+    };
+
     // Format cells if requested (before saving)
-    if format_cells {
+    if format_cells && !disable_auto_format {
         if let Err(e) = format_notebook_cells(room).await {
             warn!("[save] Format cells failed (continuing with save): {}", e);
         }

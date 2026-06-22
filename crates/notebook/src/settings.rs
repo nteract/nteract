@@ -117,6 +117,10 @@ pub fn load_settings() -> SyncedSettings {
             .get("disable_comments")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.disable_comments),
+        disable_auto_format: json
+            .get("disable_auto_format")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.disable_auto_format),
         redact_env_values_in_outputs: json
             .get("redact_env_values_in_outputs")
             .and_then(|v| v.as_bool())
@@ -184,6 +188,7 @@ mod tests {
         assert!(settings.install_default_data_packages);
         assert!(!settings.disable_nteract_launcher);
         assert!(!settings.disable_comments);
+        assert!(!settings.disable_auto_format);
         assert!(settings.redact_env_values_in_outputs);
     }
 
@@ -207,6 +212,7 @@ mod tests {
             install_default_data_packages: true,
             disable_nteract_launcher: false,
             disable_comments: true,
+            disable_auto_format: true,
             ..SyncedSettings::default()
         };
 
@@ -218,6 +224,7 @@ mod tests {
         assert_eq!(parsed.default_python_env, PythonEnvType::Uv);
         assert_eq!(parsed.uv.default_packages, vec!["numpy", "pandas"]);
         assert!(parsed.disable_comments);
+        assert!(parsed.disable_auto_format);
     }
 
     #[test]
@@ -401,6 +408,7 @@ mod tests {
             install_default_data_packages: defaults.install_default_data_packages,
             disable_nteract_launcher: defaults.disable_nteract_launcher,
             disable_comments: defaults.disable_comments,
+            disable_auto_format: defaults.disable_auto_format,
             ..defaults
         };
         // Valid fields are preserved
