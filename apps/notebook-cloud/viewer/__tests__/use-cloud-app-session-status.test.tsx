@@ -12,6 +12,8 @@ import type { CloudAppSession } from "../app-session";
 
 const mocks = vi.hoisted(() => ({
   readCloudAppSessionStatus: vi.fn<() => Promise<{ ok: true; session: CloudAppSession | null }>>(),
+  refreshStoredOidcToken: vi.fn<() => Promise<void>>(),
+  storedOidcTokenNeedsRefresh: vi.fn<() => boolean>(),
 }));
 
 vi.mock("../app-session", async (importOriginal) => ({
@@ -19,11 +21,20 @@ vi.mock("../app-session", async (importOriginal) => ({
   readCloudAppSessionStatus: mocks.readCloudAppSessionStatus,
 }));
 
-import { useCloudAppSessionStatus } from "../use-cloud-auth";
+vi.mock("../oidc-auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../oidc-auth")>()),
+  refreshStoredOidcToken: mocks.refreshStoredOidcToken,
+  storedOidcTokenNeedsRefresh: mocks.storedOidcTokenNeedsRefresh,
+}));
+
+import { useCloudAppSessionStatus, useCloudPrototypeAuth } from "../use-cloud-auth";
 
 describe("useCloudAppSessionStatus", () => {
   beforeEach(() => {
     mocks.readCloudAppSessionStatus.mockReset();
+    mocks.refreshStoredOidcToken.mockReset();
+    mocks.storedOidcTokenNeedsRefresh.mockReset();
+    mocks.storedOidcTokenNeedsRefresh.mockReturnValue(false);
   });
 
   const session = (overrides: Partial<CloudAppSession> = {}): CloudAppSession => ({
@@ -124,5 +135,48 @@ describe("useCloudAppSessionStatus", () => {
 
     expect(result.current.error).toBe("session endpoint down");
     expect(result.current.session).toBe(initial);
+  });
+});
+
+describe("useCloudPrototypeAuth", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    mocks.refreshStoredOidcToken.mockReset();
+    mocks.refreshStoredOidcToken.mockResolvedValue();
+    mocks.storedOidcTokenNeedsRefresh.mockReset();
+    mocks.storedOidcTokenNeedsRefresh.mockReturnValue(true);
+  });
+
+  const authConfig = {
+    localDev: null,
+    oidc: {
+      issuer: "https://auth.example.test",
+      clientId: "client-id",
+      redirectUri: "https://preview.example.test/oidc",
+    },
+  };
+
+  it("can defer stale OIDC refresh until the route needs authenticated behavior", async () => {
+    const { result, rerender } = renderHook(
+      ({ autoRefreshOidc }: { autoRefreshOidc: boolean }) =>
+        useCloudPrototypeAuth(authConfig, {
+          appSession: null,
+          appSessionLoading: false,
+          appSessionRefreshFallback: true,
+          autoRefreshOidc,
+        }),
+      { initialProps: { autoRefreshOidc: false } },
+    );
+
+    await act(async () => {});
+
+    expect(result.current.authRenewal.kind).toBe("idle");
+    expect(mocks.storedOidcTokenNeedsRefresh).not.toHaveBeenCalled();
+    expect(mocks.refreshStoredOidcToken).not.toHaveBeenCalled();
+
+    rerender({ autoRefreshOidc: true });
+
+    await waitFor(() => expect(mocks.refreshStoredOidcToken).toHaveBeenCalledTimes(1));
+    expect(result.current.authRenewal.kind).toBe("idle");
   });
 });

@@ -20,6 +20,7 @@ interface CloudPrototypeAuthOptions {
   appSessionRefreshFallback?: boolean;
   appSessionLoading?: boolean;
   appSession?: CloudAppSession | null;
+  autoRefreshOidc?: boolean;
 }
 
 export interface CloudAppSessionViewState {
@@ -73,8 +74,12 @@ export function useCloudPrototypeAuth(
   );
   const appSession = options?.appSession ?? null;
   const appSessionLoading = options?.appSessionLoading === true;
+  const autoRefreshOidc = options?.autoRefreshOidc !== false;
   const [authRenewal, setAuthRenewal] = useState<CloudAuthRenewalState>(() =>
-    shouldRefreshStoredOidcToken() && !cloudAppSessionIsFresh(appSession) && !appSessionLoading
+    autoRefreshOidc &&
+    shouldRefreshStoredOidcToken() &&
+    !cloudAppSessionIsFresh(appSession) &&
+    !appSessionLoading
       ? { kind: "refreshing", message: "Refreshing sign-in..." }
       : { kind: "idle", message: null },
   );
@@ -89,7 +94,7 @@ export function useCloudPrototypeAuth(
 
   const refreshOidcIfNeeded = useCallback(async () => {
     const oidc = authConfig.oidc;
-    if (!oidc || !shouldRefreshStoredOidcToken()) {
+    if (!autoRefreshOidc || !oidc || !shouldRefreshStoredOidcToken()) {
       return;
     }
     if (appSessionRefreshFallback) {
@@ -134,7 +139,14 @@ export function useCloudPrototypeAuth(
     })();
     refreshPromiseRef.current = refreshPromise;
     return refreshPromise;
-  }, [appSession, appSessionLoading, appSessionRefreshFallback, authConfig.oidc, refreshAuthState]);
+  }, [
+    appSession,
+    appSessionLoading,
+    appSessionRefreshFallback,
+    authConfig.oidc,
+    autoRefreshOidc,
+    refreshAuthState,
+  ]);
 
   useEffect(() => {
     void refreshOidcIfNeeded();
