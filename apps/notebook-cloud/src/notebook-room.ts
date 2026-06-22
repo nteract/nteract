@@ -86,6 +86,11 @@ interface PeerCloseOptions {
 
 type RuntimePeerForwardedRequestAction = "interrupt_execution" | "send_comm";
 type RuntimePeerQueryRequestAction = "complete";
+type HostedExecutionRequestAction =
+  | "execute_cell"
+  | "execute_cell_guarded"
+  | "run_all_cells"
+  | "run_all_cells_guarded";
 type UnsupportedHostedRuntimeRequestAction =
   | "launch_kernel"
   | "restart_kernel"
@@ -127,6 +132,12 @@ const runtimePeerForwardedRequestActions = new Set<RuntimePeerForwardedRequestAc
   "send_comm",
 ]);
 const runtimePeerQueryRequestActions = new Set<RuntimePeerQueryRequestAction>(["complete"]);
+const hostedExecutionRequestActions = new Set<HostedExecutionRequestAction>([
+  "execute_cell",
+  "execute_cell_guarded",
+  "run_all_cells",
+  "run_all_cells_guarded",
+]);
 const unsupportedHostedRuntimeRequestActions = new Set<UnsupportedHostedRuntimeRequestAction>([
   "launch_kernel",
   "restart_kernel",
@@ -185,6 +196,15 @@ function runtimePeerQueryRequestAction(
   }
   return runtimePeerQueryRequestActions.has(action as RuntimePeerQueryRequestAction)
     ? (action as RuntimePeerQueryRequestAction)
+    : null;
+}
+
+function hostedExecutionRequestAction(action: string | null): HostedExecutionRequestAction | null {
+  if (!action) {
+    return null;
+  }
+  return hostedExecutionRequestActions.has(action as HostedExecutionRequestAction)
+    ? (action as HostedExecutionRequestAction)
     : null;
 }
 
@@ -1043,6 +1063,29 @@ export class NotebookRoom {
       return;
     }
 
+    const hostedExecutionAction =
+      normalizedFrame.type === FrameType.REQUEST
+        ? hostedExecutionRequestAction(requestMetadata?.action ?? null)
+        : null;
+    if (hostedExecutionAction) {
+      const runtimePeer = await this.activeRuntimePeer(notebookId, peer.id);
+      if (!runtimePeer && !(await this.executionCanWaitForStartingRuntime(notebookId))) {
+        await this.reconcileMissingRuntimePeer(
+          notebookId,
+          `no runtime peer is attached for ${hostedExecutionAction}`,
+          "hosted_execution_without_runtime_peer",
+        );
+        this.rejectFrame(
+          notebookId,
+          peer,
+          normalizedFrame.type,
+          `no runtime peer is attached for ${hostedExecutionAction}`,
+          { countsTowardStreak: false },
+        );
+        return;
+      }
+    }
+
     const unsupportedRuntimeRequestAction =
       normalizedFrame.type === FrameType.REQUEST
         ? unsupportedHostedRuntimeRequestAction(requestMetadata?.action ?? null)
@@ -1428,6 +1471,48 @@ export class NotebookRoom {
       }
     }
     return selected;
+  }
+
+  private async executionCanWaitForStartingRuntime(notebookId: string): Promise<boolean> {
+    const materializer = this.materializerFor(notebookId);
+    if (typeof materializer.getWorkstationAttachment !== "function") {
+      return false;
+    }
+    const attachment = await materializer.getWorkstationAttachment();
+    return attachment?.status === "connecting";
+  }
+
+  private async reconcileMissingRuntimePeer(
+    notebookId: string,
+    reason: string,
+    operation: string,
+  ): Promise<boolean> {
+    try {
+      const materializer = this.materializerFor(notebookId);
+      const result = await materializer.reconcileRuntimePeerGone(reason);
+      this.invalidateSelectedRuntimePeerSession(notebookId);
+      if (result.changed) {
+        this.deliverRoomHostFrames(notebookId, result);
+        this.scheduleRoomHostCheckpoint(notebookId, materializer, operation);
+      }
+      cloudLog("info", "room.runtime_peer_missing.reconciled", {
+        notebook_id: notebookId,
+        operation,
+        changed: result.changed,
+        counter: "runtime_peer_missing_reconciled",
+        counter_delta: result.changed ? 1 : 0,
+      });
+      return result.changed;
+    } catch (error) {
+      cloudLog("warn", "room.runtime_peer_missing.reconcile_failed", {
+        notebook_id: notebookId,
+        operation,
+        error: errorMessage(error),
+        counter: "runtime_peer_missing_reconcile_failed",
+        counter_delta: 1,
+      });
+      return false;
+    }
   }
 
   private async selectedRuntimePeerSession(

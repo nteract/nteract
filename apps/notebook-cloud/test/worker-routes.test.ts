@@ -2319,7 +2319,21 @@ describe("Worker artifact routes", () => {
   });
 
   it("does not create attach jobs or runtime peer grants for offline workstations", async () => {
-    const env = fakeEnv();
+    const roomRequests: string[] = [];
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            roomRequests.push(new URL(request.url).pathname);
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
     seedNotebook(env, "attach-demo");
     seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
     seedWorkstation(env, {
@@ -2351,6 +2365,7 @@ describe("Worker artifact routes", () => {
     assert.equal(body.error, "workstation is not online");
     assert.equal(body.workstation?.workstation_id, "ws-lab2");
     assert.equal(body.workstation?.status, "offline");
+    assert.deepEqual(roomRequests, ["/internal/n/attach-demo/runtime-state-repair"]);
     assert.equal(env.DB.workstationAttachJobs.size, 0);
     assert.equal(
       env.DB.acl.some(
@@ -2774,6 +2789,52 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 200);
     assert.equal(attachmentStatus, "connecting");
     assert.equal(attachmentMessage, "Lab2 accepted the request and is starting compute.");
+  });
+
+  it("repairs RuntimeStateDoc when a workstation attach job fails before runtime peer connects", async () => {
+    const roomRequests: string[] = [];
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            roomRequests.push(new URL(request.url).pathname);
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-fail",
+      notebookId: "nb-fail",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs/job-fail", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ status: "failed", error_message: "spawn failed" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(roomRequests, [
+      "/internal/n/nb-fail/workstation-attachment",
+      "/internal/n/nb-fail/runtime-state-repair",
+    ]);
   });
 
   it("rejects late workstation status patches after a replacement cancelled the job", async () => {
