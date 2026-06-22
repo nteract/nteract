@@ -485,10 +485,15 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
   });
 
   it("can project stale ready hosted attachments as needing attention", () => {
-    const target = projectNotebookRuntimeTargetFromWorkstationAttachment(attachment(), {
-      requireRuntimePeer: true,
-      runtimePeerCount: 0,
-    });
+    const target = projectNotebookRuntimeTargetFromWorkstationAttachment(
+      attachment({
+        status_message: "stale ready status message",
+      }),
+      {
+        requireRuntimePeer: true,
+        runtimePeerCount: 0,
+      },
+    );
 
     expect(target).toMatchObject({
       id: "ws-lab2",

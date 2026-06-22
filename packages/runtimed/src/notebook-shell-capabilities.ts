@@ -286,11 +286,13 @@ export function projectNotebookRuntimeTargetFromWorkstationAttachment(
   if (!attachment) return null;
 
   const runtimePeerCount = normalizePositiveInteger(options.runtimePeerCount);
+  const missingRequiredRuntimePeer =
+    Boolean(options.requireRuntimePeer) &&
+    workstationAttachmentCanExecute(attachment) &&
+    runtimePeerCount === null;
   const statusProjection = workstationAttachmentStatusProjection(
     attachment.status,
-    Boolean(options.requireRuntimePeer) &&
-      workstationAttachmentCanExecute(attachment) &&
-      runtimePeerCount === null,
+    missingRequiredRuntimePeer,
   );
   const defaultEnvironmentLabel =
     trimToNull(attachment.default_environment_label) ??
@@ -304,7 +306,9 @@ export function projectNotebookRuntimeTargetFromWorkstationAttachment(
     status: statusProjection.status,
     label: trimToNull(attachment.display_name) ?? "Attached workstation",
     statusLabel: statusProjection.statusLabel,
-    detail: trimToNull(attachment.status_message) ?? statusProjection.detail,
+    detail: missingRequiredRuntimePeer
+      ? statusProjection.detail
+      : (trimToNull(attachment.status_message) ?? statusProjection.detail),
     providerLabel: workstationAttachmentProviderLabel(attachment.provider),
     defaultEnvironmentLabel,
     environmentLabel: defaultEnvironmentLabel,
