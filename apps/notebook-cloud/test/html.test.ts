@@ -124,9 +124,8 @@ describe("HTML script serialization", () => {
                 "notebook-route.0123456789abcdef.js",
                 "MarkdownText.0123456789abcdef.js",
                 "markdown.0123456789abcdef.js",
-                "katex.min.0123456789abcdef.js",
               ],
-              stylepreload: ["notebook-route.0123456789abcdef.css", "katex.0123456789abcdef.css"],
+              stylepreload: ["notebook-route.0123456789abcdef.css"],
             },
           },
           seenPaths,
@@ -145,12 +144,18 @@ describe("HTML script serialization", () => {
     assert.match(html, /rel="modulepreload" href="\/assets\/notebook-route\.0123456789abcdef\.js"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/MarkdownText\.0123456789abcdef\.js"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/markdown\.0123456789abcdef\.js"/);
-    assert.match(html, /rel="modulepreload" href="\/assets\/katex\.min\.0123456789abcdef\.js"/);
+    assert.doesNotMatch(
+      html,
+      /rel="modulepreload" href="\/assets\/katex\.min\.0123456789abcdef\.js"/,
+    );
     assert.match(
       html,
       /rel="preload" href="\/assets\/notebook-route\.0123456789abcdef\.css" as="style"/,
     );
-    assert.match(html, /rel="preload" href="\/assets\/katex\.0123456789abcdef\.css" as="style"/);
+    assert.doesNotMatch(
+      html,
+      /rel="preload" href="\/assets\/katex\.0123456789abcdef\.css" as="style"/,
+    );
     assert.ok(
       html.indexOf('rel="modulepreload" href="/assets/notebook-cloud-viewer.js"') <
         html.indexOf('rel="modulepreload" href="/assets/notebook-route.0123456789abcdef.js"'),

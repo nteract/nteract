@@ -37,6 +37,13 @@ const IsolatedRendererContext = createContext<IsolatedRendererContextValue | nul
 
 interface IsolatedRendererProviderProps {
   children: ReactNode;
+  /**
+   * Start loading the core renderer bundle as soon as the provider mounts.
+   * Defaults to true for desktop/local parity. Hosted notebook routes can
+   * defer this until an isolated output actually mounts so read-mostly pages
+   * do not fetch the multi-megabyte renderer bundle on the critical path.
+   */
+  autoLoad?: boolean;
   /** Base path to fetch isolated-renderer.js and isolated-renderer.css from */
   basePath?: string;
   /**
@@ -269,6 +276,7 @@ const noopRetry = () => {};
  */
 export function IsolatedRendererProvider({
   children,
+  autoLoad = true,
   basePath,
   assetNames,
   loader,
@@ -299,11 +307,13 @@ export function IsolatedRendererProvider({
   }, [basePath, cssName, jsName, loader]);
 
   const snapshot = useSyncExternalStore(subscribeLoadState, getLoadState, getLoadState);
+  const hasIsolatedOutputs = useHasIsolatedOutputs();
 
   useEffect(() => {
     if (!bundleLoader) return;
+    if (!autoLoad && !hasIsolatedOutputs) return;
     startRendererBundleLoad(bundleLoader);
-  }, [bundleLoader]);
+  }, [autoLoad, bundleLoader, hasIsolatedOutputs]);
 
   // Auto-recovery nudge: a terminal failure during an outage stays pinned
   // after the network returns (the transport reconnects itself, the bundle

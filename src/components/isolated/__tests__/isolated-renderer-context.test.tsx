@@ -67,6 +67,41 @@ describe("IsolatedRendererProvider retry behavior", () => {
     expect(loader).toHaveBeenCalledTimes(1);
   });
 
+  it("can defer bundle loading until an isolated output registers", async () => {
+    const loader = vi.fn(async () => ({ rendererCode: "code-v1", rendererCss: "css-v1" }));
+
+    function IsolatedWell({ active }: { active: boolean }) {
+      useRegisterIsolatedOutput(active);
+      return null;
+    }
+
+    const { rerender } = render(
+      <IsolatedRendererProvider loader={loader} autoLoad={false}>
+        <Probe id="a" />
+      </IsolatedRendererProvider>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(loader).not.toHaveBeenCalled();
+    expect(probeState("a")).toMatchObject({ loading: "true", error: "", code: "" });
+
+    rerender(
+      <IsolatedRendererProvider loader={loader} autoLoad={false}>
+        <Probe id="a" />
+        <IsolatedWell active />
+      </IsolatedRendererProvider>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(probeState("a")).toMatchObject({ loading: "false", error: "", code: "code-v1" });
+  });
+
   it("retries on the backoff ladder before surfacing anything to consumers", async () => {
     let failuresRemaining = 2;
     const loader = vi.fn(async () => {

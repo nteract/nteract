@@ -44,6 +44,7 @@ function CloudNotebookProviders({
 
   return (
     <IsolatedRendererProvider
+      autoLoad={false}
       basePath={rendererAssetBasePathForProvider(config.rendererAssetsBasePath)}
       assetNames={rendererAssetNames}
     >

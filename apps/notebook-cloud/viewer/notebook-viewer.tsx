@@ -260,12 +260,16 @@ export function NotebookViewer({
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const commentsUiEnabled = config.featureFlags?.enable_comments === true;
   const { store: widgetStore } = useWidgetStoreRequired();
+  const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
+    () => cloudNotebookModeFromSearch(window.location.search),
+  );
   const appSessionStatus = useCloudAppSessionStatus(config.session ?? null);
   const hasAppSession = Boolean(appSessionStatus.session);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
     appSessionRefreshFallback: true,
     appSessionLoading: appSessionStatus.status === "loading",
     appSession: appSessionStatus.session,
+    autoRefreshOidc: hasAppSession || selectedInteractionMode === "edit",
   });
   const authStateRef = useRef(authState);
   useEffect(() => {
@@ -318,9 +322,6 @@ export function NotebookViewer({
   const [catalogAccessResolved, setCatalogAccessResolved] = useState(false);
   const [catalogAccessLoadFailed, setCatalogAccessLoadFailed] = useState(false);
   const [accessRequestError, setAccessRequestError] = useState<string | null>(null);
-  const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
-    () => cloudNotebookModeFromSearch(window.location.search),
-  );
   const [editAccessRequestedByUser, setEditAccessRequestedByUser] = useState(false);
   // Scope resolution reads the latest selected mode at connect time, but
   // access-mode correction itself must not rebuild the live-room callback:
