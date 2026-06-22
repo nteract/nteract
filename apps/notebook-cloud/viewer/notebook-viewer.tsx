@@ -258,8 +258,7 @@ export function NotebookViewer({
   );
   const loadingPolicy = useMemo(() => cloudViewerLoadingPolicy(config), [config.headsHash]);
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const disableComments = config.featureFlags?.disable_comments === true;
-  const commentsUiEnabled = !disableComments;
+  const commentsUiEnabled = config.featureFlags?.enable_comments === true;
   const { store: widgetStore } = useWidgetStoreRequired();
   const appSessionStatus = useCloudAppSessionStatus(config.session ?? null);
   const hasAppSession = Boolean(appSessionStatus.session);

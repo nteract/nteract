@@ -365,7 +365,7 @@ export interface HostSyncedSettings {
   keep_alive_secs?: unknown;
   install_default_data_packages?: unknown;
   disable_nteract_launcher?: unknown;
-  disable_comments?: unknown;
+  enable_comments?: unknown;
   disable_auto_format?: unknown;
   redact_env_values_in_outputs?: unknown;
   import_shell_environment?: unknown;

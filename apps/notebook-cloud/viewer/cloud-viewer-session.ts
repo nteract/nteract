@@ -132,7 +132,7 @@ export interface CloudViewerConfig {
     canSubmitExecutionRequests?: boolean;
   };
   featureFlags?: {
-    disable_comments?: boolean;
+    enable_comments?: boolean;
     disable_auto_format?: boolean;
   };
   session?: CloudAppSession | null;

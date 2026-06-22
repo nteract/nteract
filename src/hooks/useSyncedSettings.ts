@@ -100,9 +100,10 @@ export const FEATURE_FLAG_METADATA = {
     label: "Use Legacy IPython Launcher",
     description: "Launch Python kernels with ipykernel_launcher instead of the nteract launcher.",
   },
-  disable_comments: {
-    label: "Disable Comments UI",
-    description: "Hide comment panels and creation affordances while keeping comments sync active.",
+  enable_comments: {
+    label: "Enable Comments UI",
+    description:
+      "Show comment panels and creation affordances. Comments sync stays active either way.",
   },
   disable_auto_format: {
     label: "Disable automatic formatting",
@@ -116,7 +117,7 @@ export type FeatureFlagValues = Record<FeatureFlagId, boolean>;
 
 const FEATURE_FLAG_DEFAULTS: FeatureFlagValues = {
   disable_nteract_launcher: false,
-  disable_comments: false,
+  enable_comments: false,
   disable_auto_format: false,
 };
 
