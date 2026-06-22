@@ -1,9 +1,11 @@
 import type { DurableObjectState, Env } from "./cloudflare-types.ts";
+import { cloudLog } from "./observability.ts";
 
 const WORKSTATION_EVENTS_KEEPALIVE_MS = 25_000;
 
 interface EventListener {
   readonly id: string;
+  readonly workstationId: string | null;
   readonly writer: WritableStreamDefaultWriter<Uint8Array>;
   closed: boolean;
   keepalive: ReturnType<typeof setInterval> | null;
@@ -41,6 +43,14 @@ export class WorkstationEvents {
       return this.openStream(request);
     }
     if (request.method === "GET" && url.pathname === "/status") {
+      const workstationId = workstationIdFromUrl(url);
+      cloudLog("debug", "workstation.events.status", {
+        workstation_id: workstationId,
+        connected: this.listeners.size > 0,
+        connections: this.listeners.size,
+        counter: "workstation_event_status_checks",
+        counter_delta: 1,
+      });
       return Response.json({
         ok: true,
         connected: this.listeners.size > 0,
@@ -62,9 +72,11 @@ export class WorkstationEvents {
   }
 
   private openStream(request: Request): Response {
+    const workstationId = workstationIdFromUrl(new URL(request.url));
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const listener: EventListener = {
       id: crypto.randomUUID(),
+      workstationId,
       writer: writable.getWriter(),
       closed: false,
       keepalive: null,
@@ -75,6 +87,13 @@ export class WorkstationEvents {
     request.signal.addEventListener("abort", close, { once: true });
 
     this.listeners.set(listener.id, listener);
+    cloudLog("info", "workstation.events.stream_opened", {
+      workstation_id: workstationId,
+      listener_id: listener.id,
+      connections: this.listeners.size,
+      counter: "workstation_event_streams_opened",
+      counter_delta: 1,
+    });
     void this.writeEvent(listener, "ready", {
       ok: true,
       connected_at: new Date().toISOString(),
@@ -128,8 +147,20 @@ export class WorkstationEvents {
       listener.keepalive = null;
     }
     this.listeners.delete(listener.id);
+    cloudLog("info", "workstation.events.stream_closed", {
+      workstation_id: listener.workstationId,
+      listener_id: listener.id,
+      connections: this.listeners.size,
+      counter: "workstation_event_streams_closed",
+      counter_delta: 1,
+    });
     void listener.writer.close().catch(() => undefined);
   }
+}
+
+function workstationIdFromUrl(url: URL): string | null {
+  const workstationId = url.searchParams.get("workstation_id")?.trim();
+  return workstationId && workstationId.length <= 128 ? workstationId : null;
 }
 
 function formatServerSentEvent(event: string, data: unknown): string {

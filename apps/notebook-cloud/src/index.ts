@@ -1770,7 +1770,13 @@ async function routeWorkstationEvents(
   }
 
   const stub = workstationEventsStub(env, ownerPrincipal, workstationId);
-  const response = await stub.fetch(new Request("https://workstation-events.internal/stream"));
+  const response = await stub.fetch(
+    new Request(
+      `https://workstation-events.internal/stream?workstation_id=${encodeURIComponent(
+        workstationId,
+      )}`,
+    ),
+  );
   return withCors(new Response(response.body, response));
 }
 
@@ -1919,7 +1925,11 @@ async function workstationEventPresence(
   }
   try {
     const response = await workstationEventsStub(env, ownerPrincipal, workstationId).fetch(
-      new Request("https://workstation-events.internal/status"),
+      new Request(
+        `https://workstation-events.internal/status?workstation_id=${encodeURIComponent(
+          workstationId,
+        )}`,
+      ),
     );
     if (!response.ok) {
       cloudLog("warn", "workstation.events.status_failed", {
