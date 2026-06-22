@@ -81,9 +81,10 @@ export type SyncedSettings = {
    */
   disable_nteract_launcher: boolean;
   /**
-   * Disable comments UI surfaces while keeping comments sync active.
+   * Show the comments UI (panels and creation affordances). Comments sync stays
+   * active regardless of this flag. Default off.
    */
-  disable_comments: boolean;
+  enable_comments: boolean;
   /**
    * Disable automatic code formatting on cell execution and notebook save.
    */

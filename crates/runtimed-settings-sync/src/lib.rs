@@ -598,7 +598,7 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
             .unwrap_or(defaults.install_default_data_packages),
         disable_nteract_launcher: get_bool("disable_nteract_launcher")
             .unwrap_or(defaults.disable_nteract_launcher),
-        disable_comments: get_bool("disable_comments").unwrap_or(defaults.disable_comments),
+        enable_comments: get_bool("enable_comments").unwrap_or(defaults.enable_comments),
         disable_auto_format: get_bool("disable_auto_format")
             .unwrap_or(defaults.disable_auto_format),
         redact_env_values_in_outputs: get_bool("redact_env_values_in_outputs")
@@ -820,12 +820,12 @@ mod tests {
     }
 
     #[test]
-    fn test_get_all_reads_disable_comments() {
+    fn test_get_all_reads_enable_comments() {
         let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "disable_comments", true).unwrap();
+        doc.put(automerge::ROOT, "enable_comments", true).unwrap();
 
         let settings = get_all_from_doc(&doc);
-        assert!(settings.disable_comments);
+        assert!(settings.enable_comments);
     }
 
     #[test]

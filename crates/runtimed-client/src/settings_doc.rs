@@ -15,7 +15,7 @@
 //!   default_python_env: "uv"
 //!   install_default_data_packages: true
 //!   disable_nteract_launcher: false
-//!   disable_comments: false
+//!   enable_comments: false
 //!   disable_auto_format: false
 //!   uv/                           ← nested Map
 //!     default_packages: List[…]   ← List of Str
@@ -301,9 +301,10 @@ pub struct SyncedSettings {
     #[serde(default)]
     pub disable_nteract_launcher: bool,
 
-    /// Disable comments UI surfaces while keeping comments sync active.
+    /// Show the comments UI (panels and creation affordances). Comments sync stays
+    /// active regardless of this flag. Default off.
     #[serde(default)]
-    pub disable_comments: bool,
+    pub enable_comments: bool,
 
     /// Disable automatic code formatting on cell execution and notebook save.
     #[serde(default)]
@@ -384,7 +385,7 @@ impl Default for SyncedSettings {
             pixi_pool_size: pool_sizes.pixi_pool_size,
             install_default_data_packages: true,
             disable_nteract_launcher: false,
-            disable_comments: false,
+            enable_comments: false,
             disable_auto_format: false,
             redact_env_values_in_outputs: true,
             import_shell_environment: true,
@@ -589,11 +590,7 @@ impl SettingsDoc {
             "disable_nteract_launcher",
             defaults.disable_nteract_launcher,
         );
-        let _ = doc.put(
-            automerge::ROOT,
-            "disable_comments",
-            defaults.disable_comments,
-        );
+        let _ = doc.put(automerge::ROOT, "enable_comments", defaults.enable_comments);
         let _ = doc.put(
             automerge::ROOT,
             "disable_auto_format",
@@ -738,9 +735,9 @@ impl SettingsDoc {
         {
             settings.put_bool("disable_nteract_launcher", disabled);
         }
-        // disable_comments: boolean
-        if let Some(disabled) = json.get("disable_comments").and_then(|v| v.as_bool()) {
-            settings.put_bool("disable_comments", disabled);
+        // enable_comments: boolean
+        if let Some(enabled) = json.get("enable_comments").and_then(|v| v.as_bool()) {
+            settings.put_bool("enable_comments", enabled);
         }
         // disable_auto_format: boolean
         if let Some(disabled) = json.get("disable_auto_format").and_then(|v| v.as_bool()) {
@@ -1207,9 +1204,9 @@ impl SettingsDoc {
             disable_nteract_launcher: self
                 .get_bool("disable_nteract_launcher")
                 .unwrap_or(defaults.disable_nteract_launcher),
-            disable_comments: self
-                .get_bool("disable_comments")
-                .unwrap_or(defaults.disable_comments),
+            enable_comments: self
+                .get_bool("enable_comments")
+                .unwrap_or(defaults.enable_comments),
             disable_auto_format: self
                 .get_bool("disable_auto_format")
                 .unwrap_or(defaults.disable_auto_format),
@@ -1423,15 +1420,15 @@ impl SettingsDoc {
                 changed = true;
             }
         }
-        // disable_comments: boolean
-        if let Some(disabled) = json.get("disable_comments").and_then(|v| v.as_bool()) {
-            let current = self.get_bool("disable_comments");
-            if current != Some(disabled) {
+        // enable_comments: boolean
+        if let Some(enabled) = json.get("enable_comments").and_then(|v| v.as_bool()) {
+            let current = self.get_bool("enable_comments");
+            if current != Some(enabled) {
                 info!(
-                    "[settings] apply_json_changes: disable_comments changed {:?} -> {}",
-                    current, disabled
+                    "[settings] apply_json_changes: enable_comments changed {:?} -> {}",
+                    current, enabled
                 );
-                self.put_bool("disable_comments", disabled);
+                self.put_bool("enable_comments", enabled);
                 changed = true;
             }
         }
@@ -1678,7 +1675,7 @@ mod tests {
         assert!(settings.pixi.default_packages.is_empty());
         assert!(settings.install_default_data_packages);
         assert!(!settings.disable_nteract_launcher);
-        assert!(!settings.disable_comments);
+        assert!(!settings.enable_comments);
         assert!(!settings.disable_auto_format);
         assert!(settings.feature_flags().bootstrap_dx);
         assert!(settings.redact_env_values_in_outputs);
@@ -1759,16 +1756,16 @@ mod tests {
     }
 
     #[test]
-    fn test_disable_comments_can_be_enabled_from_json() {
+    fn test_enable_comments_can_be_set_from_json() {
         let mut doc = SettingsDoc::new();
 
         assert!(doc.apply_json_changes(&serde_json::json!({
-            "disable_comments": true
+            "enable_comments": true
         })));
 
         let settings = doc.get_all();
-        assert_eq!(doc.get_bool("disable_comments"), Some(true));
-        assert!(settings.disable_comments);
+        assert_eq!(doc.get_bool("enable_comments"), Some(true));
+        assert!(settings.enable_comments);
     }
 
     #[test]
@@ -2175,7 +2172,7 @@ mod tests {
         assert!(schema_str.contains("default_python_env"));
         assert!(schema_str.contains("install_default_data_packages"));
         assert!(schema_str.contains("disable_nteract_launcher"));
-        assert!(schema_str.contains("disable_comments"));
+        assert!(schema_str.contains("enable_comments"));
         assert!(schema_str.contains("disable_auto_format"));
         assert!(schema_str.contains("redact_env_values_in_outputs"));
         // Should have known values as examples for editor autocomplete

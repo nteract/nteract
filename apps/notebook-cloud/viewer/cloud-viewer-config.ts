@@ -58,7 +58,7 @@ function loadConfig(): CloudViewerConfig {
       canSubmitExecutionRequests: Boolean(parsed.hostCapabilities?.canSubmitExecutionRequests),
     },
     featureFlags: {
-      disable_comments: parsed.featureFlags?.disable_comments === true,
+      enable_comments: parsed.featureFlags?.enable_comments === true,
       disable_auto_format: parsed.featureFlags?.disable_auto_format === true,
     },
     session: isCloudAppSession(parsed.session) ? parsed.session : null,

@@ -326,8 +326,7 @@ function AppContent() {
 
   // Apply theme to this window
   const { defaultPythonEnv, featureFlags } = useSyncedTheme();
-  const disableComments = featureFlags.disable_comments;
-  const commentsUiEnabled = !disableComments;
+  const commentsUiEnabled = featureFlags.enable_comments;
 
   // Stable peer ID for presence (generated once per window lifetime)
   const peerIdRef = useRef(crypto.randomUUID());
