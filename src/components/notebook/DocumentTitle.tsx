@@ -66,13 +66,13 @@ export function DocumentTitle({
   title,
 }: DocumentTitleProps) {
   const [editing, setEditing] = useState(false);
-  const [draftTitle, setDraftTitle] = useState(renameTitle);
+  const draftTitleRef = useRef(renameTitle);
   const editableRef = useRef<HTMLSpanElement | null>(null);
   const canShowRename = canRename && Boolean(onRename);
 
   useEffect(() => {
     if (!editing) {
-      setDraftTitle(renameTitle);
+      draftTitleRef.current = renameTitle;
     }
   }, [editing, renameTitle]);
 
@@ -81,6 +81,7 @@ export function DocumentTitle({
       return;
     }
     const editable = editableRef.current;
+    editable.textContent = draftTitleRef.current;
     editable.focus();
     placeCaretAtEnd(editable);
   }, [editing]);
@@ -89,11 +90,11 @@ export function DocumentTitle({
     if (!canShowRename || renameSaving) {
       return;
     }
-    setDraftTitle(renameTitle);
+    draftTitleRef.current = renameTitle;
     setEditing(true);
   };
 
-  const commitRename = (titleDraft = draftTitle) => {
+  const commitRename = (titleDraft = draftTitleRef.current) => {
     if (!onRename || renameSaving) {
       return;
     }
@@ -125,7 +126,7 @@ export function DocumentTitle({
     if (renameSaving) {
       return;
     }
-    setDraftTitle(renameTitle);
+    draftTitleRef.current = renameTitle;
     setEditing(false);
   };
 
@@ -135,7 +136,7 @@ export function DocumentTitle({
       editableRef.current.textContent = nextTitle;
       placeCaretAtEnd(editableRef.current);
     }
-    setDraftTitle(nextTitle);
+    draftTitleRef.current = nextTitle;
     return nextTitle;
   };
 
@@ -202,7 +203,7 @@ export function DocumentTitle({
             suppressContentEditableWarning
             tabIndex={editing || canShowRename ? 0 : undefined}
           >
-            {editing ? draftTitle : title.label}
+            {editing ? null : title.label}
           </span>
           {canShowRename ? (
             <span className="document-title-actions" data-slot="document-title-actions">
