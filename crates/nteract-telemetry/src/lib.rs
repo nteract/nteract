@@ -48,6 +48,9 @@ pub fn detect_arch() -> Option<&'static str> {
 }
 
 pub fn is_telemetry_suppressed() -> bool {
+    if cfg!(debug_assertions) {
+        return true;
+    }
     if runt_workspace::is_dev_mode() {
         return true;
     }
@@ -135,6 +138,9 @@ pub fn blocking_gates(
     now_secs: u64,
 ) -> Vec<&'static str> {
     let mut gates = Vec::new();
+    if cfg!(debug_assertions) {
+        gates.push("debug build (debug_assertions enabled)");
+    }
     if runt_workspace::is_dev_mode() {
         gates.push("dev mode (RUNTIMED_DEV=1 or RUNTIMED_WORKSPACE_PATH set)");
     }
@@ -450,6 +456,22 @@ mod tests {
     fn test_blocking_gates_consent_not_recorded() {
         let gates = blocking_gates_full(true, true, false, None, 1000);
         assert!(gates.contains(&"consent not recorded"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn test_debug_build_suppresses_telemetry() {
+        assert!(is_telemetry_suppressed());
+
+        let gates = blocking_gates(true, true, None, 1000);
+        assert!(gates.contains(&"debug build (debug_assertions enabled)"));
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn test_release_build_does_not_report_debug_gate() {
+        let gates = blocking_gates(true, true, None, 1000);
+        assert!(!gates.contains(&"debug build (debug_assertions enabled)"));
     }
 
     #[test]
