@@ -14,19 +14,24 @@ describe("notebook route asset manifest", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "notebook-cloud-route-assets-"));
     const assetsUrl = pathToFileURL(`${dir}/`);
 
-    await writeFile(new URL("notebook-route-abc123.js", assetsUrl), "");
-    await writeFile(new URL("notebook-route-abc123.css", assetsUrl), "");
-    await writeFile(new URL("MarkdownText-def456.js", assetsUrl), "");
-    await writeFile(new URL("markdown-ghi789.js", assetsUrl), "");
+    await writeFile(new URL("notebook-route-CEuezVx_.js", assetsUrl), "");
+    await writeFile(new URL("notebook-route-BlD6jbkE.css", assetsUrl), "");
+    await writeFile(new URL("MarkdownText-BGIeLgzy.js", assetsUrl), "");
+    await writeFile(new URL("markdown-CAXS4P_N.js", assetsUrl), "");
     await writeFile(new URL("markdown-output-lazy.js", assetsUrl), "");
-    await writeFile(new URL("katex.min-jkl012.js", assetsUrl), "");
-    await writeFile(new URL("katex-mno345.css", assetsUrl), "");
-    await writeFile(new URL("plotly-pqr678.js", assetsUrl), "");
+    await writeFile(new URL("markdown-__esModule.js", assetsUrl), "");
+    await writeFile(new URL("katex.min-CaqIvES0.js", assetsUrl), "");
+    await writeFile(new URL("katex-D_EmowkL.css", assetsUrl), "");
+    await writeFile(new URL("plotly-DPOVnGYq.js", assetsUrl), "");
     await writeFile(new URL("notebook-cloud-viewer.js", assetsUrl), "");
 
     assert.deepEqual(await collectNotebookRouteAssets(assetsUrl), {
-      modulepreload: ["notebook-route-abc123.js", "MarkdownText-def456.js", "markdown-ghi789.js"],
-      stylepreload: ["notebook-route-abc123.css"],
+      modulepreload: [
+        "notebook-route-CEuezVx_.js",
+        "MarkdownText-BGIeLgzy.js",
+        "markdown-CAXS4P_N.js",
+      ],
+      stylepreload: ["notebook-route-BlD6jbkE.css"],
     });
   });
 
@@ -34,18 +39,22 @@ describe("notebook route asset manifest", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "notebook-cloud-route-manifest-"));
     const assetsUrl = pathToFileURL(`${dir}/`);
 
-    await writeFile(new URL("notebook-route-abc123.js", assetsUrl), "");
-    await writeFile(new URL("notebook-route-abc123.css", assetsUrl), "");
-    await writeFile(new URL("MarkdownText-def456.js", assetsUrl), "");
-    await writeFile(new URL("markdown-ghi789.js", assetsUrl), "");
+    await writeFile(new URL("notebook-route-CEuezVx_.js", assetsUrl), "");
+    await writeFile(new URL("notebook-route-BlD6jbkE.css", assetsUrl), "");
+    await writeFile(new URL("MarkdownText-BGIeLgzy.js", assetsUrl), "");
+    await writeFile(new URL("markdown-CAXS4P_N.js", assetsUrl), "");
 
     const { manifest, manifestUrl } = await writeNotebookRouteAssetsManifest(assetsUrl);
     const written = JSON.parse(await readFile(manifestUrl, "utf8"));
 
     assert.deepEqual(written, manifest);
     assert.deepEqual(written, {
-      modulepreload: ["notebook-route-abc123.js", "MarkdownText-def456.js", "markdown-ghi789.js"],
-      stylepreload: ["notebook-route-abc123.css"],
+      modulepreload: [
+        "notebook-route-CEuezVx_.js",
+        "MarkdownText-BGIeLgzy.js",
+        "markdown-CAXS4P_N.js",
+      ],
+      stylepreload: ["notebook-route-BlD6jbkE.css"],
     });
   });
 

@@ -6,6 +6,8 @@ const MODULE_PRELOAD_STEMS = ["notebook-route", "MarkdownText", "markdown", "uti
 const STYLE_PRELOAD_STEMS = ["notebook-route"];
 const REQUIRED_MODULE_PRELOAD_STEMS = ["notebook-route"];
 const REQUIRED_STYLE_PRELOAD_STEMS = ["notebook-route"];
+// Vite's chunk hash is currently 8 base64url-ish chars, not hex.
+const VITE_CHUNK_HASH_PATTERN = /^[A-Za-z0-9_-]{8}$/;
 
 export async function collectNotebookRouteAssets(
   assetsDirUrl,
@@ -73,5 +75,5 @@ function assetNameMatchesStem(name, stem, extension) {
   if (!name.startsWith(prefix) || !name.endsWith(extension)) {
     return false;
   }
-  return /^[A-Za-z0-9_]+$/.test(name.slice(prefix.length, -extension.length));
+  return VITE_CHUNK_HASH_PATTERN.test(name.slice(prefix.length, -extension.length));
 }
