@@ -4612,12 +4612,6 @@ async function notebookListViewer(request: Request, env: Env): Promise<Response>
   }
 
   const bootstrap = await notebookListBootstrap(request, env);
-  const resourceHints = notebookListBootstrapHasNotebooks(bootstrap)
-    ? {
-        notebookRouteAssets: await notebookRouteAssetNames(env),
-        notebookRouteStyleHint: "prefetch" as const,
-      }
-    : null;
   return responseForRequestMethod(
     request,
     viewerShell(
@@ -4629,7 +4623,7 @@ async function notebookListViewer(request: Request, env: Env): Promise<Response>
       authConfigForRequest(request, env),
       null,
       bootstrap,
-      resourceHints,
+      null,
     ),
   );
 }
@@ -4814,11 +4808,6 @@ async function notebookListBootstrap(
     notebooks: notebookListResponseRows(request, notebooks, env),
     saved_at: new Date().toISOString(),
   };
-}
-
-function notebookListBootstrapHasNotebooks(bootstrap: Record<string, unknown> | null): boolean {
-  const notebooks = bootstrap?.notebooks;
-  return Array.isArray(notebooks) && notebooks.length > 0;
 }
 
 function viewerResourceHints(config: ViewerShellResourceHints | null): string {

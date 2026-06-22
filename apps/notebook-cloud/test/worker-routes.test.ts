@@ -585,7 +585,7 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /bootstrap@example\.test|bootstrap-user|Bootstrap User/);
   });
 
-  it("warms notebook route assets when the bootstrapped notebook home has rows", async () => {
+  it("keeps authenticated notebook home bootstrap free of notebook route asset hints", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({
       subject: "home-preload-user",
       email: "home-preload@example.test",
@@ -616,15 +616,25 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     const html = await response.text();
-    assert.deepEqual(seenAssetPaths, ["/assets/notebook-route-assets.json"]);
-    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-route\.0123456789abcdef\.js"/);
-    assert.match(html, /rel="modulepreload" href="\/assets\/MarkdownText\.0123456789abcdef\.js"/);
-    assert.match(html, /rel="modulepreload" href="\/assets\/markdown\.0123456789abcdef\.js"/);
+    assert.deepEqual(seenAssetPaths, []);
+    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-cloud-viewer\.js"/);
+    assert.doesNotMatch(
+      html,
+      /rel="modulepreload" href="\/assets\/notebook-route\.0123456789abcdef\.js"/,
+    );
+    assert.doesNotMatch(
+      html,
+      /rel="modulepreload" href="\/assets\/MarkdownText\.0123456789abcdef\.js"/,
+    );
+    assert.doesNotMatch(
+      html,
+      /rel="modulepreload" href="\/assets\/markdown\.0123456789abcdef\.js"/,
+    );
     assert.doesNotMatch(
       html,
       /rel="modulepreload" href="\/assets\/katex\.min\.0123456789abcdef\.js"/,
     );
-    assert.match(
+    assert.doesNotMatch(
       html,
       /rel="prefetch" href="\/assets\/notebook-route\.0123456789abcdef\.css" as="style"/,
     );
