@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { DocumentTitle } from "../DocumentTitle";
 
@@ -69,6 +70,31 @@ describe("DocumentTitle", () => {
     await waitFor(() => {
       expect(screen.queryByRole("textbox", { name: "Document title" })).toBeNull();
     });
+  });
+
+  it("keeps typed characters in order while editing the title", async () => {
+    const user = userEvent.setup();
+    const onRename = vi.fn().mockResolvedValue(true);
+
+    render(
+      <DocumentTitle
+        canRename
+        renameTitle=""
+        title={{ label: "Untitled", detail: null, title: "Untitled" }}
+        onRename={onRename}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Rename Untitled" }));
+
+    const editable = screen.getByRole("textbox", { name: "Document title" });
+    await user.type(editable, "Outbound");
+
+    expect(editable).toHaveTextContent("Outbound");
+
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    expect(onRename).toHaveBeenCalledWith("Outbound");
   });
 
   it("closes inline title editing immediately when rename saves synchronously", () => {
