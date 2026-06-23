@@ -280,7 +280,7 @@ export function createMcpAppBlobResolver(
 
         const declaredBytes =
           parseContentLength(response.headers.get("content-length")) ?? ref.size;
-        if (declaredBytes == null || declaredBytes > maxInlineImageBytes) {
+        if (declaredBytes != null && declaredBytes > maxInlineImageBytes) {
           void response.body?.cancel().catch(() => {});
           return resolvedUrl;
         }

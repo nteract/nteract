@@ -126,6 +126,39 @@ describe("MCP App structured content adapter", () => {
     });
   });
 
+  it("inlines small raster image blobs when content length is absent", async () => {
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array([5, 6, 7, 8])));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const outputs = mcpAppCellsToSharedOutputs(
+      [
+        cellWithOutputs([
+          {
+            output_id: "image-output",
+            output_type: "display_data",
+            data: {
+              "image/png": "http://localhost:47830/blob/image-no-length",
+            },
+          },
+        ]),
+      ],
+      "http://localhost:47830",
+    );
+
+    const [payload] = await resolveEmbeddableOutputs(outputs, {
+      blobResolver: createMcpAppBlobResolver("http://localhost:47830", {
+        inlineRasterImageBlobs: true,
+      }),
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://localhost:47830/blob/image-no-length");
+    expect(payload).toMatchObject({
+      mimeType: "image/png",
+      data: "data:image/png;base64,BQYHCA==",
+      outputId: "image-output",
+    });
+  });
+
   it("keeps large raster image blobs as URLs when the inline fallback is enabled", async () => {
     const fetchImpl = vi.fn(async () => {
       return new Response(new Uint8Array([1, 2, 3, 4]), {
