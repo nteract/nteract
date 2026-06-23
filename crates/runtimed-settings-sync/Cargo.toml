@@ -1,6 +1,6 @@
 [package]
 name = "runtimed-settings-sync"
-version = "2.5.2"
+version = "2.6.0"
 edition.workspace = true
 description = "Live settings sync client over the runtimed UDS protocol"
 repository.workspace = true
