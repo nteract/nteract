@@ -24,6 +24,7 @@ plans. Time-bound transfer notes belong in `docs/handoffs/`.
 | Memo | Status | Notes |
 |------|--------|-------|
 | [Arrow Manifest Durable Storage](arrow-manifest-durable-storage-design.md) | Exploration | Durable storage design framing for Arrow manifest outputs. |
+| [Compute Session Index](compute-session-index.md) | RFC | Owner-scoped projection for showing active notebook compute sessions on dashboards and workstation surfaces. |
 | [Execution Liveness](execution-liveness.md) | Exploration | Divergence-detection framing; not a recovery decision yet. |
 | [Markdown Plan Documents](markdown-plan-documents.md) | Exploration | First pass on a first-class Markdown/MDX document surface, comments, presence, outputs, and hosted publishing. |
 | [Panel Runtime State](panel-runtime-state.md) | RFC | Native Panel/Bokeh patch-channel runtime state, avoiding raw comm bridging. |
