@@ -118,6 +118,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     static load_snapshot(notebookBytes: Uint8Array, runtimeStateBytes: Uint8Array): RoomHostHandle;
     get_comms_doc_heads_hex(): string[];
     get_comments_doc_heads_hex(): string[];
+    get_comments_projection(): unknown;
     get_heads_hex(): string[];
     get_runtime_state_heads_hex(): string[];
     load_comms_doc(commsBytes: Uint8Array): void;

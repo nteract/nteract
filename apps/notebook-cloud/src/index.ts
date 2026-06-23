@@ -18,6 +18,7 @@ import {
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   isAnonymousViewer,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+  parseActorLabel,
   parseScope,
   stampTrustedIdentity,
   type AuthenticatedConnection,
@@ -383,6 +384,12 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: routePath("/api/n/:notebookId/access-requests", { trailingSlash: "optional" }),
     handler: ({ params }, request, env) =>
       routeNotebookAccessRequests(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/n/:notebookId/author-profiles", { trailingSlash: "optional" }),
+    methods: ["GET"],
+    handler: ({ params }, request, env) =>
+      routeNotebookAuthorProfiles(request, env, params.notebookId),
   },
   {
     match: routePath("/api/n/:notebookId/workstation-attachments", { trailingSlash: "optional" }),
@@ -3095,6 +3102,193 @@ interface AccessRequestActionPayload {
   action?: unknown;
 }
 
+const AUTHOR_PROFILE_LOOKUP_LIMIT = 100;
+const AUTHOR_PROFILE_ACTOR_LABEL_MAX_LENGTH = 512;
+
+async function routeNotebookAuthorProfiles(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "viewer",
+  );
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  const principals = requestedAuthorProfilePrincipals(new URL(request.url).searchParams);
+  if (principals instanceof Response) {
+    return principals;
+  }
+
+  const allowedPrincipals = await notebookAuthorProfileAllowedPrincipals(env, notebookId);
+  const commentAuthorPrincipals = await notebookCommentAuthorPrincipals(env, notebookId);
+  const profileLookups = await allowedAuthorProfileLookups(
+    env,
+    principals,
+    allowedPrincipals,
+    commentAuthorPrincipals,
+  );
+  const profilePrincipals = Array.from(
+    new Set(profileLookups.flatMap((lookup) => lookup.profilePrincipals)),
+  );
+  const profilesByPrincipal = new Map(
+    (await getPrincipalProfiles(env, profilePrincipals)).map((profile) => [
+      profile.principal,
+      profile,
+    ]),
+  );
+  return json({
+    notebook_id: notebookId,
+    profiles: profileLookups
+      .map((lookup) =>
+        authorProfileResponse(
+          lookup.requestedPrincipal,
+          lookup.profilePrincipals.map((principal) => profilesByPrincipal.get(principal) ?? null),
+        ),
+      )
+      .filter((profile) => profile !== null),
+  });
+}
+
+function requestedAuthorProfilePrincipals(params: URLSearchParams): string[] | Response {
+  const principals = new Set<string>();
+  for (const actorLabel of params.getAll("actor_label")) {
+    const trimmed = actorLabel.trim();
+    if (!trimmed || trimmed.length > AUTHOR_PROFILE_ACTOR_LABEL_MAX_LENGTH) {
+      continue;
+    }
+    try {
+      principals.add(parseActorLabel(trimmed).principal);
+    } catch {
+      continue;
+    }
+  }
+
+  if (principals.size > AUTHOR_PROFILE_LOOKUP_LIMIT) {
+    return json(
+      {
+        error: `author profile lookup is limited to ${AUTHOR_PROFILE_LOOKUP_LIMIT} principals`,
+      },
+      400,
+    );
+  }
+  return Array.from(principals);
+}
+
+function authorProfileResponse(
+  principal: string,
+  rows: readonly (PrincipalProfileRow | null)[],
+): Record<string, unknown> | null {
+  const row = rows.find((candidate) => candidate?.display_name?.trim());
+  const label = row?.display_name?.trim() ?? null;
+  if (!row || !label) {
+    return null;
+  }
+  return {
+    principal,
+    label,
+    image_url: row.avatar_url,
+  };
+}
+
+async function notebookAuthorProfileAllowedPrincipals(
+  env: Env,
+  notebookId: string,
+): Promise<Set<string>> {
+  const allowed = new Set<string>();
+  const notebook = await getNotebookRow(env, notebookId);
+  if (notebook?.owner_principal) {
+    allowed.add(notebook.owner_principal);
+  }
+  for (const row of await getNotebookAclRows(env, notebookId)) {
+    if (row.subject_kind === "principal") {
+      allowed.add(row.subject);
+    }
+  }
+  return allowed;
+}
+
+async function notebookCommentAuthorPrincipals(env: Env, notebookId: string): Promise<Set<string>> {
+  const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
+  const room = env.NOTEBOOK_ROOMS.get(id);
+  const response = await room.fetch(
+    new Request(
+      `https://notebook-room.internal/internal/n/${encodeURIComponent(notebookId)}/comment-authors`,
+      { method: "GET" },
+    ),
+  );
+  if (!response.ok) {
+    return new Set();
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return new Set();
+  }
+  if (!isRecord(body) || !Array.isArray(body.actor_labels)) {
+    return new Set();
+  }
+  const principals = new Set<string>();
+  for (const actorLabel of body.actor_labels) {
+    if (typeof actorLabel !== "string") {
+      continue;
+    }
+    try {
+      principals.add(parseActorLabel(actorLabel).principal);
+    } catch {
+      continue;
+    }
+  }
+  return principals;
+}
+
+interface AuthorProfileLookup {
+  requestedPrincipal: string;
+  profilePrincipals: string[];
+}
+
+async function allowedAuthorProfileLookups(
+  env: Env,
+  principals: string[],
+  allowedPrincipals: Set<string>,
+  commentAuthorPrincipals: Set<string>,
+): Promise<AuthorProfileLookup[]> {
+  if (
+    principals.length === 0 ||
+    allowedPrincipals.size === 0 ||
+    commentAuthorPrincipals.size === 0
+  ) {
+    return [];
+  }
+
+  const lookups: AuthorProfileLookup[] = [];
+  for (const principal of principals) {
+    if (!commentAuthorPrincipals.has(principal)) {
+      continue;
+    }
+    const canonical = await getCanonicalPrincipalForTransport(env, principal);
+    if (!allowedPrincipals.has(principal) && (!canonical || !allowedPrincipals.has(canonical))) {
+      continue;
+    }
+    lookups.push({
+      requestedPrincipal: principal,
+      profilePrincipals:
+        canonical && canonical !== principal ? [principal, canonical] : [principal],
+    });
+  }
+  return lookups;
+}
+
 async function routeNotebookAccessRequests(
   request: Request,
   env: Env,
@@ -4655,6 +4849,7 @@ async function viewer(
     aclEndpoint: `${notebookApiBasePath}/acl`,
     invitesEndpoint: `${notebookApiBasePath}/invites`,
     accessRequestsEndpoint: `${notebookApiBasePath}/access-requests`,
+    authorProfilesEndpoint: `${notebookApiBasePath}/author-profiles`,
     workstationsEndpoint: "/api/workstations",
     workstationDefaultEndpoint: "/api/workstations/default",
     workstationAttachEndpoint: `${notebookApiBasePath}/workstation-attachments`,

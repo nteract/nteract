@@ -276,6 +276,10 @@ export class NotebookRoom {
     if (runtimeStateRepairNotebookId) {
       return this.handleRuntimeStateRepairControl(runtimeStateRepairNotebookId, request);
     }
+    const commentAuthorsNotebookId = commentAuthorsControlNotebookId(url.pathname);
+    if (commentAuthorsNotebookId) {
+      return this.handleCommentAuthorsControl(commentAuthorsNotebookId, request);
+    }
     const accessControlNotebookId = accessRevocationControlNotebookId(url.pathname);
     if (accessControlNotebookId) {
       return this.handleAccessRevocationControl(accessControlNotebookId, request);
@@ -583,6 +587,20 @@ export class NotebookRoom {
       counter_delta: 1,
     });
     return json({ ok: true, closed_anonymous_viewers: closedAnonymousViewers }, 200);
+  }
+
+  private async handleCommentAuthorsControl(
+    notebookId: string,
+    request: Request,
+  ): Promise<Response> {
+    // Worker-internal read path only. The public author-profile API authorizes
+    // notebook viewing before asking the room to constrain profile hydration to
+    // actor labels that actually appear in the CommentsDoc projection.
+    if (request.method !== "GET") {
+      return json({ error: "method not allowed" }, 405);
+    }
+    const actorLabels = await this.materializerFor(notebookId).getCommentAuthorActorLabels();
+    return json({ notebook_id: notebookId, actor_labels: actorLabels }, 200);
   }
 
   async webSocketMessage(
@@ -2330,6 +2348,14 @@ function workstationAttachmentControlNotebookId(pathname: string): string | unde
 
 function runtimeStateRepairControlNotebookId(pathname: string): string | undefined {
   const match = pathname.match(/^\/internal\/n\/([^/]+)\/runtime-state-repair\/?$/);
+  if (!match) {
+    return undefined;
+  }
+  return decodeURIComponent(match[1]);
+}
+
+function commentAuthorsControlNotebookId(pathname: string): string | undefined {
+  const match = pathname.match(/^\/internal\/n\/([^/]+)\/comment-authors\/?$/);
   if (!match) {
     return undefined;
   }

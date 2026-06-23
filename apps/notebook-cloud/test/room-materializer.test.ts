@@ -745,6 +745,35 @@ describe("RoomMaterializer", () => {
     assert.equal(cells[1].source, "");
   });
 
+  it("projects comment author labels from the room-host CommentsDoc", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const editorIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const editorPeer = {
+      id: "peer-editor",
+      identity: editorIdentity,
+    };
+    const editor = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
+    editor.init_comments_sync_target("comments:demo");
+
+    await syncCommentsMaterializerWithClient(materializer, editorPeer, editor);
+    editor.create_comment_thread(
+      "thread-1",
+      "message-1",
+      { kind: "notebook" },
+      "Can this profile be hydrated?",
+      undefined,
+      "2026-06-23T00:00:00.000Z",
+    );
+
+    const result = await applyCommentsClientChangesToMaterializer(materializer, editorPeer, editor);
+
+    assert.equal(result.changed, true);
+    assert.deepEqual(await materializer.getCommentAuthorActorLabels(), [editorIdentity.actorLabel]);
+  });
+
   it("ignores unversioned prototype checkpoints so published snapshots can hydrate rooms", async () => {
     const state = fakeState();
     const editorIdentity = authenticateDevRequest(
@@ -2061,6 +2090,75 @@ async function applyCommsClientChangesToMaterializer(
   return result;
 }
 
+async function syncCommentsMaterializerWithClient(
+  materializer: RoomMaterializer,
+  peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
+  client: NotebookHandle,
+): Promise<void> {
+  let result = await materializer.syncPeer(peer);
+  for (let round = 0; round < 8; round += 1) {
+    const replies = applyCommentsOutboundToClient(result.outbound, peer.id, client);
+    if (replies.length === 0) {
+      return;
+    }
+    const outbound = [];
+    for (const reply of replies) {
+      const next = await materializer.receiveFrame(peer, {
+        type: FrameType.COMMENTS_DOC_SYNC,
+        payload: reply.slice(1),
+      });
+      outbound.push(...next.outbound);
+    }
+    result = {
+      changed: false,
+      notebook_changed: false,
+      runtime_state_changed: false,
+      outbound,
+    };
+  }
+}
+
+async function applyCommentsClientChangesToMaterializer(
+  materializer: RoomMaterializer,
+  peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
+  client: NotebookHandle,
+) {
+  const message = client.flush_comments_doc_sync();
+  assert.ok(message);
+  let result = await materializer.receiveFrame(peer, {
+    type: FrameType.COMMENTS_DOC_SYNC,
+    payload: message,
+  });
+
+  for (let round = 0; round < 8 && !result.changed; round += 1) {
+    const replies = applyCommentsOutboundToClient(result.outbound, peer.id, client);
+    if (replies.length === 0) {
+      break;
+    }
+    const outbound = [];
+    for (const reply of replies) {
+      const next = await materializer.receiveFrame(peer, {
+        type: FrameType.COMMENTS_DOC_SYNC,
+        payload: reply.slice(1),
+      });
+      if (next.changed) {
+        result = next;
+      }
+      outbound.push(...next.outbound);
+    }
+    if (!result.changed) {
+      result = {
+        changed: false,
+        notebook_changed: false,
+        runtime_state_changed: false,
+        outbound,
+      };
+    }
+  }
+
+  return result;
+}
+
 async function applyRuntimePeerChangesToMaterializer(
   materializer: RoomMaterializer,
   peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
@@ -2319,6 +2417,28 @@ function applyOutboundToClient(
     for (const event of events ?? []) {
       if (event.type === "sync_applied" && event.reply) {
         replies.push(encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array(event.reply)));
+      }
+    }
+  }
+  return replies;
+}
+
+function applyCommentsOutboundToClient(
+  outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: Uint8Array | number[] }>,
+  peerId: string,
+  client: NotebookHandle,
+): Uint8Array[] {
+  const replies: Uint8Array[] = [];
+  for (const frame of outbound) {
+    if (frame.peer_id !== peerId || frame.frame_type !== FrameType.COMMENTS_DOC_SYNC) {
+      continue;
+    }
+    const events = client.receive_frame(
+      encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)),
+    ) as Array<{ type: string; reply?: number[] }>;
+    for (const event of events ?? []) {
+      if (event.type === "comments_doc_sync_applied" && event.reply) {
+        replies.push(encodeTypedFrame(FrameType.COMMENTS_DOC_SYNC, new Uint8Array(event.reply)));
       }
     }
   }

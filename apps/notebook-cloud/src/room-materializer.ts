@@ -93,6 +93,12 @@ export class RoomMaterializer {
     );
   }
 
+  async getCommentAuthorActorLabels(): Promise<string[]> {
+    return this.withHost((host) =>
+      commentAuthorActorLabelsFromProjection(host.get_comments_projection()),
+    );
+  }
+
   /// Publish the room-host-owned active workstation attachment into the
   /// RuntimeStateDoc. Runtime peers do not mutate this map directly; the room
   /// host owns the notebook-visible selected-compute projection.
@@ -770,6 +776,39 @@ function normalizeWorkstationAttachmentJson(value: string): WorkstationAttachmen
     return parsed;
   }
   throw new Error("RoomHostHandle returned an invalid workstation attachment");
+}
+
+function commentAuthorActorLabelsFromProjection(projection: unknown): string[] {
+  if (!projection || typeof projection !== "object") {
+    return [];
+  }
+  const labels = new Set<string>();
+  const threads = (projection as Record<string, unknown>).threads;
+  if (!Array.isArray(threads)) {
+    return [];
+  }
+  for (const thread of threads) {
+    if (!thread || typeof thread !== "object") {
+      continue;
+    }
+    const record = thread as Record<string, unknown>;
+    addActorLabel(labels, record.created_by_actor_label);
+    addActorLabel(labels, record.resolved_by_actor_label);
+    if (Array.isArray(record.messages)) {
+      for (const message of record.messages) {
+        if (message && typeof message === "object") {
+          addActorLabel(labels, (message as Record<string, unknown>).created_by_actor_label);
+        }
+      }
+    }
+  }
+  return Array.from(labels);
+}
+
+function addActorLabel(labels: Set<string>, value: unknown): void {
+  if (typeof value === "string" && value.trim()) {
+    labels.add(value);
+  }
 }
 
 function isWorkstationAttachmentState(value: unknown): value is WorkstationAttachmentState {

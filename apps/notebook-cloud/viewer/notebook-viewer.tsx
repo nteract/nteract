@@ -71,6 +71,7 @@ import {
   resolveActorDisplay,
   workstationAttachmentCanExecute,
   workstationAttachmentIsConnected,
+  type ActorDisplayPeer,
   type CellChangeset,
   type NotebookOutlineItem,
   type SyncEngineLogger,
@@ -120,6 +121,13 @@ import { beginOidcLogin } from "./oidc-auth";
 import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { cloudPresenceHasRuntimePeer, cloudPresenceRuntimePeerCount } from "./presence";
+import {
+  commentAuthorActorLabels,
+  commentAuthorProfilePeers,
+  commentAuthorProfileUrls,
+  mergeCommentAuthorPeers,
+  type CloudCommentAuthorProfilesResponse,
+} from "./comment-author-profiles";
 import type { ResolvedCell } from "./render-resolution";
 import {
   CloudNotebookNotices,
@@ -593,13 +601,62 @@ export function NotebookViewer({
     presenceStore.getSnapshot,
     presenceStore.getSnapshot,
   );
-  const commentAuthorPeers = useMemo(
+  const liveCommentAuthorPeers = useMemo(
     () =>
       presenceSnapshot.peers.map((peer) => ({
         participantKey: peer.participantKey,
         label: peer.label,
       })),
     [presenceSnapshot.peers],
+  );
+  const commentAuthorLabels = useMemo(
+    () => commentAuthorActorLabels(commentsProjection),
+    [commentsProjection],
+  );
+  const commentAuthorLabelsKey = commentAuthorLabels.join("\u0000");
+  const [profileCommentAuthorPeers, setProfileCommentAuthorPeers] = useState<ActorDisplayPeer[]>(
+    [],
+  );
+  useEffect(() => {
+    const endpoint = config.authorProfilesEndpoint;
+    if (!endpoint || commentAuthorLabelsKey === "") {
+      setProfileCommentAuthorPeers([]);
+      return;
+    }
+    const actorLabels = commentAuthorLabelsKey.split("\u0000");
+
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const peers: ActorDisplayPeer[] = [];
+        for (const url of commentAuthorProfileUrls(endpoint, actorLabels)) {
+          const response = await fetchWithCloudPrototypeAuth(
+            url,
+            { headers: { Accept: "application/json" }, signal: controller.signal },
+            browserApiAuthState,
+          );
+          if (controller.signal.aborted) return;
+          if (!response.ok) {
+            setProfileCommentAuthorPeers([]);
+            return;
+          }
+          const body = (await response.json()) as CloudCommentAuthorProfilesResponse;
+          if (controller.signal.aborted) return;
+          peers.push(...commentAuthorProfilePeers(body));
+        }
+        setProfileCommentAuthorPeers(peers);
+      } catch {
+        if (!controller.signal.aborted) {
+          setProfileCommentAuthorPeers([]);
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  }, [browserApiAuthState, commentAuthorLabelsKey, config.authorProfilesEndpoint]);
+  const commentAuthorPeers = useMemo(
+    () => mergeCommentAuthorPeers(profileCommentAuthorPeers, liveCommentAuthorPeers),
+    [liveCommentAuthorPeers, profileCommentAuthorPeers],
   );
   const resolveCloudCommentAuthor = useCallback(
     (actorLabel: string): CommentAuthor => {

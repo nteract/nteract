@@ -974,6 +974,20 @@ impl RoomHostHandle {
             .map(|head| hex::encode(head.as_ref()))
             .collect()
     }
+
+    /// Read the current CommentsDoc projection from the room-host document set.
+    pub fn get_comments_projection(&mut self) -> JsValue {
+        let cell_order: Vec<String> = self
+            .doc
+            .get_cells()
+            .into_iter()
+            .map(|cell| cell.id)
+            .collect();
+        match self.comments_doc.read_projection(Some(&cell_order)) {
+            Ok(projection) => serialize_to_js(&projection).unwrap_or(JsValue::UNDEFINED),
+            Err(_) => JsValue::UNDEFINED,
+        }
+    }
 }
 
 impl RoomHostHandle {
