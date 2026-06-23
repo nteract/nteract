@@ -124,6 +124,7 @@ export interface CloudViewerConfig {
   aclEndpoint: string;
   invitesEndpoint: string;
   accessRequestsEndpoint: string;
+  authorProfilesEndpoint?: string;
   workstationsEndpoint?: string;
   workstationDefaultEndpoint?: string;
   workstationAttachEndpoint?: string;

@@ -3904,6 +3904,184 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("returns notebook-scoped author profiles for comment attribution", async () => {
+    const canonicalGreg = "account:user%3Aanaconda:email:greg-hash";
+    const gregTransport = "user:anaconda:6707d79f-4f39-403e-bb2f-1fccb520c09b";
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: fakeNotebookRoomsWithCommentAuthors([`${gregTransport}/browser:tab`]),
+    });
+    seedNotebook(env, "comment-author-demo");
+    const mallory = "user:anaconda:mallory";
+    seedAcl(env, {
+      notebookId: "comment-author-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "comment-author-demo",
+      subject: canonicalGreg,
+      scope: "editor",
+    });
+    env.DB.accountLinks.set(gregTransport, {
+      transport_principal: gregTransport,
+      canonical_principal: canonicalGreg,
+      provider: "user:anaconda",
+      email_normalized: "greg@example.com",
+      first_seen_at: "2026-05-28T00:00:00.000Z",
+      last_seen_at: "2026-05-28T00:00:00.000Z",
+    });
+    env.DB.profiles.set(canonicalGreg, {
+      principal: canonicalGreg,
+      provider: "user:anaconda",
+      provider_subject: null,
+      email_normalized: "greg@example.com",
+      email_verified: 1,
+      display_name: "Greg Jennings",
+      avatar_url: "https://profiles.example/greg.png",
+      first_seen_at: "2026-05-28T00:00:00.000Z",
+      last_seen_at: "2026-05-28T00:00:00.000Z",
+      raw_claims_json: null,
+    });
+    env.DB.profiles.set(mallory, {
+      principal: mallory,
+      provider: "oidc",
+      provider_subject: "mallory",
+      email_normalized: "mallory@example.com",
+      email_verified: 1,
+      display_name: "Mallory Example",
+      avatar_url: null,
+      first_seen_at: "2026-05-28T00:00:00.000Z",
+      last_seen_at: "2026-05-28T00:00:00.000Z",
+      raw_claims_json: null,
+    });
+
+    const url = new URL("http://localhost/api/n/comment-author-demo/author-profiles");
+    url.searchParams.append("actor_label", `${gregTransport}/browser:tab`);
+    url.searchParams.append("actor_label", `${mallory}/browser:tab`);
+    url.searchParams.append("actor_label", "not-an-actor-label");
+    const response = await worker.fetch(
+      new Request(url, {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "owner",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { profiles: Array<Record<string, unknown>> };
+    assert.deepEqual(body.profiles, [
+      {
+        principal: gregTransport,
+        label: "Greg Jennings",
+        image_url: "https://profiles.example/greg.png",
+      },
+    ]);
+  });
+
+  it("does not expose email fallback labels to public comment viewers", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: fakeNotebookRoomsWithCommentAuthors(["user:dev:alice/browser:tab"]),
+    });
+    seedNotebook(env, "public-author-demo");
+    seedAcl(env, {
+      notebookId: "public-author-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "public-author-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+    env.DB.profiles.set("user:dev:alice", {
+      principal: "user:dev:alice",
+      provider: "dev",
+      provider_subject: "alice",
+      email_normalized: "alice@example.com",
+      email_verified: 1,
+      display_name: null,
+      avatar_url: null,
+      first_seen_at: "2026-05-28T00:00:00.000Z",
+      last_seen_at: "2026-05-28T00:00:00.000Z",
+      raw_claims_json: null,
+    });
+
+    const url = new URL("http://localhost/api/n/public-author-demo/author-profiles");
+    url.searchParams.append("actor_label", "user:dev:alice/browser:tab");
+    const response = await worker.fetch(new Request(url), env, fakeContext());
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { profiles: Array<Record<string, unknown>> };
+    assert.deepEqual(body.profiles, []);
+  });
+
+  it("does not expose ACL principal profiles unless they authored visible comments", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: fakeNotebookRoomsWithCommentAuthors(["user:dev:alice/browser:tab"]),
+    });
+    seedNotebook(env, "public-comment-author-demo");
+    seedAcl(env, {
+      notebookId: "public-comment-author-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "public-comment-author-demo",
+      subject: "user:dev:bob",
+      scope: "editor",
+    });
+    seedAcl(env, {
+      notebookId: "public-comment-author-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+    env.DB.profiles.set("user:dev:alice", {
+      principal: "user:dev:alice",
+      provider: "dev",
+      provider_subject: "alice",
+      email_normalized: "alice@example.com",
+      email_verified: 1,
+      display_name: "Alice Example",
+      avatar_url: null,
+      first_seen_at: "2026-05-28T00:00:00.000Z",
+      last_seen_at: "2026-05-28T00:00:00.000Z",
+      raw_claims_json: null,
+    });
+    env.DB.profiles.set("user:dev:bob", {
+      principal: "user:dev:bob",
+      provider: "dev",
+      provider_subject: "bob",
+      email_normalized: "bob@example.com",
+      email_verified: 1,
+      display_name: "Bob Example",
+      avatar_url: null,
+      first_seen_at: "2026-05-28T00:00:00.000Z",
+      last_seen_at: "2026-05-28T00:00:00.000Z",
+      raw_claims_json: null,
+    });
+
+    const url = new URL("http://localhost/api/n/public-comment-author-demo/author-profiles");
+    url.searchParams.append("actor_label", "user:dev:alice/browser:tab");
+    url.searchParams.append("actor_label", "user:dev:bob/browser:tab");
+    const response = await worker.fetch(new Request(url), env, fakeContext());
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { profiles: Array<Record<string, unknown>> };
+    assert.deepEqual(body.profiles, [
+      {
+        principal: "user:dev:alice",
+        label: "Alice Example",
+        image_url: null,
+      },
+    ]);
+  });
+
   it("closes anonymous live viewers when public link access is revoked", async () => {
     const roomRequests: Request[] = [];
     const env = fakeEnv({
@@ -6175,6 +6353,26 @@ function fakeEnv(overrides: Partial<Env> = {}): FakeEnv {
   };
   Object.assign(env, overrides);
   return env;
+}
+
+function fakeNotebookRoomsWithCommentAuthors(
+  actorLabels: readonly string[],
+): DurableObjectNamespace {
+  return {
+    idFromName: (name: string) => ({ toString: () => name }),
+    get: (id: { toString(): string }) => ({
+      fetch: async (request: Request) => {
+        const pathname = new URL(request.url).pathname;
+        if (pathname.endsWith("/comment-authors")) {
+          return Response.json({
+            notebook_id: id.toString(),
+            actor_labels: actorLabels,
+          });
+        }
+        return new Response("not implemented", { status: 501 });
+      },
+    }),
+  } satisfies DurableObjectNamespace;
 }
 
 function fakeContext(): ExecutionContext {

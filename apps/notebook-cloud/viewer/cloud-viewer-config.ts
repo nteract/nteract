@@ -50,6 +50,8 @@ function loadConfig(): CloudViewerConfig {
     aclEndpoint: parsed.aclEndpoint,
     invitesEndpoint: parsed.invitesEndpoint,
     accessRequestsEndpoint: parsed.accessRequestsEndpoint,
+    authorProfilesEndpoint:
+      typeof parsed.authorProfilesEndpoint === "string" ? parsed.authorProfilesEndpoint : undefined,
     workstationsEndpoint: parsed.workstationsEndpoint,
     workstationDefaultEndpoint: parsed.workstationDefaultEndpoint,
     workstationAttachEndpoint: parsed.workstationAttachEndpoint,
