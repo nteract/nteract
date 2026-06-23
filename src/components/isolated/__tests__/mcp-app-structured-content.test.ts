@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { resolveEmbeddableOutputs } from "../embeddable-output";
 import {
   createMcpAppBlobResolver,
+  MCP_APP_INLINE_RASTER_IMAGE_MAX_BYTES,
   mcpAppCellHasRichOutput,
   mcpAppCellPreviewText,
   mcpAppCellsToSharedOutputs,
@@ -82,6 +83,159 @@ describe("MCP App structured content adapter", () => {
       data: "http://localhost:47830/blob/image-hash",
       outputId: "image-output",
     });
+  });
+
+  it("inlines small raster image blobs as data URIs when enabled", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(new Uint8Array([1, 2, 3, 4]), {
+        headers: {
+          "content-length": "4",
+          "content-type": "image/png",
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const outputs = mcpAppCellsToSharedOutputs(
+      [
+        cellWithOutputs([
+          {
+            output_id: "image-output",
+            output_type: "display_data",
+            data: {
+              "image/png": "http://localhost:47830/blob/image-hash",
+              "text/plain": "<Figure size 1100x520 with 1 Axes>",
+            },
+          },
+        ]),
+      ],
+      "http://localhost:47830",
+    );
+
+    const [payload] = await resolveEmbeddableOutputs(outputs, {
+      blobResolver: createMcpAppBlobResolver("http://localhost:47830", {
+        inlineRasterImageBlobs: true,
+      }),
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://localhost:47830/blob/image-hash");
+    expect(payload).toMatchObject({
+      mimeType: "image/png",
+      data: "data:image/png;base64,AQIDBA==",
+      outputId: "image-output",
+    });
+  });
+
+  it("inlines small raster image blobs when content length is absent", async () => {
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array([5, 6, 7, 8])));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const outputs = mcpAppCellsToSharedOutputs(
+      [
+        cellWithOutputs([
+          {
+            output_id: "image-output",
+            output_type: "display_data",
+            data: {
+              "image/png": "http://localhost:47830/blob/image-no-length",
+            },
+          },
+        ]),
+      ],
+      "http://localhost:47830",
+    );
+
+    const [payload] = await resolveEmbeddableOutputs(outputs, {
+      blobResolver: createMcpAppBlobResolver("http://localhost:47830", {
+        inlineRasterImageBlobs: true,
+      }),
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://localhost:47830/blob/image-no-length");
+    expect(payload).toMatchObject({
+      mimeType: "image/png",
+      data: "data:image/png;base64,BQYHCA==",
+      outputId: "image-output",
+    });
+  });
+
+  it("keeps large raster image blobs as URLs when the inline fallback is enabled", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(new Uint8Array([1, 2, 3, 4]), {
+        headers: {
+          "content-length": String(MCP_APP_INLINE_RASTER_IMAGE_MAX_BYTES + 1),
+          "content-type": "image/png",
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const outputs = mcpAppCellsToSharedOutputs(
+      [
+        cellWithOutputs([
+          {
+            output_id: "large-image-output",
+            output_type: "display_data",
+            data: {
+              "image/png": "http://localhost:47830/blob/large-image-hash",
+            },
+          },
+        ]),
+      ],
+      "http://localhost:47830",
+    );
+
+    const [payload] = await resolveEmbeddableOutputs(outputs, {
+      blobResolver: createMcpAppBlobResolver("http://localhost:47830", {
+        inlineRasterImageBlobs: true,
+      }),
+    });
+
+    expect(payload).toMatchObject({
+      mimeType: "image/png",
+      data: "http://localhost:47830/blob/large-image-hash",
+      outputId: "large-image-output",
+    });
+  });
+
+  it("does not data-URI inline blob-backed HTML outputs", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response("<button>interactive</button>", {
+        headers: {
+          "content-length": "28",
+          "content-type": "text/html",
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const outputs = mcpAppCellsToSharedOutputs(
+      [
+        cellWithOutputs([
+          {
+            output_id: "html-output",
+            output_type: "display_data",
+            data: {
+              "text/html": "http://localhost:47830/blob/html-hash",
+            },
+          },
+        ]),
+      ],
+      "http://localhost:47830",
+    );
+
+    const [payload] = await resolveEmbeddableOutputs(outputs, {
+      blobResolver: createMcpAppBlobResolver("http://localhost:47830", {
+        inlineRasterImageBlobs: true,
+      }),
+    });
+
+    expect(payload).toMatchObject({
+      mimeType: "text/html",
+      data: "<button>interactive</button>",
+      outputId: "html-output",
+    });
+    expect(String(payload.data)).not.toMatch(/^data:text\/html/);
   });
 
   it("synthesizes stable output ids for legacy MCP structured content", () => {

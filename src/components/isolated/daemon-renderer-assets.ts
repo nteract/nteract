@@ -131,6 +131,24 @@ export function daemonOutputFrameUrl(
   return frameDomainsAllowUrl(hostCsp.frameDomains, url) ? url : null;
 }
 
+export function daemonOutputFrameBlockedByHostCsp(
+  blobBaseUrl: string | undefined,
+  hostCsp?: DaemonRendererAssetCsp | null,
+): boolean {
+  if (!blobBaseUrl || !hostCsp) return false;
+  const url = `${trimTrailingSlash(blobBaseUrl)}/output-frame`;
+  return !frameDomainsAllowUrl(hostCsp.frameDomains, url);
+}
+
+export function daemonOutputFrameOrigin(blobBaseUrl: string | undefined): string | null {
+  if (!blobBaseUrl) return null;
+  try {
+    return new URL(`${trimTrailingSlash(blobBaseUrl)}/output-frame`).origin;
+  } catch {
+    return null;
+  }
+}
+
 export function daemonRendererAssetsBaseUrl(blobBaseUrl: string | undefined): string | undefined {
   if (!blobBaseUrl) return undefined;
   return `${trimTrailingSlash(blobBaseUrl)}/plugins/`;

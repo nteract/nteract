@@ -115,4 +115,33 @@ describe("McpAppOutputFrame", () => {
       }),
     );
   });
+
+  it("replays outputs when the output frame URL changes", async () => {
+    const rendererBundle = { rendererCode: "renderer", rendererCss: "css" };
+    const cell = cellWithHtmlOutput();
+
+    const { rerender } = render(
+      <McpAppOutputFrame
+        cell={cell}
+        blobBaseUrl="http://localhost:47830"
+        rendererBundle={rendererBundle}
+        outputDocumentUrl="http://localhost:47830/output-frame"
+      />,
+    );
+
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <McpAppOutputFrame
+        cell={cell}
+        blobBaseUrl="http://localhost:47830"
+        rendererBundle={rendererBundle}
+        outputDocumentUrl={null}
+      />,
+    );
+
+    await waitFor(() => expect(createNteractOutputEmbed).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalledTimes(2));
+    expect(mockHandle.dispose).toHaveBeenCalled();
+  });
 });

@@ -27,6 +27,13 @@ fn is_viz_mime(mime: &str) -> bool {
             && (mime.ends_with("+json") || mime.ends_with(".json")))
 }
 
+fn is_static_raster_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
 /// Inputs for [`cell_structured_content_from_manifests`].
 pub struct CellStructuredContentManifestInput<'a> {
     pub cell_id: &'a str,
@@ -154,12 +161,16 @@ fn manifest_output_to_structured(
             let mut data = serde_json::Map::new();
 
             if let Some(data_map) = manifest.get("data").and_then(|v| v.as_object()) {
-                // Check for renderable raster images to skip redundant text/html
-                let has_renderable_image = data_map.keys().any(|m| {
-                    matches!(
-                        m.as_str(),
-                        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-                    )
+                // Check for blob-backed raster images that will survive as
+                // Blob Store URLs, then skip redundant text/html. Inline
+                // rasters are intentionally omitted from MCP tool responses,
+                // so they must not suppress richer HTML fallbacks.
+                let has_renderable_image = data_map.iter().any(|(mime, content_ref)| {
+                    is_static_raster_mime(mime)
+                        && blob_base_url.is_some()
+                        && output_resolver::content_ref_meta(content_ref)
+                            .blob_hash
+                            .is_some()
                 });
 
                 for (mime, content_ref) in data_map {
@@ -191,13 +202,12 @@ fn manifest_output_to_structured(
 
                     let meta = output_resolver::content_ref_meta(content_ref);
 
-                    // Images are binary but their inline form is base64,
-                    // which renderers handle as data: URIs. Non-image binary
-                    // MIMEs (parquet, audio, video, application/octet-stream)
-                    // produce garbled text when inlined as JSON strings.
-                    let is_non_renderable_binary = notebook_doc::mime::mime_kind(mime)
+                    // Binary blobs can be rendered via Blob Store URLs. Inline
+                    // binary has no URL to hand to the MCP app, and inlining
+                    // raster base64 would expose image bytes in tool responses.
+                    let should_drop_inline_binary = notebook_doc::mime::mime_kind(mime)
                         == MimeKind::Binary
-                        && !mime.starts_with("image/");
+                        && (!mime.starts_with("image/") || is_static_raster_mime(mime));
 
                     let json_value = if let Some(hash) = meta.blob_hash {
                         // Blob-stored content — always emit blob URL regardless
@@ -205,11 +215,10 @@ fn manifest_output_to_structured(
                         blob_base_url
                             .as_ref()
                             .map(|base| Value::String(format!("{}/blob/{}", base, hash)))
-                    } else if meta.is_inline && !is_non_renderable_binary {
-                        // Inline text/JSON/image content — extract directly.
-                        // Non-renderable binary (parquet, audio, etc.) is
-                        // silently dropped; the client falls back to
-                        // text/plain or text/llm+plain.
+                    } else if meta.is_inline && !should_drop_inline_binary {
+                        // Inline text/JSON content — extract directly. Inline
+                        // binary/raster content is silently dropped; the client
+                        // falls back to text/plain or text/llm+plain.
                         content_ref.get("inline").cloned()
                     } else {
                         None
@@ -424,6 +433,26 @@ mod tests {
     }
 
     #[test]
+    fn structured_inline_image_does_not_suppress_html() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "text/html": inline_ref("<img src='data:...' />"),
+                "image/png": inline_ref("iVBORw0KGgoAAAA...base64..."),
+                "text/plain": inline_ref("<Figure>"),
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
+        let Some(data) = result["data"].as_object() else {
+            panic!("data should be an object");
+        };
+        assert_eq!(data["text/html"], "<img src='data:...' />");
+        assert!(!data.contains_key("image/png"));
+        assert_eq!(data["text/plain"], "<Figure>");
+    }
+
+    #[test]
     fn structured_output_id_propagates_on_every_variant() {
         // The daemon stamps `output_id` on every manifest and the MCP App
         // uses it as a React key. Structured output must preserve it.
@@ -539,9 +568,9 @@ mod tests {
     }
 
     #[test]
-    fn structured_image_inline_passes_through() {
-        // Images are binary but inline as base64 which renderers handle
-        // as data: URIs. They must NOT be suppressed.
+    fn structured_image_inline_is_omitted() {
+        // Inline raster content would put image bytes directly in MCP tool
+        // responses. Blob-backed images still emit Blob Store URLs.
         let manifest = json!({
             "output_type": "display_data",
             "data": {
@@ -553,9 +582,9 @@ mod tests {
         let data = result["data"]
             .as_object()
             .expect("data should be an object");
-        assert_eq!(
-            data["image/png"], "iVBORw0KGgoAAAA...base64...",
-            "inline base64 images should pass through for data: URI rendering"
+        assert!(
+            !data.contains_key("image/png"),
+            "inline base64 images should not be serialized in structured content"
         );
         assert_eq!(data["text/plain"], "<Figure>");
     }

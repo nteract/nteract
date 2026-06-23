@@ -1,12 +1,15 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import type { McpUiHostCapabilities, McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import { rendererCode, rendererCss } from "virtual:isolated-renderer";
 import {
   createDaemonRendererPluginLoader,
+  daemonOutputFrameBlockedByHostCsp,
+  daemonOutputFrameOrigin,
   daemonOutputFrameUrl,
   daemonRendererAssetsBaseUrl,
 } from "@/components/isolated/daemon-renderer-assets";
 import { McpAppOutputFrame } from "@/components/isolated/mcp-app-output-frame";
+import { MCP_APP_INLINE_RASTER_IMAGE_MAX_BYTES } from "@/components/isolated/mcp-app-structured-content";
 import type { NteractOutputRendererBundleProvider } from "@/components/isolated/output-embed";
 import type { CellData } from "../types";
 import { errorDetails, hostLog } from "../lib/host-log";
@@ -37,10 +40,16 @@ export function SharedCellOutputs({
     () => daemonRendererAssetsBaseUrl(blobBaseUrl),
     [blobBaseUrl],
   );
+  const hostCsp = hostCapabilities?.sandbox?.csp;
   const outputDocumentUrl = useMemo(
-    () => daemonOutputFrameUrl(blobBaseUrl, hostCapabilities?.sandbox?.csp),
-    [blobBaseUrl, hostCapabilities],
+    () => daemonOutputFrameUrl(blobBaseUrl, hostCsp),
+    [blobBaseUrl, hostCsp],
   );
+  const daemonOutputFrameBlocked = useMemo(
+    () => daemonOutputFrameBlockedByHostCsp(blobBaseUrl, hostCsp),
+    [blobBaseUrl, hostCsp],
+  );
+  const inlineRasterBlobImages = daemonOutputFrameBlocked;
   const handleDiagnostic = useCallback(
     (
       phase: string,
@@ -63,6 +72,17 @@ export function SharedCellOutputs({
     });
   }, []);
 
+  useEffect(() => {
+    if (!blobBaseUrl || outputDocumentUrl !== null || !daemonOutputFrameBlocked) return;
+
+    hostLog("warning", "shared-output-daemon-frame-blocked", {
+      outputFrameOrigin: daemonOutputFrameOrigin(blobBaseUrl),
+      frameDomains: hostCsp?.frameDomains ?? [],
+      fallback: "srcdoc-raster-image-data-uri",
+      maxInlineImageBytes: MCP_APP_INLINE_RASTER_IMAGE_MAX_BYTES,
+    });
+  }, [blobBaseUrl, daemonOutputFrameBlocked, hostCsp, outputDocumentUrl]);
+
   return (
     <McpAppOutputFrame
       cell={cell}
@@ -72,6 +92,7 @@ export function SharedCellOutputs({
       rendererPluginLoader={rendererPluginLoader}
       rendererAssetsBaseUrl={rendererAssetsBaseUrl}
       outputDocumentUrl={outputDocumentUrl}
+      inlineRasterBlobImages={inlineRasterBlobImages}
       className="shared-output-frame"
       onDiagnostic={handleDiagnostic}
       onError={handleError}
