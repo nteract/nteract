@@ -119,6 +119,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     get_comms_doc_heads_hex(): string[];
     get_comments_doc_heads_hex(): string[];
     get_heads_hex(): string[];
+    get_runtime_queue_depth(): number;
     get_runtime_state_heads_hex(): string[];
     load_comms_doc(commsBytes: Uint8Array): void;
     load_comments_doc(commentsBytes: Uint8Array): void;

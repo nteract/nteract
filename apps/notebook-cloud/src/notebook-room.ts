@@ -86,6 +86,10 @@ interface PeerCloseOptions {
   suppressRuntimePeerWatch?: boolean;
 }
 
+interface PublishComputeSessionSummaryOptions {
+  onlyIfQueueDepthChanged?: boolean;
+}
+
 type RuntimePeerForwardedRequestAction = "interrupt_execution" | "send_comm";
 type RuntimePeerQueryRequestAction = "complete";
 type HostedExecutionRequestAction =
@@ -233,6 +237,9 @@ export class NotebookRoom {
     string,
     SelectedRuntimePeerSession | null
   >();
+  private readonly computeSessionQueueDepths = new Map<string, number>();
+  private readonly computeSessionSummaryPublishes = new Map<string, Promise<void>>();
+  private readonly dirtyComputeSessionSummaries = new Set<string>();
   private readonly restoredPeersReady: Promise<void>;
   private readonly pendingRuntimePeerResponses = new Map<string, PendingRuntimePeerResponse>();
   // In-memory only by design: persisting on the frame hot path would cost more
@@ -1145,6 +1152,13 @@ export class NotebookRoom {
       if (result.changed) {
         this.scheduleRoomHostCheckpoint(notebookId, materializer, "materialized_frame");
       }
+      if (result.runtime_state_changed) {
+        this.state.waitUntil(
+          this.publishCurrentComputeSessionSummary(notebookId, undefined, {
+            onlyIfQueueDepthChanged: true,
+          }),
+        );
+      }
       this.sendControl(notebookId, peer, {
         type: "cloud_frame_accepted",
         notebook_id: notebookId,
@@ -1285,7 +1299,7 @@ export class NotebookRoom {
         this.deliverRoomHostFrames(notebookId, result);
         await this.checkpointRoomHost(notebookId, materializer, "runtime_peer_attachment");
       }
-      await this.publishCurrentComputeSessionSummary(notebookId, attachment);
+      await this.publishCurrentComputeSessionSummary(notebookId);
       cloudLog("debug", "room.workstation_attachment.published", {
         notebook_id: notebookId,
         peer_id: peer.id,
@@ -1312,15 +1326,42 @@ export class NotebookRoom {
   private async publishCurrentComputeSessionSummary(
     notebookId: string,
     attachment?: WorkstationAttachmentState | null,
+    options?: PublishComputeSessionSummaryOptions,
+  ): Promise<void> {
+    const previous = this.computeSessionSummaryPublishes.get(notebookId) ?? Promise.resolve();
+    const publish = previous
+      .catch(() => undefined)
+      .then(() => this.publishCurrentComputeSessionSummaryNow(notebookId, attachment, options));
+    this.computeSessionSummaryPublishes.set(notebookId, publish);
+    await publish.finally(() => {
+      if (this.computeSessionSummaryPublishes.get(notebookId) === publish) {
+        this.computeSessionSummaryPublishes.delete(notebookId);
+      }
+    });
+  }
+
+  private async publishCurrentComputeSessionSummaryNow(
+    notebookId: string,
+    attachment?: WorkstationAttachmentState | null,
+    options?: PublishComputeSessionSummaryOptions,
   ): Promise<void> {
     if (!this.env.OWNER_COMPUTE_INDEX || !this.env.DB) {
       return;
     }
     try {
+      const materializer = this.materializerFor(notebookId);
+      const queueDepth = await materializer.getRuntimeQueueDepth();
+      if (
+        options?.onlyIfQueueDepthChanged &&
+        !this.dirtyComputeSessionSummaries.has(notebookId) &&
+        this.computeSessionQueueDepths.get(notebookId) === queueDepth
+      ) {
+        return;
+      }
       const [notebook, currentAttachment] = await Promise.all([
         getNotebookRow(this.env, notebookId),
         attachment === undefined
-          ? this.materializerFor(notebookId).getWorkstationAttachment()
+          ? materializer.getWorkstationAttachment()
           : Promise.resolve(attachment),
       ]);
       if (!notebook) {
@@ -1330,15 +1371,33 @@ export class NotebookRoom {
         attachment: currentAttachment,
         notebookId,
         ownerPrincipal: notebook.owner_principal,
+        queueDepth,
         runtimePeerCount: this.runtimePeerCount(),
         updatedAt: new Date().toISOString(),
       });
       if (summary) {
-        await upsertOwnerComputeSession(this.env, summary);
+        const published = await upsertOwnerComputeSession(this.env, summary);
+        if (published) {
+          this.computeSessionQueueDepths.set(notebookId, summary.queue_depth);
+          this.dirtyComputeSessionSummaries.delete(notebookId);
+        } else {
+          this.dirtyComputeSessionSummaries.add(notebookId);
+        }
       } else {
-        await deleteOwnerComputeSession(this.env, notebook.owner_principal, notebookId);
+        const deleted = await deleteOwnerComputeSession(
+          this.env,
+          notebook.owner_principal,
+          notebookId,
+        );
+        if (deleted) {
+          this.computeSessionQueueDepths.set(notebookId, queueDepth);
+          this.dirtyComputeSessionSummaries.delete(notebookId);
+        } else {
+          this.dirtyComputeSessionSummaries.add(notebookId);
+        }
       }
     } catch (error) {
+      this.dirtyComputeSessionSummaries.add(notebookId);
       cloudLog("warn", "room.compute_session_summary.publish_failed", {
         notebook_id: notebookId,
         error: errorMessage(error),

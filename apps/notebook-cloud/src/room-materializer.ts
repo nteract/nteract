@@ -93,6 +93,10 @@ export class RoomMaterializer {
     );
   }
 
+  async getRuntimeQueueDepth(): Promise<number> {
+    return this.withHost((host) => Math.max(0, Math.trunc(host.get_runtime_queue_depth())));
+  }
+
   /// Publish the room-host-owned active workstation attachment into the
   /// RuntimeStateDoc. Runtime peers do not mutate this map directly; the room
   /// host owns the notebook-visible selected-compute projection.
