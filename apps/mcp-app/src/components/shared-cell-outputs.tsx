@@ -49,7 +49,7 @@ export function SharedCellOutputs({
     () => daemonOutputFrameBlockedByHostCsp(blobBaseUrl, hostCsp),
     [blobBaseUrl, hostCsp],
   );
-  const inlineRasterBlobImages = Boolean(blobBaseUrl && outputDocumentUrl === null);
+  const inlineRasterBlobImages = daemonOutputFrameBlocked;
   const handleDiagnostic = useCallback(
     (
       phase: string,

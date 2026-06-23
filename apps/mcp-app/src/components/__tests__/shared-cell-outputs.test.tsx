@@ -100,6 +100,38 @@ describe("SharedCellOutputs", () => {
     );
   });
 
+  it("waits for host CSP before enabling the raster image inline fallback", () => {
+    render(
+      <SharedCellOutputs
+        cell={{
+          cell_id: "cell-1",
+          cell_type: "code",
+          source: "display('hi')",
+          execution_count: 1,
+          status: "done",
+          outputs: [
+            {
+              output_id: "output-1",
+              output_type: "display_data",
+              data: {
+                "image/png": "http://localhost:47830/blob/image-hash",
+              },
+            },
+          ],
+        }}
+        blobBaseUrl="http://localhost:47830/"
+        hostCapabilities={null}
+      />,
+    );
+
+    expect(mcpAppOutputFrameSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outputDocumentUrl: null,
+        inlineRasterBlobImages: false,
+      }),
+    );
+  });
+
   it("warns the host when daemon output frames are blocked by frameDomains", async () => {
     const sendLog = vi.fn();
     setHostLogSink({ sendLog });

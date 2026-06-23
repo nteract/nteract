@@ -144,7 +144,7 @@ export function McpAppOutputFrame({
       setFailed(true);
       onErrorRef.current?.(details);
     });
-  }, [failed, outputs]);
+  }, [blobResolver, failed, outputDocumentUrl, outputs]);
 
   useEffect(() => {
     hostContextPatchRef.current = hostContextPatch;
