@@ -17,6 +17,10 @@ class_name = "NotebookRoom"
 name = "WORKSTATION_EVENTS"
 class_name = "WorkstationEvents"
 
+[[durable_objects.bindings]]
+name = "OWNER_COMPUTE_INDEX"
+class_name = "OwnerComputeIndex"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["NotebookRoom"]
@@ -32,6 +36,10 @@ new_sqlite_classes = ["MarkdownDocumentRoom"]
 [[migrations]]
 tag = "v4"
 deleted_classes = ["MarkdownDocumentRoom"]
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["OwnerComputeIndex"]
 
 [[d1_databases]]
 binding = "DB"

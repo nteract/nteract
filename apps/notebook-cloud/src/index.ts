@@ -5,6 +5,7 @@ import type {
   ExportedHandler,
   WorkerAssets,
 } from "./cloudflare-types.ts";
+import type { NotebookComputeSessionSummary } from "runtimed";
 import { projectNotebookWorkstationAttachmentFromClaim, type BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
@@ -81,6 +82,7 @@ import {
   workstationEventsObjectName,
   type WorkstationAttachJobNotification,
 } from "./workstation-events.ts";
+import { OwnerComputeIndex, listOwnerComputeSessions } from "./compute-session-index.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
 import { notebookRouteSegmentTitle } from "./notebook-route-title.ts";
 import {
@@ -151,7 +153,7 @@ import {
   trustsLoopbackRequestHeaders,
 } from "./loopback.ts";
 
-export { NotebookRoom, WorkstationEvents };
+export { NotebookRoom, WorkstationEvents, OwnerComputeIndex };
 
 // `/plugins/*` is a raw static asset path in deployed Workers. Use a
 // Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
@@ -1167,20 +1169,53 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
   }
 
   const notebooks = await listNotebooksForPrincipal(env, principal, limit);
+  const computeSessions = await listNotebookComputeSessionsForOwnedRows(env, notebooks);
   return json({
     ok: true,
-    notebooks: notebookListResponseRows(request, notebooks, env),
+    notebooks: notebookListResponseRows(request, notebooks, env, computeSessions),
   });
+}
+
+async function listNotebookComputeSessionsForOwnedRows(
+  env: Env,
+  notebooks: readonly ListedNotebookRow[],
+): Promise<Map<string, NotebookComputeSessionSummary>> {
+  const idsByOwner = new Map<string, string[]>();
+  for (const notebook of notebooks) {
+    if (notebook.scope !== "owner") {
+      continue;
+    }
+    const ids = idsByOwner.get(notebook.owner_principal) ?? [];
+    ids.push(notebook.id);
+    idsByOwner.set(notebook.owner_principal, ids);
+  }
+  const entries = await Promise.all(
+    Array.from(idsByOwner, async ([ownerPrincipal, notebookIds]) =>
+      listOwnerComputeSessions(env, ownerPrincipal, notebookIds),
+    ),
+  );
+  const sessions = new Map<string, NotebookComputeSessionSummary>();
+  for (const ownerSessions of entries) {
+    for (const [notebookId, session] of ownerSessions) {
+      sessions.set(notebookId, session);
+    }
+  }
+  return sessions;
 }
 
 function notebookListResponseRows(
   request: Request,
   notebooks: ListedNotebookRow[],
   env?: Env,
+  computeSessions: ReadonlyMap<string, NotebookComputeSessionSummary> = new Map(),
 ): Array<Record<string, unknown>> {
   return notebooks.map((notebook) => {
     const notebookPathId = encodeURIComponent(notebook.id);
     const apiBasePath = `/api/n/${notebookPathId}`;
+    const computeSession =
+      notebook.owner_principal === computeSessions.get(notebook.id)?.owner_principal
+        ? computeSessions.get(notebook.id)
+        : null;
     return {
       notebook_id: notebook.id,
       title: notebook.title,
@@ -1189,6 +1224,7 @@ function notebookListResponseRows(
       created_at: notebook.created_at,
       updated_at: notebook.updated_at,
       latest_revision_id: notebook.latest_revision_id,
+      compute_session: computeSession,
       viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title, env),
       endpoints: {
         catalog: apiBasePath,
@@ -4867,10 +4903,11 @@ async function notebookListBootstrap(
     session.principal,
     DEFAULT_NOTEBOOK_LIST_LIMIT,
   );
+  const computeSessions = await listNotebookComputeSessionsForOwnedRows(env, notebooks);
   return {
     kind: "notebook-list",
     session: appSessionResponse(session),
-    notebooks: notebookListResponseRows(request, notebooks, env),
+    notebooks: notebookListResponseRows(request, notebooks, env, computeSessions),
     saved_at: new Date().toISOString(),
   };
 }

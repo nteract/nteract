@@ -1331,6 +1331,26 @@ body {
   color: color-mix(in srgb, #0f766e 84%, var(--foreground));
 }
 
+.cloud-dashboard-continue-facts [data-state="active"],
+.cloud-notebook-list-row-facts [data-state="active"] {
+  color: color-mix(in srgb, #0f766e 82%, var(--foreground));
+}
+
+.cloud-dashboard-continue-facts [data-state="starting"],
+.cloud-notebook-list-row-facts [data-state="starting"] {
+  color: color-mix(in srgb, #0369a1 82%, var(--foreground));
+}
+
+.cloud-dashboard-continue-facts [data-state="stale"],
+.cloud-notebook-list-row-facts [data-state="stale"] {
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+}
+
+.cloud-dashboard-continue-facts [data-state="error"],
+.cloud-notebook-list-row-facts [data-state="error"] {
+  color: color-mix(in srgb, #b42318 86%, var(--foreground));
+}
+
 .cloud-notebook-list-updated {
   display: inline-flex;
   align-items: center;

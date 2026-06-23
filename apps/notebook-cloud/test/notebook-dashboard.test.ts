@@ -627,6 +627,65 @@ describe("cloud notebook dashboard projection", () => {
     assert.equal(generatedView.sections[0]?.notebooks.length, 7);
     assert.equal(generatedView.sections[0]?.overflowAction, null);
   });
+
+  it("surfaces active compute as a row fact and drill-in filter", () => {
+    const active = notebook({
+      id: "topic-viz",
+      title: "Topic Visualization",
+      scope: "owner",
+      updatedAt: "2026-06-23T00:00:00.000Z",
+      latestRevisionId: null,
+      computeSession: {
+        environment_label: "Current Python",
+        last_runtime_seen_at: "2026-06-23T00:00:00.000Z",
+        notebook_id: "topic-viz",
+        owner_principal: "user:dev:alice",
+        queue_depth: 1,
+        runtime_peer_count: 1,
+        runtime_session_id: "job-1",
+        status: "active",
+        status_message: null,
+        updated_at: "2026-06-23T00:00:00.000Z",
+        working_directory: "/home/ubuntu/project",
+        workstation_display_name: "lab2 workstation",
+        workstation_id: "ws-lab2",
+      },
+    });
+    const idle = notebook({
+      id: "notes",
+      title: "Notes",
+      scope: "owner",
+      updatedAt: "2026-06-22T00:00:00.000Z",
+      latestRevisionId: null,
+    });
+
+    const model = projectCloudNotebookDashboard([idle, active]);
+    const computeView = projectCloudNotebookDashboardView(model, { filterId: "compute" });
+
+    assert.deepEqual(
+      model.filters.map((filter) => [filter.id, filter.count]),
+      [
+        ["all", 2],
+        ["owned", 2],
+        ["compute", 1],
+      ],
+    );
+    assert.deepEqual(model.continueRow?.facts, [
+      {
+        kind: "compute",
+        label: "lab2 workstation running, 1 queued",
+        tone: "active",
+      },
+    ]);
+    assert.deepEqual(
+      computeView.sections.map((section) => [
+        section.id,
+        section.title,
+        section.notebooks.map((item) => item.notebook_id),
+      ]),
+      [["compute", "Active compute", ["topic-viz"]]],
+    );
+  });
 });
 
 function notebook(input: {
@@ -635,6 +694,7 @@ function notebook(input: {
   scope: CloudNotebookListItem["scope"];
   updatedAt: string;
   latestRevisionId: string | null;
+  computeSession?: CloudNotebookListItem["compute_session"];
 }): CloudNotebookListItem {
   return {
     notebook_id: input.id,
@@ -644,6 +704,7 @@ function notebook(input: {
     created_at: "2026-05-01T00:00:00.000Z",
     updated_at: input.updatedAt,
     latest_revision_id: input.latestRevisionId,
+    compute_session: input.computeSession ?? null,
     viewer_url: `/n/${input.id}/notebook`,
     endpoints: {
       catalog: `/api/n/${input.id}`,

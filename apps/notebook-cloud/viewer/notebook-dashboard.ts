@@ -1,4 +1,9 @@
 import { cloudNotebookUrlWithMode, type CloudNotebookUrlMode } from "./cloud-notebook-mode";
+import {
+  isNotebookComputeSessionSummary,
+  projectNotebookComputeSessionFact,
+  type NotebookComputeSessionSummary,
+} from "runtimed";
 
 export interface CloudNotebookListItem {
   notebook_id: string;
@@ -8,6 +13,7 @@ export interface CloudNotebookListItem {
   created_at: string;
   updated_at: string;
   latest_revision_id: string | null;
+  compute_session?: NotebookComputeSessionSummary | null;
   viewer_url: string;
   endpoints: {
     catalog: string;
@@ -20,6 +26,7 @@ export type CloudNotebookDashboardFilterId =
   | "all"
   | "owned"
   | "shared"
+  | "compute"
   | "published"
   | "generated"
   | "untitled";
@@ -66,8 +73,9 @@ export interface CloudNotebookDashboardRow {
 }
 
 export interface CloudNotebookDashboardRowFact {
-  kind: "access" | "published";
+  kind: "access" | "compute" | "published";
   label: string;
+  tone?: "active" | "starting" | "stale" | "error";
 }
 
 export interface CloudNotebookDashboardSectionFilterAction {
@@ -235,6 +243,9 @@ export function isCloudNotebookListItem(value: unknown): value is CloudNotebookL
     typeof candidate.created_at === "string" &&
     typeof candidate.updated_at === "string" &&
     (candidate.latest_revision_id === null || typeof candidate.latest_revision_id === "string") &&
+    (candidate.compute_session === undefined ||
+      candidate.compute_session === null ||
+      isNotebookComputeSessionSummary(candidate.compute_session)) &&
     typeof candidate.viewer_url === "string" &&
     Boolean(candidate.endpoints) &&
     typeof candidate.endpoints?.catalog === "string" &&
@@ -265,6 +276,7 @@ function cloudNotebookDashboardFilters(
 ): CloudNotebookDashboardFilter[] {
   const generatedCount = notebooks.filter(cloudNotebookIsGeneratedRun).length;
   const ownerCount = notebooks.filter((notebook) => notebook.scope === "owner").length;
+  const computeCount = notebooks.filter(cloudNotebookHasComputeSession).length;
   const publishedCount = notebooks.filter((notebook) =>
     Boolean(notebook.latest_revision_id),
   ).length;
@@ -278,6 +290,9 @@ function cloudNotebookDashboardFilters(
   }
   if (sharedCount > 0) {
     filters.push({ id: "shared", label: "Shared with me", count: sharedCount, group: "work" });
+  }
+  if (computeCount > 0) {
+    filters.push({ id: "compute", label: "Compute", count: computeCount, group: "work" });
   }
   if (publishedCount > 0) {
     filters.push({ id: "published", label: "Published", count: publishedCount, group: "work" });
@@ -348,6 +363,11 @@ function cloudNotebookDashboardSections(
 
   if (context.filterId === "generated") {
     sections.push(generatedNotebookSection(notebooks, { limit: null }));
+    return sections;
+  }
+
+  if (context.filterId === "compute") {
+    sections.push(computeNotebookSection(notebooks));
     return sections;
   }
 
@@ -466,6 +486,21 @@ function sharedWithMeNotebookSection(
   };
 }
 
+function computeNotebookSection(
+  notebooks: readonly CloudNotebookListItem[],
+): CloudNotebookDashboardSection {
+  return {
+    action: null,
+    detail: bucketDetail(notebooks.length, "with compute state"),
+    id: "compute",
+    notebooks,
+    overflowAction: null,
+    rows: dashboardRows(notebooks),
+    title: "Active compute",
+    totalCount: notebooks.length,
+  };
+}
+
 function generatedNotebookSection(
   notebooks: readonly CloudNotebookListItem[],
   options: { limit: number | null },
@@ -577,6 +612,14 @@ function cloudNotebookDashboardRowFacts(
   notebook: CloudNotebookListItem,
 ): CloudNotebookDashboardRowFact[] {
   const facts: CloudNotebookDashboardRowFact[] = [];
+  const computeFact = projectNotebookComputeSessionFact(notebook.compute_session);
+  if (computeFact) {
+    facts.push({
+      kind: "compute",
+      label: computeFact.label,
+      tone: computeFact.tone,
+    });
+  }
   switch (notebook.scope) {
     case "editor":
       facts.push({ kind: "access", label: "editor" });
@@ -605,6 +648,10 @@ function cloudNotebookIsGeneratedRun(notebook: CloudNotebookListItem): boolean {
   );
 }
 
+function cloudNotebookHasComputeSession(notebook: CloudNotebookListItem): boolean {
+  return Boolean(notebook.compute_session);
+}
+
 function cloudNotebookMatchesFilter(
   notebook: CloudNotebookListItem,
   filterId: CloudNotebookDashboardFilterId,
@@ -616,6 +663,8 @@ function cloudNotebookMatchesFilter(
       return notebook.scope === "owner";
     case "shared":
       return notebook.scope !== "owner";
+    case "compute":
+      return cloudNotebookHasComputeSession(notebook);
     case "published":
       return Boolean(notebook.latest_revision_id);
     case "generated":
@@ -633,6 +682,7 @@ function cloudNotebookMatchesSearch(notebook: CloudNotebookListItem, query: stri
     notebook.scope,
     notebook.latest_revision_id ? "published" : "private",
     cloudNotebookDisplayTitle(notebook),
+    notebook.compute_session ? "compute runtime workstation active starting stale" : null,
   ]
     .filter(Boolean)
     .join(" ")
@@ -655,6 +705,8 @@ function cloudNotebookDashboardEmptyMessage(
       return "No owned notebooks yet.";
     case "shared":
       return "No notebooks have been shared with this account.";
+    case "compute":
+      return "No notebooks have active compute state.";
     case "published":
       return "No published notebooks yet.";
     case "generated":

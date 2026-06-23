@@ -377,6 +377,19 @@ export {
   type ProjectNotebookWorkstationAttachmentFromClaimOptions,
 } from "./notebook-workstation-attachment";
 
+// Notebook compute session projection
+export {
+  clearNotebookComputeSessionProjectionCacheForTests,
+  isNotebookComputeSessionStatus,
+  isNotebookComputeSessionSummary,
+  projectNotebookComputeSessionFact,
+  projectNotebookComputeSessionSummary,
+  type NotebookComputeSessionFactProjection,
+  type NotebookComputeSessionStatus,
+  type NotebookComputeSessionSummary,
+  type ProjectNotebookComputeSessionSummaryOptions,
+} from "./notebook-compute-session";
+
 // Notebook workstation launch-readiness projection
 export {
   clearNotebookWorkstationLaunchReadinessProjectionCacheForTests,

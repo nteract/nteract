@@ -7,6 +7,7 @@ import {
   Loader2,
   PencilLine,
   Search,
+  Server,
   Share2,
   UserRound,
   X,
@@ -372,6 +373,15 @@ function canRenameCloudNotebook(notebook: CloudNotebookListItem): boolean {
 }
 
 function CloudNotebookDashboardFact({ fact }: { fact: CloudNotebookDashboardRowFact }) {
+  if (fact.kind === "compute") {
+    return (
+      <span data-state={fact.tone ?? "active"}>
+        <Server aria-hidden="true" />
+        {fact.label}
+      </span>
+    );
+  }
+
   if (fact.kind === "published") {
     return (
       <span data-state="published">

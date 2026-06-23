@@ -4,7 +4,8 @@ import type {
   Env,
   WebSocketRequestResponsePair,
 } from "./cloudflare-types.ts";
-import type { WorkstationAttachmentState } from "runtimed";
+import { projectNotebookComputeSessionSummary, type WorkstationAttachmentState } from "runtimed";
+import { deleteOwnerComputeSession, upsertOwnerComputeSession } from "./compute-session-index.ts";
 import { identityDisplayLabel } from "./display-label.ts";
 import {
   allowsBlobUpload,
@@ -41,6 +42,7 @@ import {
   type SyncFrameBudgetDirection,
   type SyncFrameBudgetSummary,
 } from "./sync-frame-budget.ts";
+import { getNotebookRow } from "./storage.ts";
 
 interface Peer {
   id: string;
@@ -422,6 +424,7 @@ export class NotebookRoom {
           suppressRuntimePeerWatch: true,
         });
       }
+      this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId, attachment));
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
       }
@@ -501,6 +504,7 @@ export class NotebookRoom {
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
       }
+      this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
       const checkpointPersisted = result.changed
         ? await this.checkpointRoomHost(notebookId, materializer, "runtime_state_repair")
         : true;
@@ -1281,6 +1285,7 @@ export class NotebookRoom {
         this.deliverRoomHostFrames(notebookId, result);
         await this.checkpointRoomHost(notebookId, materializer, "runtime_peer_attachment");
       }
+      await this.publishCurrentComputeSessionSummary(notebookId, attachment);
       cloudLog("debug", "room.workstation_attachment.published", {
         notebook_id: notebookId,
         peer_id: peer.id,
@@ -1299,6 +1304,45 @@ export class NotebookRoom {
         duration_ms: durationMs(startedAt),
         error: errorMessage(error),
         counter: "workstation_attachment_publish_failed",
+        counter_delta: 1,
+      });
+    }
+  }
+
+  private async publishCurrentComputeSessionSummary(
+    notebookId: string,
+    attachment?: WorkstationAttachmentState | null,
+  ): Promise<void> {
+    if (!this.env.OWNER_COMPUTE_INDEX || !this.env.DB) {
+      return;
+    }
+    try {
+      const [notebook, currentAttachment] = await Promise.all([
+        getNotebookRow(this.env, notebookId),
+        attachment === undefined
+          ? this.materializerFor(notebookId).getWorkstationAttachment()
+          : Promise.resolve(attachment),
+      ]);
+      if (!notebook) {
+        return;
+      }
+      const summary = projectNotebookComputeSessionSummary({
+        attachment: currentAttachment,
+        notebookId,
+        ownerPrincipal: notebook.owner_principal,
+        runtimePeerCount: this.runtimePeerCount(),
+        updatedAt: new Date().toISOString(),
+      });
+      if (summary) {
+        await upsertOwnerComputeSession(this.env, summary);
+      } else {
+        await deleteOwnerComputeSession(this.env, notebook.owner_principal, notebookId);
+      }
+    } catch (error) {
+      cloudLog("warn", "room.compute_session_summary.publish_failed", {
+        notebook_id: notebookId,
+        error: errorMessage(error),
+        counter: "compute_session_summary_publish_failed",
         counter_delta: 1,
       });
     }
@@ -1895,6 +1939,7 @@ export class NotebookRoom {
     // runtime_peer behind.
     if (peer.identity.scope === "runtime_peer" && !closeOptions.suppressRuntimePeerWatch) {
       this.refreshRuntimePeerWatch(notebookId);
+      this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
     }
   }
 
@@ -2014,6 +2059,7 @@ export class NotebookRoom {
         counter: "runtime_peer_gone_recovered",
         counter_delta: 1,
       });
+      this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
       return;
     }
 
@@ -2030,6 +2076,7 @@ export class NotebookRoom {
           "runtime_peer_watch_reconcile",
         );
       }
+      this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
       cloudLog("info", "room.runtime_peer_watch.reconciled", {
         notebook_id: notebookId,
         changed: result.changed,
