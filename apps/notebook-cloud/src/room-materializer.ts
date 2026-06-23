@@ -87,14 +87,14 @@ export class RoomMaterializer {
     return this.withHost((host) => normalizeResult(host.reconcile_runtime_peer_gone(reason)));
   }
 
+  async getRuntimeQueueDepth(): Promise<number> {
+    return this.withHost((host) => Math.max(0, Math.trunc(host.get_runtime_queue_depth())));
+  }
+
   async getWorkstationAttachment(): Promise<WorkstationAttachmentState | null> {
     return this.withHost((host) =>
       normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json()),
     );
-  }
-
-  async getRuntimeQueueDepth(): Promise<number> {
-    return this.withHost((host) => Math.max(0, Math.trunc(host.get_runtime_queue_depth())));
   }
 
   /// Publish the room-host-owned active workstation attachment into the
