@@ -1,6 +1,6 @@
 [package]
 name = "runt-publish"
-version = "0.1.1"
+version = "0.2.0"
 edition.workspace = true
 description = "Publisher library for hosted nteract notebook-cloud demos (CLI surface: `runt publish`)"
 repository.workspace = true

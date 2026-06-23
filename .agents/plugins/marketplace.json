@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "nteract",
-      "version": "0.3.2",
+      "version": "0.4.0",
       "source": {
         "source": "local",
         "path": "./plugins/nteract"
@@ -19,7 +19,7 @@
     },
     {
       "name": "nightly",
-      "version": "0.3.2",
+      "version": "0.4.0",
       "source": {
         "source": "local",
         "path": "./plugins/nightly"
