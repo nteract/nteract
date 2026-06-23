@@ -29,6 +29,7 @@ import type {
   R2ObjectBody,
   R2PutOptions,
 } from "../src/cloudflare-types.ts";
+import type { NotebookComputeSessionSummary } from "runtimed";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import {
   WORKSTATION_ATTACH_JOB_STALE_MS,
@@ -1857,6 +1858,74 @@ describe("Worker artifact routes", () => {
     assert.equal(body.notebooks[1]?.title, "Editor Shared");
     assert.equal(body.notebooks[1]?.viewer_url, "http://localhost/n/editor-shared/Editor%20Shared");
     assert.equal(body.notebooks[1]?.endpoints.catalog, "/api/n/editor-shared");
+  });
+
+  it("enriches owned notebook rows with owner-scoped compute sessions", async () => {
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute });
+    seedNotebook(env, "owned-active");
+    seedNotebook(env, "shared-active");
+    env.DB.notebooks.get("shared-active")!.owner_principal = "user:dev:bob";
+    seedAcl(env, { notebookId: "owned-active", subject: "user:dev:alice", scope: "owner" });
+    seedAcl(env, { notebookId: "shared-active", subject: "user:dev:alice", scope: "editor" });
+    compute.sessions.set("owned-active", {
+      environment_label: "Current Python",
+      last_runtime_seen_at: "2026-06-23T00:00:00.000Z",
+      notebook_id: "owned-active",
+      owner_principal: "user:dev:alice",
+      queue_depth: 0,
+      runtime_peer_count: 1,
+      runtime_session_id: "job-1",
+      status: "active",
+      status_message: null,
+      updated_at: "2026-06-23T00:00:00.000Z",
+      working_directory: "/home/ubuntu/project",
+      workstation_display_name: "lab2 workstation",
+      workstation_id: "ws-lab2",
+    });
+    compute.sessions.set("shared-active", {
+      environment_label: "Current Python",
+      last_runtime_seen_at: "2026-06-23T00:00:00.000Z",
+      notebook_id: "shared-active",
+      owner_principal: "user:dev:bob",
+      queue_depth: 0,
+      runtime_peer_count: 1,
+      runtime_session_id: "job-2",
+      status: "active",
+      status_message: null,
+      updated_at: "2026-06-23T00:00:00.000Z",
+      working_directory: "/home/bob/project",
+      workstation_display_name: "bob workstation",
+      workstation_id: "ws-bob",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      notebooks: Array<{
+        compute_session?: NotebookComputeSessionSummary | null;
+        notebook_id: string;
+      }>;
+    };
+    const owned = body.notebooks.find((notebook) => notebook.notebook_id === "owned-active");
+    const shared = body.notebooks.find((notebook) => notebook.notebook_id === "shared-active");
+    assert.equal(owned?.compute_session?.workstation_id, "ws-lab2");
+    assert.equal(shared?.compute_session, null);
+    assert.deepEqual(
+      compute.requests.map((request) => [request.objectName, request.notebookIds]),
+      [["owner-compute:v1:user:dev:alice", ["owned-active"]]],
+    );
   });
 
   it("requires sign-in before listing notebooks", async () => {
@@ -6458,6 +6527,43 @@ class FakeWorkstationEventsNamespace implements DurableObjectNamespace {
           });
         }
         return Response.json({ error: "not found" }, { status: 404 });
+      },
+    };
+  }
+}
+
+interface FakeOwnerComputeIndexRequest {
+  notebookIds: string[];
+  objectName: string;
+}
+
+class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
+  readonly requests: FakeOwnerComputeIndexRequest[] = [];
+  readonly sessions = new Map<string, NotebookComputeSessionSummary>();
+
+  idFromName(name: string): { toString(): string } {
+    return { toString: () => name };
+  }
+
+  get(id: { toString(): string }) {
+    const requests = this.requests;
+    const sessions = this.sessions;
+    const objectName = id.toString();
+    return {
+      fetch: async (request: Request) => {
+        const pathname = new URL(request.url).pathname;
+        if (pathname !== "/list") {
+          return Response.json({ error: "not found" }, { status: 404 });
+        }
+        const payload = (await request.json().catch(() => ({}))) as {
+          notebook_ids?: string[];
+        };
+        const notebookIds = Array.isArray(payload.notebook_ids) ? payload.notebook_ids : [];
+        requests.push({ objectName, notebookIds });
+        return Response.json({
+          ok: true,
+          sessions: notebookIds.map((notebookId) => sessions.get(notebookId)).filter(Boolean),
+        });
       },
     };
   }

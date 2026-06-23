@@ -1,6 +1,14 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { CloudflareWebSocket, DurableObjectState, Env } from "../src/cloudflare-types.ts";
+import type {
+  CloudflareWebSocket,
+  D1Database,
+  D1PreparedStatement,
+  D1Result,
+  DurableObjectNamespace,
+  DurableObjectState,
+  Env,
+} from "../src/cloudflare-types.ts";
 import {
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   TRUSTED_WEBSOCKET_PROTOCOL_HEADER,
@@ -1054,7 +1062,8 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("disconnects runtime peers when replacement workstation attachment control is published", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const room = new NotebookRoom(state.state, roomEnvWithComputeIndex(compute));
     const harness = roomHarness(room);
     const runtimeSocket = new FakeSocket();
     const runtimePeer = {
@@ -1110,6 +1119,16 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.equal(runtimeSocket.closeCode, 1012);
     assert.equal(runtimeSocket.closeReason, "workstation restart requested");
     assert.equal(await state.getAlarm(), null, "intentional replacement does not arm stale repair");
+    assert.deepEqual(
+      compute.requests.map((request) => [
+        request.objectName,
+        new URL(request.url).pathname,
+        request.body?.summary?.status,
+        request.body?.summary?.runtime_peer_count,
+        request.body?.summary?.workstation_id,
+      ]),
+      [["owner-compute:v1:user:dev:alice", "/upsert", "starting", 0, "ws-lab2"]],
+    );
   });
 
   it("disconnects anonymous viewers when public link access is revoked", async () => {
@@ -1667,6 +1686,15 @@ describe("NotebookRoom materialized sync routing", () => {
       connectedAt: "2026-05-22T00:00:00.000Z",
     };
     const harness = roomHarness(room);
+    harness.peers.set("runtime", {
+      ...peer,
+      id: "runtime",
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=alice&operator=runtime:py&scope=runtime_peer",
+        ),
+      ),
+    });
     let materialized = 0;
     harness.materializers.set("demo", {
       receiveFrame: async () => {
@@ -2795,6 +2823,83 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     assert.equal(reconcileCalls, 1, "alarm reconciles the orphaned room");
   });
 
+  it("publishes active runtime peers to the owner compute index", async () => {
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = roomEnvWithComputeIndex(compute);
+    const room = new NotebookRoom(fakeState(), env);
+    const harness = roomHarness(room);
+    const runtimePeer = {
+      ...peerWithScope("rt", "runtime_peer"),
+      workstation: {
+        workstationId: "ws-lab2",
+        displayName: "lab2 workstation",
+        defaultEnvironmentLabel: "Current Python",
+        environmentPolicy: "current_python",
+        runtimeSessionId: "job-1",
+        workingDirectory: "/home/ubuntu/project",
+      },
+    };
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      setWorkstationAttachment: async () => ({
+        ...noopMaterializedResult(),
+        changed: true,
+        runtime_state_changed: true,
+      }),
+    } as never);
+
+    await harness.publishRuntimePeerAttachment("demo", runtimePeer);
+
+    assert.deepEqual(
+      compute.requests.map((request) => [
+        request.objectName,
+        new URL(request.url).pathname,
+        request.body?.summary?.status,
+        request.body?.summary?.runtime_peer_count,
+        request.body?.summary?.workstation_id,
+      ]),
+      [["owner-compute:v1:user:dev:alice", "/upsert", "active", 1, "ws-lab2"]],
+    );
+  });
+
+  it("publishes stale compute when the last runtime peer leaves", async () => {
+    const state = hibernatedState([]);
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = roomEnvWithComputeIndex(compute);
+    const room = new NotebookRoom(state.state, env);
+    const harness = roomHarness(room);
+    const runtimePeer = peerWithScope("rt", "runtime_peer");
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab2",
+        display_name: "lab2 workstation",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "ready",
+        status_message: null,
+        updated_at: "2026-06-23T00:00:00.000Z",
+        runtime_session_id: "job-1",
+      }),
+      removePeer: async () => undefined,
+      reconcileRuntimePeerGone: async () => noopMaterializedResult(),
+    } as never);
+
+    harness.removePeer("demo", runtimePeer);
+    await state.drain();
+
+    const staleRequest = compute.requests.find(
+      (request) => request.body?.summary?.status === "stale",
+    );
+    assert.equal(staleRequest?.objectName, "owner-compute:v1:user:dev:alice");
+    assert.equal(staleRequest?.body?.summary?.runtime_peer_count, 0);
+  });
+
   it("disarms (no reconcile) when a runtime_peer rejoins within the grace window", async () => {
     const state = alarmCapableState();
     const room = new NotebookRoom(state.state, {} as Env);
@@ -3065,6 +3170,99 @@ function fakeState(): DurableObjectState {
     },
     waitUntil: () => undefined,
   };
+}
+
+function roomEnvWithComputeIndex(computeIndex: DurableObjectNamespace): Env {
+  return {
+    DB: new NotebookOwnerD1(),
+    NOTEBOOK_ROOMS: {
+      idFromName: (name: string) => ({ toString: () => name }),
+      get: () => ({
+        fetch: async () => new Response("not implemented", { status: 501 }),
+      }),
+    },
+    OWNER_COMPUTE_INDEX: computeIndex,
+  } as Env;
+}
+
+interface FakeOwnerComputeIndexRequest {
+  body: { summary?: { runtime_peer_count?: number; status?: string; workstation_id?: string } };
+  objectName: string;
+  url: string;
+}
+
+class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
+  readonly requests: FakeOwnerComputeIndexRequest[] = [];
+
+  idFromName(name: string): { toString(): string } {
+    return { toString: () => name };
+  }
+
+  get(id: { toString(): string }) {
+    const requests = this.requests;
+    const objectName = id.toString();
+    return {
+      fetch: async (request: Request) => {
+        const body = (await request
+          .json()
+          .catch(() => ({}))) as FakeOwnerComputeIndexRequest["body"];
+        requests.push({ body, objectName, url: request.url });
+        return Response.json({ ok: true });
+      },
+    };
+  }
+}
+
+class NotebookOwnerD1 implements D1Database {
+  prepare(query: string): D1PreparedStatement {
+    return new NotebookOwnerD1Statement(query);
+  }
+
+  async exec(): Promise<D1Result> {
+    return d1OkResult();
+  }
+
+  async batch<T = unknown>(): Promise<D1Result<T>[]> {
+    return [];
+  }
+}
+
+class NotebookOwnerD1Statement implements D1PreparedStatement {
+  private values: unknown[] = [];
+
+  constructor(private readonly query: string) {}
+
+  bind(...values: unknown[]): D1PreparedStatement {
+    this.values = values;
+    return this;
+  }
+
+  async first<T = unknown>(): Promise<T | null> {
+    if (this.query.includes("FROM notebooks") && this.query.includes("WHERE id = ?")) {
+      const notebookId = String(this.values[0] ?? "demo");
+      return {
+        id: notebookId,
+        owner_principal: "user:dev:alice",
+        title: "Demo",
+        created_at: "2026-06-23T00:00:00.000Z",
+        updated_at: "2026-06-23T00:00:00.000Z",
+        latest_revision_id: null,
+      } as T;
+    }
+    return null;
+  }
+
+  async run<T = unknown>(): Promise<D1Result<T>> {
+    return d1OkResult<T>();
+  }
+
+  async all<T = unknown>(): Promise<D1Result<T>> {
+    return d1OkResult<T>([]);
+  }
+}
+
+function d1OkResult<T = unknown>(results: T[] = []): D1Result<T> {
+  return { results, success: true, meta: {} };
 }
 
 function hibernatedState(sockets: CloudflareWebSocket[]): {
