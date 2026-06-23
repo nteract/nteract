@@ -833,6 +833,14 @@ impl RoomHostHandle {
             .map_err(|e| JsError::new(&format!("serialize workstation attachment: {e}")))
     }
 
+    /// Number of executions currently waiting behind any active execution.
+    ///
+    /// Dashboard summaries use this for "N queued" without materializing a
+    /// browser-side shadow of RuntimeStateDoc queue state.
+    pub fn get_runtime_queue_depth(&self) -> usize {
+        self.state_doc.read_state().queue.queued.len()
+    }
+
     /// Generate current sync frames for a peer.
     ///
     /// The Worker calls this immediately after accepting a socket and after the
@@ -5969,6 +5977,11 @@ mod tests {
             "accepted hosted execution intent is immediately visible in the queue projection"
         );
         assert_eq!(
+            host.get_runtime_queue_depth(),
+            1,
+            "queue-depth accessor reflects RuntimeStateDoc queued executions"
+        );
+        assert_eq!(
             host.doc.get_execution_id("cell-1").as_deref(),
             Some(eid.as_str()),
             "the cell points at its queued execution"
@@ -6083,6 +6096,11 @@ mod tests {
                 },
             ],
             "run-all publishes the visible queue in notebook order"
+        );
+        assert_eq!(
+            host.get_runtime_queue_depth(),
+            2,
+            "queue-depth accessor reflects every queued run-all execution"
         );
     }
 
