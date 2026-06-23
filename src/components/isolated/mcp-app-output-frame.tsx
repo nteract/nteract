@@ -25,6 +25,7 @@ export interface McpAppOutputFrameProps {
   rendererPluginLoader?: NteractOutputRendererPluginLoader;
   rendererAssetsBaseUrl?: string;
   outputDocumentUrl?: string | null;
+  inlineRasterBlobImages?: boolean;
   autoHeight?: boolean;
   maxHeight?: number;
   className?: string;
@@ -47,6 +48,7 @@ export function McpAppOutputFrame({
   rendererPluginLoader,
   rendererAssetsBaseUrl,
   outputDocumentUrl,
+  inlineRasterBlobImages,
   autoHeight,
   maxHeight,
   className,
@@ -62,8 +64,13 @@ export function McpAppOutputFrame({
     [outputCells, blobBaseUrl],
   );
   const blobResolver = useMemo(
-    () => (blobBaseUrl ? createMcpAppBlobResolver(blobBaseUrl) : createInlineOnlyBlobResolver()),
-    [blobBaseUrl],
+    () =>
+      blobBaseUrl
+        ? createMcpAppBlobResolver(blobBaseUrl, {
+            inlineRasterImageBlobs: inlineRasterBlobImages,
+          })
+        : createInlineOnlyBlobResolver(),
+    [blobBaseUrl, inlineRasterBlobImages],
   );
   const hostContextPatch = useMemo(
     () =>

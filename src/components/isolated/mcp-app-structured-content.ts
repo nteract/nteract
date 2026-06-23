@@ -36,7 +36,15 @@ export interface McpSharedOutputInputs {
   resolveOptions: ResolveEmbeddableOutputsOptions;
 }
 
+export const MCP_APP_INLINE_RASTER_IMAGE_MAX_BYTES = 256 * 1024;
+
 const COLLAPSED_PREVIEW_MIME_TYPES = new Set(["text/plain", "text/llm+plain", "application/json"]);
+const INLINE_RASTER_IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
 
 function trimTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
@@ -219,11 +227,87 @@ export function mcpAppCellPreviewText(cell: McpAppCellData): string {
   return cell.status || "";
 }
 
-export function createMcpAppBlobResolver(blobBaseUrl: string): OutputBlobResolver {
+interface McpAppBlobResolverOptions {
+  inlineRasterImageBlobs?: boolean;
+  maxInlineImageBytes?: number;
+}
+
+function parseContentLength(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+export function createMcpAppBlobResolver(
+  blobBaseUrl: string,
+  options: McpAppBlobResolverOptions = {},
+): OutputBlobResolver {
   const base = trimTrailingSlash(blobBaseUrl);
   const url = (ref: { blob: string }) => `${base}/blob/${encodeURIComponent(ref.blob)}`;
+  const maxInlineImageBytes = options.maxInlineImageBytes ?? MCP_APP_INLINE_RASTER_IMAGE_MAX_BYTES;
+  const displayUrlCache = new Map<string, Promise<string>>();
+
+  async function inlineRasterImageDisplayUrl(
+    ref: { blob: string; size?: number; media_type?: string },
+    mediaType?: string,
+  ): Promise<string> {
+    const resolvedUrl = url(ref);
+    const imageMimeType = mediaType ?? ref.media_type;
+    if (!imageMimeType || !INLINE_RASTER_IMAGE_MIME_TYPES.has(imageMimeType)) {
+      return resolvedUrl;
+    }
+    if (ref.size != null && ref.size > maxInlineImageBytes) {
+      return resolvedUrl;
+    }
+
+    const cacheKey = `${ref.blob}:${imageMimeType}`;
+    const cached = displayUrlCache.get(cacheKey);
+    if (cached) return cached;
+
+    const promise = (async () => {
+      try {
+        const response = await fetch(resolvedUrl);
+        if (!response.ok) return resolvedUrl;
+
+        const declaredBytes =
+          parseContentLength(response.headers.get("content-length")) ?? ref.size;
+        if (declaredBytes == null || declaredBytes > maxInlineImageBytes) {
+          void response.body?.cancel().catch(() => {});
+          return resolvedUrl;
+        }
+
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.byteLength > maxInlineImageBytes) {
+          return resolvedUrl;
+        }
+
+        return `data:${imageMimeType};base64,${bytesToBase64(bytes)}`;
+      } catch {
+        return resolvedUrl;
+      }
+    })();
+
+    displayUrlCache.set(cacheKey, promise);
+    return promise;
+  }
+
   return {
     url,
+    ...(options.inlineRasterImageBlobs
+      ? {
+          displayUrl: inlineRasterImageDisplayUrl,
+          resolvesBinaryUrlsSynchronously: false,
+        }
+      : { resolvesBinaryUrlsSynchronously: true }),
     fetch(ref) {
       return fetch(url(ref));
     },

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   createDaemonRendererPluginLoader,
+  daemonOutputFrameBlockedByHostCsp,
+  daemonOutputFrameOrigin,
   daemonOutputFrameUrl,
   daemonRendererAssetsBaseUrl,
 } from "../daemon-renderer-assets";
@@ -51,6 +53,22 @@ describe("daemon renderer assets", () => {
       }),
     ).toBeNull();
     expect(daemonOutputFrameUrl("http://localhost:47830/", { frameDomains: [] })).toBeNull();
+  });
+
+  it("reports when the host CSP blocks the daemon output frame origin", () => {
+    expect(
+      daemonOutputFrameBlockedByHostCsp("http://localhost:47830/", {
+        frameDomains: ["http://localhost:47830"],
+      }),
+    ).toBe(false);
+    expect(
+      daemonOutputFrameBlockedByHostCsp("http://localhost:47830/", {
+        frameDomains: ["https://outputs.example.test"],
+      }),
+    ).toBe(true);
+    expect(daemonOutputFrameBlockedByHostCsp(undefined, { frameDomains: [] })).toBe(false);
+    expect(daemonOutputFrameBlockedByHostCsp("http://localhost:47830/", null)).toBe(false);
+    expect(daemonOutputFrameOrigin("http://localhost:47830/")).toBe("http://localhost:47830");
   });
 
   it("fetches raw renderer plugin assets from the daemon renderer-plugin route", async () => {
