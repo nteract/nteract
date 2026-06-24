@@ -1,9 +1,14 @@
 ---
 name: frontend-dev
-description: Frontend development, design exploration for UI and Elements surfaces, hot reload, dev daemon setup, MCP server workflow, and TypeScript bindings generation via ts-rs.
+description: Frontend development for nteract UI/product surfaces, Elements fixtures, hot reload, dev daemon setup, MCP server workflow, TypeScript bindings via ts-rs, and reactive state work that touches RxJS streams, useSyncExternalStore stores, or WASM-backed notebook/runtime projections.
 ---
 
 # Frontend Development
+
+Use this skill for UI/product work and for TypeScript state surfaces that feed
+shared notebook UI. If the task is primarily Automerge protocol, daemon/kernel
+execution, MCP session lifecycle, or release mechanics, use the more specific
+repo skill for that subsystem first and return here only for app integration.
 
 ## Quick Reference
 
@@ -126,6 +131,75 @@ should not fork cell, output, rail, toolbar, or execution UI.
 - When adding new API facts for UI, keep them structured and host-owned. Avoid
   parsing principal strings, display labels, or notebook IDs in React except as
   compatibility fallback.
+
+## Reactive State and WASM Projection Work
+
+Use this subsection when editing RxJS or shared-store code such as
+`packages/runtimed/src/sync-engine.ts`,
+`packages/runtimed/src/*store*.ts`,
+`src/components/notebook/state/*`,
+`apps/notebook/src/lib/notebook-sync-store-bridge.ts`, or
+`apps/notebook-cloud/viewer/*facts*.ts`.
+
+### State Boundary
+
+- Start from the durable owner: `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`,
+  `CommentsDoc`, or host-owned APIs/session facts. React state is for local UI
+  affordances, not another copy of document/runtime truth.
+- Prefer WASM-emitted changesets and projections (`CellChangeset`,
+  `ExecutionViewChangeset`, `outputIdChanges$`, `commentsProjection$`,
+  `notebookSyncApplied$`) over second-pass TypeScript diffs.
+- Shared components should consume shared stores. Host code should inject source
+  facts and side-effect adapters, not duplicate projection logic.
+- Keep host policy host-owned: D1/ACL/OIDC/session state, Tauri daemon
+  lifecycle, filesystem/package-manager access, and workstation source facts do
+  not belong in `runtimed-wasm` or shared React stores. Project their results
+  only when shared UI needs them.
+
+### RxJS Shape
+
+- Keep `Subject`, `BehaviorSubject`, and `ReplaySubject` private. Expose
+  readonly `Observable` fields through `.asObservable()`.
+- Prefer one authoritative subject plus `select(project, equals)` style
+  projections with `distinctUntilChanged`. Add structural comparators when the
+  projector allocates arrays or objects.
+- Keep stream logic inside `.pipe()` where it is composable. Manual
+  `.subscribe(...)` belongs at bridge edges that drive imperative sinks; collect
+  those subscriptions in a `Subscription` and tear them down.
+- Choose flattening operators by semantics: `switchMap` for latest-only work,
+  `concatMap` for ordered materialization or writes, `mergeMap` for independent
+  frame/event expansion, and `exhaustMap` for duplicate-submit suppression.
+- Put `catchError` inside the inner observable when the outer session stream
+  must keep running. Avoid letting one bad frame, blob fetch, or projection kill
+  a long-lived bridge.
+- Use `shareReplay` with an explicit lifetime. `refCount: false` is appropriate
+  for app/session-lifetime shared store projections that must keep one cache;
+  `refCount: true` is safer for cold sources whose subscription should end when
+  consumers detach.
+
+### React Binding
+
+- Use `useSyncExternalStore` for shared notebook store hooks. The observable
+  adapted by `useRuntimeProjection`-style helpers must emit synchronously on
+  subscribe, usually through `BehaviorSubject`, `ReplaySubject(1)`, or a seeded
+  `shareReplay` projection.
+- Subscribe to the narrowest projected fact the UI needs instead of the whole
+  runtime or notebook snapshot. This avoids re-rendering on unrelated daemon
+  ticks and keeps Desktop and Cloud behavior converged.
+- For async materialization or blob/output resolution, preserve ordering with
+  `concatMap` or an explicit queue. After every `await`, check that the live
+  handle/session still matches before writing stores.
+- Reset paths must invalidate stale async writes, not just clear visible state.
+
+### Verification
+
+- Add virtual-time tests (`rxjs/testing` or `VirtualTimeScheduler`) for timers,
+  throttles, cancellation, and ordered stream behavior.
+- Add store-level tests for synchronous snapshot seeding, deduped emissions,
+  loaded/default-state gates, and stale-write guards.
+- If a change crosses the WASM projection boundary, regenerate or freshness-check
+  runtime WASM artifacts with the repo xtask flow before trusting TypeScript
+  results.
 
 ## Hot Reload
 
