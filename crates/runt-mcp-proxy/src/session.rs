@@ -29,9 +29,16 @@ pub fn extract_session_id(
         // `open_notebook` kept for one release as a legacy alias — clients
         // may still be invoking it from stale tool caches.
         "connect_notebook" | "open_notebook" | "create_notebook" => {
-            // Explicit hosted/view-only target argument wins outright.
-            if let Some(target) = args.and_then(|a| a.get("target")).and_then(Value::as_str) {
-                return Some(target.to_string());
+            let target = args.and_then(|a| a.get("target")).and_then(Value::as_str);
+
+            // A hosted/view-only URL target is a cross-machine identity the
+            // proxy must preserve verbatim. A *local* target (a UUID or a path)
+            // is not durable across a daemon swap, so it does NOT short-circuit
+            // here — it falls through to the file-path preference below.
+            if let Some(t) = target {
+                if is_hosted_target(t) {
+                    return Some(t.to_string());
+                }
             }
 
             // Hosted notebook addressed by notebook_id + a non-local domain.
@@ -49,15 +56,19 @@ pub fn extract_session_id(
             // file-backed rooms. The path is the only handle that survives a
             // daemon swap — rejoining by UUID lands on an empty room because the
             // UUID is daemon-instance scoped (ADR mcp-session-lifecycle,
-            // Decision 8). The child surfaces `notebook_path` in connect/create
-            // responses for file-backed rooms; ephemeral notebooks omit it and
-            // legitimately rejoin by UUID below.
+            // Decision 8). The child surfaces `notebook_path` (absolute) in
+            // connect/create responses for file-backed rooms; ephemeral
+            // notebooks omit it and legitimately rejoin by UUID below.
             if let Some(path) = extract_notebook_path_from_result(result) {
                 return Some(path);
             }
 
-            // Fall back to the session-establishing argument, then the
-            // notebook_id the daemon returns in the body (create_notebook).
+            // Fall back to the session-establishing argument (local target,
+            // then notebook_id, then path), then the notebook_id the daemon
+            // returns in the body (create_notebook).
+            if let Some(t) = target {
+                return Some(t.to_string());
+            }
             if let Some(args) = args {
                 if let Some(id) = args
                     .get("notebook_id")
@@ -101,6 +112,14 @@ fn extract_notebook_id_from_result(result: &CallToolResult) -> Option<String> {
         }
     }
     None
+}
+
+/// A `target` is hosted when it is an http(s) URL. Local targets (a notebook
+/// UUID or a file path) are daemon-instance scoped and must not be preferred
+/// over a file path the child resolved.
+fn is_hosted_target(target: &str) -> bool {
+    let t = target.trim();
+    t.starts_with("http://") || t.starts_with("https://")
 }
 
 fn is_local_domain_alias(domain: &str) -> bool {
@@ -277,6 +296,54 @@ mod tests {
         assert_eq!(
             extract_session_id(&params, &result),
             Some("https://preview.runt.run/n/01KTZA152886TK1WAHYA48G7HJ".to_string())
+        );
+    }
+
+    #[test]
+    fn local_uuid_target_prefers_file_path_from_result() {
+        // A *local* target (UUID, not a hosted URL) must not short-circuit:
+        // the file path the child resolved wins so a respawn rejoins by path.
+        let params = make_params(
+            "connect_notebook",
+            serde_json::json!({"target": "550e8400-e29b-41d4-a716-446655440000"}),
+        );
+        let result = CallToolResult::success(vec![Content::text(
+            r#"{"notebook_id": "550e8400-e29b-41d4-a716-446655440000", "notebook_path": "/Users/me/fasty.ipynb"}"#,
+        )]);
+        assert_eq!(
+            extract_session_id(&params, &result),
+            Some("/Users/me/fasty.ipynb".to_string())
+        );
+    }
+
+    #[test]
+    fn local_uuid_target_without_result_path_falls_back_to_target() {
+        // Ephemeral via a local target: no path in the body, the target is the
+        // rejoin handle.
+        let params = make_params(
+            "connect_notebook",
+            serde_json::json!({"target": "550e8400-e29b-41d4-a716-446655440000"}),
+        );
+        assert_eq!(
+            extract_session_id(&params, &success_result()),
+            Some("550e8400-e29b-41d4-a716-446655440000".to_string())
+        );
+    }
+
+    #[test]
+    fn by_path_connect_prefers_absolute_path_from_result() {
+        // The path arg may be ~-prefixed; the child reports the absolute path in
+        // the body so the rejoin target is existence-checkable.
+        let params = make_params(
+            "connect_notebook",
+            serde_json::json!({"path": "~/fasty.ipynb"}),
+        );
+        let result = CallToolResult::success(vec![Content::text(
+            r#"{"notebook_id": "550e8400-e29b-41d4-a716-446655440000", "path": "/Users/me/fasty.ipynb", "notebook_path": "/Users/me/fasty.ipynb"}"#,
+        )]);
+        assert_eq!(
+            extract_session_id(&params, &result),
+            Some("/Users/me/fasty.ipynb".to_string())
         );
     }
 

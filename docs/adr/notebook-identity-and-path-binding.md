@@ -13,7 +13,7 @@
 
 A notebook needs an identity that survives the daemon process. Today it does not.
 
-When a room is created, the daemon mints a `notebook_id` as a fresh UUID (`crates/runtimed/src/notebook_sync_server/room.rs`, `Uuid::parse_str(notebook_id).unwrap_or_else(Uuid::new_v4)`). The notebook *document* is then persisted by that id to `docs_dir/<derived-from-notebook_id>` and reloaded from there on demand (the persist debouncer in `NotebookRoom`). So content already survives a restart - keyed by id.
+When a room is created, the daemon mints a `notebook_id` as a fresh UUID (`crates/runtimed/src/notebook_sync_server/room.rs`, `Uuid::parse_str(notebook_id).unwrap_or_else(Uuid::new_v4)`). The notebook *document* is persisted by that id to `docs_dir/<derived-from-notebook_id>`. The roles differ by kind (`room.rs:859`): for an **untitled** notebook the id-keyed doc is the only content record, loaded on restart so content survives. For a **file-backed** notebook the `.ipynb` is the source of truth, so the daemon deletes the stale id-keyed doc on load and re-imports from disk. Either way, content is recoverable across a restart - *if* the same notebook can be resolved to the same id (untitled) or the same file (file-backed).
 
 What does **not** survive is the binding from a file path to that id. The path-to-room binding lives only in memory (`RoomRegistry`, `set_bound_path`, `bind_existing`, `promote_after_save`). On a fresh daemon, opening the same `.ipynb` mints a **new** UUID and a new persisted doc. The same file therefore has different ids in different daemon lifetimes.
 

@@ -965,6 +965,10 @@ pub async fn open_notebook(
                     let mut response = serde_json::json!({
                         "notebook_id": notebook_id,
                         "path": abs_path.to_string_lossy(),
+                        // Absolute path under the key the proxy reads, so a
+                        // respawn after a daemon swap seeds an existence-checkable
+                        // path rather than a raw (possibly ~-prefixed) arg.
+                        "notebook_path": abs_path.to_string_lossy(),
                         "resumed": true,
                         "runtime": runtime_info,
                         "dependencies": deps,
@@ -997,6 +1001,10 @@ pub async fn open_notebook(
                 let mut response = serde_json::json!({
                     "notebook_id": notebook_id,
                     "path": abs_path.to_string_lossy(),
+                    // Absolute path under the key the proxy reads, so a respawn
+                    // after a daemon swap seeds an existence-checkable path
+                    // rather than a raw (possibly ~-prefixed) arg.
+                    "notebook_path": abs_path.to_string_lossy(),
                     "runtime": runtime_info,
                     "dependencies": deps,
                     "project_context": project_context,

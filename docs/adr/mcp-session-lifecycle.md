@@ -194,7 +194,7 @@ Ephemeral untitled notebooks are rejoined by UUID; file-backed notebooks are rej
 
 | Notebook type | Identified by | Rejoin method | Eviction check |
 |--------------|---------------|---------------|----------------|
-| File-backed | Path (UUID is derived) | `connect_open(path)` | `list_rooms` (only for ephemeral path; file-backed implicitly reloads) |
+| File-backed | Path; the UUID is daemon-local and not durable across restarts | `connect_open(path)` | `list_rooms` (only for ephemeral path; file-backed implicitly reloads) |
 | Ephemeral (untitled) | UUID | `connect(uuid)` | Explicit `list_rooms` lookup |
 
 The reason: file-backed rooms persist their state as `.ipynb`, not as a long-lived Automerge `.automerge` blob. When a file-backed room is reaped, its `.automerge` file is deleted; rejoining by UUID would create a new empty room with no cells. `connect_open(path)` triggers the daemon's reload-from-disk path so the agent finds the same cells it left.
