@@ -27,6 +27,7 @@ use tokio::sync::RwLock;
 use crate::async_outcome::{await_result_with_timeout, TimedResult};
 use crate::blob_server;
 use crate::blob_store::BlobStore;
+use crate::notebook_registry::NotebookRegistry;
 use crate::notebook_sync_server::{NotebookRooms, RoomRegistry};
 use crate::paths::{default_cache_dir, default_socket_path, pool_env_root};
 use crate::protocol::{Request, Response};
@@ -53,6 +54,8 @@ pub struct DaemonConfig {
     pub notebook_docs_dir: PathBuf,
     /// SQLite database storing package names the user has approved before.
     pub trusted_packages_db_path: PathBuf,
+    /// SQLite database mapping canonical notebook paths to stable notebook ids.
+    pub notebook_registry_db_path: PathBuf,
     /// Target number of UV environments to maintain.
     pub uv_pool_size: usize,
     /// Target number of Conda environments to maintain.
@@ -106,6 +109,7 @@ impl Default for DaemonConfig {
             execution_store_dir: crate::default_execution_store_dir(),
             notebook_docs_dir: crate::default_notebook_docs_dir(),
             trusted_packages_db_path: crate::trusted_packages_db_path(),
+            notebook_registry_db_path: crate::notebook_registry_db_path(),
             // These config defaults gate whether each warmer is enabled. The
             // effective target comes from synced settings so the selected
             // Python environment can default to a larger pool.
@@ -1123,6 +1127,8 @@ pub struct Daemon {
     execution_store: runtimed_client::execution_store::ExecutionStore,
     /// Local package allowlist used to auto-approve familiar dependencies.
     pub(crate) trusted_packages: TrustedPackageStore,
+    /// Persistent canonical-path -> stable notebook-id registry.
+    pub(crate) notebook_registry: NotebookRegistry,
     /// HTTP port for the blob server (set after startup).
     blob_port: Mutex<Option<u16>>,
     /// When the daemon process began. Reported via Ping for diagnostics.
@@ -1465,6 +1471,12 @@ impl Daemon {
         };
         log_store_unavailable(&trusted_packages);
 
+        let notebook_registry = NotebookRegistry::open(config.notebook_registry_db_path.clone())
+            .unwrap_or_else(|error| NotebookRegistry::unavailable(error.to_string()));
+        if let Some(reason) = notebook_registry.unavailable_reason() {
+            warn!("[notebook-registry] unavailable; notebook ids will be fresh per run: {reason}");
+        }
+
         let initial_pool_settings = settings.get_all();
         let initial_uv_pool_size =
             effective_pool_target(config.uv_pool_size, initial_pool_settings.uv_pool_size);
@@ -1493,6 +1505,7 @@ impl Daemon {
             blob_store,
             execution_store,
             trusted_packages,
+            notebook_registry,
             blob_port: Mutex::new(None),
             started_at: chrono::Utc::now(),
             notebook_rooms: Arc::new(RoomRegistry::new()),
@@ -2579,9 +2592,15 @@ impl Daemon {
                     {
                         found
                     } else {
+                        // Resolve a stable id for this file so reopening it (even
+                        // across a daemon restart) lands on the same id, instead
+                        // of minting a fresh UUID per run. See NIP-1.
+                        let stable_id = self
+                            .notebook_registry
+                            .resolve_or_assign(&canonical, &chrono::Utc::now().to_rfc3339());
                         crate::notebook_sync_server::get_or_create_room_result(
                             &self.notebook_rooms,
-                            uuid::Uuid::new_v4(),
+                            stable_id,
                             crate::notebook_sync_server::RoomCreationOptions {
                                 path: Some(canonical),
                                 docs_dir: &docs_dir,
@@ -2975,7 +2994,11 @@ impl Daemon {
         {
             existing
         } else {
-            let uuid = uuid::Uuid::new_v4();
+            // Reopening the same file resolves to the same id across daemon
+            // restarts instead of minting a fresh UUID per run. See NIP-1.
+            let uuid = self
+                .notebook_registry
+                .resolve_or_assign(&canonical_path, &chrono::Utc::now().to_rfc3339());
             let path = Some(canonical_path.clone());
             crate::notebook_sync_server::get_or_create_room_result(
                 &self.notebook_rooms,

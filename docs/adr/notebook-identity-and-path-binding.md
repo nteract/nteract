@@ -75,7 +75,7 @@ This restores ADR `mcp-session-lifecycle.md` Decision 8's invariant for sessions
 
 ## Open Follow-ups
 
-- **NIP-1** (Proposed; `crates/runtimed/src/notebook_sync_server/`): build the persistent path <-> id registry (daemon-local sqlite, mirroring `trusted-packages.sqlite`). Make open-by-path resolve `path -> id` and reuse the persisted doc instead of minting a fresh UUID. This is the durable replacement for Decision 5's stopgap.
+- **NIP-1** (In progress; `crates/runtimed/src/notebook_registry.rs`): the persistent path <-> id registry (daemon-local sqlite, mirroring `trusted-packages.sqlite`) has landed, and the two open-by-path sites in `daemon.rs` now resolve `path -> stable id` instead of minting a fresh UUID per run. **Remaining:** record `path -> id` on untitled->save (`persist.rs` `promote_after_save`) and save-as (`save_notebook.rs` `rebind_after_save_as`) so a notebook first saved within a session keeps its id when reopened by path after a restart. Until then, that one flow re-mints (content still loads correctly from the `.ipynb`).
 - **NIP-2** (Design): ephemeral (untitled) notebook durability across daemon restart. The doc is persisted by id in `docs_dir`, but with no stable id across restarts there is nothing to reload it as. The registry must assign and persist an id at creation, before any save, for this to hold.
 - **NIP-3** (Design): migration and id reconciliation when a file already has an in-memory room under a fresh UUID at the moment the registry is introduced. Decide whether to adopt the existing room's id into the registry or rebind.
 

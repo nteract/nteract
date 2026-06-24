@@ -42,6 +42,7 @@ pub(crate) mod kernel_ports;
 pub mod kernel_state;
 pub mod launcher_cache;
 pub mod markdown_assets;
+pub(crate) mod notebook_registry;
 pub mod notebook_sync_server;
 pub(crate) mod output_blob_publisher;
 pub(crate) mod output_commit_context;
@@ -77,6 +78,10 @@ pub mod workstation;
 
 pub fn trusted_packages_db_path() -> std::path::PathBuf {
     runt_workspace::daemon_base_dir().join("trusted-packages.sqlite")
+}
+
+pub fn notebook_registry_db_path() -> std::path::PathBuf {
+    runt_workspace::daemon_base_dir().join("notebook-registry.sqlite")
 }
 
 /// Get the daemon version string (e.g., "0.1.0-dev.10+abc123").
