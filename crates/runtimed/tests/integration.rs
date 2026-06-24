@@ -3065,6 +3065,256 @@ async fn test_streaming_load_second_client_joins() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// Same regression surface as the desktop app: the first peer is a relay
+/// frontend that owns the NotebookDoc replica, then an MCP-style full peer
+/// joins the existing daemon room by UUID.
+#[tokio::test]
+async fn test_uuid_joiner_receives_existing_cells_after_relay_loader() {
+    use automerge::sync;
+
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let nb_path = temp_dir.path().join("relay_uuid_join.ipynb");
+    write_test_ipynb(
+        &nb_path,
+        &[
+            ("relay-1", "code", "x = 1", vec![]),
+            ("relay-2", "markdown", "# loaded by relay", vec![]),
+        ],
+    );
+
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel();
+    let relay = connect::connect_open_relay_with_operator(
+        socket_path.clone(),
+        nb_path.clone(),
+        frame_tx,
+        Some("desktop".to_string()),
+    )
+    .await
+    .expect("desktop relay loader should connect");
+    let notebook_id = relay.info.notebook_id.clone();
+    let relay_handle = relay.handle;
+
+    let mut frontend_doc = notebook_doc::NotebookDoc::bootstrap(
+        notebook_doc::TextEncoding::Utf16CodeUnit,
+        "desktop:test",
+    );
+    let mut frontend_state = sync::State::new();
+    let start = std::time::Instant::now();
+    while start.elapsed() < SESSION_READY_TIMEOUT {
+        if frontend_doc.cell_count() == 2 {
+            break;
+        }
+
+        let frame = tokio::time::timeout(Duration::from_secs(5), frame_rx.recv())
+            .await
+            .expect("relay frontend should receive daemon frame")
+            .expect("relay frame stream should stay open");
+        let Some((&frame_type, payload)) = frame.split_first() else {
+            continue;
+        };
+        if frame_type != frame_types::AUTOMERGE_SYNC {
+            continue;
+        }
+
+        let message = sync::Message::decode(payload).expect("valid NotebookDoc sync frame");
+        frontend_doc
+            .receive_sync_message_recovering(&mut frontend_state, message, "relay-frontend-recv")
+            .expect("frontend applies daemon NotebookDoc frame");
+        if let Some(reply) = frontend_doc
+            .generate_sync_message_recovering(&mut frontend_state, "relay-frontend-reply")
+            .expect("frontend generates NotebookDoc reply")
+        {
+            relay_handle
+                .forward_frame(frame_types::AUTOMERGE_SYNC, reply.encode())
+                .await
+                .expect("frontend reply forwarded to daemon");
+        }
+    }
+    assert_eq!(
+        frontend_doc.cell_count(),
+        2,
+        "relay frontend should receive the file-loaded cells"
+    );
+
+    let joiner = connect::connect(socket_path.clone(), notebook_id, "mcp")
+        .await
+        .expect("MCP UUID joiner should connect")
+        .handle;
+    assert_session_ready(&joiner, "MCP UUID joiner after relay loader").await;
+
+    let cells = joiner.get_cells();
+    assert_eq!(
+        cells.len(),
+        2,
+        "MCP UUID joiner should have existing NotebookDoc cells after relay loader; status={:?}; cells={:?}",
+        joiner.status(),
+        cells
+    );
+    assert_eq!(cells[0].id, "relay-1");
+    assert_eq!(cells[0].source, "x = 1");
+    assert_eq!(cells[1].id, "relay-2");
+
+    drop(relay_handle);
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// Desktop-authored changes travel through the relay/frontend Automerge path,
+/// not the file streaming loader. A later MCP UUID joiner must receive those
+/// already-admitted NotebookDoc cells.
+#[tokio::test]
+async fn test_uuid_joiner_receives_frontend_authored_relay_cells() {
+    use automerge::sync;
+
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let relay = connect::connect_create_relay_with_operator(
+        socket_path.clone(),
+        "python",
+        None,
+        None,
+        frame_tx,
+        false,
+        None,
+        vec![],
+        None,
+        Some("desktop".to_string()),
+    )
+    .await
+    .expect("desktop relay create should connect");
+    let notebook_id = relay.info.notebook_id.clone();
+    let relay_handle = relay.handle;
+
+    let mut frontend_doc = notebook_doc::NotebookDoc::bootstrap(
+        notebook_doc::TextEncoding::Utf16CodeUnit,
+        "desktop:test",
+    );
+    let mut frontend_state = sync::State::new();
+
+    for _ in 0..32 {
+        if frontend_doc.cell_count() >= 1 {
+            break;
+        }
+
+        let frame = tokio::time::timeout(Duration::from_secs(5), frame_rx.recv())
+            .await
+            .expect("relay frontend should receive initial daemon frame")
+            .expect("relay frame stream should stay open");
+        let Some((&frame_type, payload)) = frame.split_first() else {
+            continue;
+        };
+        if frame_type != frame_types::AUTOMERGE_SYNC {
+            continue;
+        }
+
+        let message = sync::Message::decode(payload).expect("valid NotebookDoc sync frame");
+        frontend_doc
+            .receive_sync_message_recovering(&mut frontend_state, message, "relay-create-recv")
+            .expect("frontend applies initial NotebookDoc frame");
+        if let Some(reply) = frontend_doc
+            .generate_sync_message_recovering(&mut frontend_state, "relay-create-reply")
+            .expect("frontend generates initial NotebookDoc reply")
+        {
+            relay_handle
+                .forward_frame(frame_types::AUTOMERGE_SYNC, reply.encode())
+                .await
+                .expect("frontend initial reply forwarded to daemon");
+        }
+    }
+    assert!(
+        frontend_doc.cell_count() >= 1,
+        "relay frontend should receive the daemon starter cell"
+    );
+
+    frontend_doc
+        .add_cell(1, "relay-authored", "code")
+        .expect("frontend adds a code cell");
+    frontend_doc
+        .update_source("relay-authored", "created_by = 'frontend relay'")
+        .expect("frontend updates source");
+    let outbound = frontend_doc
+        .generate_sync_message_recovering(&mut frontend_state, "relay-authored-outbound")
+        .expect("frontend generates authored changes")
+        .expect("frontend has authored changes to send");
+    relay_handle
+        .forward_frame(frame_types::AUTOMERGE_SYNC, outbound.encode())
+        .await
+        .expect("frontend-authored changes forwarded to daemon");
+
+    // Let the daemon process the authored changes and, if it emits an ack, keep
+    // the relay/frontend sync state moving before the MCP peer joins.
+    for _ in 0..16 {
+        let Ok(Some(frame)) =
+            tokio::time::timeout(Duration::from_millis(250), frame_rx.recv()).await
+        else {
+            break;
+        };
+        let Some((&frame_type, payload)) = frame.split_first() else {
+            continue;
+        };
+        if frame_type != frame_types::AUTOMERGE_SYNC {
+            continue;
+        }
+
+        let message = sync::Message::decode(payload).expect("valid NotebookDoc sync ack");
+        frontend_doc
+            .receive_sync_message_recovering(&mut frontend_state, message, "relay-authored-ack")
+            .expect("frontend applies daemon ack");
+        if let Some(reply) = frontend_doc
+            .generate_sync_message_recovering(&mut frontend_state, "relay-authored-ack-reply")
+            .expect("frontend generates ack reply")
+        {
+            relay_handle
+                .forward_frame(frame_types::AUTOMERGE_SYNC, reply.encode())
+                .await
+                .expect("frontend ack reply forwarded to daemon");
+        }
+    }
+
+    let joiner = connect::connect(socket_path.clone(), notebook_id, "mcp")
+        .await
+        .expect("MCP UUID joiner should connect")
+        .handle;
+    assert_session_ready(&joiner, "MCP UUID joiner after frontend relay mutation").await;
+
+    let cells = joiner.get_cells();
+    assert!(
+        cells
+            .iter()
+            .any(|cell| cell.id == "relay-authored"
+                && cell.source == "created_by = 'frontend relay'"),
+        "MCP UUID joiner should receive frontend-authored relay cells after session-ready; status={:?}; cells={:?}",
+        joiner.status(),
+        cells
+    );
+
+    drop(relay_handle);
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 /// An older stable app sends a pool ping during upgrade to check whether a
 /// daemon is already running and whether it needs replacement. The pool channel
 /// must accept the old preamble version and still return version metadata.

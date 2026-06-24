@@ -159,6 +159,222 @@ fn test_blob_store(tmp: &tempfile::TempDir) -> Arc<BlobStore> {
     Arc::new(BlobStore::new(tmp.path().join("blobs")))
 }
 
+async fn recv_typed_frame_or_timeout<R>(
+    reader: &mut R,
+    timeout: std::time::Duration,
+    context: &str,
+) -> Option<notebook_protocol::connection::TypedNotebookFrame>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    match tokio::time::timeout(timeout, connection::recv_typed_frame(reader)).await {
+        Ok(Ok(frame)) => frame,
+        Ok(Err(err)) => panic!("{context}: failed to read typed frame: {err}"),
+        Err(_) => None,
+    }
+}
+
+fn decode_sync_status(
+    frame: &notebook_protocol::connection::TypedNotebookFrame,
+) -> Option<notebook_protocol::protocol::SessionSyncStatusWire> {
+    if frame.frame_type != NotebookFrameType::SessionControl {
+        return None;
+    }
+
+    match serde_json::from_slice::<notebook_protocol::protocol::SessionControlMessage>(
+        &frame.payload,
+    )
+    .expect("valid session control frame")
+    {
+        notebook_protocol::protocol::SessionControlMessage::SyncStatus(status) => Some(status),
+    }
+}
+
+async fn drain_initial_sync_frames<R>(reader: &mut R) -> Vec<u8>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut initial_notebook_sync = None;
+    let mut saw_any = false;
+
+    while let Some(frame) = recv_typed_frame_or_timeout(
+        reader,
+        if saw_any {
+            std::time::Duration::from_millis(100)
+        } else {
+            std::time::Duration::from_secs(2)
+        },
+        "initial sync",
+    )
+    .await
+    {
+        saw_any = true;
+        if frame.frame_type == NotebookFrameType::AutomergeSync && initial_notebook_sync.is_none() {
+            initial_notebook_sync = Some(frame.payload);
+        }
+    }
+
+    initial_notebook_sync.expect("daemon should send an initial NotebookDoc sync frame")
+}
+
+async fn recv_notebook_sync_reply<R>(reader: &mut R) -> Vec<u8>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    loop {
+        let frame = recv_typed_frame_or_timeout(
+            reader,
+            std::time::Duration::from_secs(2),
+            "notebook sync reply",
+        )
+        .await
+        .expect("daemon should send a NotebookDoc sync reply");
+        if frame.frame_type == NotebookFrameType::AutomergeSync {
+            return frame.payload;
+        }
+    }
+}
+
+async fn recv_until_notebook_doc_interactive<R>(reader: &mut R)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    loop {
+        let frame = recv_typed_frame_or_timeout(
+            reader,
+            std::time::Duration::from_secs(2),
+            "interactive status",
+        )
+        .await
+        .expect("daemon should publish NotebookDoc Interactive");
+        if decode_sync_status(&frame).is_some_and(|status| {
+            status.notebook_doc == notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
+        }) {
+            return;
+        }
+    }
+}
+
+#[tokio::test]
+async fn notebook_doc_interactive_waits_for_initial_sync_convergence() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "existing-1", "code").unwrap();
+        doc.update_source("existing-1", "x = 1").unwrap();
+        doc.add_cell(1, "existing-2", "markdown").unwrap();
+        doc.update_source("existing-2", "# already here").unwrap();
+    }
+
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let identity = RoomConnectionIdentity::local(Some("mcp:test".to_string()))
+        .await
+        .unwrap();
+    let notebook_id = room.id.to_string();
+    let (client_io, server_io) = tokio::io::duplex(1024 * 1024);
+    let (server_reader, server_writer) = tokio::io::split(server_io);
+    let (mut client_reader, mut client_writer) = tokio::io::split(client_io);
+
+    let server_task = {
+        let room = room.clone();
+        let daemon = daemon.clone();
+        tokio::spawn(async move {
+            super::peer_loop::run_sync_loop_v2(
+                server_reader,
+                server_writer,
+                &room,
+                rooms,
+                notebook_id,
+                daemon,
+                None,
+                "mcp-peer",
+                &identity,
+                notebook_protocol::connection::PROTOCOL_VERSION,
+            )
+            .await
+        })
+    };
+
+    let mut client_doc =
+        notebook_doc::NotebookDoc::bootstrap(notebook_doc::TextEncoding::Utf16CodeUnit, "mcp:test");
+    let mut client_state = sync::State::new();
+
+    let initial_sync = drain_initial_sync_frames(&mut client_reader).await;
+    let initial_message = sync::Message::decode(&initial_sync).expect("valid initial sync");
+    client_doc
+        .receive_sync_message_recovering(&mut client_state, initial_message, "test-initial-sync")
+        .unwrap();
+    let first_reply = client_doc
+        .generate_sync_message_recovering(&mut client_state, "test-first-reply")
+        .unwrap()
+        .expect("client should reply to initial sync");
+    connection::send_typed_frame(
+        &mut client_writer,
+        NotebookFrameType::AutomergeSync,
+        &first_reply.encode(),
+    )
+    .await
+    .unwrap();
+
+    let changes_reply = recv_notebook_sync_reply(&mut client_reader).await;
+    let mut premature_interactive = false;
+    while let Some(frame) = recv_typed_frame_or_timeout(
+        &mut client_reader,
+        std::time::Duration::from_millis(150),
+        "post-reply drain",
+    )
+    .await
+    {
+        if decode_sync_status(&frame).is_some_and(|status| {
+            status.notebook_doc == notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
+        }) {
+            premature_interactive = true;
+            break;
+        }
+    }
+    assert!(
+        !premature_interactive,
+        "daemon advertised NotebookDoc Interactive before the joiner acknowledged the changes-bearing initial sync reply"
+    );
+
+    let changes_message = sync::Message::decode(&changes_reply).expect("valid changes reply");
+    client_doc
+        .receive_sync_message_recovering(&mut client_state, changes_message, "test-changes-sync")
+        .unwrap();
+    assert_eq!(
+        client_doc.cell_count(),
+        2,
+        "the changes-bearing reply must deliver the existing room cells"
+    );
+    let final_ack = client_doc
+        .generate_sync_message_recovering(&mut client_state, "test-final-ack")
+        .unwrap()
+        .expect("client should acknowledge the changes-bearing reply");
+    connection::send_typed_frame(
+        &mut client_writer,
+        NotebookFrameType::AutomergeSync,
+        &final_ack.encode(),
+    )
+    .await
+    .unwrap();
+
+    recv_until_notebook_doc_interactive(&mut client_reader).await;
+
+    drop(client_writer);
+    drop(client_reader);
+    server_task.abort();
+    let _ = server_task.await;
+}
+
 fn test_trusted_packages() -> crate::trusted_packages::TrustedPackageStore {
     crate::trusted_packages::TrustedPackageStore::unavailable("test")
 }

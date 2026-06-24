@@ -74,6 +74,7 @@ These entries define the center of gravity for the system:
 | [Local-First Notebook State](local-first-notebook-state.md) | Proposed | Cloud reconnect, persistence, and offline-read direction for live notebook handles. |
 | [Shared-Store Projection Convergence](shared-store-projection-convergence.md) | In progress | Shared store migration pattern and landed slices across Desktop and Cloud. |
 | [MCP Session Lifecycle and Daemon Supervision](mcp-session-lifecycle.md) | Draft | MCP proxy, daemon, and session lifetime boundaries. |
+| [Notebook Identity and Path Binding](notebook-identity-and-path-binding.md) | Proposed | Stable opaque notebook id with the file path as a mutable attribute; daemon-local path↔id registry; local ids never enter committed files. |
 | [MCP Resource Addressing](mcp-resource-addressing.md) | Draft | Local `nteract://` MCP resource namespace. |
 | [Cloud-Connected Local MCP Clients](cloud-connected-local-mcp.md) | Draft | Local MCP target resolution for hosted notebook URLs and machine-local cloud remote config. |
 

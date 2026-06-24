@@ -90,6 +90,7 @@ pub(super) async fn handle_notebook_doc_frame(
 
     // Queue the reply outside the lock so other peers can acquire it while the
     // writer task drains the socket.
+    let sync_reply_queued = reply_encoded.is_some();
     if let Some(encoded) = reply_encoded {
         writer.send_frame(NotebookFrameType::AutomergeSync, encoded)?;
     }
@@ -97,12 +98,20 @@ pub(super) async fn handle_notebook_doc_frame(
     Ok(NotebookDocSideEffects {
         persist_bytes,
         metadata_changed,
+        sync_reply_queued,
     })
 }
 
 pub(super) struct NotebookDocSideEffects {
     persist_bytes: Option<Vec<u8>>,
     metadata_changed: bool,
+    sync_reply_queued: bool,
+}
+
+impl NotebookDocSideEffects {
+    pub(super) fn sync_reply_queued(&self) -> bool {
+        self.sync_reply_queued
+    }
 }
 
 pub(super) async fn finish_notebook_doc_frame(

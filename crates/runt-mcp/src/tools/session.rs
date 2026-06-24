@@ -27,6 +27,25 @@ async fn previous_notebook_id(server: &NteractMcp) -> Option<String> {
         .map(|s| s.notebook_id.clone())
 }
 
+/// Resolve a room's canonical on-disk path from the daemon (authoritative).
+///
+/// A session established by `notebook_id` (UUID) does not otherwise learn its
+/// file path. Without it, `daemon_watch`'s auto-rejoin falls back to
+/// `connect(uuid)` after a daemon restart/upgrade, which lands on an empty room
+/// because the UUID is daemon-instance scoped and the reaped room's `.automerge`
+/// is gone. Carrying the path lets rejoin use `connect_open(path)` and reload
+/// from disk. See `docs/adr/mcp-session-lifecycle.md`, Decision 8.
+///
+/// Returns `None` for ephemeral notebooks (no file) or on lookup failure.
+async fn resolve_room_notebook_path(server: &NteractMcp, notebook_id: &str) -> Option<String> {
+    let client = PoolClient::new(server.socket_path.clone());
+    let rooms = client.list_rooms().await.ok()?;
+    rooms
+        .into_iter()
+        .find(|room| room.notebook_id == notebook_id)
+        .and_then(|room| room.notebook_path)
+}
+
 /// Maximum number of parked sessions. When this limit is reached, the
 /// least-recently-parked session is evicted (dropped) to make room. This
 /// bounds the resource footprint of a long-lived MCP process that touches
@@ -946,6 +965,10 @@ pub async fn open_notebook(
                     let mut response = serde_json::json!({
                         "notebook_id": notebook_id,
                         "path": abs_path.to_string_lossy(),
+                        // Absolute path under the key the proxy reads, so a
+                        // respawn after a daemon swap seeds an existence-checkable
+                        // path rather than a raw (possibly ~-prefixed) arg.
+                        "notebook_path": abs_path.to_string_lossy(),
                         "resumed": true,
                         "runtime": runtime_info,
                         "dependencies": deps,
@@ -978,6 +1001,10 @@ pub async fn open_notebook(
                 let mut response = serde_json::json!({
                     "notebook_id": notebook_id,
                     "path": abs_path.to_string_lossy(),
+                    // Absolute path under the key the proxy reads, so a respawn
+                    // after a daemon swap seeds an existence-checkable path
+                    // rather than a raw (possibly ~-prefixed) arg.
+                    "notebook_path": abs_path.to_string_lossy(),
                     "runtime": runtime_info,
                     "dependencies": deps,
                     "project_context": project_context,
@@ -1027,13 +1054,20 @@ pub async fn open_notebook(
 
         // Check if we have a parked session for this notebook — resume it
         // instead of opening a new connection.
-        if let Some(parked) = take_parked_session(server, &notebook_id).await {
+        if let Some(mut parked) = take_parked_session(server, &notebook_id).await {
             tracing::info!("[mcp] Resuming parked session for {}", notebook_id);
             let handle = &parked.handle;
             let runtime_info = collect_runtime_info(handle).await;
             let deps = get_dependencies(handle);
             let cells_summary = format_cell_summaries(handle);
             let project_context = read_project_context(handle);
+
+            // A session parked after a connect-by-id has no path; backfill it so
+            // resume keeps the rejoin-by-path invariant (ADR mcp-session-lifecycle,
+            // Decision 8).
+            if parked.notebook_path.is_none() {
+                parked.notebook_path = resolve_room_notebook_path(server, &notebook_id).await;
+            }
 
             let mut response = serde_json::json!({
                 "notebook_id": handle.notebook_id(),
@@ -1044,6 +1078,9 @@ pub async fn open_notebook(
                 "project_context": project_context,
                 "cells": cells_summary,
             });
+            if let Some(ref path) = parked.notebook_path {
+                response["notebook_path"] = serde_json::json!(path);
+            }
 
             if let Some(ref prev_id) = prev {
                 if *prev_id != notebook_id {
@@ -1079,6 +1116,13 @@ pub async fn open_notebook(
                 let cells_summary = format_cell_summaries(handle);
                 let project_context = read_project_context(handle);
 
+                // File-backed rooms must carry their path so auto-rejoin reloads
+                // by path after a daemon swap rather than connecting to a stale
+                // UUID (ADR mcp-session-lifecycle, Decision 8). Surface it in the
+                // response too so the proxy seeds the path, not the UUID, into
+                // the respawned child's rejoin target.
+                let notebook_path = resolve_room_notebook_path(server, &notebook_id).await;
+
                 let mut response = serde_json::json!({
                     "notebook_id": handle.notebook_id(),
                     "connected": true,
@@ -1087,6 +1131,9 @@ pub async fn open_notebook(
                     "project_context": project_context,
                     "cells": cells_summary,
                 });
+                if let Some(ref path) = notebook_path {
+                    response["notebook_path"] = serde_json::json!(path);
+                }
 
                 if let Some(ref prev_id) = prev {
                     if *prev_id != notebook_id {
@@ -1098,8 +1145,12 @@ pub async fn open_notebook(
                 crate::presence::announce(handle, &peer_label).await;
 
                 let call_result = notebook_session_response(response, &notebook_id);
-                let session =
-                    NotebookSession::local(result.handle, result.broadcast_rx, notebook_id, None);
+                let session = NotebookSession::local(
+                    result.handle,
+                    result.broadcast_rx,
+                    notebook_id,
+                    notebook_path,
+                );
                 *server.session.write().await = Some(session);
 
                 Ok(call_result)
