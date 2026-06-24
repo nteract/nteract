@@ -265,7 +265,10 @@ where
                                 )
                                 .await?;
 
-                                if notebook_doc_phase
+                                // A queued reply means the joiner has not acknowledged
+                                // the daemon's current NotebookDoc yet.
+                                if !notebook_doc_effects.sync_reply_queued()
+                                    && notebook_doc_phase
                                     != notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
                                 {
                                     notebook_doc_phase =

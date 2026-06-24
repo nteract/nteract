@@ -3736,6 +3736,76 @@ mod tests {
         assert_eq!(empty.notebook_id(), Some("test-notebook".to_string()));
     }
 
+    /// Repro for the MCP-joiner-gets-no-cells bug.
+    ///
+    /// Models PRODUCTION driving (not the symmetric idealized loop above):
+    /// the daemon room doc is built via `new_with_actor` + `add_cell` (the
+    /// desktop-load shape), a joining peer bootstraps an empty doc, and the
+    /// handshake is driven exactly as the sync server / sync_task drive it:
+    ///   - daemon sends ONE initial frame (`send_initial_notebook_doc_sync`)
+    ///   - then strict reactive ping-pong: each side replies only when it
+    ///     receives a frame (`handle_notebook_doc_frame` / sync_task)
+    ///   - using the `_recovering` variants that production actually calls.
+    /// A joining peer must end up with the daemon's cells.
+    #[test]
+    fn join_existing_populated_doc_delivers_cells_reactive_handshake() {
+        use automerge::sync;
+
+        // Daemon room doc: populated, built the production way.
+        let mut daemon = NotebookDoc::new_with_actor("nb-join", "runtimed");
+        daemon.add_cell(0, "cell-1", "code").unwrap();
+        daemon.update_source("cell-1", "print('hello')").unwrap();
+        daemon.add_cell(1, "cell-2", "code").unwrap();
+
+        // Joining MCP peer: bootstrap, empty.
+        let mut joiner = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "agent:mcp");
+
+        // Continuous peer_state on each side (production threads these through).
+        let mut daemon_state = sync::State::new();
+        let mut joiner_state = sync::State::new();
+
+        // 1) daemon's single initial notebook-doc send.
+        let mut to_joiner = daemon
+            .generate_sync_message_recovering(&mut daemon_state, "initial-doc-sync")
+            .unwrap();
+
+        // 2) reactive ping-pong until quiescent.
+        for _ in 0..32 {
+            let to_daemon = if let Some(msg) = to_joiner.take() {
+                joiner
+                    .receive_sync_message_recovering(&mut joiner_state, msg, "c-recv")
+                    .unwrap();
+                joiner
+                    .generate_sync_message_recovering(&mut joiner_state, "c-reply")
+                    .unwrap()
+            } else {
+                None
+            };
+
+            match to_daemon {
+                Some(msg) => {
+                    daemon
+                        .receive_sync_message_recovering(&mut daemon_state, msg, "d-recv")
+                        .unwrap();
+                    to_joiner = daemon
+                        .generate_sync_message_recovering(&mut daemon_state, "doc-sync-reply")
+                        .unwrap();
+                }
+                None => break,
+            }
+        }
+
+        assert_eq!(
+            joiner.cell_count(),
+            2,
+            "joining peer must receive the daemon's existing cells"
+        );
+        assert_eq!(
+            joiner.get_cell("cell-1").map(|c| c.source),
+            Some("print('hello')".to_string())
+        );
+    }
+
     /// Regression test: MCP-added deps must survive when a second bootstrap
     /// peer (the app frontend) joins.
     ///
