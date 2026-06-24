@@ -139,6 +139,40 @@ impl DaemonConfig {
     }
 }
 
+/// Send a handshake-level refusal: a `NotebookConnectionInfo` carrying `error`
+/// and an empty notebook_id, so the client surfaces it as a failed connect
+/// rather than attaching to an empty room. Used to reject `NotebookSync` for a
+/// notebook that is gone (mirrors `handle_open_notebook`'s local sender).
+async fn send_handshake_refusal<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    error: String,
+    typed_bootstrap: bool,
+) -> anyhow::Result<()> {
+    use notebook_protocol::connection::{
+        send_json_frame, send_typed_bootstrap_frame, ConnectionBootstrap, NotebookConnectionInfo,
+        ProtocolCapabilities,
+    };
+    let response = NotebookConnectionInfo {
+        capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
+        notebook_id: String::new(),
+        cell_count: 0,
+        needs_trust_approval: false,
+        error: Some(error),
+        ephemeral: false,
+        notebook_path: None,
+    };
+    if typed_bootstrap {
+        send_typed_bootstrap_frame(
+            writer,
+            &ConnectionBootstrap::notebook_connection_info(response),
+        )
+        .await?;
+    } else {
+        send_json_frame(writer, &response).await?;
+    }
+    Ok(())
+}
+
 fn legacy_settings_doc_path(config: &DaemonConfig) -> PathBuf {
     match &config.settings_json_path {
         Some(json_path) => json_path.with_file_name("settings.automerge"),
@@ -2560,6 +2594,33 @@ impl Daemon {
                 let parsed_notebook_id = uuid::Uuid::parse_str(&notebook_id).ok();
                 let is_uuid_notebook_id = parsed_notebook_id.is_some();
                 let (room, _room_guard) = if let Some(parsed) = parsed_notebook_id {
+                    // NotebookSync by UUID is attach-only (see the notebook crate's
+                    // `Attach` intent: "attach to a room the daemon has already
+                    // created. No create, no load."). Attach to a resident room, or
+                    // reload one still recoverable from its persisted doc, but refuse
+                    // when the notebook is truly gone instead of minting a phantom
+                    // empty room — so a stale rejoin gets a clear "gone" signal and
+                    // the client need not guess with list_rooms (#2088).
+                    let resident = self.notebook_rooms.lookup_uuid(parsed).await.is_some();
+                    let recoverable = resident
+                        || docs_dir
+                            .join(crate::paths::notebook_doc_filename(&parsed.to_string()))
+                            .exists();
+                    if !recoverable {
+                        info!(
+                            "[runtimed] NotebookSync for {parsed}: not resident and no persisted doc — refusing (gone)"
+                        );
+                        let (_reader, mut writer) = tokio::io::split(stream);
+                        send_handshake_refusal(
+                            &mut writer,
+                            format!(
+                                "Notebook {parsed} is no longer available (not found or evicted)"
+                            ),
+                            typed_bootstrap.unwrap_or(false),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
                     crate::notebook_sync_server::get_or_create_room_result(
                         &self.notebook_rooms,
                         parsed,

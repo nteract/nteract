@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use runtimed_client::client::PoolClient;
 use runtimed_client::daemon_connection::{DaemonConnection, DaemonEvent};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
@@ -420,43 +419,14 @@ async fn rejoin(
         }
     };
 
-    // For ephemeral notebooks (no file path), verify the room still exists
-    // in the daemon before attempting to rejoin. This is the explicit signal
-    // that the room was evicted — no heuristics needed. Without this check,
-    // a `connect(uuid)` to an evicted room would create a new empty room,
-    // wasting a kernel and preventing proper eviction (#2088).
-    let has_file = notebook_path
-        .as_ref()
-        .is_some_and(|p| std::path::Path::new(p.as_str()).exists());
-    if !has_file {
-        let client = PoolClient::new(socket_path.to_path_buf());
-        match client.list_rooms().await {
-            Ok(rooms) => {
-                if !rooms.iter().any(|r| r.notebook_id == notebook_id) {
-                    info!(
-                        "Room {notebook_id} no longer exists in daemon; \
-                         clearing session (notebook was evicted)"
-                    );
-                    *last_session_drop.write().await = Some(SessionDropInfo {
-                        reason: SessionDropReason::Evicted,
-                        notebook_id: notebook_id.clone(),
-                        notebook_path: notebook_path.clone(),
-                        rejoin_target: Some(
-                            notebook_path.clone().unwrap_or_else(|| notebook_id.clone()),
-                        ),
-                    });
-                    *session.write().await = None;
-                    return true; // Session cleared intentionally
-                }
-            }
-            Err(e) => {
-                warn!("list_rooms failed during rejoin check: {e}");
-                // Can't verify — fall through to the connect attempt which
-                // will also fail if the daemon is truly unreachable.
-            }
-        }
-    }
-
+    // The daemon is authoritative about whether a notebook still exists.
+    // A NotebookSync attach reloads a resident-or-recoverable room (untitled
+    // notebooks reload from their persisted docs_dir doc) and refuses a gone
+    // one. We no longer pre-check list_rooms here: that heuristic could not
+    // tell "evicted" from "dormant but recoverable from docs_dir" — exactly
+    // the untitled case that must auto-recover after a daemon restart. A
+    // refusal comes back from `connect` as `SyncError::Protocol` and is
+    // handled in the retry loop below (cleared as Evicted, no retry).
     let label = peer_label.read().await.clone();
 
     for attempt in 0..=REJOIN_MAX_RETRIES {
@@ -547,6 +517,25 @@ async fn rejoin(
                 return true;
             }
             Err(e) => {
+                // A daemon refusal (the notebook is gone) is definitive — the
+                // handshake completed and the daemon said no. Don't burn retries
+                // on it; clear the session as Evicted with a recovery hint. This
+                // is the old immediate-give-up behavior, now driven by the daemon
+                // instead of a list_rooms heuristic. Transient failures (daemon
+                // down) surface as Io/DaemonUnavailable and still retry below.
+                if matches!(e, notebook_sync::SyncError::Protocol(_)) {
+                    info!("Rejoin refused by daemon (notebook gone): {e}");
+                    *last_session_drop.write().await = Some(SessionDropInfo {
+                        reason: SessionDropReason::Evicted,
+                        notebook_id: notebook_id.clone(),
+                        notebook_path: notebook_path.clone(),
+                        rejoin_target: Some(
+                            notebook_path.clone().unwrap_or_else(|| notebook_id.clone()),
+                        ),
+                    });
+                    *session.write().await = None;
+                    return true;
+                }
                 if attempt < REJOIN_MAX_RETRIES {
                     warn!(
                         "Rejoin attempt {} failed (retrying in {}s): {e}",

@@ -198,7 +198,10 @@ pub async fn connect_with_options(
 
     // Receive protocol capabilities. New daemons respond with a typed
     // SessionControl bootstrap; old daemons ignore typed_bootstrap and send the
-    // legacy untyped JSON frame.
+    // legacy untyped JSON frame. A NotebookSync attach normally yields bare
+    // ProtocolCapabilities; a refusal (the notebook is gone) arrives as a
+    // NotebookConnectionInfo with `error` set, which recv_typed_capabilities
+    // surfaces as an Err so we don't attach to an empty room.
     let caps = recv_typed_capabilities(&mut reader).await?;
     check_daemon_protocol_version(&caps);
 
@@ -832,7 +835,13 @@ async fn recv_typed_capabilities<R: AsyncRead + Unpin>(
     if is_typed_bootstrap_frame(&frame) {
         match parse_typed_bootstrap_payload(&frame[1..])? {
             ConnectionBootstrap::ProtocolCapabilities { capabilities } => Ok(capabilities),
-            ConnectionBootstrap::NotebookConnectionInfo { info } => Ok(info.capabilities),
+            // A populated `error` means the daemon refused this attach (e.g. an
+            // untitled notebook that is gone); surface it instead of returning
+            // capabilities so the caller does not attach to an empty room.
+            ConnectionBootstrap::NotebookConnectionInfo { info } => match info.error {
+                Some(error) => Err(SyncError::Protocol(error)),
+                None => Ok(info.capabilities),
+            },
         }
     } else {
         serde_json::from_slice(&frame)
@@ -902,6 +911,64 @@ mod bootstrap_tests {
             actual.actor_label.as_deref(),
             Some("local:kyle/desktop:legacy")
         );
+    }
+
+    #[tokio::test]
+    async fn recv_typed_capabilities_surfaces_connection_info_error() {
+        // A daemon refusal (e.g. an untitled notebook that is gone) arrives as a
+        // NotebookConnectionInfo with `error` set. recv_typed_capabilities must
+        // surface it as an Err, not silently return capabilities — otherwise the
+        // caller attaches to an empty room.
+        let refused = NotebookConnectionInfo {
+            capabilities: ProtocolCapabilities::v4(Some("2.6.0".into())),
+            notebook_id: String::new(),
+            cell_count: 0,
+            needs_trust_approval: false,
+            error: Some("Notebook abc is no longer available (not found or evicted)".into()),
+            ephemeral: false,
+            notebook_path: None,
+        };
+        let mut buf = Vec::new();
+        connection::send_typed_bootstrap_frame(
+            &mut buf,
+            &ConnectionBootstrap::notebook_connection_info(refused),
+        )
+        .await
+        .unwrap();
+
+        let mut reader = std::io::Cursor::new(buf);
+        let err = recv_typed_capabilities(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(err, SyncError::Protocol(ref msg) if msg.contains("no longer available")),
+            "expected refusal surfaced as Protocol error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_typed_capabilities_extracts_caps_from_connection_info_without_error() {
+        // A NotebookConnectionInfo with no error still yields its capabilities
+        // (a normal attach response can carry it).
+        let info = NotebookConnectionInfo {
+            capabilities: ProtocolCapabilities::v4(Some("2.6.0".into()))
+                .with_identity("local:kyle/desktop:ok", "owner"),
+            notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            cell_count: 1,
+            needs_trust_approval: false,
+            error: None,
+            ephemeral: false,
+            notebook_path: None,
+        };
+        let mut buf = Vec::new();
+        connection::send_typed_bootstrap_frame(
+            &mut buf,
+            &ConnectionBootstrap::notebook_connection_info(info),
+        )
+        .await
+        .unwrap();
+
+        let mut reader = std::io::Cursor::new(buf);
+        let caps = recv_typed_capabilities(&mut reader).await.unwrap();
+        assert_eq!(caps.actor_label.as_deref(), Some("local:kyle/desktop:ok"));
     }
 
     #[tokio::test]
