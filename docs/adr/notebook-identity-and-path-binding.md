@@ -1,0 +1,89 @@
+# Notebook Identity and Path Binding
+
+**Status:** Proposed, 2026-06-24.
+
+**Neighbors:**
+- `docs/adr/mcp-session-lifecycle.md` - Decision 8 keys file-backed rejoin on the path; this ADR is the why behind that key and where it must come from.
+- `docs/adr/local-first-notebook-state.md` - persistence and reconnect direction for local handles; the registry proposed here is the durable side of that.
+- `docs/adr/identity-and-trust.md` - principal/operator identity. That is *actor* identity (who is connecting); this ADR is *document* identity (which notebook). They do not share an id space.
+- `docs/adr/runtime-state-document-identity.md` - how the RuntimeStateDoc id is owned by the NotebookDoc; the same "stable id, separate concern" instinct applies here for the file path.
+- `docs/prd/notebook-identity-environment-surfaces.md` and `docs/audits/notebook-identity-environment-surface-audit.md` - the product surfaces and the audit that motivated looking at identity end to end.
+
+## Context
+
+A notebook needs an identity that survives the daemon process. Today it does not.
+
+When a room is created, the daemon mints a `notebook_id` as a fresh UUID (`crates/runtimed/src/notebook_sync_server/room.rs`, `Uuid::parse_str(notebook_id).unwrap_or_else(Uuid::new_v4)`). The notebook *document* is then persisted by that id to `docs_dir/<derived-from-notebook_id>` and reloaded from there on demand (the persist debouncer in `NotebookRoom`). So content already survives a restart - keyed by id.
+
+What does **not** survive is the binding from a file path to that id. The path-to-room binding lives only in memory (`RoomRegistry`, `set_bound_path`, `bind_existing`, `promote_after_save`). On a fresh daemon, opening the same `.ipynb` mints a **new** UUID and a new persisted doc. The same file therefore has different ids in different daemon lifetimes.
+
+That gap is invisible until the daemon is replaced under a live client, which on the nightly channel happens routinely (auto-update). The failure mode, reproduced live against `2.6.0-nightly` (`8f2c9c4`) with `fasty.ipynb`:
+
+1. An MCP client joins a file-backed room **by `notebook_id`** (UUID).
+2. The daemon is upgraded/replaced. The MCP child reconnects to the new daemon.
+3. The rejoin uses the only handle it kept - the UUID - but that UUID is scoped to the dead daemon's room space. The new daemon either has no such room or an empty one.
+4. The desktop, which tracks the **path**, reopens `fasty.ipynb` and reloads its cells. Desktop shows the notebook; the agent sees `cells: []`.
+
+The asymmetry is the tell: the peer that kept a path recovered, the peer that kept a UUID did not. The UUID is a daemon-local handle wearing the costume of a durable identity.
+
+## Decision 1: Identity is opaque and stable; the path is a mutable attribute
+
+A notebook's id is an opaque, stable token assigned once - at creation for an untitled notebook, at first open for a file. The file path is **an attribute of that id**, not a component of it.
+
+Do not encode the path into the id, and do not derive the id from the path. A path-derived id changes on every move or rename, which forces a compensating `old_id -> new_id` remap table to preserve continuity - machinery that exists only to undo the coupling you introduced by deriving the id from the path in the first place. Keep them separate and the remap table never needs to exist: a move updates the path attribute, the id is unchanged; the file watcher already fires on the rename.
+
+This is the ordinary database split between a primary key and a mutable column. The id is the key. The path is a column.
+
+## Decision 2: Local notebooks resolve through a daemon-local persistent registry
+
+The missing piece is a persistent **path <-> id registry**, daemon-local, surviving restarts. It is the same shape as `trusted-packages.sqlite` (a daemon-local sqlite store), and it closes the loop the in-memory `RoomRegistry` leaves open:
+
+- **Open by path:** look up `path -> id`; reuse the existing id and its already-persisted doc instead of minting a fresh UUID.
+- **Open by id:** look up `id -> path`; reload the file when the in-memory room is gone.
+- **Move/rename:** update the path for that id. Id unchanged.
+- **Untitled to save:** assign a path to the existing id. Same id, now file-backed.
+
+With the registry, daemon churn stops being a data-loss event for file-backed notebooks, and untitled notebooks recover too (their doc is already persisted by id; the registry keeps the id stable so the doc can be found again).
+
+## Decision 3: The cloud id is the only globally meaningful identity, and the only one that may be embedded
+
+Local ids are per machine and must never enter a committed file. If a local daemon id were written into `.ipynb` metadata and committed, every collaborator's daemon would either churn the field on each open (noisy diffs, merge conflicts on a meaningless token) or collide on it (two machines claiming the same id over divergent `docs_dir` state). Committed file content has to stay machine-agnostic.
+
+The only identity that is globally meaningful is the **cloud/hosted id**, because the hosting layer owns it and it is shared by construction. That is the one - and the only one - that may be embedded or shared across users. The codebase already separates these paths (`is_hosted()`, `NotebookSession::hosted`, `cloud::hosted_notebook_url` vs `Local`); this ADR pins the rule: local document identity never leaves the machine, cross-user continuity comes from the cloud id when a notebook is hosted.
+
+Cell ids already in nbformat are fine to commit; they are content, not notebook identity.
+
+## Decision 4: New file at a freed path gets a new id; no reclaim by default
+
+Delete a file and create a different one at the same path and it gets a **new** id. A new file silently inheriting a prior id - and the prior id's persisted doc, outputs, and trust state - is a footgun, not a feature. "Claim the old id" is an explicit operation if we ever need it, never the default resolution.
+
+## Decision 5: Carry the path on the session and the rejoin target now (landed stopgap)
+
+The registry is the durable fix and is not a same-release change. The release stopgap, landed with this ADR, carries the path that already exists rather than persisting a new structure:
+
+- `connect_notebook(notebook_id=...)` resolves the room's canonical path from the daemon (`list_rooms`, authoritative) and stores it on `NotebookSession.notebook_path` instead of `None`, so `daemon_watch`'s in-child rejoin uses `connect_open(path)` and reloads (`crates/runt-mcp/src/tools/session.rs`).
+- The same connect/create response surfaces `notebook_path` for file-backed rooms, and the proxy's `extract_session_id` prefers it over the UUID, so a respawn after a daemon swap seeds the **path** into the new child's rejoin target (`crates/runt-mcp-proxy/src/session.rs`). Ephemeral notebooks omit the path and still rejoin by UUID, which is correct for them.
+
+This restores ADR `mcp-session-lifecycle.md` Decision 8's invariant for sessions established by `notebook_id`. It is forward-compatible: even after the registry lands, carrying the path on the session and the rejoin target is still correct.
+
+## Rejected alternatives
+
+- **Path-encoded or path-derived ids.** Couples identity to location; every move mints a new id and you are back to needing a remap table. Rejected in Decision 1.
+- **Embed the local id in `.ipynb` metadata.** Breaks git collaboration: id churn or cross-machine collision. Rejected in Decision 3. Only a cloud id is embeddable.
+- **`old_id -> new_id` remap table.** A symptom of path-derived ids. With a stable id and a mutable path attribute it has nothing to track. Rejected in Decision 1.
+- **Treat the UUID as durable and reload by UUID across daemons.** The UUID is daemon-instance scoped; the live failure above is exactly this. Rejected in Decision 2.
+
+## Open Follow-ups
+
+- **NIP-1** (Proposed; `crates/runtimed/src/notebook_sync_server/`): build the persistent path <-> id registry (daemon-local sqlite, mirroring `trusted-packages.sqlite`). Make open-by-path resolve `path -> id` and reuse the persisted doc instead of minting a fresh UUID. This is the durable replacement for Decision 5's stopgap.
+- **NIP-2** (Design): ephemeral (untitled) notebook durability across daemon restart. The doc is persisted by id in `docs_dir`, but with no stable id across restarts there is nothing to reload it as. The registry must assign and persist an id at creation, before any save, for this to hold.
+- **NIP-3** (Design): migration and id reconciliation when a file already has an in-memory room under a fresh UUID at the moment the registry is introduced. Decide whether to adopt the existing room's id into the registry or rebind.
+
+## References
+
+- `crates/runtimed/src/notebook_sync_server/room.rs` - `load_or_create`, UUID assignment, `RoomRegistry`, path binding (`bind_existing`, `promote_after_save`, `rebind_after_save_as`).
+- `crates/runt-mcp/src/tools/session.rs` - `connect_notebook`, `resolve_room_notebook_path`, session path backfill.
+- `crates/runt-mcp/src/daemon_watch.rs` - `rejoin`, the path-vs-UUID fork.
+- `crates/runt-mcp-proxy/src/session.rs` - `extract_session_id`, rejoin-target selection.
+- `crates/runtimed/src/lib.rs` - `trusted-packages.sqlite` as the daemon-local store precedent.
+- `docs/adr/mcp-session-lifecycle.md` - Decision 8, the rejoin invariant this ADR backs.
