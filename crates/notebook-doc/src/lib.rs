@@ -3741,12 +3741,12 @@ mod tests {
     /// Models PRODUCTION driving (not the symmetric idealized loop above):
     /// the daemon room doc is built via `new_with_actor` + `add_cell` (the
     /// desktop-load shape), a joining peer bootstraps an empty doc, and the
-    /// handshake is driven exactly as the sync server / sync_task drive it:
-    ///   - daemon sends ONE initial frame (`send_initial_notebook_doc_sync`)
-    ///   - then strict reactive ping-pong: each side replies only when it
-    ///     receives a frame (`handle_notebook_doc_frame` / sync_task)
-    ///   - using the `_recovering` variants that production actually calls.
-    /// A joining peer must end up with the daemon's cells.
+    /// handshake is driven exactly as the sync server / sync_task drive it.
+    /// The daemon sends ONE initial frame (`send_initial_notebook_doc_sync`),
+    /// then both sides do strict reactive ping-pong (each replies only when it
+    /// receives a frame, via `handle_notebook_doc_frame` / sync_task), using the
+    /// `_recovering` variants that production actually calls. A joining peer
+    /// must end up with the daemon's cells.
     #[test]
     fn join_existing_populated_doc_delivers_cells_reactive_handshake() {
         use automerge::sync;
