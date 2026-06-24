@@ -33,6 +33,13 @@ pub enum SyncError {
     #[error("Protocol error: {0}")]
     Protocol(String),
 
+    /// The daemon refused this attach because the notebook is gone (no resident
+    /// room and no recoverable doc). Distinct from a transient `Protocol` error
+    /// so callers (e.g. the MCP rejoin) can treat it as definitive — clear the
+    /// session rather than retry.
+    #[error("{0}")]
+    NotebookUnavailable(String),
+
     /// A blob upload failed before bytes were published.
     #[error("Blob upload failed: {0:?}")]
     BlobUpload(BlobUploadErrorKind),

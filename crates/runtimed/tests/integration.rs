@@ -3823,7 +3823,8 @@ async fn test_notebook_sync_refuses_gone_uuid_without_phantom() {
     // A UUID the daemon has never seen: not resident, no persisted doc.
     let gone = "00000000-0000-0000-0000-0000000000ff".to_string();
     match connect::connect(socket_path.clone(), gone.clone(), "test").await {
-        Err(notebook_sync::SyncError::Protocol(ref m)) if m.contains("no longer available") => {}
+        Err(notebook_sync::SyncError::NotebookUnavailable(ref m))
+            if m.contains("no longer available") => {}
         Err(other) => panic!("gone uuid refused with an unexpected error: {other:?}"),
         Ok(_) => {
             panic!("connect to a gone uuid should be refused, but it succeeded (phantom room)")

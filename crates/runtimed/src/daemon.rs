@@ -2601,12 +2601,29 @@ impl Daemon {
                     // when the notebook is truly gone instead of minting a phantom
                     // empty room — so a stale rejoin gets a clear "gone" signal and
                     // the client need not guess with list_rooms (#2088).
-                    let resident = self.notebook_rooms.lookup_uuid(parsed).await.is_some();
-                    let recoverable = resident
-                        || docs_dir
-                            .join(crate::paths::notebook_doc_filename(&parsed.to_string()))
-                            .exists();
-                    if !recoverable {
+                    if let Some(found) = self.notebook_rooms.lookup_uuid(parsed).await {
+                        // Resident: attach holding the reservation guard so the
+                        // reaper cannot remove it between this check and steady
+                        // state (the guard is part of `found`).
+                        found
+                    } else if docs_dir
+                        .join(crate::paths::notebook_doc_filename(&parsed.to_string()))
+                        .exists()
+                    {
+                        // Not resident but recoverable: reload from the persisted doc.
+                        crate::notebook_sync_server::get_or_create_room_result(
+                            &self.notebook_rooms,
+                            parsed,
+                            crate::notebook_sync_server::RoomCreationOptions {
+                                path: None,
+                                docs_dir: &docs_dir,
+                                blob_store: self.blob_store.clone(),
+                                ephemeral: false, // NotebookSync handshake is always persistent
+                                trusted_packages: self.trusted_packages.clone(),
+                            },
+                        )
+                        .await?
+                    } else {
                         info!(
                             "[runtimed] NotebookSync for {parsed}: not resident and no persisted doc — refusing (gone)"
                         );
@@ -2621,18 +2638,6 @@ impl Daemon {
                         .await?;
                         return Ok(());
                     }
-                    crate::notebook_sync_server::get_or_create_room_result(
-                        &self.notebook_rooms,
-                        parsed,
-                        crate::notebook_sync_server::RoomCreationOptions {
-                            path: None,
-                            docs_dir: &docs_dir,
-                            blob_store: self.blob_store.clone(),
-                            ephemeral: false, // NotebookSync handshake is always persistent
-                            trusted_packages: self.trusted_packages.clone(),
-                        },
-                    )
-                    .await?
                 } else {
                     let raw = PathBuf::from(&notebook_id);
                     let canonical = match tokio::fs::canonicalize(&raw).await {

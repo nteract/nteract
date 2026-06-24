@@ -836,10 +836,11 @@ async fn recv_typed_capabilities<R: AsyncRead + Unpin>(
         match parse_typed_bootstrap_payload(&frame[1..])? {
             ConnectionBootstrap::ProtocolCapabilities { capabilities } => Ok(capabilities),
             // A populated `error` means the daemon refused this attach (e.g. an
-            // untitled notebook that is gone); surface it instead of returning
-            // capabilities so the caller does not attach to an empty room.
+            // untitled notebook that is gone); surface it as the definitive
+            // NotebookUnavailable (not a retryable Protocol error) so the caller
+            // does not attach to an empty room.
             ConnectionBootstrap::NotebookConnectionInfo { info } => match info.error {
-                Some(error) => Err(SyncError::Protocol(error)),
+                Some(error) => Err(SyncError::NotebookUnavailable(error)),
                 None => Ok(info.capabilities),
             },
         }
@@ -939,8 +940,8 @@ mod bootstrap_tests {
         let mut reader = std::io::Cursor::new(buf);
         let err = recv_typed_capabilities(&mut reader).await.unwrap_err();
         assert!(
-            matches!(err, SyncError::Protocol(ref msg) if msg.contains("no longer available")),
-            "expected refusal surfaced as Protocol error, got {err:?}"
+            matches!(err, SyncError::NotebookUnavailable(ref msg) if msg.contains("no longer available")),
+            "expected refusal surfaced as NotebookUnavailable, got {err:?}"
         );
     }
 

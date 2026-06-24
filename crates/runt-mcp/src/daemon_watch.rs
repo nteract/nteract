@@ -361,10 +361,12 @@ fn looks_like_uuid(target: &str) -> bool {
 /// reloads from disk (the UUID-only path would yield an empty document
 /// because file-backed rooms' `.automerge` persist files are deleted).
 ///
-/// For ephemeral notebooks, checks `list_rooms` first to verify the room
-/// still exists in the daemon. If the room was evicted during the
-/// disconnect, the session is cleared immediately without creating a new
-/// peer connection — avoiding the creation of phantom rooms (#2088).
+/// For untitled (UUID-only) notebooks, the rejoin is daemon-authoritative: it
+/// just attempts the reconnect and trusts the daemon, which attaches a resident
+/// or recoverable room (untitled notebooks reload from their persisted doc) and
+/// refuses a gone one. A refusal surfaces as `SyncError::NotebookUnavailable`
+/// and the session is cleared as `Evicted` without retries; the phantom-room
+/// guard (#2088) now lives in the daemon, not a client `list_rooms` heuristic.
 ///
 /// Returns `true` if the rejoin succeeded or the session was explicitly
 /// cleared (room evicted). Returns `false` if retries were exhausted
@@ -521,9 +523,10 @@ async fn rejoin(
                 // handshake completed and the daemon said no. Don't burn retries
                 // on it; clear the session as Evicted with a recovery hint. This
                 // is the old immediate-give-up behavior, now driven by the daemon
-                // instead of a list_rooms heuristic. Transient failures (daemon
-                // down) surface as Io/DaemonUnavailable and still retry below.
-                if matches!(e, notebook_sync::SyncError::Protocol(_)) {
+                // instead of a list_rooms heuristic. Only the refusal is treated
+                // this way: transient failures (daemon down → Io/DaemonUnavailable,
+                // streaming-load failure → Protocol) still retry below.
+                if matches!(e, notebook_sync::SyncError::NotebookUnavailable(_)) {
                     info!("Rejoin refused by daemon (notebook gone): {e}");
                     *last_session_drop.write().await = Some(SessionDropInfo {
                         reason: SessionDropReason::Evicted,
