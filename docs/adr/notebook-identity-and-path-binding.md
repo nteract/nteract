@@ -53,9 +53,19 @@ The only identity that is globally meaningful is the **cloud/hosted id**, becaus
 
 Cell ids already in nbformat are fine to commit; they are content, not notebook identity.
 
-## Decision 4: New file at a freed path gets a new id; no reclaim by default
+## Decision 4: A freed path gets a new id where we can tell; identity otherwise binds to the path
 
-Delete a file and create a different one at the same path and it gets a **new** id. A new file silently inheriting a prior id - and the prior id's persisted doc, outputs, and trust state - is a footgun, not a feature. "Claim the old id" is an explicit operation if we ever need it, never the default resolution.
+The clean cases hold:
+
+- **Untitled** notebooks have no path, so they cannot collide with a reused path - a new untitled notebook is always a new id.
+- **Save-as** explicitly moves a room from one path to another. The registry forgets the old path and binds the new one (`save_notebook.rs`: `release_path` + `registry.forget`/`record`), so the vacated path is free and a future file there gets a fresh id.
+
+The case we cannot cleanly detect: a file is replaced **out of band** at the same path with no save event the daemon observes - `rm x.ipynb && cp other.ipynb x.ipynb`, a `git checkout`, an editor's atomic write. There the registry still maps that path to the old id, so reopening resolves to the prior id. We accept this, because:
+
+1. The blast radius is small. File-backed rooms reload content from the `.ipynb` and delete the id-keyed Automerge doc on open (`room.rs:859`), and trust is keyed on package content, not id. The replacement gets the old id but its own (correct) content; there is no stale-content leak.
+2. There is no reliable signal to do better. Inode, mtime, birth time, and content hash all change on ordinary edits and atomic saves, so keying on any of them would churn a notebook's id on every save - breaking the whole point of a stable id to "fix" a contrived edge.
+
+So for file-backed notebooks, identity binds to the canonical path over time (`fs::canonicalize`, so symlinks are resolved and trailing slashes normalized). "Claim a fresh id for the file now at this path" is a candidate explicit action if we ever need it (NIP-3), never the default.
 
 ## Decision 5: Carry the path on the session and the rejoin target now (landed stopgap)
 
@@ -75,7 +85,7 @@ This restores ADR `mcp-session-lifecycle.md` Decision 8's invariant for sessions
 
 ## Open Follow-ups
 
-- **NIP-1** (Proposed; `crates/runtimed/src/notebook_sync_server/`): build the persistent path <-> id registry (daemon-local sqlite, mirroring `trusted-packages.sqlite`). Make open-by-path resolve `path -> id` and reuse the persisted doc instead of minting a fresh UUID. This is the durable replacement for Decision 5's stopgap.
+- **NIP-1** (Landed; `crates/runtimed/src/notebook_registry.rs`): the persistent path <-> id registry (daemon-local sqlite, mirroring `trusted-packages.sqlite`) is in place. The two open-by-path sites in `daemon.rs` resolve `path -> stable id` instead of minting per run, and `save_notebook.rs` records `path -> id` on untitled->save and forgets-then-records on save-as. A file resolves to the same id across daemon restarts whether it was opened-as-file, saved from untitled, or saved-as.
 - **NIP-2** (Design): ephemeral (untitled) notebook durability across daemon restart. The doc is persisted by id in `docs_dir`, but with no stable id across restarts there is nothing to reload it as. The registry must assign and persist an id at creation, before any save, for this to hold.
 - **NIP-3** (Design): migration and id reconciliation when a file already has an in-memory room under a fresh UUID at the moment the registry is introduced. Decide whether to adopt the existing room's id into the registry or rebind.
 

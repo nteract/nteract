@@ -132,8 +132,14 @@ pub(crate) async fn handle(
         }
     }
 
+    let registry_now = chrono::Utc::now().to_rfc3339();
     if was_untitled {
         finalize_untitled_promotion(room, canonical.clone()).await;
+        // Persist path -> id so reopening this freshly-saved file keeps its id
+        // across daemon restarts (NIP-1).
+        daemon
+            .notebook_registry
+            .record(&canonical, room.id, &registry_now);
     } else if let Some(old) = old_path.as_ref() {
         let path_changed = old != &canonical;
         if path_changed {
@@ -141,6 +147,12 @@ pub(crate) async fn handle(
             // the old path_index entry and rebind the room to the new path.
             NotebookFileBinding::release_path(&daemon.notebook_rooms, old).await;
             NotebookFileBinding::rebind_after_save_as(room, canonical.clone()).await;
+            // Move the persistent binding with the room: the old path is now a
+            // different (or absent) file and must not resolve to this id.
+            daemon.notebook_registry.forget(old);
+            daemon
+                .notebook_registry
+                .record(&canonical, room.id, &registry_now);
         }
         // If path didn't change, this is save-in-place: nothing else.
     }
