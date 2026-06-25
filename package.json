@@ -17,8 +17,7 @@
     "elements:dev": "pnpm --dir apps/elements dev",
     "elements:dev:local": "pnpm --dir apps/elements dev:local",
     "elements:url": "pnpm --dir apps/elements url",
-    "elements:build": "pnpm --dir apps/elements build",
-    "prototype:sidebar-toc": "RUNTIMED_VITE_PORT=5175 RUNT_NOTEBOOK_PROTOTYPE_ROUTE=/prototypes/sidebar-toc/ pnpm --dir apps/notebook dev -- --host 127.0.0.1"
+    "elements:build": "pnpm --dir apps/elements build"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",
