@@ -78,7 +78,6 @@ export default defineConfig(() => {
         "diagnostics",
         "upgrade",
         "gallery",
-        "prototypes/sidebar-toc",
       ]),
       visualizer({
         filename: "dist/stats.html",
