@@ -3386,6 +3386,32 @@ async fn test_pool_ping_from_old_stable_preamble_returns_version_metadata() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// Seed a resident room and return its id (plus a keep-alive handle).
+///
+/// `NotebookSync` is attach-only, so relay/pipe tests must attach to a room the
+/// daemon has already created (via `CreateNotebook`). Hold the returned handle
+/// for the room to stay resident while the test attaches the relay and peer.
+async fn seed_pipe_room(
+    socket_path: &std::path::Path,
+) -> (notebook_sync::connect::CreateResult, String) {
+    let seed = connect::connect_create(
+        socket_path.to_path_buf(),
+        "python",
+        None,
+        "test:seed",
+        true,
+        None,
+        vec![],
+    )
+    .await
+    .expect("seed room create should succeed");
+    // No session-ready wait: the relay and peer do their own sync wait; the seed
+    // only needs the room to exist so they can attach to it. An untitled
+    // ephemeral notebook does not auto-launch a kernel, so this stays light.
+    let id = seed.info.notebook_id.clone();
+    (seed, id)
+}
+
 #[tokio::test]
 async fn test_pipe_mode_forwards_sync_frames() {
     let temp_dir = TempDir::new().unwrap();
@@ -3400,27 +3426,22 @@ async fn test_pipe_mode_forwards_sync_frames() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
+    // Seed a resident room and attach by its id (NotebookSync is attach-only).
+    let (_seed, notebook_id) = seed_pipe_room(&socket_path).await;
+
     // Create a pipe channel
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
     // Connect pipe client (relay mode — no local doc, no initial sync)
-    let _result = connect::connect_relay(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-000000000001".to_string(),
-        frame_tx,
-    )
-    .await
-    .unwrap();
+    let _result = connect::connect_relay(socket_path.clone(), notebook_id.clone(), frame_tx)
+        .await
+        .unwrap();
 
     // Second client (full peer) adds a cell and updates source
-    let client2 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-000000000001".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
+    let client2 = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
+        .await
+        .unwrap()
+        .handle;
     // Initial sync must deliver the daemon's cells map before we can
     // mutate it. Otherwise `add_cell_after` panics with
     // `InvalidObjId("cells map not found")` — a flake under loaded CI.
@@ -3478,15 +3499,12 @@ async fn test_pipe_mode_preserves_initial_session_status_frame() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
+    let (_seed, notebook_id) = seed_pipe_room(&socket_path).await;
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    let _result = connect::connect_relay(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-000000000011".to_string(),
-        frame_tx,
-    )
-    .await
-    .unwrap();
+    let _result = connect::connect_relay(socket_path.clone(), notebook_id.clone(), frame_tx)
+        .await
+        .unwrap();
 
     let first_frame = tokio::time::timeout(Duration::from_secs(2), frame_rx.recv())
         .await
@@ -3529,28 +3547,21 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
+    let (_seed, notebook_id) = seed_pipe_room(&socket_path).await;
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    let _result = connect::connect_relay(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-000000000002".to_string(),
-        frame_tx,
-    )
-    .await
-    .unwrap();
+    let _result = connect::connect_relay(socket_path.clone(), notebook_id.clone(), frame_tx)
+        .await
+        .unwrap();
 
     // Second client adds a cell to trigger sync activity.
     // Note: this only produces AutomergeSync frames — actual Broadcast frames
     // require a kernel launch, which is covered by E2E tests. This test
     // verifies the type-byte filter, not broadcast-specific forwarding.
-    let client2 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-000000000002".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
+    let client2 = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
+        .await
+        .unwrap()
+        .handle;
     assert!(
         wait_for_cells_map(&client2, SESSION_READY_TIMEOUT).await,
         "initial sync did not deliver the cells map within {:?}",
@@ -3616,15 +3627,12 @@ async fn test_pipe_mode_does_not_forward_response_frames() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
+    let (_seed, notebook_id) = seed_pipe_room(&socket_path).await;
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    let result = connect::connect_relay(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-000000000004".to_string(),
-        frame_tx,
-    )
-    .await
-    .unwrap();
+    let result = connect::connect_relay(socket_path.clone(), notebook_id.clone(), frame_tx)
+        .await
+        .unwrap();
     let handle = result.handle;
 
     // Send a request that produces a Response frame
@@ -3688,25 +3696,18 @@ async fn test_pipe_mode_preserves_frame_order() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
+    let (_seed, notebook_id) = seed_pipe_room(&socket_path).await;
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    let _result = connect::connect_relay(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-000000000003".to_string(),
-        frame_tx,
-    )
-    .await
-    .unwrap();
+    let _result = connect::connect_relay(socket_path.clone(), notebook_id.clone(), frame_tx)
+        .await
+        .unwrap();
 
     // Second client rapidly adds multiple cells
-    let client2 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-000000000003".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
+    let client2 = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
+        .await
+        .unwrap()
+        .handle;
     // Initial sync must deliver the daemon's cells map before we can
     // mutate it. Otherwise `add_cell_after` panics with
     // `InvalidObjId("cells map not found")` — a flake under loaded CI.
@@ -3779,14 +3780,10 @@ async fn test_pipe_mode_preserves_frame_order() {
     // Connect a third full-peer client and verify convergence — this proves
     // the daemon processed all mutations and that the sync traffic the pipe
     // received (in channel order) represents the correct state transitions.
-    let client3 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-000000000003".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
+    let client3 = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
+        .await
+        .unwrap()
+        .handle;
     assert!(
         wait_for_session_ready(&client3, SESSION_READY_TIMEOUT).await,
         "third client should reach session-ready state within 2s"
@@ -3801,6 +3798,46 @@ async fn test_pipe_mode_preserves_frame_order() {
     assert_eq!(cells[2].source, "c = 3");
 
     // Shutdown
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// NotebookSync is attach-only: connecting by a UUID that has no resident room
+/// and no persisted doc is refused, and must NOT mint a phantom empty room.
+/// This is what lets the rejoin trust the daemon instead of guessing with
+/// list_rooms, while a recoverable (persisted) untitled notebook still reloads.
+#[tokio::test]
+async fn test_notebook_sync_refuses_gone_uuid_without_phantom() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    // A UUID the daemon has never seen: not resident, no persisted doc.
+    let gone = "00000000-0000-0000-0000-0000000000ff".to_string();
+    match connect::connect(socket_path.clone(), gone.clone(), "test").await {
+        Err(notebook_sync::SyncError::NotebookUnavailable(ref m))
+            if m.contains("no longer available") => {}
+        Err(other) => panic!("gone uuid refused with an unexpected error: {other:?}"),
+        Ok(_) => {
+            panic!("connect to a gone uuid should be refused, but it succeeded (phantom room)")
+        }
+    }
+
+    // The refusal must not have created a phantom room.
+    let rooms = pool_client.list_rooms().await.unwrap();
+    assert!(
+        !rooms.iter().any(|r| r.notebook_id == gone),
+        "refused NotebookSync must not mint a phantom room: {rooms:?}"
+    );
+
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
