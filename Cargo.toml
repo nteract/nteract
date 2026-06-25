@@ -32,7 +32,6 @@ members = [
     "crates/mcp-supervisor",
     "crates/nteract-markdown-engine",
     "crates/nteract-markdown-wasm",
-    "crates/playdate-image",
     "crates/runt-mcp",
     "crates/runt-mcp-proxy",
     "crates/nteract-mcp",
