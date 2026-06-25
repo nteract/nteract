@@ -6231,6 +6231,7 @@ mod tests {
             // so parallel daemon unit tests can't contaminate each other's
             // allowlists through the shared default path.
             trusted_packages_db_path: temp_dir.path().join("trusted-packages.sqlite"),
+            notebook_registry_db_path: temp_dir.path().join("notebook-registry.sqlite"),
             uv_pool_size: 0,
             conda_pool_size: 0,
             pixi_pool_size: 0,
