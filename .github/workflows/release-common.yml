@@ -1462,6 +1462,14 @@ jobs:
             echo "curl -fsSL ${INSTALLER_URL} | bash"
             echo '```'
             echo ''
+            if [ "$VERSION_SUFFIX" = "nightly" ]; then
+              echo 'Headless workstation install:'
+              echo ''
+              echo '```bash'
+              echo "curl -fsSL ${INSTALLER_URL} | bash -s -- --headless"
+              echo '```'
+              echo ''
+            fi
             if [ "$VERSION_SUFFIX" != "nightly" ]; then
               echo 'Latest stable shortcut:'
               echo ''
