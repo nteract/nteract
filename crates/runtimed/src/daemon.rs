@@ -139,11 +139,11 @@ impl DaemonConfig {
     }
 }
 
-/// Send a handshake-level refusal: a `NotebookConnectionInfo` carrying `error`
-/// and an empty notebook_id, so the client surfaces it as a failed connect
-/// rather than attaching to an empty room. Used to reject `NotebookSync` for a
-/// notebook that is gone (mirrors `handle_open_notebook`'s local sender).
-async fn send_handshake_refusal<W: AsyncWrite + Unpin>(
+/// Send a handshake-level error response: a `NotebookConnectionInfo` carrying
+/// `error` and an empty notebook_id, so the client surfaces it as a failed
+/// connect rather than attaching. Used to refuse a `NotebookSync` attach for a
+/// gone notebook and to report `OpenNotebook`/`CreateNotebook` handshake errors.
+async fn send_error_response<W: AsyncWrite + Unpin>(
     writer: &mut W,
     error: String,
     typed_bootstrap: bool,
@@ -2592,7 +2592,6 @@ impl Daemon {
                 // would replace it, losing the in-memory doc and outputs
                 // the resident-room cache is meant to preserve.
                 let parsed_notebook_id = uuid::Uuid::parse_str(&notebook_id).ok();
-                let is_uuid_notebook_id = parsed_notebook_id.is_some();
                 let (room, _room_guard) = if let Some(parsed) = parsed_notebook_id {
                     // NotebookSync by UUID is attach-only (see the notebook crate's
                     // `Attach` intent: "attach to a room the daemon has already
@@ -2628,7 +2627,7 @@ impl Daemon {
                             "[runtimed] NotebookSync for {parsed}: not resident and no persisted doc — refusing (gone)"
                         );
                         let (_reader, mut writer) = tokio::io::split(stream);
-                        send_handshake_refusal(
+                        send_error_response(
                             &mut writer,
                             format!(
                                 "Notebook {parsed} is no longer available (not found or evicted)"
@@ -2684,40 +2683,12 @@ impl Daemon {
                 let settings = self.settings.read().await.get_all();
                 let default_runtime = settings.default_runtime;
                 let default_python_env = settings.default_python_env;
-                if is_uuid_notebook_id {
-                    let mut seed_error = None;
-                    let mut seeded = false;
-                    {
-                        let mut doc = room.doc.write().await;
-                        if doc.is_pristine() {
-                            match crate::notebook_sync_server::create_empty_notebook(
-                                &mut doc,
-                                &default_runtime.to_string(),
-                                default_python_env.clone(),
-                                Some(&notebook_id),
-                                None,
-                                &[],
-                            ) {
-                                Ok(_) => {
-                                    seeded = true;
-                                }
-                                Err(e) => {
-                                    seed_error = Some(e);
-                                }
-                            }
-                        }
-                    }
-                    if let Some(e) = seed_error {
-                        return Err(anyhow::anyhow!(
-                            "Failed to initialize notebook '{}': {}",
-                            notebook_id,
-                            e
-                        ));
-                    }
-                    if seeded {
-                        info!("[runtimed] Initialized fresh notebook room {}", notebook_id);
-                    }
-                }
+                // NotebookSync is attach-only: it only reaches a resident or
+                // recoverable room (both already have content) or refuses a gone
+                // one above, so it never lands on a pristine room and does no
+                // fresh-room seeding. New notebooks and untitled-restore seed via
+                // the CreateNotebook handshake.
+
                 // Convert working_dir String to PathBuf
                 let working_dir_path = working_dir.map(std::path::PathBuf::from);
                 let connection_identity =
@@ -2862,33 +2833,6 @@ impl Daemon {
                     path
                 );
             }
-        }
-
-        // Helper to send error response to client
-        async fn send_error_response<W: AsyncWrite + Unpin>(
-            writer: &mut W,
-            error: String,
-            typed_bootstrap: bool,
-        ) -> anyhow::Result<()> {
-            let response = NotebookConnectionInfo {
-                capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
-                notebook_id: String::new(),
-                cell_count: 0,
-                needs_trust_approval: false,
-                error: Some(error),
-                ephemeral: false,
-                notebook_path: None,
-            };
-            if typed_bootstrap {
-                send_typed_bootstrap_frame(
-                    writer,
-                    &ConnectionBootstrap::notebook_connection_info(response),
-                )
-                .await?;
-            } else {
-                send_json_frame(writer, &response).await?;
-            }
-            Ok(())
         }
 
         if crate::paths::looks_like_untitled_notebook_path(&path) {
@@ -6287,6 +6231,7 @@ mod tests {
             // so parallel daemon unit tests can't contaminate each other's
             // allowlists through the shared default path.
             trusted_packages_db_path: temp_dir.path().join("trusted-packages.sqlite"),
+            notebook_registry_db_path: temp_dir.path().join("notebook-registry.sqlite"),
             uv_pool_size: 0,
             conda_pool_size: 0,
             pixi_pool_size: 0,

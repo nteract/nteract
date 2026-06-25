@@ -92,6 +92,7 @@ fn test_config(temp_dir: &TempDir) -> DaemonConfig {
         // false-pass on a developer machine and false-fail on CI depending
         // on what ran before them.
         trusted_packages_db_path: temp_dir.path().join("trusted-packages.sqlite"),
+        notebook_registry_db_path: temp_dir.path().join("notebook-registry.sqlite"),
         uv_pool_size: 0, // Don't create real envs in tests
         conda_pool_size: 0,
         max_age_secs: 3600,
