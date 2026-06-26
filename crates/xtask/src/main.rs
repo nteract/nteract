@@ -580,9 +580,9 @@ fn probe_pnpm_version(program: &str, prefix_args: &[&str], root: &Path) -> Resul
 fn last_non_empty_line(bytes: &[u8]) -> Option<String> {
     String::from_utf8_lossy(bytes)
         .lines()
+        .rev()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .last()
+        .find(|line| !line.is_empty())
         .map(str::to_string)
 }
 
