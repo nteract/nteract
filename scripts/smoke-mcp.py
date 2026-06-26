@@ -8,17 +8,28 @@ Spawns `runt mcp` (or `runt.exe mcp`) over stdio and runs two passes:
      small DataFrame, render it as the cell's execute_result, assert the
      rendered output contains the expected column names and values.
      Proves uv env resolution + package install + dataframe display.
+  3. Optional Viz LLM: ephemeral notebook with pandas/plotly/altair,
+     create four cells (imports, DataFrame, Plotly, Altair/Vega-Lite),
+     run all cells, and assert the MCP text content includes repr-llm
+     summaries for the table and both chart specs. With `--opencode`,
+     send only the MCP text content to OpenCode and ask a model for a
+     strict JSON verdict that it saw the Plotly LLM summary.
 
 Exits non-zero on any failure.
 
 Usage:
     python scripts/smoke-mcp.py <path-to-runt>
+    python scripts/smoke-mcp.py <path-to-runt> --viz-llm
+    python scripts/smoke-mcp.py <path-to-runt> --viz-llm --opencode \\
+        --opencode-model <provider/model>
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
+import os
 import re
 import shutil
 import sys
@@ -59,9 +70,26 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
+def env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def content_text_blocks(result) -> list[str]:
+    """Return text-typed content blocks from a tool result."""
+    return [c.text for c in result.content if hasattr(c, "text")]
+
+
 def text_of(result) -> str:
     """Concat all text-typed content blocks from a tool result."""
-    return "\n".join(c.text for c in result.content if hasattr(c, "text"))
+    return "\n".join(content_text_blocks(result))
+
+
+def content_transcript_of(result) -> str:
+    """Render MCP text content blocks with boundaries for LLM harness checks."""
+    blocks = content_text_blocks(result)
+    return "\n\n".join(
+        f"--- MCP content item {index} ---\n{block}" for index, block in enumerate(blocks, 1)
+    )
 
 
 def stdout_of(body: str) -> str:
@@ -303,19 +331,7 @@ async def run_cell_and_get_body(session: ClientSession, source: str, label: str)
     Polls `get_results` for up to 240s to cover the slow path where the
     kernel needs to install dependencies on first execute.
     """
-    print(f"[{label}] create_cell")
-    cell = await session.call_tool(
-        "create_cell",
-        {"cell_type": "code", "source": source},
-    )
-    if cell.isError:
-        fail(f"create_cell errored: {text_of(cell)}")
-    print(text_of(cell))
-
-    match = CELL_ID_RE.search(text_of(cell))
-    if not match:
-        fail(f"could not parse cell_id from create_cell response: {text_of(cell)}")
-    cell_id = match.group(0)
+    cell_id = await create_code_cell(session, source, label)
 
     print(f"[{label}] execute_cell {cell_id}")
     exec_result = await session.call_tool("execute_cell", {"cell_id": cell_id})
@@ -351,6 +367,52 @@ async def run_cell_and_get_body(session: ClientSession, source: str, label: str)
             print(f"[{label}] attempt {attempt}: still pending")
 
     fail(f"[{label}] execution did not complete within 240s")
+
+
+async def create_code_cell(session: ClientSession, source: str, label: str) -> str:
+    """Create a code cell and return its cell_id."""
+    print(f"[{label}] create_cell")
+    cell = await session.call_tool(
+        "create_cell",
+        {"cell_type": "code", "source": source},
+    )
+    if cell.isError:
+        fail(f"[{label}] create_cell errored: {text_of(cell)}")
+    print(text_of(cell))
+
+    match = CELL_ID_RE.search(text_of(cell))
+    if not match:
+        fail(f"[{label}] could not parse cell_id from create_cell response: {text_of(cell)}")
+    return match.group(0)
+
+
+async def first_cell_id(session: ClientSession, label: str) -> str:
+    """Return the current notebook's first cell_id."""
+    print(f"[{label}] get_all_cells(format=json, count=1)")
+    result = await session.call_tool("get_all_cells", {"format": "json", "count": 1})
+    body = text_of(result)
+    if result.isError:
+        fail(f"[{label}] get_all_cells errored: {body}")
+
+    cells = parse_json_value(body)
+    if not isinstance(cells, list) or not cells:
+        fail(f"[{label}] get_all_cells returned no cells: {body}")
+    cell_id = cells[0].get("cell_id") if isinstance(cells[0], dict) else None
+    if not isinstance(cell_id, str) or not cell_id:
+        fail(f"[{label}] could not read first cell_id from get_all_cells: {body}")
+    return cell_id
+
+
+async def set_code_cell(session: ClientSession, cell_id: str, source: str, label: str) -> None:
+    """Update an existing cell to code with the given source."""
+    print(f"[{label}] set_cell {cell_id}")
+    result = await session.call_tool(
+        "set_cell",
+        {"cell_id": cell_id, "cell_type": "code", "source": source},
+    )
+    if result.isError:
+        fail(f"[{label}] set_cell errored: {text_of(result)}")
+    print(text_of(result))
 
 
 async def basic_pass(session: ClientSession, smoke_root: Path) -> None:
@@ -404,7 +466,200 @@ async def polars_pass(session: ClientSession, smoke_root: Path) -> None:
     print("[polars] PASS")
 
 
-async def smoke(runt_exe: Path) -> None:
+VIZ_IMPORT_CELL = """
+import pandas as pd
+import plotly.express as px
+import altair as alt
+""".strip()
+
+VIZ_DATAFRAME_CELL = """
+df = pd.DataFrame({
+    "region": ["north", "south", "east", "west"],
+    "revenue": [125, 98, 143, 87],
+    "orders": [42, 31, 55, 28],
+})
+df
+""".strip()
+
+VIZ_PLOTLY_CELL = """
+fig = px.bar(
+    df,
+    x="region",
+    y="revenue",
+    color="orders",
+    title="Revenue by Region",
+)
+fig
+""".strip()
+
+VIZ_ALTAIR_CELL = """
+chart = alt.Chart(df).mark_circle(size=120).encode(
+    x=alt.X("orders:Q", title="Orders"),
+    y=alt.Y("revenue:Q", title="Revenue"),
+    color="region:N",
+    tooltip=["region", "revenue", "orders"],
+).properties(title="Revenue vs Orders")
+chart
+""".strip()
+
+
+def assert_viz_llm_content(transcript: str) -> None:
+    """Assert the model-facing MCP content contains repr-llm summaries."""
+    required_snippets = {
+        "DataFrame summary": "DataFrame",
+        "DataFrame column": "revenue",
+        "Plotly LLM summary": "Plotly bar chart",
+        "Plotly title": 'Revenue by Region"',
+        "Vega-Lite LLM summary": "Vega-Lite circle chart",
+        "Vega-Lite encoding": "Encoding:",
+    }
+    missing = [name for name, snippet in required_snippets.items() if snippet not in transcript]
+    if missing:
+        fail(
+            "[viz-llm] MCP content missing expected repr-llm snippets "
+            f"{missing!r}; transcript was:\n{transcript}"
+        )
+
+
+async def run_opencode_plotly_verdict(
+    transcript: str,
+    model: str | None,
+    timeout_secs: float,
+    work_dir: Path,
+) -> None:
+    """Ask OpenCode whether the MCP text transcript exposed the Plotly summary."""
+    opencode_bin = os.environ.get("NTERACT_SMOKE_OPENCODE_BIN") or shutil.which("opencode")
+    if not opencode_bin:
+        fail("[viz-llm] --opencode requested but opencode was not found on PATH")
+
+    prompt = f"""
+You are checking whether an MCP tool result exposed an LLM-optimized Plotly chart summary.
+
+Use only the MCP text content transcript below. Do not infer from Python source code. Return true
+only if the transcript literally contains an output summary such as "Plotly bar chart".
+
+Return exactly one JSON object and no markdown:
+{{
+  "saw_plotly_llm_summary": true|false,
+  "plotly_summary_excerpt": "short exact excerpt or empty string",
+  "reason": "one short sentence"
+}}
+
+MCP TEXT CONTENT TRANSCRIPT:
+{transcript}
+""".strip()
+
+    args = [
+        opencode_bin,
+        "run",
+        "--pure",
+        "--format",
+        "default",
+        "--dir",
+        str(work_dir),
+    ]
+    if model:
+        args.extend(["--model", model])
+    args.append(prompt)
+
+    model_label = model or "configured default"
+    print(f"[viz-llm] opencode verdict using {model_label}")
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        fail(f"[viz-llm] opencode timed out after {timeout_secs}s")
+
+    stdout_text = stdout.decode("utf-8", errors="replace").strip()
+    stderr_text = stderr.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        fail(
+            f"[viz-llm] opencode exited {proc.returncode}\n"
+            f"stdout:\n{stdout_text}\n\nstderr:\n{stderr_text}"
+        )
+    if stderr_text:
+        print(f"[viz-llm] opencode stderr:\n{stderr_text}", file=sys.stderr)
+    print(f"[viz-llm] opencode stdout:\n{stdout_text}")
+
+    verdict = parse_json_value(stdout_text)
+    if not isinstance(verdict, dict):
+        fail(f"[viz-llm] opencode did not return a JSON object: {stdout_text}")
+    if verdict.get("saw_plotly_llm_summary") is not True:
+        fail(f"[viz-llm] model did not report seeing Plotly LLM summary: {verdict}")
+    excerpt = str(verdict.get("plotly_summary_excerpt") or "")
+    if "Plotly" not in excerpt:
+        fail(f"[viz-llm] model verdict did not include a Plotly excerpt: {verdict}")
+
+
+async def viz_llm_pass(
+    session: ClientSession,
+    smoke_root: Path,
+    *,
+    run_opencode: bool,
+    opencode_model: str | None,
+    opencode_timeout_secs: float,
+) -> None:
+    """Full MCP text-content pass for DataFrame, Plotly, and Altair/Vega summaries."""
+    working_dir = smoke_root / "viz-llm"
+    working_dir.mkdir(parents=True, exist_ok=True)
+
+    print("[viz-llm] create_notebook(dependencies=['pandas', 'plotly', 'altair'])")
+    notebook_id = await create_notebook_checked(
+        session,
+        "viz-llm",
+        {
+            "dependencies": ["pandas", "plotly", "altair"],
+            "working_dir": str(working_dir),
+        },
+    )
+    await wait_for_kernel_ready(session, notebook_id, "viz-llm")
+
+    import_cell_id = await first_cell_id(session, "viz-llm/imports")
+    await set_code_cell(session, import_cell_id, VIZ_IMPORT_CELL, "viz-llm/imports")
+    await create_code_cell(session, VIZ_DATAFRAME_CELL, "viz-llm/dataframe")
+    await create_code_cell(session, VIZ_PLOTLY_CELL, "viz-llm/plotly")
+    await create_code_cell(session, VIZ_ALTAIR_CELL, "viz-llm/altair")
+
+    print("[viz-llm] run_all_cells")
+    result = await session.call_tool("run_all_cells", {"timeout_secs": 300})
+    transcript = content_transcript_of(result)
+    print(transcript)
+    if result.isError:
+        fail(f"[viz-llm] run_all_cells errored: {transcript}")
+    if "Execution completed (4 succeeded)" not in transcript:
+        fail(f"[viz-llm] run_all_cells did not report four successful cells:\n{transcript}")
+
+    transcript_path = working_dir / "mcp-content-transcript.txt"
+    transcript_path.write_text(transcript, encoding="utf-8")
+    print(f"[viz-llm] wrote MCP content transcript: {transcript_path}")
+
+    assert_viz_llm_content(transcript)
+
+    if run_opencode:
+        await run_opencode_plotly_verdict(
+            transcript,
+            opencode_model,
+            opencode_timeout_secs,
+            working_dir,
+        )
+
+    print("[viz-llm] PASS")
+
+
+async def smoke(
+    runt_exe: Path,
+    *,
+    run_viz_llm: bool,
+    run_opencode: bool,
+    opencode_model: str | None,
+    opencode_timeout_secs: float,
+) -> None:
     params = StdioServerParameters(command=str(runt_exe), args=["mcp"])
 
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
@@ -418,7 +673,9 @@ async def smoke(runt_exe: Path) -> None:
             "list_active_notebooks",
             "create_notebook",
             "create_cell",
+            "set_cell",
             "execute_cell",
+            "run_all_cells",
             "get_results",
         ):
             if required not in tool_names:
@@ -440,19 +697,67 @@ async def smoke(runt_exe: Path) -> None:
                 lambda active_session: polars_pass(active_session, smoke_root_path),
                 session,
             )
+            if run_viz_llm:
+                await run_smoke_pass(
+                    "viz-llm",
+                    lambda active_session: viz_llm_pass(
+                        active_session,
+                        smoke_root_path,
+                        run_opencode=run_opencode,
+                        opencode_model=opencode_model,
+                        opencode_timeout_secs=opencode_timeout_secs,
+                    ),
+                    session,
+                )
         finally:
             shutil.rmtree(smoke_root_path, ignore_errors=True)
         print("[smoke] ALL PASSES GREEN")
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        print(__doc__, file=sys.stderr)
-        sys.exit(2)
-    runt_exe = Path(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        description="Cross-platform smoke test driving the runtimed daemon over MCP."
+    )
+    parser.add_argument("runt_exe", type=Path, help="Path to the runt executable")
+    parser.add_argument(
+        "--viz-llm",
+        action="store_true",
+        default=env_truthy("NTERACT_SMOKE_VIZ_LLM"),
+        help="Run the optional DataFrame/Plotly/Altair LLM-output MCP content pass",
+    )
+    parser.add_argument(
+        "--opencode",
+        action="store_true",
+        default=env_truthy("NTERACT_SMOKE_OPENCODE"),
+        help="For --viz-llm, ask OpenCode for a model-backed verdict on the MCP content",
+    )
+    parser.add_argument(
+        "--opencode-model",
+        default=os.environ.get("NTERACT_SMOKE_OPENCODE_MODEL"),
+        help="OpenCode model id, for example provider/model. Also implies --opencode.",
+    )
+    parser.add_argument(
+        "--opencode-timeout-secs",
+        type=float,
+        default=float(os.environ.get("NTERACT_SMOKE_OPENCODE_TIMEOUT_SECS", "240")),
+        help="Timeout for the OpenCode verdict step",
+    )
+    args = parser.parse_args()
+
+    runt_exe = args.runt_exe
     if not runt_exe.exists():
         fail(f"runt exe not found: {runt_exe}")
-    asyncio.run(smoke(runt_exe))
+    run_opencode = args.opencode or bool(args.opencode_model)
+    run_viz_llm = args.viz_llm or run_opencode
+    asyncio.run(
+        smoke(
+            runt_exe,
+            run_viz_llm=run_viz_llm,
+            run_opencode=run_opencode,
+            opencode_model=args.opencode_model,
+            opencode_timeout_secs=args.opencode_timeout_secs,
+        )
+    )
 
 
 if __name__ == "__main__":

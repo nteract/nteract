@@ -291,6 +291,7 @@ pub async fn run_all_cells(
                         status: display_status,
                         blob_base_url: &server.blob_base_url,
                         comms,
+                        resolved_outputs: Some(&outputs),
                     },
                 );
                 if let Some(mut cell_data) = wrapped.get("cell").cloned() {
@@ -521,6 +522,7 @@ async fn render_execution_result(
                 status: display_status,
                 blob_base_url: &server.blob_base_url,
                 comms,
+                resolved_outputs: Some(&outputs),
             },
         );
         wrapped.get("cell").cloned().map(|mut cell_data| {
