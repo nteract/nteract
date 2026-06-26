@@ -304,6 +304,26 @@ cargo xtask dev-daemon          # Terminal 1
 
 ### Zed Integration
 
+Codex app/CLI reads `.codex/config.toml` from the project. Keep the
+project-scoped server named `nteract-dev` and pinned to the repo root:
+
+```toml
+[mcp_servers.nteract-dev]
+command = "cargo"
+args = ["xtask", "run-mcp"]
+cwd = "."
+startup_timeout_sec = 120
+
+[mcp_servers.nteract-dev.env]
+NTERACT_DEV_MODE = "attach"
+RUNTIMED_DEV = "1"
+SKIP_MATURIN = "1"
+```
+
+Installed Codex plugin servers such as `nteract-notebook`, `nightly`, or older
+`notebook` aliases target release/plugin daemons. Do not use them for source
+development against a local Browser/Vite worktree.
+
 `.zed/settings.json` (gitignored):
 
 ```json

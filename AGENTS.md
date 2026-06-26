@@ -60,8 +60,9 @@ Three may be visible. Pick by purpose. Full details in `.claude/rules/mcp-server
 - **`nteract-dev`** — default for development. Per-worktree dev daemon, dev tools (`up`, `down`, `status`, `logs`, `vite_logs`) plus 26 proxied notebook tools. Prefer `up` over manual `cargo xtask dev-daemon`.
 - **`nteract-nightly`** — system nightly daemon. Diagnostics only.
 - **`nteract`** — system stable daemon. Diagnostics only.
+- **Codex plugin notebook servers** (`nteract-notebook`, `nightly`, or older `notebook` tool names) — installed release/plugin surfaces. Diagnostics only for source work; they may attach to a different active notebook than the local Browser/Vite app.
 
-If `nteract-dev` is unavailable, fall back to `cargo xtask` (derives the worktree env on its own). Use system MCP servers only for diagnostics.
+If `nteract-dev` is unavailable, fall back to `cargo xtask` (derives the worktree env on its own). Use system or installed plugin MCP servers only for diagnostics.
 
 ## Required before commit
 
