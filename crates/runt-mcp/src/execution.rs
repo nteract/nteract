@@ -28,6 +28,8 @@ pub struct ExecutionResult {
     pub execution_id: Option<String>,
     /// Resolved outputs from the cell after execution.
     pub outputs: Vec<Output>,
+    /// Resolved outputs indexed to the original output manifest positions.
+    pub resolved_outputs_by_manifest: Vec<Option<Output>>,
     /// Execution count (e.g., "5" for In[5]).
     pub execution_count: Option<String>,
     /// Final status: "done", "error", "running" (if timed out).
@@ -93,6 +95,7 @@ pub async fn execute_and_wait(
                 cell_id: cell_id.to_string(),
                 execution_id: None,
                 outputs: Vec::new(),
+                resolved_outputs_by_manifest: Vec::new(),
                 execution_count: None,
                 status: "error".to_string(),
                 success: false,
@@ -168,16 +171,22 @@ pub async fn execute_and_wait(
         execution_cell_map: Some(&execution_cell_map),
         ..Default::default()
     };
-    let outputs = if !output_manifests.is_empty() {
-        output_resolver::resolve_cell_outputs_for_llm(&output_manifests, ctx).await
+    let (outputs, resolved_outputs_by_manifest) = if !output_manifests.is_empty() {
+        let aligned =
+            output_resolver::resolve_cell_outputs_for_llm_aligned(&output_manifests, ctx).await;
+        let outputs = aligned.iter().filter_map(|output| output.clone()).collect();
+        (outputs, aligned)
     } else {
         // Outputs live in RuntimeStateDoc under execution_id/output_id. Fetch
         // via the explicit lookup — CellSnapshot no longer carries them.
         let raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
         if raw_outputs.is_empty() {
-            Vec::new()
+            (Vec::new(), Vec::new())
         } else {
-            output_resolver::resolve_cell_outputs_for_llm(&raw_outputs, ctx).await
+            let aligned =
+                output_resolver::resolve_cell_outputs_for_llm_aligned(&raw_outputs, ctx).await;
+            let outputs = aligned.iter().filter_map(|output| output.clone()).collect();
+            (outputs, aligned)
         }
     };
 
@@ -191,6 +200,7 @@ pub async fn execute_and_wait(
         cell_id: cell_id.to_string(),
         execution_id,
         outputs,
+        resolved_outputs_by_manifest,
         execution_count,
         status: final_status,
         success,

@@ -611,7 +611,7 @@ pub async fn build_execution_result(
                 status: &result.status,
                 blob_base_url: &server.blob_base_url,
                 comms: runtime_comms.as_ref(),
-                resolved_outputs: Some(&result.outputs),
+                resolved_outputs_by_manifest: Some(&result.resolved_outputs_by_manifest),
             },
         ))
     } else {

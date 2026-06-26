@@ -234,9 +234,9 @@ pub async fn run_all_cells(
 
         // Resolve outputs from the execution's output manifests.
         let output_manifests = &exec.outputs;
-        let outputs = if !output_manifests.is_empty() {
+        let (outputs, resolved_outputs_by_manifest) = if !output_manifests.is_empty() {
             // Batch execute path — always preview mode. No per-cell opt-out.
-            runtimed_outputs::output_resolver::resolve_cell_outputs_for_llm(
+            let aligned = runtimed_outputs::output_resolver::resolve_cell_outputs_for_llm_aligned(
                 output_manifests,
                 runtimed_outputs::output_resolver::ResolveCtx {
                     blob_base_url: server.blob_base_url.as_deref(),
@@ -246,9 +246,11 @@ pub async fn run_all_cells(
                     ..Default::default()
                 },
             )
-            .await
+            .await;
+            let outputs = aligned.iter().filter_map(|output| output.clone()).collect();
+            (outputs, aligned)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
 
         // Text content: cell header + output text items.
@@ -291,7 +293,7 @@ pub async fn run_all_cells(
                         status: display_status,
                         blob_base_url: &server.blob_base_url,
                         comms,
-                        resolved_outputs: Some(&outputs),
+                        resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
                     },
                 );
                 if let Some(mut cell_data) = wrapped.get("cell").cloned() {
@@ -446,8 +448,8 @@ async fn render_execution_result(
     );
 
     // Resolve outputs from the execution's manifests
-    let outputs = if !exec.outputs.is_empty() {
-        output_resolver::resolve_cell_outputs_for_llm(
+    let (outputs, resolved_outputs_by_manifest) = if !exec.outputs.is_empty() {
+        let aligned = output_resolver::resolve_cell_outputs_for_llm_aligned(
             &exec.outputs,
             output_resolver::ResolveCtx {
                 blob_base_url: server.blob_base_url.as_deref(),
@@ -461,9 +463,11 @@ async fn render_execution_result(
                 execution_cell_map: execution_cell_map.as_ref(),
             },
         )
-        .await
+        .await;
+        let outputs = aligned.iter().filter_map(|output| output.clone()).collect();
+        (outputs, aligned)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     let mut items = vec![rmcp::model::Content::text(header)];
@@ -522,7 +526,7 @@ async fn render_execution_result(
                 status: display_status,
                 blob_base_url: &server.blob_base_url,
                 comms,
-                resolved_outputs: Some(&outputs),
+                resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
             },
         );
         wrapped.get("cell").cloned().map(|mut cell_data| {

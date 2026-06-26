@@ -45,7 +45,7 @@ pub struct CellStructuredContentManifestInput<'a> {
     pub status: &'a str,
     pub blob_base_url: &'a Option<String>,
     pub comms: Option<&'a HashMap<String, CommDocEntry>>,
-    pub resolved_outputs: Option<&'a [Output]>,
+    pub resolved_outputs_by_manifest: Option<&'a [Option<Output>]>,
 }
 
 /// Build structuredContent JSON directly from manifest Values and blob URLs.
@@ -66,8 +66,9 @@ pub fn cell_structured_content_from_manifests(
                 input.blob_base_url,
                 input.comms,
                 input
-                    .resolved_outputs
-                    .and_then(|outputs| outputs.get(index)),
+                    .resolved_outputs_by_manifest
+                    .and_then(|outputs| outputs.get(index))
+                    .and_then(Option::as_ref),
             )
         })
         .collect::<Vec<_>>();
@@ -709,12 +710,12 @@ mod tests {
                 "text/plain": inline_ref("Figure()"),
             },
         });
-        let resolved_outputs = vec![Output::display_data(HashMap::from([(
+        let resolved_outputs_by_manifest = vec![Some(Output::display_data(HashMap::from([(
             "text/llm+plain".to_string(),
             runtimed_outputs::resolved_output::DataValue::Text(
                 "Plotly chart: 1 bar trace".to_string(),
             ),
-        )]))];
+        )])))];
         let blob_base = Some("http://localhost:9999".to_string());
 
         let result = cell_structured_content_from_manifests(CellStructuredContentManifestInput {
@@ -726,7 +727,7 @@ mod tests {
             status: "done",
             blob_base_url: &blob_base,
             comms: None,
-            resolved_outputs: Some(&resolved_outputs),
+            resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
         });
 
         let data = result["cell"]["outputs"][0]["data"]
@@ -737,6 +738,64 @@ mod tests {
             "http://localhost:9999/blob/plotly_hash"
         );
         assert_eq!(data["text/llm+plain"], "Plotly chart: 1 bar trace");
+    }
+
+    #[test]
+    fn structured_resolved_llm_plain_stays_aligned_when_manifest_resolution_drops_output() {
+        let dropped_manifest = json!({
+            "output_type": "display_data",
+        });
+        let plotly_manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.plotly.v1+json": blob_ref("plotly_hash", 4_096),
+            },
+        });
+        let resolved_outputs_by_manifest = vec![
+            None,
+            Some(Output::display_data(HashMap::from([(
+                "text/llm+plain".to_string(),
+                runtimed_outputs::resolved_output::DataValue::Text(
+                    "Plotly chart: aligned summary".to_string(),
+                ),
+            )]))),
+        ];
+        let manifests = vec![dropped_manifest, plotly_manifest];
+        let blob_base = Some("http://localhost:9999".to_string());
+
+        let result = cell_structured_content_from_manifests(CellStructuredContentManifestInput {
+            cell_id: "cell-plotly",
+            cell_type: "code",
+            source: "fig",
+            output_manifests: &manifests,
+            execution_count: Some(1),
+            status: "done",
+            blob_base_url: &blob_base,
+            comms: None,
+            resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
+        });
+
+        let outputs = result["cell"]["outputs"]
+            .as_array()
+            .expect("outputs should be an array");
+        let first_data = outputs[0]["data"]
+            .as_object()
+            .expect("first output data should be an object");
+        assert!(
+            !first_data.contains_key("text/llm+plain"),
+            "summary must not be injected into a preceding dropped manifest"
+        );
+        let second_data = outputs[1]["data"]
+            .as_object()
+            .expect("second output data should be an object");
+        assert_eq!(
+            second_data["application/vnd.plotly.v1+json"],
+            "http://localhost:9999/blob/plotly_hash"
+        );
+        assert_eq!(
+            second_data["text/llm+plain"],
+            "Plotly chart: aligned summary"
+        );
     }
 
     #[test]
@@ -963,7 +1022,7 @@ mod tests {
             status: "done",
             blob_base_url: &blob_base,
             comms: None,
-            resolved_outputs: None,
+            resolved_outputs_by_manifest: None,
         });
         assert_eq!(result["cell"]["cell_id"], "cell-123");
         assert_eq!(result["cell"]["cell_type"], "code");
