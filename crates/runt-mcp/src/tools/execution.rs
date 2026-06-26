@@ -247,7 +247,7 @@ pub async fn run_all_cells(
                 },
             )
             .await;
-            let outputs = aligned.iter().filter_map(|output| output.clone()).collect();
+            let outputs = aligned.iter().flatten().cloned().collect();
             (outputs, aligned)
         } else {
             (Vec::new(), Vec::new())
@@ -461,7 +461,7 @@ async fn render_execution_result(
             },
         )
         .await;
-        let outputs = aligned.iter().filter_map(|output| output.clone()).collect();
+        let outputs = aligned.iter().flatten().cloned().collect();
         (outputs, aligned)
     } else {
         (Vec::new(), Vec::new())

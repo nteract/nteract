@@ -187,7 +187,7 @@ pub async fn execute_and_wait(
     } else {
         let aligned =
             output_resolver::resolve_cell_outputs_for_llm_aligned(&output_manifests, ctx).await;
-        let outputs = aligned.iter().filter_map(|output| output.clone()).collect();
+        let outputs = aligned.iter().flatten().cloned().collect();
         (outputs, aligned)
     };
 

@@ -130,25 +130,39 @@ def parse_json_body(body: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def parse_json_value(body: str) -> Any | None:
-    """Best-effort parse for tool responses that are printed as JSON."""
+def iter_json_values(body: str):
+    """Yield JSON values embedded in text, in source order."""
     text = body.strip()
     if not text:
-        return None
+        return
 
     try:
-        parsed = json.loads(text)
+        yield json.loads(text)
+        return
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            return None
-        try:
-            parsed = json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            return None
+        pass
 
-    return parsed
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"[\[{]", text):
+        try:
+            parsed, _ = decoder.raw_decode(text[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        yield parsed
+
+
+def parse_json_value(body: str) -> Any | None:
+    """Best-effort parse for tool responses that are printed as JSON."""
+    return next(iter_json_values(body), None)
+
+
+def parse_opencode_verdict(body: str) -> dict | None:
+    """Parse the first embedded OpenCode verdict object with the expected keys."""
+    expected = {"saw_plotly_llm_summary", "plotly_summary_excerpt", "reason"}
+    for parsed in iter_json_values(body):
+        if isinstance(parsed, dict) and expected.issubset(parsed):
+            return parsed
+    return None
 
 
 def kernel_launch_error(body: str) -> str | None:
@@ -587,8 +601,8 @@ MCP TEXT CONTENT TRANSCRIPT:
         print(f"[viz-llm] opencode stderr:\n{stderr_text}", file=sys.stderr)
     print(f"[viz-llm] opencode stdout:\n{stdout_text}")
 
-    verdict = parse_json_value(stdout_text)
-    if not isinstance(verdict, dict):
+    verdict = parse_opencode_verdict(stdout_text)
+    if verdict is None:
         fail(f"[viz-llm] opencode did not return a JSON object: {stdout_text}")
     if verdict.get("saw_plotly_llm_summary") is not True:
         fail(f"[viz-llm] model did not report seeing Plotly LLM summary: {verdict}")
