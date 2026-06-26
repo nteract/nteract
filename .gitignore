@@ -106,6 +106,10 @@ crates/notebook/fixtures/**/uv.lock
 .context/
 .codex/environments/environment.toml
 
+# Project-scoped Codex config is source, not per-worktree state.
+!.codex/
+!.codex/config.toml
+
 # Override global gitignore for .claude — rules and skills are project docs
 !.claude/
 !.claude/rules/

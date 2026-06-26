@@ -1,0 +1,10 @@
+[mcp_servers.nteract-dev]
+command = "cargo"
+args = ["xtask", "run-mcp"]
+cwd = "."
+startup_timeout_sec = 120
+
+[mcp_servers.nteract-dev.env]
+NTERACT_DEV_MODE = "attach"
+RUNTIMED_DEV = "1"
+SKIP_MATURIN = "1"
