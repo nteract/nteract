@@ -589,12 +589,11 @@ pub async fn build_execution_result(
 
     // Build structured content directly from manifest Values + blob URLs.
     // No blob fetches — inline ContentRefs pass through, blobs become URLs.
-    // Outputs live in RuntimeStateDoc, keyed by execution_id, so we fetch
-    // them separately from the cell snapshot.
+    // Use the same manifest slice captured during execution resolution so
+    // resolved summaries stay aligned to their source manifests.
     let cell_snapshot = handle.get_cell(&result.cell_id);
     let runtime_comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
     let mut structured_content = if let Some(snap) = cell_snapshot {
-        let outputs = handle.get_cell_outputs(&result.cell_id).unwrap_or_default();
         let ec_str = cell_read::get_cell_execution_count_from_runtime(handle, &snap.id);
         let ec: Option<i64> = if ec_str.is_empty() {
             None
@@ -606,7 +605,7 @@ pub async fn build_execution_result(
                 cell_id: &snap.id,
                 cell_type: &snap.cell_type,
                 source: &snap.source,
-                output_manifests: &outputs,
+                output_manifests: &result.output_manifests,
                 execution_count: ec,
                 status: &result.status,
                 blob_base_url: &server.blob_base_url,

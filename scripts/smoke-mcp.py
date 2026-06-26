@@ -593,7 +593,7 @@ MCP TEXT CONTENT TRANSCRIPT:
     if verdict.get("saw_plotly_llm_summary") is not True:
         fail(f"[viz-llm] model did not report seeing Plotly LLM summary: {verdict}")
     excerpt = str(verdict.get("plotly_summary_excerpt") or "")
-    if "Plotly" not in excerpt:
+    if "Plotly bar chart" not in excerpt:
         fail(f"[viz-llm] model verdict did not include a Plotly excerpt: {verdict}")
 
 

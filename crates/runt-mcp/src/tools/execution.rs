@@ -272,23 +272,20 @@ pub async fn run_all_cells(
         }
         content_items.extend(formatting::outputs_to_content_items(&outputs));
 
-        // Structured content for MCP Apps: use manifests from the cell snapshot
-        // (which include ContentRef entries needed for structured rendering).
+        // Structured content for MCP Apps: use the same manifest slice resolved
+        // above so resolved summaries stay aligned to their source manifests.
         // Extract the inner "cell" object — cell_structured_content_from_manifests
         // returns {"cell": {...}, "blob_base_url": "..."} but the multi-cell
         // wrapper expects CellData directly in the cells[] array.
-        // Outputs live in RuntimeStateDoc, keyed by execution_id; fetch them
-        // alongside the snapshot.
         let cell_snapshot = handle.get_cell(&cell.id);
         if let Some(snap) = cell_snapshot {
-            let snap_outputs = handle.get_cell_outputs(&cell.id).unwrap_or_default();
-            if !snap_outputs.is_empty() {
+            if !output_manifests.is_empty() {
                 let wrapped = crate::structured::cell_structured_content_from_manifests(
                     crate::structured::CellStructuredContentManifestInput {
                         cell_id: &snap.id,
                         cell_type: &snap.cell_type,
                         source: &snap.source,
-                        output_manifests: &snap_outputs,
+                        output_manifests,
                         execution_count: exec.execution_count,
                         status: display_status,
                         blob_base_url: &server.blob_base_url,

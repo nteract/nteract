@@ -319,6 +319,9 @@ fn merge_resolved_llm_plain(
     let Some(resolved_output) = resolved_output else {
         return;
     };
+    if data.contains_key("text/llm+plain") {
+        return;
+    }
     if !matches!(
         resolved_output.output_type.as_str(),
         "display_data" | "execute_result"
@@ -795,6 +798,37 @@ mod tests {
         assert_eq!(
             second_data["text/llm+plain"],
             "Plotly chart: aligned summary"
+        );
+    }
+
+    #[test]
+    fn structured_resolved_llm_plain_does_not_overwrite_existing_summary() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "text/llm+plain": inline_ref("author summary"),
+            },
+        });
+        let resolved_outputs_by_manifest = vec![Some(Output::display_data(HashMap::from([(
+            "text/llm+plain".to_string(),
+            runtimed_outputs::resolved_output::DataValue::Text("resolved summary".to_string()),
+        )])))];
+
+        let result = cell_structured_content_from_manifests(CellStructuredContentManifestInput {
+            cell_id: "cell-summary",
+            cell_type: "code",
+            source: "display",
+            output_manifests: &[manifest],
+            execution_count: Some(1),
+            status: "done",
+            blob_base_url: &None,
+            comms: None,
+            resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
+        });
+
+        assert_eq!(
+            result["cell"]["outputs"][0]["data"]["text/llm+plain"],
+            "author summary"
         );
     }
 
