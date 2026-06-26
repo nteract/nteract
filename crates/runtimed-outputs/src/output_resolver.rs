@@ -598,11 +598,25 @@ pub async fn resolve_cell_outputs_for_llm(
     raw_outputs: &[serde_json::Value],
     ctx: ResolveCtx<'_>,
 ) -> Vec<Output> {
+    resolve_cell_outputs_for_llm_aligned(raw_outputs, ctx)
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// Resolve outputs for LLM consumption while preserving manifest positions.
+///
+/// Use this when a caller must pair resolved outputs back to the original
+/// output manifests. Unknown or malformed manifests resolve to `None`, so the
+/// returned vector always has the same length and order as `raw_outputs`.
+pub async fn resolve_cell_outputs_for_llm_aligned(
+    raw_outputs: &[serde_json::Value],
+    ctx: ResolveCtx<'_>,
+) -> Vec<Option<Output>> {
     let mut outputs = Vec::with_capacity(raw_outputs.len());
     for manifest in raw_outputs {
-        if let Some(output) = resolve_output_for_llm(manifest, ctx).await {
-            outputs.push(output);
-        }
+        outputs.push(resolve_output_for_llm(manifest, ctx).await);
     }
     outputs
 }
@@ -2519,6 +2533,29 @@ mod tests {
         };
         assert!(data.contains_key("text/plain"));
         assert!(!data.contains_key("image/png"));
+    }
+
+    #[tokio::test]
+    async fn llm_aligned_resolution_preserves_none_for_dropped_manifests() {
+        let manifests = vec![
+            json!({
+                "output_type": "display_data",
+            }),
+            json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": inline_ref("print output"),
+            }),
+        ];
+
+        let outputs = resolve_cell_outputs_for_llm_aligned(&manifests, ResolveCtx::default()).await;
+
+        assert_eq!(outputs.len(), 2);
+        assert!(outputs[0].is_none());
+        let Some(output) = outputs[1].as_ref() else {
+            panic!("second manifest should resolve");
+        };
+        assert_eq!(output.output_type, "stream");
     }
 
     // ── llm_preview rendering ───────────────────────────────────

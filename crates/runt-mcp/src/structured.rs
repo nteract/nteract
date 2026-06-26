@@ -12,6 +12,7 @@
 use notebook_doc::mime::MimeKind;
 use runtime_doc::CommDocEntry;
 use runtimed_outputs::output_resolver;
+use runtimed_outputs::resolved_output::{DataValue, Output};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -44,6 +45,7 @@ pub struct CellStructuredContentManifestInput<'a> {
     pub status: &'a str,
     pub blob_base_url: &'a Option<String>,
     pub comms: Option<&'a HashMap<String, CommDocEntry>>,
+    pub resolved_outputs_by_manifest: Option<&'a [Option<Output>]>,
 }
 
 /// Build structuredContent JSON directly from manifest Values and blob URLs.
@@ -54,12 +56,29 @@ pub struct CellStructuredContentManifestInput<'a> {
 pub fn cell_structured_content_from_manifests(
     input: CellStructuredContentManifestInput<'_>,
 ) -> Value {
+    let outputs = input
+        .output_manifests
+        .iter()
+        .enumerate()
+        .map(|(index, manifest)| {
+            manifest_output_to_structured_with_resolved(
+                manifest,
+                input.blob_base_url,
+                input.comms,
+                input
+                    .resolved_outputs_by_manifest
+                    .and_then(|outputs| outputs.get(index))
+                    .and_then(Option::as_ref),
+            )
+        })
+        .collect::<Vec<_>>();
+
     let mut content = json!({
         "cell": {
             "cell_id": input.cell_id,
             "source": input.source,
             "cell_type": input.cell_type,
-            "outputs": input.output_manifests.iter().map(|m| manifest_output_to_structured(m, input.blob_base_url, input.comms)).collect::<Vec<_>>(),
+            "outputs": outputs,
             "execution_count": input.execution_count,
             "status": input.status,
         }
@@ -76,10 +95,20 @@ pub fn cell_structured_content_from_manifests(
 ///
 /// Reads inline content directly from ContentRef entries and emits blob URLs
 /// for blob-stored content. No blob fetches are performed.
+#[cfg(test)]
 fn manifest_output_to_structured(
     manifest: &Value,
     blob_base_url: &Option<String>,
     comms: Option<&HashMap<String, CommDocEntry>>,
+) -> Value {
+    manifest_output_to_structured_with_resolved(manifest, blob_base_url, comms, None)
+}
+
+fn manifest_output_to_structured_with_resolved(
+    manifest: &Value,
+    blob_base_url: &Option<String>,
+    comms: Option<&HashMap<String, CommDocEntry>>,
+    resolved_output: Option<&Output>,
 ) -> Value {
     let output_type = manifest
         .get("output_type")
@@ -266,6 +295,8 @@ fn manifest_output_to_structured(
                 }
             }
 
+            merge_resolved_llm_plain(&mut data, resolved_output);
+
             let mut result = json!({
                 "output_type": output_type,
                 "data": data,
@@ -279,6 +310,32 @@ fn manifest_output_to_structured(
         }
         _ => attach_id(json!({"output_type": output_type})),
     }
+}
+
+fn merge_resolved_llm_plain(
+    data: &mut serde_json::Map<String, Value>,
+    resolved_output: Option<&Output>,
+) {
+    let Some(resolved_output) = resolved_output else {
+        return;
+    };
+    if data.contains_key("text/llm+plain") {
+        return;
+    }
+    if !matches!(
+        resolved_output.output_type.as_str(),
+        "display_data" | "execute_result"
+    ) {
+        return;
+    }
+    let Some(resolved_data) = resolved_output.data.as_ref() else {
+        return;
+    };
+    let Some(DataValue::Text(summary)) = resolved_data.get("text/llm+plain") else {
+        return;
+    };
+
+    data.insert("text/llm+plain".to_string(), Value::String(summary.clone()));
 }
 
 fn widget_model_id_from_content_ref(content_ref: &Value) -> Option<String> {
@@ -645,6 +702,137 @@ mod tests {
     }
 
     #[test]
+    fn structured_merges_resolved_llm_plain_for_blob_backed_viz_specs() {
+        // Real Plotly/Vega specs usually exceed the inline ContentRef threshold.
+        // The structured renderer still needs the blob URL, while the MCP output
+        // payload should carry the already-resolved LLM summary.
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.plotly.v1+json": blob_ref("plotly_hash", 4_096),
+                "text/plain": inline_ref("Figure()"),
+            },
+        });
+        let resolved_outputs_by_manifest = vec![Some(Output::display_data(HashMap::from([(
+            "text/llm+plain".to_string(),
+            runtimed_outputs::resolved_output::DataValue::Text(
+                "Plotly chart: 1 bar trace".to_string(),
+            ),
+        )])))];
+        let blob_base = Some("http://localhost:9999".to_string());
+
+        let result = cell_structured_content_from_manifests(CellStructuredContentManifestInput {
+            cell_id: "cell-plotly",
+            cell_type: "code",
+            source: "fig",
+            output_manifests: &[manifest],
+            execution_count: Some(1),
+            status: "done",
+            blob_base_url: &blob_base,
+            comms: None,
+            resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
+        });
+
+        let data = result["cell"]["outputs"][0]["data"]
+            .as_object()
+            .expect("output data should be an object");
+        assert_eq!(
+            data["application/vnd.plotly.v1+json"],
+            "http://localhost:9999/blob/plotly_hash"
+        );
+        assert_eq!(data["text/llm+plain"], "Plotly chart: 1 bar trace");
+    }
+
+    #[test]
+    fn structured_resolved_llm_plain_stays_aligned_when_manifest_resolution_drops_output() {
+        let dropped_manifest = json!({
+            "output_type": "display_data",
+        });
+        let plotly_manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.plotly.v1+json": blob_ref("plotly_hash", 4_096),
+            },
+        });
+        let resolved_outputs_by_manifest = vec![
+            None,
+            Some(Output::display_data(HashMap::from([(
+                "text/llm+plain".to_string(),
+                runtimed_outputs::resolved_output::DataValue::Text(
+                    "Plotly chart: aligned summary".to_string(),
+                ),
+            )]))),
+        ];
+        let manifests = vec![dropped_manifest, plotly_manifest];
+        let blob_base = Some("http://localhost:9999".to_string());
+
+        let result = cell_structured_content_from_manifests(CellStructuredContentManifestInput {
+            cell_id: "cell-plotly",
+            cell_type: "code",
+            source: "fig",
+            output_manifests: &manifests,
+            execution_count: Some(1),
+            status: "done",
+            blob_base_url: &blob_base,
+            comms: None,
+            resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
+        });
+
+        let outputs = result["cell"]["outputs"]
+            .as_array()
+            .expect("outputs should be an array");
+        let first_data = outputs[0]["data"]
+            .as_object()
+            .expect("first output data should be an object");
+        assert!(
+            !first_data.contains_key("text/llm+plain"),
+            "summary must not be injected into a preceding dropped manifest"
+        );
+        let second_data = outputs[1]["data"]
+            .as_object()
+            .expect("second output data should be an object");
+        assert_eq!(
+            second_data["application/vnd.plotly.v1+json"],
+            "http://localhost:9999/blob/plotly_hash"
+        );
+        assert_eq!(
+            second_data["text/llm+plain"],
+            "Plotly chart: aligned summary"
+        );
+    }
+
+    #[test]
+    fn structured_resolved_llm_plain_does_not_overwrite_existing_summary() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "text/llm+plain": inline_ref("author summary"),
+            },
+        });
+        let resolved_outputs_by_manifest = vec![Some(Output::display_data(HashMap::from([(
+            "text/llm+plain".to_string(),
+            runtimed_outputs::resolved_output::DataValue::Text("resolved summary".to_string()),
+        )])))];
+
+        let result = cell_structured_content_from_manifests(CellStructuredContentManifestInput {
+            cell_id: "cell-summary",
+            cell_type: "code",
+            source: "display",
+            output_manifests: &[manifest],
+            execution_count: Some(1),
+            status: "done",
+            blob_base_url: &None,
+            comms: None,
+            resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
+        });
+
+        assert_eq!(
+            result["cell"]["outputs"][0]["data"]["text/llm+plain"],
+            "author summary"
+        );
+    }
+
+    #[test]
     fn structured_widget_view_gets_safe_summary_from_comms() {
         let manifest = json!({
             "output_type": "display_data",
@@ -868,6 +1056,7 @@ mod tests {
             status: "done",
             blob_base_url: &blob_base,
             comms: None,
+            resolved_outputs_by_manifest: None,
         });
         assert_eq!(result["cell"]["cell_id"], "cell-123");
         assert_eq!(result["cell"]["cell_type"], "code");
