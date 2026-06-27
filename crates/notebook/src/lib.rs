@@ -20,7 +20,7 @@ use notebook_sync::RelayHandle;
 
 use log::{debug, info, warn};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 
 /// Shared notebook sync handle for cross-window state synchronization.
@@ -154,8 +154,8 @@ impl WindowNotebookRegistry {
     }
 }
 
-/// Newtype wrapper for reconnect-in-progress flag (distinguishes from other AtomicBool states).
-struct ReconnectInProgress(Arc<AtomicBool>);
+/// Per-window reconnect guard (distinguishes from app-global restart state).
+struct ReconnectInProgress(Arc<Mutex<HashSet<String>>>);
 
 /// Newtype wrapper for daemon-restart-in-progress flag.
 /// Prevents multiple windows from attempting to restart the daemon simultaneously.
@@ -2793,18 +2793,48 @@ async fn reconnect_to_daemon(
         .map_err(|e| e.to_string())?
         .clone();
 
-    // Use atomic compare_exchange to ensure only one reconnect runs at a time
-    if reconnect_in_progress
-        .0
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        info!("[daemon-kernel] Reconnect already in progress, skipping");
-        return Ok(());
+    let window_label = window.label().to_string();
+
+    let acquire_reconnect_slot = || -> Result<bool, String> {
+        let mut active = reconnect_in_progress.0.lock().map_err(|e| e.to_string())?;
+        Ok(active.insert(window_label.clone()))
+    };
+
+    // Serialize reconnects per window. Different desktop windows can recover
+    // independently, but a single stale relay should not have duplicate
+    // reconnect attempts racing each other.
+    // Forced reconnects are recovery paths for stale-but-present relay handles,
+    // so they must not be silently dropped behind a weaker in-flight reconnect.
+    if !acquire_reconnect_slot()? {
+        if !force {
+            info!("[daemon-kernel] Reconnect already in progress, skipping");
+            return Ok(());
+        }
+
+        let mut acquired = false;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if acquire_reconnect_slot()? {
+                acquired = true;
+                break;
+            }
+        }
+
+        if !acquired {
+            return Err(format!(
+                "Forced reconnect timed out waiting for active reconnect for '{}'",
+                window_label
+            ));
+        }
     }
 
     // Helper to reset flag on all exit paths
-    let reset_flag = || reconnect_in_progress.0.store(false, Ordering::SeqCst);
+    let reset_flag = || match reconnect_in_progress.0.lock() {
+        Ok(mut active) => {
+            active.remove(&window_label);
+        }
+        Err(e) => warn!("[daemon-kernel] Failed to reset reconnect guard: {}", e),
+    };
 
     // Check if already connected. Manual recovery from a stuck bootstrap can
     // force a fresh relay generation even when the old Rust handle is still
@@ -3979,7 +4009,7 @@ pub fn run(
     );
 
     // Guard against concurrent reconnect attempts
-    let reconnect_in_progress = ReconnectInProgress(Arc::new(AtomicBool::new(false)));
+    let reconnect_in_progress = ReconnectInProgress(Arc::new(Mutex::new(HashSet::new())));
 
     // Guard against multiple windows trying to restart daemon simultaneously
     let restart_in_progress = DaemonRestartInProgress(Arc::new(AtomicBool::new(false)));

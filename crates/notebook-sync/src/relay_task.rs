@@ -477,6 +477,35 @@ mod tests {
         (handle, daemon_read, daemon_write)
     }
 
+    async fn spawn_relay_for_test_with_heartbeat_interval_and_frame_rx(
+        heartbeat_interval: Duration,
+    ) -> (
+        crate::relay::RelayHandle,
+        tokio::io::ReadHalf<tokio::io::DuplexStream>,
+        tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        mpsc::UnboundedReceiver<Vec<u8>>,
+    ) {
+        let (client, daemon) = tokio::io::duplex(64 * 1024);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (daemon_read, daemon_write) = tokio::io::split(daemon);
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (frame_tx, frame_rx) = mpsc::unbounded_channel();
+        let handle = crate::relay::RelayHandle::new(cmd_tx, "notebook-test".to_string());
+
+        tokio::spawn(run(
+            RelayTaskConfig {
+                cmd_rx,
+                frame_tx,
+                notebook_id: "notebook-test".to_string(),
+                heartbeat_interval: Some(heartbeat_interval),
+            },
+            client_read,
+            client_write,
+        ));
+
+        (handle, daemon_read, daemon_write, frame_rx)
+    }
+
     async fn recv_request_for_test(
         daemon_read: &mut tokio::io::ReadHalf<tokio::io::DuplexStream>,
     ) -> NotebookRequestEnvelope {
@@ -507,6 +536,53 @@ mod tests {
     async fn relay_task_sends_native_presence_heartbeat() {
         let (_handle, mut daemon_read, _daemon_write) =
             spawn_relay_for_test_with_heartbeat_interval(Duration::from_millis(5)).await;
+
+        let frame = tokio::time::timeout(
+            Duration::from_millis(100),
+            connection::recv_typed_frame(&mut daemon_read),
+        )
+        .await
+        .expect("heartbeat frame timed out")
+        .expect("read heartbeat frame")
+        .expect("heartbeat frame");
+
+        assert_eq!(frame.frame_type, NotebookFrameType::Presence);
+        let message =
+            notebook_doc::presence::decode_message(&frame.payload).expect("decode heartbeat");
+        assert!(matches!(
+            message,
+            notebook_doc::presence::PresenceMessage::Heartbeat { peer_id } if peer_id == "local"
+        ));
+    }
+
+    #[tokio::test]
+    async fn relay_task_sends_heartbeat_after_piping_inbound_frames() {
+        let (_handle, mut daemon_read, mut daemon_write, mut frame_rx) =
+            spawn_relay_for_test_with_heartbeat_interval_and_frame_rx(Duration::from_millis(5))
+                .await;
+
+        let remote_payload =
+            notebook_doc::presence::encode_heartbeat("remote").expect("encode remote heartbeat");
+        for _ in 0..5 {
+            connection::send_typed_frame(
+                &mut daemon_write,
+                NotebookFrameType::Presence,
+                &remote_payload,
+            )
+            .await
+            .expect("send inbound presence frame");
+        }
+
+        for _ in 0..5 {
+            let frame = tokio::time::timeout(Duration::from_millis(100), frame_rx.recv())
+                .await
+                .expect("relayed frame timed out")
+                .expect("relayed frame");
+            assert_eq!(
+                frame.first().copied(),
+                Some(NotebookFrameType::Presence as u8)
+            );
+        }
 
         let frame = tokio::time::timeout(
             Duration::from_millis(100),

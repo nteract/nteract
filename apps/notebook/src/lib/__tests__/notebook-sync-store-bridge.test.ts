@@ -555,6 +555,33 @@ describe("startNotebookSyncStoreBridge", () => {
     bridge.stop();
   });
 
+  it("does not re-arm bootstrap timeout while initial materialization is in flight", async () => {
+    vi.useFakeTimers();
+    const materialize = deferred();
+    const materializeCells = vi.fn(() => materialize.promise);
+    const onBootstrapTimeout = vi.fn();
+    const { bridge, setLoadError, subjects } = startBridge({
+      bootstrapTimeoutMs: 1_000,
+      materializeCells,
+      onBootstrapTimeout,
+    });
+
+    subjects.initialSyncComplete$.next();
+    await flushMicrotasks();
+    expect(materializeCells).toHaveBeenCalledTimes(1);
+
+    subjects.sessionStatus$.next(readyStatus());
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(setLoadError).not.toHaveBeenCalledWith(expect.stringContaining("Timed out"));
+    expect(onBootstrapTimeout).not.toHaveBeenCalled();
+
+    materialize.resolve();
+    await flushMicrotasks();
+
+    bridge.stop();
+  });
+
   it("ignores in-flight materializeCells result if stopped before it resolves", async () => {
     const materialize = deferred();
     const materializeCells = vi.fn(() => materialize.promise);

@@ -183,19 +183,26 @@ export function startNotebookSyncStoreBridge(
           status.initial_load.reason,
         );
         initialMaterializeDeferred = false;
+        initialLoadCurrentlyStreaming = false;
         initialLoadWasStreaming = false;
         options.setLoadError(status.initial_load.reason);
         options.setIsLoading(false);
         return;
       }
 
-      options.setLoadError(null);
       const initialLoadStreaming = isInitialLoadStreaming(status.initial_load);
+      if (bootstrapTimeout !== null || interactiveReady || initialLoadStreaming) {
+        options.setLoadError(null);
+      }
       if (initialLoadStreaming) {
         initialLoadCurrentlyStreaming = true;
         initialLoadWasStreaming = true;
         clearBootstrapTimeout();
-      } else if (!interactiveReady && !initialMaterializeDeferred) {
+      } else if (
+        !interactiveReady &&
+        !initialMaterializeDeferred &&
+        !initialMaterializeInFlight
+      ) {
         initialLoadCurrentlyStreaming = false;
         ensureBootstrapTimeout();
       }
