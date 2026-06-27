@@ -8,9 +8,16 @@ name: Smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional release tag to run only the Windows app-launch smoke against.
+        required: false
+        type: string
   push:
     branches:
       - main
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -26,10 +33,268 @@ env:
   RUNT_BUILD_CHANNEL: stable
 
 jobs:
+  windows-app-launch-smoke:
+    name: Windows app launch smoke
+    runs-on: windows-latest
+    timeout-minutes: 20
+    if: |
+      (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    steps:
+      - name: Resolve release asset
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          if (-not $env:RELEASE_TAG) {
+            Write-Error "RELEASE_TAG was not resolved"
+            exit 1
+          }
+
+          Write-Host "Release tag: $env:RELEASE_TAG"
+          $asset = $null
+          for ($i = 1; $i -le 60; $i++) {
+            $releaseJson = gh release view $env:RELEASE_TAG --json assets
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Could not read release $env:RELEASE_TAG"
+              exit 1
+            }
+
+            $assets = ($releaseJson | ConvertFrom-Json).assets
+            $asset = $assets |
+              Where-Object { $_.name -match '^nteract-(stable|nightly)-windows-x64\.exe$' } |
+              Select-Object -First 1
+
+            if ($asset) {
+              break
+            }
+
+            Write-Host "Windows installer asset not visible yet (attempt $i/60); waiting..."
+            Start-Sleep -Seconds 10
+          }
+
+          if (-not $asset) {
+            Write-Error "Release $env:RELEASE_TAG does not contain a Windows x64 nteract installer"
+            exit 1
+          }
+
+          Write-Host "Installer asset: $($asset.name)"
+          "tag=$env:RELEASE_TAG" | Out-File -Append -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+          "asset=$($asset.name)" | Out-File -Append -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+
+      - name: Download published Windows installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          ASSET_NAME: ${{ steps.release.outputs.asset }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\release-asset" | Out-Null
+          gh release download $env:RELEASE_TAG `
+            --pattern $env:ASSET_NAME `
+            --dir "$env:RUNNER_TEMP\release-asset"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to download $env:ASSET_NAME from $env:RELEASE_TAG"
+            exit 1
+          }
+
+          $installer = Get-ChildItem -Path "$env:RUNNER_TEMP\release-asset" -Filter *.exe |
+            Select-Object -First 1
+          if (-not $installer) {
+            Write-Error "No downloaded installer found"
+            exit 1
+          }
+
+          Write-Host "Downloaded installer: $($installer.FullName)"
+          "INSTALLER=$($installer.FullName)" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+
+      - name: Install published app silently
+        shell: pwsh
+        run: |
+          $installDir = "$env:RUNNER_TEMP\nteract-release-app-smoke"
+          Write-Host "Installing $env:INSTALLER to $installDir"
+          $proc = Start-Process -FilePath $env:INSTALLER `
+            -ArgumentList "/S", "/D=$installDir" `
+            -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "Installer exited with code $($proc.ExitCode)"
+            exit $proc.ExitCode
+          }
+
+          Write-Host "Install dir contents:"
+          Get-ChildItem -Path $installDir -Recurse | Select-Object FullName | Format-Table -AutoSize
+
+          $runt = Join-Path $installDir "runt.exe"
+          if (-not (Test-Path $runt)) {
+            Write-Error "runt.exe not found at $runt"
+            exit 1
+          }
+
+          $appExe = Get-ChildItem -Path $installDir -Filter *.exe |
+            Where-Object { $_.Name -match '^nteract( Nightly)?\.exe$' } |
+            Select-Object -First 1
+          if (-not $appExe) {
+            $appExe = Get-ChildItem -Path $installDir -Filter *.exe |
+              Where-Object {
+                $_.Name -notin @(
+                  "runt.exe",
+                  "runtimed.exe",
+                  "nteract-mcp.exe",
+                  "uninstall.exe"
+                ) -and $_.Name -notmatch '^unins'
+              } |
+              Select-Object -First 1
+          }
+          if (-not $appExe) {
+            Write-Error "Could not find installed desktop app executable in $installDir"
+            exit 1
+          }
+
+          "INSTALL_DIR=$installDir" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          "RUNT=$runt" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          "APP_EXE=$($appExe.FullName)" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+
+          $bootstrapLog = Join-Path $env:LOCALAPPDATA "nteract\install-bootstrap.log"
+          if (Test-Path $bootstrapLog) {
+            Write-Host "=== installer bootstrap log ==="
+            Get-Content $bootstrapLog
+          } else {
+            Write-Warning "Installer bootstrap log not found at $bootstrapLog"
+          }
+
+      - name: Launch app and wait for daemon
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          Write-Host "Stopping any daemon left by installer or runner state"
+          & $env:RUNT daemon stop 2>$null | Out-Null
+
+          Write-Host "Launching desktop app: $env:APP_EXE"
+          $app = Start-Process -FilePath $env:APP_EXE -PassThru
+          Write-Host "App pid: $($app.Id)"
+
+          $ready = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 1
+
+            if ($app.HasExited) {
+              Write-Error "App process exited while waiting for daemon (code $($app.ExitCode))"
+              break
+            }
+
+            $statusJson = & $env:RUNT daemon status --json 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $statusJson) {
+              continue
+            }
+
+            try {
+              $status = $statusJson | ConvertFrom-Json
+            } catch {
+              continue
+            }
+
+            if ($status.running -eq $true) {
+              Write-Host "Daemon ready after ${i}s"
+              Write-Host $statusJson
+              $ready = $true
+              break
+            }
+          }
+
+          if (-not $ready) {
+            Write-Error "Installed app did not make the daemon available"
+            exit 1
+          }
+
+      - name: Run diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\app-launch-diag" | Out-Null
+          if ($env:RUNT -and (Test-Path $env:RUNT)) {
+            Push-Location "$env:RUNNER_TEMP\app-launch-diag"
+            & $env:RUNT diagnostics
+            Pop-Location
+          } else {
+            Write-Warning "RUNT was not available; skipping diagnostics command"
+          }
+          Get-ChildItem "$env:RUNNER_TEMP\app-launch-diag"
+
+      - name: Dump app and daemon logs
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($logPath in @(
+            "$env:LOCALAPPDATA\nteract\logs\notebook.log",
+            "$env:LOCALAPPDATA\nteract\notebook.log",
+            "$env:LOCALAPPDATA\runt\runtimed.log"
+          )) {
+            Write-Host "=== $logPath ==="
+            if (Test-Path $logPath) {
+              Get-Content $logPath
+            } else {
+              Write-Host "(not present)"
+            }
+          }
+
+          Write-Host "Searching for notebook.log and runtimed.log under LOCALAPPDATA..."
+          Get-ChildItem -Path $env:LOCALAPPDATA -Filter notebook.log -Recurse -ErrorAction SilentlyContinue |
+            Select-Object FullName | Format-Table -AutoSize
+          Get-ChildItem -Path $env:LOCALAPPDATA -Filter runtimed.log -Recurse -ErrorAction SilentlyContinue |
+            Select-Object FullName | Format-Table -AutoSize
+
+      - name: Stop app and daemon
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:APP_EXE) {
+            $appName = [System.IO.Path]::GetFileNameWithoutExtension($env:APP_EXE)
+            Get-Process -Name $appName -ErrorAction SilentlyContinue |
+              Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          if ($env:RUNT) {
+            & $env:RUNT daemon stop 2>$null | Out-Null
+          }
+
+      - name: Upload app-launch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-app-launch-smoke-diagnostics
+          path: |
+            ${{ runner.temp }}\app-launch-diag\*.tar.gz
+            ${{ runner.temp }}\release-asset\*.exe
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Notify #windows on failure
+        if: failure()
+        shell: bash
+        env:
+          DISCORD_WEBHOOK_WINDOWS: ${{ secrets.DISCORD_WEBHOOK_WINDOWS }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_WINDOWS" ]; then
+            echo "DISCORD_WEBHOOK_WINDOWS not set, skipping notification"
+            exit 0
+          fi
+          curl --fail-with-body -sS -H "Content-Type: application/json" -d "{
+            \"embeds\": [{
+              \"title\": \"Windows app-launch smoke failed\",
+              \"description\": \"Published release \`${RELEASE_TAG}\` did not pass the installed app daemon-start canary. [View run]($RUN_URL).\",
+              \"url\": \"$RUN_URL\",
+              \"color\": 15158332
+            }]
+          }" "$DISCORD_WEBHOOK_WINDOWS"
+
   windows-smoke:
     name: Windows (build + install + smoke)
     runs-on: windows-latest
     timeout-minutes: 75
+    if: github.event_name != 'release' && (github.event_name != 'workflow_dispatch' || inputs.release_tag == '')
     # The Windows leg currently runs ~32 minutes (cargo build + NSIS bundling
     # + smoke). Gating PRs on it would tax every diff, including frontend-only
     # changes that have no Windows surface. We run it post-merge and surface
@@ -399,6 +664,7 @@ jobs:
     name: Linux (build + smoke)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    if: github.event_name != 'release' && (github.event_name != 'workflow_dispatch' || inputs.release_tag == '')
     # Keep this native smoke off per-commit PR CI. It still runs after merge
     # and can be queued manually when a PR needs the extra signal.
     steps:
