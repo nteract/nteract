@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -62,6 +62,13 @@ pub const DEFAULT_HEARTBEAT_MS: u64 = 60_000;
 const DEFAULT_RETRY_AFTER_MS: u64 = 60_000;
 /// Upper bound for rate-limit cooldowns (15 minutes, like the `.mjs` agent).
 const MAX_RETRY_AFTER_MS: u64 = 15 * 60_000;
+/// Idle workstation event sockets should reconnect rather than pinning an
+/// agent to a half-open network path forever.
+const WORKSTATION_EVENTS_IDLE_TIMEOUT_MS: u64 = 90_000;
+/// After an idle socket is probed, a missing response means the path is stale.
+const WORKSTATION_EVENTS_PING_TIMEOUT_MS: u64 = 10_000;
+const WORKSTATION_EVENTS_PING: &str = "nteract.workstation_events.ping.v1";
+const WORKSTATION_EVENTS_PONG: &str = "nteract.workstation_events.pong.v1";
 /// How often active children are checked for exit/readiness between polls
 /// (the `.mjs` agent's `readyPoll` interval).
 const CHILD_TICK_MS: u64 = 250;
@@ -350,6 +357,38 @@ fn workstation_event_name_from_ws_text(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+async fn handle_workstation_event_ws_message(
+    message: WsMessage,
+    tx: &mpsc::Sender<WorkstationControlEvent>,
+) -> Result<bool, AgentHttpError> {
+    match message {
+        WsMessage::Text(text) => {
+            if text.as_str() == WORKSTATION_EVENTS_PONG {
+                return Ok(true);
+            }
+            if workstation_event_name_from_ws_text(text.as_str()).as_deref() == Some("attach_jobs")
+                && tx.send(WorkstationControlEvent::AttachJobs).await.is_err()
+            {
+                return Ok(false);
+            }
+        }
+        WsMessage::Binary(bytes) => {
+            if let Ok(text) = std::str::from_utf8(&bytes) {
+                if workstation_event_name_from_ws_text(text).as_deref() == Some("attach_jobs")
+                    && tx.send(WorkstationControlEvent::AttachJobs).await.is_err()
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        WsMessage::Close(_) => {
+            return Ok(false);
+        }
+        WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_) => {}
+    }
+    Ok(true)
+}
+
 fn workstation_events_ws_url(http_url: &str) -> Result<String, AgentHttpError> {
     if let Some(rest) = http_url.strip_prefix("https://") {
         return Ok(format!("wss://{rest}"));
@@ -569,36 +608,47 @@ impl CloudApi {
             }
         };
 
-        let (_write, mut read) = ws.split();
+        let (mut write, mut read) = ws.split();
         loop {
-            let Some(message) = read.next().await else {
-                return Ok(());
-            };
-            let message = message.map_err(|e| {
-                AgentHttpError::local(format!("read workstation event websocket: {e}"))
-            })?;
-            match message {
-                WsMessage::Text(text) => {
-                    if workstation_event_name_from_ws_text(&text) == Some("attach_jobs".to_string())
-                        && tx.send(WorkstationControlEvent::AttachJobs).await.is_err()
+            let message = match tokio::time::timeout(
+                Duration::from_millis(WORKSTATION_EVENTS_IDLE_TIMEOUT_MS),
+                read.next(),
+            )
+            .await
+            {
+                Ok(Some(message)) => message.map_err(|e| {
+                    AgentHttpError::local(format!("read workstation event websocket: {e}"))
+                })?,
+                Ok(None) => return Ok(()),
+                Err(_) => {
+                    write
+                        .send(WsMessage::Text(WORKSTATION_EVENTS_PING.into()))
+                        .await
+                        .map_err(|e| {
+                            AgentHttpError::local(format!("ping workstation event websocket: {e}"))
+                        })?;
+                    match tokio::time::timeout(
+                        Duration::from_millis(WORKSTATION_EVENTS_PING_TIMEOUT_MS),
+                        read.next(),
+                    )
+                    .await
                     {
-                        return Ok(());
-                    }
-                }
-                WsMessage::Binary(bytes) => {
-                    if let Ok(text) = std::str::from_utf8(&bytes) {
-                        if workstation_event_name_from_ws_text(text)
-                            == Some("attach_jobs".to_string())
-                            && tx.send(WorkstationControlEvent::AttachJobs).await.is_err()
-                        {
-                            return Ok(());
+                        Ok(Some(message)) => message.map_err(|e| {
+                            AgentHttpError::local(format!(
+                                "read workstation event websocket after ping: {e}"
+                            ))
+                        })?,
+                        Ok(None) => return Ok(()),
+                        Err(_) => {
+                            return Err(AgentHttpError::local(
+                                "workstation event websocket idle timeout".to_string(),
+                            ));
                         }
                     }
                 }
-                WsMessage::Close(_) => {
-                    return Ok(());
-                }
-                WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_) => {}
+            };
+            if !handle_workstation_event_ws_message(message, &tx).await? {
+                return Ok(());
             }
         }
     }
@@ -1794,7 +1844,32 @@ mod tests {
             Some("ready".to_string())
         );
         assert_eq!(workstation_event_name_from_ws_text("not json"), None);
+        assert_eq!(
+            workstation_event_name_from_ws_text(WORKSTATION_EVENTS_PONG),
+            None
+        );
         assert_eq!(workstation_event_name_from_ws_text(r#"{"data":{}}"#), None);
+    }
+
+    #[tokio::test]
+    async fn workstation_event_ws_message_ignores_pong_and_forwards_attach_jobs() {
+        let (tx, mut rx) = mpsc::channel(1);
+
+        assert!(handle_workstation_event_ws_message(
+            WsMessage::Text(WORKSTATION_EVENTS_PONG.into()),
+            &tx,
+        )
+        .await
+        .unwrap());
+        assert!(rx.try_recv().is_err());
+
+        assert!(handle_workstation_event_ws_message(
+            WsMessage::Text(r#"{"event":"attach_jobs","data":{"job_id":"j"}}"#.into()),
+            &tx,
+        )
+        .await
+        .unwrap());
+        assert_eq!(rx.recv().await, Some(WorkstationControlEvent::AttachJobs));
     }
 
     #[test]

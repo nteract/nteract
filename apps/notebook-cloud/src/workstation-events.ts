@@ -122,10 +122,17 @@ export class WorkstationEvents {
       counter: "workstation_event_sockets_opened",
       counter_delta: 1,
     });
-    this.sendEvent(server, "ready", {
-      ok: true,
-      connected_at: connectedAt,
-    });
+    if (
+      !this.sendEvent(server, "ready", {
+        ok: true,
+        connected_at: connectedAt,
+      })
+    ) {
+      return Response.json(
+        { error: "workstation event socket failed to initialize" },
+        { status: 500 },
+      );
+    }
 
     return new Response(null, {
       status: 101,
@@ -138,8 +145,8 @@ export class WorkstationEvents {
 
   private acceptSocket(socket: CloudflareWebSocket, attachment: EventSocketAttachment): void {
     if (this.state.acceptWebSocket && socket.serializeAttachment) {
-      this.state.acceptWebSocket(socket, [socketTag(attachment.workstationId)]);
       socket.serializeAttachment(attachment);
+      this.state.acceptWebSocket(socket, [socketTag(attachment.workstationId)]);
       return;
     }
 

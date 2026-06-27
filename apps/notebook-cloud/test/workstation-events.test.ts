@@ -116,6 +116,32 @@ test("workstation events answers ping in the non-hibernation fallback path", () 
   assert.deepEqual(socket.sent, [WORKSTATION_EVENTS_PONG]);
 });
 
+test("workstation events stores socket attachment before hibernatable accept", async () => {
+  const calls: string[] = [];
+  const server = new FakeSocket({ calls, failSend: true });
+  const restore = installWebSocketPair(new FakeSocket(), server);
+  try {
+    const events = new WorkstationEvents(
+      {
+        ...stateWithSockets([]),
+        acceptWebSocket: () => calls.push("accept"),
+      },
+      {} as Env,
+    );
+
+    const response = await events.fetch(
+      new Request("https://workstation-events.internal/stream?workstation_id=ws-lab2", {
+        headers: { Upgrade: "websocket" },
+      }),
+    );
+
+    assert.equal(response.status, 500);
+    assert.deepEqual(calls, ["serialize", "accept", "close:1011"]);
+  } finally {
+    restore();
+  }
+});
+
 function stateWithSockets(sockets: CloudflareWebSocket[]): DurableObjectState {
   return {
     id: { toString: () => "workstation-events-test" },
@@ -133,18 +159,33 @@ function stateWithSockets(sockets: CloudflareWebSocket[]): DurableObjectState {
 class FakeSocket {
   readonly sent: string[] = [];
   closed = false;
+  private readonly calls?: string[];
+  private readonly failSend: boolean;
+
+  constructor(options: { calls?: string[]; failSend?: boolean } = {}) {
+    this.calls = options.calls;
+    this.failSend = options.failSend ?? false;
+  }
 
   accept(): void {}
 
   addEventListener(): void {}
 
   send(message: string | ArrayBuffer | ArrayBufferView): void {
+    if (this.failSend) {
+      throw new Error("send failed");
+    }
     assert.equal(typeof message, "string");
     this.sent.push(message as string);
   }
 
-  close(): void {
+  close(code?: number): void {
     this.closed = true;
+    this.calls?.push(`close:${code ?? "none"}`);
+  }
+
+  serializeAttachment(): void {
+    this.calls?.push("serialize");
   }
 
   deserializeAttachment() {
@@ -158,4 +199,18 @@ class FakeSocket {
   asCloudflareWebSocket(): CloudflareWebSocket {
     return this as unknown as CloudflareWebSocket;
   }
+}
+
+function installWebSocketPair(client: FakeSocket, server: FakeSocket): () => void {
+  const globals = globalThis as typeof globalThis & {
+    WebSocketPair?: new () => { 0: CloudflareWebSocket; 1: CloudflareWebSocket };
+  };
+  const original = globals.WebSocketPair;
+  globals.WebSocketPair = class {
+    readonly 0 = client.asCloudflareWebSocket();
+    readonly 1 = server.asCloudflareWebSocket();
+  };
+  return () => {
+    globals.WebSocketPair = original;
+  };
 }
