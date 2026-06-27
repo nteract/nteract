@@ -565,9 +565,31 @@ fn forward_runtime_agent_broadcast(
     payload: &[u8],
 ) -> anyhow::Result<usize> {
     let broadcast = serde_json::from_slice::<NotebookBroadcast>(payload)?;
+    validate_runtime_agent_broadcast(&broadcast)?;
     match tx.send(broadcast) {
         Ok(receiver_count) => Ok(receiver_count),
         Err(_) => Ok(0),
+    }
+}
+
+fn validate_runtime_agent_broadcast(broadcast: &NotebookBroadcast) -> anyhow::Result<()> {
+    match broadcast {
+        NotebookBroadcast::Comm {
+            msg_type, content, ..
+        } => {
+            anyhow::ensure!(
+                msg_type == "comm_msg" || msg_type == "comm_close",
+                "runtime agent broadcast used unsupported comm msg_type {msg_type:?}"
+            );
+            anyhow::ensure!(
+                content
+                    .get("comm_id")
+                    .and_then(|value| value.as_str())
+                    .is_some(),
+                "runtime agent broadcast comm payload missing comm_id"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -615,5 +637,39 @@ mod tests {
 
         forward_runtime_agent_broadcast(&tx, b"{not-json")
             .expect_err("malformed broadcast must fail");
+    }
+
+    #[test]
+    fn rejects_non_comm_runtime_agent_broadcast_payload() {
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let broadcast = NotebookBroadcast::Comm {
+            msg_type: "status".to_string(),
+            content: serde_json::json!({
+                "comm_id": "comm-1",
+            }),
+            buffers: Vec::new(),
+        };
+        let payload = serde_json::to_vec(&broadcast).expect("serialize broadcast");
+
+        forward_runtime_agent_broadcast(&tx, &payload)
+            .expect_err("non-comm message type must fail");
+    }
+
+    #[test]
+    fn rejects_runtime_agent_broadcast_without_comm_id() {
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let broadcast = NotebookBroadcast::Comm {
+            msg_type: "comm_msg".to_string(),
+            content: serde_json::json!({
+                "data": {
+                    "method": "custom",
+                    "content": { "type": "draw" }
+                }
+            }),
+            buffers: Vec::new(),
+        };
+        let payload = serde_json::to_vec(&broadcast).expect("serialize broadcast");
+
+        forward_runtime_agent_broadcast(&tx, &payload).expect_err("missing comm_id must fail");
     }
 }

@@ -67,6 +67,12 @@ use echo_suppression::EchoSuppressor;
 /// is gated out of the floor by `clean_eof_is_recoverable() == false`).
 const RECOVERABLE_RECONNECT_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Runtime-agent-local buffer for live kernel broadcasts. These carry
+/// ephemeral custom widget events such as ipympl PNG frames. Match the
+/// coordinator room broadcast capacity so the runtime-agent bridge can absorb
+/// the same burst size before reporting lag.
+const RUNTIME_AGENT_KERNEL_BROADCAST_CAPACITY: usize = 256;
+
 /// How long to sleep before a reconnect to enforce [`RECOVERABLE_RECONNECT_FLOOR`].
 ///
 /// Pure so the flap-floor policy is unit-testable away from the agent's
@@ -450,7 +456,8 @@ where
     // -- 3. Create local infrastructure -------------------------------------
 
     let blob_store = Arc::new(BlobStore::new(blob_root.clone()));
-    let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<NotebookBroadcast>(16);
+    let (broadcast_tx, mut broadcast_rx) =
+        broadcast::channel::<NotebookBroadcast>(RUNTIME_AGENT_KERNEL_BROADCAST_CAPACITY);
     let presence = Arc::new(RwLock::new(PresenceState::new()));
     let (presence_tx, _presence_rx) = broadcast::channel::<(String, Vec<u8>)>(16);
 
