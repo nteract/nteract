@@ -1,6 +1,6 @@
 [package]
 name = "notebook-cloud-transport"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 description = "Cloud-WebSocket FrameTransport for the runtime agent (dials a hosted notebook room as a runtime peer)"
 repository.workspace = true
