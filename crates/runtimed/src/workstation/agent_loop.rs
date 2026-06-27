@@ -2,7 +2,7 @@
 //!
 //! Rust port of `apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`:
 //! registers/heartbeats this machine against the hosted workstation surface
-//! (`POST /api/workstations`), keeps a server-sent event wakeup stream open,
+//! (`POST /api/workstations`), keeps a workstation event WebSocket open,
 //! and falls back to polling the attach-job queue
 //! (`GET /api/workstations/{id}/attach-jobs`). It serves each pending job by
 //! spawning a `runtimed cloud-runtime-agent` runtime peer (the agent *is*
@@ -32,9 +32,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::header::{HeaderValue, AUTHORIZATION};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{error, info, warn};
 
 pub use super::cloud_agent_cli::CLOUD_TOKEN_ENV;
@@ -46,25 +51,27 @@ pub use super::cloud_agent_cli::CLOUD_TOKEN_ENV;
 pub const READINESS_LINE: &str = "Infrastructure ready, entering main loop";
 
 /// Default attach-job fallback poll interval. The fast path is the workstation
-/// event stream; polling is recovery for missed events or older servers.
+/// event socket; polling is recovery for missed events or older servers.
 pub const DEFAULT_POLL_MS: u64 = 60_000;
-/// Default workstation heartbeat interval. The event stream is the fast wakeup
+/// Default workstation heartbeat interval. The event socket is the fast wakeup
 /// path, but registration heartbeat remains the durable online-presence
-/// fallback for missed or wedged streams.
+/// fallback for missed or wedged sockets.
 pub const DEFAULT_HEARTBEAT_MS: u64 = 60_000;
 
 /// Cooldown applied to 429/503 responses without a usable `Retry-After`.
 const DEFAULT_RETRY_AFTER_MS: u64 = 60_000;
 /// Upper bound for rate-limit cooldowns (15 minutes, like the `.mjs` agent).
 const MAX_RETRY_AFTER_MS: u64 = 15 * 60_000;
+/// Idle workstation event sockets should reconnect rather than pinning an
+/// agent to a half-open network path forever.
+const WORKSTATION_EVENTS_IDLE_TIMEOUT_MS: u64 = 90_000;
+/// After an idle socket is probed, a missing response means the path is stale.
+const WORKSTATION_EVENTS_PING_TIMEOUT_MS: u64 = 10_000;
+const WORKSTATION_EVENTS_PING: &str = "nteract.workstation_events.ping.v1";
+const WORKSTATION_EVENTS_PONG: &str = "nteract.workstation_events.pong.v1";
 /// How often active children are checked for exit/readiness between polls
 /// (the `.mjs` agent's `readyPoll` interval).
 const CHILD_TICK_MS: u64 = 250;
-/// Server keepalives are 25s today. Recycle half-open SSE streams that stop
-/// delivering bytes so the agent falls back/reconnects instead of waiting
-/// forever on a dead TCP connection.
-const WORKSTATION_EVENTS_IDLE_TIMEOUT_MS: u64 = 60_000;
-
 /// Configuration for [`run_workstation_agent`]. All fields are non-secret;
 /// the credential travels separately.
 #[derive(Debug, Clone)]
@@ -342,37 +349,56 @@ pub fn normalize_jobs(body: &Value) -> Vec<AttachJob> {
         .collect()
 }
 
-fn drain_sse_event_names(buffer: &mut String, chunk: &[u8]) -> Vec<String> {
-    buffer.push_str(&String::from_utf8_lossy(chunk));
-    let mut events = Vec::new();
-    while let Some((boundary, boundary_len)) = find_sse_event_boundary(buffer) {
-        let block = buffer[..boundary].to_string();
-        buffer.drain(..boundary + boundary_len);
-        if let Some(event_name) = parse_sse_event_name(&block) {
-            events.push(event_name);
-        }
-    }
-    events
+fn workstation_event_name_from_ws_text(text: &str) -> Option<String> {
+    serde_json::from_str::<Value>(text)
+        .ok()?
+        .get("event")?
+        .as_str()
+        .map(str::to_string)
 }
 
-fn find_sse_event_boundary(buffer: &str) -> Option<(usize, usize)> {
-    match (buffer.find("\n\n"), buffer.find("\r\n\r\n")) {
-        (Some(lf), Some(crlf)) if lf < crlf => Some((lf, 2)),
-        (Some(_lf), Some(crlf)) => Some((crlf, 4)),
-        (Some(lf), None) => Some((lf, 2)),
-        (None, Some(crlf)) => Some((crlf, 4)),
-        (None, None) => None,
+async fn handle_workstation_event_ws_message(
+    message: WsMessage,
+    tx: &mpsc::Sender<WorkstationControlEvent>,
+) -> Result<bool, AgentHttpError> {
+    match message {
+        WsMessage::Text(text) => {
+            if text.as_str() == WORKSTATION_EVENTS_PONG {
+                return Ok(true);
+            }
+            if workstation_event_name_from_ws_text(text.as_str()).as_deref() == Some("attach_jobs")
+                && tx.send(WorkstationControlEvent::AttachJobs).await.is_err()
+            {
+                return Ok(false);
+            }
+        }
+        WsMessage::Binary(bytes) => {
+            if let Ok(text) = std::str::from_utf8(&bytes) {
+                if workstation_event_name_from_ws_text(text).as_deref() == Some("attach_jobs")
+                    && tx.send(WorkstationControlEvent::AttachJobs).await.is_err()
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        WsMessage::Close(_) => {
+            return Ok(false);
+        }
+        WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_) => {}
     }
+    Ok(true)
 }
 
-fn parse_sse_event_name(block: &str) -> Option<String> {
-    for line in block.lines() {
-        let line = line.trim_end_matches('\r');
-        if let Some(event_name) = line.strip_prefix("event:") {
-            return Some(event_name.trim().to_string());
-        }
+fn workstation_events_ws_url(http_url: &str) -> Result<String, AgentHttpError> {
+    if let Some(rest) = http_url.strip_prefix("https://") {
+        return Ok(format!("wss://{rest}"));
     }
-    None
+    if let Some(rest) = http_url.strip_prefix("http://") {
+        return Ok(format!("ws://{rest}"));
+    }
+    Err(AgentHttpError::local(format!(
+        "workstation event URL must be http(s): {http_url}"
+    )))
 }
 
 /// Cooldown hint from a response: nonzero only for 429/503. `Retry-After`
@@ -530,64 +556,99 @@ impl CloudApi {
         Ok(normalize_jobs(&body))
     }
 
-    async fn stream_workstation_events(
+    async fn connect_workstation_events(
         &self,
         workstation_id: &str,
         tx: mpsc::Sender<WorkstationControlEvent>,
     ) -> Result<(), AgentHttpError> {
-        let url = format!(
+        let http_url = format!(
             "{}/api/workstations/{}/events",
             self.base,
             encode_path_segment(workstation_id)
         );
-        let mut response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.token)
-            .header("Accept", "text/event-stream")
-            .send()
-            .await
-            .map_err(|e| AgentHttpError::local(format!("stream workstation events failed: {e}")))?;
-        let status = response.status().as_u16();
-        let retry_after_header = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        if status != 200 {
-            let text = response.text().await.unwrap_or_default();
-            let body = parse_response_body(&text);
-            let snippet: String = serde_json::to_string(&body)
-                .unwrap_or_default()
-                .chars()
-                .take(500)
-                .collect();
-            return Err(AgentHttpError {
-                message: format!("stream workstation events failed: HTTP {status} {snippet}"),
-                retry_after_ms: retry_after_ms(status, retry_after_header.as_deref()),
-                status: Some(status),
-                body,
-            });
-        }
+        let ws_url = workstation_events_ws_url(&http_url)?;
+        let mut request = ws_url.as_str().into_client_request().map_err(|e| {
+            AgentHttpError::local(format!("build workstation event websocket: {e}"))
+        })?;
+        let auth = HeaderValue::from_str(&format!("Bearer {}", self.token)).map_err(|e| {
+            AgentHttpError::local(format!("build workstation event auth header: {e}"))
+        })?;
+        request.headers_mut().insert(AUTHORIZATION, auth);
 
-        let mut buffer = String::new();
+        let (ws, _response) = match connect_async(request).await {
+            Ok(ok) => ok,
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                let status = response.status().as_u16();
+                let retry_after_header = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_string);
+                let body = response
+                    .into_body()
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                    .map(|text| parse_response_body(&text))
+                    .unwrap_or_else(|| json!({}));
+                let snippet: String = serde_json::to_string(&body)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(500)
+                    .collect();
+                return Err(AgentHttpError {
+                    message: format!("connect workstation events failed: HTTP {status} {snippet}"),
+                    retry_after_ms: retry_after_ms(status, retry_after_header.as_deref()),
+                    status: Some(status),
+                    body,
+                });
+            }
+            Err(error) => {
+                return Err(AgentHttpError::local(format!(
+                    "connect workstation events failed: {error}"
+                )));
+            }
+        };
+
+        let (mut write, mut read) = ws.split();
         loop {
-            let chunk = tokio::time::timeout(
+            let message = match tokio::time::timeout(
                 Duration::from_millis(WORKSTATION_EVENTS_IDLE_TIMEOUT_MS),
-                response.chunk(),
+                read.next(),
             )
             .await
-            .map_err(|_| AgentHttpError::local("workstation event stream idle timeout".into()))?
-            .map_err(|e| AgentHttpError::local(format!("read workstation event stream: {e}")))?;
-            let Some(chunk) = chunk else {
-                return Ok(());
-            };
-            for event_name in drain_sse_event_names(&mut buffer, &chunk) {
-                if event_name == "attach_jobs"
-                    && tx.send(WorkstationControlEvent::AttachJobs).await.is_err()
-                {
-                    return Ok(());
+            {
+                Ok(Some(message)) => message.map_err(|e| {
+                    AgentHttpError::local(format!("read workstation event websocket: {e}"))
+                })?,
+                Ok(None) => return Ok(()),
+                Err(_) => {
+                    write
+                        .send(WsMessage::Text(WORKSTATION_EVENTS_PING.into()))
+                        .await
+                        .map_err(|e| {
+                            AgentHttpError::local(format!("ping workstation event websocket: {e}"))
+                        })?;
+                    match tokio::time::timeout(
+                        Duration::from_millis(WORKSTATION_EVENTS_PING_TIMEOUT_MS),
+                        read.next(),
+                    )
+                    .await
+                    {
+                        Ok(Some(message)) => message.map_err(|e| {
+                            AgentHttpError::local(format!(
+                                "read workstation event websocket after ping: {e}"
+                            ))
+                        })?,
+                        Ok(None) => return Ok(()),
+                        Err(_) => {
+                            return Err(AgentHttpError::local(
+                                "workstation event websocket idle timeout".to_string(),
+                            ));
+                        }
+                    }
                 }
+            };
+            if !handle_workstation_event_ws_message(message, &tx).await? {
+                return Ok(());
             }
         }
     }
@@ -671,33 +732,33 @@ async fn run_workstation_event_listener(
             return;
         }
         match api
-            .stream_workstation_events(&workstation_id, tx.clone())
+            .connect_workstation_events(&workstation_id, tx.clone())
             .await
         {
             Ok(()) => {
-                warn!("[workstation-agent] workstation event stream closed; reconnecting");
+                warn!("[workstation-agent] workstation event socket closed; reconnecting");
                 reconnect_delay = Duration::from_secs(1);
             }
             Err(error) => {
                 if error.status == Some(404) || error.status == Some(503) {
                     warn!(
-                        "[workstation-agent] workstation event stream unavailable; using fallback polling: {}",
+                        "[workstation-agent] workstation event socket unavailable; using fallback polling: {}",
                         error.message
                     );
                 } else {
                     warn!(
-                        "[workstation-agent] workstation event stream failed; reconnecting: {}",
+                        "[workstation-agent] workstation event socket failed; reconnecting: {}",
                         error.message
                     );
                 }
-                reconnect_delay = retry_event_stream_delay(reconnect_delay, error.retry_after_ms);
+                reconnect_delay = retry_event_socket_delay(reconnect_delay, error.retry_after_ms);
             }
         }
         tokio::time::sleep(reconnect_delay).await;
     }
 }
 
-fn retry_event_stream_delay(previous: Duration, retry_after_ms: u64) -> Duration {
+fn retry_event_socket_delay(previous: Duration, retry_after_ms: u64) -> Duration {
     if retry_after_ms > 0 {
         return Duration::from_millis(retry_after_ms).min(Duration::from_secs(60));
     }
@@ -805,7 +866,7 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
     let mut last_registration: Option<Instant> = None;
     let mut last_poll: Option<Instant> = None;
     let mut poll_requested = true;
-    let mut event_stream_closed = false;
+    let mut event_socket_closed = false;
     let mut tracker = StepTracker::default();
     let (event_tx, mut event_rx) = mpsc::channel(16);
     let _event_listener = tokio::spawn(run_workstation_event_listener(
@@ -821,9 +882,9 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
         }
 
         // Register on startup and refresh workstation metadata periodically.
-        // The SSE stream is the fast attach-job wakeup path; this heartbeat is
+        // The event socket is the fast attach-job wakeup path; this heartbeat is
         // the durable fallback that keeps a locally-running workstation visible
-        // if that stream is missed, half-open, or blocked by an intermediary.
+        // if that socket is missed, half-open, or blocked by an intermediary.
         if should_register_workstation(last_registration, opts.heartbeat_interval) {
             let result = heartbeat(&api, &opts).await;
             if result.is_ok() {
@@ -835,13 +896,13 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
             continue;
         }
 
-        if !event_stream_closed {
+        if !event_socket_closed {
             while let Ok(WorkstationControlEvent::AttachJobs) = event_rx.try_recv() {
                 poll_requested = true;
             }
         }
 
-        // Accept/adopt attach jobs. SSE is the fast wakeup path; this fallback
+        // Accept/adopt attach jobs. The event socket is the fast wakeup path; this fallback
         // poll catches missed events, server versions without /events, and
         // jobs that existed before this agent started.
         if poll_requested || last_poll.is_none_or(|at| at.elapsed() >= opts.poll_interval) {
@@ -875,14 +936,14 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
                 Duration::from_millis(CHILD_TICK_MS).min(deadline - now)
             };
             tokio::select! {
-                event = event_rx.recv(), if !event_stream_closed => {
+                event = event_rx.recv(), if !event_socket_closed => {
                     match event {
                         Some(WorkstationControlEvent::AttachJobs) => {
                             poll_requested = true;
                             break;
                         }
                         None => {
-                            event_stream_closed = true;
+                            event_socket_closed = true;
                         }
                     }
                 }
@@ -1773,36 +1834,66 @@ mod tests {
     }
 
     #[test]
-    fn sse_parser_drains_complete_event_names() {
-        let mut buffer = String::new();
-        let events = drain_sse_event_names(
-            &mut buffer,
-            b"event: ready\ndata: {}\n\nevent: attach_jobs\ndata: {\"job_id\":\"j\"}\n\n",
+    fn workstation_event_name_reads_json_messages() {
+        assert_eq!(
+            workstation_event_name_from_ws_text(r#"{"event":"attach_jobs","data":{"job_id":"j"}}"#),
+            Some("attach_jobs".to_string())
         );
+        assert_eq!(
+            workstation_event_name_from_ws_text(r#"{"event":"ready","data":{"ok":true}}"#),
+            Some("ready".to_string())
+        );
+        assert_eq!(workstation_event_name_from_ws_text("not json"), None);
+        assert_eq!(
+            workstation_event_name_from_ws_text(WORKSTATION_EVENTS_PONG),
+            None
+        );
+        assert_eq!(workstation_event_name_from_ws_text(r#"{"data":{}}"#), None);
+    }
 
-        assert_eq!(events, vec!["ready", "attach_jobs"]);
-        assert!(buffer.is_empty());
+    #[tokio::test]
+    async fn workstation_event_ws_message_ignores_pong_and_forwards_attach_jobs() {
+        let (tx, mut rx) = mpsc::channel(1);
+
+        assert!(handle_workstation_event_ws_message(
+            WsMessage::Text(WORKSTATION_EVENTS_PONG.into()),
+            &tx,
+        )
+        .await
+        .unwrap());
+        assert!(rx.try_recv().is_err());
+
+        assert!(handle_workstation_event_ws_message(
+            WsMessage::Text(r#"{"event":"attach_jobs","data":{"job_id":"j"}}"#.into()),
+            &tx,
+        )
+        .await
+        .unwrap());
+        assert_eq!(rx.recv().await, Some(WorkstationControlEvent::AttachJobs));
     }
 
     #[test]
-    fn sse_parser_keeps_partial_event_until_boundary() {
-        let mut buffer = String::new();
-        assert!(drain_sse_event_names(&mut buffer, b"event: attach_").is_empty());
+    fn workstation_event_url_uses_websocket_scheme() {
         assert_eq!(
-            drain_sse_event_names(&mut buffer, b"jobs\r\ndata: {}\r\n\r\n"),
-            vec!["attach_jobs"]
+            workstation_events_ws_url("https://preview.runt.run/api/workstations/ws/events")
+                .unwrap(),
+            "wss://preview.runt.run/api/workstations/ws/events"
         );
-        assert!(buffer.is_empty());
+        assert_eq!(
+            workstation_events_ws_url("http://localhost:8787/api/workstations/ws/events").unwrap(),
+            "ws://localhost:8787/api/workstations/ws/events"
+        );
+        assert!(workstation_events_ws_url("file:///tmp/socket").is_err());
     }
 
     #[test]
-    fn event_stream_retry_delay_uses_retry_after_and_caps_backoff() {
+    fn event_socket_retry_delay_uses_retry_after_and_caps_backoff() {
         assert_eq!(
-            retry_event_stream_delay(Duration::from_secs(1), 42_000),
+            retry_event_socket_delay(Duration::from_secs(1), 42_000),
             Duration::from_secs(42)
         );
         assert_eq!(
-            retry_event_stream_delay(Duration::from_secs(45), 0),
+            retry_event_socket_delay(Duration::from_secs(45), 0),
             Duration::from_secs(60)
         );
     }

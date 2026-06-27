@@ -2015,7 +2015,7 @@ describe("Worker artifact routes", () => {
     assert.equal(body.workstations[0]?.is_default, true);
   });
 
-  it("streams user-owned workstation events with CORS headers", async () => {
+  it("forwards user-owned workstation event socket upgrades", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
     const env = fakeEnv({ WORKSTATION_EVENTS: events });
@@ -2030,6 +2030,7 @@ describe("Worker artifact routes", () => {
           "X-Operator": "workstation:lab2",
           "X-Scope": "owner",
           "X-User": "alice",
+          Upgrade: "websocket",
         },
       }),
       env,
@@ -2037,16 +2038,15 @@ describe("Worker artifact routes", () => {
     );
 
     assert.equal(response.status, 200);
-    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
-    assert.equal(response.headers.get("Content-Type"), "text/event-stream; charset=utf-8");
-    assert.match(await response.text(), /event: ready/);
+    assert.equal(response.headers.get("x-fake-websocket-upgrade"), "1");
     const streamRequest = events.requests.find(
       (entry) => new URL(entry.url).pathname === "/stream",
     );
     assert.equal(streamRequest?.objectName, objectName);
+    assert.equal(streamRequest?.upgrade, "websocket");
   });
 
-  it("projects a stale workstation as online when its event stream is connected", async () => {
+  it("projects a stale workstation as online when its event socket is connected", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
     const env = fakeEnv({ WORKSTATION_EVENTS: events });
@@ -2085,7 +2085,7 @@ describe("Worker artifact routes", () => {
     assert.equal(statusRequest?.objectName, objectName);
   });
 
-  it("does not fan out event-stream status checks for fresh workstation rows", async () => {
+  it("does not fan out event-socket status checks for fresh workstation rows", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
     const env = fakeEnv({ WORKSTATION_EVENTS: events });
@@ -2121,7 +2121,7 @@ describe("Worker artifact routes", () => {
     assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
   });
 
-  it("does not fan out event-stream status checks for explicitly offline rows", async () => {
+  it("does not fan out event-socket status checks for explicitly offline rows", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
     const env = fakeEnv({ WORKSTATION_EVENTS: events });
@@ -2447,7 +2447,7 @@ describe("Worker artifact routes", () => {
     );
   });
 
-  it("allows attach requests for stale workstations with a connected event stream", async () => {
+  it("allows attach requests for stale workstations with a connected event socket", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
     const env = fakeEnv({ WORKSTATION_EVENTS: events });
@@ -5794,7 +5794,34 @@ describe("Workstation pairing", () => {
     );
   });
 
-  it("lets a paired workstation credential open the workstation event stream", async () => {
+  it("lets a paired workstation credential open the workstation event socket", async () => {
+    const events = new FakeWorkstationEventsNamespace();
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+    const register = await registerWorkstationWithToken(env, token, "ws-paired");
+    assert.equal(register.status, 201);
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-paired/events", {
+        headers: { Authorization: `Bearer ${token}`, Upgrade: "websocket" },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-fake-websocket-upgrade"), "1");
+    assert.equal(events.requests.length, 1);
+    assert.equal(
+      events.requests[0]?.objectName,
+      workstationEventsObjectName("user:dev:alice", "ws-paired"),
+    );
+    assert.equal(new URL(events.requests[0]!.url).pathname, "/stream");
+    assert.equal(events.requests[0]?.upgrade, "websocket");
+  });
+
+  it("rejects workstation event requests that are not websocket upgrades", async () => {
     const events = new FakeWorkstationEventsNamespace();
     const env = fakeEnv({ WORKSTATION_EVENTS: events });
     const pairing = await mintPairingCode(env);
@@ -5810,17 +5837,12 @@ describe("Workstation pairing", () => {
       fakeContext(),
     );
 
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("Content-Type"), "text/event-stream; charset=utf-8");
-    assert.equal(events.requests.length, 1);
-    assert.equal(
-      events.requests[0]?.objectName,
-      workstationEventsObjectName("user:dev:alice", "ws-paired"),
-    );
-    assert.equal(new URL(events.requests[0]!.url).pathname, "/stream");
+    assert.equal(response.status, 426);
+    assert.deepEqual(await response.json(), { error: "expected WebSocket upgrade" });
+    assert.equal(events.requests.length, 0);
   });
 
-  it("notifies the paired workstation event stream when an owner creates an attach job", async () => {
+  it("notifies the paired workstation event socket when an owner creates an attach job", async () => {
     const events = new FakeWorkstationEventsNamespace();
     const env = fakeEnv({ WORKSTATION_EVENTS: events });
     seedNotebook(env, "pairing-events-demo");
@@ -6674,6 +6696,7 @@ interface FakeWorkstationEventsRequest {
   url: string;
   method: string;
   body: unknown;
+  upgrade: string | null;
 }
 
 class FakeWorkstationEventsNamespace implements DurableObjectNamespace {
@@ -6706,11 +6729,12 @@ class FakeWorkstationEventsNamespace implements DurableObjectNamespace {
           url: request.url,
           method: request.method,
           body,
+          upgrade: request.headers.get("Upgrade"),
         });
         const pathname = new URL(request.url).pathname;
         if (pathname === "/stream") {
-          return new Response('event: ready\ndata: {"ok":true}\n\n', {
-            headers: { "Content-Type": "text/event-stream; charset=utf-8" },
+          return new Response("websocket accepted", {
+            headers: { "x-fake-websocket-upgrade": "1" },
           });
         }
         if (pathname === "/notify") {

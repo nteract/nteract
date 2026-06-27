@@ -756,17 +756,17 @@ pnpm --dir apps/notebook-cloud smoke:hosted:workstation-agent
 The workstation agent reads `NTERACT_API_KEY` from the environment and also
 loads `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` when present. It
 registers and heartbeats the current machine through `POST /api/workstations`,
-keeps a server-sent event stream open at
+keeps a hibernatable WebSocket open at
 `GET /api/workstations/:workstationId/events` for attach-job wakeups, and
 spawns `runtimed cloud-runtime-agent` for pending attach jobs. Low-frequency
 `GET /api/workstations/:workstationId/attach-jobs` polling is still the
 recovery path for missed events, older servers, and jobs that predate agent
-startup. The SSE stream also carries idle online presence without burning a
-Worker/D1 request per workstation per heartbeat interval; a per-workstation
-control WebSocket was avoided for the same request-pressure reason. The stream
-does not use SSE `Last-Event-ID` replay; attach jobs are durable D1 rows, so
-reconnect recovery polls the queue rather than replaying transient wakeup
-events. API-key auth is the default
+startup. The event socket carries idle online presence without burning a
+Worker/D1 request per workstation per heartbeat interval, and it uses
+Cloudflare's hibernatable WebSocket path so idle sockets do not keep the
+WorkstationEvents Durable Object active. The socket does not replay events;
+attach jobs are durable D1 rows, so reconnect recovery polls the queue rather
+than replaying transient wakeup events. API-key auth is the default
 (`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=anaconda-key`); set
 `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=oidc` when `NTERACT_API_KEY` carries a
 short-lived OIDC bearer token. Prefer API-key auth for long-lived tmux/systemd
@@ -776,7 +776,7 @@ through argv; `runtimed` removes cloud environment variables again before
 launching the Python kernel. When the hosted service returns a rate-limit or
 maintenance response (`429`/`503`), the runner honors `Retry-After` when
 present and otherwise backs off with a capped exponential cooldown before
-heartbeating, reconnecting the event stream, or polling again. Run this helper
+heartbeating, reconnecting the event socket, or polling again. Run this helper
 inside tmux for preview/manual testing so the workstation agent stays alive
 while the browser attaches
 workstations. The first registered workstation becomes the account default
