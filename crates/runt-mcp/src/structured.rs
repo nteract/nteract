@@ -17,6 +17,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 const WIDGET_VIEW_MIME: &str = "application/vnd.jupyter.widget-view+json";
+const JUPYTER_MATPLOTLIB_MODULE: &str = "jupyter-matplotlib";
+const MPL_CANVAS_MODEL: &str = "MPLCanvasModel";
+const MPL_CANVAS_CHECKPOINT_KEY: &str = "_nteract_mpl_canvas";
 
 /// Check if a MIME type is a visualization spec (Plotly, Vega-Lite, Vega).
 fn is_viz_mime(mime: &str) -> bool {
@@ -285,6 +288,23 @@ fn manifest_output_to_structured_with_resolved(
             // Synthesize a safe widget summary for MCP App/static clients that
             // cannot attach to the live comm bridge. Do not include raw widget
             // state here; Password widgets can store plaintext values.
+            if let (Some(data_map), Some(comms)) =
+                (manifest.get("data").and_then(|v| v.as_object()), comms)
+            {
+                if let Some(checkpoint) =
+                    matplotlib_checkpoint_from_data_map(data_map, comms, blob_base_url)
+                {
+                    if let Some(image_url) = checkpoint.image_url {
+                        data.insert("image/png".to_string(), Value::String(image_url));
+                    }
+                    if !data.contains_key("text/llm+plain") {
+                        data.insert(
+                            "text/llm+plain".to_string(),
+                            Value::String(checkpoint.summary),
+                        );
+                    }
+                }
+            }
             if !data.contains_key("text/llm+plain") {
                 if let (Some(data_map), Some(comms)) =
                     (manifest.get("data").and_then(|v| v.as_object()), comms)
@@ -368,6 +388,44 @@ fn widget_summary_from_data_map(
     Some(output_resolver::format_widget_summary(
         &model_id, entry, comms,
     ))
+}
+
+struct MatplotlibCheckpoint {
+    image_url: Option<String>,
+    summary: String,
+}
+
+fn matplotlib_checkpoint_from_data_map(
+    data_map: &serde_json::Map<String, Value>,
+    comms: &HashMap<String, CommDocEntry>,
+    blob_base_url: &Option<String>,
+) -> Option<MatplotlibCheckpoint> {
+    let model_id = widget_model_id_from_content_ref(data_map.get(WIDGET_VIEW_MIME)?)?;
+    let entry = comms.get(&model_id)?;
+    if entry.model_module != JUPYTER_MATPLOTLIB_MODULE || entry.model_name != MPL_CANVAS_MODEL {
+        return None;
+    }
+
+    let checkpoint = entry.state.get(MPL_CANVAS_CHECKPOINT_KEY)?;
+    let frame = checkpoint.get("frame")?;
+    let hash = frame.get("blob").and_then(|v| v.as_str())?;
+    let image_url = blob_base_url
+        .as_ref()
+        .map(|base| format!("{}/blob/{}", base, hash));
+    let size = checkpoint
+        .get("size")
+        .and_then(|v| v.as_array())
+        .and_then(|items| {
+            let width = items.first()?.as_u64()?;
+            let height = items.get(1)?.as_u64()?;
+            Some(format!(" {width}x{height}"))
+        })
+        .unwrap_or_default();
+
+    Some(MatplotlibCheckpoint {
+        image_url,
+        summary: format!("[matplotlib widget checkpoint: image/png{size}]"),
+    })
 }
 
 /// Resolve a text ContentRef to a JSON value (inline text or blob URL).
@@ -861,6 +919,53 @@ mod tests {
 
         assert!(summary.contains("IntSlider"));
         assert!(summary.contains("7"));
+    }
+
+    #[test]
+    fn structured_matplotlib_widget_view_emits_checkpoint_image_url() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.jupyter.widget-view+json": inline_ref(r#"{"model_id":"mpl-1"}"#),
+            },
+        });
+        let mut comms = HashMap::new();
+        comms.insert(
+            "mpl-1".to_string(),
+            CommDocEntry {
+                target_name: "jupyter.widget".to_string(),
+                model_module: "jupyter-matplotlib".to_string(),
+                model_name: "MPLCanvasModel".to_string(),
+                state: json!({
+                    "_nteract_mpl_canvas": {
+                        "version": 1,
+                        "frame": {
+                            "blob": "pnghash",
+                            "size": 100,
+                            "media_type": "image/png"
+                        },
+                        "image_mode": "full",
+                        "size": [320, 240],
+                        "frame_seq": 1
+                    }
+                }),
+                outputs: Vec::new(),
+                seq: 0,
+                capture_msg_id: String::new(),
+            },
+        );
+        let blob_base = Some("http://localhost:9999".to_string());
+
+        let result = manifest_output_to_structured(&manifest, &blob_base, Some(&comms));
+
+        assert_eq!(
+            result["data"]["image/png"],
+            "http://localhost:9999/blob/pnghash"
+        );
+        assert_eq!(
+            result["data"]["text/llm+plain"],
+            "[matplotlib widget checkpoint: image/png 320x240]"
+        );
     }
 
     #[test]

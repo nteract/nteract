@@ -1507,6 +1507,21 @@ pub fn format_widget_summary(
     let short_id = &comm_id[..6.min(comm_id.len())];
 
     match name {
+        "MPLCanvas" if entry.model_module == "jupyter-matplotlib" => {
+            let suffix = entry
+                .state
+                .get("_nteract_mpl_canvas")
+                .and_then(|checkpoint| checkpoint.get("size"))
+                .and_then(|v| v.as_array())
+                .and_then(|items| {
+                    let width = items.first()?.as_u64()?;
+                    let height = items.get(1)?.as_u64()?;
+                    Some(format!(" {width}x{height}"))
+                })
+                .unwrap_or_default();
+            format!("Matplotlib widget {short_id}\u{2026}: image/png checkpoint{suffix}")
+        }
+
         // Numeric sliders — value + range
         "IntSlider" | "FloatSlider" | "FloatLogSlider" => {
             let val = state_display(&entry.state, "value");
@@ -1924,6 +1939,35 @@ mod tests {
             panic!("should be object");
         };
         assert!(has_synthesizable_mime(map));
+    }
+
+    #[test]
+    fn widget_summary_describes_matplotlib_checkpoint() {
+        let entry = CommDocEntry {
+            target_name: "jupyter.widget".to_string(),
+            model_module: "jupyter-matplotlib".to_string(),
+            model_name: "MPLCanvasModel".to_string(),
+            state: json!({
+                "_nteract_mpl_canvas": {
+                    "version": 1,
+                    "frame": {
+                        "blob": "pnghash",
+                        "size": 100,
+                        "media_type": "image/png"
+                    },
+                    "size": [320, 240]
+                }
+            }),
+            outputs: Vec::new(),
+            seq: 0,
+            capture_msg_id: String::new(),
+        };
+        let comms = HashMap::from([("mpl-1".to_string(), entry.clone())]);
+
+        assert_eq!(
+            format_widget_summary("mpl-1", &entry, &comms),
+            "Matplotlib widget mpl-1…: image/png checkpoint 320x240"
+        );
     }
 
     #[test]

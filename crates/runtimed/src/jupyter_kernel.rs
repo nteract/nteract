@@ -55,6 +55,47 @@ const KERNEL_ENV_SECRET_BLOCKLIST: &[&str] = &[
     "NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN",
 ];
 
+enum CommCoalesceMessage {
+    StateDelta {
+        comm_id: String,
+        delta: serde_json::Value,
+    },
+    MplCanvasFrame {
+        comm_id: String,
+        png: Vec<u8>,
+        size: Option<(u64, u64)>,
+    },
+}
+
+struct PendingMplCanvasFrame {
+    png: Vec<u8>,
+    size: Option<(u64, u64)>,
+}
+
+fn mpl_size_from_state(state: &serde_json::Value) -> Option<(u64, u64)> {
+    let size = state.get("_size").and_then(|v| v.as_array())?;
+    let width = size.first()?.as_u64()?;
+    let height = size.get(1)?.as_u64()?;
+    Some((width, height))
+}
+
+fn content_with_mpl_canvas_image_mode(
+    mut content: serde_json::Value,
+    mode: &str,
+) -> serde_json::Value {
+    if let Some(inner) = content
+        .get_mut("data")
+        .and_then(|data| data.get_mut("content"))
+        .and_then(|inner| inner.as_object_mut())
+    {
+        inner.insert(
+            "_nteract_image_mode".to_string(),
+            serde_json::Value::String(mode.to_string()),
+        );
+    }
+    content
+}
+
 fn is_tolerated_kernel_info_reply_parse_error(error: &jupyter_zmq_client::RuntimeError) -> bool {
     match error {
         jupyter_zmq_client::RuntimeError::ParseError { msg_type, source } => {
@@ -428,7 +469,7 @@ pub struct JupyterKernel {
     /// Handle to the heartbeat monitor task (detects unresponsive kernel).
     heartbeat_task: Option<JoinHandle<()>>,
     /// Channel for coalesced comm state writes (IOPub -> coalesce task).
-    comm_coalesce_tx: Option<mpsc::UnboundedSender<(String, serde_json::Value)>>,
+    comm_coalesce_tx: Option<mpsc::UnboundedSender<CommCoalesceMessage>>,
     /// Handle to the coalescing task for comm state CRDT writes.
     comm_coalesce_task: Option<JoinHandle<()>>,
     /// Execution IDs sent through this kernel.
@@ -1383,7 +1424,7 @@ impl KernelConnection for JupyterKernel {
             crate::output_committer::start_output_committer(output_commit_context);
 
         // Create coalescing channel early so the IOPub task can capture the sender.
-        let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
+        let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<CommCoalesceMessage>();
         let comm_coalesce_tx_for_iopub = Some(coalesce_tx.clone());
 
         let iopub_panic_cmd_tx = lifecycle_cmd_tx.clone();
@@ -1405,6 +1446,12 @@ impl KernelConnection for JupyterKernel {
                 // and CommClose arms so we can route without a CRDT read on the
                 // hot path.
                 let mut comm_targets: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                let mut comm_models: std::collections::HashMap<String, (String, String)> =
+                    std::collections::HashMap::new();
+                let mut mpl_canvas_image_modes: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                let mut mpl_canvas_sizes: std::collections::HashMap<String, (u64, u64)> =
                     std::collections::HashMap::new();
 
                 let comm_coalesce_tx = comm_coalesce_tx_for_iopub;
@@ -2126,6 +2173,24 @@ impl KernelConnection for JupyterKernel {
                                             .get("_model_name")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
+                                        comm_models.insert(
+                                            open.comm_id.0.clone(),
+                                            (model_module.to_string(), model_name.to_string()),
+                                        );
+                                        if crate::matplotlib_widget::is_mpl_canvas_model(
+                                            model_module,
+                                            model_name,
+                                        ) {
+                                            if let Some(size) =
+                                                mpl_size_from_state(&state_with_blobs)
+                                            {
+                                                mpl_canvas_sizes
+                                                    .insert(open.comm_id.0.clone(), size);
+                                            }
+                                            mpl_canvas_image_modes
+                                                .entry(open.comm_id.0.clone())
+                                                .or_insert_with(|| "full".to_string());
+                                        }
                                         let seq = iopub_comm_seq.fetch_add(1, Ordering::Relaxed);
                                         let lock_wait = lock_start.elapsed();
                                         if lock_wait > std::time::Duration::from_millis(5) {
@@ -2234,8 +2299,33 @@ impl KernelConnection for JupyterKernel {
                                         "[comm_msg] comm_id={} method={:?}",
                                         msg.comm_id.0, method
                                     );
+                                    let is_mpl_canvas = comm_models
+                                        .get(&msg.comm_id.0)
+                                        .is_some_and(|(model_module, model_name)| {
+                                            crate::matplotlib_widget::is_mpl_canvas_model(
+                                                model_module,
+                                                model_name,
+                                            )
+                                        });
+                                    let mut mpl_binary_broadcast_mode: Option<String> = None;
                                     if method == Some("update") {
                                         if let Some(state_delta) = data.get("state") {
+                                            if is_mpl_canvas {
+                                                if let Some(mode) = state_delta
+                                                    .get("_image_mode")
+                                                    .and_then(|v| v.as_str())
+                                                {
+                                                    mpl_canvas_image_modes.insert(
+                                                        msg.comm_id.0.clone(),
+                                                        mode.to_string(),
+                                                    );
+                                                }
+                                                if let Some(size) = mpl_size_from_state(state_delta)
+                                                {
+                                                    mpl_canvas_sizes
+                                                        .insert(msg.comm_id.0.clone(), size);
+                                                }
+                                            }
                                             if let Some(new_msg_id) =
                                                 state_delta.get("msg_id").and_then(|v| v.as_str())
                                             {
@@ -2280,9 +2370,52 @@ impl KernelConnection for JupyterKernel {
                                                 state_delta.clone()
                                             };
                                             if let Some(ref tx) = comm_coalesce_tx {
-                                                let _ = tx
-                                                    .send((msg.comm_id.0.clone(), coalesce_delta));
+                                                let _ = tx.send(CommCoalesceMessage::StateDelta {
+                                                    comm_id: msg.comm_id.0.clone(),
+                                                    delta: coalesce_delta,
+                                                });
                                             }
+                                        }
+                                    }
+                                    if method != Some("update") && is_mpl_canvas {
+                                        match crate::matplotlib_widget::parse_mpl_canvas_custom_message(&data) {
+                                                Some(crate::matplotlib_widget::MplCanvasCustomMessage::ImageMode(mode)) => {
+                                                    mpl_canvas_image_modes
+                                                        .insert(msg.comm_id.0.clone(), mode);
+                                                }
+                                                Some(crate::matplotlib_widget::MplCanvasCustomMessage::Resize(size)) => {
+                                                    if let Some(size) = size {
+                                                        mpl_canvas_sizes.insert(
+                                                            msg.comm_id.0.clone(),
+                                                            size,
+                                                        );
+                                                    }
+                                                }
+                                            Some(crate::matplotlib_widget::MplCanvasCustomMessage::Binary) => {
+                                                    let mode = mpl_canvas_image_modes
+                                                        .get(&msg.comm_id.0)
+                                                        .map(String::as_str)
+                                                        .unwrap_or("full");
+                                                if mode == "full" {
+                                                    if let (Some(first_buffer), Some(tx)) =
+                                                            (buffers.first(), comm_coalesce_tx.as_ref())
+                                                        {
+                                                            let _ = tx.send(
+                                                                CommCoalesceMessage::MplCanvasFrame {
+                                                                    comm_id: msg.comm_id.0.clone(),
+                                                                    png: first_buffer.clone(),
+                                                                    size: mpl_canvas_sizes
+                                                                        .get(&msg.comm_id.0)
+                                                                        .copied(),
+                                                                },
+                                                            );
+                                                        }
+                                                    }
+                                                mpl_binary_broadcast_mode =
+                                                    Some(mode.to_string());
+                                            }
+                                            Some(crate::matplotlib_widget::MplCanvasCustomMessage::Other)
+                                            | None => {}
                                         }
                                     }
 
@@ -2295,9 +2428,19 @@ impl KernelConnection for JupyterKernel {
                                     }
 
                                     if method != Some("update") {
+                                        let broadcast_content = if let Some(mode) =
+                                            mpl_binary_broadcast_mode.as_ref()
+                                        {
+                                            content_with_mpl_canvas_image_mode(
+                                                content.clone(),
+                                                mode,
+                                            )
+                                        } else {
+                                            content.clone()
+                                        };
                                         let _ = broadcast_tx.send(NotebookBroadcast::Comm {
                                             msg_type: message.header.msg_type.clone(),
-                                            content: content.clone(),
+                                            content: broadcast_content,
                                             buffers: buffers.clone(),
                                         });
                                     }
@@ -2323,6 +2466,9 @@ impl KernelConnection for JupyterKernel {
                                         .remove(&close.comm_id.0)
                                         .map(|t| crate::dx_blob_comm::is_dx_target(&t))
                                         .unwrap_or(false);
+                                    comm_models.remove(&close.comm_id.0);
+                                    mpl_canvas_image_modes.remove(&close.comm_id.0);
+                                    mpl_canvas_sizes.remove(&close.comm_id.0);
                                     if was_dx_target {
                                         continue;
                                     }
@@ -2809,6 +2955,8 @@ impl KernelConnection for JupyterKernel {
             "comm-coalesce",
             async move {
                 let mut pending: HashMap<String, serde_json::Value> = HashMap::new();
+                let mut pending_mpl_frames: HashMap<String, PendingMplCanvasFrame> = HashMap::new();
+                let mut mpl_frame_seq: HashMap<String, u64> = HashMap::new();
                 let mut timer = tokio::time::interval(std::time::Duration::from_millis(16));
                 timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -2816,7 +2964,7 @@ impl KernelConnection for JupyterKernel {
                     tokio::select! {
                         msg = coalesce_rx.recv() => {
                             match msg {
-                                Some((comm_id, delta)) => {
+                                Some(CommCoalesceMessage::StateDelta { comm_id, delta }) => {
                                     let entry = pending.entry(comm_id)
                                         .or_insert_with(|| serde_json::json!({}));
                                     if let (Some(existing), Some(new)) =
@@ -2827,16 +2975,69 @@ impl KernelConnection for JupyterKernel {
                                         }
                                     }
                                 }
+                                Some(CommCoalesceMessage::MplCanvasFrame { comm_id, png, size }) => {
+                                    pending_mpl_frames.insert(
+                                        comm_id,
+                                        PendingMplCanvasFrame { png, size },
+                                    );
+                                }
                                 None => break,
                             }
                         }
                         _ = timer.tick() => {
-                            if pending.is_empty() {
+                            if pending.is_empty() && pending_mpl_frames.is_empty() {
                                 continue;
                             }
                             let mut batch = std::mem::take(&mut pending);
                             for delta in batch.values_mut() {
                                 *delta = blob_store_large_state_values(delta, &coalesce_blob_store).await;
+                            }
+                            let frame_batch = std::mem::take(&mut pending_mpl_frames);
+                            for (comm_id, frame) in frame_batch {
+                                match coalesce_blob_store.put(&frame.png, "image/png").await {
+                                    Ok(hash) => {
+                                        let seq = mpl_frame_seq
+                                            .entry(comm_id.clone())
+                                            .and_modify(|seq| *seq = seq.saturating_add(1))
+                                            .or_insert(1);
+                                        let size = frame
+                                            .size
+                                            .map(|(width, height)| serde_json::json!([width, height]))
+                                            .unwrap_or(serde_json::Value::Null);
+                                        let mut checkpoint = serde_json::Map::new();
+                                        checkpoint.insert(
+                                            crate::matplotlib_widget::MPL_CANVAS_CHECKPOINT_KEY
+                                                .to_string(),
+                                            serde_json::json!({
+                                                "version": 1,
+                                                "frame": {
+                                                    "blob": hash,
+                                                    "size": frame.png.len(),
+                                                    "media_type": "image/png",
+                                                },
+                                                "image_mode": "full",
+                                                "size": size,
+                                                "frame_seq": *seq,
+                                            }),
+                                        );
+                                        let entry = batch
+                                            .entry(comm_id)
+                                            .or_insert_with(|| serde_json::json!({}));
+                                        if let (Some(existing), Some(new)) =
+                                            (entry.as_object_mut(), Some(&checkpoint))
+                                        {
+                                            for (k, v) in new {
+                                                existing.insert(k.clone(), v.clone());
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "[comms-doc] Failed to blob-store matplotlib canvas checkpoint: {}",
+                                            e
+                                        );
+                                    }
+                                }
                             }
                             if let Err(e) = coalesce_comms.with_doc(|cd| {
                                 let heads = cd.get_heads();
