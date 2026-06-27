@@ -98,10 +98,10 @@ export default function App() {
     }
   }, [busy, prepared]);
 
-  const copyToken = useCallback(async () => {
+  const copyReference = useCallback(async () => {
     if (!result) return;
     try {
-      await navigator.clipboard.writeText(result.token);
+      await navigator.clipboard.writeText(`id=${result.id}\ntoken=${result.token}`);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
@@ -157,23 +157,30 @@ export default function App() {
               <div className="min-w-0 flex-1">
                 <h2 className="text-sm font-semibold">Upload complete</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Uploaded {formatBytes(result.uploaded_bytes)}. Share this token with the
+                  Uploaded {formatBytes(result.uploaded_bytes)}. Share this reference with the
                   developer.
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 p-2">
-              <code className="min-w-0 flex-1 select-all overflow-x-auto whitespace-nowrap px-1 text-sm">
-                {result.token}
-              </code>
+            <div className="space-y-2 rounded-md border border-border bg-muted/40 p-2">
+              <div className="grid gap-1 text-sm sm:grid-cols-[4rem_minmax(0,1fr)] sm:items-center">
+                <span className="text-xs font-medium text-muted-foreground">ID</span>
+                <code className="min-w-0 select-all overflow-x-auto whitespace-nowrap px-1 text-sm">
+                  {result.id}
+                </code>
+                <span className="text-xs font-medium text-muted-foreground">Token</span>
+                <code className="min-w-0 select-all overflow-x-auto whitespace-nowrap px-1 text-sm">
+                  {result.token}
+                </code>
+              </div>
               <button
                 type="button"
-                onClick={copyToken}
+                onClick={copyReference}
                 className="inline-flex h-8 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               >
                 {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                {copied ? "Copied" : "Copy"}
+                {copied ? "Copied" : "Copy reference"}
               </button>
             </div>
           </section>
