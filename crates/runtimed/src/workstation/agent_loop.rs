@@ -802,7 +802,8 @@ async fn run_workstation_event_listener(
 
 fn retry_event_socket_delay(previous: Duration, retry_after_ms: u64) -> Duration {
     if retry_after_ms > 0 {
-        return Duration::from_millis(retry_after_ms).min(Duration::from_secs(60));
+        return Duration::from_millis(retry_after_ms)
+            .min(Duration::from_millis(MAX_RETRY_AFTER_MS));
     }
     previous.saturating_mul(2).min(Duration::from_secs(60))
 }
@@ -1933,6 +1934,13 @@ mod tests {
         assert_eq!(
             retry_event_socket_delay(Duration::from_secs(1), 42_000),
             Duration::from_secs(42)
+        );
+        assert_eq!(
+            retry_event_socket_delay(
+                Duration::from_secs(1),
+                DEFAULT_MISSING_WORKSTATION_RETRY_AFTER_MS
+            ),
+            Duration::from_millis(DEFAULT_MISSING_WORKSTATION_RETRY_AFTER_MS)
         );
         assert_eq!(
             retry_event_socket_delay(Duration::from_secs(45), 0),

@@ -17,6 +17,7 @@ import {
   retryCooldownMs,
   retryAfterMs,
   runtimePeerExitMessage,
+  STALE_WORKSTATION_RETRYABLE_STATUS_CODES,
   stableWorkstationId,
 } from "./hosted-workstation-agent-core.mjs";
 import { notebookCloudBaseUrl, notebookCloudWorkspaceRoot } from "./local-dev.mjs";
@@ -180,7 +181,9 @@ async function pollAttachJobs(pythonPath) {
     },
   );
   const body = await parseHttpResponseBody(response);
-  assertResponse(response, body, "poll attach jobs", [200]);
+  assertResponse(response, body, "poll attach jobs", [200], {
+    retryStatuses: STALE_WORKSTATION_RETRYABLE_STATUS_CODES,
+  });
   for (const job of normalizeJobs(body)) {
     if (activeJobs.has(job.job_id)) continue;
     if (job.status === "pending") {
@@ -582,12 +585,12 @@ async function assertBinaryExists(binaryPath, name) {
   }
 }
 
-function assertResponse(response, body, label, expectedStatuses) {
+function assertResponse(response, body, label, expectedStatuses, options = {}) {
   if (expectedStatuses.includes(response.status)) return;
   const error = new Error(
     `${label} failed: HTTP ${response.status} ${JSON.stringify(body).slice(0, 500)}`,
   );
-  error.retryAfterMs = retryAfterMs(response);
+  error.retryAfterMs = retryAfterMs(response, undefined, options.retryStatuses);
   throw error;
 }
 
