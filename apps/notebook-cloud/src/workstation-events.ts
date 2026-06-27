@@ -128,17 +128,16 @@ export class WorkstationEvents {
         connected_at: connectedAt,
       })
     ) {
-      return Response.json(
-        { error: "workstation event socket failed to initialize" },
-        { status: 500 },
-      );
+      cloudLog("warn", "workstation.events.ready_send_failed", {
+        workstation_id: workstationId,
+        listener_id: listenerId,
+        counter: "workstation_event_ready_send_failures",
+        counter_delta: 1,
+      });
     }
 
     return new Response(null, {
       status: 101,
-      headers: {
-        "Cache-Control": "no-store",
-      },
       webSocket: client,
     } as ResponseInit & { webSocket: CloudflareWebSocket });
   }

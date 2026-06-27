@@ -116,30 +116,43 @@ test("workstation events answers ping in the non-hibernation fallback path", () 
   assert.deepEqual(socket.sent, [WORKSTATION_EVENTS_PONG]);
 });
 
-test("workstation events stores socket attachment before hibernatable accept", async () => {
+test("workstation events stores socket attachment before hibernatable accept", () => {
   const calls: string[] = [];
-  const server = new FakeSocket({ calls, failSend: true });
-  const restore = installWebSocketPair(new FakeSocket(), server);
-  try {
-    const events = new WorkstationEvents(
-      {
-        ...stateWithSockets([]),
-        acceptWebSocket: () => calls.push("accept"),
-      },
-      {} as Env,
-    );
+  const socket = new FakeSocket({ calls });
+  const events = new WorkstationEvents(
+    {
+      ...stateWithSockets([]),
+      acceptWebSocket: () => calls.push("accept"),
+    },
+    {} as Env,
+  );
 
-    const response = await events.fetch(
-      new Request("https://workstation-events.internal/stream?workstation_id=ws-lab2", {
-        headers: { Upgrade: "websocket" },
-      }),
-    );
+  (
+    events as unknown as {
+      acceptSocket(socket: CloudflareWebSocket, attachment: unknown): void;
+    }
+  ).acceptSocket(socket.asCloudflareWebSocket(), {
+    listenerId: "listener-1",
+    workstationId: "ws-lab2",
+    connectedAt: "2026-06-27T00:00:00.000Z",
+  });
 
-    assert.equal(response.status, 500);
-    assert.deepEqual(calls, ["serialize", "accept", "close:1011"]);
-  } finally {
-    restore();
-  }
+  assert.deepEqual(calls, ["serialize", "accept"]);
+});
+
+test("workstation events closes sockets when send fails", () => {
+  const calls: string[] = [];
+  const socket = new FakeSocket({ calls, failSend: true });
+  const events = new WorkstationEvents(stateWithSockets([]), {} as Env);
+
+  const sent = (
+    events as unknown as {
+      sendEvent(socket: CloudflareWebSocket, event: string, data: unknown): boolean;
+    }
+  ).sendEvent(socket.asCloudflareWebSocket(), "ready", { ok: true });
+
+  assert.equal(sent, false);
+  assert.deepEqual(calls, ["close:1011"]);
 });
 
 function stateWithSockets(sockets: CloudflareWebSocket[]): DurableObjectState {
@@ -199,18 +212,4 @@ class FakeSocket {
   asCloudflareWebSocket(): CloudflareWebSocket {
     return this as unknown as CloudflareWebSocket;
   }
-}
-
-function installWebSocketPair(client: FakeSocket, server: FakeSocket): () => void {
-  const globals = globalThis as typeof globalThis & {
-    WebSocketPair?: new () => { 0: CloudflareWebSocket; 1: CloudflareWebSocket };
-  };
-  const original = globals.WebSocketPair;
-  globals.WebSocketPair = class {
-    readonly 0 = client.asCloudflareWebSocket();
-    readonly 1 = server.asCloudflareWebSocket();
-  };
-  return () => {
-    globals.WebSocketPair = original;
-  };
 }
