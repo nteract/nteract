@@ -312,7 +312,7 @@ describe("markdown projection", () => {
         name: "cases",
         source: [
           "\\begin{cases}",
-          "x & \\text{if } x \\ge 0 \\",
+          "x & \\text{if } x \\ge 0 \\\\",
           "-x & \\text{otherwise}",
           "\\end{cases}",
         ].join("\n"),
@@ -321,7 +321,7 @@ describe("markdown projection", () => {
         name: "pmatrix",
         source: [
           "\\begin{pmatrix}",
-          "\\cos\\theta & -\\sin\\theta \\",
+          "\\cos\\theta & -\\sin\\theta \\\\",
           "\\sin\\theta & \\cos\\theta",
           "\\end{pmatrix}",
         ].join("\n"),
