@@ -61,6 +61,7 @@ export function startNotebookSyncStoreBridge(
   let interactiveReady = false;
   let initialMaterializeDeferred = false;
   let initialMaterializeInFlight = false;
+  let initialLoadCurrentlyStreaming = false;
   let initialLoadWasStreaming = false;
   let latestSessionStatus: SessionStatus | null = null;
   let stopped = false;
@@ -79,7 +80,7 @@ export function startNotebookSyncStoreBridge(
     if (bootstrapTimeoutMs <= 0) return;
     bootstrapTimeout = setTimeout(() => {
       bootstrapTimeout = null;
-      if (stopped || interactiveReady) return;
+      if (stopped || interactiveReady || initialLoadCurrentlyStreaming) return;
       logger.warn(
         `[automerge-notebook] Bootstrap timed out after ${bootstrapTimeoutMs}ms before notebook became interactive`,
       );
@@ -91,9 +92,16 @@ export function startNotebookSyncStoreBridge(
     }, bootstrapTimeoutMs);
   };
 
+  const ensureBootstrapTimeout = () => {
+    if (bootstrapTimeout !== null) return;
+    armBootstrapTimeout();
+  };
+
   const resetReadiness = () => {
+    if (stopped) return;
     interactiveReady = false;
     initialMaterializeDeferred = false;
+    initialLoadCurrentlyStreaming = false;
     initialLoadWasStreaming = false;
     latestSessionStatus = null;
     armBootstrapTimeout();
@@ -133,6 +141,7 @@ export function startNotebookSyncStoreBridge(
         if (options.getHandle() !== handle) return;
         interactiveReady = true;
         initialMaterializeDeferred = false;
+        initialLoadCurrentlyStreaming = false;
         initialLoadWasStreaming = false;
         const cellIdList = [...handle.get_cell_ids()];
         // `initialSyncComplete$` fires when the notebook doc is interactive,
@@ -145,6 +154,7 @@ export function startNotebookSyncStoreBridge(
         );
         seedOutputStoresFromHandle(handle, cellIdList);
         options.refreshCanAcceptCellMutations(handle);
+        options.setLoadError(null);
         options.setIsLoading(
           latestSessionStatus
             ? isInitialLoadStreaming(latestSessionStatus.initial_load)
@@ -180,19 +190,23 @@ export function startNotebookSyncStoreBridge(
       }
 
       options.setLoadError(null);
-      if (isInitialLoadStreaming(status.initial_load)) {
+      const initialLoadStreaming = isInitialLoadStreaming(status.initial_load);
+      if (initialLoadStreaming) {
+        initialLoadCurrentlyStreaming = true;
         initialLoadWasStreaming = true;
+        clearBootstrapTimeout();
+      } else if (!interactiveReady && !initialMaterializeDeferred) {
+        initialLoadCurrentlyStreaming = false;
+        ensureBootstrapTimeout();
       }
       options.refreshCanAcceptCellMutations();
-      if (
-        initialMaterializeDeferred &&
-        !isInitialLoadStreaming(status.initial_load)
-      ) {
+      if (initialMaterializeDeferred && !initialLoadStreaming) {
+        initialLoadCurrentlyStreaming = false;
         runInitialMaterialize();
         return;
       }
       if (interactiveReady) {
-        options.setIsLoading(isInitialLoadStreaming(status.initial_load));
+        options.setIsLoading(initialLoadStreaming);
       }
     }),
   );

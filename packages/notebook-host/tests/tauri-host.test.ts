@@ -208,6 +208,41 @@ describe("createTauriHost()", () => {
     });
   });
 
+  it("queues a forced reconnect behind an in-flight non-forced reconnect", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    let resolveReconnect!: () => void;
+    reconnectPromiseOverride = new Promise((resolve) => {
+      resolveReconnect = () => resolve(undefined);
+    });
+
+    const nonForced = host.daemon.reconnect();
+    await Promise.resolve();
+    const forced = host.daemon.reconnect({ force: true });
+    await Promise.resolve();
+
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: false },
+      },
+    ]);
+
+    reconnectPromiseOverride = null;
+    resolveReconnect();
+    await Promise.all([nonForced, forced]);
+
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: false },
+      },
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: true },
+      },
+    ]);
+  });
+
   it("routes daemon.getInfo to get_daemon_info and passes the payload through", async () => {
     const host = createTauriHost({ transport: stubTransport });
     const info = await host.daemon.getInfo();

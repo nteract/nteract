@@ -118,12 +118,10 @@ where
         }
 
         let select_result = tokio::select! {
-            biased;
-            _ = heartbeat.tick() => SelectResult::Heartbeat,
-            // Prioritize incoming daemon frames (sync, broadcast, presence,
-            // responses) over outgoing commands. Keeping frames flowing
-            // prevents head divergence; commands can wait a tick.
+            // Keep daemon frames flowing while still allowing the native
+            // heartbeat through during sustained inbound traffic.
             frame = framed_reader.recv() => SelectResult::Frame(frame),
+            _ = heartbeat.tick() => SelectResult::Heartbeat,
             cmd = config.cmd_rx.recv() => SelectResult::Command(cmd),
         };
 
