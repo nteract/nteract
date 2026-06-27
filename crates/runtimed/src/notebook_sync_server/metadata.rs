@@ -994,12 +994,25 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
         let doc = room.doc.read().await;
         doc.get_metadata_snapshot()
     };
-
-    let Some(current_metadata) = current_metadata else {
-        return;
+    let current_metadata = if current_metadata.is_some() {
+        current_metadata
+    } else {
+        let mut doc = room.doc.write().await;
+        match doc.get_metadata_snapshot() {
+            Some(snapshot) => Some(snapshot),
+            // A pristine file-backed room may still be waiting for notebook
+            // metadata to seed from disk/client sync. Preserve its initial
+            // disk-derived trust state until the document has real history.
+            None if doc.is_pristine() => return,
+            None => None,
+        }
     };
 
-    let mut new_trust = verify_trust_from_snapshot(&current_metadata, &room.trusted_packages);
+    let mut new_trust = if let Some(current_metadata) = current_metadata {
+        verify_trust_from_snapshot(&current_metadata, &room.trusted_packages)
+    } else {
+        trust_state_from_metadata(&std::collections::HashMap::new(), &room.trusted_packages)
+    };
     enrich_trust_info(room, &mut new_trust);
 
     let current_runtime_trust = {
