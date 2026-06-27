@@ -196,6 +196,51 @@ describe("createTauriHost()", () => {
     const host = createTauriHost({ transport: stubTransport });
     await host.daemon.reconnect();
     expect(capturedInvokes.at(-1)?.cmd).toBe("reconnect_to_daemon");
+    expect(capturedInvokes.at(-1)?.args).toEqual({ force: false });
+  });
+
+  it("passes force through daemon.reconnect for stuck relay recovery", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await host.daemon.reconnect({ force: true });
+    expect(capturedInvokes.at(-1)).toEqual({
+      cmd: "reconnect_to_daemon",
+      args: { force: true },
+    });
+  });
+
+  it("queues a forced reconnect behind an in-flight non-forced reconnect", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    let resolveReconnect!: () => void;
+    reconnectPromiseOverride = new Promise((resolve) => {
+      resolveReconnect = () => resolve(undefined);
+    });
+
+    const nonForced = host.daemon.reconnect();
+    await Promise.resolve();
+    const forced = host.daemon.reconnect({ force: true });
+    await Promise.resolve();
+
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: false },
+      },
+    ]);
+
+    reconnectPromiseOverride = null;
+    resolveReconnect();
+    await Promise.all([nonForced, forced]);
+
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: false },
+      },
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: true },
+      },
+    ]);
   });
 
   it("routes daemon.getInfo to get_daemon_info and passes the payload through", async () => {
@@ -453,7 +498,12 @@ describe("createTauriHost()", () => {
 
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
-    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toHaveLength(1);
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: true },
+      },
+    ]);
 
     resolveReconnect();
     await reconnectPromiseOverride;

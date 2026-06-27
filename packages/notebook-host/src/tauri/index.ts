@@ -103,13 +103,24 @@ function listenWebview<T>(eventName: string, cb: (payload: T) => void): Unlisten
 
 export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost {
   const transport = opts.transport ?? new TauriTransport();
-  let reconnectPromise: Promise<void> | null = null;
-  const reconnectDaemon = (): Promise<void> => {
-    if (reconnectPromise) return reconnectPromise;
-    reconnectPromise = invoke<void>("reconnect_to_daemon").finally(() => {
-      reconnectPromise = null;
+  let reconnectInFlight: { promise: Promise<void>; force: boolean } | null = null;
+  const startReconnect = (force: boolean): Promise<void> => {
+    const promise = invoke<void>("reconnect_to_daemon", { force }).finally(() => {
+      if (reconnectInFlight?.promise === promise) {
+        reconnectInFlight = null;
+      }
     });
-    return reconnectPromise;
+    reconnectInFlight = { promise, force };
+    return promise;
+  };
+  const reconnectDaemon = (force = false): Promise<void> => {
+    const active = reconnectInFlight;
+    if (!active) return startReconnect(force);
+    if (!force || active.force) return active.promise;
+
+    const escalated = active.promise.catch(() => undefined).then(() => startReconnect(true));
+    reconnectInFlight = { promise: escalated, force: true };
+    return escalated;
   };
 
   const daemon: HostDaemon = {
@@ -120,8 +131,8 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
         return false;
       }
     },
-    async reconnect() {
-      await reconnectDaemon();
+    async reconnect(options) {
+      await reconnectDaemon(options?.force === true);
     },
     async getInfo() {
       return invoke<DaemonInfo | null>("get_daemon_info");
@@ -208,7 +219,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     onDisconnected: (cb) =>
       listenWebview<void>("daemon:disconnected", () => {
         cb();
-        reconnectDaemon().catch(() => {});
+        reconnectDaemon(true).catch(() => {});
       }),
     onUnavailable: (cb) => listenWebview<DaemonUnavailablePayload>("daemon:unavailable", cb),
   };

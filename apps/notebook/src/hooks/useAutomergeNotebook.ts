@@ -51,6 +51,7 @@ import type { JupyterOutput, NotebookCell } from "../types";
  * presence stays user-driven and Tauri remains a byte transport.
  */
 const PRESENCE_HEARTBEAT_INTERVAL_MS = 15_000;
+const BOOTSTRAP_INTERACTIVE_TIMEOUT_MS = 90_000;
 
 let loggedWasmReady = false;
 
@@ -363,6 +364,16 @@ export function useNotebook() {
       refreshCanAcceptCellMutations,
       setIsLoading,
       setLoadError,
+      bootstrapTimeoutMs: BOOTSTRAP_INTERACTIVE_TIMEOUT_MS,
+      onBootstrapTimeout: () => {
+        void host.daemon.reconnect({ force: true }).catch((error: unknown) => {
+          logger.warn(
+            "[automerge-notebook] forced reconnect after bootstrap timeout failed:",
+            error,
+          );
+          setLoadError(error instanceof Error ? error.message : String(error));
+        });
+      },
     });
 
     // ── Bootstrap / daemon lifecycle ─────────────────────────────

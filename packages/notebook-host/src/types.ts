@@ -117,8 +117,8 @@ export type Unlisten = () => void;
 export interface HostDaemon {
   /** Fast synchronous-ish check; returns false when the daemon socket is down. */
   isConnected(): Promise<boolean>;
-  /** Forces a reconnect; resolves when the relay task has a fresh socket. */
-  reconnect(): Promise<void>;
+  /** Reconnects the relay; `force` drops an existing stale handle first. */
+  reconnect(options?: { force?: boolean }): Promise<void>;
   /** Daemon diagnostics for banners / debug UI. */
   getInfo(): Promise<DaemonInfo | null>;
   /**

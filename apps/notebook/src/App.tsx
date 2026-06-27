@@ -1587,6 +1587,16 @@ function AppContent() {
     applyNotebookPath(runtimePath);
   }, [applyNotebookPath, runtimePath]);
 
+  const reconnectRuntime = useCallback(() => {
+    setDaemonStatus({ status: "checking" });
+    host.daemon.reconnect({ force: true }).catch((e: unknown) => {
+      setDaemonStatus({
+        status: "failed",
+        error: `Reconnection failed: ${e}`,
+      });
+    });
+  }, [host]);
+
   // Title is purely a function of `ephemeral`. Untitled notebooks get
   // the `*` prefix; saved notebooks render their filename. Autosave
   // (2s quiet, 10s max) keeps the file current within seconds of any
@@ -1838,20 +1848,7 @@ function AppContent() {
         <DaemonStatusBanner
           status={daemonStatus}
           onDismiss={() => setDaemonStatus(null)}
-          onRetry={() => {
-            setDaemonStatus({ status: "checking" });
-            host.daemon
-              .reconnect()
-              .then(() => {
-                // Success - daemon:ready event will clear the banner
-              })
-              .catch((e) => {
-                setDaemonStatus({
-                  status: "failed",
-                  error: `Reconnection failed: ${e}`,
-                });
-              });
-          }}
+          onRetry={reconnectRuntime}
         />
         <PoolErrorBanner
           uvError={poolUvError}
@@ -2134,6 +2131,7 @@ function AppContent() {
                 loadError={loadError}
                 runtime={runtime}
                 sessionRuntimeState={sessionStatus?.runtime_state ?? null}
+                onReconnectRuntime={reconnectRuntime}
                 onFocusCell={handleNotebookViewFocus}
                 onExecuteCell={handleExecuteCell}
                 onInterruptKernel={interruptKernel}

@@ -80,6 +80,7 @@ export interface NotebookViewProps {
   loadError?: string | null;
   runtime?: Runtime | null;
   sessionRuntimeState?: string | null;
+  onReconnectRuntime?: () => void;
   onFocusCell: (cellId: string) => void;
   onExecuteCell: (cellId: string) => void;
   onRequestExecuteCell?: (cellId: string) => void;
@@ -366,6 +367,7 @@ function NotebookViewContent({
   loadError = null,
   runtime = "python",
   sessionRuntimeState = null,
+  onReconnectRuntime,
   onFocusCell,
   onExecuteCell,
   onRequestExecuteCell,
@@ -1125,8 +1127,20 @@ function NotebookViewContent({
       data-cell-count={cellIds.length}
     >
       {loadError ? (
-        <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          Notebook failed to finish loading: {loadError}
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <span className="min-w-0 flex-1">Notebook failed to finish loading: {loadError}</span>
+          {onReconnectRuntime ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1 border-destructive/30 text-destructive hover:bg-destructive/10"
+              onClick={onReconnectRuntime}
+            >
+              <RotateCcw className="size-3" />
+              Reconnect
+            </Button>
+          ) : null}
         </div>
       ) : null}
       {outputProjectionFailures.length > 0 ? (
@@ -1147,6 +1161,18 @@ function NotebookViewContent({
           <div className="flex flex-col items-center justify-center py-20 text-center text-destructive">
             <p className="text-sm font-medium">Notebook load failed</p>
             <p className="mt-1 max-w-xl text-xs text-muted-foreground">{loadError}</p>
+            {onReconnectRuntime ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="mt-4 gap-1"
+                onClick={onReconnectRuntime}
+              >
+                <RotateCcw className="size-3" />
+                Reconnect runtime
+              </Button>
+            ) : null}
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">

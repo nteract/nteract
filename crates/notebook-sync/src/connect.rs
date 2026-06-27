@@ -802,6 +802,8 @@ where
         cmd_rx,
         frame_tx,
         notebook_id: notebook_id.clone(),
+        #[cfg(test)]
+        heartbeat_interval: None,
     };
 
     tokio::spawn(async move {

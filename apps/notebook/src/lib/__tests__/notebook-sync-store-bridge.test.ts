@@ -205,6 +205,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 describe("startNotebookSyncStoreBridge", () => {
@@ -450,6 +451,150 @@ describe("startNotebookSyncStoreBridge", () => {
 
     expect(materializeCells).toHaveBeenCalledTimes(1);
     expect(setIsLoading).toHaveBeenLastCalledWith(false);
+
+    bridge.stop();
+  });
+
+  it("reports a bootstrap timeout when interactive never arrives after readiness reset", async () => {
+    vi.useFakeTimers();
+    const onBootstrapTimeout = vi.fn();
+    const { bridge, setIsLoading, setLoadError } = startBridge({
+      bootstrapTimeoutMs: 1_000,
+      onBootstrapTimeout,
+    });
+
+    bridge.resetReadiness();
+    await vi.advanceTimersByTimeAsync(999);
+
+    expect(setLoadError).not.toHaveBeenCalled();
+    expect(onBootstrapTimeout).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(setLoadError).toHaveBeenCalledWith(expect.stringContaining("Timed out"));
+    expect(setIsLoading).toHaveBeenCalledWith(false);
+    expect(onBootstrapTimeout).toHaveBeenCalledTimes(1);
+
+    bridge.stop();
+  });
+
+  it("reports a bootstrap timeout on initial startup when interactive never arrives", async () => {
+    vi.useFakeTimers();
+    const onBootstrapTimeout = vi.fn();
+    const { bridge, setIsLoading, setLoadError } = startBridge({
+      bootstrapTimeoutMs: 1_000,
+      onBootstrapTimeout,
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(setLoadError).toHaveBeenCalledWith(expect.stringContaining("Timed out"));
+    expect(setIsLoading).toHaveBeenCalledWith(false);
+    expect(onBootstrapTimeout).toHaveBeenCalledTimes(1);
+
+    bridge.stop();
+  });
+
+  it("does not report a bootstrap timeout while initial load is streaming", async () => {
+    vi.useFakeTimers();
+    const onBootstrapTimeout = vi.fn();
+    const { bridge, setIsLoading, setLoadError, subjects } = startBridge({
+      bootstrapTimeoutMs: 1_000,
+      onBootstrapTimeout,
+    });
+
+    subjects.sessionStatus$.next(streamingStatus());
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(setLoadError).not.toHaveBeenCalledWith(expect.stringContaining("Timed out"));
+    expect(onBootstrapTimeout).not.toHaveBeenCalled();
+
+    subjects.sessionStatus$.next(readyStatus());
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(setLoadError).toHaveBeenCalledWith(expect.stringContaining("Timed out"));
+    expect(setIsLoading).toHaveBeenCalledWith(false);
+    expect(onBootstrapTimeout).toHaveBeenCalledTimes(1);
+
+    bridge.stop();
+  });
+
+  it("clears a bootstrap timeout error when initial sync completes afterward", async () => {
+    vi.useFakeTimers();
+    const { bridge, setLoadError, subjects } = startBridge({
+      bootstrapTimeoutMs: 1_000,
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(setLoadError).toHaveBeenCalledWith(expect.stringContaining("Timed out"));
+
+    subjects.initialSyncComplete$.next();
+    await flushMicrotasks();
+
+    expect(setLoadError).toHaveBeenLastCalledWith(null);
+
+    bridge.stop();
+  });
+
+  it("does not report repeated bootstrap timeouts without progress or reset", async () => {
+    vi.useFakeTimers();
+    const onBootstrapTimeout = vi.fn();
+    const { bridge, subjects } = startBridge({
+      bootstrapTimeoutMs: 1_000,
+      onBootstrapTimeout,
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    subjects.sessionStatus$.next(readyStatus());
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(onBootstrapTimeout).toHaveBeenCalledTimes(1);
+
+    bridge.stop();
+  });
+
+  it("clears the bootstrap timeout when initial sync completes", async () => {
+    vi.useFakeTimers();
+    const onBootstrapTimeout = vi.fn();
+    const { bridge, setLoadError, subjects } = startBridge({
+      bootstrapTimeoutMs: 1_000,
+      onBootstrapTimeout,
+    });
+
+    bridge.resetReadiness();
+    subjects.initialSyncComplete$.next();
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(setLoadError).not.toHaveBeenCalledWith(expect.stringContaining("Timed out"));
+    expect(onBootstrapTimeout).not.toHaveBeenCalled();
+
+    bridge.stop();
+  });
+
+  it("does not re-arm bootstrap timeout while initial materialization is in flight", async () => {
+    vi.useFakeTimers();
+    const materialize = deferred();
+    const materializeCells = vi.fn(() => materialize.promise);
+    const onBootstrapTimeout = vi.fn();
+    const { bridge, setLoadError, subjects } = startBridge({
+      bootstrapTimeoutMs: 1_000,
+      materializeCells,
+      onBootstrapTimeout,
+    });
+
+    subjects.initialSyncComplete$.next();
+    await flushMicrotasks();
+    expect(materializeCells).toHaveBeenCalledTimes(1);
+
+    subjects.sessionStatus$.next(readyStatus());
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(setLoadError).not.toHaveBeenCalledWith(expect.stringContaining("Timed out"));
+    expect(onBootstrapTimeout).not.toHaveBeenCalled();
+
+    materialize.resolve();
+    await flushMicrotasks();
 
     bridge.stop();
   });
