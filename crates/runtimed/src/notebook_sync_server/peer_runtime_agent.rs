@@ -577,6 +577,9 @@ fn validate_runtime_agent_broadcast(broadcast: &NotebookBroadcast) -> anyhow::Re
         NotebookBroadcast::Comm {
             msg_type, content, ..
         } => {
+            // Runtime-agent broadcasts arrive over the authenticated runtime-agent
+            // attachment. This guard validates the payload shape before peer fanout;
+            // comm ownership remains part of that trusted attachment boundary.
             anyhow::ensure!(
                 msg_type == "comm_msg" || msg_type == "comm_close",
                 "runtime agent broadcast used unsupported comm msg_type {msg_type:?}"
@@ -640,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_comm_runtime_agent_broadcast_payload() {
+    fn rejects_runtime_agent_broadcast_with_non_comm_msg_type() {
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let broadcast = NotebookBroadcast::Comm {
             msg_type: "status".to_string(),

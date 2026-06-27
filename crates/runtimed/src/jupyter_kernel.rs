@@ -2377,9 +2377,8 @@ impl KernelConnection for JupyterKernel {
                                             }
                                         }
                                     }
-                                    if method != Some("update") {
-                                        if is_mpl_canvas {
-                                            match crate::matplotlib_widget::parse_mpl_canvas_custom_message(&data) {
+                                    if method != Some("update") && is_mpl_canvas {
+                                        match crate::matplotlib_widget::parse_mpl_canvas_custom_message(&data) {
                                                 Some(crate::matplotlib_widget::MplCanvasCustomMessage::ImageMode(mode)) => {
                                                     mpl_canvas_image_modes
                                                         .insert(msg.comm_id.0.clone(), mode);
@@ -2392,13 +2391,13 @@ impl KernelConnection for JupyterKernel {
                                                         );
                                                     }
                                                 }
-                                                Some(crate::matplotlib_widget::MplCanvasCustomMessage::Binary) => {
+                                            Some(crate::matplotlib_widget::MplCanvasCustomMessage::Binary) => {
                                                     let mode = mpl_canvas_image_modes
                                                         .get(&msg.comm_id.0)
                                                         .map(String::as_str)
                                                         .unwrap_or("full");
-                                                    if mode == "full" {
-                                                        if let (Some(first_buffer), Some(ref tx)) =
+                                                if mode == "full" {
+                                                    if let (Some(first_buffer), Some(tx)) =
                                                             (buffers.first(), comm_coalesce_tx.as_ref())
                                                         {
                                                             let _ = tx.send(
@@ -2412,12 +2411,11 @@ impl KernelConnection for JupyterKernel {
                                                             );
                                                         }
                                                     }
-                                                    mpl_binary_broadcast_mode =
-                                                        Some(mode.to_string());
-                                                }
-                                                Some(crate::matplotlib_widget::MplCanvasCustomMessage::Other)
-                                                | None => {}
+                                                mpl_binary_broadcast_mode =
+                                                    Some(mode.to_string());
                                             }
+                                            Some(crate::matplotlib_widget::MplCanvasCustomMessage::Other)
+                                            | None => {}
                                         }
                                     }
 

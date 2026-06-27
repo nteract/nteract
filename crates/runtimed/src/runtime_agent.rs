@@ -2420,6 +2420,8 @@ fn diff_comm_state(
             {
                 let mut delta = serde_json::Map::new();
                 for (key, after_val) in after_obj {
+                    // `_nteract_mpl_canvas` is daemon-authored checkpoint state for
+                    // late viewers and agents. It is never a kernel traitlet update.
                     if key == crate::matplotlib_widget::MPL_CANVAS_CHECKPOINT_KEY {
                         continue;
                     }
