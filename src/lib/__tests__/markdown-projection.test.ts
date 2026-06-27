@@ -303,6 +303,68 @@ describe("markdown projection", () => {
     ]);
   });
 
+  it("projects the Jupyter matrix and cases family as display math (#3834)", () => {
+    // #3834: MathJax's `processEnvironments` renders any bare environment, so
+    // the matrix family, `cases`, `gather`, `multline`, and `aligned` all
+    // route to the math renderer without an environment whitelist.
+    const environments = [
+      {
+        name: "cases",
+        source: [
+          "\\begin{cases}",
+          "x & \\text{if } x \\ge 0 \\",
+          "-x & \\text{otherwise}",
+          "\\end{cases}",
+        ].join("\n"),
+      },
+      {
+        name: "pmatrix",
+        source: [
+          "\\begin{pmatrix}",
+          "\\cos\\theta & -\\sin\\theta \\",
+          "\\sin\\theta & \\cos\\theta",
+          "\\end{pmatrix}",
+        ].join("\n"),
+      },
+      {
+        name: "vmatrix",
+        source: "\\begin{vmatrix}a & b \\\\ c & d\\end{vmatrix}",
+      },
+    ];
+
+    for (const { name, source } of environments) {
+      const plan = projectMarkdownPlan(source);
+      expect(plan?.blocks.map((block) => block.kind)).toEqual(["math"]);
+      expect(plan?.blocks[0]?.text).toBe(source);
+      expect(
+        plan?.runs
+          .filter((run) => run.semantic === "math-source")
+          .map((run) => run.renderedText),
+      ).toEqual([source]);
+      // Sanity: the block text actually carries the environment name.
+      expect(plan?.blocks[0]?.text).toContain(`\\begin{${name}}`);
+    }
+  });
+
+  it("projects display \\[...\\] delimiters (#3834)", () => {
+    // #3834: a standalone `\[...\]` block becomes a display math block with the
+    // inner LaTeX as its text. Inline `\(...\)` is intentionally out of scope
+    // — see issue #3834.
+    const display = projectMarkdownPlan("\\[\nx = y\nz = w\n\\]");
+    expect(display?.blocks.map((block) => block.kind)).toEqual(["math"]);
+    expect(display?.blocks[0]?.text).toBe("x = y\nz = w");
+    expect(
+      display?.runs
+        .filter((run) => run.semantic === "math-source")
+        .map((run) => run.renderedText),
+    ).toEqual(["x = y\nz = w"]);
+
+    // The #3377 constraint holds for the new delimiter: mixed prose stays a
+    // paragraph rather than being swallowed as display math.
+    const mixed = projectMarkdownPlan("before \\[ x \\] after on one line");
+    expect(mixed?.blocks.map((block) => block.kind)).toEqual(["paragraph"]);
+  });
+
   it("keeps projected raw HTML markup out of the host DOM without forcing iframe fallback", () => {
     const plan = projectMarkdownPlan("alpha <i>wow</i> omega");
 

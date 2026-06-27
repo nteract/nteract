@@ -1301,6 +1301,21 @@ mod tests {
     }
 
     #[test]
+    fn projects_display_bracket_tex_delimiters() {
+        // #3834: a standalone `\[...\]` block routes to the math renderer with
+        // the bracket delimiters stripped from the rendered text. Inline
+        // `\(...\)` is intentionally out of scope — see issue #3834.
+        let display = project_to_json("\\[\nx = y\nz = w\n\\]");
+        assert_eq!(display.matches("\"kind\":\"math\"").count(), 1);
+        assert!(display.contains("\"semantic\":\"math-source\""));
+        // Display math text is the inner LaTeX; the newlines are JSON-escaped.
+        assert!(display.contains("\"renderedText\":\"x = y\\nz = w\""));
+        // The bracket delimiters are stripped from the rendered text.
+        assert!(!display.contains("\\\\["));
+        assert!(!display.contains("\\\\]"));
+    }
+
+    #[test]
     fn projects_table_rows_cells_and_alignment() {
         let json = project_to_json("| metric | value |\n| --- | ---: |\n| rows | 128 |\n");
 
