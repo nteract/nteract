@@ -12,6 +12,7 @@ import {
   retryAfterMs,
   retryCooldownMs,
   runtimePeerExitMessage,
+  STALE_WORKSTATION_RETRYABLE_STATUS_CODES,
   stableWorkstationId,
 } from "../scripts/hosted-workstation-agent-core.mjs";
 
@@ -207,6 +208,26 @@ describe("hosted workstation agent launch contract", () => {
       `date retry delay should be bounded, got ${retryDateDelay}`,
     );
     assert.equal(retryAfterMs(new Response("no hint", { status: 503 }), 12_345), 12_345);
+    assert.equal(retryAfterMs(new Response("missing", { status: 404 })), 0);
+    assert.equal(
+      retryAfterMs(
+        new Response("missing", {
+          status: 404,
+          headers: { "Retry-After": "900" },
+        }),
+        undefined,
+        STALE_WORKSTATION_RETRYABLE_STATUS_CODES,
+      ),
+      900_000,
+    );
+    assert.equal(
+      retryAfterMs(
+        new Response("gone", { status: 410 }),
+        undefined,
+        STALE_WORKSTATION_RETRYABLE_STATUS_CODES,
+      ),
+      900_000,
+    );
   });
 
   it("expands retry cooldowns for repeated rate-limit responses", () => {

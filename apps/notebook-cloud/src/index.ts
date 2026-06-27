@@ -1257,6 +1257,7 @@ function parseNotebookListLimit(request: Request): number | Response {
 
 const WORKSTATION_HEARTBEAT_STALE_MS = 3 * 60_000;
 const MAX_WORKSTATION_ATTACH_JOBS_LIMIT = 25;
+const MISSING_WORKSTATION_RETRY_AFTER_SECONDS = 15 * 60;
 
 interface WorkstationEventPresence {
   connected: boolean;
@@ -1812,7 +1813,7 @@ async function routeWorkstationEvents(
   const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
   const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
   if (!workstation) {
-    return json({ error: "workstation not found" }, 404);
+    return missingWorkstationResponse();
   }
 
   const stub = workstationEventsStub(env, ownerPrincipal, workstationId);
@@ -1848,7 +1849,7 @@ async function routeWorkstationAttachJobs(
   const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
   const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
   if (!workstation) {
-    return json({ error: "workstation not found" }, 404);
+    return missingWorkstationResponse();
   }
 
   const limit = parseWorkstationAttachJobsLimit(request);
@@ -1923,6 +1924,18 @@ function workstationEventsStub(
     workstationEventsObjectName(ownerPrincipal, workstationId),
   );
   return env.WORKSTATION_EVENTS!.get(id);
+}
+
+function missingWorkstationResponse(): Response {
+  const response = json(
+    {
+      error: "workstation not found",
+      code: "workstation_not_found",
+    },
+    404,
+  );
+  response.headers.set("Retry-After", MISSING_WORKSTATION_RETRY_AFTER_SECONDS.toString());
+  return response;
 }
 
 async function workstationEventPresenceById(
