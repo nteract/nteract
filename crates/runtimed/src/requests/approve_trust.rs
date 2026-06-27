@@ -50,7 +50,6 @@ pub(crate) async fn handle(
 
 #[derive(Debug, PartialEq, Eq)]
 enum TrustApprovalError {
-    NoMetadata,
     StaleDependencies,
     Persist(String),
 }
@@ -58,9 +57,6 @@ enum TrustApprovalError {
 impl TrustApprovalError {
     fn into_response(self) -> NotebookResponse {
         match self {
-            TrustApprovalError::NoMetadata => NotebookResponse::Error {
-                error: "No metadata in Automerge doc".to_string(),
-            },
             TrustApprovalError::StaleDependencies => NotebookResponse::GuardRejected {
                 reason: TRUST_APPROVAL_STALE_REASON.to_string(),
             },
@@ -81,9 +77,7 @@ fn apply_trust_approval(
             .map_err(|_| TrustApprovalError::StaleDependencies)?;
     }
 
-    let Some(snapshot) = doc.get_metadata_snapshot() else {
-        return Err(TrustApprovalError::NoMetadata);
-    };
+    let snapshot = doc.get_metadata_snapshot().unwrap_or_default();
 
     let mut metadata = std::collections::HashMap::new();
     if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
@@ -141,5 +135,24 @@ mod tests {
         let result = apply_trust_approval(&doc, Some(&observed_heads));
 
         assert!(matches!(result, Err(TrustApprovalError::StaleDependencies)));
+    }
+
+    #[test]
+    fn approval_without_metadata_is_noop_no_dependencies() {
+        let mut doc = NotebookDoc::new("trust-approval-test");
+        let observed_heads = doc.get_heads_hex();
+
+        let info = apply_trust_approval(&doc, Some(&observed_heads)).unwrap();
+
+        assert_eq!(info.status, runt_trust::TrustStatus::NoDependencies);
+        assert!(info.uv_dependencies.is_empty());
+        assert!(info.conda_dependencies.is_empty());
+        assert!(info.pixi_dependencies.is_empty());
+        assert!(info.pixi_pypi_dependencies.is_empty());
+        assert_eq!(
+            doc.get_heads_hex(),
+            observed_heads,
+            "approval extraction must stay read-only even with missing metadata"
+        );
     }
 }

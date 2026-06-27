@@ -5864,6 +5864,38 @@ async fn test_check_and_update_trust_state_no_deps() {
 }
 
 #[tokio::test]
+async fn test_check_and_update_trust_state_cleared_metadata_resets_no_deps() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _path) = test_room_with_path(&tmp, "cleared_deps.ipynb");
+
+    room.state
+        .with_doc(|sd| sd.set_trust("untrusted", true))
+        .unwrap();
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snapshot_with_uv(vec!["pandas>=2".to_string()]))
+            .unwrap();
+        doc.set_metadata_snapshot(&snapshot_empty()).unwrap();
+        assert!(
+            doc.get_metadata_snapshot().is_none(),
+            "empty notebook metadata snapshots are stored as no metadata keys"
+        );
+    }
+
+    check_and_update_trust_state(&room).await;
+
+    let ts = room.trust_state.read().await;
+    assert_eq!(ts.status, runt_trust::TrustStatus::NoDependencies);
+    assert!(ts.info.uv_dependencies.is_empty());
+    drop(ts);
+
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert_eq!(state.trust.status, "no_dependencies");
+    assert!(!state.trust.needs_approval);
+}
+
+#[tokio::test]
 async fn test_approve_trust_adds_dependencies_to_allowlist() {
     let tmp = tempfile::TempDir::new().unwrap();
     let store =
