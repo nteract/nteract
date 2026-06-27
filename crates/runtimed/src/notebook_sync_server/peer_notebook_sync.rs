@@ -17,6 +17,24 @@ pub(super) async fn handle_notebook_doc_frame(
     writer: &PeerWriter,
     payload: &[u8],
 ) -> anyhow::Result<NotebookDocSideEffects> {
+    let (effects, reply_encoded) =
+        apply_notebook_doc_frame(room, peer_state, connection_identity, payload).await?;
+
+    // Queue the reply outside the lock so other peers can acquire it while the
+    // writer task drains the socket.
+    if let Some(encoded) = reply_encoded {
+        writer.send_frame(NotebookFrameType::AutomergeSync, encoded)?;
+    }
+
+    Ok(effects)
+}
+
+pub(super) async fn apply_notebook_doc_frame(
+    room: &NotebookRoom,
+    peer_state: &mut sync::State,
+    connection_identity: &RoomConnectionIdentity,
+    payload: &[u8],
+) -> anyhow::Result<(NotebookDocSideEffects, Option<Vec<u8>>)> {
     let mut message =
         sync::Message::decode(payload).map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
     let has_client_changes = !message.changes.is_empty();
@@ -88,18 +106,16 @@ pub(super) async fn handle_notebook_doc_frame(
         (bytes, encoded, metadata_changed)
     };
 
-    // Queue the reply outside the lock so other peers can acquire it while the
-    // writer task drains the socket.
     let sync_reply_queued = reply_encoded.is_some();
-    if let Some(encoded) = reply_encoded {
-        writer.send_frame(NotebookFrameType::AutomergeSync, encoded)?;
-    }
 
-    Ok(NotebookDocSideEffects {
-        persist_bytes,
-        metadata_changed,
-        sync_reply_queued,
-    })
+    Ok((
+        NotebookDocSideEffects {
+            persist_bytes,
+            metadata_changed,
+            sync_reply_queued,
+        },
+        reply_encoded,
+    ))
 }
 
 pub(super) struct NotebookDocSideEffects {

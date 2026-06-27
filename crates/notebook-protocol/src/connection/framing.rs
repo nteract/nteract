@@ -301,6 +301,20 @@ impl FramedReader {
     pub async fn recv(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
         self.rx.recv().await
     }
+
+    /// Non-blocking receive of an already-buffered frame.
+    ///
+    /// This is useful for bootstrap code that wants to drain a burst after one
+    /// awaited `recv()` without blocking the connection setup path. Empty and
+    /// disconnected both return `None`; callers that need to distinguish EOF
+    /// should use `recv()`.
+    pub fn try_recv(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+        match self.rx.try_recv() {
+            Ok(frame) => Some(frame),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => None,
+        }
+    }
 }
 
 impl Drop for FramedReader {

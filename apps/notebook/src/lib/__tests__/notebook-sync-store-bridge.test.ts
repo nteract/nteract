@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 import { Subject } from "rxjs";
 import type {
   ExecutionViewChangeset,
@@ -25,6 +32,7 @@ const mocks = vi.hoisted(() => ({
     error: vi.fn(),
   },
   materializeChangeset: vi.fn(async () => {}),
+  publishProgressiveInitialStructureSlice: vi.fn(async () => true),
   notifyMetadataChanged: vi.fn(),
   seedOutputStoresFromHandle: vi.fn(),
   setPoolState: vi.fn(),
@@ -33,6 +41,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../frame-pipeline", () => ({
   materializeChangeset: mocks.materializeChangeset,
+  publishProgressiveInitialStructureSlice:
+    mocks.publishProgressiveInitialStructureSlice,
 }));
 
 vi.mock("../logger", () => ({
@@ -73,8 +83,9 @@ function deferred<T = void>() {
 }
 
 async function flushMicrotasks() {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 8; i++) {
+    await Promise.resolve();
+  }
 }
 
 function readyStatus(): SessionStatus {
@@ -105,7 +116,9 @@ function createHandle() {
   return {
     get_cell_ids: vi.fn(() => ["cell-1"]),
     get_cell_execution_id: vi.fn(() => "exec-1"),
-    get_cell_outputs: vi.fn(() => [{ output_id: "out-1", output_type: "stream" }]),
+    get_cell_outputs: vi.fn(() => [
+      { output_id: "out-1", output_type: "stream" },
+    ]),
   } as unknown as NotebookHandle;
 }
 
@@ -115,7 +128,10 @@ function createEngineSubjects() {
     cellChanges$: new Subject<CellChangeset | null>(),
     executionViewChanges$: new Subject<ExecutionViewChangeset>(),
     initialSyncComplete$: new Subject<void>(),
-    outputIdChanges$: new Subject<{ changed: Array<[string, unknown]>; removed_ids: string[] }>(),
+    outputIdChanges$: new Subject<{
+      changed: Array<[string, unknown]>;
+      removed_ids: string[];
+    }>(),
     poolState$: new Subject<PoolState>(),
     presence$: new Subject<unknown>(),
     runtimeState$: new Subject<RuntimeState>(),
@@ -123,15 +139,16 @@ function createEngineSubjects() {
   };
 
   const engine = Object.fromEntries(
-    Object.entries(subjects).map(([key, subject]) => [key, subject.asObservable()]),
+    Object.entries(subjects).map(([key, subject]) => [
+      key,
+      subject.asObservable(),
+    ]),
   ) as NotebookSyncStoreBridgeOptions["engine"];
 
   return { engine, subjects };
 }
 
-function startBridge(
-  overrides: Partial<NotebookSyncStoreBridgeOptions> = {},
-) {
+function startBridge(overrides: Partial<NotebookSyncStoreBridgeOptions> = {}) {
   const { engine, subjects } = createEngineSubjects();
   const handle = createHandle();
   const materializeCells = vi.fn(async () => {});
@@ -183,6 +200,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.applyOutputChangeset.mockResolvedValue(undefined);
   mocks.materializeChangeset.mockResolvedValue(undefined);
+  mocks.publishProgressiveInitialStructureSlice.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -221,7 +239,9 @@ describe("startNotebookSyncStoreBridge", () => {
     expect(mocks.applyExecutionViewChangeset).toHaveBeenCalledWith(
       projectExecutionViewChangeset.mock.results[0].value,
     );
-    expect(mocks.seedOutputStoresFromHandle).toHaveBeenCalledWith(handle, ["cell-1"]);
+    expect(mocks.seedOutputStoresFromHandle).toHaveBeenCalledWith(handle, [
+      "cell-1",
+    ]);
     expect(refreshCanAcceptCellMutations).toHaveBeenCalledWith(handle);
     expect(setIsLoading).toHaveBeenLastCalledWith(false);
     expect(mocks.notifyMetadataChanged).toHaveBeenCalledTimes(1);
@@ -234,7 +254,9 @@ describe("startNotebookSyncStoreBridge", () => {
     const materializeCells = vi.fn(async () => {
       throw error;
     });
-    const { bridge, setIsLoading, setLoadError, subjects } = startBridge({ materializeCells });
+    const { bridge, setIsLoading, setLoadError, subjects } = startBridge({
+      materializeCells,
+    });
 
     subjects.initialSyncComplete$.next();
     await flushMicrotasks();
@@ -297,6 +319,29 @@ describe("startNotebookSyncStoreBridge", () => {
     bridge.stop();
   });
 
+  it("enables progressive structural materialization during initial file load", async () => {
+    const { bridge, options, subjects } = startBridge();
+    const changeset: CellChangeset = {
+      added: ["cell-1", "cell-2", "cell-3", "cell-4"],
+      changed: [],
+      order_changed: true,
+      removed: [],
+    };
+
+    subjects.sessionStatus$.next(streamingStatus());
+    subjects.cellChanges$.next(changeset);
+    await flushMicrotasks();
+
+    expect(mocks.materializeChangeset).toHaveBeenCalledWith(changeset, {
+      getHandle: options.getHandle,
+      materializeCells: options.materializeCells,
+      outputCache: options.outputCache,
+      progressiveStructuralBatchSize: 3,
+    });
+
+    bridge.stop();
+  });
+
   it("routes sync engine streams to app stores and frame buses", async () => {
     const { bridge, subjects } = startBridge();
     const runtimeState = { kernel: null } as RuntimeState;
@@ -320,7 +365,9 @@ describe("startNotebookSyncStoreBridge", () => {
     expect(mocks.emitPresence).toHaveBeenCalledWith({ type: "presence" });
     expect(mocks.setRuntimeState).toHaveBeenCalledWith(runtimeState);
     expect(mocks.setPoolState).toHaveBeenCalledWith(poolState);
-    expect(mocks.applyExecutionViewChangeset).toHaveBeenCalledWith(executionChanges);
+    expect(mocks.applyExecutionViewChangeset).toHaveBeenCalledWith(
+      executionChanges,
+    );
     expect(mocks.applyOutputChangeset).toHaveBeenCalledWith(
       [["out-1", { output_type: "stream" }]],
       ["out-old"],
@@ -347,6 +394,33 @@ describe("startNotebookSyncStoreBridge", () => {
     bridge.stop();
   });
 
+  it("defers initial full materialization while file load is streaming", async () => {
+    const { bridge, handle, materializeCells, setIsLoading, subjects } =
+      startBridge();
+
+    subjects.sessionStatus$.next(streamingStatus());
+    subjects.initialSyncComplete$.next();
+    await flushMicrotasks();
+
+    expect(materializeCells).not.toHaveBeenCalled();
+    expect(setIsLoading).not.toHaveBeenCalledWith(false);
+
+    subjects.sessionStatus$.next(readyStatus());
+    await flushMicrotasks();
+
+    expect(mocks.publishProgressiveInitialStructureSlice).toHaveBeenCalledWith(
+      handle,
+      {
+        outputCache: expect.any(Map),
+        progressiveStructuralBatchSize: 3,
+      },
+    );
+    expect(materializeCells).toHaveBeenCalledTimes(1);
+    expect(setIsLoading).toHaveBeenLastCalledWith(false);
+
+    bridge.stop();
+  });
+
   it("waits for fresh initial sync after reconnect readiness reset", async () => {
     const { bridge, materializeCells, setIsLoading, subjects } = startBridge();
 
@@ -368,8 +442,14 @@ describe("startNotebookSyncStoreBridge", () => {
     subjects.initialSyncComplete$.next();
     await flushMicrotasks();
 
+    expect(materializeCells).not.toHaveBeenCalled();
+    expect(setIsLoading).not.toHaveBeenCalled();
+
+    subjects.sessionStatus$.next(readyStatus());
+    await flushMicrotasks();
+
     expect(materializeCells).toHaveBeenCalledTimes(1);
-    expect(setIsLoading).toHaveBeenLastCalledWith(true);
+    expect(setIsLoading).toHaveBeenLastCalledWith(false);
 
     bridge.stop();
   });
@@ -377,7 +457,9 @@ describe("startNotebookSyncStoreBridge", () => {
   it("ignores in-flight materializeCells result if stopped before it resolves", async () => {
     const materialize = deferred();
     const materializeCells = vi.fn(() => materialize.promise);
-    const { bridge, setIsLoading, setLoadError, subjects } = startBridge({ materializeCells });
+    const { bridge, setIsLoading, setLoadError, subjects } = startBridge({
+      materializeCells,
+    });
 
     subjects.initialSyncComplete$.next();
     await flushMicrotasks();
@@ -428,8 +510,12 @@ describe("startNotebookSyncStoreBridge", () => {
   it("ignores in-flight materializeChangeset result if stopped before it resolves", async () => {
     const work = deferred();
     mocks.materializeChangeset.mockImplementationOnce(() => work.promise);
-    const { bridge, projectExecutionViewChangeset, refreshCanAcceptCellMutations, subjects } =
-      startBridge();
+    const {
+      bridge,
+      projectExecutionViewChangeset,
+      refreshCanAcceptCellMutations,
+      subjects,
+    } = startBridge();
 
     subjects.cellChanges$.next(null);
     expect(mocks.materializeChangeset).toHaveBeenCalledTimes(1);
@@ -472,7 +558,10 @@ describe("startNotebookSyncStoreBridge", () => {
     subjects.runtimeState$.next({ kernel: null } as RuntimeState);
     subjects.poolState$.next({ uv: {}, conda: {}, pixi: {} } as PoolState);
     subjects.executionViewChanges$.next({});
-    subjects.outputIdChanges$.next({ changed: [["out-1", {}]], removed_ids: [] });
+    subjects.outputIdChanges$.next({
+      changed: [["out-1", {}]],
+      removed_ids: [],
+    });
     await flushMicrotasks();
 
     expect(mocks.materializeChangeset).not.toHaveBeenCalled();

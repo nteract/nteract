@@ -19,12 +19,24 @@ use super::peer_presence::{
 use super::peer_runtime_sync::{forward_runtime_state_broadcast, handle_runtime_state_frame};
 use super::peer_session::{
     send_initial_notebook_doc_sync, send_initial_runtime_state_sync, send_session_status,
-    stream_initial_load, InitialSyncState,
+    stream_initial_load_with_frame_drain, InitialSyncState,
 };
 use super::peer_writer::{
     enqueue_notebook_request, queue_session_status, spawn_peer_request_worker, spawn_peer_writer,
 };
 use super::*;
+use std::collections::VecDeque;
+
+async fn next_peer_frame(
+    deferred_frames: &mut VecDeque<connection::TypedNotebookFrame>,
+    framed_reader: &mut connection::FramedReader,
+) -> Option<std::io::Result<connection::TypedNotebookFrame>> {
+    if let Some(frame) = deferred_frames.pop_front() {
+        Some(Ok(frame))
+    } else {
+        framed_reader.recv().await
+    }
+}
 
 /// Typed frames sync loop with first-byte type indicator.
 ///
@@ -36,7 +48,7 @@ use super::*;
 /// belongs to the dedicated reader task, not this select loop.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_sync_loop_v2<R, W>(
-    mut reader: R,
+    reader: R,
     mut writer: W,
     room: &Arc<NotebookRoom>,
     _rooms: NotebookRooms,
@@ -51,6 +63,12 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    // Hand the reader off to a dedicated FramedReader actor before bootstrap.
+    // The initial file-backed load can then safely wait for client sync replies
+    // between batches without risking partial-frame cancellation.
+    let mut framed_reader = connection::FramedReader::spawn(reader, 16);
+    let mut deferred_frames = VecDeque::new();
+
     // Subscribe before sending bootstrap traffic so any writes that land
     // during connection setup are still observed as steady-state deltas.
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
@@ -81,8 +99,20 @@ where
         .await?;
     }
 
-    let InitialSyncState { mut peer_state } =
-        send_initial_notebook_doc_sync(&mut writer, room).await?;
+    // Fresh file-backed rooms stream the file itself as the initial doc sync.
+    // Sending an empty-doc handshake first leaves Automerge with an in-flight
+    // message and can collapse the visible cell batches into one final update.
+    let defer_initial_doc_sync_for_file_load = if needs_load.is_some() {
+        let doc = room.doc.read().await;
+        doc.cell_count() == 0
+    } else {
+        false
+    };
+    let InitialSyncState { mut peer_state } = if defer_initial_doc_sync_for_file_load {
+        InitialSyncState::new()
+    } else {
+        send_initial_notebook_doc_sync(&mut writer, room).await?
+    };
     notebook_doc_phase = notebook_protocol::protocol::NotebookDocPhaseWire::Syncing;
     if client_protocol_version >= 3 {
         send_session_status(
@@ -121,9 +151,10 @@ where
     send_initial_comms_doc_sync(&mut writer, room, &mut comms_peer_state).await?;
     send_initial_comments_doc_sync(&mut writer, room, &mut comments_peer_state).await?;
 
-    initial_load_phase = stream_initial_load(
-        &mut reader,
+    initial_load_phase = stream_initial_load_with_frame_drain(
+        &mut framed_reader,
         &mut writer,
+        &mut deferred_frames,
         room,
         needs_load,
         &daemon.config.execution_store_dir,
@@ -132,6 +163,7 @@ where
         runtime_state_phase,
         initial_load_phase,
         client_protocol_version,
+        connection_identity,
     )
     .await?;
 
@@ -171,13 +203,6 @@ where
         notebook_id.clone(),
         peer_id.to_string(),
     );
-
-    // Hand the reader off to a dedicated FramedReader actor before
-    // entering the busy `select!` below. `recv_typed_frame`'s internal
-    // `read_exact` calls are NOT cancel-safe — putting them directly
-    // in a `select!` arm desyncs the framed stream the moment another
-    // arm wins mid-payload (see issue + production diagnostics).
-    let mut framed_reader = connection::FramedReader::spawn(reader, 16);
 
     // Idle peer timeout: disconnect peers that stop sending inbound frames.
     // This is the safety net for orphaned connections where the remote process
@@ -236,7 +261,7 @@ where
             }
 
             // Incoming message from this client (cancel-safe via FramedReader actor)
-            maybe_frame = framed_reader.recv() => {
+            maybe_frame = next_peer_frame(&mut deferred_frames, &mut framed_reader) => {
                 let frame = match maybe_frame {
                     Some(Ok(frame)) => frame,
                     Some(Err(e)) => return Err(e.into()),

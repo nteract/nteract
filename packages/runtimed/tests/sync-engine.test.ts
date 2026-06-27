@@ -647,6 +647,49 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("emits initial file-load changesets immediately while load is streaming", () => {
+      const streamingInteractiveStatus: SessionStatus = {
+        notebook_doc: "interactive",
+        runtime_state: "syncing",
+        initial_load: { phase: "streaming" },
+      };
+      const changesets: CellChangeset[] = [
+        {
+          changed: [],
+          added: ["c1", "c2", "c3"],
+          removed: [],
+          order_changed: true,
+        },
+        {
+          changed: [],
+          added: ["c4", "c5", "c6"],
+          removed: [],
+          order_changed: true,
+        },
+      ];
+      let callCount = 0;
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return [sessionStatusEvent(streamingInteractiveStatus)];
+        }
+        return [syncAppliedEvent({ changed: true, changeset: changesets[callCount - 2] })];
+      });
+
+      const engine = createEngine();
+      engine.start();
+
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+
+      transport.deliver(Array.from([0x07, 1]));
+      transport.deliver(Array.from([0x00, 2]));
+      transport.deliver(Array.from([0x00, 3]));
+
+      expect(emissions).toEqual(changesets);
+      engine.stop();
+    });
+
     it("emits separately for frames in different coalescing windows", () => {
       let callCount = 0;
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {

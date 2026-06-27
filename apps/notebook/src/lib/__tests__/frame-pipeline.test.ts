@@ -5,7 +5,11 @@ import {
   type ChangedFields,
   mergeChangesets,
 } from "../cell-changeset";
-import { type MaterializeDeps, materializeChangeset } from "../frame-pipeline";
+import {
+  type MaterializeDeps,
+  materializeChangeset,
+  publishProgressiveInitialStructureSlice,
+} from "../frame-pipeline";
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
@@ -21,6 +25,7 @@ const structureProjectionCalls: Array<{
 
 vi.mock("../notebook-cells", () => ({
   getCellById: (id: string) => cellStore.get(id) ?? null,
+  getCellIdsSnapshot: () => [...cellStore.keys()],
   updateCellById: (
     id: string,
     fn: (prev: Record<string, unknown>) => Record<string, unknown>,
@@ -654,6 +659,118 @@ describe("materializeChangeset", () => {
     expect(cellStore.get("inserted")).toMatchObject({
       id: "inserted",
       source: "new source",
+    });
+  });
+
+  it("can publish a leading structural slice before the final projection", async () => {
+    const handle = createMockHandle(
+      {
+        c1: { source: "one" },
+        c2: { source: "two" },
+        c3: { source: "three" },
+        c4: { source: "four" },
+        c5: { source: "five" },
+      },
+      ["c1", "c2", "c3", "c4", "c5"],
+    );
+    const deps = {
+      ...createDeps(handle),
+      progressiveStructuralBatchSize: 3,
+    };
+
+    await materializeChangeset(
+      {
+        changed: [],
+        added: ["c3", "c1", "c5", "c2", "c4"],
+        removed: [],
+        order_changed: true,
+      },
+      deps,
+    );
+
+    expect(deps.materializeCells).not.toHaveBeenCalled();
+    expect(structureProjectionCalls).toHaveLength(2);
+    expect(structureProjectionCalls[0]).toMatchObject({
+      orderedCellIds: ["c1", "c2", "c3"],
+      upsertedCells: [
+        { id: "c1", source: "one" },
+        { id: "c2", source: "two" },
+        { id: "c3", source: "three" },
+      ],
+    });
+    expect(structureProjectionCalls[1]).toMatchObject({
+      orderedCellIds: ["c1", "c2", "c3", "c4", "c5"],
+      upsertedCells: [
+        { id: "c1", source: "one" },
+        { id: "c2", source: "two" },
+        { id: "c3", source: "three" },
+        { id: "c4", source: "four" },
+        { id: "c5", source: "five" },
+      ],
+    });
+  });
+
+  it("does not shrink an already-populated initial streaming projection", async () => {
+    cellStore.set("c1", { id: "c1", source: "one" });
+    cellStore.set("c2", { id: "c2", source: "two" });
+    cellStore.set("c3", { id: "c3", source: "three" });
+
+    const handle = createMockHandle(
+      {
+        c1: { source: "one" },
+        c2: { source: "two" },
+        c3: { source: "three" },
+        c4: { source: "four" },
+        c5: { source: "five" },
+      },
+      ["c1", "c2", "c3", "c4", "c5"],
+    );
+    const deps = {
+      ...createDeps(handle),
+      progressiveStructuralBatchSize: 3,
+    };
+
+    await materializeChangeset(
+      {
+        changed: [],
+        added: ["c4", "c5"],
+        removed: [],
+        order_changed: true,
+      },
+      deps,
+    );
+
+    expect(structureProjectionCalls).toHaveLength(1);
+    expect(structureProjectionCalls[0]).toMatchObject({
+      orderedCellIds: ["c1", "c2", "c3", "c4", "c5"],
+    });
+  });
+
+  it("publishes an initial structural slice before full materialization", async () => {
+    const handle = createMockHandle(
+      {
+        c1: { source: "one" },
+        c2: { source: "two" },
+        c3: { source: "three" },
+        c4: { source: "four" },
+      },
+      ["c1", "c2", "c3", "c4"],
+    );
+
+    const published = await publishProgressiveInitialStructureSlice(handle, {
+      outputCache: new Map(),
+      progressiveStructuralBatchSize: 3,
+    });
+
+    expect(published).toBe(true);
+    expect(structureProjectionCalls).toHaveLength(1);
+    expect(structureProjectionCalls[0]).toMatchObject({
+      orderedCellIds: ["c1", "c2", "c3"],
+      upsertedCells: [
+        { id: "c1", source: "one" },
+        { id: "c2", source: "two" },
+        { id: "c3", source: "three" },
+      ],
     });
   });
 
