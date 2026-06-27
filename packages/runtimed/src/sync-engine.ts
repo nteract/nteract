@@ -110,6 +110,10 @@ function formatSessionStatus(status: SessionStatus): string {
   return `notebook=${status.notebook_doc} runtime=${status.runtime_state} load=${initialLoadPhaseName(status.initial_load)}`;
 }
 
+function isInitialLoadStreamingStatus(status: SessionStatus | null): boolean {
+  return status?.initial_load.phase === "streaming";
+}
+
 // ── Comm state helpers ───────────────────────────────────────────────
 
 /**
@@ -659,7 +663,12 @@ export class SyncEngine {
                   "[sync-engine] sync_applied with change but no changeset (full materialization needed)",
                 );
               }
-              materialize$.next(cs ?? null);
+              if (isInitialLoadStreamingStatus(this.latestSessionStatus)) {
+                log.debug("[sync-engine] streaming load changeset emitted without coalescing");
+                this._cellChanges$.next(cs ?? null);
+              } else {
+                materialize$.next(cs ?? null);
+              }
               this._notebookDocChanged$.next();
             }
             this.emitExecutionViewChanges(e.execution_view_changeset);

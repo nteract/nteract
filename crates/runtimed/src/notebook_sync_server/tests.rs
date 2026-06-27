@@ -255,6 +255,37 @@ where
     }
 }
 
+async fn write_numbered_notebook(path: &Path, count: usize) {
+    let cells: Vec<serde_json::Value> = (0..count)
+        .map(|index| {
+            serde_json::json!({
+                "cell_type": "code",
+                "execution_count": null,
+                "id": format!("cell-{index}"),
+                "metadata": {},
+                "outputs": [],
+                "source": format!("print({index})\n"),
+            })
+        })
+        .collect();
+    let notebook = serde_json::json!({
+        "cells": cells,
+        "metadata": {
+            "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3",
+            },
+            "language_info": {"name": "python"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    });
+    tokio::fs::write(path, serde_json::to_vec(&notebook).unwrap())
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn notebook_doc_interactive_waits_for_initial_sync_convergence() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -303,6 +334,10 @@ async fn notebook_doc_interactive_waits_for_initial_sync_convergence() {
             .await
         })
     };
+
+    connection::send_typed_frame(&mut client_writer, NotebookFrameType::Presence, b"{}")
+        .await
+        .unwrap();
 
     let mut client_doc =
         notebook_doc::NotebookDoc::bootstrap(notebook_doc::TextEncoding::Utf16CodeUnit, "mcp:test");
@@ -368,6 +403,272 @@ async fn notebook_doc_interactive_waits_for_initial_sync_convergence() {
     .unwrap();
 
     recv_until_notebook_doc_interactive(&mut client_reader).await;
+
+    drop(client_writer);
+    drop(client_reader);
+    server_task.abort();
+    let _ = server_task.await;
+}
+
+#[tokio::test]
+async fn file_backed_initial_load_applies_buffered_replies_before_ready() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let load_path = tmp.path().join("seven-cells.ipynb");
+    write_numbered_notebook(&load_path, 7).await;
+
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        Some(load_path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let identity = RoomConnectionIdentity::local(Some("mcp:test".to_string()))
+        .await
+        .unwrap();
+    let notebook_id = room.id.to_string();
+    let (client_io, server_io) = tokio::io::duplex(1024 * 1024);
+    let (server_reader, server_writer) = tokio::io::split(server_io);
+    let (mut client_reader, mut client_writer) = tokio::io::split(client_io);
+
+    let server_task = {
+        let room = room.clone();
+        let daemon = daemon.clone();
+        let load_path = load_path.clone();
+        tokio::spawn(async move {
+            super::peer_loop::run_sync_loop_v2(
+                server_reader,
+                server_writer,
+                &room,
+                rooms,
+                notebook_id,
+                daemon,
+                Some(load_path.as_path()),
+                "mcp-peer",
+                &identity,
+                notebook_protocol::connection::PROTOCOL_VERSION,
+            )
+            .await
+        })
+    };
+
+    let mut client_doc =
+        notebook_doc::NotebookDoc::bootstrap(notebook_doc::TextEncoding::Utf16CodeUnit, "mcp:test");
+    let mut client_state = sync::State::new();
+    let mut observed_counts = Vec::new();
+    let mut last_count = 0usize;
+    let mut saw_ready = false;
+
+    while !saw_ready {
+        let frame = recv_typed_frame_or_timeout(
+            &mut client_reader,
+            std::time::Duration::from_secs(2),
+            "streaming load frame",
+        )
+        .await
+        .expect("daemon should keep sending bootstrap frames");
+
+        match frame.frame_type {
+            NotebookFrameType::AutomergeSync => {
+                let message = sync::Message::decode(&frame.payload).expect("valid sync message");
+                client_doc
+                    .receive_sync_message_recovering(
+                        &mut client_state,
+                        message,
+                        "test-streaming-load-sync",
+                    )
+                    .unwrap();
+                let count = client_doc.cell_count();
+                if count != last_count {
+                    observed_counts.push(count);
+                    last_count = count;
+                }
+                if let Some(reply) = client_doc
+                    .generate_sync_message_recovering(
+                        &mut client_state,
+                        "test-streaming-load-reply",
+                    )
+                    .unwrap()
+                {
+                    connection::send_typed_frame(
+                        &mut client_writer,
+                        NotebookFrameType::AutomergeSync,
+                        &reply.encode(),
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
+            NotebookFrameType::SessionControl => {
+                if decode_sync_status(&frame).is_some_and(|status| {
+                    status.initial_load == notebook_protocol::protocol::InitialLoadPhaseWire::Ready
+                }) {
+                    saw_ready = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(client_doc.cell_count(), 7);
+    assert!(
+        observed_counts.iter().any(|count| *count < 7),
+        "client should observe at least one partial load before Ready, got {observed_counts:?}"
+    );
+    assert_eq!(
+        observed_counts.last().copied(),
+        Some(7),
+        "client should converge before Ready when replies are already buffered"
+    );
+
+    drop(client_writer);
+    drop(client_reader);
+    server_task.abort();
+    let _ = server_task.await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn file_backed_initial_load_reaches_ready_without_streaming_replies() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let load_path = tmp.path().join("eleven-cells.ipynb");
+    write_numbered_notebook(&load_path, 11).await;
+
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        Some(load_path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let identity = RoomConnectionIdentity::local(Some("mcp:test".to_string()))
+        .await
+        .unwrap();
+    let notebook_id = room.id.to_string();
+    let (client_io, server_io) = tokio::io::duplex(1024 * 1024);
+    let (server_reader, server_writer) = tokio::io::split(server_io);
+    let (mut client_reader, mut client_writer) = tokio::io::split(client_io);
+
+    let server_task = {
+        let room = room.clone();
+        let daemon = daemon.clone();
+        let load_path = load_path.clone();
+        tokio::spawn(async move {
+            super::peer_loop::run_sync_loop_v2(
+                server_reader,
+                server_writer,
+                &room,
+                rooms,
+                notebook_id,
+                daemon,
+                Some(load_path.as_path()),
+                "mcp-peer",
+                &identity,
+                notebook_protocol::connection::PROTOCOL_VERSION,
+            )
+            .await
+        })
+    };
+
+    let queued_notebook_syncs = tokio::time::timeout(std::time::Duration::from_millis(24), async {
+        let mut sync_payloads = Vec::new();
+        loop {
+            let frame = connection::recv_typed_frame(&mut client_reader)
+                .await
+                .expect("daemon frame read should succeed")
+                .expect("daemon should keep bootstrap connection open");
+            match frame.frame_type {
+                NotebookFrameType::AutomergeSync => sync_payloads.push(frame.payload),
+                NotebookFrameType::SessionControl => {
+                    if decode_sync_status(&frame).is_some_and(|status| {
+                        status.initial_load
+                            == notebook_protocol::protocol::InitialLoadPhaseWire::Ready
+                    }) {
+                        return sync_payloads;
+                    }
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("file load should reach Ready without waiting for 25ms streaming reply drains");
+
+    assert_eq!(
+        room.doc.read().await.cell_count(),
+        11,
+        "daemon doc should finish loading before any client sync reply"
+    );
+
+    let mut client_doc =
+        notebook_doc::NotebookDoc::bootstrap(notebook_doc::TextEncoding::Utf16CodeUnit, "mcp:test");
+    let mut client_state = sync::State::new();
+    for payload in queued_notebook_syncs {
+        let message = sync::Message::decode(&payload).expect("valid sync message");
+        client_doc
+            .receive_sync_message_recovering(&mut client_state, message, "test-no-reply-sync")
+            .unwrap();
+    }
+
+    if let Some(reply) = client_doc
+        .generate_sync_message_recovering(&mut client_state, "test-delayed-reply")
+        .unwrap()
+    {
+        connection::send_typed_frame(
+            &mut client_writer,
+            NotebookFrameType::AutomergeSync,
+            &reply.encode(),
+        )
+        .await
+        .unwrap();
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while client_doc.cell_count() < 11 {
+            let frame = connection::recv_typed_frame(&mut client_reader)
+                .await
+                .expect("daemon frame read should succeed")
+                .expect("daemon should keep connection open until convergence");
+            if frame.frame_type != NotebookFrameType::AutomergeSync {
+                continue;
+            }
+
+            let message = sync::Message::decode(&frame.payload).expect("valid sync message");
+            client_doc
+                .receive_sync_message_recovering(
+                    &mut client_state,
+                    message,
+                    "test-delayed-convergence-sync",
+                )
+                .unwrap();
+            if let Some(reply) = client_doc
+                .generate_sync_message_recovering(
+                    &mut client_state,
+                    "test-delayed-convergence-reply",
+                )
+                .unwrap()
+            {
+                connection::send_typed_frame(
+                    &mut client_writer,
+                    NotebookFrameType::AutomergeSync,
+                    &reply.encode(),
+                )
+                .await
+                .unwrap();
+            }
+        }
+    })
+    .await
+    .expect("client should converge after its delayed sync reply");
+
+    assert_eq!(client_doc.cell_count(), 11);
 
     drop(client_writer);
     drop(client_reader);

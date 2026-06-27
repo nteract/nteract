@@ -1,7 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
+use super::peer_notebook_sync::{apply_notebook_doc_frame, finish_notebook_doc_frame};
 use super::*;
 use base64::Engine as _;
+use notebook_protocol::connection::TypedNotebookFrame;
 
 pub(crate) struct ParsedIpynbCells {
     pub cells: Vec<CellSnapshot>,
@@ -594,28 +596,62 @@ pub(crate) fn fallback_output_with_id(output: &serde_json::Value) -> serde_json:
     fallback
 }
 
-/// Placeholder for draining incoming sync replies during streaming load.
+pub(crate) struct StreamingLoadFrameDrain<'a> {
+    pub(crate) framed_reader: &'a mut connection::FramedReader,
+    pub(crate) deferred_frames: &'a mut VecDeque<TypedNotebookFrame>,
+    pub(crate) connection_identity: &'a RoomConnectionIdentity,
+}
+
+/// Drain client frames while streaming the initial file-backed notebook.
 ///
-/// In theory, the client sends sync replies after each batch and we should
-/// drain them to prevent socket buffer deadlock. In practice:
-///
-/// 1. `recv_typed_frame` uses `read_exact` internally, which is NOT
-///    cancellation-safe. Wrapping it in `tokio::time::timeout` risks
-///    cancelling mid-frame, leaving the stream desynchronized.
-/// 2. With release-mode load times (~56ms for 50 cells), the OS socket
-///    buffer (typically 64KB+) easily absorbs the client's sync replies.
-/// 3. Non-sync frames (requests) would be silently dropped.
-///
-/// The sync replies are processed normally once the main select loop starts
-/// after streaming completes.
-async fn drain_incoming_frames<R>(
-    _reader: &mut R,
-    _room: &NotebookRoom,
-    _peer_state: &mut sync::State,
-) where
-    R: AsyncRead + Unpin,
+/// This is intentionally non-blocking. Real browser/Tauri clients do not answer
+/// these sync frames until their bootstrap path releases queued daemon frames,
+/// so waiting after every batch just adds fixed latency to small notebooks.
+/// Clients that can reply immediately still get their already-buffered frames
+/// applied before the next batch.
+async fn drain_buffered_incoming_frames<W>(
+    drain: &mut StreamingLoadFrameDrain<'_>,
+    writer: &mut W,
+    room: &NotebookRoom,
+    peer_state: &mut sync::State,
+) -> Result<bool, String>
+where
+    W: AsyncWrite + Unpin,
 {
-    // No-op. See doc comment above.
+    // Give the dedicated FramedReader task one scheduling turn to move bytes
+    // that are already available from the socket into its mpsc queue. This is a
+    // cooperative yield, not an I/O wait.
+    tokio::task::yield_now().await;
+
+    let mut consumed_notebook_doc_frame = false;
+    loop {
+        let Some(frame) = drain.framed_reader.try_recv() else {
+            break;
+        };
+        let frame = frame.map_err(|e| format!("Failed to read streaming-load reply: {e}"))?;
+
+        if frame.frame_type != NotebookFrameType::AutomergeSync {
+            drain.deferred_frames.push_back(frame);
+            continue;
+        }
+
+        consumed_notebook_doc_frame = true;
+
+        let (effects, reply_encoded) =
+            apply_notebook_doc_frame(room, peer_state, drain.connection_identity, &frame.payload)
+                .await
+                .map_err(|e| format!("Failed to apply streaming-load sync reply: {e}"))?;
+
+        if let Some(encoded) = reply_encoded {
+            connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded)
+                .await
+                .map_err(|e| format!("Failed to send streaming-load sync reply: {e}"))?;
+        }
+
+        finish_notebook_doc_frame(room, effects).await;
+    }
+
+    Ok(consumed_notebook_doc_frame)
 }
 
 /// Stream notebook cells into the Automerge doc in batches, sending sync
@@ -627,16 +663,15 @@ async fn drain_incoming_frames<R>(
 ///
 /// The caller must have already won `room.try_start_loading()` and must call
 /// `room.finish_loading()` after this returns (success or failure).
-pub(crate) async fn streaming_load_cells<R, W>(
-    reader: &mut R,
+pub(crate) async fn streaming_load_cells<W>(
     writer: &mut W,
     room: &NotebookRoom,
     path: &Path,
     execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
     peer_state: &mut sync::State,
+    mut frame_drain: Option<StreamingLoadFrameDrain<'_>>,
 ) -> Result<usize, String>
 where
-    R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     let start = std::time::Instant::now();
@@ -809,8 +844,11 @@ where
         let _ = room.broadcasts.changed_tx.send(());
         // RuntimeStateDoc notification is automatic via with_doc heads check
 
-        // Drain incoming sync replies to prevent deadlock
-        drain_incoming_frames(reader, room, peer_state).await;
+        // Apply any already-buffered client sync replies. Do not block here:
+        // browser bootstrap normally cannot reply until after initial load.
+        if let Some(drain) = frame_drain.as_mut() {
+            let _ = drain_buffered_incoming_frames(drain, writer, room, peer_state).await?;
+        }
 
         batch_num += 1;
         debug!(
@@ -842,7 +880,9 @@ where
                 .map_err(|e| format!("Failed to send metadata sync: {}", e))?;
         }
         let _ = room.broadcasts.changed_tx.send(());
-        drain_incoming_frames(reader, room, peer_state).await;
+        if let Some(drain) = frame_drain.as_mut() {
+            let _ = drain_buffered_incoming_frames(drain, writer, room, peer_state).await?;
+        }
     }
 
     info!(

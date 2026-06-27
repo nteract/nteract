@@ -1,13 +1,19 @@
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 
 use automerge::sync;
-use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(test)]
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
 use tracing::{info, warn};
 
-use notebook_protocol::connection::{self, NotebookFrameType};
+use notebook_protocol::connection::{self, NotebookFrameType, TypedNotebookFrame};
 
-use super::{streaming_load_cells, NotebookRoom, STATE_SYNC_COMPACT_THRESHOLD};
+use super::{
+    streaming_load_cells, NotebookRoom, RoomConnectionIdentity, StreamingLoadFrameDrain,
+    STATE_SYNC_COMPACT_THRESHOLD,
+};
 
 pub(crate) async fn send_session_status<W>(
     writer: &mut W,
@@ -44,7 +50,7 @@ pub(crate) struct InitialSyncState {
 }
 
 impl InitialSyncState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             peer_state: sync::State::new(),
         }
@@ -130,8 +136,9 @@ where
 /// The caller passes `peer_state` from the initial notebook-doc sync so each
 /// streamed batch can produce deltas from the same baseline.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) async fn stream_initial_load<R, W>(
-    reader: &mut R,
+    _reader: &mut R,
     writer: &mut W,
     room: &Arc<NotebookRoom>,
     needs_load: Option<&Path>,
@@ -146,6 +153,74 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    stream_initial_load_inner(
+        writer,
+        room,
+        needs_load,
+        execution_store_dir,
+        peer_state,
+        notebook_doc_phase,
+        runtime_state_phase,
+        initial_load_phase,
+        client_protocol_version,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn stream_initial_load_with_frame_drain<W>(
+    framed_reader: &mut connection::FramedReader,
+    writer: &mut W,
+    deferred_frames: &mut VecDeque<TypedNotebookFrame>,
+    room: &Arc<NotebookRoom>,
+    needs_load: Option<&Path>,
+    execution_store_dir: &Path,
+    peer_state: &mut sync::State,
+    notebook_doc_phase: notebook_protocol::protocol::NotebookDocPhaseWire,
+    runtime_state_phase: notebook_protocol::protocol::RuntimeStatePhaseWire,
+    initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
+    client_protocol_version: u8,
+    connection_identity: &RoomConnectionIdentity,
+) -> anyhow::Result<notebook_protocol::protocol::InitialLoadPhaseWire>
+where
+    W: AsyncWrite + Unpin,
+{
+    stream_initial_load_inner(
+        writer,
+        room,
+        needs_load,
+        execution_store_dir,
+        peer_state,
+        notebook_doc_phase,
+        runtime_state_phase,
+        initial_load_phase,
+        client_protocol_version,
+        Some(StreamingLoadFrameDrain {
+            framed_reader,
+            deferred_frames,
+            connection_identity,
+        }),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stream_initial_load_inner<W>(
+    writer: &mut W,
+    room: &Arc<NotebookRoom>,
+    needs_load: Option<&Path>,
+    execution_store_dir: &Path,
+    peer_state: &mut sync::State,
+    notebook_doc_phase: notebook_protocol::protocol::NotebookDocPhaseWire,
+    runtime_state_phase: notebook_protocol::protocol::RuntimeStatePhaseWire,
+    initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
+    client_protocol_version: u8,
+    frame_drain: Option<StreamingLoadFrameDrain<'_>>,
+) -> anyhow::Result<notebook_protocol::protocol::InitialLoadPhaseWire>
+where
+    W: AsyncWrite + Unpin,
+{
     let Some(load_path) = needs_load else {
         return Ok(initial_load_phase);
     };
@@ -158,12 +233,12 @@ where
     let execution_store =
         runtimed_client::execution_store::ExecutionStore::new(execution_store_dir.to_path_buf());
     match streaming_load_cells(
-        reader,
         writer,
         room,
         load_path,
         Some(&execution_store),
         peer_state,
+        frame_drain,
     )
     .await
     {
