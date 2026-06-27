@@ -536,6 +536,23 @@ describe("startNotebookSyncStoreBridge", () => {
     bridge.stop();
   });
 
+  it("does not report repeated bootstrap timeouts without progress or reset", async () => {
+    vi.useFakeTimers();
+    const onBootstrapTimeout = vi.fn();
+    const { bridge, subjects } = startBridge({
+      bootstrapTimeoutMs: 1_000,
+      onBootstrapTimeout,
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    subjects.sessionStatus$.next(readyStatus());
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(onBootstrapTimeout).toHaveBeenCalledTimes(1);
+
+    bridge.stop();
+  });
+
   it("clears the bootstrap timeout when initial sync completes", async () => {
     vi.useFakeTimers();
     const onBootstrapTimeout = vi.fn();
