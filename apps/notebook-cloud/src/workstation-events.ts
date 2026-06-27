@@ -1,14 +1,14 @@
-import type { DurableObjectState, Env } from "./cloudflare-types.ts";
+import type { CloudflareWebSocket, DurableObjectState, Env } from "./cloudflare-types.ts";
+import type { WebSocketRequestResponsePair } from "./cloudflare-types.ts";
 import { cloudLog } from "./observability.ts";
 
-const WORKSTATION_EVENTS_KEEPALIVE_MS = 25_000;
+export const WORKSTATION_EVENTS_PING = "nteract.workstation_events.ping.v1";
+export const WORKSTATION_EVENTS_PONG = "nteract.workstation_events.pong.v1";
 
-interface EventListener {
-  readonly id: string;
+interface EventSocketAttachment {
+  readonly listenerId: string;
   readonly workstationId: string | null;
-  readonly writer: WritableStreamDefaultWriter<Uint8Array>;
-  closed: boolean;
-  keepalive: ReturnType<typeof setInterval> | null;
+  readonly connectedAt: string;
 }
 
 export interface WorkstationAttachJobNotification {
@@ -26,35 +26,45 @@ export function workstationEventsObjectName(ownerPrincipal: string, workstationI
 }
 
 export class WorkstationEvents {
-  private readonly encoder = new TextEncoder();
-  private readonly listeners = new Map<string, EventListener>();
-
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: Env,
   ) {
-    void this.state;
     void this.env;
+    const pairCtor = (
+      globalThis as {
+        WebSocketRequestResponsePair?: new (
+          request: string,
+          response: string,
+        ) => WebSocketRequestResponsePair;
+      }
+    ).WebSocketRequestResponsePair;
+    if (pairCtor && this.state.setWebSocketAutoResponse) {
+      this.state.setWebSocketAutoResponse(
+        new pairCtor(WORKSTATION_EVENTS_PING, WORKSTATION_EVENTS_PONG),
+      );
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/stream") {
-      return this.openStream(request);
+      return this.openSocket(request);
     }
     if (request.method === "GET" && url.pathname === "/status") {
       const workstationId = workstationIdFromUrl(url);
+      const connections = this.workstationSockets(workstationId).length;
       cloudLog("debug", "workstation.events.status", {
         workstation_id: workstationId,
-        connected: this.listeners.size > 0,
-        connections: this.listeners.size,
+        connected: connections > 0,
+        connections,
         counter: "workstation_event_status_checks",
         counter_delta: 1,
       });
       return Response.json({
         ok: true,
-        connected: this.listeners.size > 0,
-        connections: this.listeners.size,
+        connected: connections > 0,
+        connections,
       });
     }
     if (request.method === "POST" && url.pathname === "/notify") {
@@ -62,99 +72,125 @@ export class WorkstationEvents {
       if (notification instanceof Response) {
         return notification;
       }
-      await this.broadcast(notification.event, notification);
+      const delivered = this.broadcast(notification.event, notification);
       return Response.json({
         ok: true,
-        delivered: this.listeners.size,
+        delivered,
       });
     }
     return Response.json({ error: "not found" }, { status: 404 });
   }
 
-  private openStream(request: Request): Response {
-    const workstationId = workstationIdFromUrl(new URL(request.url));
-    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
-    const listener: EventListener = {
-      id: crypto.randomUUID(),
-      workstationId,
-      writer: writable.getWriter(),
-      closed: false,
-      keepalive: null,
-    };
-    const close = () => {
-      this.closeListener(listener);
-    };
-    request.signal.addEventListener("abort", close, { once: true });
+  webSocketMessage(
+    socket: CloudflareWebSocket,
+    message: string | ArrayBuffer | ArrayBufferView,
+  ): void {
+    if (message === WORKSTATION_EVENTS_PING) {
+      socket.send(WORKSTATION_EVENTS_PONG);
+    }
+  }
 
-    this.listeners.set(listener.id, listener);
-    cloudLog("info", "workstation.events.stream_opened", {
+  webSocketClose(socket: CloudflareWebSocket): void {
+    this.logSocketClosed(socket, "closed");
+  }
+
+  webSocketError(socket: CloudflareWebSocket): void {
+    this.logSocketClosed(socket, "errored");
+  }
+
+  private openSocket(request: Request): Response {
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+      return Response.json({ error: "expected WebSocket upgrade" }, { status: 426 });
+    }
+    const workstationId = workstationIdFromUrl(new URL(request.url));
+    const listenerId = crypto.randomUUID();
+    const connectedAt = new Date().toISOString();
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    const attachment: EventSocketAttachment = {
+      listenerId,
+      workstationId,
+      connectedAt,
+    };
+
+    this.acceptSocket(server, attachment);
+    cloudLog("info", "workstation.events.socket_opened", {
       workstation_id: workstationId,
-      listener_id: listener.id,
-      connections: this.listeners.size,
-      counter: "workstation_event_streams_opened",
+      listener_id: listenerId,
+      connections: this.workstationSockets(workstationId).length,
+      counter: "workstation_event_sockets_opened",
       counter_delta: 1,
     });
-    void this.writeEvent(listener, "ready", {
+    this.sendEvent(server, "ready", {
       ok: true,
-      connected_at: new Date().toISOString(),
-    }).catch(close);
-    listener.keepalive = setInterval(() => {
-      void this.writeComment(listener, "keepalive").catch(close);
-    }, WORKSTATION_EVENTS_KEEPALIVE_MS);
+      connected_at: connectedAt,
+    });
 
-    return new Response(readable, {
-      status: 200,
+    return new Response(null, {
+      status: 101,
       headers: {
         "Cache-Control": "no-store",
-        "Content-Type": "text/event-stream; charset=utf-8",
       },
+      webSocket: client,
+    } as ResponseInit & { webSocket: CloudflareWebSocket });
+  }
+
+  private acceptSocket(socket: CloudflareWebSocket, attachment: EventSocketAttachment): void {
+    if (this.state.acceptWebSocket && socket.serializeAttachment) {
+      this.state.acceptWebSocket(socket, [socketTag(attachment.workstationId)]);
+      socket.serializeAttachment(attachment);
+      return;
+    }
+
+    socket.accept();
+    socket.addEventListener("message", (event) => {
+      this.webSocketMessage(socket, event.data);
+    });
+    socket.addEventListener("close", () => {
+      this.webSocketClose(socket);
+    });
+    socket.addEventListener("error", () => {
+      this.webSocketError(socket);
     });
   }
 
-  private async broadcast(event: string, data: unknown): Promise<void> {
-    await Promise.all(
-      Array.from(this.listeners.values(), async (listener) => {
-        try {
-          await this.writeEvent(listener, event, data);
-        } catch {
-          this.closeListener(listener);
-        }
-      }),
-    );
+  private broadcast(event: string, data: unknown): number {
+    let delivered = 0;
+    for (const socket of this.workstationSockets(
+      (data as { workstation_id?: unknown }).workstation_id,
+    )) {
+      if (this.sendEvent(socket, event, data)) {
+        delivered += 1;
+      }
+    }
+    return delivered;
   }
 
-  private async writeEvent(listener: EventListener, event: string, data: unknown): Promise<void> {
-    if (listener.closed) {
-      return;
+  private sendEvent(socket: CloudflareWebSocket, event: string, data: unknown): boolean {
+    try {
+      socket.send(JSON.stringify({ event, data }));
+      return true;
+    } catch {
+      socket.close(1011, "workstation event delivery failed");
+      return false;
     }
-    await listener.writer.write(this.encoder.encode(formatServerSentEvent(event, data)));
   }
 
-  private async writeComment(listener: EventListener, comment: string): Promise<void> {
-    if (listener.closed) {
-      return;
-    }
-    await listener.writer.write(this.encoder.encode(`: ${comment}\n\n`));
+  private workstationSockets(workstationId: unknown): CloudflareWebSocket[] {
+    const tag = socketTag(typeof workstationId === "string" ? workstationId : null);
+    return this.state.getWebSockets?.(tag) ?? [];
   }
 
-  private closeListener(listener: EventListener): void {
-    if (listener.closed) {
-      return;
-    }
-    listener.closed = true;
-    if (listener.keepalive) {
-      clearInterval(listener.keepalive);
-      listener.keepalive = null;
-    }
-    this.listeners.delete(listener.id);
-    cloudLog("info", "workstation.events.stream_closed", {
-      workstation_id: listener.workstationId,
-      listener_id: listener.id,
-      connections: this.listeners.size,
-      counter: "workstation_event_streams_closed",
+  private logSocketClosed(socket: CloudflareWebSocket, reason: "closed" | "errored"): void {
+    const attachment = socketAttachment(socket);
+    cloudLog("info", "workstation.events.socket_closed", {
+      workstation_id: attachment?.workstationId ?? null,
+      listener_id: attachment?.listenerId ?? null,
+      reason,
+      counter: "workstation_event_sockets_closed",
       counter_delta: 1,
     });
-    void listener.writer.close().catch(() => undefined);
   }
 }
 
@@ -163,14 +199,24 @@ function workstationIdFromUrl(url: URL): string | null {
   return workstationId && workstationId.length <= 128 ? workstationId : null;
 }
 
-function formatServerSentEvent(event: string, data: unknown): string {
-  // This stream is a wakeup/presence path, not the durable attach-job log.
-  // Attach jobs live in D1 and agents recover by polling the queue after a
-  // reconnect, so we intentionally do not assign SSE ids or support
-  // Last-Event-ID replay here.
-  const payload = JSON.stringify(data);
-  const dataLines = payload.split(/\r?\n/).map((line) => `data: ${line}`);
-  return [`event: ${event}`, ...dataLines, ""].join("\n") + "\n";
+function socketTag(workstationId: string | null): string {
+  return `workstation:${workstationId ?? "unknown"}`;
+}
+
+function socketAttachment(socket: CloudflareWebSocket): EventSocketAttachment | null {
+  const value = socket.deserializeAttachment?.();
+  if (!isRecord(value)) {
+    return null;
+  }
+  const listenerId = stringField(value.listenerId);
+  if (!listenerId) {
+    return null;
+  }
+  return {
+    listenerId,
+    workstationId: stringField(value.workstationId) || null,
+    connectedAt: stringField(value.connectedAt),
+  };
 }
 
 async function readNotification(

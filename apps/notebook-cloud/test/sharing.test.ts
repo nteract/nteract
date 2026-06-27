@@ -172,7 +172,7 @@ function pendingInvite(overrides: Partial<PendingNotebookInvite> = {}): PendingN
     status: "pending",
     createdByActorLabel: "user:oidc:owner/smoke:owner",
     createdAt: "2026-05-24T11:00:00.000Z",
-    expiresAt: "2026-06-24T11:00:00.000Z",
+    expiresAt: "2026-07-24T11:00:00.000Z",
     ...overrides,
   };
 }

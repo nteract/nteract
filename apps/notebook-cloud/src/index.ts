@@ -1793,7 +1793,10 @@ async function routeWorkstationEvents(
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
   if (!env.WORKSTATION_EVENTS) {
-    return json({ error: "workstation event stream is not configured" }, 503);
+    return json({ error: "workstation event socket is not configured" }, 503);
+  }
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return json({ error: "expected WebSocket upgrade" }, 426);
   }
 
   const identity = await authenticateRequestOrResponse(request, env, {
@@ -1803,7 +1806,7 @@ async function routeWorkstationEvents(
     return identity;
   }
   if (isAnonymousViewer(identity)) {
-    return json({ error: "sign in to stream workstation events" }, 401);
+    return json({ error: "sign in to open workstation events" }, 401);
   }
 
   const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
@@ -1813,14 +1816,14 @@ async function routeWorkstationEvents(
   }
 
   const stub = workstationEventsStub(env, ownerPrincipal, workstationId);
-  const response = await stub.fetch(
+  return stub.fetch(
     new Request(
       `https://workstation-events.internal/stream?workstation_id=${encodeURIComponent(
         workstationId,
       )}`,
+      request,
     ),
   );
-  return withCors(new Response(response.body, response));
 }
 
 async function routeWorkstationAttachJobs(
@@ -2323,7 +2326,7 @@ function workstationResponseRow(
     status,
     status_message:
       status === "offline" && options.eventPresence?.connected === false
-        ? "Workstation event stream is not connected."
+        ? "Workstation event socket is not connected."
         : status === "online" && options.eventPresence?.connected === true
           ? workstation.status_message
           : status === "offline" && workstation.status === "online"
