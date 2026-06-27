@@ -1,12 +1,14 @@
 //! `RelayHandle` — transparent byte pipe between a frontend (WASM) and the daemon.
 //!
 //! Unlike [`DocHandle`](crate::DocHandle), the relay does not maintain a local
-//! Automerge document replica. It does not participate in the sync protocol —
-//! the frontend owns the sync state and the relay just forwards bytes.
+//! Automerge document replica. It does not participate in the Automerge sync
+//! protocol — the frontend owns sync state and the relay forwards bytes, plus
+//! a native presence heartbeat for desktop liveness.
 //!
 //! This eliminates the "dual sync" problem where both the relay and the WASM
 //! generate sync messages on the same daemon connection. The relay never owns
-//! bootstrap or readiness heuristics; it only forwards daemon frames.
+//! bootstrap or readiness heuristics; it only owns socket forwarding and relay
+//! liveness.
 //!
 //! ## API surface
 //!

@@ -1,14 +1,17 @@
 //! Relay task — transparent byte pipe between frontend (WASM) and daemon.
 //!
 //! Unlike the sync task, the relay does not maintain a local Automerge document.
-//! It does not participate in the sync protocol — the frontend owns the sync
-//! state and the relay just forwards bytes in both directions.
+//! It does not participate in the Automerge sync protocol — the frontend owns
+//! sync state and the relay forwards bytes in both directions, plus a native
+//! presence heartbeat so host liveness does not depend on WebKit timers.
 //!
 //! ## Select loop
 //!
-//! Two arms:
+//! Three arms:
 //! 1. **Commands** from `RelayHandle` — send requests, forward frames
 //! 2. **Incoming daemon frames** — route via pending map or pipe to frontend
+//! 3. **Heartbeat** — send a native presence heartbeat to keep live desktop
+//!    relay sockets from being mistaken for orphaned browser peers
 //!
 //! ## Request/response correlation
 //!
@@ -46,6 +49,11 @@ use notebook_protocol::protocol::{
 use crate::error::SyncError;
 use crate::relay::RelayCommand;
 
+/// Native heartbeat for relay clients (desktop/Tauri) so WebKit timer
+/// throttling cannot make a live app look idle to the daemon.
+const RELAY_HEARTBEAT_INTERVAL: Duration =
+    Duration::from_millis(notebook_doc::presence::DEFAULT_HEARTBEAT_MS);
+
 /// Configuration for the relay task.
 pub struct RelayTaskConfig {
     /// Receives commands from `RelayHandle` (send_request, forward_frame).
@@ -57,6 +65,9 @@ pub struct RelayTaskConfig {
 
     /// The notebook identifier (for logging).
     pub notebook_id: String,
+
+    #[cfg(test)]
+    pub heartbeat_interval: Option<Duration>,
 }
 
 /// A Rust-side caller awaiting a response for a specific correlation id.
@@ -80,6 +91,7 @@ where
 
     let notebook_id = &config.notebook_id;
     let mut pending: HashMap<String, PendingEntry> = HashMap::new();
+    let relay_heartbeat_interval = relay_heartbeat_interval(&config);
 
     info!("[relay] Started for {}", notebook_id);
 
@@ -92,15 +104,22 @@ where
     // BufReader stays for syscall coalescing inside the actor task.
     let buffered = tokio::io::BufReader::new(reader);
     let mut framed_reader = connection::FramedReader::spawn(buffered, 16);
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + relay_heartbeat_interval,
+        relay_heartbeat_interval,
+    );
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         enum SelectResult {
             Command(Option<RelayCommand>),
             Frame(Option<std::io::Result<connection::TypedNotebookFrame>>),
+            Heartbeat,
         }
 
         let select_result = tokio::select! {
             biased;
+            _ = heartbeat.tick() => SelectResult::Heartbeat,
             // Prioritize incoming daemon frames (sync, broadcast, presence,
             // responses) over outgoing commands. Keeping frames flowing
             // prevents head divergence; commands can wait a tick.
@@ -182,6 +201,16 @@ where
                 info!("[relay] Daemon closed connection for {}", notebook_id);
                 break;
             }
+
+            SelectResult::Heartbeat => {
+                if let Err(e) = send_relay_heartbeat(&mut writer).await {
+                    warn!(
+                        "[relay] Failed to send heartbeat for {}: {}",
+                        notebook_id, e
+                    );
+                    break;
+                }
+            }
         }
     }
 
@@ -192,6 +221,26 @@ where
     }
 
     info!("[relay] Stopped for {}", notebook_id);
+}
+
+fn relay_heartbeat_interval(_config: &RelayTaskConfig) -> Duration {
+    #[cfg(test)]
+    if let Some(interval) = _config.heartbeat_interval {
+        return interval;
+    }
+
+    RELAY_HEARTBEAT_INTERVAL
+}
+
+async fn send_relay_heartbeat<W: AsyncWrite + Unpin>(writer: &mut W) -> Result<(), SyncError> {
+    // Match the existing frontend/full-peer heartbeat identity. The daemon's
+    // idle deadline is per socket and only needs an inbound Presence frame; it
+    // is not keyed by this transient UX peer id.
+    let payload = notebook_doc::presence::encode_heartbeat("local")
+        .map_err(|e| SyncError::Protocol(format!("encode heartbeat: {e}")))?;
+    connection::send_typed_frame(writer, NotebookFrameType::Presence, &payload)
+        .await
+        .map_err(SyncError::Io)
 }
 
 /// Register a Rust-side PutBlob request in the pending map and write the binary
@@ -393,6 +442,35 @@ mod tests {
                 cmd_rx,
                 frame_tx,
                 notebook_id: "notebook-test".to_string(),
+                heartbeat_interval: None,
+            },
+            client_read,
+            client_write,
+        ));
+
+        (handle, daemon_read, daemon_write)
+    }
+
+    async fn spawn_relay_for_test_with_heartbeat_interval(
+        heartbeat_interval: Duration,
+    ) -> (
+        crate::relay::RelayHandle,
+        tokio::io::ReadHalf<tokio::io::DuplexStream>,
+        tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    ) {
+        let (client, daemon) = tokio::io::duplex(64 * 1024);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (daemon_read, daemon_write) = tokio::io::split(daemon);
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (frame_tx, _frame_rx) = mpsc::unbounded_channel();
+        let handle = crate::relay::RelayHandle::new(cmd_tx, "notebook-test".to_string());
+
+        tokio::spawn(run(
+            RelayTaskConfig {
+                cmd_rx,
+                frame_tx,
+                notebook_id: "notebook-test".to_string(),
+                heartbeat_interval: Some(heartbeat_interval),
             },
             client_read,
             client_write,
@@ -425,6 +503,29 @@ mod tests {
         )
         .await
         .expect("send response");
+    }
+
+    #[tokio::test]
+    async fn relay_task_sends_native_presence_heartbeat() {
+        let (_handle, mut daemon_read, _daemon_write) =
+            spawn_relay_for_test_with_heartbeat_interval(Duration::from_millis(5)).await;
+
+        let frame = tokio::time::timeout(
+            Duration::from_millis(100),
+            connection::recv_typed_frame(&mut daemon_read),
+        )
+        .await
+        .expect("heartbeat frame timed out")
+        .expect("read heartbeat frame")
+        .expect("heartbeat frame");
+
+        assert_eq!(frame.frame_type, NotebookFrameType::Presence);
+        let message =
+            notebook_doc::presence::decode_message(&frame.payload).expect("decode heartbeat");
+        assert!(matches!(
+            message,
+            notebook_doc::presence::PresenceMessage::Heartbeat { peer_id } if peer_id == "local"
+        ));
     }
 
     #[tokio::test]

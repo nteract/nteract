@@ -46,6 +46,8 @@ export interface NotebookSyncStoreBridgeOptions {
   refreshCanAcceptCellMutations: (handle?: NotebookHandle) => boolean;
   setIsLoading: (isLoading: boolean) => void;
   setLoadError: (loadError: string | null) => void;
+  bootstrapTimeoutMs?: number;
+  onBootstrapTimeout?: () => void;
 }
 
 export interface NotebookSyncStoreBridge {
@@ -62,13 +64,39 @@ export function startNotebookSyncStoreBridge(
   let initialLoadWasStreaming = false;
   let latestSessionStatus: SessionStatus | null = null;
   let stopped = false;
+  let bootstrapTimeout: ReturnType<typeof setTimeout> | null = null;
   const subscription = new Subscription();
+  const bootstrapTimeoutMs = options.bootstrapTimeoutMs ?? 90_000;
+
+  const clearBootstrapTimeout = () => {
+    if (bootstrapTimeout === null) return;
+    clearTimeout(bootstrapTimeout);
+    bootstrapTimeout = null;
+  };
+
+  const armBootstrapTimeout = () => {
+    clearBootstrapTimeout();
+    if (bootstrapTimeoutMs <= 0) return;
+    bootstrapTimeout = setTimeout(() => {
+      bootstrapTimeout = null;
+      if (stopped || interactiveReady) return;
+      logger.warn(
+        `[automerge-notebook] Bootstrap timed out after ${bootstrapTimeoutMs}ms before notebook became interactive`,
+      );
+      options.setLoadError(
+        "Timed out waiting for notebook sync to become interactive. Reconnecting runtime...",
+      );
+      options.setIsLoading(false);
+      options.onBootstrapTimeout?.();
+    }, bootstrapTimeoutMs);
+  };
 
   const resetReadiness = () => {
     interactiveReady = false;
     initialMaterializeDeferred = false;
     initialLoadWasStreaming = false;
     latestSessionStatus = null;
+    armBootstrapTimeout();
   };
 
   const runInitialMaterialize = () => {
@@ -139,6 +167,7 @@ export function startNotebookSyncStoreBridge(
       latestSessionStatus = status;
 
       if (isInitialLoadFailed(status.initial_load)) {
+        clearBootstrapTimeout();
         logger.warn(
           "[automerge-notebook] Initial load failed:",
           status.initial_load.reason,
@@ -170,6 +199,7 @@ export function startNotebookSyncStoreBridge(
 
   subscription.add(
     options.engine.initialSyncComplete$.subscribe(() => {
+      clearBootstrapTimeout();
       if (
         latestSessionStatus &&
         isInitialLoadStreaming(latestSessionStatus.initial_load)
@@ -255,10 +285,13 @@ export function startNotebookSyncStoreBridge(
     options.engine.poolState$.subscribe((state) => setPoolState(state)),
   );
 
+  armBootstrapTimeout();
+
   return {
     resetReadiness,
     stop() {
       stopped = true;
+      clearBootstrapTimeout();
       subscription.unsubscribe();
     },
   };

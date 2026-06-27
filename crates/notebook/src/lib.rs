@@ -2772,12 +2772,14 @@ fn is_daemon_dead_error(error: &str) -> bool {
 #[tauri::command]
 async fn reconnect_to_daemon(
     window: tauri::Window,
+    force: Option<bool>,
     app: tauri::AppHandle,
     registry: tauri::State<'_, WindowNotebookRegistry>,
     reconnect_in_progress: tauri::State<'_, ReconnectInProgress>,
     restart_in_progress: tauri::State<'_, DaemonRestartInProgress>,
 ) -> Result<(), String> {
     info!("[daemon-kernel] reconnect_to_daemon");
+    let force = force.unwrap_or(false);
 
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let sync_generation = sync_generation_for_window(&window, registry.inner())?;
@@ -2804,13 +2806,18 @@ async fn reconnect_to_daemon(
     // Helper to reset flag on all exit paths
     let reset_flag = || reconnect_in_progress.0.store(false, Ordering::SeqCst);
 
-    // Check if already connected
+    // Check if already connected. Manual recovery from a stuck bootstrap can
+    // force a fresh relay generation even when the old Rust handle is still
+    // present but the frontend never reached interactive.
     {
-        let sync_guard = notebook_sync.lock().await;
-        if sync_guard.is_some() {
+        let mut sync_guard = notebook_sync.lock().await;
+        if sync_guard.is_some() && !force {
             info!("[daemon-kernel] Already connected to daemon");
             reset_flag();
             return Ok(());
+        }
+        if sync_guard.take().is_some() {
+            info!("[daemon-kernel] Dropped existing relay handle for forced reconnect");
         }
     }
 
