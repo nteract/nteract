@@ -444,9 +444,15 @@ export function MatplotlibCanvasWidget({ modelId, className }: WidgetComponentPr
   }, []);
 
   const sendMouseEvent = useCallback(
-    (name: string, event: React.MouseEvent<HTMLCanvasElement> | React.WheelEvent<HTMLCanvasElement>) => {
+    (
+      name: string,
+      event: React.MouseEvent<HTMLCanvasElement> | React.WheelEvent<HTMLCanvasElement>,
+    ) => {
       const now = performance.now();
-      if ((name === "motion_notify" || name === "scroll") && now - throttleRef.current < panZoomThrottle) {
+      if (
+        (name === "motion_notify" || name === "scroll") &&
+        now - throttleRef.current < panZoomThrottle
+      ) {
         return;
       }
       throttleRef.current = now;
@@ -454,7 +460,11 @@ export function MatplotlibCanvasWidget({ modelId, className }: WidgetComponentPr
       const point = canvasPoint(event as React.MouseEvent<HTMLCanvasElement>);
       const ratio = ratioRef.current;
       const step =
-        name === "scroll" ? ((event as React.WheelEvent<HTMLCanvasElement>).deltaY < 0 ? 1 : -1) : undefined;
+        name === "scroll"
+          ? (event as React.WheelEvent<HTMLCanvasElement>).deltaY < 0
+            ? 1
+            : -1
+          : undefined;
       sendMessage(name, {
         x: point.x * ratio,
         y: point.y * ratio,
@@ -510,9 +520,7 @@ export function MatplotlibCanvasWidget({ modelId, className }: WidgetComponentPr
         }}
       >
         {headerVisible && (
-          <div style={{ textAlign: "center", fontSize: 12, padding: "2px 6px" }}>
-            {figureLabel}
-          </div>
+          <div style={{ textAlign: "center", fontSize: 12, padding: "2px 6px" }}>{figureLabel}</div>
         )}
         <div style={{ position: "relative", display: "inline-block", maxWidth: "100%" }}>
           <div
@@ -577,11 +585,7 @@ export function MatplotlibCanvasWidget({ modelId, className }: WidgetComponentPr
             />
           </div>
           {toolbarId && toolbarVisibleNow && (
-            <MatplotlibToolbar
-              modelId={toolbarId}
-              position={toolbarPosition}
-              overlay
-            />
+            <MatplotlibToolbar modelId={toolbarId} position={toolbarPosition} overlay />
           )}
         </div>
         {footerVisible && (
@@ -633,7 +637,9 @@ function MatplotlibToolbar({
         const [text, tooltip, image, method] = item;
         const name = typeof method === "string" ? method : "";
         if (!name) {
-          return <span key={index} style={{ width: isVertical ? 1 : 8, height: isVertical ? 8 : 1 }} />;
+          return (
+            <span key={index} style={{ width: isVertical ? 1 : 8, height: isVertical ? 8 : 1 }} />
+          );
         }
         const active = currentAction === name;
         const label = toolbarButtonLabel(name, String(text ?? image ?? name));
