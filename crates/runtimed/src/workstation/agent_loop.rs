@@ -60,6 +60,9 @@ pub const DEFAULT_HEARTBEAT_MS: u64 = 60_000;
 
 /// Cooldown applied to 429/503 responses without a usable `Retry-After`.
 const DEFAULT_RETRY_AFTER_MS: u64 = 60_000;
+/// Missing/deleted workstation rows mean this agent is stale. Back off hard
+/// instead of steadily polling a registry entry the cloud no longer accepts.
+const DEFAULT_MISSING_WORKSTATION_RETRY_AFTER_MS: u64 = 15 * 60_000;
 /// Upper bound for rate-limit cooldowns (15 minutes, like the `.mjs` agent).
 const MAX_RETRY_AFTER_MS: u64 = 15 * 60_000;
 /// Idle workstation event sockets should reconnect rather than pinning an
@@ -405,23 +408,38 @@ fn workstation_events_ws_url(http_url: &str) -> Result<String, AgentHttpError> {
 /// may be delta-seconds or an HTTP date; absent/unparseable falls back to
 /// [`DEFAULT_RETRY_AFTER_MS`]. Mirrors `retryAfterMs` in the `.mjs` agent.
 pub fn retry_after_ms(status: u16, retry_after_header: Option<&str>) -> u64 {
-    if status != 429 && status != 503 {
+    retry_after_ms_for_statuses(status, retry_after_header, &[429, 503])
+}
+
+fn retry_after_ms_for_statuses(
+    status: u16,
+    retry_after_header: Option<&str>,
+    retry_statuses: &[u16],
+) -> u64 {
+    if !retry_statuses.contains(&status) {
         return 0;
     }
     let Some(header) = retry_after_header.map(str::trim).filter(|h| !h.is_empty()) else {
-        return DEFAULT_RETRY_AFTER_MS;
+        return default_retry_after_ms(status);
     };
     if let Ok(seconds) = header.parse::<f64>() {
         if seconds.is_finite() && seconds >= 0.0 {
             return (((seconds * 1000.0).ceil()) as u64).max(1_000);
         }
-        return DEFAULT_RETRY_AFTER_MS;
+        return default_retry_after_ms(status);
     }
     if let Ok(date) = chrono::DateTime::parse_from_rfc2822(header) {
         let delta = date.timestamp_millis() - chrono::Utc::now().timestamp_millis();
         return delta.max(1_000) as u64;
     }
-    DEFAULT_RETRY_AFTER_MS
+    default_retry_after_ms(status)
+}
+
+fn default_retry_after_ms(status: u16) -> u64 {
+    match status {
+        404 | 410 => DEFAULT_MISSING_WORKSTATION_RETRY_AFTER_MS,
+        _ => DEFAULT_RETRY_AFTER_MS,
+    }
 }
 
 /// Exponential cooldown for repeated retryable failures, capped at
@@ -551,7 +569,12 @@ impl CloudApi {
             encode_path_segment(workstation_id)
         );
         let body = self
-            .execute("poll attach jobs", self.client.get(&url), &[200])
+            .execute_with_retry_statuses(
+                "poll attach jobs",
+                self.client.get(&url),
+                &[200],
+                &[404, 410, 429, 503],
+            )
             .await?;
         Ok(normalize_jobs(&body))
     }
@@ -596,7 +619,11 @@ impl CloudApi {
                     .collect();
                 return Err(AgentHttpError {
                     message: format!("connect workstation events failed: HTTP {status} {snippet}"),
-                    retry_after_ms: retry_after_ms(status, retry_after_header.as_deref()),
+                    retry_after_ms: retry_after_ms_for_statuses(
+                        status,
+                        retry_after_header.as_deref(),
+                        &[404, 410, 429, 503],
+                    ),
                     status: Some(status),
                     body,
                 });
@@ -685,6 +712,17 @@ impl CloudApi {
         request: reqwest::RequestBuilder,
         expected_statuses: &[u16],
     ) -> Result<Value, AgentHttpError> {
+        self.execute_with_retry_statuses(label, request, expected_statuses, &[429, 503])
+            .await
+    }
+
+    async fn execute_with_retry_statuses(
+        &self,
+        label: &str,
+        request: reqwest::RequestBuilder,
+        expected_statuses: &[u16],
+        retry_statuses: &[u16],
+    ) -> Result<Value, AgentHttpError> {
         let response = request
             .timeout(Duration::from_secs(30))
             .bearer_auth(&self.token)
@@ -709,7 +747,11 @@ impl CloudApi {
             .collect();
         Err(AgentHttpError {
             message: format!("{label} failed: HTTP {status} {snippet}"),
-            retry_after_ms: retry_after_ms(status, retry_after_header.as_deref()),
+            retry_after_ms: retry_after_ms_for_statuses(
+                status,
+                retry_after_header.as_deref(),
+                retry_statuses,
+            ),
             status: Some(status),
             body,
         })
@@ -2157,6 +2199,7 @@ mod tests {
         assert_eq!(retry_after_ms(200, None), 0);
         assert_eq!(retry_after_ms(429, Some("7")), 7_000);
         assert_eq!(retry_after_ms(503, None), 60_000);
+        assert_eq!(retry_after_ms(404, Some("900")), 0);
         // Sub-second hints are floored to 1s.
         assert_eq!(retry_after_ms(429, Some("0")), 1_000);
         // Unparseable headers fall back to the default.
@@ -2166,6 +2209,19 @@ mod tests {
             retry_after_ms(429, Some("Tue, 15 Nov 1994 08:12:31 GMT")),
             1_000
         );
+    }
+
+    #[test]
+    fn stale_workstation_statuses_can_back_off_selected_paths() {
+        assert_eq!(
+            retry_after_ms_for_statuses(404, Some("900"), &[404, 410, 429, 503]),
+            900_000
+        );
+        assert_eq!(
+            retry_after_ms_for_statuses(410, None, &[404, 410, 429, 503]),
+            DEFAULT_MISSING_WORKSTATION_RETRY_AFTER_MS
+        );
+        assert_eq!(retry_after_ms_for_statuses(404, None, &[429, 503]), 0);
     }
 
     #[test]

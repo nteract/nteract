@@ -6,3 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 [assets]
 directory = "./dist/plugins"
 binding = "ASSETS"
+
+[observability]
+enabled = true
+head_sampling_rate = 0.01

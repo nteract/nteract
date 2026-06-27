@@ -12,6 +12,7 @@
     "deploy:main": "node scripts/deploy-main.mjs",
     "deploy:renderer-assets": "wrangler deploy -c wrangler.renderer-assets.toml",
     "deploy:check": "curl -fsS https://preview.runt.run/api/health",
+    "ops:cloudflare:usage": "node scripts/cloudflare-usage.mjs --script nteract-notebook-cloud --script nteract-notebook-cloud-assets",
     "auth:preview:health": "node scripts/preview-auth-health.mjs",
     "pretypecheck": "cargo xtask wasm-ensure-runtime",
     "typecheck": "tsc -p tsconfig.json --noEmit",

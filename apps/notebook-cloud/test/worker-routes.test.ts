@@ -5794,6 +5794,27 @@ describe("Workstation pairing", () => {
     );
   });
 
+  it("asks stale workstation credentials to back off when polling attach jobs", async () => {
+    const env = fakeEnv();
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+
+    const poll = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-missing/attach-jobs", {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(poll.status, 404);
+    assert.equal(poll.headers.get("Retry-After"), "900");
+    assert.deepEqual(await poll.json(), {
+      error: "workstation not found",
+      code: "workstation_not_found",
+    });
+  });
+
   it("lets a paired workstation credential open the workstation event socket", async () => {
     const events = new FakeWorkstationEventsNamespace();
     const env = fakeEnv({ WORKSTATION_EVENTS: events });
@@ -5819,6 +5840,29 @@ describe("Workstation pairing", () => {
     );
     assert.equal(new URL(events.requests[0]!.url).pathname, "/stream");
     assert.equal(events.requests[0]?.upgrade, "websocket");
+  });
+
+  it("asks stale workstation credentials to back off when opening event sockets", async () => {
+    const events = new FakeWorkstationEventsNamespace();
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    const pairing = await mintPairingCode(env);
+    const token = await redeemedCredentialToken(env, pairing.code);
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-missing/events", {
+        headers: { Authorization: `Bearer ${token}`, Upgrade: "websocket" },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(response.headers.get("Retry-After"), "900");
+    assert.deepEqual(await response.json(), {
+      error: "workstation not found",
+      code: "workstation_not_found",
+    });
+    assert.equal(events.requests.length, 0);
   });
 
   it("rejects workstation event requests that are not websocket upgrades", async () => {

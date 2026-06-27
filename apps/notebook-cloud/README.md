@@ -631,6 +631,21 @@ pnpm --workspace-root exec wrangler tail nteract-notebook-cloud \
   --format pretty
 ```
 
+Check deployed Worker and Durable Object usage with:
+
+```bash
+CLOUDFLARE_ACCOUNT_ID=... \
+pnpm --dir apps/notebook-cloud run ops:cloudflare:usage -- \
+  --hours 24 \
+  --request-warn 50000 \
+  --do-duration-warn-seconds 3600
+```
+
+The main Worker serves static assets from `dist/` with asset-first routing. Do
+not enable `assets.run_worker_first=true` unless a path truly needs Worker
+logic before asset delivery; otherwise every bundle/chunk fetch becomes Worker
+execution instead of free static asset traffic.
+
 Useful events while debugging collaboration:
 
 - `room.connection.accepted` / `room.connection.closed` - peer lifecycle and
