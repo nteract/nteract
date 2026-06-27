@@ -358,6 +358,11 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
                 text = math_source.to_string();
                 copy_text = math_source.to_string();
                 children.clear();
+            } else if let Some(math_source) = bracket_display_tex(context.source, &span) {
+                kind = NodeKind::MathBlock;
+                text = math_source.to_string();
+                copy_text = math_source.to_string();
+                children.clear();
             } else {
                 kind = NodeKind::Paragraph;
             }
@@ -760,50 +765,44 @@ fn source_slice<'a>(source: &'a str, span: &SourceSpan) -> &'a str {
     source.get(span.start..span.end).unwrap_or("")
 }
 
+/// Recognizes a standalone bare TeX environment as MathJax's
+/// `processEnvironments` does: any paragraph that is entirely
+/// `\begin{X}...\end{X}` (matched name, X non-empty) routes to the host math
+/// renderer. There is no environment whitelist, so `cases`, the matrix family,
+/// `gather`, `multline`, `aligned`, `split`, `alignat`, and friends all render
+/// because they are valid once inside math mode.
 fn bare_display_tex_environment<'a>(source: &'a str, span: &SourceSpan) -> Option<&'a str> {
     let trimmed = source_slice(source, span).trim();
     let environment = tex_environment_name(trimmed)?;
-    if !is_supported_display_tex_environment(environment) {
-        return None;
-    }
     let closing = format!("\\end{{{environment}}}");
-    if trimmed.ends_with(&closing) {
-        Some(trimmed)
-    } else {
-        None
-    }
+    trimmed
+        .ends_with(&closing)
+        .then_some(trimmed)
+        .filter(|value| *value != closing)
+}
+
+/// Recognizes a standalone `\[...\]` display-math paragraph the way MathJax's
+/// tex2jax does. markdown-rs treats `\[` and `\]` as backslash escapes (the `\`
+/// is dropped from the parsed text), so we read the raw source span and check
+/// that the paragraph is entirely a single balanced `\[...\]` block. The first
+/// `\]` must be the closing delimiter; prose after it (`\[ x \] after \]`)
+/// stays a paragraph because the block is not standalone.
+fn bracket_display_tex<'a>(source: &'a str, span: &SourceSpan) -> Option<&'a str> {
+    let trimmed = source_slice(source, span).trim();
+    let after_open = trimmed.strip_prefix("\\[")?;
+    // The first `\]` closes the display region.
+    let close_rel = after_open.find("\\]")?;
+    let inner = after_open[..close_rel].trim();
+    let after_close = &after_open[close_rel + "\\]".len()..];
+    // Nothing but whitespace may follow the closing `\]`.
+    (!inner.is_empty() && after_close.trim().is_empty()).then_some(inner)
 }
 
 fn tex_environment_name(source: &str) -> Option<&str> {
     let rest = source.strip_prefix("\\begin{")?;
     let end = rest.find('}')?;
     let environment = &rest[..end];
-    if environment.is_empty() {
-        None
-    } else {
-        Some(environment)
-    }
-}
-
-fn is_supported_display_tex_environment(environment: &str) -> bool {
-    matches!(
-        environment,
-        "align"
-            | "align*"
-            | "aligned"
-            | "alignedat"
-            | "alignedat*"
-            | "array"
-            | "equation"
-            | "equation*"
-            | "eqnarray"
-            | "eqnarray*"
-            | "gather"
-            | "gather*"
-            | "multline"
-            | "multline*"
-            | "split"
-    )
+    (!environment.is_empty()).then_some(environment)
 }
 
 #[cfg(test)]
@@ -928,6 +927,78 @@ mod tests {
         assert_eq!(plan.blocks.len(), 1);
         assert_eq!(plan.blocks[0].kind, NodeKind::Paragraph);
         assert!(contains_kind(&plan.blocks[0], NodeKind::Text));
+    }
+
+    #[test]
+    fn projects_jupyter_matrix_cases_and_family_as_math_blocks() {
+        // #3834: MathJax's `processEnvironments` renders any bare
+        // `\begin{X}...\end{X}` as display math, so the matrix family, `cases`,
+        // `gather`, `multline`, `aligned`, and `alignat` all render without an
+        // environment whitelist. KaTeX handles each once it is in math mode.
+        let environments = [
+            (
+                "cases",
+                "\\begin{cases}\nx & \\text{if } x \\ge 0 \\\\\n-x & \\text{otherwise}\n\\end{cases}",
+            ),
+            (
+                "pmatrix",
+                "\\begin{pmatrix}\n\\cos\\theta & -\\sin\\theta \\\\\n\\sin\\theta & \\cos\\theta\n\\end{pmatrix}",
+            ),
+            ("bmatrix", "\\begin{bmatrix}a & b \\\\ c & d\\end{bmatrix}"),
+            ("vmatrix", "\\begin{vmatrix}a & b \\\\ c & d\\end{vmatrix}"),
+            ("matrix", "\\begin{matrix}a & b \\\\ c & d\\end{matrix}"),
+            ("gather", "\\begin{gather}a = b \\\\ c = d\\end{gather}"),
+            ("multline", "\\begin{multline}a \\\\ b\\end{multline}"),
+            ("aligned", "\\begin{aligned}a &= b \\\\ c &= d\\end{aligned}"),
+            ("alignat", "\\begin{alignat}{2}a &= b \\\\ c &= d\\end{alignat}"),
+        ];
+
+        for (name, source) in environments {
+            let plan = project_markdown(source).unwrap_or_else(|_| panic!("{name} projected"));
+            assert_eq!(plan.blocks.len(), 1, "{name} produced one block");
+            assert_eq!(plan.blocks[0].kind, NodeKind::MathBlock, "{name} is math");
+            assert_eq!(
+                plan.blocks[0].fallback.copy_text, source,
+                "{name} text intact"
+            );
+        }
+    }
+
+    #[test]
+    fn projects_unknown_tex_environment_as_math_for_mathjax_parity() {
+        // MathJax does not keep an environment whitelist; any balanced bare
+        // environment routes to the renderer. This documents that intentional
+        // widening from the #3377 curated set.
+        let plan = project_markdown("\\begin{notreal}\nbody\n\\end{notreal}").unwrap();
+
+        assert_eq!(plan.blocks.len(), 1);
+        assert_eq!(plan.blocks[0].kind, NodeKind::MathBlock);
+        assert_eq!(
+            plan.blocks[0].fallback.copy_text,
+            "\\begin{notreal}\nbody\n\\end{notreal}"
+        );
+    }
+
+    #[test]
+    fn projects_display_bracket_tex_delimiters() {
+        // #3834: a standalone `\[...\]` block routes to the host math renderer
+        // the way MathJax's tex2jax handles it. markdown-rs treats `\[` / `\]`
+        // as backslash escapes (the `\` is dropped from the parsed text), so we
+        // recover the inner LaTeX from the raw source span. Inline `\(...\)` is
+        // intentionally out of scope — see issue #3834.
+        let display = project_markdown("\\[\nx = y\nz = w\n\\]").unwrap();
+        assert_eq!(display.blocks.len(), 1);
+        assert_eq!(display.blocks[0].kind, NodeKind::MathBlock);
+        assert_eq!(display.blocks[0].fallback.text, "x = y\nz = w");
+    }
+
+    #[test]
+    fn keeps_mixed_bracket_tex_delimiters_as_prose() {
+        // The #3377 constraint: mixed inline prose stays normal text even with
+        // the new delimiter. `before \[ x \] after` is not a standalone block.
+        let bracket = project_markdown("before \\[ x \\] after on one line").unwrap();
+        assert_eq!(bracket.blocks.len(), 1);
+        assert_eq!(bracket.blocks[0].kind, NodeKind::Paragraph);
     }
 
     #[test]
