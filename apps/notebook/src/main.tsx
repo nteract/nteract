@@ -15,6 +15,7 @@ import { createNotebookHost, isTauriRuntime } from "./host/create-notebook-host"
 // Register built-in widget components
 import "@/components/widgets/controls";
 import "@/components/widgets/ipycanvas";
+import "@/components/widgets/matplotlib";
 
 // Preload output components used in main bundle (via MediaRouter).
 // Note: markdown-output, html-output, svg-output are isolated-only

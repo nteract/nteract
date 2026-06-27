@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use notebook_protocol::connection::{send_typed_frame, FramedReader, NotebookFrameType};
-use notebook_protocol::protocol::RuntimeAgentResponse;
+use notebook_protocol::protocol::{NotebookBroadcast, RuntimeAgentResponse};
 use tracing::{debug, info, warn};
 
 use crate::async_outcome::{flatten_joined_result, JoinedResult};
@@ -383,6 +383,25 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                             }
                         }
                     }
+                    NotebookFrameType::Broadcast => {
+                        match forward_runtime_agent_broadcast(
+                            &room.broadcasts.kernel_broadcast_tx,
+                            &typed_frame.payload,
+                        ) {
+                            Ok(0) => {
+                                debug!(
+                                    "[notebook-sync] Runtime agent broadcast had no subscribers"
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                warn!(
+                                    "[notebook-sync] Dropping malformed runtime agent broadcast: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
                     _ => {
                         debug!("[notebook-sync] Agent sent unexpected frame type: {:?}", typed_frame.frame_type);
                     }
@@ -539,4 +558,62 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         "[notebook-sync] Runtime agent sync connection closed: {}",
         runtime_agent_id
     );
+}
+
+fn forward_runtime_agent_broadcast(
+    tx: &tokio::sync::broadcast::Sender<NotebookBroadcast>,
+    payload: &[u8],
+) -> anyhow::Result<usize> {
+    let broadcast = serde_json::from_slice::<NotebookBroadcast>(payload)?;
+    match tx.send(broadcast) {
+        Ok(receiver_count) => Ok(receiver_count),
+        Err(_) => Ok(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn forwards_runtime_agent_broadcast_to_subscriber() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let broadcast = NotebookBroadcast::Comm {
+            msg_type: "comm_msg".to_string(),
+            content: serde_json::json!({
+                "comm_id": "comm-1",
+                "data": {
+                    "method": "custom",
+                    "content": { "type": "draw" }
+                }
+            }),
+            buffers: vec![vec![1, 2, 3]],
+        };
+        let payload = serde_json::to_vec(&broadcast).expect("serialize broadcast");
+
+        let receiver_count =
+            forward_runtime_agent_broadcast(&tx, &payload).expect("forward broadcast");
+
+        assert_eq!(receiver_count, 1);
+        match rx.recv().await.expect("receive broadcast") {
+            NotebookBroadcast::Comm {
+                msg_type,
+                content,
+                buffers,
+            } => {
+                assert_eq!(msg_type, "comm_msg");
+                assert_eq!(content["comm_id"], "comm-1");
+                assert_eq!(content["data"]["content"]["type"], "draw");
+                assert_eq!(buffers, vec![vec![1, 2, 3]]);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_runtime_agent_broadcast() {
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+
+        forward_runtime_agent_broadcast(&tx, b"{not-json")
+            .expect_err("malformed broadcast must fail");
+    }
 }

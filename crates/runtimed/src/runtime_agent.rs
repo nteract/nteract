@@ -38,7 +38,7 @@ use notebook_doc::presence::PresenceState;
 use notebook_protocol::connection::{
     FrameSink, FrameSource, FrameTransport, NotebookFrameType, PackageManager, UdsFrameTransport,
 };
-use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
+use notebook_protocol::protocol::{NotebookBroadcast, RuntimeAgentRequest, RuntimeAgentResponse};
 use runtime_doc::{CommsDoc, CommsDocHandle, ExecutionState, RuntimeLifecycle, RuntimeStateDoc};
 use runtime_doc::{KernelActivity, RuntimeStateHandle};
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -140,7 +140,7 @@ struct RuntimeAgentContext {
     comms: CommsDocHandle,
     blob_store: Arc<BlobStore>,
     output_blob_publisher: OutputBlobPublisher,
-    broadcast_tx: broadcast::Sender<notebook_protocol::protocol::NotebookBroadcast>,
+    broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     presence: Arc<RwLock<PresenceState>>,
     presence_tx: broadcast::Sender<(String, Vec<u8>)>,
     runtime_agent_id: String,
@@ -450,8 +450,7 @@ where
     // -- 3. Create local infrastructure -------------------------------------
 
     let blob_store = Arc::new(BlobStore::new(blob_root.clone()));
-    let (broadcast_tx, _broadcast_rx) =
-        broadcast::channel::<notebook_protocol::protocol::NotebookBroadcast>(16);
+    let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<NotebookBroadcast>(16);
     let presence = Arc::new(RwLock::new(PresenceState::new()));
     let (presence_tx, _presence_rx) = broadcast::channel::<(String, Vec<u8>)>(16);
 
@@ -1256,6 +1255,77 @@ where
                 }
                 if let Err(e) = handle_work_command(command, &mut kernel).await {
                     warn!("[runtime-agent] Error handling work command: {}", e);
+                }
+            }
+
+            // Forward ephemeral kernel comm events to the coordinator. Durable
+            // widget state still syncs through CommsDoc; this path is for live
+            // custom messages such as ipympl draw/binary events.
+            result = broadcast_rx.recv() => {
+                match result {
+                    Ok(broadcast) => {
+                        let json = match serde_json::to_vec(&broadcast) {
+                            Ok(json) => json,
+                            Err(e) => {
+                                warn!(
+                                    "[runtime-agent] Failed to serialize kernel broadcast: {}",
+                                    e
+                                );
+                                continue;
+                            }
+                        };
+
+                        if let Err(e) = frame_sink.send_frame(
+                            NotebookFrameType::Broadcast,
+                            &json,
+                        ).await {
+                            if !transport.clean_eof_is_recoverable() {
+                                warn!(
+                                    "[runtime-agent] Closing after Broadcast send failure: {}",
+                                    e
+                                );
+                                break;
+                            }
+                            warn!(
+                                "[runtime-agent] Broadcast send failed: {} — reconnecting \
+                                 (kernel stays running)",
+                                e
+                            );
+                            drop(frame_source);
+                            match reconnect_after_writer_error(
+                                &transport,
+                                &mut last_recoverable_reconnect,
+                            ).await {
+                                Ok((new_source, new_sink)) => {
+                                    frame_source = new_source;
+                                    frame_sink = new_sink;
+                                    coordinator_sync_state = automerge::sync::State::new();
+                                    comms_sync_state = automerge::sync::State::new();
+                                    let _ = state_kick_tx.send(());
+                                    let _ = comms_kick_tx.send(());
+                                    info!("[runtime-agent] Reconnected after Broadcast send failure");
+                                    continue;
+                                }
+                                Err(reconnect_err) => {
+                                    error!(
+                                        "[runtime-agent] Reconnect failed after retries: {}",
+                                        reconnect_err
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(
+                            "[runtime-agent] Dropped {} kernel broadcasts before forwarding",
+                            n
+                        );
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        warn!("[runtime-agent] Kernel broadcast channel closed");
+                        break;
+                    }
                 }
             }
 
@@ -2343,6 +2413,9 @@ fn diff_comm_state(
             {
                 let mut delta = serde_json::Map::new();
                 for (key, after_val) in after_obj {
+                    if key == crate::matplotlib_widget::MPL_CANVAS_CHECKPOINT_KEY {
+                        continue;
+                    }
                     match before_obj.get(key) {
                         Some(before_val) if before_val == after_val => {}
                         _ => {
@@ -2680,6 +2753,40 @@ mod tests {
                 Duration::from_secs(1),
             ),
             Some(Duration::from_millis(800))
+        );
+    }
+
+    #[test]
+    fn diff_comm_state_filters_matplotlib_checkpoint_key() {
+        let mut active = HashSet::new();
+        active.insert("mpl-comm".to_string());
+
+        let before = HashMap::from([(
+            "mpl-comm".to_string(),
+            serde_json::json!({
+                "value": 1,
+            }),
+        )]);
+        let after = HashMap::from([(
+            "mpl-comm".to_string(),
+            serde_json::json!({
+                "value": 2,
+                "_nteract_mpl_canvas": {
+                    "version": 1,
+                    "frame": {
+                        "blob": "hash",
+                        "size": 10,
+                        "media_type": "image/png"
+                    }
+                }
+            }),
+        )]);
+
+        let updates = diff_comm_state(&before, &after, &active);
+
+        assert_eq!(
+            updates,
+            vec![("mpl-comm".to_string(), serde_json::json!({"value": 2}))]
         );
     }
 

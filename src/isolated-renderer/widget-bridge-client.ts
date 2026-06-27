@@ -28,12 +28,13 @@ import {
 } from "@/components/isolated/rpc-methods";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
 
-function isLocalDaemonBlobUrl(value: string): boolean {
+export function isLocalDaemonBlobUrl(value: string): boolean {
   try {
     const url = new URL(value);
+    const host = url.hostname.toLowerCase();
     return (
       (url.protocol === "http:" || url.protocol === "https:") &&
-      url.hostname === "127.0.0.1" &&
+      (host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1") &&
       url.port.length > 0 &&
       url.search === "" &&
       url.hash === "" &&

@@ -69,6 +69,7 @@ import { IframeWidgetStoreProvider } from "./widget-provider";
 // Import widget controls to register them in the widget registry
 // This import has side effects that register all built-in widgets
 import "@/components/widgets/controls";
+import "@/components/widgets/matplotlib";
 
 // --- Renderer Plugin Registry ---
 //

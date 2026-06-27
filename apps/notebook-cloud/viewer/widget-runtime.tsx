@@ -12,6 +12,7 @@ export {
   type ProjectCloudWidgetCommsOptions,
 } from "./widget-comm-projection";
 import "@/components/widgets/controls";
+import "@/components/widgets/matplotlib";
 
 export const CLOUD_WIDGET_RENDERERS = {
   [WIDGET_VIEW_MIME]: CloudWidgetViewRenderer,
