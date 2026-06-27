@@ -148,6 +148,7 @@ export function MatplotlibCanvasWidget({ modelId, className }: WidgetComponentPr
   const waitingForImageRef = useRef(false);
   const throttleRef = useRef(0);
   const imageUrlRef = useRef<string | null>(null);
+  const imageModeRef = useRef(imageMode);
 
   useEffect(() => {
     const offscreen = document.createElement("canvas");
@@ -163,6 +164,13 @@ export function MatplotlibCanvasWidget({ modelId, className }: WidgetComponentPr
   useEffect(() => {
     setRenderSize(asSize(sizeValue));
   }, [sizeValue]);
+
+  useEffect(() => {
+    imageModeRef.current = imageMode;
+    return store.subscribeToKey(modelId, "_image_mode", (value) => {
+      imageModeRef.current = typeof value === "string" ? value : "full";
+    });
+  }, [imageMode, modelId, store]);
 
   const resizeCanvases = useCallback((nextSize: CanvasSize) => {
     const ratio = ratioRef.current;
@@ -359,7 +367,9 @@ export function MatplotlibCanvasWidget({ modelId, className }: WidgetComponentPr
         }
         imageUrlRef.current = bufferToBlobUrl(first);
         const mode =
-          typeof msg._nteract_image_mode === "string" ? msg._nteract_image_mode : imageMode;
+          typeof msg._nteract_image_mode === "string"
+            ? msg._nteract_image_mode
+            : imageModeRef.current;
         loadImageUrl(imageUrlRef.current, mode);
         return;
       }
@@ -412,7 +422,7 @@ export function MatplotlibCanvasWidget({ modelId, className }: WidgetComponentPr
         if (first) URL.revokeObjectURL(href);
       }
     });
-  }, [figureLabel, imageMode, loadImageUrl, modelId, sendDrawMessage, sendMessage, store]);
+  }, [figureLabel, loadImageUrl, modelId, sendDrawMessage, sendMessage, store]);
 
   const requestResize = useCallback(
     (width: number, height: number) => {
