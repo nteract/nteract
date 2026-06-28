@@ -2046,7 +2046,7 @@ class TestDocumentFirstExecution:
 
         # Create and queue execution
         cell_id = await async_create_cell_and_wait_for_sync(
-            session, "async_queued_var = 'async_queued'"
+            session, "async_queued_var = 'async_queued'\nprint(async_queued_var)"
         )
         execution_id = await session.queue_cell(cell_id)
 
@@ -2055,17 +2055,11 @@ class TestDocumentFirstExecution:
         assert len(execution_id) == 36, f"Expected UUID (36 chars), got {len(execution_id)!r}"
         assert execution_id.count("-") == 4, f"Expected UUID format, got {execution_id!r}"
 
-        # Poll until the queued cell has executed.
-        # We verify execution by checking that a follow-up cell can read the variable.
-        import asyncio
-
-        await asyncio.sleep(2.0)  # Give the queued cell time to execute
-
-        # Verify it ran by executing another cell that uses the variable
-        cell2 = await async_create_cell_and_wait_for_sync(session, "print(async_queued_var)")
-        result = await session.execute_cell(cell2)
+        result = await session.wait_for_execution(cell_id, execution_id, timeout_secs=30.0)
 
         assert result.success
+        assert result.cell_id == cell_id
+        assert result.execution_id == execution_id
         assert "async_queued" in result.stdout
 
     async def test_async_execution_error_captured(self, session):
