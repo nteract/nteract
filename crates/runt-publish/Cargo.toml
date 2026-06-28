@@ -13,18 +13,17 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 automerge = { workspace = true }
-clap = { version = "4.5.1", features = ["derive", "env"] }
-hex = "0.4"
+clap = { workspace = true, features = ["env"] }
+hex = { workspace = true }
 notebook-doc = { path = "../notebook-doc" }
 notebook-sync = { path = "../notebook-sync" }
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
-runt-workspace = { path = "../runt-workspace" }
+reqwest = { workspace = true, features = ["json"] }
 runtimed-client = { path = "../runtimed-client" }
 runtime-doc = { path = "../runtime-doc" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.11"
-tokio = { workspace = true }
-url = "2"
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+url = { workspace = true }
 urlencoding = "2"
 uuid = { workspace = true }

@@ -11,8 +11,8 @@ workspace = true
 
 [dependencies]
 runt-workspace = { path = "../runt-workspace" }
-dirs = "6"
-log = "0.4"
+dirs = { workspace = true }
+log = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

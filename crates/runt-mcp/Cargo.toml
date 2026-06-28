@@ -12,8 +12,8 @@ workspace = true
 
 [dependencies]
 base64 = { workspace = true }
-rmcp = { version = "1.4", features = ["server", "transport-io"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+reqwest = { workspace = true, features = ["json"] }
 repr-llm = { path = "../repr-llm" }
 runtimed-client = { path = "../runtimed-client" }
 runtimed-outputs = { path = "../runtimed-outputs" }
@@ -24,20 +24,20 @@ notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
 mcp-client-branding = { path = "../mcp-client-branding" }
 runt-workspace = { path = "../runt-workspace" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
-toml = "1"
-dirs = "6"
-regex = "1"
+toml = { workspace = true }
+dirs = { workspace = true }
+regex = { workspace = true }
 fancy-regex = "0.14"
-uuid = { version = "1", features = ["v4"] }
-tracing = "0.1"
-url = "2"
+uuid = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
-chrono = "0.4"
-futures-util = "0.3"
-tempfile = "3"
-tokio-tungstenite = "0.26"
+chrono = { workspace = true }
+futures-util = { workspace = true }
+tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }

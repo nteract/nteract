@@ -24,7 +24,7 @@ name = "notebook"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { workspace = true }
 tauri = { version = "2", features = ["devtools"] }
 # Activate wry's `fullscreen` feature (Cargo feature unification) so WKWebView
 # enables the HTML5 Fullscreen API. Required for sift's fullscreen button and
@@ -38,7 +38,7 @@ tauri-plugin-window-state = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
 runtimed-client = { path = "../runtimed-client" }
 runtimed-settings-sync = { path = "../runtimed-settings-sync" }
@@ -49,15 +49,15 @@ notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }
 runt-workspace = { path = "../runt-workspace" }
 nbformat = { workspace = true }
-log = "0.4"
+log = { workspace = true }
 tauri-plugin-log = "2"
 strsim = "0.11"  # For Levenshtein distance (typosquat detection)
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-dirs = "6"
+chrono = { workspace = true, features = ["std", "clock"] }
+dirs = { workspace = true }
 rfd = "0.17"  # Native dialogs for pre-window error display
-flate2 = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
-tar = "0.4"
+flate2 = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+tar = { workspace = true }
 
 # WebDriver plugin for E2E testing
 tauri-plugin-webdriver = { version = "0.2", optional = true }
@@ -72,18 +72,18 @@ cocoa = "0.26"
 # pointer, so the windows-sys symbols are gated on the `Win32_Security` feature
 # in addition to `Win32_System_Registry` itself.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
 
 # Unix process group support for kernel cleanup
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", features = ["signal", "process"] }
+nix = { workspace = true }
 
 [features]
 default = []
 e2e-webdriver = ["tauri-plugin-webdriver"]
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 
 [build-dependencies]
 build-metadata = { path = "../build-metadata" }

@@ -10,6 +10,6 @@ publish = false
 workspace = true
 
 [dependencies]
-dirs = "6"
+dirs = { workspace = true }
 runt-workspace = { path = "../runt-workspace" }
 serde_json.workspace = true

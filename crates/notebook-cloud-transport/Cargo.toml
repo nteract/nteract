@@ -11,13 +11,13 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-futures-util = "0.3"
+futures-util = { workspace = true }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-wire = { path = "../notebook-wire" }
 serde_json = { workspace = true }
-tokio = { workspace = true }
-tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
-tracing = "0.1"
+tokio = { workspace = true, features = ["full"] }
+tokio-tungstenite = { workspace = true, features = ["native-tls"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tokio = { workspace = true, features = ["full", "test-util"] }

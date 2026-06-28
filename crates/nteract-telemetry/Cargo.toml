@@ -15,7 +15,7 @@ runtimed-settings-sync = { path = "../runtimed-settings-sync" }
 runt-workspace = { path = "../runt-workspace" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-log = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
-tokio = { workspace = true }
+log = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 uuid = { workspace = true }

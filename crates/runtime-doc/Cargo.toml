@@ -9,9 +9,9 @@ license.workspace = true
 [dependencies]
 automerge = { workspace = true }
 automerge-recovery = { path = "../automerge-recovery" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 automunge = { path = "../automunge" }
-tokio = { version = "1", features = ["sync"] }
-tracing = "0.1"
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
 thiserror = { workspace = true }

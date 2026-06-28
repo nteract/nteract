@@ -20,13 +20,13 @@ notebook-protocol = { path = "../notebook-protocol" }
 notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
 runt-workspace = { path = "../runt-workspace" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
-log = "0.4"
-dirs = "6"
+chrono = { workspace = true, features = ["std", "clock", "serde"] }
+log = { workspace = true }
+dirs = { workspace = true }
 uuid = { workspace = true }
 automerge = { workspace = true }
 automerge-recovery = { path = "../automerge-recovery" }
@@ -34,11 +34,11 @@ schemars = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
-serial_test = "3"
+tempfile = { workspace = true }
+serial_test = { workspace = true }
 
 [build-dependencies]
 build-metadata = { path = "../build-metadata" }

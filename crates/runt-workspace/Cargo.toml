@@ -7,17 +7,17 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-dirs = "6"
-hex = "0.4"
+dirs = { workspace = true }
+hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.11"
+sha2 = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

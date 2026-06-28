@@ -32,7 +32,6 @@ members = [
     "crates/mcp-supervisor",
     "crates/nteract-markdown-engine",
     "crates/nteract-markdown-wasm",
-    "crates/playdate-image",
     "crates/runt-mcp",
     "crates/runt-mcp-proxy",
     "crates/nteract-mcp",
@@ -50,24 +49,63 @@ repository = "https://github.com/nteract/nteract"
 
 [workspace.dependencies]
 anyhow = "1"
-loro_fractional_index = "=1.6.0"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid = { version = "1", features = ["serde", "v4", "v5"] }
-futures = "0.3"
-bytes = "1"
-base64 = "0.22"
-tokio = { version = "1.36.0", features = ["full"] }
-jupyter-zmq-client = { version = "1.0.0", default-features = false }
-jupyter-protocol = "2.0.1"
-nbformat = "3.0.0"
+arrow = { version = "54", default-features = false }
+arrow-cast = { version = "54", default-features = false }
+arrow-ord = { version = "54", default-features = false }
+arrow-select = { version = "54", default-features = false }
 automerge = { git = "https://github.com/nteract/automerge", rev = "992effbf859fdd5d180bb3cef4312fd41d5a43e0" }
-thiserror = "2"
-schemars = "1"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false }
+clap = { version = "4.5.1", features = ["derive"] }
+console_error_panic_hook = "0.1"
+dirs = "6"
+flate2 = "1"
+futures = "0.3"
+futures-util = "0.3"
+hex = "0.4"
+jiter = { version = "0.13", default-features = false, features = ["num-bigint"] }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+jupyter-protocol = "2.0.2"
+jupyter-zmq-client = { version = "1.0.1", default-features = false }
+libc = "0.2"
+log = "0.4"
+loro_fractional_index = "=1.6.0"
+nbformat = "3.0.0"
+nix = { version = "0.31", features = ["signal", "process"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
+parquet = { version = "54", default-features = false, features = ["arrow", "snap", "flate2", "zstd"] }
+rattler = { version = "0.40", default-features = false, features = ["native-tls"] }
+rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"] }
+rattler_conda_types = "0.44"
+rattler_repodata_gateway = { version = "0.27", default-features = false, features = ["gateway", "native-tls"] }
+rattler_solve = { version = "5.0", features = ["resolvo"] }
+rattler_virtual_packages = "2.3"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+reqwest-middleware = "0.4"
+rmcp = "1.4"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+serde_json = "1"
+serial_test = "3"
+sha2 = "0.11"
+tar = "0.4"
+tempfile = "3"
+thiserror = "2"
+tokio = "1.36.0"
+tokio-tungstenite = "0.26"
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ts-rs = { version = "12", features = ["serde-compat", "format"] }
-jiter = { version = "0.13", default-features = false, features = ["num-bigint"] }
+url = "2"
+uuid = { version = "1", features = ["serde", "v4", "v5"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-test = "0.3"
+windows-sys = "0.52"
 
 [workspace.lints.rust]
 dead_code = "warn"

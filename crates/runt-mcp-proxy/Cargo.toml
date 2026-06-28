@@ -8,13 +8,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
-rmcp = { version = "1.4", features = ["server", "client", "transport-async-rw", "transport-io"] }
-tokio = { workspace = true }
+rmcp = { workspace = true, features = ["server", "client", "transport-async-rw", "transport-io"] }
+tokio = { workspace = true, features = ["full"] }
 serde_json = { workspace = true }
-tracing = "0.1"
+tracing = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
