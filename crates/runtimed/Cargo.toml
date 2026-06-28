@@ -38,9 +38,9 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
 loro_fractional_index = { workspace = true }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-dirs = "6"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
 aho-corasick = "1"
 
 # Jupyter kernel management
@@ -48,30 +48,29 @@ jupyter-protocol = { workspace = true }
 nbformat = { workspace = true }
 jupyter-zmq-client = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 petname = "2"
-chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
-clap = { version = "4", features = ["derive"] }
+chrono = { workspace = true, features = ["std", "clock", "serde"] }
+clap = { workspace = true }
 
 # Conda environment support via rattler
-rattler = { version = "0.40", default-features = false, features = ["native-tls"] }
-rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"] }
-rattler_conda_types = "0.44"
-rattler_repodata_gateway = { version = "0.27", default-features = false, features = ["gateway", "native-tls"] }
-rattler_solve = { version = "5.0", features = ["resolvo"] }
-rattler_virtual_packages = "2.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
-reqwest-middleware = "0.4"
-tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+rattler = { workspace = true }
+rattler_cache = { workspace = true }
+rattler_conda_types = { workspace = true }
+rattler_solve = { workspace = true }
+rattler_virtual_packages = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+reqwest-middleware = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["native-tls"] }
 
 # Content-addressed blob store
-sha2 = "0.11"
-hex = "0.4"
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 # Terminal emulation for stream outputs
 alacritty_terminal = "0.25"
 
 # Error parsing
-regex = "1"
-base64 = "0.22"
+regex = { workspace = true }
+base64 = { workspace = true }
 
 # Markdown parsing for image extraction
 pulldown-cmark = "0.13"
@@ -115,23 +114,23 @@ jiter = { workspace = true }
 
 # pyproject.toml parsing for ProjectContext (handles PEP 508 specs with
 # commas inside bracket groups, which the prior line-scanner mangled).
-toml = "1"
+toml = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
-nix = { version = "0.31", features = ["signal", "process"] }
+libc = { workspace = true }
+nix = { workspace = true }
 
 [build-dependencies]
 build-metadata = { path = "../build-metadata" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [dev-dependencies]
-tempfile = "3"
-serial_test = "3"
-tokio = { version = "1.36.0", features = ["full", "test-util"] }
+tempfile = { workspace = true }
+serial_test = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 notebook-sync = { path = "../notebook-sync" }
 async-rust-lsp = "0.3"
 zeromq = "0.6"

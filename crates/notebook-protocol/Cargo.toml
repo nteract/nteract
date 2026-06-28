@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-log = "0.4"
+log = { workspace = true }
 notebook-wire = { path = "../notebook-wire" }
 nteract-identity = { path = "../nteract-identity", default-features = false, features = ["local"] }
 serde = { workspace = true }

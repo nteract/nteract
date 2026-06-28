@@ -21,9 +21,9 @@ notebook-sync = { path = "../notebook-sync" }
 runtime-doc = { path = "../runtime-doc" }
 runt-workspace = { path = "../runt-workspace" }
 nteract-predicate = { path = "../nteract-predicate" }
-arrow = { version = "54", default-features = false, features = ["ipc"] }
-parquet = { version = "54", default-features = false, features = ["arrow", "snap", "flate2", "zstd"] }
-tokio = { version = "1", features = ["full"] }
+arrow = { workspace = true, features = ["ipc"] }
+parquet = { workspace = true }
+tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

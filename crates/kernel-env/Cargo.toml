@@ -29,10 +29,9 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-log = "0.4"
-dirs = "6"
-sha2 = "0.11"
-hex = "0.4"
+log = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 # Channel-aware cache directory (nightly vs stable, dev worktree isolation).
 runt-workspace = { path = "../runt-workspace" }
@@ -41,15 +40,15 @@ runt-workspace = { path = "../runt-workspace" }
 kernel-launch = { path = "../kernel-launch", optional = true }
 
 # Conda environment support via rattler
-rattler = { version = "0.40", default-features = false, features = ["native-tls"], optional = true }
-rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"], optional = true }
-rattler_conda_types = { version = "0.44", optional = true }
-rattler_repodata_gateway = { version = "0.27", default-features = false, features = ["gateway", "native-tls"], optional = true }
-rattler_solve = { version = "5.0", features = ["resolvo"], optional = true }
-rattler_virtual_packages = { version = "2.3", optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["native-tls"], optional = true }
-reqwest-middleware = { version = "0.4", optional = true }
+rattler = { workspace = true, optional = true }
+rattler_cache = { workspace = true, optional = true }
+rattler_conda_types = { workspace = true, optional = true }
+rattler_repodata_gateway = { workspace = true, optional = true }
+rattler_solve = { workspace = true, optional = true }
+rattler_virtual_packages = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+reqwest-middleware = { workspace = true, optional = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 which = "7"

@@ -23,27 +23,26 @@ notebook-doc = { path = "../notebook-doc", features = ["persistence"] }
 runt-workspace = { path = "../runt-workspace" }
 runt-mcp = { path = "../runt-mcp" }
 kernel-env = { path = "../kernel-env" }
-rmcp = { version = "1.4", features = ["server", "transport-io"] }
-clap = { version = "4.5.1", features = ["derive", "color"] }
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+clap = { workspace = true, features = ["color"] }
 colored = "3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
-tokio = { version = "1", features = ["full"] }
-petname = "2"
-dirs = "6"
+reqwest = { workspace = true, features = ["json"] }
+tokio = { workspace = true }
+dirs = { workspace = true }
 tabled = "0.20"
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-flate2 = "1"
-notify = "8"
-tar = "0.4"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { workspace = true, features = ["std", "clock"] }
+flate2 = { workspace = true }
+notify = { workspace = true }
+tar = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 walkdir = "2"
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 
 [build-dependencies]
 build-metadata = { path = "../build-metadata" }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = { workspace = true }

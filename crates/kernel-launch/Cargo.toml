@@ -12,22 +12,21 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 tokio = { workspace = true }
-log = "0.4"
-dirs = "6"
-sha2 = "0.11"
-hex = "0.4"
+log = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 # Channel-aware tools cache (nightly vs stable, dev worktree isolation).
 runt-workspace = { path = "../runt-workspace" }
 zip = { version = "8", default-features = false, features = ["deflate"] }
-flate2 = "1"
-tar = "0.4"
+flate2 = { workspace = true }
+tar = { workspace = true }
 
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # GitHub release downloads
-reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+reqwest = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }

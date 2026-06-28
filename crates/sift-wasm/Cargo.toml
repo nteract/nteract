@@ -12,24 +12,24 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 nteract-predicate = { path = "../nteract-predicate" }
-wasm-bindgen = "0.2"
+wasm-bindgen = { workspace = true }
 js-sys = "0.3"
-console_error_panic_hook = "0.1"
+console_error_panic_hook = { workspace = true }
 serde = { workspace = true }
-serde-wasm-bindgen = "0.6"
+serde-wasm-bindgen = { workspace = true }
 bytes = { workspace = true }
-chrono = { version = "0.4", default-features = false }
+chrono = { workspace = true }
 chrono-tz = "0.10"
 
-arrow = { version = "54", default-features = false, features = ["ipc", "ffi"] }
-arrow-cast = { version = "54", default-features = false }
-arrow-ord = { version = "54", default-features = false }
-arrow-select = { version = "54", default-features = false }
-parquet = { version = "54", default-features = false, features = ["arrow", "snap", "flate2", "zstd"] }
+arrow = { workspace = true, features = ["ipc", "ffi"] }
+arrow-cast = { workspace = true }
+arrow-ord = { workspace = true }
+arrow-select = { workspace = true }
+parquet = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
-wasm-bindgen-test = "0.3"
+wasm-bindgen-test = { workspace = true }
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

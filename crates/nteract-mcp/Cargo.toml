@@ -14,11 +14,11 @@ path = "src/main.rs"
 [dependencies]
 runt-mcp-proxy = { path = "../runt-mcp-proxy" }
 runt-workspace = { path = "../runt-workspace" }
-rmcp = { version = "1.4", features = ["transport-io"] }
+rmcp = { workspace = true, features = ["transport-io"] }
 tokio = { workspace = true }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-dirs = "6"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
 
 [lints]
 workspace = true
