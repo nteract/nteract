@@ -12,7 +12,10 @@ use automerge::patches::PatchAction;
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::Prop;
-use comments_doc::{CommentAnchor, CommentsDoc, CommentsProjection, NotebookCommentRef};
+use comments_doc::{
+    CommentAnchor, CommentsDoc, CommentsDocReceiveRepairResult, CommentsProjection,
+    NotebookCommentRef,
+};
 use notebook_doc::diff::{
     diff_doc, extract_change_actor_hashes, extract_change_actors, CellChangeset, ChangeActor,
     TextPatch,
@@ -999,19 +1002,26 @@ impl RoomHostHandle {
 }
 
 impl RoomHostHandle {
-    fn expected_comments_doc_id_string(&self) -> Result<String, String> {
+    /// Hosted rooms derive the CommentsDoc identity from the authoritative
+    /// NotebookDoc id, not from potentially stale CommentsDoc contents.
+    fn expected_comments_identity(&self) -> Result<(String, NotebookCommentRef), String> {
         self.doc
             .notebook_id()
-            .map(|notebook_id| hosted_comments_doc_id(&notebook_id))
+            .map(|notebook_id| hosted_comments_identity(&notebook_id))
             .ok_or_else(|| "room host notebook is missing notebook_id".to_string())
     }
 
     fn load_comments_doc_inner(&mut self, comments_bytes: &[u8]) -> Result<(), String> {
-        let expected_comments_doc_id = self.expected_comments_doc_id_string()?;
+        let (expected_comments_doc_id, expected_comments_ref) =
+            self.expected_comments_identity()?;
         let actor = notebook_doc::actor_label_from_id(self.comments_doc.doc().get_actor());
-        let comments_doc =
-            CommentsDoc::load_with_actor(comments_bytes, &expected_comments_doc_id, &actor)
-                .map_err(|e| format!("load comments snapshot failed: {e}"))?;
+        let (comments_doc, _repaired) = CommentsDoc::load_with_actor_repairing_identity(
+            comments_bytes,
+            &expected_comments_doc_id,
+            &expected_comments_ref,
+            &actor,
+        )
+        .map_err(|e| format!("load comments snapshot failed: {e}"))?;
         self.comments_doc = comments_doc;
         self.comments_peer_states.clear();
         Ok(())
@@ -1242,41 +1252,38 @@ impl RoomHostHandle {
         if has_changes && !can_write {
             return Err("connection scope cannot write CommentsDoc changes".to_string());
         }
-        if has_changes {
-            let heads_before = self.comments_doc.get_heads();
-            let peer_state = self
-                .comments_peer_states
-                .entry(peer_id.to_string())
-                .or_insert_with(|| room_peer_sync_state(can_write));
-            let mut preview = self.comments_doc.clone();
-            let mut preview_peer_state = peer_state.clone();
-            preview
-                .receive_sync_message_with_changes_recovering(
-                    &mut preview_peer_state,
-                    message.clone(),
-                    "cloud-room-comments-auth-preview",
-                )
-                .map_err(|e| format!("comments auth preview failed: {e}"))?;
-            let actors = extract_change_actors(preview.doc_mut(), &heads_before);
-            validate_room_actor_labels_inner(principal, actors.iter().map(String::as_str))?;
-        }
-
-        let heads_before = self.comments_doc.get_heads();
+        let (expected_comments_doc_id, expected_comments_ref) =
+            self.expected_comments_identity()?;
+        let mut next_comments_doc = self.comments_doc.clone();
+        let receive_result;
         {
             let peer_state = self
                 .comments_peer_states
                 .entry(peer_id.to_string())
                 .or_insert_with(|| room_peer_sync_state(can_write));
-            self.comments_doc
-                .receive_sync_message_with_changes_recovering(
-                    peer_state,
+            let mut next_peer_state = peer_state.clone();
+            receive_result = next_comments_doc
+                .receive_sync_message_with_changes_repairing_identity_recovering(
+                    &mut next_peer_state,
                     message,
+                    &expected_comments_doc_id,
+                    &expected_comments_ref,
                     "cloud-room-comments-receive-sync",
                 )
                 .map_err(|e| format!("receive comments doc sync: {e}"))?;
+            if has_changes {
+                validate_room_actor_labels_inner(
+                    principal,
+                    receive_result
+                        .incoming_actor_labels
+                        .iter()
+                        .map(String::as_str),
+                )?;
+            }
+            *peer_state = next_peer_state;
         }
-        let heads_after = self.comments_doc.get_heads();
-        let changed = heads_before != heads_after;
+        self.comments_doc = next_comments_doc;
+        let changed = receive_result.changed;
 
         let mut result = RoomHostFrameResult {
             changed,
@@ -2125,6 +2132,7 @@ pub struct NotebookHandle {
     comms_sync_state: sync::State,
     /// Durable comments doc — mutable by notebook editors and owners.
     comments_doc: Option<CommentsDoc>,
+    comments_identity: Option<(String, NotebookCommentRef)>,
     comments_sync_state: sync::State,
     /// Previous per-`output_id` manifest snapshot. Used to produce the
     /// per-output diff emitted on `RuntimeStateSyncApplied.output_changeset`.
@@ -2406,6 +2414,7 @@ impl NotebookHandle {
                 .map_err(|e| JsError::new(&format!("create comms doc failed: {}", e)))?,
             comms_sync_state: sync::State::new(),
             comments_doc: None,
+            comments_identity: None,
             comments_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
             output_identity_epoch: 0,
@@ -2440,6 +2449,7 @@ impl NotebookHandle {
             comms_doc,
             comms_sync_state: sync::State::new(),
             comments_doc: None,
+            comments_identity: None,
             comments_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
             output_identity_epoch: 0,
@@ -2503,6 +2513,7 @@ impl NotebookHandle {
                 .map_err(|e| JsError::new(&format!("create comms doc failed: {}", e)))?,
             comms_sync_state: sync::State::new(),
             comments_doc: None,
+            comments_identity: None,
             comments_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
             output_identity_epoch: 0,
@@ -4083,13 +4094,12 @@ impl NotebookHandle {
         notebook_ref: &NotebookCommentRef,
     ) -> Result<(), JsError> {
         let actor_label = self.doc.get_actor_id();
-        if self
-            .comments_doc
-            .as_ref()
-            .and_then(CommentsDoc::comments_doc_id)
-            .as_deref()
-            == Some(comments_doc_id)
-        {
+        let current_identity_matches = self.comments_doc.as_ref().is_some_and(|comments_doc| {
+            comments_doc.comments_doc_id().as_deref() == Some(comments_doc_id)
+                && comments_doc.notebook_ref().as_ref() == Some(notebook_ref)
+        });
+        if current_identity_matches {
+            self.comments_identity = Some((comments_doc_id.to_string(), notebook_ref.clone()));
             if let Some(comments_doc) = self.comments_doc.as_mut() {
                 comments_doc
                     .doc_mut()
@@ -4102,8 +4112,24 @@ impl NotebookHandle {
             notebook_ref,
             &actor_label,
         )?);
+        self.comments_identity = Some((comments_doc_id.to_string(), notebook_ref.clone()));
         self.comments_sync_state = sync::State::new();
         Ok(())
+    }
+
+    fn expected_comments_identity(&self) -> Option<(String, NotebookCommentRef)> {
+        debug_assert!(
+            self.comments_identity.is_some() || self.comments_doc.is_none(),
+            "comments_doc initialized without cached comments identity"
+        );
+        self.comments_identity.clone().or_else(|| {
+            self.comments_doc.as_ref().and_then(|comments_doc| {
+                Some((
+                    comments_doc.comments_doc_id()?,
+                    comments_doc.notebook_ref()?,
+                ))
+            })
+        })
     }
 
     /// Current CommentsDoc identity if comments sync is initialized.
@@ -4722,6 +4748,7 @@ impl NotebookHandle {
                 let Ok(msg) = sync::Message::decode(payload) else {
                     return JsValue::UNDEFINED;
                 };
+                let expected_comments_identity = self.expected_comments_identity();
                 let Some(comments_doc) = self.comments_doc.as_mut() else {
                     web_sys::console::warn_1(
                         &"[wasm] comments sync received before comments doc initialization".into(),
@@ -4729,41 +4756,58 @@ impl NotebookHandle {
                     return JsValue::UNDEFINED;
                 };
                 let heads_before = comments_doc.get_heads();
-                if comments_doc
-                    .receive_sync_message_with_changes(&mut self.comments_sync_state, msg)
-                    .is_err()
-                {
-                    self.rebuild_comments_doc();
-                    self.normalize_comments_sync_state();
-                    let heads_after = self
-                        .comments_doc
-                        .as_mut()
-                        .map(CommentsDoc::get_heads)
-                        .unwrap_or_default();
-                    let changed = heads_before != heads_after;
-                    let projection = if changed {
-                        self.comments_projection().ok().map(Box::new)
-                    } else {
-                        None
-                    };
-                    let reply = self.comments_doc.as_mut().and_then(|comments_doc| {
+                let receive_result = match expected_comments_identity {
+                    Some((comments_doc_id, notebook_ref)) => comments_doc
+                        .receive_sync_message_with_changes_repairing_identity_recovering(
+                            &mut self.comments_sync_state,
+                            msg,
+                            &comments_doc_id,
+                            &notebook_ref,
+                            "wasm-comments-receive-sync",
+                        ),
+                    None => {
+                        web_sys::console::warn_1(
+                            &"[wasm] comments sync received without expected comments identity; skipping identity repair".into(),
+                        );
                         comments_doc
-                            .generate_sync_message(&mut self.comments_sync_state)
-                            .map(|msg| msg.encode())
-                    });
-                    events.push(FrameEvent::CommentsDocSyncError {
-                        changed,
-                        projection,
-                        reply,
-                    });
-                    return serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED);
-                }
-                let heads_after = self
-                    .comments_doc
-                    .as_mut()
-                    .map(CommentsDoc::get_heads)
-                    .unwrap_or_default();
-                let changed = heads_before != heads_after;
+                            .receive_sync_message_with_changes(&mut self.comments_sync_state, msg)
+                            .map(|changed| CommentsDocReceiveRepairResult {
+                                changed,
+                                repaired_identity: false,
+                                incoming_actor_labels: Vec::new(),
+                            })
+                    }
+                };
+                let receive_result = match receive_result {
+                    Ok(result) => result,
+                    Err(_) => {
+                        self.rebuild_comments_doc();
+                        self.normalize_comments_sync_state();
+                        let heads_after = self
+                            .comments_doc
+                            .as_mut()
+                            .map(CommentsDoc::get_heads)
+                            .unwrap_or_default();
+                        let changed = heads_before != heads_after;
+                        let projection = if changed {
+                            self.comments_projection().ok().map(Box::new)
+                        } else {
+                            None
+                        };
+                        let reply = self.comments_doc.as_mut().and_then(|comments_doc| {
+                            comments_doc
+                                .generate_sync_message(&mut self.comments_sync_state)
+                                .map(|msg| msg.encode())
+                        });
+                        events.push(FrameEvent::CommentsDocSyncError {
+                            changed,
+                            projection,
+                            reply,
+                        });
+                        return serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED);
+                    }
+                };
+                let changed = receive_result.changed;
                 let projection = if changed {
                     self.comments_projection().ok().map(Box::new)
                 } else {
@@ -5198,6 +5242,82 @@ mod tests {
     }
 
     #[test]
+    fn comments_sync_repairs_with_bootstrap_identity_not_stale_doc_identity() {
+        let expected_comments_doc_id = hosted_comments_doc_id("demo");
+        let expected_ref = NotebookCommentRef::HostedRoom {
+            room_locator: "demo".to_string(),
+        };
+        let expected_ref_json =
+            serde_json::to_string(&expected_ref).expect("serialize expected ref");
+        let mut handle = NotebookHandle::create_bootstrap_with_comments_ref(
+            "user:dev:alice/browser:a",
+            &expected_comments_doc_id,
+            &expected_ref_json,
+        )
+        .expect("create comments bootstrap handle");
+
+        let stale_ref = NotebookCommentRef::HostedRoom {
+            room_locator: "stale-demo".to_string(),
+        };
+        handle.comments_doc = Some(CommentsDoc::new_with_actor(
+            "comments:stale-demo",
+            &stale_ref,
+            "user:dev:alice/browser:a",
+        ));
+        let mut sender = CommentsDoc::new_with_actor(
+            "comments:stale-demo",
+            &stale_ref,
+            "system/schema:notebook-cloud-room",
+        );
+        sender
+            .create_thread(
+                "thread-stale",
+                "message-stale",
+                &comments_doc::CommentAnchor::Notebook,
+                "stale identity should be repaired by the browser handle",
+                None,
+                "2026-06-28T00:00:00Z",
+            )
+            .expect("create stale-id comment");
+
+        let changes = sender.doc_mut().save_after(&[]);
+        assert!(!changes.is_empty(), "expected stale-id sender changes");
+        let message = sync::Message {
+            heads: sender.get_heads(),
+            need: Vec::new(),
+            have: Vec::new(),
+            changes: sync::ChunkList::from(changes),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        };
+        let (comments_doc_id, notebook_ref) = handle
+            .expected_comments_identity()
+            .expect("cached comments identity");
+        let comments_doc = handle.comments_doc.as_mut().expect("comments doc");
+        let result = comments_doc
+            .receive_sync_message_with_changes_repairing_identity_recovering(
+                &mut handle.comments_sync_state,
+                message,
+                &comments_doc_id,
+                &notebook_ref,
+                "test-comments-receive-sync",
+            )
+            .expect("stale identity repaired from bootstrap identity");
+        assert!(result.changed);
+        assert!(result.repaired_identity);
+        assert_eq!(
+            comments_doc.raw_comments_doc_id().as_deref(),
+            Some(expected_comments_doc_id.as_str())
+        );
+        assert_eq!(comments_doc.notebook_ref().as_ref(), Some(&expected_ref));
+        let projection = comments_doc
+            .read_projection(None)
+            .expect("comments projection");
+        assert_eq!(projection.threads.len(), 1);
+        assert_eq!(projection.threads[0].id, "thread-stale");
+    }
+
+    #[test]
     fn room_host_seeds_initial_code_cell_idempotently() {
         let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
             .expect("create room host");
@@ -5305,6 +5425,68 @@ mod tests {
             .expect("reloaded projection");
         assert_eq!(projection.threads.len(), 1);
         assert_eq!(projection.threads[0].id, "thread-1");
+    }
+
+    #[test]
+    fn room_host_repairs_stale_comments_doc_identity_from_editor_change() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let stale_ref = NotebookCommentRef::HostedRoom {
+            room_locator: "stale-demo".to_string(),
+        };
+        let mut editor = CommentsDoc::new_with_actor(
+            "comments:stale-demo",
+            &stale_ref,
+            "user:dev:alice/browser:a",
+        );
+        editor
+            .create_thread(
+                "thread-stale",
+                "message-stale",
+                &comments_doc::CommentAnchor::Notebook,
+                "stale identity should be repaired by the room host",
+                None,
+                "2026-06-28T00:00:00Z",
+            )
+            .expect("create stale-id comment");
+
+        let changes = editor.doc_mut().save_after(&[]);
+        assert!(!changes.is_empty(), "expected stale-id editor changes");
+        let payload = sync::Message {
+            heads: editor.get_heads(),
+            need: Vec::new(),
+            have: Vec::new(),
+            changes: sync::ChunkList::from(changes),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        }
+        .encode();
+        let accepted = host
+            .receive_comments_doc_sync_inner("peer-editor", "user:dev:alice", true, &payload)
+            .expect("editor comment accepted with repaired identity");
+        let expected_comments_doc_id = hosted_comments_doc_id("demo");
+
+        assert!(accepted.changed);
+        assert_eq!(
+            host.comments_doc.raw_comments_doc_id().as_deref(),
+            Some(expected_comments_doc_id.as_str())
+        );
+        assert_eq!(
+            host.comments_doc.notebook_ref().as_ref(),
+            Some(&NotebookCommentRef::HostedRoom {
+                room_locator: "demo".to_string(),
+            })
+        );
+        let projection = host
+            .comments_doc
+            .read_projection(None)
+            .expect("host projection");
+        assert_eq!(projection.threads.len(), 1);
+        assert_eq!(projection.threads[0].id, "thread-stale");
+        assert_eq!(
+            projection.threads[0].created_by_actor_label.as_deref(),
+            Some("user:dev:alice/browser:a")
+        );
     }
 
     #[test]
@@ -5515,6 +5697,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn room_host_repairs_comments_doc_checkpoint_with_conflicting_identity() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let stale_ref = NotebookCommentRef::HostedRoom {
+            room_locator: "stale-demo".to_string(),
+        };
+        let mut stale = CommentsDoc::new_with_actor(
+            "comments:stale-demo",
+            &stale_ref,
+            "user:dev:alice/browser:a",
+        );
+        stale
+            .create_thread(
+                "thread-stale",
+                "message-stale",
+                &comments_doc::CommentAnchor::Notebook,
+                "stale checkpoint identity should be repaired by load",
+                None,
+                "2026-06-28T00:00:00Z",
+            )
+            .expect("create stale-id comment");
+        let mut checkpoint =
+            hosted_comments_client("demo", "system/schema:notebook-cloud-room/comments");
+        sync_comments_raw_without_projection_check(&mut stale, &mut checkpoint);
+        let bytes = checkpoint.save();
+
+        host.load_comments_doc_inner(&bytes)
+            .expect("repair conflicting checkpoint identity");
+        let expected_comments_doc_id = hosted_comments_doc_id("demo");
+
+        assert_eq!(
+            host.comments_doc.raw_comments_doc_id().as_deref(),
+            Some(expected_comments_doc_id.as_str())
+        );
+        assert_eq!(
+            host.comments_doc.notebook_ref().as_ref(),
+            Some(&NotebookCommentRef::HostedRoom {
+                room_locator: "demo".to_string(),
+            })
+        );
+        let projection = host
+            .comments_doc
+            .read_projection(None)
+            .expect("host projection");
+        assert_eq!(projection.threads.len(), 1);
+        assert_eq!(projection.threads[0].id, "thread-stale");
+    }
+
     // -- runtime_peer-gone reconciliation (Phase 3d watchdog core) --------
 
     use runtime_doc::KernelActivity;
@@ -5568,11 +5799,42 @@ mod tests {
 
     fn comments_doc_from_host(host: &mut RoomHostHandle, actor_label: &str) -> CommentsDoc {
         let comments_doc_id = host
-            .expected_comments_doc_id_string()
+            .expected_comments_identity()
+            .map(|(comments_doc_id, _)| comments_doc_id)
             .expect("host comments doc id");
         let bytes = host.save_comments_doc();
         CommentsDoc::load_with_actor(&bytes, &comments_doc_id, actor_label)
             .expect("load comments doc from host")
+    }
+
+    fn sync_comments_raw_without_projection_check(
+        sender: &mut CommentsDoc,
+        receiver: &mut CommentsDoc,
+    ) {
+        // Test-only helper for constructing invalid/conflicted snapshots that
+        // production projection reads would reject before load repair can run.
+        let mut sender_sync = sync::State::new();
+        let mut receiver_sync = sync::State::new();
+        let mut receives = 0;
+        for _ in 0..8 {
+            if let Some(message) = sender.generate_sync_message(&mut sender_sync) {
+                receiver
+                    .doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut receiver_sync, message)
+                    .expect("raw comments sync receiver apply");
+                receives += 1;
+            }
+            if let Some(reply) = receiver.generate_sync_message(&mut receiver_sync) {
+                sender
+                    .doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut sender_sync, reply)
+                    .expect("raw comments sync sender apply");
+                receives += 1;
+            }
+        }
+        assert!(receives > 0, "expected raw comments sync to apply messages");
     }
 
     fn sync_comments_doc_with_host(

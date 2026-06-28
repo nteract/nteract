@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 #[cfg(test)]
 use automerge::transaction::CommitOptions;
@@ -33,6 +33,15 @@ const DEFAULT_POSITION: &str = "80";
 pub struct CommentsDoc {
     doc: AutoCommit,
     comments_doc_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentsDocReceiveRepairResult {
+    /// True when receiving the message or repairing identity advanced document heads.
+    pub changed: bool,
+    pub repaired_identity: bool,
+    /// Unique actor labels from incoming peer changes before any local repair writes.
+    pub incoming_actor_labels: Vec<String>,
 }
 
 impl CommentsDoc {
@@ -102,19 +111,11 @@ impl CommentsDoc {
             comments_doc_id: expected_comments_doc_id.to_string(),
         };
 
-        let mut repaired = match comments.ensure_raw_comments_doc_id_matches() {
-            Ok(()) => false,
-            Err(CommentsDocError::CommentsDocIdConflict) => {
-                comments.set_comments_doc_id(expected_comments_doc_id)?;
-                true
-            }
-            Err(err) => return Err(err),
-        };
-
-        if comments.notebook_ref().as_ref() != Some(expected_notebook_ref) {
-            comments.set_notebook_ref(expected_notebook_ref)?;
-            repaired = true;
-        }
+        let repaired = comments.repair_identity_fields(
+            expected_comments_doc_id,
+            expected_notebook_ref,
+            false,
+        )?;
 
         comments.ensure_raw_comments_doc_id_matches()?;
         Ok((comments, repaired))
@@ -197,7 +198,14 @@ impl CommentsDoc {
     }
 
     fn ensure_raw_comments_doc_id_matches(&self) -> Result<(), CommentsDocError> {
-        validate_comments_doc_id(&self.comments_doc_id)?;
+        self.ensure_raw_comments_doc_id_matches_value(&self.comments_doc_id)
+    }
+
+    fn ensure_raw_comments_doc_id_matches_value(
+        &self,
+        expected_comments_doc_id: &str,
+    ) -> Result<(), CommentsDocError> {
+        validate_comments_doc_id(expected_comments_doc_id)?;
         let conflicts = self
             .doc
             .get_all(&ROOT, "comments_doc_id")
@@ -217,9 +225,9 @@ impl CommentsDoc {
             .next()
             .ok_or(CommentsDocError::MissingCommentsDocId)?;
         validate_comments_doc_id(&actual)?;
-        if actual != self.comments_doc_id {
+        if actual != expected_comments_doc_id {
             return Err(CommentsDocError::CommentsDocIdMismatch {
-                expected: self.comments_doc_id.clone(),
+                expected: expected_comments_doc_id.to_string(),
                 actual,
             });
         }
@@ -481,6 +489,99 @@ impl CommentsDoc {
         Ok(self.doc.get_heads() != heads_before)
     }
 
+    pub fn receive_sync_message_with_changes_repairing_identity(
+        &mut self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+        expected_comments_doc_id: &str,
+        expected_notebook_ref: &NotebookCommentRef,
+    ) -> Result<CommentsDocReceiveRepairResult, CommentsDocError> {
+        validate_comments_doc_id(expected_comments_doc_id)?;
+        let before_doc = self.doc.clone();
+        let before_actor = self.doc.get_actor().clone();
+        let before_comments_doc_id = self.comments_doc_id.clone();
+        let heads_before = self.doc.get_heads();
+        if let Err(err) = self.doc.sync().receive_sync_message(peer_state, message) {
+            return Err(CommentsDocError::Automerge(err));
+        }
+        let incoming_actor_labels = self.change_actor_labels_since(&heads_before);
+        let repaired_identity = match self.repair_identity_fields(
+            expected_comments_doc_id,
+            expected_notebook_ref,
+            true,
+        ) {
+            Ok(repaired) => repaired,
+            Err(err) => {
+                self.doc = before_doc;
+                self.doc.set_actor(before_actor);
+                self.comments_doc_id = before_comments_doc_id;
+                *peer_state = sync::State::new();
+                return Err(err);
+            }
+        };
+        Ok(CommentsDocReceiveRepairResult {
+            changed: self.doc.get_heads() != heads_before,
+            repaired_identity,
+            incoming_actor_labels,
+        })
+    }
+
+    pub fn receive_sync_message_with_changes_repairing_identity_recovering(
+        &mut self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+        expected_comments_doc_id: &str,
+        expected_notebook_ref: &NotebookCommentRef,
+        label: &str,
+    ) -> Result<CommentsDocReceiveRepairResult, CommentsDocError> {
+        let label = label.to_string();
+        let should_retry = match catch_automerge_result(label.clone(), || {
+            self.receive_sync_message_with_changes_repairing_identity(
+                peer_state,
+                message.clone(),
+                expected_comments_doc_id,
+                expected_notebook_ref,
+            )
+        }) {
+            AutomergeAttempt::Success(result) => return Ok(result),
+            AutomergeAttempt::OperationError(CommentsDocError::Automerge(source))
+                if is_recoverable_sync_error(&source) =>
+            {
+                true
+            }
+            AutomergeAttempt::OperationError(source) => return Err(source),
+            AutomergeAttempt::Panic(error) => {
+                return Err(CommentsDocError::from(AutomergeOperationError::Panic(
+                    error,
+                )));
+            }
+        };
+        debug_assert!(should_retry);
+
+        *peer_state = sync::State::new();
+        self.rebuild_from_save().map_err(|source| {
+            CommentsDocError::from(AutomergeOperationError::rebuild_failed(
+                label.clone(),
+                source,
+            ))
+        })?;
+
+        match catch_automerge_result(label.clone(), || {
+            self.receive_sync_message_with_changes_repairing_identity(
+                peer_state,
+                message,
+                expected_comments_doc_id,
+                expected_notebook_ref,
+            )
+        }) {
+            AutomergeAttempt::Success(result) => Ok(result),
+            AutomergeAttempt::OperationError(source) => Err(source),
+            AutomergeAttempt::Panic(error) => Err(CommentsDocError::from(
+                AutomergeOperationError::Panic(error),
+            )),
+        }
+    }
+
     pub fn receive_sync_message_with_changes_recovering(
         &mut self,
         peer_state: &mut sync::State,
@@ -538,6 +639,55 @@ impl CommentsDoc {
                 Err(source) => Err(AutomergeRebuildError::load(source)),
             }
         })?
+    }
+
+    fn repair_identity_fields(
+        &mut self,
+        expected_comments_doc_id: &str,
+        expected_notebook_ref: &NotebookCommentRef,
+        allow_comments_doc_id_mismatch: bool,
+    ) -> Result<bool, CommentsDocError> {
+        validate_comments_doc_id(expected_comments_doc_id)?;
+        let mut repaired =
+            match self.ensure_raw_comments_doc_id_matches_value(expected_comments_doc_id) {
+                Ok(()) => {
+                    if self.comments_doc_id != expected_comments_doc_id {
+                        self.comments_doc_id = expected_comments_doc_id.to_string();
+                    }
+                    false
+                }
+                Err(CommentsDocError::CommentsDocIdConflict) => {
+                    self.set_comments_doc_id(expected_comments_doc_id)?;
+                    true
+                }
+                Err(CommentsDocError::CommentsDocIdMismatch { .. })
+                    if allow_comments_doc_id_mismatch =>
+                {
+                    self.set_comments_doc_id(expected_comments_doc_id)?;
+                    true
+                }
+                Err(err) => return Err(err),
+            };
+
+        if self.notebook_ref().as_ref() != Some(expected_notebook_ref) {
+            self.set_notebook_ref(expected_notebook_ref)?;
+            repaired = true;
+        }
+
+        self.ensure_raw_comments_doc_id_matches_value(expected_comments_doc_id)?;
+        Ok(repaired)
+    }
+
+    fn change_actor_labels_since(&mut self, heads_before: &[automerge::ChangeHash]) -> Vec<String> {
+        // Auth only needs the set of actors represented by new changes; the
+        // BTreeSet deduplicates repeat actors while keeping diagnostics stable.
+        self.doc
+            .get_changes(heads_before)
+            .into_iter()
+            .map(|change| actor_label_from_id(change.actor_id()))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     fn create_message_in_map(
@@ -813,6 +963,12 @@ fn scalar_string(value: &Value<'_>) -> Option<String> {
         },
         _ => None,
     }
+}
+
+fn actor_label_from_id(actor: &ActorId) -> String {
+    std::str::from_utf8(actor.to_bytes())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|_| actor.to_hex_string())
 }
 
 /// Principal label of the actor that created an object, recovered from its
@@ -1484,6 +1640,82 @@ mod tests {
         assert_eq!(receiver.comments_doc_id().as_deref(), Some(DOC_ID));
         assert_eq!(receiver.raw_comments_doc_id().as_deref(), Some(DOC_ID));
         assert!(receiver.read_projection(None).unwrap().threads.is_empty());
+    }
+
+    #[test]
+    fn sync_can_repair_conflicting_comments_doc_identity_after_receive() {
+        let expected_ref = notebook_ref();
+        let mut receiver = CommentsDoc::new_with_actor(DOC_ID, &expected_ref, "client:receiver");
+        let stale_ref = NotebookCommentRef::LocalRoom {
+            room_id: "stale-room".to_string(),
+        };
+        let mut sender = CommentsDoc::new_with_actor(
+            "comments:stale-notebook",
+            &stale_ref,
+            "user:dev:alice/browser:a",
+        );
+        sender
+            .create_thread(
+                "thread-stale",
+                "message-stale",
+                &CommentAnchor::Notebook,
+                "stale identity should not poison comment sync",
+                None,
+                "2026-06-28T00:00:00Z",
+            )
+            .unwrap();
+
+        let mut receiver_sync = sync::State::new();
+        let changes = sender.doc_mut().save_after(&[]);
+        assert!(!changes.is_empty(), "expected sender changes");
+        let message = sync::Message {
+            heads: sender.get_heads(),
+            need: Vec::new(),
+            have: Vec::new(),
+            changes: sync::ChunkList::from(changes),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        };
+        let result = receiver
+            .receive_sync_message_with_changes_repairing_identity(
+                &mut receiver_sync,
+                message,
+                DOC_ID,
+                &expected_ref,
+            )
+            .expect("receiver repairs stale identity");
+
+        assert!(result.changed);
+        assert!(result.repaired_identity);
+        assert_eq!(
+            result.incoming_actor_labels,
+            vec!["user:dev:alice/browser:a".to_string()]
+        );
+        assert_eq!(receiver.raw_comments_doc_id().as_deref(), Some(DOC_ID));
+        assert_eq!(receiver.notebook_ref().as_ref(), Some(&expected_ref));
+        let projection = receiver.read_projection(None).unwrap();
+        assert_eq!(projection.threads.len(), 1);
+        assert_eq!(projection.threads[0].id, "thread-stale");
+    }
+
+    #[test]
+    fn failed_strict_identity_repair_preserves_cached_comments_doc_id() {
+        let notebook_ref = notebook_ref();
+        let mut comments = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref, "client:receiver");
+
+        let err = comments
+            .repair_identity_fields("comments:other-notebook", &notebook_ref, false)
+            .expect_err("strict repair should reject mismatched comments_doc_id");
+
+        assert!(matches!(
+            err,
+            CommentsDocError::CommentsDocIdMismatch {
+                expected,
+                actual
+            } if expected == "comments:other-notebook" && actual == DOC_ID
+        ));
+        assert_eq!(comments.comments_doc_id().as_deref(), Some(DOC_ID));
+        assert_eq!(comments.raw_comments_doc_id().as_deref(), Some(DOC_ID));
     }
 
     #[test]
