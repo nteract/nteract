@@ -209,15 +209,15 @@ mod tests {
         ))
     }
 
-    fn make_sender(
-        comments_doc_id: &str,
-        actor_label: &str,
-        body: &str,
-    ) -> (CommentsDoc, sync::State) {
+    fn make_sender(comments_doc_id: &str, actor_label: &str) -> (CommentsDoc, sync::State) {
         let notebook_ref = NotebookCommentRef::LocalRoom {
             room_id: "room".to_string(),
         };
-        let mut sender = CommentsDoc::new_with_actor(comments_doc_id, &notebook_ref, actor_label);
+        let sender = CommentsDoc::new_with_actor(comments_doc_id, &notebook_ref, actor_label);
+        (sender, sync::State::new())
+    }
+
+    fn create_sender_thread(sender: &mut CommentsDoc, body: &str) {
         sender
             .create_thread(
                 "thread-1",
@@ -228,7 +228,6 @@ mod tests {
                 "2026-06-16T00:00:00Z",
             )
             .expect("create comment thread");
-        (sender, sync::State::new())
     }
 
     fn client_payload_after_initial_sync(
@@ -236,6 +235,7 @@ mod tests {
         room_peer_state: &mut sync::State,
         sender: &mut CommentsDoc,
         sender_state: &mut sync::State,
+        body: &str,
     ) -> Vec<u8> {
         let initial_message = room
             .comments
@@ -245,6 +245,7 @@ mod tests {
         sender
             .receive_sync_message_with_changes(sender_state, initial_message)
             .expect("client receives initial comments sync");
+        create_sender_thread(sender, body);
         let message = sender
             .generate_sync_message(sender_state)
             .expect("sender sync message");
@@ -288,13 +289,13 @@ mod tests {
         .unwrap();
         let actor_label = identity.actor_label().as_str().to_string();
         let mut receiver_state = sync::State::new();
-        let (mut sender, mut sender_state) =
-            make_sender(&comments_doc_id, &actor_label, "persisted from sync");
+        let (mut sender, mut sender_state) = make_sender(&comments_doc_id, &actor_label);
         let payload = client_payload_after_initial_sync(
             &room,
             &mut receiver_state,
             &mut sender,
             &mut sender_state,
+            "persisted from sync",
         );
         let (client, mut reader) = duplex(8192);
         let (peer_writer, writer_task) =
@@ -375,13 +376,13 @@ mod tests {
         .unwrap();
         let actor_label = identity.actor_label().as_str().to_string();
         let mut receiver_state = sync::State::new();
-        let (mut sender, mut sender_state) =
-            make_sender(&comments_doc_id, &actor_label, "runtime peer write");
+        let (mut sender, mut sender_state) = make_sender(&comments_doc_id, &actor_label);
         let payload = client_payload_after_initial_sync(
             &room,
             &mut receiver_state,
             &mut sender,
             &mut sender_state,
+            "runtime peer write",
         );
         let (client, mut reader) = duplex(8192);
         let (peer_writer, writer_task) =
