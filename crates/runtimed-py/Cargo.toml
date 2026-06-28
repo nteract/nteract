@@ -26,7 +26,7 @@ runtime-doc = { path = "../runtime-doc" }
 notebook-protocol = { path = "../notebook-protocol" }
 kernel-env = { path = "../kernel-env" }
 notebook-sync = { path = "../notebook-sync" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }

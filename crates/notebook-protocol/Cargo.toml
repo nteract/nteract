@@ -16,4 +16,4 @@ notebook-wire = { path = "../notebook-wire" }
 nteract-identity = { path = "../nteract-identity", default-features = false, features = ["local"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }

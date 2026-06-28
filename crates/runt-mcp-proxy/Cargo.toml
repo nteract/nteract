@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 rmcp = { workspace = true, features = ["server", "client", "transport-async-rw", "transport-io"] }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 

@@ -24,7 +24,7 @@ notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
 mcp-client-branding = { path = "../mcp-client-branding" }
 runt-workspace = { path = "../runt-workspace" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }

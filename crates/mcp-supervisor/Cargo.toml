@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 rmcp = { workspace = true, features = ["server", "client", "transport-child-process", "transport-io"] }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }

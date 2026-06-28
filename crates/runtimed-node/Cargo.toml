@@ -23,7 +23,7 @@ runt-workspace = { path = "../runt-workspace" }
 nteract-predicate = { path = "../nteract-predicate" }
 arrow = { workspace = true, features = ["ipc"] }
 parquet = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

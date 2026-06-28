@@ -23,7 +23,7 @@ runtime-doc = { path = "../runtime-doc" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 url = { workspace = true }
 urlencoding = "2"
 uuid = { workspace = true }

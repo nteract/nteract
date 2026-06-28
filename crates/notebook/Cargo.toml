@@ -38,7 +38,7 @@ tauri-plugin-window-state = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
 runtimed-client = { path = "../runtimed-client" }
 runtimed-settings-sync = { path = "../runtimed-settings-sync" }

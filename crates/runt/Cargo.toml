@@ -27,7 +27,7 @@ rmcp = { workspace = true, features = ["server", "transport-io"] }
 clap = { workspace = true, features = ["color"] }
 colored = "3"
 reqwest = { workspace = true, features = ["json"] }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 dirs = { workspace = true }
 tabled = "0.20"
 chrono = { workspace = true, features = ["std", "clock"] }

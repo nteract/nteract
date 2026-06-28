@@ -29,7 +29,7 @@ notebook-wire = { path = "../notebook-wire" }
 notebook-cloud-transport = { path = "../notebook-cloud-transport" }
 comments-doc = { path = "../comments-doc" }
 nteract-identity = { path = "../nteract-identity" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -130,7 +130,7 @@ windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32
 [dev-dependencies]
 tempfile = { workspace = true }
 serial_test = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 notebook-sync = { path = "../notebook-sync" }
 async-rust-lsp = "0.3"
 zeromq = "0.6"
