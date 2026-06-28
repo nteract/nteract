@@ -376,7 +376,7 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
 
           if (cancelled) return;
           tableRoot.innerHTML = "";
-          currentEngine = createTable(tableRoot, tableData);
+          currentEngine = createTable(tableRoot, tableData, { streaming: true });
           disposePendingStore = null;
           subscriber.next();
 
