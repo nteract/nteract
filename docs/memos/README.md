@@ -23,6 +23,7 @@ plans. Time-bound transfer notes belong in `docs/handoffs/`.
 
 | Memo | Status | Notes |
 |------|--------|-------|
+| [Agendoc Document Lineage](agendoc-lineage.md) | Exploration | First-class agent session document with messages, tool artifacts, tasks, compaction, forks, and lineage. |
 | [Arrow Manifest Durable Storage](arrow-manifest-durable-storage-design.md) | Exploration | Durable storage design framing for Arrow manifest outputs. |
 | [Compute Session Index](compute-session-index.md) | RFC | Owner-scoped projection for showing active notebook compute sessions on dashboards and workstation surfaces. |
 | [Execution Liveness](execution-liveness.md) | Exploration | Divergence-detection framing; not a recovery decision yet. |
