@@ -46,6 +46,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
         run: |
           if (-not $env:RELEASE_TAG) {
@@ -88,6 +89,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           ASSET_NAME: ${{ steps.release.outputs.asset }}
         run: |
@@ -275,7 +277,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_WINDOWS: ${{ secrets.DISCORD_WEBHOOK_WINDOWS }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag || github.event.release.tag_name || inputs.release_tag }}
         run: |
           if [ -z "$DISCORD_WEBHOOK_WINDOWS" ]; then
             echo "DISCORD_WEBHOOK_WINDOWS not set, skipping notification"
