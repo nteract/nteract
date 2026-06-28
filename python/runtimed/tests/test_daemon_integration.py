@@ -2291,8 +2291,11 @@ class TestKernelLifecycle:
 
     async def test_async_shutdown_kernel(self, session):
         """Can shutdown the kernel."""
-        await async_start_kernel_with_retry(session)
-        assert await session.kernel_started()
+        await async_use_auto_kernel_or_start(
+            session,
+            description="shutdown-kernel auto-launched kernel",
+        )
+        assert runtime_kernel_is_running(session)
 
         await session.shutdown_kernel()
         assert not await session.kernel_started()
