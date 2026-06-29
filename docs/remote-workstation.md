@@ -13,6 +13,14 @@ This doc is the operator path. The architecture lives in
 
 ## Install (one-liner)
 
+On fresh Debian/Ubuntu images, install `curl` first. `tmux` is optional, but
+useful when you serve attach requests from an SSH session instead of a user
+service.
+
+```bash
+sudo apt update && sudo apt install -y curl tmux
+```
+
 On a Linux x64 or macOS (Apple silicon / Intel) machine:
 
 ```bash
@@ -25,6 +33,13 @@ of the .app bundle kept under that prefix), links them into `~/.local/bin`,
 and installs the per-user daemon service (`runt daemon doctor --fix` —
 systemd on Linux, launchd on macOS). Everything is per-user; no root
 required. Re-run to upgrade.
+
+If this is a fresh shell, make the installed CLI available before running the
+pairing commands:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
 
 The examples below use the stable channel command names. Nightly releases use
 channel-suffixed commands instead: `runt-nightly`, `runtimed-nightly`, and
@@ -56,70 +71,93 @@ runt workstation connect https://app.runt.run --code XXXX-XXXX-XXXX
    override the default `ws-<hostname>` identity. If the code is rejected,
    mint a fresh one from the panel — codes expire and cannot be reused.
 
-3. Serve attach requests:
+3. On Linux, keep the workstation available with user systemd:
+
+```bash
+runt workstation service install --start
+```
+
+   On Linux this writes and enables a user systemd unit that runs
+   `runt workstation run` with the stored credential. It does not require
+   root. Use `--python-path /path/to/python` when the workstation should
+   launch kernels from a project or virtual environment interpreter instead
+   of the first `python3`/`python` on `PATH`. Use
+   `--working-directory /path/to/project` when the service should advertise
+   and launch runtime peers from a specific project directory.
+
+   On macOS or Linux hosts without a usable user systemd session, use the
+   foreground fallback instead:
 
 ```bash
 runt workstation run
 ```
-
-   This launches `runtimed workstation-agent`, which heartbeats the
-   registration, keeps a server-sent event stream open for attach-job wakeups,
-   and spawns one `runtimed cloud-runtime-agent` runtime peer per job
-   (pending → accepted → running → completed/failed). The event stream is the
-   fast path; low-frequency attach-job polling remains as recovery for missed
-   events, older servers, and jobs that existed before the agent started.
-   The stream is deliberately only a wakeup signal, not a replay log: attach
-   jobs are durable in the hosted database, so reconnect recovery polls the
-   queue instead of relying on SSE `Last-Event-ID` state. Keeping idle presence
-   and wakeups on one SSE request avoids the request churn of tight polling or
-   a per-workstation control WebSocket. The credential rides the environment
-   (`RUNT_CLOUD_TOKEN`), never argv. `RUNT_CLOUD_TOKEN` / `RUNT_CLOUD_URL`
-   environment variables override the stored credential when set.
-   Use `--python-path /path/to/python` when the workstation should launch
-   kernels from a project or virtual environment interpreter instead of the
-   first `python3`/`python` on `PATH`.
 
 4. Check what the credential sees:
 
 ```bash
 runt workstation status          # workstations, status, last-seen, default
 runt workstation status --json
+runt workstation service status  # Linux user systemd service state
 ```
 
-In the hosted notebook, attaching compute to a workstation dispatches an
-attach job; the agent accepts it and the runtime peer attaches to the room as
+The service launches `runtimed workstation-agent`, which heartbeats the
+registration, keeps a server-sent event stream open for attach-job wakeups, and
+spawns one `runtimed cloud-runtime-agent` runtime peer per job (pending →
+accepted → running → completed/failed). The event stream is the fast path;
+low-frequency attach-job polling remains as recovery for missed events, older
+servers, and jobs that existed before the agent started. The stream is
+deliberately only a wakeup signal, not a replay log: attach jobs are durable in
+the hosted database, so reconnect recovery polls the queue instead of relying
+on SSE `Last-Event-ID` state. Keeping idle presence and wakeups on one SSE
+request avoids the request churn of tight polling or a per-workstation control
+WebSocket. The credential rides the environment (`RUNT_CLOUD_TOKEN`), never
+argv. `RUNT_CLOUD_TOKEN` / `RUNT_CLOUD_URL` environment variables override the
+stored credential for foreground `runt workstation run`; the service path uses
+the stored credential file written by `connect`.
+
+In the hosted notebook, attaching compute to a workstation dispatches an attach
+job; the agent accepts it and the runtime peer attaches to the room as
 `runtime_peer` over an outbound WebSocket. The peer reconnects with backoff
 across room evictions and network blips and keeps the kernel alive across
 reconnects; a clean room close does not tear the kernel down. If the agent
-restarts, it adopts runtime peers that are still alive (per-job pid + log
-files under the daemon cache) and reports the ones that are gone.
+restarts, it adopts runtime peers that are still alive (per-job pid + log files
+under the daemon cache) and reports the ones that are gone.
 
 ## Run it as a service
 
-The installer's systemd unit runs the *daemon*. To serve attach requests
-permanently, add a user unit for the workstation agent (after a one-time
-`runt workstation connect`):
+The installer's systemd unit runs the *daemon*. Workstation availability is a
+separate user service because the daemon makes the machine notebook-capable,
+while the workstation agent offers this machine's compute to hosted notebooks.
 
-```ini
-# ~/.config/systemd/user/nteract-workstation.service
-[Unit]
-Description=nteract workstation agent
-After=network-online.target
-
-[Service]
-ExecStart=%h/.local/bin/runt workstation run --python-path %h/project/.venv/bin/python
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
-
-For nightly, use `%h/.local/bin/runt-nightly workstation run ...` in
-`ExecStart`.
+Install or update the workstation service after a one-time
+`runt workstation connect`:
 
 ```bash
-systemctl --user enable --now nteract-workstation
+runt workstation service install --start \
+  --python-path "$PWD/.venv/bin/python" \
+  --working-directory "$PWD"
+```
+
+Manage it with:
+
+```bash
+runt workstation service status
+runt workstation service logs -f
+runt workstation service stop
+runt workstation service start
+runt workstation service uninstall
+```
+
+The service command detects missing user systemd sessions and prints the
+foreground fallback. If the workstation must stay available after SSH logout,
+the Linux account may also need lingering enabled by an administrator:
+`loginctl enable-linger $USER`.
+
+For preview/manual testing, the foreground path still works unchanged and is
+useful inside tmux:
+
+```bash
+runt workstation run --python-path "$PWD/.venv/bin/python" --working-directory "$PWD"
 ```
 
 ## Attach a single room directly (legacy / dev)

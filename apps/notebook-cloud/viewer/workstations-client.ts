@@ -18,6 +18,18 @@ export interface CloudWorkstationRefreshCadenceOptions {
 
 export const CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS = 10_000;
 export const CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS = 2_500;
+export const CLOUD_WORKSTATION_DEBIAN_PREP_COMMAND =
+  "sudo apt update && sudo apt install -y curl tmux";
+export const CLOUD_WORKSTATION_HEADLESS_INSTALL_COMMAND =
+  "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless";
+export const CLOUD_WORKSTATION_PATH_EXPORT_COMMAND = 'export PATH="$HOME/.local/bin:$PATH"';
+
+export interface CloudWorkstationPairingCommand {
+  id: string;
+  label: string;
+  command: string;
+  optional?: boolean;
+}
 
 interface CloudWorkstationsResponse {
   default_workstation_id?: unknown;
@@ -185,7 +197,55 @@ export async function fetchCloudWorkstationPairingStatus(
 }
 
 export function cloudWorkstationConnectCommand(origin: string, code: string): string {
-  return `runt workstation connect ${origin} --code ${code} && runt workstation run`;
+  return `runt workstation connect ${origin} --code ${code}`;
+}
+
+export function cloudWorkstationRunCommand(): string {
+  return "runt workstation run";
+}
+
+export function cloudWorkstationServiceInstallCommand(): string {
+  return "runt workstation service install --start";
+}
+
+export function cloudWorkstationPairingCommands(
+  origin: string,
+  code: string,
+): readonly CloudWorkstationPairingCommand[] {
+  return [
+    {
+      id: "debian-prep",
+      label: "Fresh Debian/Ubuntu only",
+      command: CLOUD_WORKSTATION_DEBIAN_PREP_COMMAND,
+      optional: true,
+    },
+    {
+      id: "install",
+      label: "Install nteract headless",
+      command: CLOUD_WORKSTATION_HEADLESS_INSTALL_COMMAND,
+    },
+    {
+      id: "path",
+      label: "Use installed CLI in this shell",
+      command: CLOUD_WORKSTATION_PATH_EXPORT_COMMAND,
+    },
+    {
+      id: "connect",
+      label: "Pair this workstation",
+      command: cloudWorkstationConnectCommand(origin, code),
+    },
+    {
+      id: "run",
+      label: "Linux user systemd service",
+      command: cloudWorkstationServiceInstallCommand(),
+    },
+    {
+      id: "foreground-run",
+      label: "macOS/non-systemd fallback",
+      command: cloudWorkstationRunCommand(),
+      optional: true,
+    },
+  ];
 }
 
 export function cloudWorkstationRefreshIntervalMs({
