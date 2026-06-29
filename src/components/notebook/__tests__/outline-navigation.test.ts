@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { NotebookOutlineItem } from "runtimed";
+import type { DocumentAnchor } from "../document-anchors";
 import { navigateNotebookOutlineItem } from "../outline-navigation";
 
 describe("navigateNotebookOutlineItem", () => {
@@ -66,6 +67,42 @@ describe("navigateNotebookOutlineItem", () => {
     await Promise.resolve();
     expect(target.scrollIntoView).toHaveBeenCalled();
     expect(window.location.hash).toBe("#notebook-cell-code-1");
+  });
+
+  it("resolves outline targets through document anchors when provided", () => {
+    const target = document.createElement("div");
+    target.id = "rendered-output-target";
+    target.scrollIntoView = vi.fn();
+    document.body.append(target);
+
+    const documentAnchor: DocumentAnchor = {
+      id: "notebook-cell-plot-output-plot-output",
+      kind: "output",
+      cellId: "plot",
+      cellAnchorId: "notebook-cell-plot",
+      domId: "rendered-output-target",
+      href: "#notebook-cell-plot-output-plot-output",
+      outputAnchorId: "notebook-cell-plot-output-plot-output",
+      outputId: "plot-output",
+    };
+    const item = outlineItem({
+      id: "plot:output:plot-output",
+      kind: "output",
+      cellId: "plot",
+      cellAnchorId: "notebook-cell-plot",
+      href: "#notebook-cell-plot-output-plot-output",
+    });
+
+    expect(
+      navigateNotebookOutlineItem(item, "#notebook-cell-plot-output-plot-output", {
+        behavior: "auto",
+        documentAnchors: [documentAnchor],
+      }),
+    ).toBe(true);
+    expect(target.scrollIntoView).toHaveBeenCalledWith({
+      block: "start",
+      behavior: "auto",
+    });
   });
 
   it("rejects non-anchor outline hrefs", () => {

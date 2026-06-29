@@ -1210,8 +1210,12 @@ function AppContent() {
   const handleNotebookViewFocus = useCallback(() => {}, []);
 
   const getOutlineStatusLabel = useOutlineStatusLabel();
-  const notebookViewModel = useNotebookViewModel({ getOutlineStatusLabel });
+  const notebookViewModel = useNotebookViewModel({
+    getOutlineStatusLabel,
+    includeDocumentAnchors: true,
+  });
   const outlineItems = notebookViewModel.outlineItems;
+  const documentAnchors = notebookViewModel.documentAnchors;
   const markdownHeadingAnchorsByCellId = notebookViewModel.markdownHeadingAnchorsByCellId;
   const activeOutlineItemId = useActiveOutlineItemId(
     outlineItems,
@@ -1356,9 +1360,15 @@ function AppContent() {
     toggleNotebookRailPanel("packages");
   }, [shellCapabilities.canViewPackages]);
 
-  const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
-    return navigateNotebookOutlineItem(item, href, { headingHashTarget: "cell" });
-  }, []);
+  const handleNavigateOutlineItem = useCallback(
+    (item: NotebookOutlineItem, href: string) => {
+      return navigateNotebookOutlineItem(item, href, {
+        documentAnchors,
+        headingHashTarget: "cell",
+      });
+    },
+    [documentAnchors],
+  );
 
   const getObservedHeads = useCallback(() => getHandle()?.get_heads_hex() ?? [], [getHandle]);
 

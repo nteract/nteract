@@ -109,6 +109,24 @@ export function createDocumentAnchorMap(
   return new Map(anchors.map((anchor) => [anchor.id, anchor]));
 }
 
+export function documentAnchorForOutlineItem(
+  item: NotebookOutlineItem,
+  anchors: readonly DocumentAnchor[],
+): DocumentAnchor | null {
+  const anchorId = documentAnchorIdForOutlineItem(item);
+  return anchors.find((anchor) => anchor.id === anchorId) ?? null;
+}
+
+export function documentAnchorIdForOutlineItem(item: NotebookOutlineItem): DocumentAnchorId {
+  if (item.kind === "heading" && item.headingAnchorId !== null) {
+    return item.headingAnchorId;
+  }
+  if (item.kind === "output" && item.href.startsWith("#")) {
+    return item.href.slice(1);
+  }
+  return item.cellAnchorId;
+}
+
 export function documentMarkdownBlockAnchorId(cellId: string, blockId: string): DocumentAnchorId {
   return `${notebookCellAnchorId(cellId)}-markdown-block-${encodeURIComponent(blockId)}`;
 }

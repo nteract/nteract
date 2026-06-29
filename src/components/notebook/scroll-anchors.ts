@@ -38,6 +38,7 @@ export function selectTopVisibleCellAnchor(
   const visible = candidates.filter(
     (candidate) =>
       !excluded.has(candidate.cellId) &&
+      candidate.bottom > candidate.top &&
       candidate.bottom > 0 &&
       candidate.top < options.viewportHeight,
   );

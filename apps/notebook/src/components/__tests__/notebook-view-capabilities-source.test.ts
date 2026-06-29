@@ -78,13 +78,16 @@ describe("NotebookView shell capabilities", () => {
 
     expect(sourceText).toMatch(/const previousCellCountRef = useRef\(cellIds\.length\);/);
     expect(sourceText).toMatch(
-      /const pendingScrollAnchorRef = useRef<NotebookScrollAnchorSnapshot \| null>\(null\);/,
+      /interface PendingNotebookScrollAnchorRestore \{[\s\S]*deletedCellId: string;[\s\S]*sourceCellIds: readonly string\[\];[\s\S]*snapshot: NotebookScrollAnchorSnapshot;/,
     );
     expect(sourceText).toMatch(
-      /const handleDeleteCell = useCallback\([\s\S]*tailPinnedRef\.current = false;[\s\S]*cancelTailScrollFrame\(\);[\s\S]*pendingScrollAnchorRef\.current = captureCellDeletionScrollAnchor\([\s\S]*onDeleteCell\(cellId\);/,
+      /const pendingScrollAnchorRef = useRef<PendingNotebookScrollAnchorRestore \| null>\(null\);/,
     );
     expect(sourceText).toMatch(
-      /useLayoutEffect\(\(\) => \{[\s\S]*restoreScrollAnchor\(containerRef\.current, pendingScrollAnchorRef\.current\);[\s\S]*pendingScrollAnchorRef\.current = null;/,
+      /const handleDeleteCell = useCallback\([\s\S]*tailPinnedRef\.current = false;[\s\S]*cancelTailScrollFrame\(\);[\s\S]*const sourceCellIds = cellIdsRef\.current;[\s\S]*const snapshot = captureCellDeletionScrollAnchor\(containerRef\.current, sourceCellIds, cellId\);[\s\S]*pendingScrollAnchorRef\.current = snapshot[\s\S]*onDeleteCell\(cellId\);/,
+    );
+    expect(sourceText).toMatch(
+      /useLayoutEffect\(\(\) => \{[\s\S]*const pending = pendingScrollAnchorRef\.current;[\s\S]*if \(cellIds === pending\.sourceCellIds\) return;[\s\S]*pendingScrollAnchorRef\.current = null;[\s\S]*if \(cellIds\.includes\(pending\.deletedCellId\)\) return;[\s\S]*restoreScrollAnchor\(containerRef\.current, pending\.snapshot\);[\s\S]*\}, \[cellIds\]\);/,
     );
     expect(sourceText).toMatch(
       /if \(shouldTailFollowCellCountChange\(previousCellCount, cellIds\.length, tailPinnedRef\.current\)\) \{[\s\S]*scheduleTailScrollIfPinned\(\);[\s\S]*\}/,

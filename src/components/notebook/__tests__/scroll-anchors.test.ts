@@ -63,6 +63,21 @@ describe("notebook scroll anchors", () => {
     });
   });
 
+  it("skips zero-height candidates when choosing a visible anchor", () => {
+    const snapshot = selectCellDeletionScrollAnchor(
+      [candidate("hidden-group-placeholder", 0, 0), candidate("cell-b", 24, 160)],
+      ["hidden-group-placeholder", "cell-b"],
+      "cell-a",
+      500,
+    );
+
+    expect(snapshot).toEqual({
+      anchorId: "notebook-cell-cell-b",
+      cellId: "cell-b",
+      offsetFromContainerTop: 24,
+    });
+  });
+
   it("allows tail-follow only on cell-count increases while pinned", () => {
     expect(shouldTailFollowCellCountChange(2, 3, true)).toBe(true);
     expect(shouldTailFollowCellCountChange(3, 2, true)).toBe(false);

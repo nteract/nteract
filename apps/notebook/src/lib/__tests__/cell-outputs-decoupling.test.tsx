@@ -221,6 +221,22 @@ describe("Phase C-lite: cell subscription / outputs decoupling", () => {
     );
   });
 
+  it("passes document anchor projection options through the notebook view-model hook", () => {
+    act(() => {
+      replaceNotebookCells([codeCell("code-1")]);
+    });
+
+    const { result } = renderHook(() => useNotebookViewModel({ includeDocumentAnchors: true }));
+
+    expect(result.current.documentAnchors).toEqual([
+      expect.objectContaining({
+        id: "notebook-cell-code-1",
+        kind: "cell",
+        cellId: "code-1",
+      }),
+    ]);
+  });
+
   it("does not re-render cell A when only cell B's outputs change", () => {
     // Seed both cells with one output each.
     const oA = streamOutput("cell-a-initial");

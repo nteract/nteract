@@ -720,8 +720,9 @@ export function NotebookViewer({
     metadata: notebookMetadata,
     resolveLanguage: cloudSourceLanguage,
     getOutlineStatusLabel,
+    includeDocumentAnchors: true,
   });
-  const { codeCellCount, outlineItems } = notebookViewModel;
+  const { codeCellCount, documentAnchors, outlineItems } = notebookViewModel;
   const notebookCellIds = notebookViewModel.cellIds;
   const activeOutlineItemId = useActiveOutlineItemId(
     outlineItems,
@@ -748,15 +749,19 @@ export function NotebookViewer({
     handleSelectOutlineItem(item);
     navigateNotebookOutlineItem(item, hash, {
       behavior: "auto",
+      documentAnchors,
       headingHashTarget: "cell",
     });
-  }, [handleSelectOutlineItem, outlineItems]);
+  }, [documentAnchors, handleSelectOutlineItem, outlineItems]);
   const handleNavigateOutlineItem = useCallback(
     (item: NotebookOutlineItem, href: string) => {
       handleSelectOutlineItem(item);
-      return navigateNotebookOutlineItem(item, href, { headingHashTarget: "cell" });
+      return navigateNotebookOutlineItem(item, href, {
+        documentAnchors,
+        headingHashTarget: "cell",
+      });
     },
-    [handleSelectOutlineItem],
+    [documentAnchors, handleSelectOutlineItem],
   );
   const handleTogglePackagesRail = useCallback(() => {
     if (activeRailPanel === "packages" && !railCollapsed) {

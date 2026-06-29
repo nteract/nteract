@@ -118,6 +118,12 @@ export interface NotebookViewProps {
   autoFocusFirstCell?: boolean;
 }
 
+interface PendingNotebookScrollAnchorRestore {
+  deletedCellId: string;
+  sourceCellIds: readonly string[];
+  snapshot: NotebookScrollAnchorSnapshot;
+}
+
 const NOTEBOOK_TAIL_SPACE = "clamp(4rem, 10vh, 6rem)";
 const NOTEBOOK_TAIL_PIN_THRESHOLD_PX = 96;
 
@@ -405,7 +411,7 @@ function NotebookViewContent({
   const tailPinnedRef = useRef(false);
   const tailScrollFrameRef = useRef<number | null>(null);
   const previousCellCountRef = useRef(cellIds.length);
-  const pendingScrollAnchorRef = useRef<NotebookScrollAnchorSnapshot | null>(null);
+  const pendingScrollAnchorRef = useRef<PendingNotebookScrollAnchorRestore | null>(null);
   const canEditCodeCellSources = capabilities?.canEditCells ?? !readOnly;
   const canEditMarkdownSources = capabilities?.canEditMarkdown ?? !readOnly;
   const canMutateCells = computeCanMutateCells({ canAcceptCellMutations, capabilities, readOnly });
@@ -692,21 +698,30 @@ function NotebookViewContent({
     (cellId: string) => {
       tailPinnedRef.current = false;
       cancelTailScrollFrame();
-      pendingScrollAnchorRef.current = captureCellDeletionScrollAnchor(
-        containerRef.current,
-        cellIdsRef.current,
-        cellId,
-      );
+      const sourceCellIds = cellIdsRef.current;
+      const snapshot = captureCellDeletionScrollAnchor(containerRef.current, sourceCellIds, cellId);
+      pendingScrollAnchorRef.current = snapshot
+        ? {
+            deletedCellId: cellId,
+            sourceCellIds,
+            snapshot,
+          }
+        : null;
       onDeleteCell(cellId);
     },
     [cancelTailScrollFrame, onDeleteCell],
   );
 
   useLayoutEffect(() => {
-    if (!pendingScrollAnchorRef.current) return;
-    restoreScrollAnchor(containerRef.current, pendingScrollAnchorRef.current);
+    const pending = pendingScrollAnchorRef.current;
+    if (!pending) return;
+    if (cellIds === pending.sourceCellIds) return;
+
     pendingScrollAnchorRef.current = null;
-  }, [cellIds.length]);
+    if (cellIds.includes(pending.deletedCellId)) return;
+
+    restoreScrollAnchor(containerRef.current, pending.snapshot);
+  }, [cellIds]);
 
   // Prevent horizontal scroll drift (can happen during text selection) and
   // remember whether the user is already reading at the notebook tail.

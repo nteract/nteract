@@ -215,6 +215,8 @@ export { computeCanMutateCells } from "./mutation-gate";
 export {
   createDocumentAnchorMap,
   createNotebookDocumentAnchors,
+  documentAnchorForOutlineItem,
+  documentAnchorIdForOutlineItem,
   documentMarkdownBlockAnchorId,
   type CreateNotebookDocumentAnchorsOptions,
   type DocumentAnchor,
