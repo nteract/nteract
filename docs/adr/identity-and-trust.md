@@ -93,7 +93,7 @@ Three properties fall out:
 3. If the principal is in the ACL, the connection inherits the ACL-stated scope. If not, the connection is rejected. An unauthenticated request may receive anonymous `viewer` scope when the room has a public-read ACL entry.
 4. The connection's `AuthenticatedConnection` carries that principal and scope for the life of the socket.
 
-What this changes from the older framing: rooms are no longer implicitly scoped to one IdP's principal space. They authenticate principals from whatever IdPs the host validates against, and the per-room ACL is the source of truth for who can do what. v1 enforces per-frame actor labels with a clone-preview validator before applying inbound `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` sync frames. The Automerge fork patch tracked in `docs/adr/automerge-fork-patches.md` remains the intended lower-cost replacement for that validator.
+What this changes from the older framing: rooms are no longer implicitly scoped to one IdP's principal space. They authenticate principals from whatever IdPs the host validates against, and the per-room ACL is the source of truth for who can do what. v1 enforces per-frame actor labels with a clone-preview validator before applying inbound `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` sync frames. The Automerge fork patch tracked in `docs/memos/automerge-fork-patches.md` remains the intended lower-cost replacement for that validator.
 
 ### Federated principal display
 
@@ -148,7 +148,7 @@ The room-host enforces scope at frame ingress by inspecting frame type and empti
 
 For non-empty `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` sync messages, the room-host also performs a v1 clone-preview validator: clone the current Automerge doc and sync state, apply the incoming message to the clone, extract the actors in the newly applied changes, and reject the frame if any new change's principal differs from the connection's authenticated principal. The real room document is mutated only after this preview succeeds.
 
-This closes live principal forgery for v1, but it is intentionally a stopgap. It deep-clones the document and applies each non-empty inbound message twice, which is most expensive on the high-churn `RuntimeStateDoc` path. `docs/adr/automerge-fork-patches.md` Patch 1 (`sync_message_new_changes`) is the planned v2 replacement: inspect the new changes from a sync message without cloning or applying to a throwaway document.
+This closes live principal forgery for v1, but it is intentionally a stopgap. It deep-clones the document and applies each non-empty inbound message twice, which is most expensive on the high-churn `RuntimeStateDoc` path. `docs/memos/automerge-fork-patches.md` Patch 1 (`sync_message_new_changes`) is the planned v2 replacement: inspect the new changes from a sync message without cloning or applying to a throwaway document.
 
 ### Schema-seed actors are canonical, with principal-prefixed labels as target
 
@@ -460,7 +460,7 @@ The threat surface this leaves:
 | Bearer-token replay (stolen JWT opens a new socket) | DPoP / mTLS / short token lifetimes | deferred |
 | Clone-preview validator cost on large/high-churn docs | `sync_message_new_changes` Automerge fork patch | deferred performance hardening |
 
-The v1 clone-preview validator closes principal forgery without new Automerge APIs by using the existing post-apply actor extraction primitive against a cloned document. The deferred work is performance, not correctness: parsing `automerge::sync::Message.changes` (`ChunkList(Vec<Vec<u8>>)` of raw chunks; V1 = one `Change` per chunk; V2 = potentially a whole-doc save) without cloning is what the companion `automerge-fork-patches.md` ADR proposes adding to our Automerge fork.
+The v1 clone-preview validator closes principal forgery without new Automerge APIs by using the existing post-apply actor extraction primitive against a cloned document. The deferred work is performance, not correctness: parsing `automerge::sync::Message.changes` (`ChunkList(Vec<Vec<u8>>)` of raw chunks; V1 = one `Change` per chunk; V2 = potentially a whole-doc save) without cloning is what the companion [Automerge fork patches memo](../memos/automerge-fork-patches.md) proposes adding to our Automerge fork.
 
 The upstream `filters` work (`origin/filters` branch on `automerge/automerge`, post-peer-review, `rust/automerge/src/filter.rs`) gives us a complementary subduction primitive once it lands in main: `Filter::Allow / AllowUpTo { heads } / Deny` per-actor or per-author. Filters do not reject changes pre-storage (rejected changes still ingest and sync) but they hide them from rendering, which is the right primitive for runtime revocation and post-hoc audit hiding. When filters lands, pairing them with a pre-apply validator becomes the natural next step. Keyhive ([inkandswitch/keyhive notebook](https://www.inkandswitch.com/keyhive/notebook/)) is orthogonal: change-level capability tokens with signed changes; composable later if needed.
 
@@ -482,7 +482,7 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 8. **ACL mechanics beyond the Cloudflare v1 shape.** The hosted prototype covers flat D1 rows, public-read rows, and owner-only row mutation. Still open: owner transfer UX, group/org expansion, inherited ACLs, audit event retention, Zanzibar/Authzed-style evaluation, and product policy for anonymous public presence.
 9. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. Until then, publish produces a fresh document in the destination space (see Decision 6).
 10. **Bearer-token replay mitigation.** DPoP / proof-of-possession tokens, mTLS for system-to-system, short token lifetimes. v1 inherits the bearer-token threat model; tightening it is future work.
-11. **Lower-cost actor-label validator.** Replace the v1 clone-preview validator with parsing of `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred until we land a patch on our Automerge fork as part of the room-host crate extraction. Drafted in `docs/adr/automerge-fork-patches.md`. Pairs with the filters work above for full attribution integrity once both are in.
+11. **Lower-cost actor-label validator.** Replace the v1 clone-preview validator with parsing of `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred until we land a patch on our Automerge fork as part of the room-host crate extraction. Drafted in `docs/memos/automerge-fork-patches.md`. Pairs with the filters work above for full attribution integrity once both are in.
 
 ## Worked examples
 

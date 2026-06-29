@@ -30,8 +30,7 @@ routine implementation notes, test plans, or ordinary code changes.
 
 ## Workflow
 
-1. Read `docs/README.md` and the relevant directory README before creating or
-   moving durable docs.
+1. Read `docs/README.md` before creating or moving durable docs.
 2. When moving docs, update indexes and cross-links; search for old paths with
    `git grep`.
 3. Prefer the smallest durable artifact. Mark contentious sections as open

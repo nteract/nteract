@@ -244,17 +244,3 @@ execution starts. RuntimeStateDoc polling ensures outputs are
 available before the client reads them. CommsDoc sync matters when those
 outputs include live widgets. All document sync streams run concurrently on
 the same socket connection.
-
-## Key Source Files
-
-| File | Role |
-|------|------|
-| `crates/runt-mcp/src/execution.rs` | `execute_and_wait`, `run_all_and_wait` — MCP entry points |
-| `crates/notebook-sync/src/execution_wait.rs` | `await_execution_terminal` — shared two-phase polling |
-| `crates/notebook-sync/src/handle.rs` | `send_request_after_heads`, `current_heads_hex` |
-| `crates/runtimed/src/notebook_sync_server/peer_writer.rs` | `wait_for_required_heads` — daemon-side causal gate |
-| `crates/runtimed/src/runtime_agent/` | Kernel management, output routing, `set_execution_done` |
-| `crates/runtime-doc/src/doc.rs` | RuntimeStateDoc schema — executions map, kernel status |
-| `crates/runtimed-outputs/src/output_resolver.rs` | `resolve_cell_outputs_for_llm` — manifest → Output |
-| `crates/notebook-doc/src/mime.rs` | MIME classification (text vs binary) |
-| `packages/runtimed/src/notebook-client.ts` | Frontend `executeCell` with `getRequiredHeads` callback |

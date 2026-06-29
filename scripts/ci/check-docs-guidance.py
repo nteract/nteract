@@ -18,15 +18,6 @@ import urllib.parse
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DOCS_SUBDIRS_REQUIRING_INDEX = {
-    "adr",
-    "audits",
-    "measurements",
-    "memos",
-    "plans",
-    "prd",
-    "runbooks",
-}
 GUIDANCE_EXTENSIONS = {".md", ".mdx"}
 
 REFERENCE_LINK_RE = re.compile(r"^\s*\[(?!\^)[^\]\n]+\]:\s*(.+?)\s*$", re.MULTILINE)
@@ -128,21 +119,8 @@ def iter_link_targets(text: str) -> list[tuple[int, str]]:
     return targets
 
 
-def check_index(path: Path, errors: list[str]) -> None:
-    parts = path.parts
-    if len(parts) < 3 or parts[0] != "docs":
-        return
-    subdir = parts[1]
-    if subdir not in DOCS_SUBDIRS_REQUIRING_INDEX:
-        return
-    index = REPO_ROOT / "docs" / subdir / "README.md"
-    if not index.exists():
-        errors.append(f"{path}: docs/{subdir}/ contains durable docs but has no README.md index")
-
-
 def check_file(path: Path, tracked: set[str], errors: list[str]) -> None:
     absolute = REPO_ROOT / path
-    check_index(path, errors)
     if path.suffix.lower() not in GUIDANCE_EXTENSIONS:
         return
     if not absolute.exists() or not absolute.is_file():

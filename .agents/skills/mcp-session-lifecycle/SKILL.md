@@ -232,17 +232,6 @@ is closed. Use `connect_open(path)` to let the daemon reload from disk.
 If an ephemeral room was evicted, `connect(uuid)` creates a new empty room
 with no cells and no kernel. Check `list_rooms` first.
 
-## Key Source Files
-
-| File | What it owns |
-|------|-------------|
-| `crates/runt-mcp/src/daemon_watch.rs` | `classify()` pure function, `watch()` loop, `rejoin()` |
-| `crates/runt-mcp/src/session.rs` | `NotebookSession`, `SessionDropReason`, `SessionDropInfo` |
-| `crates/runt-mcp/src/lib.rs` | `NteractMcp` server, `require_handle!` pattern |
-| `crates/runt-mcp/src/tools/session.rs` | `connect_notebook`, `create_notebook`, `disconnect_previous_session` |
-| `crates/runt-mcp-proxy/src/proxy.rs` | `McpProxy`, `restart_child()`, `track_session()` |
-| `crates/runtimed/src/notebook_sync_server/` | Room lifecycle, peer counting, eviction |
-
 ## North Star: Concurrent MCP Clients
 
 The current architecture assumes a single MCP client per daemon session.

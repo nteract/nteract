@@ -216,7 +216,3 @@ The #1969 implementation plan should be updated before coding:
 - classify launch failures in `runtime_agent.rs` before wrapping;
 - keep retry lifecycle in a progressing state until final success/error;
 - add focused tests for UV and Conda disk states, including broken symlink behavior when feasible.
-
-## Open Follow-ups
-
-- **KE-1** (Design; reset/rebuild request path): Captured env has no user-initiated rebuild/reset surface. Daemon lifecycle owns automatic repair, but lacks a `ResetNotebookEnvironment { RebuildSame | RefreshDefaults }` request for manual recovery and defaults refresh.

@@ -251,7 +251,11 @@ return `cell_queued` / `guard_rejected` details directly.
 There is no flow-control field on the wire. No window, no credits, no rate limit. Back-pressure is structural:
 
 1. The receiving side reads through `FramedReader`, a bounded mpsc channel (capacity 16 in the daemon peer loop). When the consumer falls behind, the reader task blocks on `tx.send()` and stops reading from the socket. TCP/Unix-socket flow control then propagates to the sender, which blocks on its own `write_all`.
-2. The peer writer (`peer_writer.rs`) is a single ordered actor task that owns the write half. Other room tasks queue frames through a bounded mpsc (`PEER_OUTBOUND_QUEUE_CAPACITY = 1024`, `crates/runtimed/src/notebook_sync_server/peer_writer.rs:14`); if the writer falls behind, the queue fills and `PeerWriter::send_frame` fails via `try_send` instead of waiting for socket drain. That keeps command paths from blocking on slow peers, but every steady-state frame type still competes for one bounded FIFO. The lane-split investigation in `peer-egress-lanes.md` tracks the follow-up.
+2. The peer writer (`peer_writer.rs`) is a single ordered actor task that owns
+   the write half. Other room tasks queue frames into bounded writer lanes; if
+   the writer falls behind, send attempts fail instead of waiting for socket
+   drain. That keeps command paths from blocking on slow peers while isolating
+   reliable sync/response traffic from ephemeral presence/broadcast traffic.
 3. The 100 MiB outer ceiling on a single frame bounds the worst-case allocation; per-type caps bound it per channel.
 
 The frame-level cap-and-warn pattern is the closest the protocol gets to flow control, and it is a hard reject, not a rate limit. A misbehaving peer that floods small frames will fill the bounded mpsc, then the OS socket buffer, then block. The only escape valve is the idle-peer timeout in the daemon's peer loop, which disconnects peers that stop sending inbound frames for a configured interval (the daemon's `idle_peer_timeout`).
@@ -261,12 +265,17 @@ The frame-level cap-and-warn pattern is the closest the protocol gets to flow co
 Wire compatibility is enforced by:
 
 - `crates/notebook-wire/src/lib.rs` for Rust frame constants and limits.
-- `packages/runtimed/src/transport.ts` for TypeScript constants and limits (hand-mirrored, no codegen).
-- `packages/runtimed/src/protocol-contract.ts` for TS discriminant lists, checked against the Rust source of truth.
-- `crates/notebook-protocol/src/protocol.rs::typescript_protocol_contract_matches_rust_wire_discriminants` (`:1512`) compares the TS discriminant lists against the Rust enums.
+- generated TypeScript wire constants for package consumers.
+- `packages/runtimed/src/protocol-contract.ts` for TS discriminant lists,
+  checked against the Rust source of truth.
+- `crates/notebook-protocol/src/protocol.rs::typescript_protocol_contract_matches_rust_wire_discriminants`
+  compares the TS discriminant lists against the Rust enums.
 - `crates/notebook-protocol/src/connection.rs::frame_size_limits_cover_every_known_frame_type` (`:530`) asserts every Rust per-type cap is tighter than the 100 MiB outer ceiling and that warn < cap.
 
-The contract tests compare enum variant lists and frame-type byte values, not the full per-type size table. Per-type caps and warns are copied by hand into `frameSizeLimits` and are not asserted against the Rust table by CI.
+The contract tests compare enum variant lists, frame-type byte values, and the
+generated TypeScript surface against Rust source of truth. Any remaining
+hand-authored protocol adapters should stay downstream of that generated
+contract rather than copying frame tables.
 
 The Python client (`crates/runtimed-py`) uses the Rust framing directly through `crates/notebook-sync` and `crates/notebook-protocol`, so it inherits any Rust-side change automatically. Hosted rooms now have two WebSocket transports: the browser-side `CloudWebSocketTransport` in `apps/notebook-cloud/viewer/live-sync.ts`, and the non-browser/runtime-peer `CloudWsFrameTransport` in `crates/notebook-cloud-transport`. Both carry one typed frame per WebSocket binary message with no outer length preamble; the browser transport owns its TypeScript byte layout, while the runtime-peer transport reuses Rust framing types.
 
@@ -337,9 +346,3 @@ The phase fields are deliberately ordered so a later snapshot never represents l
 6. **No wire-level signature or MAC.** The identity ADR mandates server-side per-frame actor validation against `AuthenticatedConnection.principal`, but the bytes themselves carry no cryptographic binding. A trusted intermediary (Tauri relay) could rewrite an outbound frame's payload before forwarding. v1 inherits the same-UID trust model from the Unix socket; hosted rooms will inherit the TLS trust model from the WebSocket. Change-level signed authorship (Keyhive direction) is the eventual fix.
 
 7. **Runtime-agent reuses Request/Response type bytes.** `0x01`/`0x02` carry either `NotebookRequestEnvelope`/`NotebookResponseEnvelope` or `RuntimeAgentRequestEnvelope`/`RuntimeAgentResponseEnvelope` depending on which connection it is. There is no way to tell them apart from the type byte alone; the handshake variant determines the payload shape. A misrouted frame (e.g., a buggy proxy that crosses the streams) would deserialize incorrectly. Worth either a distinct type-byte block for runtime-agent traffic or an explicit `kind` field in the envelope.
-
-## Open Follow-ups
-
-- **WP-4** (Design; `crates/notebook-protocol/`, `crates/runtimed/`): `0x01`/`0x02` frame IDs are reused with different envelopes between `RuntimeAgent` and `NotebookSync` channels. Distinguishable only by handshake variant; a misrouted frame deserializes incorrectly with no protocol-level detection.
-- **WP-8** (Design; `crates/notebook-protocol/`): `ProtocolCapabilities.protocol_version: Option<u32>` is set, defaults to `Some(PROTOCOL_VERSION)`, but no client reads it differently from the preamble byte. Possibly vestigial.
-- **WP-10** (Design; `crates/runtimed/src/notebook_sync_server/peer_loop.rs`): No application-layer heartbeat for typed-frame connections. Presence has room-level heartbeats; the connection itself only has `daemon.idle_peer_timeout()`.

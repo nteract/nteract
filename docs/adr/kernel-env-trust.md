@@ -286,7 +286,3 @@ If Claude later asks `manage_dependencies(add=["requests"])`, the same MCP-level
 6. **Lockfile-based trust.** A `uv.lock` or `conda-lock.yml` is a stronger statement than a raw dep list: every transitive package and version is pinned. Trust against a lockfile hash (rather than dep names) would close the "approved pandas but pandas pulled a malicious transitive" gap. Open question how to surface that in the dialog without overwhelming the user.
 7. **Pre-resolution preview.** The user approves names, but the daemon resolves and installs full transitive trees. Showing the resolved tree before install (so the dialog can warn about surprise transitives) is a UX direction that needs solver cooperation.
 8. **Channel ordering.** `conda_channels` is treated as a set today: approving `[conda-forge, defaults]` is the same as `[defaults, conda-forge]`. Channel order affects which copy of a package wins, which is a separate supply-chain decision the current model does not capture.
-
-## Open Follow-ups
-
-- **MSL-2** (Design; `crates/runtimed/src/daemon.rs:1436-1450`): `seed_defaults` seeds startup base packages into `pypi` and `conda` only — not into the channel ecosystems (`conda-channel`, `pixi-channel`). A user with a notebook on a non-default channel will see all channel approvals as fresh prompts even after several uses.

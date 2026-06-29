@@ -112,43 +112,6 @@ Recommended staged design:
    returns. Do not drop encoded `RuntimeStateSync` frames without resetting the
    corresponding `sync::State`.
 
-## Draft Implementation Plan
-
-### PR 1: observability and contract tests
-
-- Add `PeerEgressLane` classification.
-- Keep the existing FIFO writer.
-- Log/metric queue depth and full errors by lane and frame type.
-- Add tests that pin the current control barrier ordering:
-  `RuntimeStateSync` reply before `SessionControl(runtime_state=Ready)`, and
-  notebook sync reply before `SessionControl(notebook_doc=Interactive)`.
-
-### PR 2: scheduler without semantic drops
-
-- Replace the single `mpsc<OutboundFrame>` receiver with a single writer actor
-  that owns a `Reliable` queue and an `Ephemeral` queue.
-- Preserve per-lane FIFO.
-- Prefer `Reliable` over `Ephemeral` when both are ready.
-- Bound or coalesce `Ephemeral` pressure before it can reject reliable frames.
-- Keep overflow behavior fail-closed initially so this PR changes latency and
-  isolation, not delivery semantics.
-
-### PR 3: control reservation and barriers
-
-- Split `Response` into a reserved-capacity control lane.
-- Keep phase-related `SessionControl` with the sync frame it summarizes, or add
-  explicit barrier tokens before allowing it to use the control lane.
-- Add tests that a runtime-state flood cannot delay an unrelated response once
-  the reserved lane exists.
-
-### PR 4: runtime-state catch-up policy
-
-- Add a lane-full recovery path for `RuntimeStateSync`.
-- On runtime lane saturation, invalidate that peer's runtime sync state and
-  enqueue one catch-up generation when capacity returns.
-- Test with a synthetic runtime output burst that response/session-control
-  frames still reach the peer promptly and the RuntimeStateDoc replica
-  converges after the burst.
 
 ## Non-Goals
 
@@ -159,19 +122,3 @@ Recommended staged design:
   still ephemeral.
 - Do not use an unbounded outbound queue for everything. That hides the failure
   and allows a dead or slow peer to accumulate memory without a clear cap.
-
-## Open Questions
-
-1. Should `Broadcast::Comm` live in `Control` or `Ancillary`? The durable widget
-   state path suggests ancillary, but custom comm messages are user-visible.
-2. Should `PoolStateSync` have its own lane or share ancillary with presence?
-   Pool state is daemon-global but not usually critical to notebook execution.
-3. Should queue-full behavior disconnect only the slow peer, or should some
-   lanes shed/recover while preserving the connection?
-4. Can `RuntimeStateDoc` sync generation move closer to the writer so runtime
-   lane coalescing regenerates from current state instead of handling already
-   encoded messages?
-5. Should frontend output projection serialize per-cell async materialization?
-   A lane split can increase runtime burstiness, and `applyOutputChangeset`
-   awaits blob resolution. The frame protocol does not require global ordering,
-   but the projection path should still prevent stale async writes.

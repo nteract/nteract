@@ -10,7 +10,7 @@ retire at least one item or add evidence explaining why the item is host-owned.
 
 ## References
 
-- [Shared-Store Projection Convergence](../adr/shared-store-projection-convergence.md)
+- [Shared-Store Projection Convergence](../memos/shared-store-projection-convergence.md)
 - [Notebook Host Shell Convergence](../adr/notebook-host-shell-convergence.md)
 - [Notebook Identity and Environment Surface Audit](../audits/notebook-identity-environment-surface-audit.md)
 - [Hosted Cloud Rooms](../../apps/notebook-cloud/README.md)

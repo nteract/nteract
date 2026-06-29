@@ -407,46 +407,6 @@ published demo notebooks only when the room has public-read ACL. Private
 notebooks need viewer-or-better auth, signed URLs, or an output origin that can
 enforce equivalent access.
 
-## Implementation Sequence
-
-1. **ADR and docs.** Land this document, cross-reference it from
-   `identity-and-trust.md` and `hosted-notebook-artifacts.md`.
-2. **ACL schema, lookup, and side-effect removal.** Add `notebook_acl`, a
-   storage helper, and unit tests for principal rows, public-read rows, and
-   missing ACL rejection. This PR must also remove or guard the existing
-   WebSocket `ensureNotebook()` side effect; do not ship an ACL table while
-   `/n/:id/sync` can still mint notebook rows before authorization.
-3. **Auth refactor.** Change Worker auth so dev/OIDC/JupyterHub authenticate a
-   principal and operator first; route handlers call
-   `authorizeNotebookAccess()` to derive final scope.
-4. **Public viewer as ACL.** Seed demo/public notebooks with the public ACL
-   row, and make anonymous render/sync fail without that row.
-5. **Publish/create owner ACL.** Publish/import creates the notebook row and
-   owner ACL row atomically before recording the first revision. Existing
-   notebook creation helpers should be renamed or split so call sites choose
-   between creation, touch/update, and authorization.
-6. **DO snapshot materialization.** Load latest snapshot bundle into
-   `runtimed-wasm` inside the DO and use it as the room state, initially still
-   without kernels.
-7. **Editor RuntimeStateDoc path enforcement.** Done in the shared
-   runtime-doc policy: editor/owner `RuntimeStateDoc` sync is rejected for
-   widget state and runtime state. Mutable widget values live in `CommsDoc`.
-   Runtime peers may write only policy-allowed lifecycle, progress, output,
-   and topology updates for accepted work; execution intent/provenance plus
-   environment, trust, workstation, and schema/root facts remain
-   coordinator/room-host owned.
-8. **Editor cell-editing slice.** Server-side semantic gate
-   (`validate_editor_notebook_changes`) accepts full cell editing (any cell
-   type, source, and structure) from authenticated `editor`/`owner`
-   connections while rejecting notebook-level metadata edits from non-owners.
-9. **Runtime peer ingress.** Allow runtime peers to attach and update
-   `RuntimeStateDoc` plus blobs without notebook edits.
-10. **Direct OIDC and app sessions.** Wire real provider validation after ACL
-   lookup is in place. Browser app APIs and live-room WebSockets follow
-   `hosted-credential-transport.md`: OIDC bootstraps first-party app-session
-   cookies, cookie-backed WebSockets require trusted origins, explicit bearer
-   subprotocols remain available for compatible browser/native flows, and
-   native/system clients may use headers.
 
 ## Prototype-only behavior to remove
 
@@ -477,9 +437,3 @@ enforce equivalent access.
    immediately through a `SESSION_CONTROL` close frame or only take effect on
    the next connection attempt. `identity-and-trust.md` defers general
    revocation, but hosted ACL mutation makes the decision visible earlier.
-
-## Open Follow-ups
-
-- **HCA-1** (Targeted PR; `apps/notebook-cloud/src/identity.ts`, `apps/notebook-cloud/test/identity.test.ts`, `docs/runbooks/hosted-direct-oidc-demo-runbook.md`): Mixed hosted credentials are documented as reject-by-default in `hosted-credential-transport.md`, but the current notebook-cloud prototype still needs complete mixed-credential rejection coverage. The direct-OIDC implementation should reject mixed identity-bearing credentials unless a deployment proves they are one credential.
-- **HCA-3** (Targeted PR; `apps/notebook-cloud/src/identity.ts`, `docs/adr/hosted-room-authorization.md`): **Decided** as the staged policy, recorded in `hosted-room-authorization.md` Decision 3: editors cannot upload blobs until server-side reference-path validation lands; the two ship together in one change set. Stage 1 is already enforced uniformly (`identity.ts::allowsBlobUpload` permits only `runtime_peer`/`owner`, checked at both the `PUT_BLOB` frame prefilter and the HTTP upload route). The remaining row is the stage-2 Targeted PR: editor upload plus reference-path validation together.
-- **HCA-4** (Targeted PR; `crates/notebook-doc/src/lib.rs`, `crates/runtime-doc/src/doc.rs`, `docs/adr/identity-and-trust.md`): Live peer validators must reject incoming changes authored by `system`/legacy schema actors. Schema/system actors are tolerated only as trusted seed or import history already present before peer ingress, not as newly received peer-authored deltas.

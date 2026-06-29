@@ -2,34 +2,6 @@
 
 Scope: `apps/notebook/src/**`, shared components at `src/components/**`, and `packages/notebook-host/`.
 
-## Directory layout
-
-```
-src/                          ← Shared components (path alias @/)
-├── bindings/                 ← TypeScript types generated from Rust (ts-rs)
-├── components/
-│   ├── cell/                 ← Cell container, controls, execution count
-│   ├── editor/               ← CodeMirror wrappers, extensions, themes
-│   ├── isolated/             ← Iframe security isolation (see src/components/isolated/AGENTS.md)
-│   ├── notebook/             ← Shared notebook chrome, capabilities, view-model projections
-│   ├── outputs/              ← Output renderers (MediaRouter, AnsiOutput, etc.)
-│   ├── widgets/              ← ipywidgets and anywidget (see src/components/widgets/AGENTS.md)
-│   └── ui/                   ← shadcn components (see src/components/ui/AGENTS.md)
-├── hooks/                    ← Shared hooks (useSyncedSettings, useTheme)
-├── isolated-renderer/        ← Code that runs INSIDE isolated iframe
-├── lib/                      ← Shared utilities (utils.ts with cn())
-└── styles/                   ← Global stylesheets
-
-apps/notebook/src/            ← Notebook app (path alias ~/)
-├── components/               ← App-specific components (toolbar, banners)
-├── contexts/                 ← React contexts (PresenceContext)
-├── hooks/                    ← Notebook-specific hooks (useDaemonKernel, etc.)
-├── lib/                      ← App-specific utilities (materialize-cells.ts)
-├── wasm/                     ← WASM bindings (runtimed-wasm)
-├── App.tsx                   ← Root component
-└── types.ts                  ← App types
-```
-
 ## Path aliases
 
 Configured in `apps/notebook/tsconfig.json`:
@@ -85,27 +57,6 @@ Module-level helpers (no hooks) — called once from `main.tsx` after `createTau
 Notebook request/response traffic goes through `NotebookClient` on `host.transport`, encoding `NotebookRequestEnvelope` values as typed protocol frames (`0x01`). Responses return as `0x02` frames on the unified inbound transport stream, resolved by request id.
 
 Prefer extending `NotebookRequest` for daemon-owned notebook behavior. Add host methods for platform behavior. Some direct `invoke(...)` calls remain for host-side work that is not a notebook request/response frame: save/open dialogs, app update flows, dependency validation helpers.
-
-## Key hooks
-
-| Hook | Role |
-|------|------|
-| `useNotebook` | Owns the active notebook controller: WASM NotebookHandle, materialization, `CellChangeset` dispatch |
-| `useDaemonKernel` | Kernel execution and ephemeral runtime event callbacks |
-| `usePresence` | Remote cursor/selection tracking via presence frames |
-| `useEnvProgress` | RuntimeStateDoc-backed environment progress projection |
-| `useDependencies` | UV dependency management |
-| `useCondaDependencies` | Conda dependency management |
-| `useDenoConfig` | Deno config detection plus flexible-npm-imports toggle |
-| `useManifestResolver` | Resolves blob hashes to output data |
-| `useCellKeyboardNavigation` | Arrow keys, enter/escape modes |
-| `useEditorRegistry` | CodeMirror editor instance registry |
-| `useGitInfo` | Git branch/status for the notebook file |
-| `useGlobalFind` | Global find-and-replace across cells |
-| `useTrust` | Notebook trust verification state |
-| `usePixiDetection` | Pixi project detection (pixi.toml is the source of truth) |
-| `usePoolState` | Daemon pool state |
-| `useCrdtBridge` | CodeMirror ↔ CRDT character-level sync |
 
 ## Data flow
 
@@ -177,19 +128,3 @@ Shape originates in Rust (`notebook-doc/src/diff.rs`). TypeScript source of trut
 - Persistent runtime state comes from RuntimeStateDoc projections. Broadcasts are ephemeral only.
 - Preserve split cell-store behavior: update individual cells by id when possible, reserve full replacement for structural changes.
 - Render cells in stable DOM order in `NotebookView.tsx` and use CSS `order` for visual positioning so iframe outputs survive reorder without destruction.
-
-## Key files
-
-| File | Role |
-|------|------|
-| `apps/notebook/tsconfig.json` | Path alias configuration |
-| `apps/notebook/src/App.tsx` | Root component, provider setup |
-| `apps/notebook/src/hooks/useNotebook.ts` | Product-facing notebook controller hook |
-| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Current WASM handle owner and materialization implementation |
-| `apps/notebook/src/lib/materialize-cells.ts` | WASM → React conversion |
-| `src/components/notebook/state/notebook-frame-bus.ts` | Pub/sub for broadcast and presence |
-| `apps/notebook/src/hooks/usePresence.ts` | Remote presence tracking |
-| `packages/runtimed/src/transport.ts` | `FrameType` constants and transport interface |
-| `apps/notebook/src/lib/frame-pipeline.ts` | Frame event processing and materialization planning |
-| `src/components/outputs/media-router.tsx` | Output type dispatch |
-| `src/components/editor/codemirror-editor.tsx` | Main editor |

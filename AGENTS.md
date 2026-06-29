@@ -2,7 +2,10 @@
 
 <!-- This file is canonical. CLAUDE.md is a symlink to AGENTS.md. -->
 
-This is a map. Subsystem details live in nested `AGENTS.md` files next to code, auto-loaded rules live in `.claude/rules/`, and repository skills live in `.agents/skills/`. Claude reads the same skills through the `.claude/skills` symlink. Run `cargo xtask help` for build commands.
+Subsystem details live in nested `AGENTS.md` files next to code, auto-loaded
+rules live in `.claude/rules/`, and repository skills live in `.agents/skills/`.
+Claude reads the same skills through the `.claude/skills` symlink. Run
+`cargo xtask help` for build commands.
 
 ## Project positioning
 
@@ -23,34 +26,6 @@ technical decisions to `docs/adr/`, durable product requirements to `docs/prd/`,
 scoped execution work to `docs/plans/`, evidence and follow-up lists to
 `docs/audits/`, benchmark evidence to `docs/measurements/`, operational
 procedures to `docs/runbooks/`.
-
-## Skills
-
-Use `.agents/skills/` when the task matches:
-- `architecture` — docs taxonomy, ADR/memo/PRD placement, cross-cutting architecture, and source-grounded proposal work
-- `automerge-sync` — sync protocol internals, document model, reconnection, peer state, in-flight suppression, protocol design patterns, convergence debugging
-- `daemon-dev` — daemon development, Python bindings, build system, kernel debugging, xtask workflows
-- `execution-pipeline` — end-to-end cell execution: required_heads → ExecuteCell → CellQueued → RuntimeStateDoc polling → output-sync grace → output resolution
-- `frontend-dev` — frontend development, TypeScript bindings (ts-rs), UI iteration workflows
-- `mcp-session-lifecycle` — MCP proxy supervision, daemon watch loop, session state, rejoin/reconnect races, room eviction
-- `pr-reviewer` — opencode-backed Bedrock PR reviews with isolated worktrees and structured findings
-- `releasing` — version bumps, tag conventions, release procedures
-- `testing` — choosing test strategies, running verification, E2E, diagnostics collection
-
-## Subsystem guides
-
-| Topic | Doc |
-|------|-----|
-| Architecture + daemon | `crates/runtimed/AGENTS.md` |
-| Frontend architecture | `apps/notebook/src/AGENTS.md` |
-| Hosted cloud rooms | `apps/notebook-cloud/AGENTS.md` |
-| UI components (Shadcn + nteract) | `src/components/ui/AGENTS.md` |
-| Wire protocol & sync | `crates/notebook-wire/AGENTS.md` |
-| Widgets | `src/components/widgets/AGENTS.md` |
-| Environments / trust | `crates/kernel-env/AGENTS.md` |
-| Iframe sandbox & renderer plugins | `src/components/isolated/AGENTS.md` |
-| CRDT mutation rules | `crates/notebook-doc/AGENTS.md` |
-| Logging | `.claude/rules/logging.md` |
 
 ## MCP servers
 

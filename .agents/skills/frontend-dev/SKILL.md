@@ -390,22 +390,6 @@ Export directory set in `.cargo/config.toml`:
 TS_RS_EXPORT_DIR = { value = "src/bindings", relative = true }
 ```
 
-### Source Files
-
-| Rust File | Generated Types |
-|-----------|-----------------|
-| `crates/runtimed-client/src/settings_doc.rs` | `ThemeMode`, `PythonEnvType`, `UvDefaults`, `CondaDefaults`, `PixiDefaults`, `SyncedSettings` |
-| `crates/runtimed-client/src/runtime.rs` | `Runtime` |
-
-### Generated Output
-
-```
-src/bindings/
-  CondaDefaults.ts, PixiDefaults.ts, PythonEnvType.ts,
-  Runtime.ts, SyncedSettings.ts, ThemeMode.ts, UvDefaults.ts,
-  index.ts          -- Re-exports all types
-```
-
 ## Zed Editor Tasks
 
 Pre-configured in `.zed/tasks.json` (cmd-shift-t):

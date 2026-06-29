@@ -201,29 +201,6 @@ Each open notebook has a room (`NotebookRoom`), keyed by UUID. A `PathIndex` map
 - Hold tokio mutex guards only within synchronous blocks (use block scoping, verify with `cargo test -p runtimed --test tokio_mutex_lint`).
 - Cell list renders in stable DOM order (sorted by ID) with CSS `order` for visual positioning.
 
-## Code Structure
-
-```
-crates/runtimed/src/
-  daemon.rs                — State, pool management, connection routing
-  notebook_sync_server/    — Room lifecycle, peer sync, persistence
-  jupyter_kernel.rs        — Process spawn, ZMQ wiring, IOPub routing
-  output_prep.rs           — QueueCommand, iopub → nbformat, blob offload
-  runtime_agent.rs         — Kernel lifecycle, RuntimeStateDoc writes
-  blob_store.rs            — Content-addressed store with metadata sidecars
-  singleton.rs             — Lock file, PID tracking
-crates/runtimed-client/src/
-  client.rs                — Client APIs (Python bindings, MCP)
-  daemon_paths.rs          — Socket/blob path resolution
-  settings_doc.rs          — Settings Automerge schema
-crates/runtimed-outputs/src/
-  output_resolver.rs       — Shared manifest resolution
-crates/runtimed-py/        — PyO3/maturin bindings
-python/runtimed/           — Python SDK package
-python/nteract/            — MCP wrapper (launches `runt mcp`)
-python/gremlin/            — Autonomous notebook stress tester
-```
-
 ## Troubleshooting
 
 **Daemon lock held:** `runt daemon status` → check with `lsof`. Remove stale `daemon.lock` + `daemon.json` if crashed.

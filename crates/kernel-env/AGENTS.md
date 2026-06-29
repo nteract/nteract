@@ -144,15 +144,9 @@ Kernel is dead at this point so rename is safe.
 
 ## Project file discovery
 
-Unified detection in `crates/runtimed/src/`:
-
-| Module | Purpose |
-|--------|---------|
-| `project_file.rs` | `find_nearest_project_file()` — single walk-up, closest wins; handles pyproject.toml, pixi.toml, environment.yml |
-| `pixi_project.rs` | Pixi project launch helpers; offline-tolerant `pixi shell-hook` probe with frozen retry |
-| `uv_project.rs` | UV project launch helpers; `uv run` command construction for pyproject-backed kernels |
-
-Walk-up stops at `.git` boundaries and the user's home directory. Tiebreaker order within a directory: pyproject.toml > pixi.toml > environment.yml.
+Unified project-file detection walks up from the notebook, stops at `.git`
+boundaries and the user's home directory, and uses closest-wins semantics.
+Same-directory tiebreaker: pyproject.toml > pixi.toml > environment.yml.
 
 ## Notebook metadata schema
 
@@ -213,21 +207,3 @@ Ensures the app works standalone without requiring users to install tooling.
 3. Wire into daemon auto-launch helpers at the correct priority position.
 4. Add frontend projection in `packages/runtimed/src/derived-state.ts` and the appropriate hook.
 5. Add test fixture coverage in `crates/notebook/fixtures/audit-test/`.
-
-## Key files
-
-| File | Role |
-|------|------|
-| `crates/kernel-launch/src/lib.rs` | Public API for kernel launching |
-| `crates/kernel-launch/src/tools.rs` | Tool bootstrapping (deno, uv, ruff, pixi) |
-| `crates/kernel-env/src/uv.rs` | UV environment creation and caching |
-| `crates/kernel-env/src/conda.rs` | Conda environment creation and caching |
-| `crates/kernel-env/src/warmup.rs` | Pool warming logic |
-| `crates/runtimed/src/daemon.rs` | Pool management |
-| `crates/runtimed/src/notebook_sync_server/metadata.rs` | Auto-launch detection and resolution |
-| `crates/runtimed/src/runtime_agent.rs` | Per-notebook event loop |
-| `crates/runtimed/src/jupyter_kernel.rs` | Kernel process spawning |
-| `crates/runtimed/src/inline_env.rs` | Cached inline dep environments |
-| `crates/runtimed/src/project_file.rs` | Unified project file detection |
-| `crates/runt-trust/src/lib.rs` | Notebook trust extraction |
-| `crates/notebook-doc/src/metadata.rs` | Metadata schema and accessors |

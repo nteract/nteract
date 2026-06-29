@@ -15,7 +15,7 @@
  * `distinctUntilChanged` projection emits only when its slice actually
  * changes, and that dedup is shared by every subscriber instead of
  * re-derived per component instance. See
- * `docs/adr/shared-store-projection-convergence.md`.
+ * `docs/memos/shared-store-projection-convergence.md`.
  */
 
 import {
