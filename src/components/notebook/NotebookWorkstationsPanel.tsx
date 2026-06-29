@@ -241,16 +241,16 @@ function WorkstationPairingCard({
   onCancel?: () => void;
   onRestart?: () => void;
 }) {
-  const pairingCommands =
-    pairing.commands && pairing.commands.length > 0
-      ? pairing.commands
-      : [
-          {
-            id: "connect",
-            label: "Connect workstation",
-            command: pairing.connectCommand,
-          },
-        ];
+  const hasStructuredCommands = pairing.commands && pairing.commands.length > 0;
+  const pairingCommands = hasStructuredCommands
+    ? pairing.commands
+    : [
+        {
+          id: "connect",
+          label: "Connect workstation",
+          command: pairing.connectCommand,
+        },
+      ];
   const hasServiceCommand = pairingCommands.some((command) =>
     command.command.includes("workstation service"),
   );
@@ -279,13 +279,28 @@ function WorkstationPairingCard({
       </div>
 
       {pairing.status === "registered" ? (
-        <div className="space-y-2 text-xs" aria-live="polite">
+        <div className="space-y-2 text-xs">
           <div className="flex min-w-0 items-center gap-2 text-foreground">
             <CircleCheck className="size-4 shrink-0 text-emerald-500" aria-hidden="true" />
-            <span data-testid="workstation-pairing-status">
+            <span data-testid="workstation-pairing-status" aria-live="polite">
               {pairing.workstationName ?? "Workstation"} is connected.
             </span>
           </div>
+          {hasStructuredCommands ? (
+            <div className="space-y-2">
+              <p className="leading-5 text-muted-foreground">
+                Finish setup with the keep-available command if you have not run it yet:
+              </p>
+              <PairingCommandList commands={pairingCommands} />
+              <p className="leading-5 text-muted-foreground">
+                {hasServiceCommand && hasForegroundFallback
+                  ? "The Linux service command keeps this workstation available. Use the foreground fallback in tmux for macOS, non-systemd hosts, or manual testing."
+                  : hasServiceCommand
+                    ? "The Linux service command keeps this workstation available after pairing."
+                    : "Keep the command running until the workstation appears in the panel."}
+              </p>
+            </div>
+          ) : null}
           {onCancel ? (
             <Button type="button" variant="secondary" size="sm" onClick={onCancel}>
               Done
@@ -344,10 +359,16 @@ function PairingCommandList({
 }: {
   commands: readonly NotebookWorkstationPairingCommandView[];
 }) {
-  const requiredCommandText = commands
+  const bulkCommandText = commands
     .filter((command) => command.optional !== true)
     .map((command) => command.command)
     .join("\n");
+  const hasLinuxServiceBundle = commands.some((command) =>
+    command.command.includes("workstation service"),
+  );
+  const copyLabel = hasLinuxServiceBundle
+    ? "Linux workstation setup commands"
+    : "workstation setup commands";
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) {
@@ -368,15 +389,11 @@ function PairingCommandList({
           variant="ghost"
           size="icon"
           className="size-7 shrink-0"
-          aria-label={
-            copied
-              ? "Copied required workstation setup commands"
-              : "Copy required workstation setup commands"
-          }
-          title={copied ? "Copied" : "Copy required commands"}
-          disabled={!requiredCommandText}
+          aria-label={copied ? `Copied ${copyLabel}` : `Copy ${copyLabel}`}
+          title={copied ? "Copied" : `Copy ${copyLabel}`}
+          disabled={!bulkCommandText}
           onClick={() => {
-            void navigator.clipboard.writeText(requiredCommandText).then(() => setCopied(true));
+            void navigator.clipboard.writeText(bulkCommandText).then(() => setCopied(true));
           }}
         >
           {copied ? (

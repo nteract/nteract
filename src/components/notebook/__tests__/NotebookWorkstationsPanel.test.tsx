@@ -64,6 +64,41 @@ const localReadyCapabilities: NotebookShellCapabilities = {
   },
 };
 
+const cloudPairingCommands = [
+  {
+    id: "debian-prep",
+    label: "Fresh Debian/Ubuntu only",
+    command: "sudo apt update && sudo apt install -y curl tmux",
+    optional: true,
+  },
+  {
+    id: "install",
+    label: "Install nteract headless",
+    command: "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
+  },
+  {
+    id: "path",
+    label: "Use installed CLI in this shell",
+    command: 'export PATH="$HOME/.local/bin:$PATH"',
+  },
+  {
+    id: "connect",
+    label: "Pair this workstation",
+    command: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+  },
+  {
+    id: "run",
+    label: "Linux user systemd service",
+    command: "runt workstation service install --start",
+  },
+  {
+    id: "foreground-run",
+    label: "macOS/non-systemd fallback",
+    command: "runt workstation run",
+    optional: true,
+  },
+];
+
 describe("NotebookWorkstationsPanel", () => {
   it("renders a local executable runtime as a workstation target", () => {
     render(<NotebookWorkstationsPanel capabilities={localReadyCapabilities} />);
@@ -598,41 +633,7 @@ describe("NotebookWorkstationsPanel", () => {
         pairing={{
           code: "ABCD-EFGH-JKMN",
           connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
-          commands: [
-            {
-              id: "debian-prep",
-              label: "Fresh Debian/Ubuntu only",
-              command: "sudo apt update && sudo apt install -y curl tmux",
-              optional: true,
-            },
-            {
-              id: "install",
-              label: "Install nteract headless",
-              command:
-                "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
-            },
-            {
-              id: "path",
-              label: "Use installed CLI in this shell",
-              command: 'export PATH="$HOME/.local/bin:$PATH"',
-            },
-            {
-              id: "connect",
-              label: "Pair this workstation",
-              command: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
-            },
-            {
-              id: "run",
-              label: "Linux user systemd service",
-              command: "runt workstation service install --start",
-            },
-            {
-              id: "foreground-run",
-              label: "macOS/non-systemd fallback",
-              command: "runt workstation run",
-              optional: true,
-            },
-          ],
+          commands: cloudPairingCommands,
           expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
           status: "pending",
           workstationName: null,
@@ -665,7 +666,7 @@ describe("NotebookWorkstationsPanel", () => {
       /Code expires in 8:5\d/,
     );
     expect(
-      screen.getByRole("button", { name: "Copy required workstation setup commands" }),
+      screen.getByRole("button", { name: "Copy Linux workstation setup commands" }),
     ).toBeVisible();
     expect(
       screen.getByRole("button", { name: "Copy Pair this workstation command" }),
@@ -673,9 +674,7 @@ describe("NotebookWorkstationsPanel", () => {
 
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
-    fireEvent.click(
-      screen.getByRole("button", { name: "Copy required workstation setup commands" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy Linux workstation setup commands" }));
     expect(writeText).toHaveBeenCalledWith(
       [
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
@@ -719,6 +718,7 @@ describe("NotebookWorkstationsPanel", () => {
       code: "ABCD-EFGH-JKMN",
       connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      commands: cloudPairingCommands,
       workstationName: null,
       error: null,
     };
@@ -741,6 +741,11 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
       "Hub devbox is connected.",
     );
+    expect(
+      screen.getByText("Finish setup with the keep-available command if you have not run it yet:"),
+    ).toBeVisible();
+    expect(screen.getByText("Linux user systemd service")).toBeVisible();
+    expect(screen.getByText("macOS/non-systemd fallback")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(dismissed).toHaveLength(1);
   });

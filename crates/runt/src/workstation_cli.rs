@@ -752,7 +752,7 @@ fn install_workstation_service(
         config.runt_path.display()
     );
     if start {
-        start_workstation_service()?;
+        start_or_restart_workstation_service_after_install()?;
     } else {
         println!(
             "Start it with `{} workstation service start`.",
@@ -760,6 +760,40 @@ fn install_workstation_service(
         );
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn start_or_restart_workstation_service_after_install() -> Result<()> {
+    ensure_user_systemd_available()?;
+    ensure_workstation_service_installed()?;
+    let active_state = systemctl_probe(&["is-active", &workstation_service_unit_name()]);
+    let action = workstation_service_start_action_for_active_state(&active_state);
+    systemctl_checked(
+        &[action, &workstation_service_unit_name()],
+        if action == "restart" {
+            "restart workstation service"
+        } else {
+            "start workstation service"
+        },
+    )?;
+    println!(
+        "Workstation service {}.",
+        if action == "restart" {
+            "restarted"
+        } else {
+            "started"
+        }
+    );
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn workstation_service_start_action_for_active_state(active_state: &str) -> &'static str {
+    if active_state.trim() == "active" {
+        "restart"
+    } else {
+        "start"
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1364,6 +1398,26 @@ mod tests {
         assert!(unit.contains(
             "Environment=\"PATH=/home/u/$account/.local/bin:/usr/local/bin:/usr/bin:/bin\""
         ));
+    }
+
+    #[test]
+    fn workstation_service_install_start_restarts_only_active_units() {
+        assert_eq!(
+            workstation_service_start_action_for_active_state("active\n"),
+            "restart"
+        );
+        assert_eq!(
+            workstation_service_start_action_for_active_state("inactive\n"),
+            "start"
+        );
+        assert_eq!(
+            workstation_service_start_action_for_active_state("failed\n"),
+            "start"
+        );
+        assert_eq!(
+            workstation_service_start_action_for_active_state("unknown"),
+            "start"
+        );
     }
 
     #[test]
