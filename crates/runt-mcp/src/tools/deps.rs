@@ -602,6 +602,41 @@ async fn apply_dependency_changes(
     }
 }
 
+fn apply_none_hint(
+    add: &[String],
+    removed: &[String],
+    apply: &DependencyApply,
+) -> Option<serde_json::Value> {
+    if *apply != DependencyApply::None || (add.is_empty() && removed.is_empty()) {
+        return None;
+    }
+
+    let (note, next_apply) = if !removed.is_empty() {
+        (
+            "Dependency edits were recorded in notebook metadata, but the running kernel was not restarted. Removals take effect after restart.",
+            "restart",
+        )
+    } else {
+        (
+            "Dependencies were recorded in notebook metadata, but not installed into the running kernel. Call manage_dependencies again with apply=\"sync\" to hot-install them, or use apply=\"restart\" to restart with the updated dependency set.",
+            "sync",
+        )
+    };
+
+    Some(serde_json::json!({
+        "mode": "none",
+        "success": true,
+        "environment_updated": false,
+        "note": note,
+        "suggested_next_call": {
+            "tool": "manage_dependencies",
+            "arguments": {
+                "apply": next_apply,
+            },
+        },
+    }))
+}
+
 /// Add a package dependency. Auto-detects the notebook's package manager (uv, conda, or pixi).
 ///
 /// Tolerates agents passing a list-like string (e.g. `"['pandas','numpy']"` or
@@ -779,6 +814,8 @@ pub async fn manage_dependencies(
 
     if matches!(apply, DependencyApply::Sync | DependencyApply::Restart) {
         apply_dependency_changes(&handle, &notebook_id, apply_str, &mut result).await;
+    } else if let Some(hint) = apply_none_hint(&params.add, &removed, &apply) {
+        result["apply"] = hint;
     }
 
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
@@ -1129,6 +1166,55 @@ mod tests {
         assert!(message.contains("Unknown parameter(s): packages"));
         assert!(message
             .contains("Allowed parameters: add, remove, trust, dependency_fingerprint, apply"));
+    }
+
+    #[test]
+    fn manage_dependencies_apply_none_hint_for_add_suggests_sync() {
+        let add = vec!["pymc".to_string()];
+        let removed = Vec::new();
+        let hint = apply_none_hint(&add, &removed, &DependencyApply::None).unwrap();
+
+        assert_eq!(hint["mode"], serde_json::json!("none"));
+        assert_eq!(hint["environment_updated"], serde_json::json!(false));
+        assert!(hint["note"]
+            .as_str()
+            .expect("note")
+            .contains("not installed into the running kernel"));
+        assert_eq!(
+            hint["suggested_next_call"],
+            serde_json::json!({
+                "tool": "manage_dependencies",
+                "arguments": {
+                    "apply": "sync",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn manage_dependencies_apply_none_hint_for_remove_suggests_restart() {
+        let add = Vec::new();
+        let removed = vec!["seaborn".to_string()];
+        let hint = apply_none_hint(&add, &removed, &DependencyApply::None).unwrap();
+
+        assert_eq!(hint["mode"], serde_json::json!("none"));
+        assert!(hint["note"]
+            .as_str()
+            .expect("note")
+            .contains("Removals take effect after restart"));
+        assert_eq!(
+            hint["suggested_next_call"]["arguments"],
+            serde_json::json!({ "apply": "restart" })
+        );
+    }
+
+    #[test]
+    fn manage_dependencies_apply_none_hint_requires_unapplied_edits() {
+        let add = Vec::new();
+        let removed = Vec::new();
+
+        assert!(apply_none_hint(&add, &removed, &DependencyApply::None).is_none());
+        assert!(apply_none_hint(&["pymc".to_string()], &removed, &DependencyApply::Sync).is_none());
     }
 
     #[test]
