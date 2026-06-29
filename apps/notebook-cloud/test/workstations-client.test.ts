@@ -3,10 +3,16 @@ import { describe, it } from "node:test";
 
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 import {
+  CLOUD_WORKSTATION_DEBIAN_PREP_COMMAND,
+  CLOUD_WORKSTATION_HEADLESS_INSTALL_COMMAND,
+  CLOUD_WORKSTATION_PATH_EXPORT_COMMAND,
   CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS,
   CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS,
   cloudWorkstationConnectCommand,
+  cloudWorkstationPairingCommands,
   cloudWorkstationRefreshIntervalMs,
+  cloudWorkstationRunCommand,
+  cloudWorkstationServiceInstallCommand,
   fetchCloudWorkstationPairingStatus,
   fetchCloudWorkstations,
   mintCloudWorkstationPairingCode,
@@ -261,10 +267,50 @@ describe("cloud workstations client", () => {
     );
   });
 
-  it("builds the connect one-liner from origin and code", () => {
+  it("builds the workstation pairing command from origin and code", () => {
     assert.equal(
       cloudWorkstationConnectCommand("https://preview.runt.run", "ABCD-EFGH-JKMN"),
-      "runt workstation connect https://preview.runt.run --code ABCD-EFGH-JKMN && runt workstation run",
+      "runt workstation connect https://preview.runt.run --code ABCD-EFGH-JKMN",
+    );
+  });
+
+  it("builds copyable workstation setup commands from origin and code", () => {
+    assert.deepEqual(
+      cloudWorkstationPairingCommands("https://preview.runt.run", "ABCD-EFGH-JKMN"),
+      [
+        {
+          id: "debian-prep",
+          label: "Fresh Debian/Ubuntu only",
+          command: CLOUD_WORKSTATION_DEBIAN_PREP_COMMAND,
+          optional: true,
+        },
+        {
+          id: "install",
+          label: "Install nteract headless",
+          command: CLOUD_WORKSTATION_HEADLESS_INSTALL_COMMAND,
+        },
+        {
+          id: "path",
+          label: "Use installed CLI in this shell",
+          command: CLOUD_WORKSTATION_PATH_EXPORT_COMMAND,
+        },
+        {
+          id: "connect",
+          label: "Pair this workstation",
+          command: "runt workstation connect https://preview.runt.run --code ABCD-EFGH-JKMN",
+        },
+        {
+          id: "run",
+          label: "Linux user systemd service",
+          command: cloudWorkstationServiceInstallCommand(),
+        },
+        {
+          id: "foreground-run",
+          label: "macOS/non-systemd fallback",
+          command: cloudWorkstationRunCommand(),
+          optional: true,
+        },
+      ],
     );
   });
 });

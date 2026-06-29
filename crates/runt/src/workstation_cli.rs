@@ -15,6 +15,8 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -53,6 +55,15 @@ pub enum WorkstationCommands {
         /// environment.
         #[arg(long)]
         python_path: Option<PathBuf>,
+        /// Working directory advertised for this workstation and used for
+        /// runtime peers unless an attach job overrides it.
+        #[arg(long, alias = "cwd")]
+        working_directory: Option<PathBuf>,
+    },
+    /// Manage the persistent workstation agent service
+    Service {
+        #[command(subcommand)]
+        command: WorkstationServiceCommands,
     },
     /// List workstations registered to the stored credential
     Status {
@@ -60,6 +71,41 @@ pub enum WorkstationCommands {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(clap::Subcommand)]
+pub enum WorkstationServiceCommands {
+    /// Install the user systemd service for the workstation agent
+    Install {
+        /// Python interpreter used for launch-on-attach kernels.
+        #[arg(long)]
+        python_path: Option<PathBuf>,
+        /// Working directory advertised for this workstation and used for
+        /// runtime peers unless an attach job overrides it. Defaults to the
+        /// current directory at install time.
+        #[arg(long, alias = "cwd")]
+        working_directory: Option<PathBuf>,
+        /// Start the service after writing and enabling it.
+        #[arg(long)]
+        start: bool,
+    },
+    /// Start the workstation service
+    Start,
+    /// Stop the workstation service
+    Stop,
+    /// Show workstation service status
+    Status,
+    /// Show workstation service logs from the user journal
+    Logs {
+        /// Follow the log (like journalctl -f)
+        #[arg(short, long)]
+        follow: bool,
+        /// Number of lines to show
+        #[arg(short = 'n', long, default_value = "50")]
+        lines: usize,
+    },
+    /// Disable and remove the workstation service
+    Uninstall,
 }
 
 pub async fn command(command: WorkstationCommands) -> Result<()> {
@@ -70,7 +116,11 @@ pub async fn command(command: WorkstationCommands) -> Result<()> {
             id,
             name,
         } => connect(url, code, id, name).await,
-        WorkstationCommands::Run { python_path } => run(python_path).await,
+        WorkstationCommands::Run {
+            python_path,
+            working_directory,
+        } => run(python_path, working_directory).await,
+        WorkstationCommands::Service { command } => service(command).await,
         WorkstationCommands::Status { json } => status(json).await,
     }
 }
@@ -181,10 +231,20 @@ async fn connect(
         }
     }
 
-    println!(
-        "Run `{} workstation run` to serve attach requests.",
-        runt_workspace::cli_command_name()
-    );
+    let cli = runt_workspace::cli_command_name();
+    println!("To serve attach requests in this terminal:");
+    println!("  {cli} workstation run");
+    #[cfg(target_os = "linux")]
+    {
+        println!("To keep this workstation available with user systemd:");
+        println!("  {cli} workstation service install --start");
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        println!(
+            "Persistent workstation service management starts with Linux user systemd; use the foreground command in tmux for now."
+        );
+    }
     Ok(())
 }
 
@@ -276,8 +336,12 @@ pub(crate) fn minimal_registration_payload(
 // run
 // ---------------------------------------------------------------------------
 
-async fn run(python_path: Option<PathBuf>) -> Result<()> {
+async fn run(python_path: Option<PathBuf>, working_directory: Option<PathBuf>) -> Result<()> {
     let resolved = resolve_credentials()?;
+    let working_directory = match working_directory {
+        Some(path) => Some(resolve_existing_directory(&path)?),
+        None => None,
+    };
 
     let runtimed_bin = locate_runtimed_binary().ok_or_else(|| {
         anyhow::anyhow!(
@@ -296,12 +360,22 @@ async fn run(python_path: Option<PathBuf>) -> Result<()> {
     if let Some(path) = &python_path {
         println!("Python interpreter: {}", path.display());
     }
+    if let Some(path) = &working_directory {
+        println!("Working directory: {}", path.display());
+    }
 
     let mut command = std::process::Command::new(&runtimed_bin);
     command
-        .args(workstation_agent_args(&resolved, python_path.as_deref()))
+        .args(workstation_agent_args(
+            &resolved,
+            python_path.as_deref(),
+            working_directory.as_deref(),
+        ))
         // The credential rides the environment, never argv.
         .env(CLOUD_TOKEN_ENV, &resolved.token);
+    if let Some(path) = &working_directory {
+        command.current_dir(path);
+    }
 
     let status = command
         .status()
@@ -313,6 +387,7 @@ async fn run(python_path: Option<PathBuf>) -> Result<()> {
 fn workstation_agent_args(
     resolved: &ResolvedCredentials,
     python_path: Option<&Path>,
+    working_directory: Option<&Path>,
 ) -> Vec<std::ffi::OsString> {
     let mut args = vec![
         "workstation-agent".into(),
@@ -325,6 +400,10 @@ fn workstation_agent_args(
     ];
     if let Some(path) = python_path {
         args.push("--python-path".into());
+        args.push(path.as_os_str().into());
+    }
+    if let Some(path) = working_directory {
+        args.push("--working-dir".into());
         args.push(path.as_os_str().into());
     }
     args
@@ -477,6 +556,473 @@ async fn status(json_output: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// service
+// ---------------------------------------------------------------------------
+
+async fn service(command: WorkstationServiceCommands) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        service_linux(command)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = command;
+        bail!(
+            "workstation service management currently supports Linux user systemd only. \
+             Use `{} workstation run` in tmux for foreground/manual testing.",
+            runt_workspace::cli_command_name()
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn service_linux(command: WorkstationServiceCommands) -> Result<()> {
+    match command {
+        WorkstationServiceCommands::Install {
+            python_path,
+            working_directory,
+            start,
+        } => install_workstation_service(python_path, working_directory, start),
+        WorkstationServiceCommands::Start => start_workstation_service(),
+        WorkstationServiceCommands::Stop => stop_workstation_service(),
+        WorkstationServiceCommands::Status => status_workstation_service(),
+        WorkstationServiceCommands::Logs { follow, lines } => {
+            logs_workstation_service(follow, lines)
+        }
+        WorkstationServiceCommands::Uninstall => uninstall_workstation_service(),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone)]
+struct WorkstationServiceUnitConfig {
+    runt_path: PathBuf,
+    python_path: Option<PathBuf>,
+    working_directory: PathBuf,
+    home: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+fn workstation_service_unit_name() -> String {
+    format!("{}-workstation.service", runt_workspace::config_namespace())
+}
+
+#[cfg(target_os = "linux")]
+fn workstation_service_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("systemd")
+        .join("user")
+        .join(workstation_service_unit_name())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn workstation_service_run_args(config: &WorkstationServiceUnitConfig) -> Vec<String> {
+    let mut args = vec![
+        config.runt_path.to_string_lossy().into_owned(),
+        "workstation".to_string(),
+        "run".to_string(),
+    ];
+    if let Some(path) = &config.python_path {
+        args.push("--python-path".to_string());
+        args.push(path.to_string_lossy().into_owned());
+    }
+    args.push("--working-directory".to_string());
+    args.push(config.working_directory.to_string_lossy().into_owned());
+    args
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn render_workstation_systemd_unit(config: &WorkstationServiceUnitConfig) -> String {
+    let home = config.home.to_string_lossy();
+    let path = format!("{home}/.local/bin:/usr/local/bin:/usr/bin:/bin");
+    let exec_start = workstation_service_run_args(config)
+        .iter()
+        .map(|arg| systemd_quote_exec_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        r#"[Unit]
+Description=nteract workstation agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={exec_start}
+WorkingDirectory={working_directory}
+Restart=on-failure
+RestartSec=5
+Environment={home_env}
+Environment={path_env}
+
+[Install]
+WantedBy=default.target
+"#,
+        exec_start = exec_start,
+        working_directory = systemd_quote_unit_value(&config.working_directory.to_string_lossy()),
+        home_env = systemd_quote_unit_value(&format!("HOME={home}")),
+        path_env = systemd_quote_unit_value(&format!("PATH={path}")),
+    )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn systemd_quote_exec_arg(value: &str) -> String {
+    systemd_quote(value, true)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn systemd_quote_unit_value(value: &str) -> String {
+    systemd_quote(value, false)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn systemd_quote(value: &str, escape_dollar: bool) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '$' if escape_dollar => escaped.push_str("$$"),
+            '$' => escaped.push('$'),
+            '%' => escaped.push_str("%%"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn resolve_existing_directory(path: &Path) -> Result<PathBuf> {
+    let resolved =
+        std::fs::canonicalize(path).with_context(|| format!("resolve {}", path.display()))?;
+    if !resolved.is_dir() {
+        bail!("{} is not a directory", resolved.display());
+    }
+    Ok(resolved)
+}
+
+#[cfg(target_os = "linux")]
+fn install_workstation_service(
+    python_path: Option<PathBuf>,
+    working_directory: Option<PathBuf>,
+    start: bool,
+) -> Result<()> {
+    ensure_user_systemd_available()?;
+    ensure_stored_workstation_credential()?;
+    let service_path = workstation_service_path();
+    let working_directory = match working_directory {
+        Some(path) => resolve_existing_directory(&path)?,
+        None => resolve_existing_directory(&std::env::current_dir().context("resolve cwd")?)?,
+    };
+    let runt_path = current_runt_path_for_service()?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
+    let config = WorkstationServiceUnitConfig {
+        runt_path,
+        python_path,
+        working_directory,
+        home,
+    };
+    if let Some(parent) = service_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create systemd user directory {}", parent.display()))?;
+    }
+    std::fs::write(&service_path, render_workstation_systemd_unit(&config))
+        .with_context(|| format!("write {}", service_path.display()))?;
+    systemctl_checked(&["daemon-reload"], "reload user systemd")?;
+    systemctl_checked(
+        &["enable", &workstation_service_unit_name()],
+        "enable workstation service",
+    )?;
+    println!(
+        "Installed workstation service at {}",
+        service_path.display()
+    );
+    println!(
+        "It runs `{}` using the stored workstation credential.",
+        config.runt_path.display()
+    );
+    if start {
+        start_workstation_service()?;
+    } else {
+        println!(
+            "Start it with `{} workstation service start`.",
+            runt_workspace::cli_command_name()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn start_workstation_service() -> Result<()> {
+    ensure_user_systemd_available()?;
+    ensure_workstation_service_installed()?;
+    systemctl_checked(
+        &["start", &workstation_service_unit_name()],
+        "start workstation service",
+    )?;
+    println!("Workstation service started.");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn stop_workstation_service() -> Result<()> {
+    ensure_user_systemd_available()?;
+    if !workstation_service_path().exists() {
+        println!("Workstation service is not installed.");
+        return Ok(());
+    }
+    systemctl_checked(
+        &["stop", &workstation_service_unit_name()],
+        "stop workstation service",
+    )?;
+    println!("Workstation service stopped.");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn status_workstation_service() -> Result<()> {
+    ensure_user_systemd_available()?;
+    let service_path = workstation_service_path();
+    println!("Unit: {}", workstation_service_unit_name());
+    println!("File: {}", service_path.display());
+    if !service_path.exists() {
+        println!("Installed: no");
+        println!(
+            "Run `{} workstation service install --start` after pairing this machine.",
+            runt_workspace::cli_command_name()
+        );
+        return Ok(());
+    }
+    println!("Installed: yes");
+    println!(
+        "Enabled: {}",
+        systemctl_probe(&["is-enabled", &workstation_service_unit_name()])
+    );
+    println!(
+        "Active: {}",
+        systemctl_probe(&["is-active", &workstation_service_unit_name()])
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn logs_workstation_service(follow: bool, lines: usize) -> Result<()> {
+    ensure_user_systemd_available()?;
+    ensure_workstation_service_installed()?;
+    let mut command = journalctl_command();
+    command
+        .args(["--user", "-u"])
+        .arg(workstation_service_unit_name())
+        .args(["--no-pager", "-n"])
+        .arg(lines.to_string());
+    if follow {
+        command.arg("-f");
+    }
+    let status = command.status().context("run journalctl")?;
+    if !status.success() {
+        bail!(
+            "journalctl failed for {}; run `{} workstation service status` first",
+            workstation_service_unit_name(),
+            runt_workspace::cli_command_name()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn uninstall_workstation_service() -> Result<()> {
+    ensure_user_systemd_available()?;
+    let service_path = workstation_service_path();
+    if !service_path.exists() {
+        println!("Workstation service is not installed.");
+        return Ok(());
+    }
+    systemctl_best_effort(&["stop", &workstation_service_unit_name()]);
+    systemctl_best_effort(&["disable", &workstation_service_unit_name()]);
+    std::fs::remove_file(&service_path)
+        .with_context(|| format!("remove {}", service_path.display()))?;
+    systemctl_checked(&["daemon-reload"], "reload user systemd")?;
+    println!("Workstation service uninstalled.");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_stored_workstation_credential() -> Result<()> {
+    let path = runt_workspace::workstation_credentials_path();
+    let Some(credentials) = read_credential_file(&path)? else {
+        bail!(
+            "no stored workstation credential found at {}. Run `{} workstation connect <url>` first.",
+            path.display(),
+            runt_workspace::cli_command_name()
+        );
+    };
+    if credentials.token.trim().is_empty() || credentials.cloud_url.trim().is_empty() {
+        bail!(
+            "workstation credential at {} is incomplete. Run `{} workstation connect <url>` again.",
+            path.display(),
+            runt_workspace::cli_command_name()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_workstation_service_installed() -> Result<()> {
+    if workstation_service_path().exists() {
+        return Ok(());
+    }
+    bail!(
+        "workstation service is not installed. Run `{} workstation service install --start` after pairing this machine.",
+        runt_workspace::cli_command_name()
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn current_runt_path_for_service() -> Result<PathBuf> {
+    let path = std::env::current_exe().context("resolve current runt executable")?;
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    if !path.exists() {
+        bail!(
+            "current runt executable does not exist at {}",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_user_systemd_available() -> Result<()> {
+    let output = systemctl_command()
+        .args(["--user", "show-environment"])
+        .output()
+        .context("run systemctl --user show-environment")?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .unwrap_or("systemctl --user did not report details");
+    bail!(
+        "Linux user systemd is not available in this session: {detail}\n\
+         Use a normal login session with XDG_RUNTIME_DIR/DBus available, or ask an admin to enable lingering with `loginctl enable-linger $USER` if this workstation should stay available after logout.\n\
+         Fallback: run `{} workstation run` inside tmux.",
+        runt_workspace::cli_command_name()
+    );
+}
+
+#[cfg(target_os = "linux")]
+const APPIMAGE_HOST_ENV_VARS: &[&str] = &[
+    "APPDIR",
+    "APPIMAGE",
+    "ARGV0",
+    "LD_AUDIT",
+    "LD_DEBUG",
+    "LD_LIBRARY_PATH",
+    "LD_ORIGIN_PATH",
+    "LD_PRELOAD",
+    "OWD",
+];
+
+#[cfg(target_os = "linux")]
+fn systemctl_binary() -> &'static str {
+    if Path::new("/usr/bin/systemctl").exists() {
+        "/usr/bin/systemctl"
+    } else if Path::new("/bin/systemctl").exists() {
+        "/bin/systemctl"
+    } else {
+        "systemctl"
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn journalctl_binary() -> &'static str {
+    if Path::new("/usr/bin/journalctl").exists() {
+        "/usr/bin/journalctl"
+    } else if Path::new("/bin/journalctl").exists() {
+        "/bin/journalctl"
+    } else {
+        "journalctl"
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn strip_appimage_host_env(command: &mut Command) {
+    for var in APPIMAGE_HOST_ENV_VARS {
+        command.env_remove(var);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn systemctl_command() -> Command {
+    let mut command = Command::new(systemctl_binary());
+    strip_appimage_host_env(&mut command);
+    command
+}
+
+#[cfg(target_os = "linux")]
+fn journalctl_command() -> Command {
+    let mut command = Command::new(journalctl_binary());
+    strip_appimage_host_env(&mut command);
+    command
+}
+
+#[cfg(target_os = "linux")]
+fn systemctl_checked(args: &[&str], action: &str) -> Result<()> {
+    let output = systemctl_command()
+        .arg("--user")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("systemctl --user {}", args.join(" ")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .unwrap_or("systemctl did not report details");
+    bail!(
+        "failed to {action}: {detail}\nRun `{} workstation service status` for current state, or use `{} workstation run` in tmux.",
+        runt_workspace::cli_command_name(),
+        runt_workspace::cli_command_name()
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn systemctl_best_effort(args: &[&str]) {
+    let _ = systemctl_command().arg("--user").args(args).output();
+}
+
+#[cfg(target_os = "linux")]
+fn systemctl_probe(args: &[&str]) -> String {
+    match systemctl_command().arg("--user").args(args).output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let value = [stdout.trim(), stderr.trim()]
+                .into_iter()
+                .find(|value| !value.is_empty())
+                .unwrap_or("unknown");
+            value.to_string()
+        }
+        Err(error) => format!("unknown ({error})"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -693,7 +1239,11 @@ mod tests {
             display_name: "lab2".to_string(),
         };
 
-        let args = workstation_agent_args(&resolved, Some(Path::new("/home/ubuntu/k/bin/python")));
+        let args = workstation_agent_args(
+            &resolved,
+            Some(Path::new("/home/ubuntu/k/bin/python")),
+            None,
+        );
         let rendered = args
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -725,7 +1275,7 @@ mod tests {
             display_name: "lab2".to_string(),
         };
 
-        let args = workstation_agent_args(&resolved, None);
+        let args = workstation_agent_args(&resolved, None, None);
         let rendered = args
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -733,6 +1283,87 @@ mod tests {
 
         assert!(!rendered.iter().any(|arg| arg == "--python-path"));
         assert!(!rendered.iter().any(|arg| arg.contains("nwc_secret")));
+    }
+
+    #[test]
+    fn workstation_agent_args_include_working_directory_without_token() {
+        let resolved = ResolvedCredentials {
+            cloud_url: "https://preview.runt.run".to_string(),
+            token: "nwc_secret".to_string(),
+            workstation_id: "ws-lab2".to_string(),
+            display_name: "lab2".to_string(),
+        };
+
+        let args = workstation_agent_args(
+            &resolved,
+            None,
+            Some(Path::new("/home/ubuntu/project with spaces")),
+        );
+        let rendered = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "workstation-agent",
+                "--cloud-url",
+                "https://preview.runt.run",
+                "--workstation-id",
+                "ws-lab2",
+                "--display-name",
+                "lab2",
+                "--working-dir",
+                "/home/ubuntu/project with spaces",
+            ]
+        );
+        assert!(!rendered.iter().any(|arg| arg.contains("nwc_secret")));
+    }
+
+    #[test]
+    fn workstation_service_unit_runs_public_cli_without_token() {
+        let config = WorkstationServiceUnitConfig {
+            runt_path: PathBuf::from("/home/ubuntu/.local/bin/runt"),
+            python_path: Some(PathBuf::from("/home/ubuntu/project/.venv/bin/python")),
+            working_directory: PathBuf::from("/home/ubuntu/project"),
+            home: PathBuf::from("/home/ubuntu"),
+        };
+
+        let unit = render_workstation_systemd_unit(&config);
+
+        assert!(unit.contains("Description=nteract workstation agent"));
+        assert!(unit.contains(
+            "ExecStart=\"/home/ubuntu/.local/bin/runt\" \"workstation\" \"run\" \"--python-path\" \"/home/ubuntu/project/.venv/bin/python\" \"--working-directory\" \"/home/ubuntu/project\""
+        ));
+        assert!(unit.contains("WorkingDirectory=\"/home/ubuntu/project\""));
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("Environment=\"HOME=/home/ubuntu\""));
+        assert!(unit
+            .contains("Environment=\"PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin\""));
+        assert!(!unit.contains("nwc_secret"));
+        assert!(!unit.contains("RUNT_CLOUD_TOKEN"));
+    }
+
+    #[test]
+    fn workstation_service_unit_escapes_systemd_specials() {
+        let config = WorkstationServiceUnitConfig {
+            runt_path: PathBuf::from("/home/u/bin/runt"),
+            python_path: None,
+            working_directory: PathBuf::from("/home/u/project %demo/$run/\"quoted\""),
+            home: PathBuf::from("/home/u/$account"),
+        };
+
+        let unit = render_workstation_systemd_unit(&config);
+
+        assert!(unit.contains(
+            "ExecStart=\"/home/u/bin/runt\" \"workstation\" \"run\" \"--working-directory\" \"/home/u/project %%demo/$$run/\\\"quoted\\\"\""
+        ));
+        assert!(unit.contains("WorkingDirectory=\"/home/u/project %%demo/$run/\\\"quoted\\\"\""));
+        assert!(unit.contains("Environment=\"HOME=/home/u/$account\""));
+        assert!(unit.contains(
+            "Environment=\"PATH=/home/u/$account/.local/bin:/usr/local/bin:/usr/bin:/bin\""
+        ));
     }
 
     #[test]

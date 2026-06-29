@@ -391,8 +391,16 @@ if [[ "$HEADLESS" == "1" ]]; then
   echo
   echo "Headless workstation install. To offer this machine's compute to a hosted"
   echo "notebook, mint a pairing code from the notebook's workstation panel, then:"
-  echo "  $CLI_NAME workstation connect https://app.runt.run --code <code>"
-  echo "  $CLI_NAME workstation run"
+  echo "  \"$BIN_DIR/$CLI_NAME\" workstation connect https://app.runt.run --code <code>"
+  if [[ "$OS" == "linux" ]]; then
+    echo "  \"$BIN_DIR/$CLI_NAME\" workstation service install --start"
+    echo "For tmux/manual testing, foreground mode still works:"
+    echo "  \"$BIN_DIR/$CLI_NAME\" workstation run"
+  else
+    echo "For macOS/non-systemd hosts, keep the foreground process running:"
+    echo "  \"$BIN_DIR/$CLI_NAME\" workstation run"
+    echo "Persistent workstation service management starts with Linux user systemd."
+  fi
   echo "(Releases without '$CLI_NAME workstation' can use the cloud-runtime-agent flow"
   echo "in docs/remote-workstation.md.)"
 fi

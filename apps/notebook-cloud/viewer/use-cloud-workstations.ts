@@ -12,12 +12,14 @@ import type { CloudViewerConfig } from "./cloud-viewer-session";
 import {
   CLOUD_WORKSTATION_PAIRING_POLL_INTERVAL_MS,
   cloudWorkstationConnectCommand,
+  cloudWorkstationPairingCommands,
   cloudWorkstationRefreshIntervalMs,
   fetchCloudWorkstationPairingStatus,
   fetchCloudWorkstations,
   mintCloudWorkstationPairingCode,
   requestCloudWorkstationAttachment,
   setCloudDefaultWorkstation,
+  type CloudWorkstationPairingCommand,
   type CloudWorkstationPairingStatus,
   type CloudWorkstationsState,
 } from "./workstations-client";
@@ -26,6 +28,7 @@ export interface CloudWorkstationPairing {
   id: string;
   code: string;
   connectCommand: string;
+  commands: readonly CloudWorkstationPairingCommand[];
   expiresAt: string;
   status: CloudWorkstationPairingStatus;
   workstationId: string | null;
@@ -194,6 +197,7 @@ export function useCloudWorkstationManager({
         id: minted.id,
         code: minted.code,
         connectCommand: cloudWorkstationConnectCommand(window.location.origin, minted.code),
+        commands: cloudWorkstationPairingCommands(window.location.origin, minted.code),
         expiresAt: minted.expiresAt,
         status: "pending",
         workstationId: null,
@@ -205,6 +209,7 @@ export function useCloudWorkstationManager({
         id: "",
         code: "",
         connectCommand: "",
+        commands: [],
         expiresAt: new Date(0).toISOString(),
         status: "expired",
         workstationId: null,
