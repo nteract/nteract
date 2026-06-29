@@ -534,6 +534,7 @@
     "description": "Review or update notebook dependencies. Returns current deps, fingerprint, and trust state.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "properties": {
         "add": {
           "default": [],

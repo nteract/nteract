@@ -14,6 +14,8 @@ use crate::NteractMcp;
 
 use super::{arg_str, arg_string_array, reject_unknown_args, tool_error, tool_success};
 
+type DependencyEditOutcome = (Vec<String>, Vec<String>, Vec<String>);
+
 /// Parse a `package` parameter that may be a single package spec or a
 /// list-like string agents sometimes produce.
 ///
@@ -319,7 +321,7 @@ fn apply_dep_edits_to_snapshot(
     add: &[String],
     remove: &[String],
     manager: &notebook_protocol::connection::PackageManager,
-) -> (Vec<String>, Vec<String>, Vec<String>) {
+) -> DependencyEditOutcome {
     use notebook_protocol::connection::PackageManager;
 
     let before_snapshot = snap.clone();
@@ -377,7 +379,7 @@ fn apply_dep_edits(
     add: &[String],
     remove: &[String],
     manager: &notebook_protocol::connection::PackageManager,
-) -> Result<(Vec<String>, Vec<String>, Vec<String>), String> {
+) -> Result<DependencyEditOutcome, String> {
     // Short-circuit: nothing to do → skip the CRDT lock entirely.
     if add.is_empty() && remove.is_empty() {
         return Ok((vec![], vec![], vec![]));
