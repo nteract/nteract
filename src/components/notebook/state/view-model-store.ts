@@ -25,7 +25,7 @@ export function useNotebookViewModel<TCell extends NotebookViewCell = NotebookVi
   const materializeVersion = useMaterializeVersion();
   const executionStructureVersion = useExecutionStructureVersion();
   const outputStructureVersion = useOutputStructureVersion();
-  const { getOutlineStatusLabel, metadata, resolveLanguage } = options;
+  const { getOutlineStatusLabel, includeDocumentAnchors, metadata, resolveLanguage } = options;
 
   return useMemo(() => {
     void cellIds;
@@ -34,6 +34,7 @@ export function useNotebookViewModel<TCell extends NotebookViewCell = NotebookVi
     void outputStructureVersion;
     return createNotebookViewModelFromNotebookCells({
       getOutlineStatusLabel,
+      includeDocumentAnchors,
       metadata,
       resolveLanguage,
     }) as NotebookViewModel<TCell>;
@@ -41,6 +42,7 @@ export function useNotebookViewModel<TCell extends NotebookViewCell = NotebookVi
     cellIds,
     executionStructureVersion,
     getOutlineStatusLabel,
+    includeDocumentAnchors,
     materializeVersion,
     metadata,
     outputStructureVersion,

@@ -17,13 +17,22 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Eye, EyeOff, Plus, RotateCcw, Trash2, X } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { notebookCellAnchorId, type NotebookInteractionTarget } from "runtimed";
 import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/CellInsertionRibbon";
 import { CellSkeleton } from "@/components/cell/CellSkeleton";
 import { Button } from "@/components/ui/button";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
-import type { NotebookShellCapabilities } from "@/components/notebook";
+import {
+  captureCellDeletionScrollAnchor,
+  isNotebookTailPinned,
+  restoreScrollAnchor,
+  scrollToDocumentAnchor,
+  scrollToNotebookTail,
+  shouldTailFollowCellCountChange,
+  type NotebookScrollAnchorSnapshot,
+  type NotebookShellCapabilities,
+} from "@/components/notebook";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -107,6 +116,12 @@ export interface NotebookViewProps {
   deferOutputIsolatedFramesUntilVisible?: boolean;
   deferredOutputIsolatedFrameRootMargin?: string;
   autoFocusFirstCell?: boolean;
+}
+
+interface PendingNotebookScrollAnchorRestore {
+  deletedCellId: string;
+  sourceCellIds: readonly string[];
+  snapshot: NotebookScrollAnchorSnapshot;
 }
 
 const NOTEBOOK_TAIL_SPACE = "clamp(4rem, 10vh, 6rem)";
@@ -395,6 +410,8 @@ function NotebookViewContent({
   const containerRef = useRef<HTMLDivElement>(null);
   const tailPinnedRef = useRef(false);
   const tailScrollFrameRef = useRef<number | null>(null);
+  const previousCellCountRef = useRef(cellIds.length);
+  const pendingScrollAnchorRef = useRef<PendingNotebookScrollAnchorRestore | null>(null);
   const canEditCodeCellSources = capabilities?.canEditCells ?? !readOnly;
   const canEditMarkdownSources = capabilities?.canEditMarkdown ?? !readOnly;
   const canMutateCells = computeCanMutateCells({ canAcceptCellMutations, capabilities, readOnly });
@@ -677,6 +694,35 @@ function NotebookViewContent({
     cancelTailScrollFrame();
   }, [cancelTailScrollFrame]);
 
+  const handleDeleteCell = useCallback(
+    (cellId: string) => {
+      tailPinnedRef.current = false;
+      cancelTailScrollFrame();
+      const sourceCellIds = cellIdsRef.current;
+      const snapshot = captureCellDeletionScrollAnchor(containerRef.current, sourceCellIds, cellId);
+      pendingScrollAnchorRef.current = snapshot
+        ? {
+            deletedCellId: cellId,
+            sourceCellIds,
+            snapshot,
+          }
+        : null;
+      onDeleteCell(cellId);
+    },
+    [cancelTailScrollFrame, onDeleteCell],
+  );
+
+  useLayoutEffect(() => {
+    const pending = pendingScrollAnchorRef.current;
+    if (!pending) return;
+    if (cellIds === pending.sourceCellIds) return;
+
+    pendingScrollAnchorRef.current = null;
+    if (cellIds.includes(pending.deletedCellId)) return;
+
+    restoreScrollAnchor(containerRef.current, pending.snapshot);
+  }, [cellIds]);
+
   // Prevent horizontal scroll drift (can happen during text selection) and
   // remember whether the user is already reading at the notebook tail.
   useEffect(() => {
@@ -693,28 +739,23 @@ function NotebookViewContent({
         return;
       }
 
-      const distanceFromTail =
-        container.scrollHeight - container.clientHeight - container.scrollTop;
-      if (distanceFromTail <= NOTEBOOK_TAIL_PIN_THRESHOLD_PX) {
-        tailPinnedRef.current = true;
-        return;
-      }
-
       const lastCellId = cellIdsRef.current.at(-1);
       const lastCellEl = lastCellId
         ? container.querySelector(`[data-cell-id="${CSS.escape(lastCellId)}"]`)
         : null;
-      if (!lastCellEl) {
-        tailPinnedRef.current = false;
-        return;
-      }
-
       const containerRect = container.getBoundingClientRect();
-      const lastCellRect = lastCellEl.getBoundingClientRect();
-      tailPinnedRef.current =
-        lastCellRect.bottom >= containerRect.top &&
-        lastCellRect.top <= containerRect.bottom &&
-        lastCellRect.bottom >= containerRect.bottom - NOTEBOOK_TAIL_PIN_THRESHOLD_PX;
+      const lastCellRect = lastCellEl?.getBoundingClientRect() ?? null;
+      tailPinnedRef.current = isNotebookTailPinned({
+        cellCount: cellIdsRef.current.length,
+        containerScrollHeight: container.scrollHeight,
+        containerClientHeight: container.clientHeight,
+        containerScrollTop: container.scrollTop,
+        containerTop: containerRect.top,
+        containerBottom: containerRect.bottom,
+        lastCellTop: lastCellRect?.top ?? null,
+        lastCellBottom: lastCellRect?.bottom ?? null,
+        thresholdPx: NOTEBOOK_TAIL_PIN_THRESHOLD_PX,
+      });
     };
 
     handleScroll();
@@ -732,7 +773,7 @@ function NotebookViewContent({
       if (!tailPinnedRef.current) return;
       const currentContainer = containerRef.current;
       if (!currentContainer) return;
-      currentContainer.scrollTop = currentContainer.scrollHeight;
+      scrollToNotebookTail(currentContainer);
     });
   }, []);
 
@@ -750,19 +791,23 @@ function NotebookViewContent({
   }, [scheduleTailScrollIfPinned]);
 
   useEffect(() => {
-    scheduleTailScrollIfPinned();
+    const previousCellCount = previousCellCountRef.current;
+    previousCellCountRef.current = cellIds.length;
+    if (shouldTailFollowCellCountChange(previousCellCount, cellIds.length, tailPinnedRef.current)) {
+      scheduleTailScrollIfPinned();
+    }
   }, [cellIds.length, scheduleTailScrollIfPinned]);
 
   // Scroll the current search match cell into view
   useEffect(() => {
     if (!searchCurrentMatch) return;
-    const cellEl = containerRef.current?.querySelector(
-      `[data-cell-id="${CSS.escape(searchCurrentMatch.cellId)}"]`,
-    );
-    if (cellEl) {
-      cellEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
-  }, [searchCurrentMatch]);
+    tailPinnedRef.current = false;
+    cancelTailScrollFrame();
+    scrollToDocumentAnchor(containerRef.current, notebookCellAnchorId(searchCurrentMatch.cellId), {
+      block: "nearest",
+      behavior: "smooth",
+    });
+  }, [cancelTailScrollFrame, searchCurrentMatch]);
 
   useEffect(() => {
     if (!autoFocusFirstCell) return;
@@ -837,7 +882,7 @@ function NotebookViewContent({
         <button
           type="button"
           tabIndex={-1}
-          onClick={() => onDeleteCell(cell.id)}
+          onClick={() => handleDeleteCell(cell.id)}
           className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-destructive"
           title="Delete cell"
         >
@@ -944,7 +989,7 @@ function NotebookViewContent({
             onRequestExecute={requestExecuteCellOrHiddenGroup}
             onRequestExecuteInPlace={requestExecuteCellInPlaceOrHiddenGroup}
             onInterrupt={onInterruptKernel}
-            onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
+            onDelete={canMutateCells ? () => handleDeleteCell(cell.id) : undefined}
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
             onNavigateToCell={onNavigateToCell}
@@ -1021,7 +1066,7 @@ function NotebookViewContent({
             onFocus={() => {
               focusInteractionTarget({ kind: "editor", cellId: cell.id });
             }}
-            onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
+            onDelete={canMutateCells ? () => handleDeleteCell(cell.id) : undefined}
             onUpdateSource={
               canMutateCells && canEditMarkdownSources && onUpdateCellSource
                 ? (source: string) => onUpdateCellSource(cell.id, source)
@@ -1060,7 +1105,7 @@ function NotebookViewContent({
           onFocus={() => {
             focusInteractionTarget({ kind: "editor", cellId: cell.id });
           }}
-          onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
+          onDelete={canMutateCells ? () => handleDeleteCell(cell.id) : undefined}
           onFocusPrevious={onFocusPrevious}
           onFocusNext={onFocusNext}
           onInsertCellAfter={canMutateCells ? () => onAddCell("code", cell.id) : undefined}
@@ -1085,7 +1130,7 @@ function NotebookViewContent({
       suppressTailFollowForInPlaceExecution,
       onExecuteCell,
       onInterruptKernel,
-      onDeleteCell,
+      handleDeleteCell,
       onUpdateCellSource,
       onAddCell,
       onChangeCellType,
@@ -1224,7 +1269,7 @@ function NotebookViewContent({
                     index={index}
                     renderCell={renderCell}
                     onAddCell={onAddCell}
-                    onDeleteCell={onDeleteCell}
+                    onDeleteCell={handleDeleteCell}
                     isLastCell={index === cellIds.length - 1}
                     isHiddenInGroup={group != null && !group.isFirst}
                     canMutateCells={canMutateCells}

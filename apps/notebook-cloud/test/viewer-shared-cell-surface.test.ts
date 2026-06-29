@@ -609,7 +609,7 @@ test("cloud viewer shell uses the shared notebook rail as an adapter surface", (
   assert.match(sourceText, /onNavigateOutlineItem=\{handleNavigateOutlineItem\}/);
   assert.match(
     sourceText,
-    /navigateNotebookOutlineItem\(item, href, \{ headingHashTarget: "cell" \}\)/,
+    /navigateNotebookOutlineItem\(item, href, \{[\s\S]*documentAnchors,[\s\S]*headingHashTarget: "cell",[\s\S]*\}\)/,
   );
   assert.doesNotMatch(sourceText, /findCellElement: \(outlineItem\)/);
 });
@@ -625,7 +625,7 @@ test("cloud outline keeps iframe heading hashes at parent cell anchors", () => {
   );
   assert.match(
     sourceText,
-    /navigateNotebookOutlineItem\(item, hash, \{\s+behavior: "auto",\s+headingHashTarget: "cell",\s+\}\)/,
+    /navigateNotebookOutlineItem\(item, hash, \{\s+behavior: "auto",\s+documentAnchors,\s+headingHashTarget: "cell",\s+\}\)/,
   );
 });
 
