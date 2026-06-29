@@ -58,6 +58,7 @@ export interface NotebookViewModel<TCell extends NotebookViewCell = NotebookView
 export interface CreateNotebookViewModelOptions {
   resolveLanguage?: NotebookViewLanguageResolver;
   getOutlineStatusLabel?: (cell: NotebookViewCell) => string | null;
+  includeDocumentAnchors?: boolean;
   metadata?: unknown;
 }
 
@@ -77,11 +78,12 @@ export function createNotebookViewModel<TCell extends NotebookViewCell = Noteboo
   const outlineItems = notebookViewCellsToOutlineItems(cells, {
     getStatusLabel: options.getOutlineStatusLabel,
   });
-  const documentAnchors = createNotebookDocumentAnchors(cells, { outlineItems });
   return {
     cells,
     cellIds: cells.map((cell) => cell.id),
-    documentAnchors,
+    documentAnchors: options.includeDocumentAnchors
+      ? createNotebookDocumentAnchors(cells, { outlineItems })
+      : [],
     readOnlyCells: notebookViewCellsToReadOnlyCells(cells, resolveLanguage),
     outlineItems,
     markdownHeadingAnchorsByCellId: notebookOutlineItemsToMarkdownHeadingAnchors(outlineItems),

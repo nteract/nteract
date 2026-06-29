@@ -706,7 +706,7 @@ function NotebookViewContent({
     if (!pendingScrollAnchorRef.current) return;
     restoreScrollAnchor(containerRef.current, pendingScrollAnchorRef.current);
     pendingScrollAnchorRef.current = null;
-  }, [cellIds.length, materializeVersion, outputStructureVersion]);
+  }, [cellIds.length]);
 
   // Prevent horizontal scroll drift (can happen during text selection) and
   // remember whether the user is already reading at the notebook tail.

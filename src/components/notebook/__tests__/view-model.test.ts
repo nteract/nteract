@@ -388,6 +388,7 @@ describe("notebook shell view model", () => {
     ];
 
     const viewModel = createNotebookViewModel(cells, {
+      includeDocumentAnchors: true,
       resolveLanguage: resolveTestLanguage,
     });
 
@@ -472,6 +473,7 @@ describe("notebook shell view model", () => {
       cellId: "code-1",
       statusLabel: null,
     });
+    expect(viewModel.documentAnchors).toEqual([]);
     expect(viewModel.readOnlyCells[0].language).toBeNull();
   });
 
