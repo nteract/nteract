@@ -9,7 +9,7 @@ comments, sketches, and proposed next steps.
 
 Durable technical decisions graduate into ADRs. Durable product requirements
 graduate into PRDs. Scoped execution work may graduate into implementation
-plans. Time-bound transfer notes belong in `docs/handoffs/`.
+plans.
 
 ## Status Values
 

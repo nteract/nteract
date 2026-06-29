@@ -196,7 +196,7 @@ runt notebooks              # List open notebooks
 
 ### Cloud workstation attach
 
-Remote machines offer compute to hosted notebook rooms via `runtimed cloud-runtime-agent`. The agent dials out over WebSocket — no inbound ports required. See `docs/remote-workstation.md` for the operator path and `docs/adr/remote-workstation-doc-agents.md` for design context.
+Remote machines offer compute to hosted notebook rooms via `runtimed cloud-runtime-agent`. The agent dials out over WebSocket — no inbound ports required. See `docs/runbooks/remote-workstation.md` for the operator path and `docs/adr/remote-workstation-doc-agents.md` for design context.
 
 ```bash
 RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \

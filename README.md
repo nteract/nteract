@@ -22,7 +22,7 @@ managed by the app and CLI, not by system package-manager scripts.
 
 For remote workstations (Outerbounds, JupyterHub) that offer compute to
 hosted notebooks, use the headless one-liner — see
-[Remote workstations](docs/remote-workstation.md):
+[Remote workstations](docs/runbooks/remote-workstation.md):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless

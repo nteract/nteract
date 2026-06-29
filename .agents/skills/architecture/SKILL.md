@@ -27,7 +27,6 @@ routine implementation notes, test plans, or ordinary code changes.
 - `docs/audits/`: source-backed evidence and follow-up lists.
 - `docs/measurements/`: benchmark evidence and performance models.
 - `docs/runbooks/`: operational procedures.
-- `docs/handoffs/`: time-bound transfer notes.
 
 ## Workflow
 

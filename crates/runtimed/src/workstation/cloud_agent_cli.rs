@@ -7,7 +7,7 @@
 //! [`run_cloud_runtime_agent`](crate::runtime_agent::run_cloud_runtime_agent).
 //! The hosted connector (`apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`)
 //! spawns this subcommand per attach job; operators can also run it directly
-//! (`docs/remote-workstation.md`).
+//! (`docs/runbooks/remote-workstation.md`).
 //!
 //! Security (ADR "Security constraints"): the credential is read from the
 //! environment, never from argv, so it can't leak into a long-running process's

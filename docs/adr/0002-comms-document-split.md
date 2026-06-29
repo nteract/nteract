@@ -10,7 +10,7 @@
 
 We are converging the desktop and cloud notebook hosts on one document model and one authorization story. The principle that emerged from the #3316 review (caught a real P1 where the editor gate left root scalars writable) is: **authorization boundaries should line up with document boundaries, not field subtrees.** Field-level carve-outs are where the bugs hide.
 
-A deep investigation of where that principle leads is recorded in `docs/handoffs/2026-06-01-host-convergence-deep-dive.md`. Its conclusion: the logical endpoint is **every CRDT document is all-or-nothing per principal** (a principal can write the whole document or none of it), which would require five documents. That endpoint is logically forced, but the investigation's premortem found that shipping it as one program concentrates the dangerous failures on an irreversible `cells`/`metadata` data-move out of a frozen-genesis document. So the recommendation is to **decouple**: take the independently-justified, low-risk pieces now, and gate the structural data-move behind separate guarantees.
+The host-convergence investigation behind this ADR concluded that the logical endpoint is **every CRDT document is all-or-nothing per principal** (a principal can write the whole document or none of it), which would require five documents. That endpoint is logically forced, but the premortem found that shipping it as one program concentrates the dangerous failures on an irreversible `cells`/`metadata` data-move out of a frozen-genesis document. So the recommendation is to **decouple**: take the independently-justified, low-risk pieces now, and gate the structural data-move behind separate guarantees.
 
 This ADR is the first decoupled piece. It is also the original "thread 1" of the host-convergence handoff.
 
@@ -113,7 +113,7 @@ write-rejection into forward-suppression. So the orphan-reclamation path is a
 Ship the all-or-nothing endpoint in one go.
 
 - **Pros:** reaches the principle's logical end; deletes `validate_editor_notebook_changes`.
-- **Cons (decisive):** couples this cheap, additive, reversible change to the irreversible `cells`/`metadata` data-move out of the frozen NotebookDoc root - the source of the premortem's most-dangerous failures (in-place reshape, silent empty-notebook on a stale client, half-notebook `.ipynb` export). Rejected as one program; the structural split is its own ADR, gated separately (see `docs/handoffs/2026-06-01-host-convergence-deep-dive.md`, Gate 1 / Gate 2).
+- **Cons (decisive):** couples this cheap, additive, reversible change to the irreversible `cells`/`metadata` data-move out of the frozen NotebookDoc root - the source of the premortem's most-dangerous failures (in-place reshape, silent empty-notebook on a stale client, half-notebook `.ipynb` export). Rejected as one program; the structural split is its own ADR, gated separately by frozen-genesis guarantees.
 
 ### D. Move comm state to an ephemeral presence channel instead of a CRDT document
 

@@ -812,7 +812,7 @@ Runtime request subtleties to keep visible:
 - Unsupported requests should fail loudly and cheaply. Accepting a delivered
   frame that the room cannot observe or reconcile creates false UI readiness.
 
-Operator instructions: `docs/remote-workstation.md`.
+Operator instructions: `docs/runbooks/remote-workstation.md`.
 
 Still open: response-bearing kernel lifecycle over cloud
 (`launch_kernel`/`shutdown_kernel`/restart, plus `sync_environment` and a
