@@ -15,7 +15,7 @@
 //! This module is the daemon-side half. It is additive and gated behind the
 //! cloud transport; the desktop/UDS path is unaffected. The hosted half
 //! (workstation registry, attach jobs) lives in `apps/notebook-cloud`; the
-//! operator path is `docs/remote-workstation.md`.
+//! operator path is `docs/runbooks/remote-workstation.md`.
 
 pub mod agent_loop;
 pub mod allocate;

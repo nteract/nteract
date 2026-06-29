@@ -37,7 +37,7 @@ Options:
   --headless           Skip the desktop app: install only runt, runtimed,
                        and nteract-mcp. For remote workstations (Outerbounds,
                        JupyterHub) that offer compute to hosted notebooks.
-                       See docs/remote-workstation.md.
+                       See docs/runbooks/remote-workstation.md.
   --applications-dir <dir>
                        macOS only: where the .app bundle is installed
                        (default: ~/Applications — the install is per-user
@@ -402,5 +402,5 @@ if [[ "$HEADLESS" == "1" ]]; then
     echo "Persistent workstation service management starts with Linux user systemd."
   fi
   echo "(Releases without '$CLI_NAME workstation' can use the cloud-runtime-agent flow"
-  echo "in docs/remote-workstation.md.)"
+  echo "in docs/runbooks/remote-workstation.md.)"
 fi

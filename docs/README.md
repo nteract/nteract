@@ -13,7 +13,6 @@ AI collaborators can use the same vocabulary.
 | [`audits/`](audits/) | Source-backed evidence and follow-up lists for a boundary, subsystem, or product surface. |
 | [`measurements/`](measurements/) | Benchmark evidence, performance models, and optimization plans. |
 | [`runbooks/`](runbooks/) | Operational procedures. |
-| [`handoffs/`](handoffs/) | Time-bound transfer notes. |
 
 When in doubt, start with a memo. Durable technical decisions can graduate into
 ADRs, durable product commitments can graduate into PRDs, and scoped execution

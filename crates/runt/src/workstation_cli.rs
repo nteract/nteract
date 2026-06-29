@@ -1,7 +1,7 @@
 //! `runt workstation` — pair this machine with a hosted nteract cloud and
 //! serve attach requests.
 //!
-//! The operator path (`docs/remote-workstation.md`, ADR
+//! The operator path (`docs/runbooks/remote-workstation.md`, ADR
 //! `docs/adr/hosted-credential-transport.md` Decision 9):
 //!
 //! 1. Mint a pairing code in the hosted workstation panel.

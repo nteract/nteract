@@ -94,9 +94,8 @@ pub trait FrameTransport: Send + Sync {
     /// A cloud-WebSocket transport overrides this to `true`: a clean WS close
     /// (idle timeout, server eviction, a network blip surfaced as a normal
     /// close) must NOT kill a healthy daemon-managed kernel. Instead the agent
-    /// reconnects and resyncs, mirroring the framing-error recovery path. This
-    /// is lifecycle requirement #1 in `docs/handoffs/16-lifecycle-analysis.md`:
-    /// the default clean-EOF teardown is actively wrong for a cloud sink.
+    /// reconnects and resyncs, mirroring the framing-error recovery path. The
+    /// default clean-EOF teardown is actively wrong for a cloud sink.
     fn clean_eof_is_recoverable(&self) -> bool {
         false
     }

@@ -22,8 +22,7 @@ work as a Draft ADR just because it mentions architecture. Graduate durable
 technical decisions to `docs/adr/`, durable product requirements to `docs/prd/`,
 scoped execution work to `docs/plans/`, evidence and follow-up lists to
 `docs/audits/`, benchmark evidence to `docs/measurements/`, operational
-procedures to `docs/runbooks/`, and time-bound transfer notes to
-`docs/handoffs/`.
+procedures to `docs/runbooks/`.
 
 ## Skills
 
