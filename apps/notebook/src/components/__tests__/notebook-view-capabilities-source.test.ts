@@ -25,7 +25,7 @@ describe("NotebookView shell capabilities", () => {
     expect(sourceText).toMatch(/onRequestExecute=\{requestExecuteCellOrHiddenGroup\}/);
     expect(sourceText).toMatch(/<MarkdownCell[\s\S]*readOnly=\{!canEditMarkdownSources\}/);
     expect(sourceText).toMatch(
-      /onDelete=\{canMutateCells \? \(\) => onDeleteCell\(cell\.id\) : undefined\}/,
+      /onDelete=\{canMutateCells \? \(\) => handleDeleteCell\(cell\.id\) : undefined\}/,
     );
     expect(sourceText).toMatch(
       /onInsertCellAfter=\{canMutateCells \? \(\) => onAddCell\("markdown", cell\.id\) : undefined\}/,
@@ -68,6 +68,31 @@ describe("NotebookView shell capabilities", () => {
     );
     expect(sourceText).toMatch(/onExecute=\{executeCellOrHiddenGroup\}/);
     expect(sourceText).toMatch(/onExecuteInPlace=\{executeCellInPlaceOrHiddenGroup\}/);
+  });
+
+  it("does not route cell deletion through tail-follow scrolling", () => {
+    const sourceText = readFileSync(
+      join(process.cwd(), "apps/notebook/src/components/NotebookView.tsx"),
+      "utf8",
+    );
+
+    expect(sourceText).toMatch(/const previousCellCountRef = useRef\(cellIds\.length\);/);
+    expect(sourceText).toMatch(
+      /const pendingScrollAnchorRef = useRef<NotebookScrollAnchorSnapshot \| null>\(null\);/,
+    );
+    expect(sourceText).toMatch(
+      /const handleDeleteCell = useCallback\([\s\S]*tailPinnedRef\.current = false;[\s\S]*cancelTailScrollFrame\(\);[\s\S]*pendingScrollAnchorRef\.current = captureCellDeletionScrollAnchor\([\s\S]*onDeleteCell\(cellId\);/,
+    );
+    expect(sourceText).toMatch(
+      /useLayoutEffect\(\(\) => \{[\s\S]*restoreScrollAnchor\(containerRef\.current, pendingScrollAnchorRef\.current\);[\s\S]*pendingScrollAnchorRef\.current = null;/,
+    );
+    expect(sourceText).toMatch(
+      /if \(shouldTailFollowCellCountChange\(previousCellCount, cellIds\.length, tailPinnedRef\.current\)\) \{[\s\S]*scheduleTailScrollIfPinned\(\);[\s\S]*\}/,
+    );
+    expect(sourceText).toMatch(/onDeleteCell=\{handleDeleteCell\}/);
+    expect(sourceText).not.toMatch(/currentContainer\.scrollTop = currentContainer\.scrollHeight/);
+    expect(sourceText).toMatch(/scrollToNotebookTail\(currentContainer\)/);
+    expect(sourceText).toMatch(/scrollToDocumentAnchor\(containerRef\.current/);
   });
 
   it("does not create cells from a transient empty sync state", () => {

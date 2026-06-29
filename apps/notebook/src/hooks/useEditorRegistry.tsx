@@ -1,4 +1,5 @@
 import { EditorView } from "@codemirror/view";
+import { scrollElementIntoView } from "@/components/notebook";
 import { createContext, type ReactNode, useCallback, useContext } from "react";
 import { logger } from "../lib/logger";
 
@@ -31,7 +32,7 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
       }
 
       // Scroll the cell container into the notebook viewport
-      cellElement.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      scrollElementIntoView(cellElement, { block: "nearest", behavior: "auto" });
 
       // Find CodeMirror's content element inside the cell
       const cmContent = cellElement.querySelector(".cm-content");

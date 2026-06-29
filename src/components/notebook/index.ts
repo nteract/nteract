@@ -213,6 +213,30 @@ export {
 } from "./NotebookContextMenu";
 export { computeCanMutateCells } from "./mutation-gate";
 export {
+  createDocumentAnchorMap,
+  createNotebookDocumentAnchors,
+  documentMarkdownBlockAnchorId,
+  type CreateNotebookDocumentAnchorsOptions,
+  type DocumentAnchor,
+  type DocumentAnchorId,
+  type DocumentAnchorKind,
+} from "./document-anchors";
+export {
+  captureCellDeletionScrollAnchor,
+  isNotebookTailPinned,
+  restoreScrollAnchor,
+  scrollElementIntoView,
+  scrollToDocumentAnchor,
+  scrollToNotebookTail,
+  selectCellDeletionScrollAnchor,
+  selectTopVisibleCellAnchor,
+  shouldTailFollowCellCountChange,
+  type NotebookScrollAnchorCandidate,
+  type NotebookScrollAnchorSnapshot,
+  type SelectNotebookScrollAnchorOptions,
+  type TailPinnedInput,
+} from "./scroll-anchors";
+export {
   createNotebookInteractionModeProjection,
   type CreateNotebookInteractionModeProjectionOptions,
   type NotebookInteractionHostSupport,

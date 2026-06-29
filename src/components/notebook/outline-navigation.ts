@@ -1,5 +1,6 @@
 import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
 import type { NotebookOutlineItem } from "runtimed";
+import { scrollElementIntoView } from "./scroll-anchors";
 
 export interface NavigateNotebookOutlineItemOptions {
   behavior?: ScrollBehavior;
@@ -28,12 +29,12 @@ export function navigateNotebookOutlineItem(
     void navigateMarkdownHeading(item.cellId, item.headingAnchorId, { behavior }).then(
       (handled) => {
         if (!handled) {
-          target.scrollIntoView({ block, behavior });
+          scrollElementIntoView(target, { block, behavior });
         }
       },
     );
   } else {
-    target.scrollIntoView({ block, behavior });
+    scrollElementIntoView(target, { block, behavior });
   }
 
   if (options.updateHash ?? true) {

@@ -393,6 +393,13 @@ describe("notebook shell view model", () => {
 
     expect(viewModel.cells).toBe(cells);
     expect(viewModel.cellIds).toEqual(["code-1"]);
+    expect(viewModel.documentAnchors).toEqual([
+      expect.objectContaining({
+        id: "notebook-cell-code-1",
+        kind: "cell",
+        cellId: "code-1",
+      }),
+    ]);
     expect(viewModel.codeCellCount).toBe(1);
     expect(viewModel.readOnlyCells[0]).toMatchObject({
       id: "code-1",

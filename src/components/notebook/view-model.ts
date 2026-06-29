@@ -11,6 +11,7 @@ import {
 } from "@/components/environment";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import { projectNotebookOutline, type NotebookOutlineItem } from "runtimed";
+import { createNotebookDocumentAnchors, type DocumentAnchor } from "./document-anchors";
 
 export {
   notebookMetadataToPackageViewModel,
@@ -45,6 +46,7 @@ export type NotebookViewLanguageResolver = (
 export interface NotebookViewModel<TCell extends NotebookViewCell = NotebookViewCell> {
   cells: readonly TCell[];
   cellIds: string[];
+  documentAnchors: readonly DocumentAnchor[];
   readOnlyCells: ReadOnlyNotebookCellData[];
   outlineItems: NotebookOutlineItem[];
   markdownHeadingAnchorsByCellId: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
@@ -75,9 +77,11 @@ export function createNotebookViewModel<TCell extends NotebookViewCell = Noteboo
   const outlineItems = notebookViewCellsToOutlineItems(cells, {
     getStatusLabel: options.getOutlineStatusLabel,
   });
+  const documentAnchors = createNotebookDocumentAnchors(cells, { outlineItems });
   return {
     cells,
     cellIds: cells.map((cell) => cell.id),
+    documentAnchors,
     readOnlyCells: notebookViewCellsToReadOnlyCells(cells, resolveLanguage),
     outlineItems,
     markdownHeadingAnchorsByCellId: notebookOutlineItemsToMarkdownHeadingAnchors(outlineItems),
