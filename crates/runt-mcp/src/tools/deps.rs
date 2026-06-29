@@ -12,7 +12,7 @@ use notebook_sync::handle::DocHandle;
 
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_str, arg_string_array, reject_unknown_args, tool_error, tool_success};
 
 /// Parse a `package` parameter that may be a single package spec or a
 /// list-like string agents sometimes produce.
@@ -148,6 +148,7 @@ impl JsonSchema for DependencyApply {
 
 #[allow(dead_code)]
 #[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ManageDependenciesParams {
     /// Packages to add to the notebook's current dependency manager.
     #[serde(default)]
@@ -175,9 +176,13 @@ pub struct ManageDependenciesParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SyncEnvironmentParams {}
 
+const MANAGE_DEPENDENCIES_ALLOWED_ARGS: &[&str] =
+    &["add", "remove", "trust", "dependency_fingerprint", "apply"];
+
 fn parse_manage_dependencies_params(
     request: &CallToolRequestParams,
 ) -> Result<ManageDependenciesParams, McpError> {
+    validate_manage_dependencies_args(request)?;
     let value = request
         .arguments
         .clone()
@@ -185,6 +190,58 @@ fn parse_manage_dependencies_params(
         .unwrap_or_else(|| serde_json::json!({}));
     serde_json::from_value(value)
         .map_err(|e| McpError::invalid_params(format!("Invalid parameters: {e}"), None))
+}
+
+fn validate_manage_dependencies_args(request: &CallToolRequestParams) -> Result<(), McpError> {
+    if let Some(message) = manage_dependencies_action_packages_hint(request) {
+        return Err(McpError::invalid_params(message, None));
+    }
+
+    reject_unknown_args(request, MANAGE_DEPENDENCIES_ALLOWED_ARGS)
+}
+
+fn manage_dependencies_action_packages_hint(request: &CallToolRequestParams) -> Option<String> {
+    let args = request.arguments.as_ref()?;
+    if !args.contains_key("action") {
+        return None;
+    }
+
+    let package_key = if args.contains_key("packages") {
+        "packages"
+    } else if args.contains_key("package") {
+        "package"
+    } else {
+        return None;
+    };
+
+    let action = args.get("action")?.as_str()?.trim().to_ascii_lowercase();
+    let packages = arg_string_array(request, package_key).unwrap_or_default();
+    let packages = if packages.is_empty() {
+        vec!["<package>".to_string()]
+    } else {
+        packages
+    };
+    let packages_json =
+        serde_json::to_string(&packages).unwrap_or_else(|_| "[\"<package>\"]".to_string());
+
+    match action.as_str() {
+        "add" | "install" => Some(format!(
+            "manage_dependencies does not accept action/packages, and no dependencies were changed. \
+             To add and install packages, call manage_dependencies with arguments: \
+             {{\"add\": {packages_json}, \"apply\": \"sync\"}}. \
+             To only record dependencies, use \"apply\": \"none\"; to restart the kernel after editing, use \"apply\": \"restart\"."
+        )),
+        "remove" | "delete" | "uninstall" => Some(format!(
+            "manage_dependencies does not accept action/packages, and no dependencies were changed. \
+             To remove packages and restart the kernel, call manage_dependencies with arguments: \
+             {{\"remove\": {packages_json}, \"apply\": \"restart\"}}."
+        )),
+        _ => Some(format!(
+            "manage_dependencies does not accept action={action:?}, and no dependencies were changed. \
+             Use \"add\" and/or \"remove\" arrays plus \"apply\". \
+             Example arguments: {{\"add\": {packages_json}, \"apply\": \"sync\"}}."
+        )),
+    }
 }
 
 /// Detect the active package manager for a notebook from its metadata or env_source.
@@ -1031,6 +1088,47 @@ mod tests {
             Some("{\"uv\":{\"dependencies\":[]}}")
         );
         assert_eq!(params.apply, Some(DependencyApply::Sync));
+    }
+
+    #[test]
+    fn manage_dependencies_params_redirect_action_packages_add() {
+        let request = make_request(serde_json::json!({
+            "action": "add",
+            "packages": ["pymc"],
+        }));
+        let err = parse_manage_dependencies_params(&request).unwrap_err();
+        let message = err.message.to_string();
+
+        assert!(message.contains("no dependencies were changed"));
+        assert!(message.contains(r#""add": ["pymc"]"#));
+        assert!(message.contains(r#""apply": "sync""#));
+    }
+
+    #[test]
+    fn manage_dependencies_params_redirect_action_packages_remove() {
+        let request = make_request(serde_json::json!({
+            "action": "remove",
+            "packages": ["seaborn"],
+        }));
+        let err = parse_manage_dependencies_params(&request).unwrap_err();
+        let message = err.message.to_string();
+
+        assert!(message.contains("no dependencies were changed"));
+        assert!(message.contains(r#""remove": ["seaborn"]"#));
+        assert!(message.contains(r#""apply": "restart""#));
+    }
+
+    #[test]
+    fn manage_dependencies_params_reject_unknown_fields() {
+        let request = make_request(serde_json::json!({
+            "packages": ["pymc"],
+        }));
+        let err = parse_manage_dependencies_params(&request).unwrap_err();
+        let message = err.message.to_string();
+
+        assert!(message.contains("Unknown parameter(s): packages"));
+        assert!(message
+            .contains("Allowed parameters: add, remove, trust, dependency_fingerprint, apply"));
     }
 
     #[test]
