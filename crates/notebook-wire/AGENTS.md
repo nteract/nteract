@@ -299,8 +299,6 @@ outputs, and comm topology for accepted work. Mutable widget comm state lives in
 CommsDoc. The frontend reads runtime state via `useRuntimeState()` and the
 project runtime stores.
 
-**Key files:** `crates/runtime-doc/src/doc.rs` (schema + setters), `crates/runtime-doc/src/handle.rs` (handle), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
-
 ### Widget comm state
 
 Widget topology lives in `doc.comms/` in RuntimeStateDoc; mutable widget values live in CommsDoc. The daemon/runtime agent writes kernel-authored entries from IOPub, and new clients get widget topology and state through CRDT sync frames `0x05` and `0x09`. `CommSync` broadcast was removed. The `Comm` broadcast variant is limited to custom messages (ephemeral events like button clicks). Frontend-originated widget state updates write to CommsDoc, and the runtime agent diffs CommsDoc state for comm ids with RuntimeStateDoc topology before forwarding deltas to the kernel. See `src/components/widgets/AGENTS.md` for the widget-side data flow.
@@ -328,30 +326,3 @@ Because the daemon socket is same-UID trusted, treat the runtime-agent handshake
 - Runtime state, outputs, queue, kernel lifecycle, trust, env drift, env progress snapshots, path, save state, and widget topology belong in `RuntimeStateDoc`; widget values belong in `CommsDoc`. Broadcasts are for ephemeral comm messages and high-frequency env progress events.
 - Steady-state frame readers must keep draining. Register waiters/pending requests instead of blocking inside command paths.
 - The runtimed socket is same-UID trusted, not app-private. New handshake variants must account for any same-user process holding the socket path.
-
-## Key source files
-
-| File | Role |
-|------|------|
-| `crates/notebook-wire/src/lib.rs` | Wire constants, preamble bytes, frame caps, typed-frame enum, session-control status |
-| `crates/notebook-protocol/src/connection.rs` | Public connection API facade and compatibility re-exports |
-| `crates/notebook-protocol/src/connection/framing.rs` | Preamble validation and length-prefixed typed-frame send/receive |
-| `crates/notebook-protocol/src/connection/handshake.rs` | Protocol version, handshake, capabilities, connection info |
-| `crates/notebook-protocol/src/connection/env.rs` | Launch spec, package manager, environment source wire types |
-| `crates/notebook-protocol/src/protocol.rs` | Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast` |
-| `packages/runtimed/src/request-types.ts` | Generated TS request/response protocol unions |
-| `packages/runtimed/src/protocol-contract.ts` | Generated TS discriminant lists for drift tests |
-| `packages/runtimed/src/transport.ts` | TS `FrameType` constants and transport boundary |
-| `crates/runtimed-client/src/protocol.rs` | Daemon-internal `Request` / `Response`, re-exports from `notebook-protocol` |
-| `crates/notebook-sync/src/{relay,connect,handle}.rs` | Relay handle, connection setup, `DocHandle` |
-| `crates/runtimed/src/notebook_sync_server/` | Notebook sync server: catalog, room, peer connection/loop/session, writer, metadata |
-| `crates/runtimed/src/requests/` | Notebook request routing handlers |
-| `crates/runtimed/src/output_prep.rs` | IOPub → nbformat conversion, widget buffers, blob offload |
-| `crates/runtimed/src/runtime_agent.rs` | Runtime-agent peer loop, kernel lifecycle, comm-state diff forwarding, RuntimeStateDoc writes |
-| `crates/runtimed/src/{output_store,blob_store}.rs` | Output manifest creation + blob inlining threshold; content-addressed blob storage |
-| `crates/runtimed-wasm/src/lib.rs` | WASM bindings: cell mutations, sync, per-cell accessors, `CellChangeset` |
-| `crates/notebook-doc/src/{lib,diff}.rs` | `NotebookDoc` schema + per-cell accessors; `CellChangeset` structural diff |
-| `crates/runtime-doc/src/doc.rs` | `RuntimeStateDoc` schema — runtime-authoritative per-notebook state, read-only to regular clients |
-| `apps/notebook/src/lib/{frame-pipeline,notebook-frame-bus,runtime-state,materialize-cells,notebook-cells}.ts` | App-side frame processing, in-memory bus, runtime store, materialization, split cell store |
-| `apps/notebook/src/hooks/{useAutomergeNotebook,useDaemonKernel}.ts` | WASM handle owner + kernel execution/broadcast handling |
-| `crates/notebook/src/lib.rs` | Tauri commands and relay tasks (transparent byte pipe) |

@@ -381,42 +381,6 @@ Properties:
   per-workstation binding becomes necessary (shared multi-user hosts), bind at
   redeem time instead.
 
-## Operational path for the Anaconda demo
-
-The exact deployment steps, direct OIDC variables, route takeover, and smoke
-shape live in `docs/runbooks/hosted-direct-oidc-demo-runbook.md`.
-
-1. Transfer `preview.runt.run` from the retired `runtimed/intheloop` preview
-   Worker to notebook-cloud.
-2. Reuse the existing Anaconda stage OIDC client:
-   - issuer: `https://auth.stage.anaconda.com/api/auth`
-   - client id: `cec4781f-853c-4267-bf09-4bc59a2a3750`
-   - redirect URI: `https://preview.runt.run/oidc`
-3. Configure Worker OIDC validation:
-   - `NOTEBOOK_CLOUD_OIDC_ISSUER`
-   - `NOTEBOOK_CLOUD_OIDC_AUDIENCE` or `NOTEBOOK_CLOUD_OIDC_CLIENT_ID`
-   - optional pinned `NOTEBOOK_CLOUD_OIDC_JWKS_JSON`
-   - `NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE=user:anaconda`
-4. Configure viewer OIDC in the Worker runtime shell:
-   - `NOTEBOOK_CLOUD_OIDC_ISSUER`
-   - `NOTEBOOK_CLOUD_OIDC_CLIENT_ID`
-   - `NOTEBOOK_CLOUD_OIDC_REDIRECT_URI`
-5. Keep credential subprotocol stripping covered by tests. The listener must
-   return only a non-sensitive application protocol such as `nteract.v4`, never
-   `nteract-dev-token.*` or `nteract-bearer.*`.
-6. Configure `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` for any notebook application
-   origin that is not the Worker origin itself.
-7. Keep notebook sharing in D1 ACL rows:
-   - owner row created at publish/import;
-   - explicit collaborator rows for editors;
-   - optional public-read row for anonymous viewers.
-8. Display provider metadata such as email/name without using it as the
-   principal key.
-
-This path is provider-neutral in the public architecture. Anaconda is the first
-hosted OIDC deployment, not a protocol dependency. Other OIDC-backed hosts can
-use the same transport and ACL model with different issuer, audience, principal
-namespace, and optional perimeter configuration.
 
 ## Open Questions
 

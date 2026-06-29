@@ -204,36 +204,6 @@ capability-token mechanics open to better current practice.
 Anaconda is the identity provider for the app origin. It is not a reason for
 output documents to receive app-origin cookies or direct OIDC material.
 
-## Implementation Sequence
-
-1. **Document and cross-reference the boundary.** Land this ADR and point
-   hosted auth/artifact docs at it wherever they mention future output origins.
-2. **Keep the current sandbox invariant.** Preserve the `allow-same-origin`
-   absence tests and treat any change to output iframe sandbox flags as a
-   security review.
-3. **Separate renderer sidecars operationally.** Keep `RENDERER_ASSETS_BASE_URL`
-   / equivalent config working so the deployed demo can move Sift WASM and
-   other sidecars to a dedicated Worker/CDN without code changes. The prototype
-   uses `nteract-notebook-cloud-assets.rgbkrk.workers.dev`.
-4. **Introduce an output-document host config.** Add a host-configured
-   output-document base URL, analogous to `VITE_IFRAME_OUTPUT_URI`, for hosted
-   production. Browser-local development may continue using `srcDoc`. The
-   prototype Worker sets `OUTPUT_DOCUMENT_BASE_URL` to the dedicated output
-   document Worker.
-5. **Build an output-document Worker.** Serve only the output document shell,
-   with CSP tailored for renderers and no app APIs, room WebSockets, or
-   credentials. The prototype uses
-   `nteract-notebook-cloud-outputs.rgbkrk.workers.dev/frame/`, backed only by
-   `dist-output-document/index.html`.
-6. **Capability-scope private blob reads.** Move private hosted blob reads from
-   app-origin API routes to short-lived capability URLs or another equivalent
-   cookie-free mechanism before broad private notebook sharing.
-7. **Add boundary tests.** Cover:
-   - renderer asset origin cannot serve app bundle or notebook data;
-   - output origin is never accepted by the room WebSocket origin gate;
-   - output frames cannot access parent storage/cookies under the sandbox;
-   - cloud viewer config can place renderer assets, runtimed WASM assets, and
-     output documents on distinct origins.
 
 ## Prototype Deployment Shape
 
@@ -296,7 +266,3 @@ depending on `srcDoc` as the security boundary.
   frame shell with output-specific response headers.
 - `src/components/isolated/AGENTS.md`, which documents the current desktop and
   browser output-frame security invariants.
-
-## Open Follow-ups
-
-- **HCA-6** (Design; new ADR; `apps/notebook-cloud/src/index.ts`, `docs/adr/hosted-output-origin-isolation.md`): Private hosted blob reads still ride viewer-authenticated app-origin routes with `Access-Control-Allow-Origin: *` (`http-responses.ts::withCors`). The remaining decision is the capability mechanism (path tokens vs signed query vs Worker-mediated check), its interaction with the public CORS wrapper, and which rooms keep plain content-addressed routes (public-ACL only). Needs its own ADR, "Hosted Private Blob Read Capabilities", resolving `hosted-output-origin-isolation.md` open question 2 before private sharing ships.

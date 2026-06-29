@@ -1,6 +1,9 @@
 # Automerge Fork Patches
 
-**Status:** Draft, 2026-05-21.
+**Status:** Memo / proposal, 2026-05-21.
+
+This memo tracks possible Automerge fork patches. It is not an accepted nteract
+architecture decision until a patch becomes part of the workspace contract.
 
 ## Context
 

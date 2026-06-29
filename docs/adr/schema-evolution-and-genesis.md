@@ -31,7 +31,7 @@ zeroed the file. The fixes that landed:
 
 - #3134: `cargo xtask verify-genesis` + `wasm-ensure` assert the built wasm
   embeds the current seed bytes. The drift guard that keeps daemon and frontend
-  seeds matched. See [Automerge Fork Patches](automerge-fork-patches.md) for the
+  seeds matched. See [Automerge Fork Patches](../memos/automerge-fork-patches.md) for the
   related validation work.
 - #3179: autosave-zeroing data-loss guard (`load_failed` set-on-hazard). The
   safety net for failed loads.

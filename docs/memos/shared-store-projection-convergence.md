@@ -1,6 +1,11 @@
 # Shared-Store Projection Convergence
 
-**Status:** In progress, 2026-06-09. Follow-up to [notebook-host-shell-convergence](./notebook-host-shell-convergence.md).
+**Status:** Memo, 2026-06-09. Follow-up to
+[notebook-host-shell-convergence](../adr/notebook-host-shell-convergence.md).
+
+This is a convergence pattern and landed-work ledger, not an architecture
+decision. Keep durable decisions in the relevant store, projection, and host
+boundary ADRs.
 
 ## Context
 

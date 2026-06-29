@@ -187,16 +187,6 @@ env -i HOME=$HOME /usr/local/bin/runt-nightly daemon logs -f
 env -i HOME=$HOME /usr/local/bin/runt ps
 ```
 
-### Archive Contents
-
-| File | Description |
-|------|-------------|
-| `runtimed.log` / `.log.1` | Daemon log (current / previous session) |
-| `notebook.log` / `.log.1` | Tauri app log (current / previous session) |
-| `daemon-status.json` | Daemon state, socket path, pool stats |
-| `doctor.json` | Health checks — binary, plist, launchd, socket |
-| `system-info.json` | OS version, architecture, channel |
-
 Read files from tarball without extracting:
 ```bash
 tar xzf <archive>.tar.gz -O doctor.json

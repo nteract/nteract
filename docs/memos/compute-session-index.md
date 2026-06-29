@@ -275,7 +275,7 @@ RoomActor owns live docs + peer membership
 On Rust + Postgres/S3:
 
 - `RoomActor` is the native hosted room actor described in
-  `docs/adr/aws-rust-room-host.md`.
+  `docs/memos/aws-rust-room-host.md`.
 - `Postgres` owns `notebook_compute_sessions`, notebook catalog, ACLs,
   workstation registry, attach jobs, and revision metadata.
 - `S3` owns snapshots and blobs.

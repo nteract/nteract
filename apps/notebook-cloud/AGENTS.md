@@ -101,11 +101,3 @@ Before committing any repo change, still run the root-required formatter/lint:
 ```bash
 cargo xtask lint --fix
 ```
-
-## Reference ADRs
-
-- `docs/adr/hosted-room-authorization.md`
-- `docs/adr/runtime-principal-promotion.md`
-- `docs/adr/live-notebook-projection-policy.md`
-- `docs/adr/document-split.md`
-- `docs/adr/notebook-comments-document.md`

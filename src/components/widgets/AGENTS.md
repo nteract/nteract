@@ -44,21 +44,6 @@ Scope: `src/components/widgets/**`. The JSON-RPC transport and iframe lifecycle 
 
 `nteract.dx.*` target-names are reserved for nteract kernel-side protocols. The runtime agent filters this namespace out of runtime comm topology/state and `NotebookBroadcast::Comm`, so it is not widget state and never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler; reserved messages are dropped with a warning while current blob refs ride IOPub `display_data` buffers. Pick a different prefix for widget targets.
 
-## Key files
-
-| File | Role |
-|------|------|
-| `src/components/widgets/widget-store.ts` | Model state (`useSyncExternalStore`) |
-| `src/components/widgets/widget-registry.ts` | Model name → React component |
-| `src/components/widgets/controls/` | 54 built-in ipywidgets |
-| `src/components/widgets/controls/index.ts` | Built-in widget registration |
-| `src/components/widgets/anywidget-view.tsx` | Anywidget ESM loader |
-| `src/components/widgets/widget-view.tsx` | Registry lookup + render |
-| `src/components/isolated/comm-bridge-manager.ts` | Parent ↔ iframe comm routing |
-| `src/components/isolated/jsonrpc-transport.ts` | JSON-RPC 2.0 transport |
-| `src/components/isolated/rpc-methods.ts` | Widget-bridge method constants |
-| `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side widget bridge |
-
 ## WidgetStore API
 
 ```typescript

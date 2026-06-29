@@ -63,8 +63,6 @@ live in the paired CommsDoc; the runtime agent gates CommsDoc deltas by
 RuntimeStateDoc topology and filters out kernel-authored echoes before
 forwarding foreign deltas to the kernel.
 
-Key files: `crates/runtime-doc/src/doc.rs`, `crates/runtime-doc/src/handle.rs`, `apps/notebook/src/lib/runtime-state.ts`.
-
 ## Binary vs text content
 
 Jupyter kernels send binary data as base64-encoded strings on the wire. The daemon **base64-decodes binary MIME types before storing** so the blob store holds actual binary bytes.
@@ -206,36 +204,6 @@ RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \
 
 The workstation module lives in `crates/runtimed/src/workstation/`. It handles the cloud agent CLI, launch-on-attach, environment allocation, and reconnect logic.
 
-## Code structure
-
-```
-crates/runtimed/src/
-├── main.rs                   # CLI entry point (runtimed and cloud-runtime-agent subcommands)
-├── daemon.rs                 # State, pool management, connection routing
-├── notebook_sync_server/     # Room lifecycle, peer sync, persistence, metadata/trust
-├── runtime_agent.rs          # Runtime agent subprocess: peer, CRDT queue, kernel ownership
-├── runtime_agent_handle.rs   # Coordinator-side agent spawn + monitor
-├── jupyter_kernel.rs         # Process spawn, ZMQ sockets, IOPub routing
-├── output_prep.rs            # IOPub → nbformat conversion, widget buffers, blob offload
-├── output_committer.rs       # Output commit pipeline with priority path for control signals
-├── output_blob_publisher.rs  # Blob upload coordination for output manifests
-├── stream_committer.rs       # Stream output (stdout/stderr) batched commit path
-├── stream_terminal.rs        # Terminal emulator for carriage-return/ANSI in stream output
-├── output_store.rs           # Manifest creation, blob inlining threshold
-├── blob_store.rs             # Content-addressed storage with metadata sidecars
-├── blob_server.rs            # HTTP read server (hyper 1.x)
-├── inline_env.rs             # Inline dependency env caching
-├── project_file.rs           # Unified project file detection (closest-wins walk-up)
-├── pixi_project.rs           # Pixi project launch helpers (offline-tolerant shell-hook probe)
-├── uv_project.rs             # UV project launch helpers
-├── workstation/              # Cloud workstation: agent CLI, launch-on-attach, env allocation
-├── cloud_peer.rs             # Hosted cloud peer session (outbound WebSocket runtime_peer)
-├── embedded_plugins.rs       # Renderer plugin bytes embedded at build time
-├── singleton.rs              # Daemon locking/singleton
-├── sync_server.rs            # Settings Automerge sync
-└── task_supervisor.rs        # Background task supervision
-```
-
 ## Shipped app behavior
 
 The daemon installs as a system service at login:
@@ -252,22 +220,3 @@ Manage with `runt daemon start/stop/status/logs`. Cross-platform install/uninsta
 **Pool not replenishing:** Verify `uv --version` works and check `~/.cache/<namespace>/envs/`.
 
 **Python bindings "Failed to parse output":** Usually connecting to wrong daemon (missing blob access). Set `RUNTIMED_SOCKET_PATH` to the correct daemon's socket.
-
-## Key files
-
-| File | Role |
-|------|------|
-| `crates/notebook-doc/src/lib.rs` | `NotebookDoc` — Automerge schema, cell CRUD |
-| `crates/notebook-doc/src/diff.rs` | `CellChangeset` — structural diff from patches |
-| `crates/notebook-doc/src/mime.rs` | Canonical MIME classification |
-| `crates/notebook-protocol/src/protocol.rs` | Wire types: requests, responses, broadcasts |
-| `crates/notebook-sync/src/handle.rs` | `DocHandle` — sync infrastructure |
-| `crates/runtime-doc/src/doc.rs` | `RuntimeStateDoc` schema |
-| `crates/runtimed/src/notebook_sync_server/` | Room lifecycle, peer sync |
-| `crates/runtimed/src/output_prep.rs` | IOPub conversion, widget buffers |
-| `crates/runtimed/src/output_store.rs` | Manifest creation, `ContentRef` |
-| `crates/runtimed/src/blob_store.rs` | Content-addressed storage |
-| `crates/runtimed/src/blob_server.rs` | HTTP blob server |
-| `crates/runtimed-outputs/src/output_resolver.rs` | Shared Rust manifest resolution |
-| `apps/notebook/src/lib/manifest-resolution.ts` | Frontend resolution (WASM resolves directly) |
-| `apps/notebook/src/lib/notebook-cells.ts` | Split cell store, per-cell subscriptions |

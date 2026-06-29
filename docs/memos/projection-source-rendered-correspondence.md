@@ -231,18 +231,12 @@ here pays forward.
   both the MIME path and direct `projectMarkdownPlan` together (the version gate
   is asymmetric today).
 
-## Suggested next steps
+## Current Status
 
-1. Host-side character-granular highlight in `ProjectedMarkdownView`
-   (`commentHighlightForRun` / `renderRuns`): wrap only the overlapping
-   characters of each covered run. Fixes the balloon with no projector change.
-2. Host-side display quote: `Selection.toString()` at creation, run-derived plus
-   whitespace-normalized when re-deriving in the rail; keep `exact_quote` as the
-   anchor's re-resolution key.
-3. Projector fidelity marker, additive under `version: 1` (no bump): a boolean
-   for the transparent runs, segments for piecewise runs. Replace the host
-   `renderedLength === sourceLength` heuristic. Update the WASM delimiter-span
-   tests (`projects_multi_character_delimiter_source_spans` ~1347).
-4. Fold the read path onto the same fidelity classes; delete the generic snap.
-5. If this holds up, graduate the contract (run fidelity classes, the marker
-   shape) into an ADR and cross-link OC-2.
+Host-side character-granular highlights and display quotes have landed. The
+remaining durable design question is whether the projector should expose an
+explicit fidelity marker under `version: 1` so consumers stop inferring fidelity
+from `renderedLength === sourceLength`.
+
+If that marker holds up, graduate the run fidelity classes and marker shape into
+an ADR and cross-link OC-2.

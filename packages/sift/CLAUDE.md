@@ -36,29 +36,6 @@ cargo xtask wasm sift
 4. Virtual scroll viewport: direct WASM cell access via `get_cell_string`/`get_cell_f64`
 5. On filter change: WASM crossfilter computes filtered summaries, re-render
 
-### Key files
-
-- `src/main.ts` — Entry point, dataset picker, data loading, type refinement
-- `src/table.ts` — The table engine (`createTable` → `TableEngine`). Virtual scroll, sort, filter, crossfilter summaries, keyboard nav, ARIA
-- `src/sparkline.tsx` — Header summary charts: histograms, category bars, boolean ratio bars, column profiling (null%/distinct), searchable category popover
-- `src/accumulators.ts` — Summary accumulators (numeric, timestamp, categorical, boolean) + type detection/refinement
-- `src/react.tsx` — `<SiftTable>` React wrapper for embedding (supports multi-instance)
-- `src/notebook.tsx` — Multi-table notebook demo page
-- `src/filter-schema.ts` — Predicate types, ExplorerState, compilers to SQL/pandas/English
-- `src/predicate.ts` — Lazy-loading TS wrapper for nteract-predicate WASM
-- `src/datasets.ts` — HuggingFace dataset catalog
-- `src/parquet-loader.ts` — Parquet fetch + conversion via parquet-wasm
-- `src/index.ts` — Public API entry point for library consumers
-- `src/style.css` — All styles, light/dark theme via CSS custom properties
-
-### WASM crate (`../../crates/nteract-predicate/`)
-
-Rust crate wrapping arrow-rs for compute operations. Built with `wasm-pack`.
-
-- `src/lib.rs` — wasm-bindgen entry points
-- `src/summary.rs` — `value_counts`, `histogram` (handles dictionary-encoded columns)
-- `src/filter.rs` — `filter_rows` (boolean mask), `string_contains` (substring search)
-
 ### Key pretext insight
 
 ```ts

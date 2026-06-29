@@ -137,7 +137,7 @@ References:
 This decision records the current Cloudflare prototype and remains useful for
 understanding the shipped `preview.runt.run` path. For the next
 production-oriented hosted target, it is partially superseded by
-`aws-rust-room-host.md`, which moves live room authority to a native Rust room
+`../memos/aws-rust-room-host.md`, which moves live room authority to a native Rust room
 host on AWS while preserving the typed-frame protocol and document model.
 
 The primary hosted topology is a Cloudflare Worker routing room requests to one
@@ -362,23 +362,3 @@ infer compute from the document host.
 6. **Backpressure and fanout.** What is the first threshold where a public room
    needs a read-only fanout layer instead of every viewer WebSocket hitting the
    same Durable Object?
-
-## Implementation Sequence
-
-1. Keep `hosted-room-authorization.md` moving first: DO as live document host,
-   ACL lookup before WebSocket admission, and snapshot persistence.
-2. Add explicit runtime attachment metadata and UI/API vocabulary without
-   launching JupyterHub yet.
-3. Define typed failure states for no runtime, runtime disconnected, credential
-   expired, and ACL revoked before the first Hub prototype consumes those
-   errors.
-4. Implement `runtime_peer` WebSocket attach from a trusted local/runtime test
-   sidecar to prove the frame path.
-5. Prototype a JupyterHub service or single-user sidecar that authenticates
-   with Hub OAuth/token, starts a kernel, and opens outbound `runtime_peer`
-   sync to the Cloudflare room.
-6. Define the runtime attachment grant/token exchange after the prototype
-   proves which side needs to mint which credential.
-7. Only after the hosted runtime path is proven, revisit whether any of #2284's
-   local URI-discovery work is still needed beyond #2285's file-binding safety
-   stopgap.

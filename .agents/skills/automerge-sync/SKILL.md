@@ -282,23 +282,3 @@ Concurrent sync can trigger `PatchLog::migrate_actors()` mismatch when actor tab
 | Adding a new sync stream | New frame type + sync::State + recovery helper |
 | Should this block client or daemon? | Prefer daemon-side waits (required_heads) |
 | Should protocol logic be async? | Consider sans-IO for testability (samod pattern) |
-
-## Key Source Files
-
-| File | Purpose |
-|------|---------|
-| `automerge/src/sync.rs` | `generate_sync_message`, `receive_sync_message_inner`, `advance_heads` |
-| `automerge/src/sync/state.rs` | `State` struct, `encode`/`decode` |
-| `automerge/src/automerge.rs` | Fork/merge/save/load, change application |
-| `automerge/src/autocommit.rs` | AutoCommit, auto-transaction, isolation, PatchLog |
-| `automerge/src/change_graph.rs` | ChangeGraph DAG, heads, causal queries |
-| `automerge/src/op_set2/op_set.rs` | OpSet columnar storage, actor table |
-| `crates/notebook-sync/src/sync_task.rs` | Biased select, document recovery calls |
-| `crates/notebook-sync/src/shared.rs` | `SharedDocState`, dual sync states, rebuild helpers |
-| `crates/notebook-sync/src/handle.rs` | `send_request_after_heads`, `current_heads_hex`, `confirm_sync` |
-| `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: transactions, fork/merge, save/load/rebuild |
-| `crates/runtimed/src/notebook_sync_server/peer_writer.rs` | `wait_for_required_heads`, daemon causal gate |
-| `crates/runt-mcp/src/execution.rs` | MCP execute path using required_heads |
-| `automerge-repo/.../DocSynchronizer.ts` | Per-peer sync state, `beginSync` encode/decode |
-| `samod/subduction-sans-io/src/engine.rs` | Sans-IO protocol engine pattern |
-| `samod/subduction-sans-io/src/incremental.rs` | Subscription + counter-based live sync |

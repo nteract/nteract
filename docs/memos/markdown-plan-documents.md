@@ -177,31 +177,18 @@ document should not fake cell IDs just to reuse the schema.
 
 ### Comments ADR Is The Closest Existing Design
 
-`docs/adr/notebook-comments-document.md` is draft status and has the right
-local-first/authority-finalization model:
+`docs/adr/notebook-comments-document.md` has the right document-sidecar model:
 
-- `docs/adr/notebook-comments-document.md:12` proposes a per-notebook
-  `CommentsDoc`.
-- `docs/adr/notebook-comments-document.md:21` reserves a likely
-  `COMMENTS_DOC_SYNC = 0x0a` frame.
-- `docs/adr/notebook-comments-document.md:23` requires tentative local comment
-  mutations to land in Automerge, with daemon/Cloud authority finalizing
-  author/scope/resolve fields.
-- `docs/adr/notebook-comments-document.md:54` states comments cannot render as
-  extra notebook cell rows because of stable DOM order.
-- `docs/adr/notebook-comments-document.md:143` places comment persistence in room
-  checkpoints and published snapshots.
-- `docs/adr/notebook-comments-document.md:157` keeps comments off by default for
-  public publish.
-- `docs/adr/notebook-comments-document.md:215` rejects storing derived
-  `anchor_index` in the CommentsDoc; projections should compute indexes.
-- `docs/adr/notebook-comments-document.md:288` defines anchors including
-  `notebook`, `cell`, `cell_range`, `source_range`, and `output`.
-- `docs/adr/notebook-comments-document.md:407` rejects a separate optimistic
-  comment store; optimistic state is the local Automerge mutation.
-- `docs/adr/notebook-comments-document.md:585` sketches MCP mutation tools.
-- `docs/adr/notebook-comments-document.md:618` sketches stable-DOM-safe UI
-  markers, gutters, overlays, and panels.
+- comments live in a per-notebook `CommentsDoc`;
+- `COMMENTS_DOC_SYNC` is its own typed-frame stream;
+- local comment mutations land directly in Automerge;
+- author/resolver attribution is projected from admitted change actors, not
+  finalized from stored authority fields;
+- comments do not render as extra notebook cell rows because of stable DOM
+  order;
+- publish excludes comments by default unless an explicit policy opts in; and
+- projections compute display indexes and badges from document heads rather than
+  storing a derived anchor index.
 
 For Markdown Plan documents, the ADR needs either an amendment or a sibling ADR
 that generalizes "notebook comments" into "document comments".
@@ -407,12 +394,13 @@ The projection layer should compute display indexes and badges from
 `MarkdownDoc + CommentsDoc` heads. Do not store a derived anchor index in the
 comments document.
 
-Cloud/local authority semantics can reuse the ADR:
+Cloud/local trust semantics can reuse the ADR:
 
-- local-first tentative comment mutation lands in Automerge
-- daemon or Cloud comments authority finalizes author/scope fields
-- public publish excludes comments by default
-- if comments are published, publish a frozen read-only comments projection
+- local-first comment mutation lands in Automerge;
+- sync ingress validates the connection actor and scope before admitting the
+  change;
+- public publish excludes comments by default; and
+- if comments are published, publish a frozen read-only comments projection.
 
 ### 6. Extend Presence From Cell-First To Document-First
 
