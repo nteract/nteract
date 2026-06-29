@@ -5,7 +5,7 @@ import {
   projectNotebookOutline,
   type NotebookOutlineItem,
 } from "runtimed";
-import { resolveMarkdownProjection } from "@/lib/markdown-projection";
+import { resolveMarkdownProjection } from "../../lib/markdown-projection";
 import type { NotebookViewCell } from "./view-model";
 
 export type DocumentAnchorId = string;
