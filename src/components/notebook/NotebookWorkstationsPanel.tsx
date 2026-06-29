@@ -241,16 +241,16 @@ function WorkstationPairingCard({
   onCancel?: () => void;
   onRestart?: () => void;
 }) {
-  const hasStructuredCommands = pairing.commands && pairing.commands.length > 0;
-  const pairingCommands = hasStructuredCommands
-    ? pairing.commands
-    : [
-        {
-          id: "connect",
-          label: "Connect workstation",
-          command: pairing.connectCommand,
-        },
-      ];
+  const structuredCommands =
+    pairing.commands && pairing.commands.length > 0 ? pairing.commands : null;
+  const hasStructuredCommands = structuredCommands !== null;
+  const pairingCommands: readonly NotebookWorkstationPairingCommandView[] = structuredCommands ?? [
+    {
+      id: "connect",
+      label: "Connect workstation",
+      command: pairing.connectCommand,
+    },
+  ];
   const hasServiceCommand = pairingCommands.some((command) =>
     command.command.includes("workstation service"),
   );
