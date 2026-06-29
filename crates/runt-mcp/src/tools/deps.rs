@@ -302,6 +302,66 @@ fn validate_specifier_for_manager(
     }
 }
 
+fn snapshot_deps_for_manager(
+    snap: &notebook_doc::metadata::NotebookMetadataSnapshot,
+    manager: &notebook_protocol::connection::PackageManager,
+) -> Vec<String> {
+    use notebook_protocol::connection::PackageManager;
+    match manager {
+        PackageManager::Conda => snap.conda_dependencies().to_vec(),
+        PackageManager::Pixi => snap.pixi_dependencies().to_vec(),
+        PackageManager::Uv | PackageManager::Unknown(_) => snap.uv_dependencies().to_vec(),
+    }
+}
+
+fn apply_dep_edits_to_snapshot(
+    snap: &mut notebook_doc::metadata::NotebookMetadataSnapshot,
+    add: &[String],
+    remove: &[String],
+    manager: &notebook_protocol::connection::PackageManager,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    use notebook_protocol::connection::PackageManager;
+
+    let before_snapshot = snap.clone();
+    let mut added = Vec::new();
+
+    // Adds
+    for package in add {
+        let before = snapshot_deps_for_manager(snap, manager);
+        match manager {
+            PackageManager::Conda => snap.add_conda_dependency(package),
+            PackageManager::Pixi => snap.add_pixi_dependency(package),
+            PackageManager::Uv | PackageManager::Unknown(_) => snap.add_uv_dependency(package),
+        }
+        if snapshot_deps_for_manager(snap, manager) != before {
+            added.push(package.clone());
+        }
+    }
+
+    // Removes
+    let mut removed = Vec::new();
+    let mut not_found = Vec::new();
+    for package in remove {
+        let was_present = match manager {
+            PackageManager::Conda => snap.remove_conda_dependency(package),
+            PackageManager::Pixi => snap.remove_pixi_dependency(package),
+            PackageManager::Uv | PackageManager::Unknown(_) => snap.remove_uv_dependency(package),
+        };
+        if was_present {
+            removed.push(package.clone());
+        } else {
+            not_found.push(package.clone());
+        }
+    }
+
+    if *snap == before_snapshot {
+        added.clear();
+        removed.clear();
+    }
+
+    (added, removed, not_found)
+}
+
 /// Apply dependency adds and removes in a single atomic CRDT transaction.
 ///
 /// Validates all specifiers first, then acquires the doc lock once, applies
@@ -309,19 +369,18 @@ fn validate_specifier_for_manager(
 /// produces O(1) Automerge ops and sync notifications regardless of how
 /// many packages are added/removed.
 ///
-/// Returns `(removed, not_found)` — packages that were present and removed
-/// vs. packages that were requested for removal but not found.
+/// Returns `(added, removed, not_found)` — packages whose requested add changed
+/// metadata, packages that were present and removed, and packages that were
+/// requested for removal but not found.
 fn apply_dep_edits(
     handle: &notebook_sync::handle::DocHandle,
     add: &[String],
     remove: &[String],
     manager: &notebook_protocol::connection::PackageManager,
-) -> Result<(Vec<String>, Vec<String>), String> {
-    use notebook_protocol::connection::PackageManager;
-
+) -> Result<(Vec<String>, Vec<String>, Vec<String>), String> {
     // Short-circuit: nothing to do → skip the CRDT lock entirely.
     if add.is_empty() && remove.is_empty() {
-        return Ok((vec![], vec![]));
+        return Ok((vec![], vec![], vec![]));
     }
 
     // Phase 1: validate all specifiers before touching the CRDT
@@ -334,37 +393,7 @@ fn apply_dep_edits(
     // closure didn't actually mutate anything (e.g. removing a package
     // that isn't present, or adding one that's already there).
     handle
-        .with_metadata(|snap| {
-            // Adds
-            for package in add {
-                match manager {
-                    PackageManager::Conda => snap.add_conda_dependency(package),
-                    PackageManager::Pixi => snap.add_pixi_dependency(package),
-                    PackageManager::Uv | PackageManager::Unknown(_) => {
-                        snap.add_uv_dependency(package)
-                    }
-                }
-            }
-
-            // Removes
-            let mut removed = Vec::new();
-            let mut not_found = Vec::new();
-            for package in remove {
-                let was_present = match manager {
-                    PackageManager::Conda => snap.remove_conda_dependency(package),
-                    PackageManager::Pixi => snap.remove_pixi_dependency(package),
-                    PackageManager::Uv | PackageManager::Unknown(_) => {
-                        snap.remove_uv_dependency(package)
-                    }
-                };
-                if was_present {
-                    removed.push(package.clone());
-                } else {
-                    not_found.push(package.clone());
-                }
-            }
-            (removed, not_found)
-        })
+        .with_metadata(|snap| apply_dep_edits_to_snapshot(snap, add, remove, manager))
         .map_err(|e| format!("Failed to apply dependency edits: {e}"))
 }
 
@@ -376,7 +405,7 @@ fn remove_dep_for_manager(
     package: &str,
     manager: &notebook_protocol::connection::PackageManager,
 ) -> Result<bool, String> {
-    let (removed, _) = apply_dep_edits(handle, &[], &[package.to_string()], manager)?;
+    let (_, removed, _) = apply_dep_edits(handle, &[], &[package.to_string()], manager)?;
     Ok(!removed.is_empty())
 }
 
@@ -602,6 +631,46 @@ async fn apply_dependency_changes(
     }
 }
 
+fn apply_none_hint(
+    add: &[String],
+    removed: &[String],
+    apply: &DependencyApply,
+) -> Option<serde_json::Value> {
+    if *apply != DependencyApply::None || (add.is_empty() && removed.is_empty()) {
+        return None;
+    }
+
+    let (note, next_apply) = if !add.is_empty() && !removed.is_empty() {
+        (
+            "Dependency edits (adds and removals) were recorded in notebook metadata, but the running kernel was not restarted. Restart to apply all changes.",
+            "restart",
+        )
+    } else if !removed.is_empty() {
+        (
+            "Dependency edits were recorded in notebook metadata, but the running kernel was not restarted. Removals take effect after restart.",
+            "restart",
+        )
+    } else {
+        (
+            "Dependencies were recorded in notebook metadata, but not installed into the running kernel. Call manage_dependencies again with apply=\"sync\" to hot-install them, or use apply=\"restart\" to restart with the updated dependency set.",
+            "sync",
+        )
+    };
+
+    Some(serde_json::json!({
+        "mode": "none",
+        "success": true,
+        "environment_updated": false,
+        "note": note,
+        "suggested_next_call": {
+            "tool": "manage_dependencies",
+            "arguments": {
+                "apply": next_apply,
+            },
+        },
+    }))
+}
+
 /// Add a package dependency. Auto-detects the notebook's package manager (uv, conda, or pixi).
 ///
 /// Tolerates agents passing a list-like string (e.g. `"['pandas','numpy']"` or
@@ -718,11 +787,11 @@ pub async fn manage_dependencies(
 
     // Validate all specifiers and apply adds/removes in a single CRDT
     // transaction — one lock, one snapshot read/write, one sync notification.
-    let (removed, not_found) = match apply_dep_edits(&handle, &params.add, &params.remove, &manager)
-    {
-        Ok(result) => result,
-        Err(e) => return tool_error(&e),
-    };
+    let (added, removed, not_found) =
+        match apply_dep_edits(&handle, &params.add, &params.remove, &manager) {
+            Ok(result) => result,
+            Err(e) => return tool_error(&e),
+        };
 
     let mut trust_approved = false;
     let approved_fingerprint = if params.trust {
@@ -779,6 +848,8 @@ pub async fn manage_dependencies(
 
     if matches!(apply, DependencyApply::Sync | DependencyApply::Restart) {
         apply_dependency_changes(&handle, &notebook_id, apply_str, &mut result).await;
+    } else if let Some(hint) = apply_none_hint(&added, &removed, &apply) {
+        result["apply"] = hint;
     }
 
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
@@ -1129,6 +1200,98 @@ mod tests {
         assert!(message.contains("Unknown parameter(s): packages"));
         assert!(message
             .contains("Allowed parameters: add, remove, trust, dependency_fingerprint, apply"));
+    }
+
+    #[test]
+    fn manage_dependencies_apply_none_hint_for_add_suggests_sync() {
+        let add = vec!["pymc".to_string()];
+        let removed = Vec::new();
+        let hint = apply_none_hint(&add, &removed, &DependencyApply::None).unwrap();
+
+        assert_eq!(hint["mode"], serde_json::json!("none"));
+        assert_eq!(hint["environment_updated"], serde_json::json!(false));
+        assert!(hint["note"]
+            .as_str()
+            .expect("note")
+            .contains("not installed into the running kernel"));
+        assert_eq!(
+            hint["suggested_next_call"],
+            serde_json::json!({
+                "tool": "manage_dependencies",
+                "arguments": {
+                    "apply": "sync",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn manage_dependencies_apply_none_hint_for_remove_suggests_restart() {
+        let add = Vec::new();
+        let removed = vec!["seaborn".to_string()];
+        let hint = apply_none_hint(&add, &removed, &DependencyApply::None).unwrap();
+
+        assert_eq!(hint["mode"], serde_json::json!("none"));
+        assert!(hint["note"]
+            .as_str()
+            .expect("note")
+            .contains("Removals take effect after restart"));
+        assert_eq!(
+            hint["suggested_next_call"]["arguments"],
+            serde_json::json!({ "apply": "restart" })
+        );
+    }
+
+    #[test]
+    fn manage_dependencies_apply_none_hint_for_mixed_edits_suggests_restart() {
+        let add = vec!["pymc".to_string()];
+        let removed = vec!["seaborn".to_string()];
+        let hint = apply_none_hint(&add, &removed, &DependencyApply::None).unwrap();
+
+        assert!(hint["note"]
+            .as_str()
+            .expect("note")
+            .contains("adds and removals"));
+        assert!(hint["note"]
+            .as_str()
+            .expect("note")
+            .contains("Restart to apply all changes"));
+        assert_eq!(
+            hint["suggested_next_call"]["arguments"],
+            serde_json::json!({ "apply": "restart" })
+        );
+    }
+
+    #[test]
+    fn manage_dependencies_apply_none_hint_requires_unapplied_edits() {
+        let add = Vec::new();
+        let removed = Vec::new();
+
+        assert!(apply_none_hint(&add, &removed, &DependencyApply::None).is_none());
+        assert!(apply_none_hint(&["pymc".to_string()], &removed, &DependencyApply::Sync).is_none());
+    }
+
+    #[test]
+    fn manage_dependencies_apply_dep_edits_to_snapshot_reports_only_actual_adds() {
+        use notebook_doc::metadata::NotebookMetadataSnapshot;
+        use notebook_protocol::connection::PackageManager;
+
+        let manager = PackageManager::Uv;
+        let mut snap = NotebookMetadataSnapshot::default();
+        let add = vec!["numpy".to_string()];
+
+        let (added, removed, not_found) =
+            apply_dep_edits_to_snapshot(&mut snap, &add, &[], &manager);
+        assert_eq!(added, vec!["numpy"]);
+        assert!(removed.is_empty());
+        assert!(not_found.is_empty());
+
+        let (added, removed, not_found) =
+            apply_dep_edits_to_snapshot(&mut snap, &add, &[], &manager);
+        assert!(added.is_empty());
+        assert!(removed.is_empty());
+        assert!(not_found.is_empty());
+        assert!(apply_none_hint(&added, &removed, &DependencyApply::None).is_none());
     }
 
     #[test]
