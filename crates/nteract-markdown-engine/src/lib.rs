@@ -91,6 +91,7 @@ pub enum NodeKind {
     FootnoteReference,
     Mdx,
     Frontmatter,
+    Island,
     Unknown,
 }
 
@@ -111,6 +112,8 @@ pub struct NodeAttrs {
     pub align: Vec<TableAlign>,
     pub anchor_slug: Option<String>,
     pub isolation_kind: Option<IsolationKind>,
+    pub island_tag: Option<String>,
+    pub island_inline: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +165,7 @@ pub enum IsolationKind {
     RawHtml,
     ActiveHtml,
     Mdx,
+    Component,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -641,6 +645,10 @@ fn html_safety(kind: IsolationKind, mode: RawHtmlMode) -> Safety {
             lane: SafetyLane::Isolated,
             reason: "mdx-compiles-to-active-js".to_string(),
         },
+        (IsolationKind::Component, _) => Safety {
+            lane: SafetyLane::Isolated,
+            reason: "isolated component region".to_string(),
+        },
         (IsolationKind::ActiveHtml, _) => Safety {
             lane: SafetyLane::Isolated,
             reason: "raw-html-active-element".to_string(),
@@ -659,6 +667,7 @@ fn html_safety(kind: IsolationKind, mode: RawHtmlMode) -> Safety {
 fn isolated_fallback(kind: IsolationKind) -> &'static str {
     match kind {
         IsolationKind::Mdx => "[isolated MDX region]",
+        IsolationKind::Component => "[isolated component region]",
         IsolationKind::ActiveHtml => "[isolated active HTML region]",
         IsolationKind::RawHtml => "[isolated raw HTML region]",
     }
@@ -708,7 +717,7 @@ fn estimate_node(node: &ProjectedNode, width: usize) -> BlockMeasurement {
             MeasurementConfidence::Low,
             "table row count",
         ),
-        NodeKind::Html | NodeKind::Mdx => measured(
+        NodeKind::Html | NodeKind::Mdx | NodeKind::Island => measured(
             96,
             MeasurementConfidence::Low,
             "isolated or escaped raw region",

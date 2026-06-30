@@ -91,8 +91,16 @@ fn render_wasm_plan(source: &str, plan: &MarkdownPlan) -> String {
         .map(|anchor| WasmAnchor::new(&position_index, anchor))
         .collect::<Vec<_>>();
 
+    let plan_version = if plan.blocks.iter().any(node_contains_island) {
+        2
+    } else {
+        1
+    };
+
     let mut output = String::new();
-    output.push_str("{\"version\":1,\"engine\":\"rust-wasm\",\"byteLength\":");
+    output.push_str("{\"version\":");
+    output.push_str(&plan_version.to_string());
+    output.push_str(",\"engine\":\"rust-wasm\",\"byteLength\":");
     output.push_str(&position_index.byte_len.to_string());
     output.push_str(",\"utf16Length\":");
     output.push_str(&position_index.utf16_len.to_string());
@@ -128,6 +136,10 @@ fn render_wasm_plan(source: &str, plan: &MarkdownPlan) -> String {
     }
     output.push_str("]}");
     output
+}
+
+fn node_contains_island(node: &ProjectedNode) -> bool {
+    node.kind == NodeKind::Island || node.children.iter().any(node_contains_island)
 }
 
 fn collect_block(
@@ -643,6 +655,7 @@ fn block_kind(block: &ProjectedNode) -> &'static str {
         NodeKind::Blockquote => "blockquote",
         NodeKind::CodeBlock => "code",
         NodeKind::Html | NodeKind::Mdx => "isolated",
+        NodeKind::Island => "island",
         NodeKind::MathBlock => "math",
         NodeKind::ThematicBreak => "thematic-break",
         NodeKind::Table => "table",
@@ -670,6 +683,7 @@ fn block_element(block: &ProjectedNode) -> &'static str {
         }
         NodeKind::CodeBlock => "pre",
         NodeKind::ThematicBreak => "hr",
+        NodeKind::Island => "div",
         _ => "div",
     }
 }
