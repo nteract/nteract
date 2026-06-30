@@ -27,6 +27,30 @@ scoped execution work to `docs/plans/`, evidence and follow-up lists to
 `docs/audits/`, benchmark evidence to `docs/measurements/`, operational
 procedures to `docs/runbooks/`.
 
+## Design system and Elements
+
+For UI, design-system, or product-surface work, start with the
+`frontend-dev` repo skill and `apps/elements/content/docs/index.mdx` before
+editing app code. This includes Elements, cloud dashboard, notebook shell,
+toolbar, cells, output rendering, comments, runtime/package UI, search, themes,
+and shared components.
+
+Treat `apps/elements` as the stable review artifact layer for visual notebook
+surfaces. The catalog details live in the Elements docs and `frontend-dev`
+skill, not in this top-level routing file.
+
+Then read the nested ownership rules for the code you will touch:
+`apps/notebook/src/AGENTS.md` for desktop/shared notebook app wiring,
+`apps/notebook-cloud/AGENTS.md` for hosted cloud shell, authority, and viewer
+boundaries, and `src/components/ui/AGENTS.md` for shared UI, cell, editor, and
+output primitives. For notebook shell convergence, also read
+`docs/adr/notebook-host-shell-convergence.md`.
+
+Use those files to keep cloud app chrome separate from the shared notebook
+shell. Host-specific auth, ACL, sharing, workstation, routing, and side-effect
+boundaries should not fork common notebook presentation without an explicit
+reason.
+
 ## MCP servers
 
 Three may be visible. Pick by purpose. Full details in `.claude/rules/mcp-servers.md` (auto-loaded everywhere).
