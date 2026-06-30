@@ -33,6 +33,12 @@ pub enum MdxMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanMode {
+    Markdown,
+    Mdx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawHtmlMode {
     Escape,
     Isolate,
@@ -41,6 +47,7 @@ pub enum RawHtmlMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkdownPlan {
     pub version: u8,
+    pub mode: PlanMode,
     pub source_len: usize,
     pub root: ProjectedNode,
     pub blocks: Vec<ProjectedNode>,
@@ -271,6 +278,11 @@ pub fn project_markdown_with_options(
 
     Ok(MarkdownPlan {
         version: 1,
+        mode: if options.islands {
+            PlanMode::Mdx
+        } else {
+            PlanMode::Markdown
+        },
         source_len: source.len(),
         root,
         blocks,
@@ -1108,6 +1120,8 @@ mod tests {
             ..Default::default()
         };
         let plan = project_markdown_with_options("<Frog size={96} />\n", &options).unwrap();
+        assert_eq!(plan.version, 1);
+        assert_eq!(plan.mode, PlanMode::Mdx);
         let island = plan
             .blocks
             .iter()
@@ -1124,6 +1138,8 @@ mod tests {
             ..Default::default()
         };
         let plan = project_markdown_with_options("<Frog size={96} />\n", &options).unwrap();
+        assert_eq!(plan.version, 1);
+        assert_eq!(plan.mode, PlanMode::Markdown);
         assert!(plan
             .blocks
             .iter()

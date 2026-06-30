@@ -1,6 +1,6 @@
 use nteract_markdown_engine::{
-    project_markdown, MarkdownAnchor, MarkdownPlan, MeasurementConfidence, NodeKind, ProjectedNode,
-    TableAlign,
+    project_markdown, MarkdownAnchor, MarkdownPlan, MeasurementConfidence, NodeKind, PlanMode,
+    ProjectedNode, TableAlign,
 };
 use std::sync::Mutex;
 
@@ -91,15 +91,17 @@ fn render_wasm_plan(source: &str, plan: &MarkdownPlan) -> String {
         .map(|anchor| WasmAnchor::new(&position_index, anchor))
         .collect::<Vec<_>>();
 
-    let plan_version = if plan.blocks.iter().any(node_contains_island) {
-        2
-    } else {
-        1
-    };
-
     let mut output = String::new();
     output.push_str("{\"version\":");
-    output.push_str(&plan_version.to_string());
+    output.push_str(&plan.version.to_string());
+    // mode is mdx-only: a plain markdown plan omits the key so its JSON prefix
+    // stays byte-identical to the version-1 schema. The mdx branch never fires
+    // from wasm today (no islands FFI flag); it exists for when this serializer
+    // is shared with the compiler.
+    if plan.mode == PlanMode::Mdx {
+        output.push_str(",\"mode\":");
+        push_json_string(&mut output, plan_mode_label(plan.mode));
+    }
     output.push_str(",\"engine\":\"rust-wasm\",\"byteLength\":");
     output.push_str(&position_index.byte_len.to_string());
     output.push_str(",\"utf16Length\":");
@@ -138,8 +140,11 @@ fn render_wasm_plan(source: &str, plan: &MarkdownPlan) -> String {
     output
 }
 
-fn node_contains_island(node: &ProjectedNode) -> bool {
-    node.kind == NodeKind::Island || node.children.iter().any(node_contains_island)
+fn plan_mode_label(mode: PlanMode) -> &'static str {
+    match mode {
+        PlanMode::Markdown => "markdown",
+        PlanMode::Mdx => "mdx",
+    }
 }
 
 fn collect_block(
@@ -1248,9 +1253,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn emits_constant_schema_version_without_markdown_mode() {
+        let json = project_to_json("# hi");
+
+        assert!(json.starts_with("{\"version\":1,\"engine\":\"rust-wasm\""));
+        assert!(json.contains("\"version\":1"));
+        assert!(!json.contains("\"mode\""));
+    }
+
+    #[test]
     fn projects_markdown_rs_output_for_wasm() {
         let json = project_to_json("# Café 🚀 &copy;\n\n<i>wow</i>");
 
+        assert!(json.starts_with("{\"version\":1,\"engine\":\"rust-wasm\""));
         assert!(json.contains("\"engine\":\"rust-wasm\""));
         assert!(json.contains("\"measurement\":{\"estimatedHeight\":"));
         assert!(json.contains("Café 🚀 ©"));
