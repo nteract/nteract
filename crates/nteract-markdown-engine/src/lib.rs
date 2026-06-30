@@ -2,6 +2,10 @@ use markdown::mdast;
 use markdown::unist::Position;
 use markdown::{Constructs, ParseOptions};
 
+mod render_json;
+
+pub use render_json::{error_to_json, render_plan_json};
+
 const DEFAULT_WIDTH: usize = 720;
 const AVG_CHAR_WIDTH: usize = 8;
 const BODY_LINE_HEIGHT: usize = 22;
@@ -241,17 +245,13 @@ pub fn project_markdown(source: &str) -> Result<MarkdownPlan, MarkdownProjectErr
     project_markdown_with_options(source, &MarkdownProjectOptions::default())
 }
 
-pub fn project_markdown_with_options(
+pub fn project_from_mdast(
+    mdast: &markdown::mdast::Node,
     source: &str,
     options: &MarkdownProjectOptions,
-) -> Result<MarkdownPlan, MarkdownProjectError> {
-    let parse_options = parse_options(options.islands);
-    let mdast =
-        markdown::to_mdast(source, &parse_options).map_err(|message| MarkdownProjectError {
-            message: message.reason,
-        })?;
+) -> MarkdownPlan {
     let mut context = ProjectionContext::new(source, options);
-    let mut root = project_node(&mdast, &mut context);
+    let mut root = project_node(mdast, &mut context);
     root.id = "root".to_string();
 
     let blocks = root.children.clone();
@@ -276,7 +276,7 @@ pub fn project_markdown_with_options(
         .map(|node| node.measurement.estimated_height)
         .sum();
 
-    Ok(MarkdownPlan {
+    MarkdownPlan {
         version: 1,
         mode: if options.islands {
             PlanMode::Mdx
@@ -294,7 +294,19 @@ pub fn project_markdown_with_options(
             confidence,
             width: options.width,
         },
-    })
+    }
+}
+
+pub fn project_markdown_with_options(
+    source: &str,
+    options: &MarkdownProjectOptions,
+) -> Result<MarkdownPlan, MarkdownProjectError> {
+    let parse_options = parse_options(options.islands);
+    let mdast =
+        markdown::to_mdast(source, &parse_options).map_err(|message| MarkdownProjectError {
+            message: message.reason,
+        })?;
+    Ok(project_from_mdast(&mdast, source, options))
 }
 
 fn parse_options(islands: bool) -> ParseOptions {
