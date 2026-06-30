@@ -1,28 +1,24 @@
 //! Singleton management for the pool daemon.
 //!
 //! Ensures only one daemon instance runs per user using file-based locking.
-//! Read-only daemon discovery (DaemonInfo, get_running_daemon_info, etc.)
-//! lives in `runtimed_client::singleton` and is re-exported via `pub use runtimed_client::*`.
+//! Read-only daemon discovery lives in `runtimed_client::singleton` and queries
+//! the daemon socket directly.
 
 use std::fs::{File, OpenOptions};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
-use chrono::Utc;
 use tracing::{info, warn};
 
 // Re-export all client-side singleton items so `runtimed::singleton::*` still works.
 use runtimed_client::singleton as client_singleton;
-pub use runtimed_client::singleton::{
-    daemon_info_path, daemon_lock_path, get_running_daemon_info, read_daemon_info, DaemonInfo,
-};
+pub use runtimed_client::singleton::{daemon_lock_path, query_daemon_info, DaemonInfo};
 
 /// A lock that ensures only one daemon instance runs.
 pub struct DaemonLock {
     _lock_file: File,
     _lock_path: PathBuf,
-    info_path: PathBuf,
 }
 
 impl DaemonLock {
@@ -36,13 +32,10 @@ impl DaemonLock {
     pub fn try_acquire(
         custom_lock_dir: Option<&PathBuf>,
     ) -> Result<Self, Box<client_singleton::DaemonInfo>> {
-        let (lock_path, info_path) = if let Some(dir) = custom_lock_dir {
-            (dir.join("daemon.lock"), dir.join("daemon.json"))
+        let lock_path = if let Some(dir) = custom_lock_dir {
+            dir.join("daemon.lock")
         } else {
-            (
-                client_singleton::daemon_lock_path(),
-                client_singleton::daemon_info_path(),
-            )
+            client_singleton::daemon_lock_path()
         };
 
         // Ensure parent directory exists
@@ -60,21 +53,7 @@ impl DaemonLock {
             Ok(f) => f,
             Err(e) => {
                 warn!("[singleton] Failed to open lock file: {}", e);
-                // Try to read existing daemon info
-                if let Some(info) = client_singleton::read_daemon_info(&info_path) {
-                    return Err(Box::new(info));
-                }
-                // No info available, create a placeholder
-                return Err(Box::new(client_singleton::DaemonInfo {
-                    endpoint: "unknown".to_string(),
-                    pid: 0,
-                    version: "unknown".to_string(),
-                    started_at: Utc::now(),
-                    blob_port: None,
-                    execution_store_dir: None,
-                    worktree_path: None,
-                    workspace_description: None,
-                }));
+                return Err(Box::new(placeholder_daemon_info(custom_lock_dir)));
             }
         };
 
@@ -87,19 +66,7 @@ impl DaemonLock {
             if result != 0 {
                 // Another process holds the lock
                 info!("[singleton] Another daemon is already running");
-                if let Some(info) = client_singleton::read_daemon_info(&info_path) {
-                    return Err(Box::new(info));
-                }
-                return Err(Box::new(client_singleton::DaemonInfo {
-                    endpoint: "unknown".to_string(),
-                    pid: 0,
-                    version: "unknown".to_string(),
-                    started_at: Utc::now(),
-                    blob_port: None,
-                    execution_store_dir: None,
-                    worktree_path: None,
-                    workspace_description: None,
-                }));
+                return Err(Box::new(placeholder_daemon_info(custom_lock_dir)));
             }
         }
 
@@ -126,19 +93,7 @@ impl DaemonLock {
             };
             if result == 0 {
                 info!("[singleton] Another daemon is already running");
-                if let Some(info) = client_singleton::read_daemon_info(&info_path) {
-                    return Err(Box::new(info));
-                }
-                return Err(Box::new(client_singleton::DaemonInfo {
-                    endpoint: "unknown".to_string(),
-                    pid: 0,
-                    version: "unknown".to_string(),
-                    started_at: Utc::now(),
-                    blob_port: None,
-                    execution_store_dir: None,
-                    worktree_path: None,
-                    workspace_description: None,
-                }));
+                return Err(Box::new(placeholder_daemon_info(custom_lock_dir)));
             }
         }
 
@@ -147,48 +102,7 @@ impl DaemonLock {
         Ok(Self {
             _lock_file: lock_file,
             _lock_path: lock_path,
-            info_path,
         })
-    }
-
-    /// Write daemon info after successful startup.
-    pub fn write_info(&self, endpoint: &str, blob_port: Option<u16>) -> std::io::Result<()> {
-        // Populate worktree info when in dev mode
-        let (worktree_path, workspace_description) = if runt_workspace::is_dev_mode() {
-            (
-                runt_workspace::get_workspace_path().map(|p| p.to_string_lossy().to_string()),
-                runt_workspace::get_workspace_name(),
-            )
-        } else {
-            (None, None)
-        };
-
-        let info = client_singleton::DaemonInfo {
-            endpoint: endpoint.to_string(),
-            pid: std::process::id(),
-            version: crate::daemon_version().to_string(),
-            started_at: Utc::now(),
-            blob_port,
-            execution_store_dir: Some(
-                crate::default_execution_store_dir()
-                    .to_string_lossy()
-                    .to_string(),
-            ),
-            worktree_path,
-            workspace_description,
-        };
-
-        let json = serde_json::to_string_pretty(&info).map_err(std::io::Error::other)?;
-
-        std::fs::write(&self.info_path, json)?;
-        info!("[singleton] Wrote daemon info to {:?}", self.info_path);
-
-        Ok(())
-    }
-
-    /// Get the path to the info file.
-    pub fn info_path(&self) -> &PathBuf {
-        &self.info_path
     }
 }
 
@@ -201,12 +115,23 @@ impl Drop for DaemonLock {
         unsafe {
             libc::flock(self._lock_file.as_raw_fd(), libc::LOCK_UN);
         }
-
-        // Clean up info file when daemon exits
-        if self.info_path.exists() {
-            std::fs::remove_file(&self.info_path).ok();
-        }
         info!("[singleton] Released daemon lock");
+    }
+}
+
+fn placeholder_daemon_info(custom_lock_dir: Option<&PathBuf>) -> client_singleton::DaemonInfo {
+    let endpoint = custom_lock_dir
+        .map(|dir| dir.join("runtimed.sock"))
+        .unwrap_or_else(runt_workspace::default_socket_path);
+    client_singleton::DaemonInfo {
+        endpoint: endpoint.to_string_lossy().to_string(),
+        pid: 0,
+        version: "unknown".to_string(),
+        started_at: chrono::Utc::now(),
+        blob_port: None,
+        execution_store_dir: None,
+        worktree_path: None,
+        workspace_description: None,
     }
 }
 
@@ -222,8 +147,7 @@ mod tests {
         // Fresh directory with no existing daemon → we should be the singleton.
         let tmp = TempDir::new()?;
         let dir = tmp.path().to_path_buf();
-        let lock = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "should acquire empty dir")?;
-        assert_eq!(lock.info_path(), &dir.join("daemon.json"));
+        let _lock = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "should acquire empty dir")?;
         Ok(())
     }
 
@@ -236,50 +160,29 @@ mod tests {
         let tmp = TempDir::new()?;
         let dir = tmp.path().to_path_buf();
         let first = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "first acquire")?;
-        first.write_info("unix:/tmp/sock", Some(12345))?;
 
         let Err(info) = DaemonLock::try_acquire(Some(&dir)) else {
             return Err("second acquire should have failed".into());
         };
-        // Second acquirer reads the on-disk info so callers can surface a
-        // useful message ("endpoint X, pid Y is already running").
-        assert_eq!(info.endpoint, "unix:/tmp/sock");
-        assert_eq!(info.blob_port, Some(12345));
+        assert_eq!(
+            info.endpoint,
+            dir.join("runtimed.sock").to_string_lossy().as_ref()
+        );
+        assert_eq!(info.pid, 0);
+        assert_eq!(info.version, "unknown");
+        drop(first);
         Ok(())
     }
 
     #[test]
-    fn drop_releases_lock_and_removes_info() -> TestResult {
-        // After the first lock drops, a second acquire must succeed AND
-        // the stale daemon.json must be gone (so clients don't connect
-        // to a dead endpoint).
+    fn drop_releases_lock() -> TestResult {
+        // After the first lock drops, a second acquire must succeed.
         let tmp = TempDir::new()?;
         let dir = tmp.path().to_path_buf();
         {
-            let lock = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "first acquire")?;
-            lock.write_info("unix:/tmp/old", None)?;
-            assert!(dir.join("daemon.json").exists());
+            let _lock = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "first acquire")?;
         }
-        // After drop, info file gone.
-        assert!(!dir.join("daemon.json").exists());
-        // And we can re-acquire.
         let _second = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "re-acquire after drop")?;
-        Ok(())
-    }
-
-    #[test]
-    fn write_info_roundtrips_through_read_daemon_info() -> TestResult {
-        let tmp = TempDir::new()?;
-        let dir = tmp.path().to_path_buf();
-        let lock = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "acquire")?;
-        lock.write_info("unix:/tmp/rt.sock", Some(4242))?;
-
-        let info =
-            client_singleton::read_daemon_info(&dir.join("daemon.json")).ok_or("read back info")?;
-        assert_eq!(info.endpoint, "unix:/tmp/rt.sock");
-        assert_eq!(info.blob_port, Some(4242));
-        assert_eq!(info.pid, std::process::id());
-        assert!(!info.version.is_empty());
         Ok(())
     }
 

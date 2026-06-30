@@ -123,15 +123,6 @@ function resolveSocketPath(repoRoot: string): string {
   return path.join(cacheDir(), namespace, "worktrees", worktreeHash(repoRoot), "runtimed.sock");
 }
 
-function readDaemonInfo(socketPath: string): DaemonInfoJson | null {
-  try {
-    const daemonJson = path.join(path.dirname(socketPath), "daemon.json");
-    return JSON.parse(fs.readFileSync(daemonJson, "utf8")) as DaemonInfoJson;
-  } catch {
-    return null;
-  }
-}
-
 function socketExists(socketPath: string): boolean {
   try {
     return fs.statSync(socketPath).isSocket();
@@ -152,12 +143,92 @@ function writePreamble(socket: net.Socket): void {
   socket.write(Buffer.from([...MAGIC, PROTOCOL_VERSION]));
 }
 
-function connectSocket(socketPath: string): Promise<net.Socket> {
+function connectSocket(socketPath: string, timeoutMs?: number): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
-    socket.once("connect", () => resolve(socket));
-    socket.once("error", reject);
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      socket.off("connect", onConnect);
+      socket.off("error", onError);
+    };
+    const onConnect = () => {
+      cleanup();
+      resolve(socket);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+
+    if (timeoutMs != null) {
+      timeout = setTimeout(() => {
+        cleanup();
+        socket.destroy();
+        reject(new Error(`timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    }
   });
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function queryDaemonInfo(socketPath: string): Promise<DaemonInfoJson | null> {
+  let socket: net.Socket | null = null;
+  try {
+    socket = await connectSocket(socketPath, 500);
+    const frames = new LengthPrefixedFrames();
+    socket.on("data", (chunk) => {
+      try {
+        frames.push(chunk);
+      } catch (error) {
+        frames.fail(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+    socket.on("error", (error) => frames.fail(error));
+    socket.on("close", () => frames.fail(new Error("daemon socket closed")));
+
+    writePreamble(socket);
+    writeFrame(socket, JSON.stringify({ channel: "pool" }));
+    writeFrame(socket, JSON.stringify({ type: "get_daemon_info" }));
+
+    const frame = await withTimeout(frames.readFrame(), 500);
+    const response = JSON.parse(frame.toString("utf8")) as {
+      type?: string;
+      daemon_version?: string;
+      blob_port?: number | null;
+      worktree_path?: string | null;
+    };
+    if (response.type !== "daemon_info") return null;
+    return {
+      version: response.daemon_version,
+      socket_path: socketPath,
+      is_dev_mode: response.worktree_path != null,
+      blob_port: response.blob_port ?? undefined,
+    };
+  } catch {
+    return null;
+  } finally {
+    socket?.destroy();
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
@@ -314,7 +385,7 @@ async function handleRelayConnection(
     const commentsNotebookRef =
       info.comments_notebook_ref ?? info.capabilities?.comments_notebook_ref ?? null;
 
-    const daemonInfoJson = readDaemonInfo(socketPath);
+    const daemonInfoJson = await queryDaemonInfo(socketPath);
     control(ws, {
       type: "ready",
       payload: {
@@ -377,24 +448,30 @@ export function browserDevRelayPlugin(options: RelayOptions): Plugin {
       server.middlewares.use((req, res, next) => {
         const url = requestUrl(req);
         if (url.pathname === HEALTH_PATH) {
-          const socketPath = resolveSocketPath(options.repoRoot);
-          const daemonInfo = readDaemonInfo(socketPath);
-          sendJson(res, 200, {
-            relay: "ok",
-            paths: {
-              config: CONFIG_PATH,
-              websocket: WS_PATH,
-            },
-            auth: relayAuthPolicy(token),
-            daemon: {
-              socket_path: daemonInfo?.socket_path ?? socketPath,
-              socket_exists: socketExists(socketPath),
-              version: daemonInfo?.version ?? null,
-              is_dev_mode: daemonInfo?.is_dev_mode ?? null,
-            },
-            blobs: {
-              port: daemonInfo?.blob_port ?? null,
-            },
+          void (async () => {
+            const socketPath = resolveSocketPath(options.repoRoot);
+            const daemonInfo = await queryDaemonInfo(socketPath);
+            sendJson(res, 200, {
+              relay: "ok",
+              paths: {
+                config: CONFIG_PATH,
+                websocket: WS_PATH,
+              },
+              auth: relayAuthPolicy(token),
+              daemon: {
+                socket_path: daemonInfo?.socket_path ?? socketPath,
+                socket_exists: socketExists(socketPath),
+                version: daemonInfo?.version ?? null,
+                is_dev_mode: daemonInfo?.is_dev_mode ?? null,
+              },
+              blobs: {
+                port: daemonInfo?.blob_port ?? null,
+              },
+            });
+          })().catch((error) => {
+            sendJson(res, 500, {
+              error: error instanceof Error ? error.message : String(error),
+            });
           });
           return;
         }
@@ -404,20 +481,26 @@ export function browserDevRelayPlugin(options: RelayOptions): Plugin {
           return;
         }
 
-        const socketPath = resolveSocketPath(options.repoRoot);
-        const daemonInfo = readDaemonInfo(socketPath);
-        const host = req.headers.host ?? "127.0.0.1";
-        sendJson(res, 200, {
-          websocket_url: `ws://${host}${WS_PATH}`,
-          token,
-          blob_port: daemonInfo?.blob_port ?? null,
-          daemon: daemonInfo
-            ? {
-                version: daemonInfo.version ?? "unknown",
-                socket_path: daemonInfo.socket_path ?? socketPath,
-                is_dev_mode: daemonInfo.is_dev_mode ?? true,
-              }
-            : null,
+        void (async () => {
+          const socketPath = resolveSocketPath(options.repoRoot);
+          const daemonInfo = await queryDaemonInfo(socketPath);
+          const host = req.headers.host ?? "127.0.0.1";
+          sendJson(res, 200, {
+            websocket_url: `ws://${host}${WS_PATH}`,
+            token,
+            blob_port: daemonInfo?.blob_port ?? null,
+            daemon: daemonInfo
+              ? {
+                  version: daemonInfo.version ?? "unknown",
+                  socket_path: daemonInfo.socket_path ?? socketPath,
+                  is_dev_mode: daemonInfo.is_dev_mode ?? true,
+                }
+              : null,
+          });
+        })().catch((error) => {
+          sendJson(res, 500, {
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
       });
 

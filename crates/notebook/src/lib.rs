@@ -1281,21 +1281,13 @@ where
         });
 
         if client.ping().await.is_ok() {
-            let endpoint = runt_workspace::default_socket_path()
-                .to_string_lossy()
-                .to_string();
-
-            // Verify the running daemon version matches what we intended to install.
-            // `query_daemon_info` is socket-first; the `daemon.json` fallback
-            // covers the moment immediately after `runtimed install` when the
-            // restarted daemon may briefly be reachable but not yet serving
-            // `GetDaemonInfo` cleanly.
-            let running_version = runtimed_client::singleton::query_daemon_info(
-                runt_workspace::default_socket_path(),
-            )
-            .await
-            .map(|i| i.version);
-            if let Some(version) = running_version {
+            // `GetDaemonInfo` is the canonical readiness and version source.
+            // A ping-only daemon is not ready enough after daemon.json removal.
+            if let Some(version) =
+                runtimed_client::singleton::query_daemon_info(runt_workspace::default_socket_path())
+                    .await
+                    .map(|i| i.version)
+            {
                 let running_commit = extract_commit_hash(&version);
                 let bundled_commit = extract_commit_hash(&bundled);
                 if running_commit == bundled_commit {
@@ -1311,18 +1303,21 @@ where
                         bundled
                     );
                 }
-            }
 
-            on_progress(DaemonProgress::Ready {
-                endpoint: endpoint.clone(),
-            });
-            return Ok(endpoint);
+                let endpoint = runt_workspace::default_socket_path()
+                    .to_string_lossy()
+                    .to_string();
+                on_progress(DaemonProgress::Ready {
+                    endpoint: endpoint.clone(),
+                });
+                return Ok(endpoint);
+            }
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
-    let error = "Upgraded daemon did not become ready within timeout".to_string();
+    let error = "Upgraded daemon did not serve socket metadata within timeout".to_string();
     log::error!("[startup] {}", error);
     on_progress(DaemonProgress::Failed {
         error: error.clone(),
@@ -1649,10 +1644,7 @@ where
     let client = PoolClient::default();
     if let Ok(()) = client.ping().await {
         // Daemon is running - check version alignment (production only).
-        // `query_daemon_info` is socket-first with a `daemon.json`
-        // fallback. The fallback is how we read the version of a pre-2.2.0
-        // daemon that doesn't speak `GetDaemonInfo`; without it we'd skip
-        // the upgrade and wedge on the next v4 handshake.
+        // `GetDaemonInfo` is the canonical daemon metadata source.
         if !runt_workspace::is_dev_mode() {
             let running_version = runtimed_client::singleton::query_daemon_info(
                 runt_workspace::default_socket_path(),
@@ -1681,10 +1673,11 @@ where
                 );
             } else {
                 log::warn!(
-                    "[startup] Daemon responded to ping but version unavailable via \
-                     socket or daemon.json (bundled={})",
+                    "[startup] Daemon responded to ping but socket metadata is unavailable; \
+                     upgrading to bundled daemon ({})",
                     bundled_version
                 );
+                return upgrade_daemon_via_sidecar(app, on_progress).await;
             }
         }
 

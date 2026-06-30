@@ -858,8 +858,7 @@ async fn status(json: bool) -> anyhow::Result<()> {
     let manager = ServiceManager::default();
     let installed = manager.is_installed();
 
-    // Check if daemon is running — socket-first with `daemon.json`
-    // fallback so custom `--socket` daemons stay discoverable.
+    // Check if daemon is running by querying live metadata over the socket.
     let daemon_info =
         runtimed_client::singleton::query_daemon_info(runt_workspace::default_socket_path()).await;
     let running = if daemon_info.is_some() {

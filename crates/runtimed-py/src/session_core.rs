@@ -2264,30 +2264,7 @@ async fn ensure_kernel_started(
 
 /// Resolve blob server URL and store path from daemon info.
 async fn resolve_blob_paths(socket_path: &Path) -> (Option<String>, Option<PathBuf>) {
-    if let Some(parent) = socket_path.parent() {
-        let daemon_json = parent.join("daemon.json");
-        let base_url = if daemon_json.exists() {
-            tokio::fs::read_to_string(&daemon_json)
-                .await
-                .ok()
-                .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
-                .and_then(|info| info.get("blob_port").and_then(|p| p.as_u64()))
-                .map(|port| format!("http://localhost:{}", port))
-        } else {
-            None
-        };
-
-        let store_path = parent.join("blobs");
-        let store_path = if store_path.exists() {
-            Some(store_path)
-        } else {
-            None
-        };
-
-        (base_url, store_path)
-    } else {
-        (None, None)
-    }
+    runtimed_client::daemon_paths::get_blob_paths_async(socket_path).await
 }
 
 // =========================================================================

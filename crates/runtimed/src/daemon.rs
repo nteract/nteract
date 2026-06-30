@@ -1562,13 +1562,11 @@ impl Daemon {
 
     /// Build the `DaemonInfo` response from live daemon state.
     ///
-    /// This carries every field that `daemon.json` used to — `pid`,
-    /// `version`, `started_at`, `blob_port`, plus the dev-mode worktree
-    /// fields — so clients can query the daemon directly over the socket
-    /// instead of reading a sidecar file. Keeping it in its own message
-    /// (not overloaded onto `Pong`) means the frequent liveness-check
-    /// path stays tiny and the one-shot discovery path carries the full
-    /// payload.
+    /// This carries `pid`, `version`, `started_at`, `blob_port`, plus the
+    /// dev-mode worktree fields so clients can query the daemon directly over
+    /// the socket. Keeping it in its own message (not overloaded onto `Pong`)
+    /// means the frequent liveness-check path stays tiny and the one-shot
+    /// discovery path carries the full payload.
     async fn build_daemon_info(&self) -> Response {
         let blob_port = *self.blob_port.lock().await;
         let (worktree_path, workspace_description) = if runt_workspace::is_dev_mode() {
@@ -1739,7 +1737,7 @@ impl Daemon {
         prepare_unix_socket_path(&self.config.socket_path).await?;
 
         // Start the blob HTTP server (also serves renderer plugin assets)
-        let blob_port = match blob_server::start_blob_server(
+        match blob_server::start_blob_server(
             self.blob_store.clone(),
             Some(self.clone()),
             self.config.use_preferred_blob_port,
@@ -1765,18 +1763,6 @@ impl Daemon {
             info!("[runtimed] Listening on {:?}", self.config.socket_path);
             listener
         };
-
-        // Write `daemon.json` so older clients can still discover us.
-        // Retained as a one-release compatibility shim for stale
-        // `runt-mcp` / `nteract-mcp` proxies that predate `GetDaemonInfo`.
-        // New consumers go through the socket (see
-        // `runtimed_client::daemon_connection`). Target v3.0 for removal.
-        if let Err(e) = self
-            ._lock
-            .write_info(&self.config.socket_path.to_string_lossy(), blob_port)
-        {
-            error!("[runtimed] Failed to write daemon info: {}", e);
-        }
 
         // Reap any orphaned agent process groups from a previous crash
         #[cfg(unix)]
@@ -4973,8 +4959,8 @@ impl Daemon {
         }
     }
 
-    /// Clean up worktree state directories where the original git worktree
-    /// path no longer exists and the daemon.json is older than 7 days.
+    /// Clean up legacy worktree state directories whose old `daemon.json`
+    /// sidecar says the original git worktree path no longer exists.
     async fn cleanup_stale_worktrees(worktrees_dir: &std::path::Path) -> anyhow::Result<usize> {
         if !worktrees_dir.exists() {
             return Ok(0);

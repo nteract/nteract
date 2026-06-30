@@ -1478,23 +1478,7 @@ pub fn blob_store_path(socket_path: Option<String>) -> Option<String> {
 }
 
 async fn resolve_blob_paths(socket_path: &std::path::Path) -> (Option<String>, Option<PathBuf>) {
-    if let Some(parent) = socket_path.parent() {
-        let daemon_json = parent.join("daemon.json");
-        let base_url = if daemon_json.exists() {
-            tokio::fs::read_to_string(&daemon_json)
-                .await
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                .and_then(|v| v.get("blob_port").and_then(|p| p.as_u64()))
-                .map(|port| format!("http://localhost:{port}"))
-        } else {
-            None
-        };
-        let store_path = blob_store_path_for_socket_path(socket_path);
-        (base_url, store_path)
-    } else {
-        (None, None)
-    }
+    runtimed_client::daemon_paths::get_blob_paths_async(socket_path).await
 }
 
 fn blob_store_path_for_socket_path(socket_path: &Path) -> Option<PathBuf> {

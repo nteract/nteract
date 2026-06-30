@@ -970,9 +970,9 @@ async fn pool_command(command: PoolCommands) -> Result<()> {
 
             match query_daemon_info(runt_workspace::default_socket_path()).await {
                 Some(info) => {
-                    // Ping the daemon at the endpoint recorded in daemon.json,
-                    // not the default socket path — the daemon may have been
-                    // started with a custom --socket.
+                    // Ping the daemon at the endpoint returned by
+                    // GetDaemonInfo, not the default socket path — the daemon
+                    // may have been started with a custom --socket.
                     let info_client = PoolClient::new(std::path::PathBuf::from(&info.endpoint));
                     let alive = info_client.ping().await.is_ok();
 
@@ -1007,7 +1007,7 @@ async fn pool_command(command: PoolCommands) -> Result<()> {
                     }
                 }
                 None => {
-                    eprintln!("Daemon not running (no daemon.json found)");
+                    eprintln!("Daemon not running (daemon info unavailable)");
                     std::process::exit(1);
                 }
             }
@@ -1182,12 +1182,12 @@ async fn stop_process_by_pid(_pid: u32) -> Result<()> {
 
 /// Clean up stale daemon info files.
 fn cleanup_stale_daemon_info() -> Result<()> {
-    use runtimed::singleton::{daemon_info_path, daemon_lock_path};
+    use runtimed::singleton::daemon_lock_path;
 
-    let info_path = daemon_info_path();
+    let info_path = legacy_daemon_info_path();
     if info_path.exists() {
         std::fs::remove_file(&info_path)?;
-        println!("Cleaned up stale daemon.json");
+        println!("Cleaned up legacy daemon.json");
     }
 
     let lock_path = daemon_lock_path();
@@ -1197,6 +1197,10 @@ fn cleanup_stale_daemon_info() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn legacy_daemon_info_path() -> PathBuf {
+    runt_workspace::daemon_base_dir().join("daemon.json")
 }
 
 /// Three-step hybrid stop: socket shutdown → service manager → signal escalation.
@@ -1212,12 +1216,8 @@ async fn stop_daemon_smart(
             Ok(Ok(())) => {
                 // Shutdown request succeeded, wait for daemon to exit
                 if wait_for_pid_exit(info.pid, Duration::from_secs(5)).await {
-                    // Give Drop handler a moment to clean up daemon.json
+                    // Give the daemon a moment to release its lock.
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    // Verify cleanup (defensive - prevents PID reuse if Drop didn't run)
-                    if runtimed::singleton::daemon_info_path().exists() {
-                        cleanup_stale_daemon_info().ok();
-                    }
                     println!("Daemon stopped gracefully.");
                     return Ok(());
                 } else {
@@ -1250,7 +1250,7 @@ async fn stop_daemon_smart(
                     // Process still running, fall through to signal escalation
                     eprintln!("Warning: Service manager stop succeeded but daemon still running (orphaned?)");
                 } else {
-                    // No daemon.json, assume success
+                    // No socket metadata, assume success
                     println!("Service manager stop completed.");
                     return Ok(());
                 }
@@ -1289,7 +1289,7 @@ async fn stop_daemon_smart(
             }
         }
     } else {
-        // No daemon.json and service manager stop didn't help
+        // No socket metadata and service manager stop didn't help
         println!("No daemon info found, assuming daemon is stopped.");
         Ok(())
     }
@@ -1304,10 +1304,8 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
     let mut manager = ServiceManager::default();
 
     // Get daemon info first so we can use its endpoint for the client.
-    // Prefer the socket (`GetDaemonInfo`) over the legacy `daemon.json`
-    // sidecar — the daemon answers from live state, so a response is
-    // proof the daemon is alive. `query_daemon_info` retains the
-    // file-read fallback for the one-release compat window.
+    // Query live daemon metadata over the socket. A response proves the daemon
+    // is alive and avoids stale sidecar state after crashes or force-kills.
     let daemon_info = query_daemon_info(runt_workspace::default_socket_path()).await;
 
     // Create client using daemon's actual endpoint if available, otherwise default
@@ -1320,7 +1318,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
         DaemonCommands::Status { json } => {
             let installed = manager.is_installed();
             let pong_info = if daemon_info.is_some() {
-                // Use timeout to prevent hanging on stale daemon.json
+                // Use a timeout so a disappearing daemon cannot hang status.
                 tokio::time::timeout(Duration::from_secs(3), client.ping_version())
                     .await
                     .ok()
@@ -1801,7 +1799,6 @@ async fn doctor_command(
         #[cfg(not(target_os = "macos"))]
         let binary_path = runtimed_service::default_binary_path();
         let socket_path = runt_workspace::default_socket_path();
-        let daemon_json_path = runtimed::singleton::daemon_info_path();
         let service_config_path = runtimed_service::service_config_path();
 
         // Check 1: Installed binary
@@ -2112,7 +2109,7 @@ async fn doctor_command(
             detail: None,
         };
 
-        // Check 4: daemon.json state
+        // Check 4: live daemon metadata from the socket
         let (daemon_state_status, daemon_state_detail) = if let Some(info) = daemon_info {
             // Check if PID is actually running
             let pid_running = is_process_running(info.pid);
@@ -2128,7 +2125,7 @@ async fn doctor_command(
             ("missing".to_string(), None)
         };
         let daemon_state = CheckResult {
-            path: shorten_path(&daemon_json_path),
+            path: shorten_path(&socket_path),
             status: daemon_state_status.clone(),
             detail: daemon_state_detail,
         };
@@ -2210,7 +2207,7 @@ async fn doctor_command(
             }
         };
 
-        // Check 6: Can we ping the daemon? Try regardless of daemon.json state
+        // Check 6: Can we ping the daemon? Try regardless of metadata state.
         let daemon_running_result = tokio::time::timeout(Duration::from_secs(2), client.ping())
             .await
             .map(|r| r.is_ok())
@@ -2225,7 +2222,7 @@ async fn doctor_command(
             }
             .to_string(),
             detail: if daemon_running_result && daemon_state_status == "missing" {
-                Some("running but daemon.json missing".to_string())
+                Some("running but daemon info unavailable".to_string())
             } else {
                 None
             },
@@ -2328,7 +2325,6 @@ async fn doctor_command(
     #[cfg(not(target_os = "macos"))]
     let binary_path = runtimed_service::default_binary_path();
     let socket_path = runt_workspace::default_socket_path();
-    let daemon_json_path = runtimed::singleton::daemon_info_path();
     let service_config_path = runtimed_service::service_config_path();
 
     let binary_exists = binary_path.exists();
@@ -2408,24 +2404,13 @@ async fn doctor_command(
     // Fix issues if requested
     if fix {
         // Clean up stale state
-        if daemon_state_status == "stale" {
-            if let Err(e) = std::fs::remove_file(&daemon_json_path) {
+        if daemon_state_status == "stale" && socket_exists {
+            if let Err(e) = std::fs::remove_file(&socket_path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!("Warning: Could not remove stale daemon.json: {}", e);
+                    eprintln!("Warning: Could not remove stale socket: {}", e);
                 }
             } else {
-                actions_taken.push("Removed stale daemon.json".to_string());
-            }
-
-            // Also remove stale socket
-            if socket_exists {
-                if let Err(e) = std::fs::remove_file(&socket_path) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        eprintln!("Warning: Could not remove stale socket: {}", e);
-                    }
-                } else {
-                    actions_taken.push("Removed stale socket file".to_string());
-                }
+                actions_taken.push("Removed stale socket file".to_string());
             }
         }
 
@@ -3371,8 +3356,6 @@ async fn tail_log_file(path: &PathBuf, lines: usize, follow: bool) -> Result<()>
 
 /// List all running dev worktree daemons
 async fn list_worktree_daemons(json_output: bool) -> Result<()> {
-    use runtimed::client::PoolClient;
-    use runtimed::singleton::read_daemon_info;
     use serde::Serialize;
 
     let worktrees_dir = dirs::cache_dir()
@@ -3405,27 +3388,17 @@ async fn list_worktree_daemons(json_output: bool) -> Result<()> {
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let info_path = path.join("daemon.json");
-
-            if let Some(info) = read_daemon_info(&info_path) {
-                // Check if daemon is actually running
-                let client = PoolClient::new(PathBuf::from(&info.endpoint));
-                let alive = client.ping().await.is_ok();
-
+            let socket_path = path.join("runtimed.sock");
+            if let Some(info) = runtimed::singleton::query_daemon_info(socket_path).await {
                 daemons.push(WorktreeDaemon {
                     hash,
-                    status: if alive {
-                        "running".to_string()
-                    } else {
-                        "stopped".to_string()
-                    },
+                    status: "running".to_string(),
                     worktree: info.worktree_path,
                     description: info.workspace_description,
-                    pid: if alive { Some(info.pid) } else { None },
-                    version: if alive { Some(info.version) } else { None },
+                    pid: Some(info.pid),
+                    version: Some(info.version),
                 });
             } else {
-                // Directory exists but no daemon.json
                 daemons.push(WorktreeDaemon {
                     hash,
                     status: "stopped".to_string(),
@@ -3491,7 +3464,6 @@ async fn clean_worktree_command(
     dry_run: bool,
 ) -> Result<()> {
     use runtimed::client::PoolClient;
-    use runtimed::singleton::read_daemon_info;
     use std::io::{self, Write};
 
     let worktrees_dir = dirs::cache_dir()
@@ -3584,18 +3556,10 @@ async fn clean_worktree_command(
 
     // Check daemon status and calculate sizes for each target
     for target in &mut targets {
-        // Read daemon info
-        let info_path = target.path.join("daemon.json");
-        if let Some(info) = read_daemon_info(&info_path) {
+        let socket_path = target.path.join("runtimed.sock");
+        if let Some(info) = runtimed::singleton::query_daemon_info(socket_path).await {
             target.worktree_path = info.worktree_path.clone();
-
-            // Try to ping the daemon
-            let client = PoolClient::new(PathBuf::from(&info.endpoint));
-            target.is_running =
-                tokio::time::timeout(std::time::Duration::from_secs(2), client.ping())
-                    .await
-                    .map(|r| r.is_ok())
-                    .unwrap_or(false);
+            target.is_running = true;
 
             // Check if stale (original path no longer exists)
             if let Some(ref wt_path) = target.worktree_path {
@@ -3637,9 +3601,12 @@ async fn clean_worktree_command(
     if force {
         for target in &targets {
             if target.is_running {
-                let info_path = target.path.join("daemon.json");
-                if let Some(info) = read_daemon_info(&info_path) {
-                    let client = PoolClient::new(PathBuf::from(&info.endpoint));
+                let socket_path = target.path.join("runtimed.sock");
+                if runtimed::singleton::query_daemon_info(socket_path.clone())
+                    .await
+                    .is_some()
+                {
+                    let client = PoolClient::new(socket_path);
                     print!("Stopping daemon {}... ", target.hash);
                     io::stdout().flush()?;
                     match client.shutdown().await {
