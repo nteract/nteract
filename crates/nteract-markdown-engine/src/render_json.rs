@@ -177,6 +177,15 @@ fn collect_block(
                 );
             }
         }
+        NodeKind::Island => {
+            context.add_run(
+                block.span.start,
+                block.span.end,
+                block.fallback.text.clone(),
+                "island",
+                None,
+            );
+        }
         _ => {
             if block.children.is_empty() && !block.fallback.text.is_empty() {
                 context.add_run(
@@ -200,6 +209,8 @@ fn collect_block(
         code_meta: block.attrs.meta.clone(),
         element,
         kind,
+        island_tag: block.attrs.island_tag.clone(),
+        island_inline: block.attrs.island_inline,
         ordered: block.attrs.ordered,
         measurement: JsonBlockMeasurement {
             basis: block.measurement.basis.clone(),
@@ -883,6 +894,8 @@ struct JsonBlock {
     code_meta: Option<String>,
     element: &'static str,
     kind: &'static str,
+    island_tag: Option<String>,
+    island_inline: bool,
     ordered: Option<bool>,
     measurement: JsonBlockMeasurement,
     source_span_byte: [usize; 2],
@@ -967,6 +980,13 @@ impl JsonBlock {
         output.push(',');
         push_json_key_string(output, "kind", self.kind);
         output.push(',');
+        if let Some(island_tag) = &self.island_tag {
+            push_json_key_string(output, "islandTag", island_tag);
+            output.push(',');
+            output.push_str("\"islandInline\":");
+            output.push_str(if self.island_inline { "true" } else { "false" });
+            output.push(',');
+        }
         if let Some(ordered) = self.ordered {
             output.push_str("\"ordered\":");
             output.push_str(if ordered { "true" } else { "false" });
@@ -1237,6 +1257,22 @@ mod tests {
 
         assert!(json.contains("\"kind\":\"isolated\""));
         assert!(json.contains("\"semantic\":\"isolated-placeholder\""));
+    }
+
+    #[test]
+    fn serializes_island_tag_for_block_jsx() {
+        let options = crate::MarkdownProjectOptions {
+            islands: true,
+            ..Default::default()
+        };
+        let source = "<Frog size={96} />\n";
+        let plan = crate::project_markdown_with_options(source, &options).unwrap();
+        let json = render_plan_json(&plan, source, "rust-wasm");
+
+        assert!(json.contains("\"kind\":\"island\""), "{json}");
+        assert!(json.contains("\"islandTag\":\"Frog\""), "{json}");
+        assert!(json.contains("\"islandInline\":false"), "{json}");
+        assert!(json.contains("\"semantic\":\"island\""), "{json}");
     }
 
     #[test]
