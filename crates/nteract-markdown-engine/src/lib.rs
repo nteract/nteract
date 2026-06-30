@@ -12,6 +12,7 @@ pub struct MarkdownProjectOptions {
     pub mdx: MdxMode,
     pub raw_html: RawHtmlMode,
     pub width: usize,
+    pub islands: bool,
 }
 
 impl Default for MarkdownProjectOptions {
@@ -20,6 +21,7 @@ impl Default for MarkdownProjectOptions {
             mdx: MdxMode::Isolate,
             raw_html: RawHtmlMode::Isolate,
             width: DEFAULT_WIDTH,
+            islands: false,
         }
     }
 }
@@ -236,7 +238,7 @@ pub fn project_markdown_with_options(
     source: &str,
     options: &MarkdownProjectOptions,
 ) -> Result<MarkdownPlan, MarkdownProjectError> {
-    let parse_options = parse_options();
+    let parse_options = parse_options(options.islands);
     let mdast =
         markdown::to_mdast(source, &parse_options).map_err(|message| MarkdownProjectError {
             message: message.reason,
@@ -283,12 +285,22 @@ pub fn project_markdown_with_options(
     })
 }
 
-fn parse_options() -> ParseOptions {
+fn parse_options(islands: bool) -> ParseOptions {
     let mut constructs = Constructs::gfm();
     constructs.html_flow = true;
     constructs.html_text = true;
     constructs.math_flow = true;
     constructs.math_text = true;
+    if islands {
+        constructs.mdx_jsx_flow = true;
+        // Flow tries html_flow before mdx_jsx_flow on `<` and only falls through
+        // on failure. A complete tag like `<Frog size={96} />` is valid HTML
+        // flow, so html_flow would swallow block JSX before mdx_jsx_flow sees it.
+        // Routing block `<...>` to MDX JSX requires html_flow off; this is the
+        // islands-on lane only. Islands-off keeps html_flow true and stays
+        // byte-identical. Inline html_text stays on: Stage 2 is block JSX only.
+        constructs.html_flow = false;
+    }
 
     ParseOptions {
         constructs,
@@ -497,6 +509,19 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
             kind = NodeKind::FootnoteReference;
             attrs.identifier = Some(reference.identifier.clone());
             attrs.label = reference.label.clone();
+        }
+        mdast::Node::MdxJsxFlowElement(element) if context.options.islands => {
+            kind = NodeKind::Island;
+            text = "[isolated MDX region]".to_string();
+            copy_text = source_slice(context.source, &span).to_string();
+            attrs.island_tag = element.name.clone();
+            attrs.island_inline = false;
+            attrs.isolation_kind = Some(IsolationKind::Component);
+            safety = Safety {
+                lane: SafetyLane::Isolated,
+                reason: "isolated-mdx-island".to_string(),
+            };
+            children.clear();
         }
         mdast::Node::MdxjsEsm(_)
         | mdast::Node::MdxFlowExpression(_)
@@ -1074,6 +1099,35 @@ mod tests {
         let html_node = find_kind(&plan.blocks[0], NodeKind::Html).unwrap();
         assert_eq!(html_node.safety.lane, SafetyLane::Escaped);
         assert!(plan.isolated_regions.is_empty());
+    }
+
+    #[test]
+    fn islands_option_projects_block_jsx_as_island() {
+        let options = MarkdownProjectOptions {
+            islands: true,
+            ..Default::default()
+        };
+        let plan = project_markdown_with_options("<Frog size={96} />\n", &options).unwrap();
+        let island = plan
+            .blocks
+            .iter()
+            .find(|block| block.kind == NodeKind::Island)
+            .expect("expected an Island node");
+        assert_eq!(island.attrs.island_tag.as_deref(), Some("Frog"));
+        assert_eq!(island.attrs.isolation_kind, Some(IsolationKind::Component));
+    }
+
+    #[test]
+    fn islands_off_leaves_block_jsx_non_island() {
+        let options = MarkdownProjectOptions {
+            islands: false,
+            ..Default::default()
+        };
+        let plan = project_markdown_with_options("<Frog size={96} />\n", &options).unwrap();
+        assert!(plan
+            .blocks
+            .iter()
+            .all(|block| block.kind != NodeKind::Island));
     }
 
     fn contains_kind(node: &ProjectedNode, kind: NodeKind) -> bool {
