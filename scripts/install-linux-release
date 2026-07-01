@@ -232,6 +232,19 @@ base_url() {
   fi
 }
 
+download_url() {
+  local url="$1"
+  local dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl --fail --location --show-error --silent "$url" --output "$dest"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$dest" "$url"
+  else
+    echo "curl or wget is required to install nteract." >&2
+    exit 1
+  fi
+}
+
 fetch_asset() {
   local asset="$1"
   local dest="$2"
@@ -247,7 +260,7 @@ fetch_asset() {
     local url
     url="$(base_url)/$asset"
     echo "Downloading $url"
-    curl --fail --location --show-error --silent "$url" --output "$dest"
+    download_url "$url" "$dest"
   fi
   chmod 0755 "$dest"
 }

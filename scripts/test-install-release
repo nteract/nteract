@@ -104,6 +104,45 @@ EOF
   chmod 0755 "$dir/uname"
 }
 
+make_fetch_tool_path_without_curl() {
+  local dir="$1"
+  local assets="$2"
+  local log="$3"
+  mkdir -p "$dir"
+
+  local tool
+  for tool in bash basename chmod cp dirname env ln mkdir mktemp mv rm; do
+    ln -s "$(command -v "$tool")" "$dir/$tool"
+  done
+
+  cat > "$dir/wget" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+out=""
+url=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    -O)
+      out="\${2:-}"
+      shift 2
+      ;;
+    *)
+      url="\$1"
+      shift
+      ;;
+  esac
+done
+if [[ -z "\$out" || -z "\$url" ]]; then
+  echo "wget shim expected -O <dest> <url>" >&2
+  exit 2
+fi
+asset="\${url##*/}"
+echo "wget \$asset -> \$out" >> "$log"
+cp "$assets/\$asset" "\$out"
+EOF
+  chmod 0755 "$dir/wget"
+}
+
 run_installer() {
   local home="$1"
   shift
@@ -125,6 +164,23 @@ assert_link "$LINUX_HOME/.local/bin/runtimed" "$PREFIX/bin/runtimed"
 assert_link "$LINUX_HOME/.local/bin/nteract-mcp" "$PREFIX/bin/nteract-mcp"
 assert_link "$LINUX_HOME/.local/bin/nteract" "$PREFIX/nteract.AppImage"
 grep -q "runt daemon doctor --fix --no-start" "$LINUX_LOG" || fail "linux: daemon doctor --fix --no-start not invoked"
+
+note "linux download install falls back to wget without curl"
+WGET_HOME="$WORK/wget-home"
+WGET_LOG="$WORK/wget-calls.log"
+WGET_DOWNLOAD_LOG="$WORK/wget-downloads.log"
+make_linux_fixtures "$WORK/wget-assets" "$WGET_LOG"
+make_fetch_tool_path_without_curl "$WORK/no-curl-tools" "$WORK/wget-assets" "$WGET_DOWNLOAD_LOG"
+PATH="$WORK/shim-linux:$WORK/no-curl-tools" run_installer "$WGET_HOME" \
+  --tag v9.9.9-stable.202601010101 --no-start > "$WORK/wget-out.log"
+WGET_PREFIX="$WGET_HOME/.local/share/nteract/stable"
+assert_file "$WGET_PREFIX/nteract.AppImage"
+assert_link "$WGET_HOME/.local/bin/runt" "$WGET_PREFIX/bin/runt"
+grep -q "wget runt-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: runt asset was not downloaded with wget"
+grep -q "wget runtimed-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: runtimed asset was not downloaded with wget"
+grep -q "wget nteract-mcp-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: mcp asset was not downloaded with wget"
+grep -q "wget nteract-stable-linux-x64.AppImage" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: appimage asset was not downloaded with wget"
+grep -q "runt daemon doctor --fix --no-start" "$WGET_LOG" || fail "wget fallback: daemon doctor --fix --no-start not invoked"
 
 note "linux nightly desktop install"
 NIGHTLY_HOME="$WORK/nightly-home"

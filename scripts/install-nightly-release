@@ -117,7 +117,14 @@ fetch_asset() {
   else
     local url="https://github.com/$REPO/releases/download/$TAG/$asset"
     echo "Downloading $url"
-    curl --fail --location --show-error --silent "$url" --output "$dest"
+    if command -v curl >/dev/null 2>&1; then
+      curl --fail --location --show-error --silent "$url" --output "$dest"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -O "$dest" "$url"
+    else
+      echo "curl or wget is required to install nteract." >&2
+      exit 1
+    fi
   fi
   chmod 0755 "$dest"
 }
