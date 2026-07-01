@@ -4,6 +4,28 @@ This directory separates thinking, decisions, product requirements, execution
 plans, evidence, and operations so product, design, engineering, research, and
 AI collaborators can use the same vocabulary.
 
+## Start Here
+
+Use these entry points when you need the current durable framing for a subsystem.
+They are not a complete inventory; they route to the docs most likely to anchor
+new product, engineering, or agent work.
+
+| Topic | Start with |
+|-------|------------|
+| Local-first notebook state | [`adr/local-first-notebook-state.md`](adr/local-first-notebook-state.md), [`adr/document-split.md`](adr/document-split.md), [`adr/runtime-state-document-identity.md`](adr/runtime-state-document-identity.md) |
+| Execution and output transport | [`adr/execution-pipeline.md`](adr/execution-pipeline.md), [`adr/typed-frame-v4-wire-protocol.md`](adr/typed-frame-v4-wire-protocol.md), [`adr/blob-ref-and-chunk-manifest-protocol.md`](adr/blob-ref-and-chunk-manifest-protocol.md) |
+| Notebook shell and frontend convergence | [`adr/notebook-host-shell-convergence.md`](adr/notebook-host-shell-convergence.md), [`adr/frontend-sync-bridge.md`](adr/frontend-sync-bridge.md), [`adr/output-rendering-segmentation.md`](adr/output-rendering-segmentation.md) |
+| Identity, trust, and hosted rooms | [`adr/identity-and-trust.md`](adr/identity-and-trust.md), [`adr/hosted-room-authorization.md`](adr/hosted-room-authorization.md), [`adr/deployment-topology.md`](adr/deployment-topology.md) |
+| Remote compute and workstations | [`adr/remote-workstation-doc-agents.md`](adr/remote-workstation-doc-agents.md), [`adr/runtime-principal-promotion.md`](adr/runtime-principal-promotion.md), [`runbooks/remote-workstation.md`](runbooks/remote-workstation.md) |
+| Product requirements | [`prd/notebook-identity-environment-surfaces.md`](prd/notebook-identity-environment-surfaces.md), [`prd/hosted-sharing-invites.md`](prd/hosted-sharing-invites.md) |
+| Evidence and measurements | [`audits/`](audits/), [`measurements/`](measurements/) |
+| Operational setup | [`runbooks/macos-setup.md`](runbooks/macos-setup.md), [`runbooks/hosted-direct-oidc-demo-runbook.md`](runbooks/hosted-direct-oidc-demo-runbook.md) |
+
+For the architecture decision register's status vocabulary and maintenance
+rules, start with [`adr/README.md`](adr/README.md).
+
+## Taxonomy
+
 | Home | Purpose |
 |------|---------|
 | [`adr/`](adr/) | Durable technical decisions, proposed decisions, rejected alternatives, invariants, and compatibility boundaries. |
