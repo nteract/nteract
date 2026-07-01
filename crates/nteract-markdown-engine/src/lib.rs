@@ -70,10 +70,7 @@ pub struct ReconcilerSnapshot {
 
 impl ReconcilerSnapshot {
     pub fn to_bytes(&self) -> Vec<u8> {
-        match serde_json::to_vec(self) {
-            Ok(bytes) => bytes,
-            Err(_) => Vec::new(),
-        }
+        serde_json::to_vec(self).unwrap_or_default()
     }
 
     pub fn from_bytes(bytes: &[u8]) -> ReconcilerSnapshot {
