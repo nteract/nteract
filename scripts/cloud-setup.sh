@@ -10,7 +10,7 @@
 # reference; keep the UI field in sync when this changes.
 #
 # Runs as root in a fresh VM with no repo present. The Anthropic image
-# already ships rust, cargo, node 20+, pnpm via corepack, uv, and ripgrep,
+# already ships rust, cargo, node 22.13+, pnpm via corepack, uv, and ripgrep,
 # so this script only fills the gaps the project needs for tier-(i)+(ii)
 # work (read everything correctly, build the workspace).
 #

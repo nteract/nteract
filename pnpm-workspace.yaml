@@ -4,9 +4,17 @@ packages:
   - packages/runtimed-node/npm/*
   - plugins/nteract/*
 
-onlyBuiltDependencies:
-  - '@fortawesome/fontawesome-free'
-  - esbuild
+allowBuilds:
+  '@fortawesome/fontawesome-free': true
+  '@sentry/cli': false
+  core-js: false
+  edgedriver: false
+  esbuild: true
+  geckodriver: false
+  koffi: false
+  protobufjs: false
+  sharp: false
+  workerd: false
 minimumReleaseAge: 1440
 # TODO(2026-05-31): remove once these exact Fumadocs lockfile entries are older
 # than minimumReleaseAge and `pnpm install --frozen-lockfile` succeeds without it.
@@ -20,6 +28,11 @@ trustPolicy: no-downgrade
 # package without a trust-policy downgrade exception.
 trustPolicyExclude:
   - tinyexec@1.2.2
+  # TODO(2026-07-08): re-check after the pnpm 11 migration; these existing
+  # lockfile entries are rejected by the stricter trust-policy verifier.
+  - chokidar@4.0.3
+  - semver@6.3.1
+  - undici-types@6.21.0
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@0.1.16
   vitest: npm:@voidzero-dev/vite-plus-test@0.1.16
@@ -28,6 +41,8 @@ overrides:
   vite: 'catalog:'
   vitest: 'catalog:'
   '@codemirror/language': 6.12.2
+  react: 19.2.6
+  react-dom: 19.2.6
 peerDependencyRules:
   allowAny:
     - vite

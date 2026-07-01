@@ -2,7 +2,7 @@
   "name": "nteract-desktop",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.30.0",
+  "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build": "pnpm --dir apps/notebook build",
     "notebook:build": "pnpm --dir apps/notebook build",
@@ -110,11 +110,5 @@
     "vitest": "catalog:",
     "webdriverio": "^8.40.0",
     "wrangler": "4.94.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "react": "19.2.6",
-      "react-dom": "19.2.6"
-    }
   }
 }

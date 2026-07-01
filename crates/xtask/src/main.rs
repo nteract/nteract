@@ -542,7 +542,7 @@ fn expected_pnpm_version() -> Result<String, String> {
 
 fn parse_pnpm_package_manager_version(package_manager: &str) -> Result<&str, String> {
     let version = package_manager.strip_prefix("pnpm@").ok_or_else(|| {
-        format!("`packageManager` must be a pnpm spec like `pnpm@10.30.0`, got `{package_manager}`")
+        format!("`packageManager` must be a pnpm spec like `pnpm@11.9.0`, got `{package_manager}`")
     })?;
     let version = version.split('+').next().unwrap_or(version);
     if version.is_empty() {
@@ -5340,12 +5340,12 @@ mod tests {
     #[test]
     fn parse_pnpm_package_manager_version_accepts_pnpm_specs() {
         assert_eq!(
-            parse_pnpm_package_manager_version("pnpm@10.30.0").unwrap(),
-            "10.30.0"
+            parse_pnpm_package_manager_version("pnpm@11.9.0").unwrap(),
+            "11.9.0"
         );
         assert_eq!(
-            parse_pnpm_package_manager_version("pnpm@10.30.0+sha512.test").unwrap(),
-            "10.30.0"
+            parse_pnpm_package_manager_version("pnpm@11.9.0+sha512.test").unwrap(),
+            "11.9.0"
         );
     }
 
@@ -5357,11 +5357,11 @@ mod tests {
 
     #[test]
     fn choose_pnpm_source_prefers_matching_corepack_over_wrong_direct_pnpm() {
-        let corepack = Ok("10.30.0".to_string());
+        let corepack = Ok("11.9.0".to_string());
         let direct = Ok("11.7.0".to_string());
 
         assert_eq!(
-            choose_pnpm_source("10.30.0", &corepack, &direct),
+            choose_pnpm_source("11.9.0", &corepack, &direct),
             Some(PnpmSource::Corepack)
         );
     }
@@ -5369,10 +5369,10 @@ mod tests {
     #[test]
     fn choose_pnpm_source_accepts_direct_pnpm_only_when_it_matches_pin() {
         let corepack = Err("failed to start: corepack not found".to_string());
-        let direct = Ok("10.30.0".to_string());
+        let direct = Ok("11.9.0".to_string());
 
         assert_eq!(
-            choose_pnpm_source("10.30.0", &corepack, &direct),
+            choose_pnpm_source("11.9.0", &corepack, &direct),
             Some(PnpmSource::Direct)
         );
     }
@@ -5382,14 +5382,14 @@ mod tests {
         let corepack = Err("failed to start: corepack not found".to_string());
         let direct = Ok("11.7.0".to_string());
 
-        assert_eq!(choose_pnpm_source("10.30.0", &corepack, &direct), None);
+        assert_eq!(choose_pnpm_source("11.9.0", &corepack, &direct), None);
     }
 
     #[test]
     fn last_non_empty_line_uses_final_version_line() {
         assert_eq!(
-            last_non_empty_line(b"Preparing pnpm...\n10.30.0\n"),
-            Some("10.30.0".to_string())
+            last_non_empty_line(b"Preparing pnpm...\n11.9.0\n"),
+            Some("11.9.0".to_string())
         );
     }
 

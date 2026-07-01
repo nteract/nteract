@@ -176,8 +176,8 @@ nteract/nteract
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Node.js | 20+ | https://nodejs.org |
-| pnpm | 10.12+ | `corepack enable` |
+| Node.js | 22.13+ | https://nodejs.org |
+| pnpm | 11.9+ | `corepack enable` |
 | Rust | 1.94.0 | https://rustup.rs (version managed by `rust-toolchain.toml`) |
 
 **Linux only:** Install GTK/WebKit dev libraries:
