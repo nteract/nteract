@@ -6,3 +6,5 @@ publish = false
 
 [dependencies]
 markdown = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }

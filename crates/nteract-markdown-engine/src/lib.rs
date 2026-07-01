@@ -1,6 +1,7 @@
 use markdown::mdast;
 use markdown::unist::Position;
 use markdown::{Constructs, ParseOptions};
+use serde::{Deserialize, Serialize};
 
 mod render_json;
 
@@ -61,6 +62,44 @@ pub struct MarkdownPlan {
     pub measurement: MeasurementPlan,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ReconcilerSnapshot {
+    root: Option<SnapshotNode>,
+    next_id: u64,
+}
+
+impl ReconcilerSnapshot {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> ReconcilerSnapshot {
+        serde_json::from_slice(bytes).unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SnapshotNode {
+    id: String,
+    key: StructuralKey,
+    content_hash: u64,
+    children: Vec<SnapshotNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StructuralKey {
+    kind: NodeKind,
+    lane: SafetyLane,
+    isolation_kind: Option<IsolationKind>,
+    // Tag identity is part of the key so a same-kind tag swap is a replace, not
+    // an edit: isolation_tag covers active-HTML elements (<video> -> <iframe>),
+    // island_tag covers MDX components (<Frog /> -> <Chart />). Without the tag
+    // here, compat would carry the old id onto a different component and alias
+    // two distinct nodes, which breaks id-anchored comments and collab state.
+    isolation_tag: Option<String>,
+    island_tag: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedNode {
     pub id: String,
@@ -73,7 +112,7 @@ pub struct ProjectedNode {
     pub children: Vec<ProjectedNode>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
     Root,
     Paragraph,
@@ -125,6 +164,7 @@ pub struct NodeAttrs {
     pub align: Vec<TableAlign>,
     pub anchor_slug: Option<String>,
     pub isolation_kind: Option<IsolationKind>,
+    pub isolation_tag: Option<String>,
     pub island_tag: Option<String>,
     pub island_inline: bool,
 }
@@ -166,14 +206,14 @@ pub struct Safety {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SafetyLane {
     Host,
     Escaped,
     Isolated,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IsolationKind {
     RawHtml,
     ActiveHtml,
@@ -250,9 +290,45 @@ pub fn project_from_mdast(
     source: &str,
     options: &MarkdownProjectOptions,
 ) -> MarkdownPlan {
-    let mut context = ProjectionContext::new(source, options);
+    let (plan, _) =
+        project_from_mdast_reconciled(mdast, source, options, &ReconcilerSnapshot::default());
+    plan
+}
+
+pub fn project_from_mdast_reconciled(
+    mdast: &markdown::mdast::Node,
+    source: &str,
+    options: &MarkdownProjectOptions,
+    previous: &ReconcilerSnapshot,
+) -> (MarkdownPlan, ReconcilerSnapshot) {
+    let mut context = ProjectionContext::new(source, options, true);
     let mut root = project_node(mdast, &mut context);
     root.id = "root".to_string();
+
+    let next_id = if let Some(previous_root) = &previous.root {
+        let mut mint = IdMint::new(previous.next_id);
+        reconcile_children(&mut root.children, &previous_root.children, &mut mint);
+        mint.next_id
+    } else {
+        assign_legacy_ids(&mut root);
+        1
+    };
+
+    let plan = assemble_plan(root, source, options);
+    let snapshot = ReconcilerSnapshot {
+        root: Some(snapshot_from_node(&plan.root)),
+        next_id,
+    };
+    (plan, snapshot)
+}
+
+fn assemble_plan(
+    mut root: ProjectedNode,
+    source: &str,
+    options: &MarkdownProjectOptions,
+) -> MarkdownPlan {
+    let mut finalization = FinalizationContext::default();
+    finalize_node(&mut root, &mut finalization);
 
     let blocks = root.children.clone();
     let text_fallback = blocks
@@ -286,8 +362,8 @@ pub fn project_from_mdast(
         source_len: source.len(),
         root,
         blocks,
-        anchors: context.anchors,
-        isolated_regions: context.isolated_regions,
+        anchors: finalization.anchors,
+        isolated_regions: finalization.isolated_regions,
         text_fallback,
         measurement: MeasurementPlan {
             estimated_height,
@@ -301,12 +377,23 @@ pub fn project_markdown_with_options(
     source: &str,
     options: &MarkdownProjectOptions,
 ) -> Result<MarkdownPlan, MarkdownProjectError> {
+    let (plan, _) = project_markdown_reconciled(source, options, &ReconcilerSnapshot::default())?;
+    Ok(plan)
+}
+
+pub fn project_markdown_reconciled(
+    source: &str,
+    options: &MarkdownProjectOptions,
+    previous: &ReconcilerSnapshot,
+) -> Result<(MarkdownPlan, ReconcilerSnapshot), MarkdownProjectError> {
     let parse_options = parse_options(options.islands);
     let mdast =
         markdown::to_mdast(source, &parse_options).map_err(|message| MarkdownProjectError {
             message: message.reason,
         })?;
-    Ok(project_from_mdast(&mdast, source, options))
+    Ok(project_from_mdast_reconciled(
+        &mdast, source, options, previous,
+    ))
 }
 
 fn parse_options(islands: bool) -> ParseOptions {
@@ -332,22 +419,559 @@ fn parse_options(islands: bool) -> ParseOptions {
     }
 }
 
+#[derive(Default)]
+struct FinalizationContext {
+    anchors: Vec<MarkdownAnchor>,
+    isolated_regions: Vec<IsolatedRegion>,
+    slug_counts: std::collections::BTreeMap<String, usize>,
+}
+
+impl FinalizationContext {
+    fn unique_slug(&mut self, title: &str) -> String {
+        let slug = slugify(title);
+        let count = self.slug_counts.entry(slug.clone()).or_insert(0);
+        *count += 1;
+        if *count == 1 {
+            slug
+        } else {
+            format!("{slug}-{count}")
+        }
+    }
+}
+
+fn finalize_node(node: &mut ProjectedNode, context: &mut FinalizationContext) {
+    if node.kind == NodeKind::Heading {
+        if let Some(depth) = node.attrs.depth {
+            let slug = context.unique_slug(&node.fallback.text);
+            node.attrs.anchor_slug = Some(slug.clone());
+            context.anchors.push(MarkdownAnchor {
+                id: format!("anchor:{slug}"),
+                slug,
+                title: node.fallback.text.clone(),
+                level: depth,
+                block_id: node.id.clone(),
+                span: node.span.clone(),
+            });
+        }
+    } else {
+        node.attrs.anchor_slug = None;
+    }
+
+    if node.safety.lane == SafetyLane::Isolated {
+        let kind = node.attrs.isolation_kind.unwrap_or(IsolationKind::RawHtml);
+        context.isolated_regions.push(IsolatedRegion {
+            id: format!("isolation:{}", node.id),
+            block_id: node.id.clone(),
+            kind,
+            reason: node.safety.reason.clone(),
+            span: node.span.clone(),
+            fallback_text: node.fallback.text.clone(),
+        });
+    }
+
+    for child in &mut node.children {
+        finalize_node(child, context);
+    }
+}
+
+struct IdMint {
+    next_id: u64,
+}
+
+impl IdMint {
+    fn new(next_id: u64) -> Self {
+        Self {
+            next_id: next_id.max(1),
+        }
+    }
+
+    fn mint(&mut self) -> String {
+        let id = format!("node:reconciled:{}", self.next_id);
+        self.next_id += 1;
+        id
+    }
+}
+
+fn reconcile_children(current: &mut [ProjectedNode], previous: &[SnapshotNode], mint: &mut IdMint) {
+    let current_hashes = current.iter().map(content_hash).collect::<Vec<_>>();
+    let current_keys = current.iter().map(structural_key).collect::<Vec<_>>();
+    let mut matches = vec![None; current.len()];
+
+    let mut current_start = 0;
+    let mut previous_start = 0;
+    let mut current_end = current.len();
+    let mut previous_end = previous.len();
+
+    while current_start < current_end
+        && previous_start < previous_end
+        && unique_eq_at(
+            &current_keys,
+            &current_hashes,
+            previous,
+            current_start,
+            previous_start,
+            current_start..current_end,
+            previous_start..previous_end,
+        )
+    {
+        matches[current_start] = Some(previous_start);
+        current_start += 1;
+        previous_start += 1;
+    }
+
+    while current_start < current_end
+        && previous_start < previous_end
+        && unique_eq_at(
+            &current_keys,
+            &current_hashes,
+            previous,
+            current_end - 1,
+            previous_end - 1,
+            current_start..current_end,
+            previous_start..previous_end,
+        )
+    {
+        current_end -= 1;
+        previous_end -= 1;
+        matches[current_end] = Some(previous_end);
+    }
+
+    lcs_eq_matches(
+        &current_keys,
+        &current_hashes,
+        previous,
+        current_start..current_end,
+        previous_start..previous_end,
+        &mut matches,
+    );
+    match_exact_moves(
+        &current_keys,
+        &current_hashes,
+        previous,
+        current_start..current_end,
+        previous_start..previous_end,
+        &mut matches,
+    );
+    zip_compatible_leftovers(
+        &current_keys,
+        previous,
+        current_start..current_end,
+        previous_start..previous_end,
+        &mut matches,
+    );
+
+    for (current_index, previous_index) in matches.into_iter().enumerate() {
+        if let Some(previous_index) = previous_index {
+            let previous_node = &previous[previous_index];
+            current[current_index].id = previous_node.id.clone();
+            if current_hashes[current_index] == previous_node.content_hash {
+                apply_snapshot_ids(&mut current[current_index], previous_node);
+            } else {
+                reconcile_children(
+                    &mut current[current_index].children,
+                    &previous_node.children,
+                    mint,
+                );
+            }
+        } else {
+            assign_fresh_ids(&mut current[current_index], mint);
+        }
+    }
+}
+
+fn unique_eq_at(
+    current_keys: &[StructuralKey],
+    current_hashes: &[u64],
+    previous: &[SnapshotNode],
+    current_index: usize,
+    previous_index: usize,
+    current_range: std::ops::Range<usize>,
+    previous_range: std::ops::Range<usize>,
+) -> bool {
+    if !eq_at(
+        current_keys,
+        current_hashes,
+        previous,
+        current_index,
+        previous_index,
+    ) {
+        return false;
+    }
+
+    let previous_matches = previous_range
+        .clone()
+        .filter(|index| {
+            eq_at(
+                current_keys,
+                current_hashes,
+                previous,
+                current_index,
+                *index,
+            )
+        })
+        .count();
+    if previous_matches != 1 {
+        return false;
+    }
+
+    current_range
+        .filter(|index| {
+            eq_at(
+                current_keys,
+                current_hashes,
+                previous,
+                *index,
+                previous_index,
+            )
+        })
+        .count()
+        == 1
+}
+
+fn lcs_eq_matches(
+    current_keys: &[StructuralKey],
+    current_hashes: &[u64],
+    previous: &[SnapshotNode],
+    current_range: std::ops::Range<usize>,
+    previous_range: std::ops::Range<usize>,
+    matches: &mut [Option<usize>],
+) {
+    let current_len = current_range.end - current_range.start;
+    let previous_len = previous_range.end - previous_range.start;
+    if current_len == 0 || previous_len == 0 {
+        return;
+    }
+
+    let columns = previous_len + 1;
+    let mut lengths = vec![0usize; (current_len + 1) * columns];
+    for current_offset in 0..current_len {
+        for previous_offset in 0..previous_len {
+            let current_index = current_range.start + current_offset;
+            let previous_index = previous_range.start + previous_offset;
+            let cell = (current_offset + 1) * columns + previous_offset + 1;
+            if eq_at(
+                current_keys,
+                current_hashes,
+                previous,
+                current_index,
+                previous_index,
+            ) {
+                lengths[cell] = lengths[current_offset * columns + previous_offset] + 1;
+            } else {
+                lengths[cell] = lengths[current_offset * columns + previous_offset + 1]
+                    .max(lengths[(current_offset + 1) * columns + previous_offset]);
+            }
+        }
+    }
+
+    let mut current_offset = current_len;
+    let mut previous_offset = previous_len;
+    while current_offset > 0 && previous_offset > 0 {
+        let current_index = current_range.start + current_offset - 1;
+        let previous_index = previous_range.start + previous_offset - 1;
+        let cell = current_offset * columns + previous_offset;
+        let diagonal = (current_offset - 1) * columns + previous_offset - 1;
+        if eq_at(
+            current_keys,
+            current_hashes,
+            previous,
+            current_index,
+            previous_index,
+        ) && lengths[cell] == lengths[diagonal] + 1
+        {
+            matches[current_index] = Some(previous_index);
+            current_offset -= 1;
+            previous_offset -= 1;
+        } else if lengths[current_offset * columns + previous_offset - 1]
+            >= lengths[(current_offset - 1) * columns + previous_offset]
+        {
+            previous_offset -= 1;
+        } else {
+            current_offset -= 1;
+        }
+    }
+}
+
+fn match_exact_moves(
+    current_keys: &[StructuralKey],
+    current_hashes: &[u64],
+    previous: &[SnapshotNode],
+    current_range: std::ops::Range<usize>,
+    previous_range: std::ops::Range<usize>,
+    matches: &mut [Option<usize>],
+) {
+    let mut previous_leftovers = unmatched_previous(previous.len(), matches, previous_range);
+    for current_index in current_range {
+        if matches[current_index].is_some() {
+            continue;
+        }
+
+        if let Some(position) = previous_leftovers.iter().position(|previous_index| {
+            eq_at(
+                current_keys,
+                current_hashes,
+                previous,
+                current_index,
+                *previous_index,
+            )
+        }) {
+            matches[current_index] = Some(previous_leftovers.remove(position));
+        }
+    }
+}
+
+fn zip_compatible_leftovers(
+    current_keys: &[StructuralKey],
+    previous: &[SnapshotNode],
+    current_range: std::ops::Range<usize>,
+    previous_range: std::ops::Range<usize>,
+    matches: &mut [Option<usize>],
+) {
+    let current_leftovers = current_range
+        .filter(|index| matches[*index].is_none())
+        .collect::<Vec<_>>();
+    let previous_leftovers = unmatched_previous(previous.len(), matches, previous_range);
+    let front_surplus = current_leftovers
+        .len()
+        .saturating_sub(previous_leftovers.len());
+
+    for (current_index, previous_index) in current_leftovers
+        .iter()
+        .skip(front_surplus)
+        .zip(previous_leftovers.iter())
+    {
+        if compat_at(current_keys, previous, *current_index, *previous_index) {
+            matches[*current_index] = Some(*previous_index);
+        }
+    }
+}
+
+fn unmatched_previous(
+    previous_len: usize,
+    matches: &[Option<usize>],
+    previous_range: std::ops::Range<usize>,
+) -> Vec<usize> {
+    let mut used = vec![false; previous_len];
+    for previous_index in matches.iter().flatten() {
+        used[*previous_index] = true;
+    }
+    previous_range.filter(|index| !used[*index]).collect()
+}
+
+fn eq_at(
+    current_keys: &[StructuralKey],
+    current_hashes: &[u64],
+    previous: &[SnapshotNode],
+    current_index: usize,
+    previous_index: usize,
+) -> bool {
+    compat_at(current_keys, previous, current_index, previous_index)
+        && current_hashes[current_index] == previous[previous_index].content_hash
+}
+
+fn compat_at(
+    current_keys: &[StructuralKey],
+    previous: &[SnapshotNode],
+    current_index: usize,
+    previous_index: usize,
+) -> bool {
+    current_keys[current_index] == previous[previous_index].key
+}
+
+fn apply_snapshot_ids(current: &mut ProjectedNode, previous: &SnapshotNode) {
+    current.id = previous.id.clone();
+    for (current_child, previous_child) in current.children.iter_mut().zip(&previous.children) {
+        apply_snapshot_ids(current_child, previous_child);
+    }
+}
+
+fn assign_fresh_ids(node: &mut ProjectedNode, mint: &mut IdMint) {
+    if node.kind == NodeKind::Root {
+        node.id = "root".to_string();
+    } else {
+        node.id = mint.mint();
+    }
+    for child in &mut node.children {
+        assign_fresh_ids(child, mint);
+    }
+}
+
+fn assign_legacy_ids(node: &mut ProjectedNode) {
+    if node.kind == NodeKind::Root {
+        node.id = "root".to_string();
+    } else {
+        node.id = node_id(node.kind, &node.span);
+    }
+    for child in &mut node.children {
+        assign_legacy_ids(child);
+    }
+}
+
+fn snapshot_from_node(node: &ProjectedNode) -> SnapshotNode {
+    SnapshotNode {
+        id: node.id.clone(),
+        key: structural_key(node),
+        content_hash: content_hash(node),
+        children: node.children.iter().map(snapshot_from_node).collect(),
+    }
+}
+
+fn structural_key(node: &ProjectedNode) -> StructuralKey {
+    StructuralKey {
+        kind: node.kind,
+        lane: node.safety.lane,
+        isolation_kind: node.attrs.isolation_kind,
+        isolation_tag: node.attrs.isolation_tag.clone(),
+        island_tag: node.attrs.island_tag.clone(),
+    }
+}
+
+fn content_hash(node: &ProjectedNode) -> u64 {
+    let mut hasher = StableHasher::new();
+    hasher.write_str("node");
+    hasher.write_str(node_kind_label(node.kind));
+    hasher.write_str(safety_lane_label(node.safety.lane));
+    hasher.write_option_str(node.attrs.isolation_tag.as_deref());
+    hasher.write_option_str(node.attrs.island_tag.as_deref());
+    hasher.write_bool(node.attrs.island_inline);
+    hasher.write_option_str(node.attrs.isolation_kind.map(isolation_kind_label));
+    hasher.write_str(&node.safety.reason);
+    hash_attrs(&mut hasher, &node.attrs);
+    hasher.write_usize(node.children.len());
+    if node.children.is_empty() {
+        hasher.write_str(&node.fallback.copy_text);
+    }
+    for child in &node.children {
+        hasher.write_u64(content_hash(child));
+    }
+    hasher.finish()
+}
+
+fn hash_attrs(hasher: &mut StableHasher, attrs: &NodeAttrs) {
+    hasher.write_option_u8(attrs.depth);
+    hasher.write_option_bool(attrs.ordered);
+    hasher.write_option_u32(attrs.start);
+    hasher.write_option_bool(attrs.spread);
+    hasher.write_option_bool(attrs.checked);
+    hasher.write_option_str(attrs.lang.as_deref());
+    hasher.write_option_str(attrs.meta.as_deref());
+    hasher.write_option_str(attrs.url.as_deref());
+    hasher.write_option_str(attrs.title.as_deref());
+    hasher.write_option_str(attrs.alt.as_deref());
+    hasher.write_option_str(attrs.identifier.as_deref());
+    hasher.write_option_str(attrs.label.as_deref());
+    hasher.write_usize(attrs.align.len());
+    for align in &attrs.align {
+        hasher.write_str(table_align_label(*align));
+    }
+}
+
+struct StableHasher {
+    hash: u64,
+}
+
+impl StableHasher {
+    fn new() -> Self {
+        Self {
+            hash: 0xcbf29ce484222325,
+        }
+    }
+
+    fn finish(self) -> u64 {
+        self.hash
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.hash ^= u64::from(*byte);
+            self.hash = self.hash.wrapping_mul(0x100000001b3);
+        }
+    }
+
+    fn write_str(&mut self, value: &str) {
+        self.write_usize(value.len());
+        self.write_bytes(value.as_bytes());
+    }
+
+    fn write_bool(&mut self, value: bool) {
+        self.write_bytes(&[u8::from(value)]);
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.write_bytes(&value.to_le_bytes());
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.write_bytes(&value.to_le_bytes());
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.write_bytes(&[value]);
+    }
+
+    fn write_option_str(&mut self, value: Option<&str>) {
+        match value {
+            Some(value) => {
+                self.write_bool(true);
+                self.write_str(value);
+            }
+            None => self.write_bool(false),
+        }
+    }
+
+    fn write_option_bool(&mut self, value: Option<bool>) {
+        match value {
+            Some(value) => {
+                self.write_bool(true);
+                self.write_bool(value);
+            }
+            None => self.write_bool(false),
+        }
+    }
+
+    fn write_option_u32(&mut self, value: Option<u32>) {
+        match value {
+            Some(value) => {
+                self.write_bool(true);
+                self.write_u32(value);
+            }
+            None => self.write_bool(false),
+        }
+    }
+
+    fn write_option_u8(&mut self, value: Option<u8>) {
+        match value {
+            Some(value) => {
+                self.write_bool(true);
+                self.write_u8(value);
+            }
+            None => self.write_bool(false),
+        }
+    }
+}
+
 struct ProjectionContext<'a> {
     source: &'a str,
     options: &'a MarkdownProjectOptions,
     anchors: Vec<MarkdownAnchor>,
     isolated_regions: Vec<IsolatedRegion>,
     slug_counts: std::collections::BTreeMap<String, usize>,
+    defer_outputs: bool,
 }
 
 impl<'a> ProjectionContext<'a> {
-    fn new(source: &'a str, options: &'a MarkdownProjectOptions) -> Self {
+    fn new(source: &'a str, options: &'a MarkdownProjectOptions, defer_outputs: bool) -> Self {
         Self {
             source,
             options,
             anchors: Vec::new(),
             isolated_regions: Vec::new(),
             slug_counts: std::collections::BTreeMap::new(),
+            defer_outputs,
         }
     }
 
@@ -410,8 +1034,10 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
         mdast::Node::Heading(heading) => {
             kind = NodeKind::Heading;
             attrs.depth = Some(heading.depth);
-            let slug = context.unique_slug(&text);
-            attrs.anchor_slug = Some(slug.clone());
+            if !context.defer_outputs {
+                let slug = context.unique_slug(&text);
+                attrs.anchor_slug = Some(slug.clone());
+            }
         }
         mdast::Node::Blockquote(_) => {
             kind = NodeKind::Blockquote;
@@ -451,6 +1077,7 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
             text = isolated_fallback(classification).to_string();
             copy_text = html.value.clone();
             attrs.isolation_kind = Some(classification);
+            attrs.isolation_tag = html_isolation_tag(&html.value, classification);
             safety = html_safety(classification, context.options.raw_html);
             children.clear();
         }
@@ -539,6 +1166,7 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
             text = "[isolated MDX region]".to_string();
             copy_text = source_slice(context.source, &span).to_string();
             attrs.island_tag = element.name.clone();
+            attrs.isolation_tag = element.name.clone();
             attrs.island_inline = false;
             attrs.isolation_kind = Some(IsolationKind::Component);
             safety = Safety {
@@ -547,11 +1175,37 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
             };
             children.clear();
         }
+        mdast::Node::MdxJsxFlowElement(element) => {
+            kind = NodeKind::Mdx;
+            text = "[isolated MDX region]".to_string();
+            copy_text = source_slice(context.source, &span).to_string();
+            attrs.isolation_kind = Some(IsolationKind::Mdx);
+            attrs.isolation_tag = element.name.clone();
+            safety = Safety {
+                lane: match context.options.mdx {
+                    MdxMode::Disabled | MdxMode::Isolate => SafetyLane::Isolated,
+                },
+                reason: "mdx-compiles-to-active-js".to_string(),
+            };
+            children.clear();
+        }
+        mdast::Node::MdxJsxTextElement(element) => {
+            kind = NodeKind::Mdx;
+            text = "[isolated MDX region]".to_string();
+            copy_text = source_slice(context.source, &span).to_string();
+            attrs.isolation_kind = Some(IsolationKind::Mdx);
+            attrs.isolation_tag = element.name.clone();
+            safety = Safety {
+                lane: match context.options.mdx {
+                    MdxMode::Disabled | MdxMode::Isolate => SafetyLane::Isolated,
+                },
+                reason: "mdx-compiles-to-active-js".to_string(),
+            };
+            children.clear();
+        }
         mdast::Node::MdxjsEsm(_)
         | mdast::Node::MdxFlowExpression(_)
-        | mdast::Node::MdxTextExpression(_)
-        | mdast::Node::MdxJsxFlowElement(_)
-        | mdast::Node::MdxJsxTextElement(_) => {
+        | mdast::Node::MdxTextExpression(_) => {
             kind = NodeKind::Mdx;
             text = "[isolated MDX region]".to_string();
             copy_text = source_slice(context.source, &span).to_string();
@@ -577,7 +1231,11 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
     }
 
     let mut projected = ProjectedNode {
-        id: node_id(kind, &span),
+        id: if context.defer_outputs {
+            String::new()
+        } else {
+            node_id(kind, &span)
+        },
         kind,
         span,
         safety,
@@ -591,7 +1249,7 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
         children,
     };
 
-    if projected.kind == NodeKind::Heading {
+    if !context.defer_outputs && projected.kind == NodeKind::Heading {
         if let (Some(depth), Some(slug)) =
             (projected.attrs.depth, projected.attrs.anchor_slug.clone())
         {
@@ -606,7 +1264,7 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
         }
     }
 
-    if projected.safety.lane == SafetyLane::Isolated {
+    if !context.defer_outputs && projected.safety.lane == SafetyLane::Isolated {
         let kind = projected
             .attrs
             .isolation_kind
@@ -640,6 +1298,68 @@ fn node_id(kind: NodeKind, span: &SourceSpan) -> String {
     format!("node:{kind:?}:{}:{}", span.start, span.end)
 }
 
+fn node_kind_label(kind: NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Root => "root",
+        NodeKind::Paragraph => "paragraph",
+        NodeKind::Heading => "heading",
+        NodeKind::Blockquote => "blockquote",
+        NodeKind::List => "list",
+        NodeKind::ListItem => "list-item",
+        NodeKind::CodeBlock => "code-block",
+        NodeKind::MathBlock => "math-block",
+        NodeKind::ThematicBreak => "thematic-break",
+        NodeKind::Html => "html",
+        NodeKind::Table => "table",
+        NodeKind::TableRow => "table-row",
+        NodeKind::TableCell => "table-cell",
+        NodeKind::Definition => "definition",
+        NodeKind::FootnoteDefinition => "footnote-definition",
+        NodeKind::Text => "text",
+        NodeKind::Emphasis => "emphasis",
+        NodeKind::Strong => "strong",
+        NodeKind::Delete => "delete",
+        NodeKind::InlineCode => "inline-code",
+        NodeKind::InlineMath => "inline-math",
+        NodeKind::Break => "break",
+        NodeKind::Link => "link",
+        NodeKind::LinkReference => "link-reference",
+        NodeKind::Image => "image",
+        NodeKind::ImageReference => "image-reference",
+        NodeKind::FootnoteReference => "footnote-reference",
+        NodeKind::Mdx => "mdx",
+        NodeKind::Frontmatter => "frontmatter",
+        NodeKind::Island => "island",
+        NodeKind::Unknown => "unknown",
+    }
+}
+
+fn safety_lane_label(lane: SafetyLane) -> &'static str {
+    match lane {
+        SafetyLane::Host => "host",
+        SafetyLane::Escaped => "escaped",
+        SafetyLane::Isolated => "isolated",
+    }
+}
+
+fn isolation_kind_label(kind: IsolationKind) -> &'static str {
+    match kind {
+        IsolationKind::RawHtml => "raw-html",
+        IsolationKind::ActiveHtml => "active-html",
+        IsolationKind::Mdx => "mdx",
+        IsolationKind::Component => "component",
+    }
+}
+
+fn table_align_label(align: TableAlign) -> &'static str {
+    match align {
+        TableAlign::None => "none",
+        TableAlign::Left => "left",
+        TableAlign::Right => "right",
+        TableAlign::Center => "center",
+    }
+}
+
 fn table_align(align: &mdast::AlignKind) -> TableAlign {
     match align {
         mdast::AlignKind::None => TableAlign::None,
@@ -650,31 +1370,46 @@ fn table_align(align: &mdast::AlignKind) -> TableAlign {
 }
 
 fn classify_html(value: &str) -> IsolationKind {
-    let lower = value.to_ascii_lowercase();
-    let active = [
-        "<script",
-        "<style",
-        "<iframe",
-        "<object",
-        "<embed",
-        "<link",
-        "<form",
-        "<input",
-        "<button",
-        "<textarea",
-        "<select",
-        "<video",
-        "<audio",
-        "<canvas",
-        "<svg",
-    ];
-    if active.iter().any(|needle| lower.contains(needle)) {
+    if active_html_tag(value).is_some() {
         return IsolationKind::ActiveHtml;
     }
     if looks_like_mdx_component(value) {
         return IsolationKind::Mdx;
     }
     IsolationKind::RawHtml
+}
+
+fn html_isolation_tag(value: &str, kind: IsolationKind) -> Option<String> {
+    match kind {
+        IsolationKind::ActiveHtml => active_html_tag(value),
+        IsolationKind::Mdx | IsolationKind::Component => first_html_tag(value),
+        IsolationKind::RawHtml => None,
+    }
+}
+
+fn active_html_tag(value: &str) -> Option<String> {
+    let active = [
+        "script", "style", "iframe", "object", "embed", "link", "form", "input", "button",
+        "textarea", "select", "video", "audio", "canvas", "svg",
+    ];
+    let lower = value.to_ascii_lowercase();
+    active
+        .iter()
+        .find(|tag| lower.contains(&format!("<{tag}")))
+        .map(|tag| (*tag).to_string())
+}
+
+fn first_html_tag(value: &str) -> Option<String> {
+    let trimmed = value.trim_start();
+    let rest = trimmed.strip_prefix('<')?.trim_start();
+    if rest.starts_with('/') || rest.starts_with('!') || rest.starts_with('?') {
+        return None;
+    }
+    let name = rest
+        .split(|character: char| character.is_whitespace() || character == '>' || character == '/')
+        .next()
+        .unwrap_or("");
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 fn looks_like_mdx_component(value: &str) -> bool {
@@ -1156,6 +1891,285 @@ mod tests {
             .blocks
             .iter()
             .all(|block| block.kind != NodeKind::Island));
+    }
+
+    #[test]
+    fn reconciler_insert_above_keeps_following_ids() {
+        let (before, snapshot) = reconcile_default("alpha\n\nbeta\n");
+        let alpha_id = before.blocks[0].id.clone();
+        let beta_id = before.blocks[1].id.clone();
+
+        let (after, _) =
+            reconcile_default_with_snapshot("intro\n\nalpha edited\n\nbeta\n", &snapshot);
+
+        assert!(after.blocks[0].id.starts_with("node:reconciled:"));
+        assert_ne!(after.blocks[0].id, alpha_id);
+        assert_eq!(after.blocks[1].id, alpha_id);
+        assert_ne!(after.blocks[1].span.end, before.blocks[0].span.end);
+        assert_eq!(after.blocks[2].id, beta_id);
+    }
+
+    #[test]
+    fn reconciler_insert_above_with_duplicates_no_misassign() {
+        let source = "## Notes\n\n---\n\n## Notes\n\n---\n";
+        let (before, snapshot) = reconcile_default(source);
+        let before_ids = before
+            .blocks
+            .iter()
+            .map(|block| block.id.clone())
+            .collect::<Vec<_>>();
+
+        let (after, _) =
+            reconcile_default_with_snapshot(&format!("## Notes\n\n---\n\n{source}"), &snapshot);
+
+        assert_eq!(after.blocks.len(), 6);
+        assert!(!before_ids.contains(&after.blocks[0].id));
+        assert!(!before_ids.contains(&after.blocks[1].id));
+        assert_eq!(after.blocks[2].id, before_ids[0]);
+        assert_eq!(after.blocks[3].id, before_ids[1]);
+        assert_eq!(after.blocks[4].id, before_ids[2]);
+        assert_eq!(after.blocks[5].id, before_ids[3]);
+    }
+
+    #[test]
+    fn reconciler_edit_inside_keeps_id_and_changes_hash() {
+        let (before, snapshot) = reconcile_default("alpha *cat* beta\n");
+        let block_id = before.blocks[0].id.clone();
+        let before_hash = snapshot_hash(&snapshot, &block_id);
+
+        let (after, next_snapshot) =
+            reconcile_default_with_snapshot("alpha *kitten* beta\n", &snapshot);
+        let after_hash = snapshot_hash(&next_snapshot, &block_id);
+
+        assert_eq!(after.blocks[0].id, block_id);
+        assert_ne!(after.blocks[0].span.end, before.blocks[0].span.end);
+        assert_ne!(after_hash, before_hash);
+    }
+
+    #[test]
+    fn reconciler_reorder_keeps_moved_block_id() {
+        let (before, snapshot) = reconcile_default("alpha\n\nbeta\n\ngamma\n");
+        let alpha_id = before.blocks[0].id.clone();
+        let beta_id = before.blocks[1].id.clone();
+        let gamma_id = before.blocks[2].id.clone();
+
+        let (after, _) = reconcile_default_with_snapshot("beta\n\nalpha\n\ngamma\n", &snapshot);
+
+        assert_eq!(after.blocks[0].id, beta_id);
+        assert_eq!(after.blocks[1].id, alpha_id);
+        assert_eq!(after.blocks[2].id, gamma_id);
+    }
+
+    #[test]
+    fn reconciler_snapshot_round_trips_through_bytes() {
+        let (_, snapshot) = reconcile_default("# Title\n\nalpha *beta*\n\n---\n");
+
+        let restored = ReconcilerSnapshot::from_bytes(&snapshot.to_bytes());
+
+        assert_eq!(restored, snapshot);
+    }
+
+    #[test]
+    fn reconciler_snapshot_bytes_preserve_shifted_block_ids() {
+        let source = "alpha\n\nbeta\n\ngamma\n";
+        let (before, snapshot) = reconcile_default(source);
+        let before_ids = before
+            .blocks
+            .iter()
+            .map(|block| block.id.clone())
+            .collect::<Vec<_>>();
+        let restored = ReconcilerSnapshot::from_bytes(&snapshot.to_bytes());
+
+        let (after, _) =
+            reconcile_default_with_snapshot("intro\n\nalpha\n\nbeta\n\ngamma\n", &restored);
+
+        assert_eq!(after.blocks.len(), 4);
+        assert!(after.blocks[0].id.starts_with("node:reconciled:"));
+        assert_eq!(after.blocks[1].id, before_ids[0]);
+        assert_eq!(after.blocks[2].id, before_ids[1]);
+        assert_eq!(after.blocks[3].id, before_ids[2]);
+    }
+
+    #[test]
+    fn reconciler_snapshot_from_bytes_falls_back_to_cold_start() {
+        let source = "alpha\n\nbeta\n";
+        let empty = ReconcilerSnapshot::from_bytes(&[]);
+        let garbage = ReconcilerSnapshot::from_bytes(b"not json");
+
+        assert_eq!(empty, ReconcilerSnapshot::default());
+        assert_eq!(garbage, ReconcilerSnapshot::default());
+
+        let (from_empty, _) = reconcile_default_with_snapshot(source, &empty);
+        let (from_garbage, _) = reconcile_default_with_snapshot(source, &garbage);
+
+        assert_legacy_ids(&from_empty.root);
+        assert_legacy_ids(&from_garbage.root);
+    }
+
+    #[test]
+    fn reconciler_replace_cross_kind_gets_fresh_id() {
+        let (before, snapshot) = reconcile_default("alpha\n");
+        let old_id = before.blocks[0].id.clone();
+
+        let (after, _) = reconcile_default_with_snapshot("## alpha\n", &snapshot);
+        let after_ids = collect_projected_ids(&after.root);
+
+        assert!(after.blocks[0].id.starts_with("node:reconciled:"));
+        assert!(!after_ids.contains(&old_id));
+    }
+
+    #[test]
+    fn reconciler_lane_flip_deliberate_remount() {
+        let source = "<div>wow</div>\n";
+        let escaped = MarkdownProjectOptions {
+            raw_html: RawHtmlMode::Escape,
+            ..Default::default()
+        };
+        let isolated = MarkdownProjectOptions {
+            raw_html: RawHtmlMode::Isolate,
+            ..Default::default()
+        };
+        let (before, snapshot) =
+            project_markdown_reconciled(source, &escaped, &ReconcilerSnapshot::default()).unwrap();
+        let (after, _) = project_markdown_reconciled(source, &isolated, &snapshot).unwrap();
+
+        assert_eq!(before.blocks[0].safety.lane, SafetyLane::Escaped);
+        assert_eq!(after.blocks[0].safety.lane, SafetyLane::Isolated);
+        assert_ne!(after.blocks[0].id, before.blocks[0].id);
+        assert_eq!(after.isolated_regions[0].block_id, after.blocks[0].id);
+    }
+
+    #[test]
+    fn reconciler_offset_decoupling_keeps_shifted_ids() {
+        let (before, snapshot) = reconcile_default("beta with *cat*\n");
+        let block_id = before.blocks[0].id.clone();
+        let emphasis_id = find_kind(&before.blocks[0], NodeKind::Emphasis)
+            .unwrap()
+            .id
+            .clone();
+        let emphasis_start = find_kind(&before.blocks[0], NodeKind::Emphasis)
+            .unwrap()
+            .span
+            .start;
+
+        let (after, _) = reconcile_default_with_snapshot("intro\n\nbeta with *cat*\n", &snapshot);
+        let after_emphasis = find_kind(&after.blocks[1], NodeKind::Emphasis).unwrap();
+
+        assert_eq!(after.blocks[1].id, block_id);
+        assert_ne!(after.blocks[1].span.start, before.blocks[0].span.start);
+        assert_eq!(after_emphasis.id, emphasis_id);
+        assert_ne!(after_emphasis.span.start, emphasis_start);
+    }
+
+    #[test]
+    fn reconciler_active_html_tag_swap_remounts() {
+        let (before, snapshot) = reconcile_default("<video></video>\n");
+        let (after, _) = reconcile_default_with_snapshot("<iframe></iframe>\n", &snapshot);
+        let before_html = find_kind(&before.blocks[0], NodeKind::Html).unwrap();
+        let after_html = find_kind(&after.blocks[0], NodeKind::Html).unwrap();
+
+        assert_eq!(before_html.attrs.isolation_tag.as_deref(), Some("video"));
+        assert_eq!(after_html.attrs.isolation_tag.as_deref(), Some("iframe"));
+        assert_ne!(after_html.id, before_html.id);
+    }
+
+    #[test]
+    fn reconciler_island_component_swap_remounts() {
+        let options = MarkdownProjectOptions {
+            islands: true,
+            ..Default::default()
+        };
+        let (before, snapshot) =
+            project_markdown_reconciled("<Frog />\n", &options, &ReconcilerSnapshot::default())
+                .unwrap();
+        let (after, _) = project_markdown_reconciled("<Chart />\n", &options, &snapshot).unwrap();
+
+        assert_eq!(before.blocks[0].attrs.island_tag.as_deref(), Some("Frog"));
+        assert_eq!(after.blocks[0].attrs.island_tag.as_deref(), Some("Chart"));
+        // A different component at the same slot mints a fresh id instead of
+        // aliasing onto Frog's id.
+        assert_ne!(after.blocks[0].id, before.blocks[0].id);
+        assert!(after.blocks[0].id.starts_with("node:reconciled:"));
+    }
+
+    #[test]
+    fn stateless_entry_points_keep_legacy_offset_ids() {
+        let source = "# Title\n\nalpha <i>wow</i> $x$\n\n---\n\n<iframe src=\"https://example.com\"></iframe>\n";
+        let options = MarkdownProjectOptions::default();
+        let mdast = markdown::to_mdast(source, &parse_options(options.islands)).unwrap();
+        let from_markdown = project_markdown(source).unwrap();
+        let from_options = project_markdown_with_options(source, &options).unwrap();
+        let from_mdast = project_from_mdast(&mdast, source, &options);
+
+        assert_eq!(from_markdown, from_options);
+        assert_eq!(from_markdown, from_mdast);
+        assert_legacy_ids(&from_markdown.root);
+        assert_eq!(
+            from_markdown.anchors[0].block_id,
+            from_markdown.blocks[0].id
+        );
+        assert_eq!(
+            from_markdown.isolated_regions[0].id,
+            format!("isolation:{}", from_markdown.isolated_regions[0].block_id)
+        );
+        assert_eq!(
+            render_plan_json(&from_markdown, source, "rust-wasm"),
+            render_plan_json(&from_mdast, source, "rust-wasm")
+        );
+
+        let island_options = MarkdownProjectOptions {
+            islands: true,
+            ..Default::default()
+        };
+        let island =
+            project_markdown_with_options("<Frog size={96} />\n", &island_options).unwrap();
+        assert_legacy_ids(&island.root);
+        assert_eq!(island.blocks[0].attrs.island_tag.as_deref(), Some("Frog"));
+    }
+
+    fn reconcile_default(source: &str) -> (MarkdownPlan, ReconcilerSnapshot) {
+        reconcile_default_with_snapshot(source, &ReconcilerSnapshot::default())
+    }
+
+    fn reconcile_default_with_snapshot(
+        source: &str,
+        snapshot: &ReconcilerSnapshot,
+    ) -> (MarkdownPlan, ReconcilerSnapshot) {
+        project_markdown_reconciled(source, &MarkdownProjectOptions::default(), snapshot).unwrap()
+    }
+
+    fn snapshot_hash(snapshot: &ReconcilerSnapshot, id: &str) -> u64 {
+        find_snapshot(snapshot.root.as_ref().unwrap(), id)
+            .map(|node| node.content_hash)
+            .unwrap()
+    }
+
+    fn find_snapshot<'a>(node: &'a SnapshotNode, id: &str) -> Option<&'a SnapshotNode> {
+        if node.id == id {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| find_snapshot(child, id))
+    }
+
+    fn collect_projected_ids(node: &ProjectedNode) -> Vec<String> {
+        let mut ids = vec![node.id.clone()];
+        for child in &node.children {
+            ids.extend(collect_projected_ids(child));
+        }
+        ids
+    }
+
+    fn assert_legacy_ids(node: &ProjectedNode) {
+        if node.kind == NodeKind::Root {
+            assert_eq!(node.id, "root");
+        } else {
+            assert_eq!(node.id, node_id(node.kind, &node.span));
+        }
+        for child in &node.children {
+            assert_legacy_ids(child);
+        }
     }
 
     fn contains_kind(node: &ProjectedNode, kind: NodeKind) -> bool {

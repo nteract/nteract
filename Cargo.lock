@@ -4899,6 +4899,8 @@ name = "nteract-markdown-engine"
 version = "0.2.2"
 dependencies = [
  "markdown",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
