@@ -4,7 +4,7 @@
   "globalName": "NteractElements",
   "shape": "package",
   "entry": ".design-sync/synthpkg/entry.tsx",
-  "srcDir": "../../src/components/ui",
+  "srcDir": "../../src/components",
   "cssEntry": "compiled.css",
   "buildCmd": "node .design-sync/synthpkg/build.mjs",
   "readmeHeader": ".design-sync/conventions.md",
@@ -18,7 +18,9 @@
     "Sheet": { "cardMode": "single", "viewport": "520x420" },
     "Accordion": { "cardMode": "column" },
     "Collapsible": { "cardMode": "column" },
-    "Tabs": { "cardMode": "column" }
+    "Tabs": { "cardMode": "column" },
+    "CellInsertionRibbon": { "cardMode": "column" },
+    "CodeCellCurrentLine": { "cardMode": "column" }
   },
   "componentSrcMap": {
     "AccordionContent": null,

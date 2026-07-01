@@ -8,6 +8,7 @@
 @import "../src/styles/notebook-tokens.css";
 
 @source "../src/components/ui";
+@source "../src/components/cell";
 @source "./previews";
 
 /* Safelist the semantic token vocabulary the conventions header documents, so a

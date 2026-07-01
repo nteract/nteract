@@ -19,6 +19,26 @@ something non-obvious comes up.
   design and will rework it later in Claude Design. Desktop + other surfaces are the good
   reference.
 
+## Cell primitives (group: cell)
+
+- Added 2026-07-01: 7 notebook cell primitives from `src/components/cell/*` render as the
+  `cell` group. Curated list lives in `synthpkg/build.mjs` (`groups[].dir === 'cell'`):
+  CellContainer, CellInsertionRibbon, CellPresenceIndicators, CellSkeleton,
+  CodeCellCurrentLine, CompactExecutionButton, ExecutionCount. All prop-driven (no
+  providers) — composition patterns come from `apps/elements/components/cell-anatomy-example.tsx`.
+- **Deferred** (need editor/output/notebook-doc/providers, would floor-card): EditableMarkdownCell,
+  OutputArea, ReadOnlyNotebook, ReadOnlyNotebookCell. Output renderers (`src/components/outputs/*`)
+  are also not synced yet — a future pass; several need a media/widget provider + fixtures.
+- `cfg.srcDir` is `../../src/components` (broadened from `.../ui`) so grouping resolves
+  `cell/` → group `cell` and `ui/` → `general`. Adding a new cell primitive: append it to the
+  curated list in build.mjs (NOT glob-all — that pulls CodeMirror/plotly/widget deps into the
+  bundle through the heavy cells) and add `@source` coverage stays via css-entry.css's
+  `../src/components/cell`.
+- Preview authoring gotchas: the anatomy example uses fumadocs `fd-*` classes — do NOT copy
+  those into previews (not in our compiled CSS); use DS token classes. Some cell states are
+  quiet-at-rest (CodeCellCurrentLine focused-idle, CompactExecutionButton idle) — pass
+  `isFocused`/`isCellFocused` to reveal the affordance, or drop the state.
+
 ## Tailwind v4 — compiled CSS is required for cssEntry
 
 - The components style via Tailwind v4 utilities (`bg-primary`, `text-muted-foreground`,
