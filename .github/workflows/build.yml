@@ -142,7 +142,6 @@ jobs:
               - "apps/notebook/src/wasm/**"
               - "crates/runtimed-wasm/**"
               - "crates/sift-wasm/**"
-              - "crates/runt-mcp/assets/plugins/**"
               - "packages/sift/**"
               - "Cargo.toml"
               - "Cargo.lock"
@@ -464,7 +463,6 @@ jobs:
             apps/notebook/src/wasm/runtimed-wasm/
             crates/sift-wasm/pkg/
             packages/sift/public/wasm/
-            crates/runt-mcp/assets/plugins/
             apps/notebook/src/renderer-plugins/
             target/xtask/*.fingerprint
 

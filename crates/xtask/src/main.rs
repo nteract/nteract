@@ -215,8 +215,7 @@ Other:
                              renderer plugin so it re-embeds fresh wasm-bindgen glue.
   wasm runtimed              Rebuild only runtimed-wasm
   wasm sift                  Rebuild only sift-wasm (bindings for @nteract/sift);
-                             also copies the binary to crates/runt-mcp/assets/plugins/
-                             and rebuilds the sift renderer plugin.
+                             also rebuilds the sift renderer plugin.
   wasm --skip-renderer-plugins
                              Skip the chained renderer-plugins rebuild (escape hatch
                              for intentionally testing drift between the two).
@@ -225,7 +224,7 @@ Other:
   artifacts verify [scopes]  Strictly verify generated artifacts; exits non-zero
                              when anything is missing, stale, or lacks fingerprints.
                              Scopes: runtime, sift, renderer, mcp-widget, all.
-  renderer-plugins           Rebuild pre-built renderer plugins (notebook + MCP)
+  renderer-plugins           Rebuild pre-built renderer plugins
   renderer-plugins --only sift
                              Rebuild one renderer plugin target. Valid targets:
                              isolated-renderer, core, markdown, plotly, bokeh,
@@ -3425,7 +3424,6 @@ fn normalized_repo_path(path: &Path) -> String {
 fn is_known_generated_text_bundle(path: &Path) -> bool {
     let path = normalized_repo_path(path);
     path.starts_with("apps/notebook/src/renderer-plugins/")
-        || path.starts_with("crates/runt-mcp/assets/plugins/")
         || path.starts_with("apps/elements/public/wasm/")
 }
 
@@ -5429,9 +5427,6 @@ mod tests {
         )));
         assert!(!should_scan_for_raw_control_bytes(Path::new(
             "apps/notebook/src/renderer-plugins/plotly.js"
-        )));
-        assert!(!should_scan_for_raw_control_bytes(Path::new(
-            "crates/runt-mcp/assets/plugins/plotly.js"
         )));
     }
 

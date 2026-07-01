@@ -106,7 +106,6 @@ jobs:
             apps/notebook/src/wasm/runtimed-wasm/
             crates/sift-wasm/pkg/
             packages/sift/public/wasm/
-            crates/runt-mcp/assets/plugins/
             apps/notebook/src/renderer-plugins/
             target/xtask/*.fingerprint
 
