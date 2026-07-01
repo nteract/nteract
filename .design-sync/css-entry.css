@@ -6,9 +6,14 @@
    source(none) keeps the output deterministic — only the @source dirs below. */
 @import "tailwindcss" source(none);
 @import "../src/styles/notebook-tokens.css";
+/* ANSI 16-color palette + .ansi-* classes the output renderers apply. The app
+   ships these via the isolated renderer; the DS closure needs them too or every
+   AnsiOutput/AnsiStreamOutput renders colorless. */
+@import "../src/styles/ansi.css";
 
 @source "../src/components/ui";
 @source "../src/components/cell";
+@source "../src/components/outputs";
 @source "./previews";
 
 /* Safelist the semantic token vocabulary the conventions header documents, so a
