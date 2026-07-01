@@ -65,10 +65,9 @@ pub enum Request {
     ActiveEnvPaths,
 
     /// Get rich daemon metadata (pid, version, start time, blob server
-    /// port, dev-mode worktree). Supersedes reading the on-disk
-    /// `daemon.json` sidecar, which can go stale when the daemon crashes
-    /// or is forcibly killed. Clients should prefer this request and
-    /// fall back to `Ping` if they only need the version.
+    /// port, dev-mode worktree). This is the canonical discovery path for
+    /// clients that need more than liveness; use `Ping` if only the daemon
+    /// version is needed.
     GetDaemonInfo,
 
     /// Read a terminal execution result by durable execution ID.
@@ -112,15 +111,12 @@ pub enum Response {
         daemon_version: Option<String>,
     },
 
-    /// Rich daemon metadata — replaces the `daemon.json` sidecar file.
+    /// Rich daemon metadata returned from `Request::GetDaemonInfo`.
     ///
-    /// Returned from `Request::GetDaemonInfo`. Carries everything the
-    /// pre-socket `get_running_daemon_info()` used to read out of the
-    /// file: pid, version, start time, blob server port, and the dev-mode
-    /// worktree fields. Fields are `Option` for backward compatibility —
-    /// older daemons that don't know this request will respond with
-    /// `Response::Error { message: "Unknown request" }` (the client should
-    /// treat that as "metadata unavailable").
+    /// Carries pid, version, start time, blob server port, and the dev-mode
+    /// worktree fields. Older daemons that don't know this request respond
+    /// with `Response::Error { message: "Unknown request" }`; clients should
+    /// treat that as "metadata unavailable".
     DaemonInfo {
         /// Numeric protocol version (matches `PROTOCOL_VERSION`).
         protocol_version: u32,

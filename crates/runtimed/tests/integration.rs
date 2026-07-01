@@ -697,13 +697,12 @@ async fn test_blob_server_health() {
     let client = PoolClient::new(socket_path);
     assert!(wait_for_daemon(&client).await);
 
-    // Read daemon info to find blob port
-    let info_path = temp_dir.path().join("daemon.json");
-    let info_json = tokio::fs::read_to_string(&info_path)
+    // Query daemon info over the socket to find the blob port.
+    let info = client
+        .daemon_info()
         .await
-        .expect("daemon.json should exist");
-    let info: serde_json::Value = serde_json::from_str(&info_json).unwrap();
-    let blob_port = info["blob_port"].as_u64().expect("blob_port should be set");
+        .expect("daemon info should be available");
+    let blob_port = info.blob_port.expect("blob_port should be set");
 
     // Hit the health endpoint
     let resp = reqwest::get(format!("http://127.0.0.1:{}/health", blob_port))

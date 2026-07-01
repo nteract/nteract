@@ -30,23 +30,13 @@ pub fn get_socket_path() -> PathBuf {
     }
 }
 
-/// Resolve blob server URL and blob store path from the daemon directory (sync).
+/// Resolve the blob store path from the daemon directory (sync).
 ///
-/// Returns (blob_base_url, blob_store_path).
+/// Returns `(None, blob_store_path)`. Blob server URLs require live daemon
+/// metadata and are only available through [`get_blob_paths_async`].
 pub fn get_blob_paths_sync(socket_path: &Path) -> (Option<String>, Option<PathBuf>) {
     let Some(parent) = socket_path.parent() else {
         return (None, None);
-    };
-
-    let daemon_json = parent.join("daemon.json");
-    let base_url = if daemon_json.exists() {
-        std::fs::read_to_string(&daemon_json)
-            .ok()
-            .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
-            .and_then(|info| info.get("blob_port").and_then(|p| p.as_u64()))
-            .map(|port| format!("http://localhost:{}", port))
-    } else {
-        None
     };
 
     let store_path = parent.join("blobs");
@@ -56,10 +46,11 @@ pub fn get_blob_paths_sync(socket_path: &Path) -> (Option<String>, Option<PathBu
         None
     };
 
-    (base_url, store_path)
+    (None, store_path)
 }
 
-/// Resolve blob server URL and blob store path from the daemon directory (async).
+/// Resolve blob server URL from live daemon metadata plus blob store path from
+/// the daemon directory (async).
 ///
 /// Returns (blob_base_url, blob_store_path).
 pub async fn get_blob_paths_async(socket_path: &Path) -> (Option<String>, Option<PathBuf>) {
@@ -67,17 +58,10 @@ pub async fn get_blob_paths_async(socket_path: &Path) -> (Option<String>, Option
         return (None, None);
     };
 
-    let daemon_json = parent.join("daemon.json");
-    let base_url = if daemon_json.exists() {
-        tokio::fs::read_to_string(&daemon_json)
-            .await
-            .ok()
-            .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
-            .and_then(|info| info.get("blob_port").and_then(|p| p.as_u64()))
-            .map(|port| format!("http://localhost:{}", port))
-    } else {
-        None
-    };
+    let base_url = crate::singleton::query_daemon_info(socket_path.to_path_buf())
+        .await
+        .and_then(|info| info.blob_port)
+        .map(|port| format!("http://localhost:{}", port));
 
     let store_path = parent.join("blobs");
     let store_path = if store_path.exists() {
@@ -158,55 +142,39 @@ mod tests {
 
     #[test]
     fn blob_paths_sync_returns_none_for_orphan_socket_path() {
-        // socket_path with no parent (e.g. "/" or "") → both None.
+        // socket_path with no parent (e.g. "/" or "") cannot resolve a store.
         let (url, store) = get_blob_paths_sync(Path::new("/"));
-        assert!(url.is_none(), "no parent → no daemon.json → no url");
+        assert!(url.is_none(), "sync path never opens a daemon socket");
         // "/" exists, /blobs may or may not — assert nothing about store.
         let _ = store;
     }
 
     #[test]
-    fn blob_paths_sync_reads_blob_port_from_daemon_json() {
+    fn blob_paths_sync_returns_store_path_without_blob_url() {
         let tmp = TempDir::new().unwrap();
-        // socket_path's parent dir is what we read from.
         let sock = tmp.path().join("runtimed.sock");
-        fs::write(
-            tmp.path().join("daemon.json"),
-            r#"{"blob_port": 49152, "version": "2.2.0"}"#,
-        )
-        .unwrap();
         fs::create_dir(tmp.path().join("blobs")).unwrap();
 
         let (url, store) = get_blob_paths_sync(&sock);
-        assert_eq!(url.as_deref(), Some("http://localhost:49152"));
+        assert_eq!(url, None);
         assert_eq!(store, Some(tmp.path().join("blobs")));
     }
 
     #[test]
-    fn blob_paths_sync_returns_url_none_when_daemon_json_lacks_blob_port() {
+    fn blob_paths_sync_returns_store_path_when_no_daemon_info_exists() {
         let tmp = TempDir::new().unwrap();
         let sock = tmp.path().join("runtimed.sock");
-        fs::write(tmp.path().join("daemon.json"), r#"{"version":"2.2.0"}"#).unwrap();
+        fs::create_dir(tmp.path().join("blobs")).unwrap();
 
-        let (url, _) = get_blob_paths_sync(&sock);
-        assert!(url.is_none(), "missing blob_port → no url");
-    }
-
-    #[test]
-    fn blob_paths_sync_returns_url_none_when_daemon_json_is_invalid_json() {
-        let tmp = TempDir::new().unwrap();
-        let sock = tmp.path().join("runtimed.sock");
-        fs::write(tmp.path().join("daemon.json"), "not json {{").unwrap();
-
-        let (url, _) = get_blob_paths_sync(&sock);
-        assert!(url.is_none(), "invalid daemon.json → no url");
+        let (url, store) = get_blob_paths_sync(&sock);
+        assert!(url.is_none(), "sync path never opens a daemon socket");
+        assert_eq!(store, Some(tmp.path().join("blobs")));
     }
 
     #[test]
     fn blob_paths_sync_returns_store_none_when_blobs_dir_missing() {
         let tmp = TempDir::new().unwrap();
         let sock = tmp.path().join("runtimed.sock");
-        fs::write(tmp.path().join("daemon.json"), r#"{"blob_port":1}"#).unwrap();
         // no blobs/ dir created
 
         let (_, store) = get_blob_paths_sync(&sock);
@@ -216,16 +184,15 @@ mod tests {
     // ── get_blob_paths_async ──────────────────────────────────────────
 
     #[tokio::test]
-    async fn blob_paths_async_matches_sync_for_happy_path() {
+    async fn blob_paths_async_returns_store_without_live_daemon() {
         let tmp = TempDir::new().unwrap();
         let sock = tmp.path().join("runtimed.sock");
-        fs::write(tmp.path().join("daemon.json"), r#"{"blob_port": 49200}"#).unwrap();
         fs::create_dir(tmp.path().join("blobs")).unwrap();
 
         let (sync_url, sync_store) = get_blob_paths_sync(&sock);
         let (async_url, async_store) = get_blob_paths_async(&sock).await;
         assert_eq!(sync_url, async_url);
         assert_eq!(sync_store, async_store);
-        assert_eq!(async_url.as_deref(), Some("http://localhost:49200"));
+        assert_eq!(async_url, None);
     }
 }

@@ -73,8 +73,7 @@ pub struct PongInfo {
     pub daemon_version: Option<String>,
 }
 
-/// Rich daemon metadata. Replaces the `daemon.json` sidecar file —
-/// query this from the daemon directly via `PoolClient::daemon_info()`.
+/// Rich daemon metadata queried from the daemon via `PoolClient::daemon_info()`.
 #[derive(Debug, Clone)]
 pub struct DaemonInfo {
     /// Numeric protocol version.
@@ -204,12 +203,10 @@ impl PoolClient {
 
     /// Query rich daemon metadata (pid, blob port, worktree info, etc.).
     ///
-    /// This is the socket-based replacement for reading `daemon.json`.
+    /// This is the socket-based daemon metadata path.
     /// Returns `Err` with `DaemonError("Unknown request")` on daemons too
-    /// old to know this request — callers can either treat that as
-    /// "metadata unavailable" or fall back to the file (we don't bake in
-    /// a file fallback here because the whole point is to stop relying
-    /// on the file).
+    /// old to know this request; callers should treat that as "metadata
+    /// unavailable".
     pub async fn daemon_info(&self) -> Result<DaemonInfo, ClientError> {
         let response = self.send_request(Request::GetDaemonInfo).await?;
         match response {
