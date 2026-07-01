@@ -121,6 +121,9 @@ pub enum ServiceError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("{0}")]
+    SystemdUnavailable(String),
+
     #[error("Service already installed")]
     AlreadyInstalled,
 
@@ -185,6 +188,49 @@ fn systemctl_command() -> Command {
     let mut command = Command::new(systemctl_binary());
     strip_appimage_host_env(&mut command);
     command
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_linux_user_systemd_available() -> ServiceResult<()> {
+    let output = match systemctl_command()
+        .args(["--user", "show-environment"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            let detail = if error.kind() == std::io::ErrorKind::NotFound {
+                "systemctl was not found on this host".to_string()
+            } else {
+                format!("could not run systemctl --user show-environment: {error}")
+            };
+            return Err(ServiceError::SystemdUnavailable(
+                linux_user_systemd_unavailable_message(&detail),
+            ));
+        }
+    };
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .unwrap_or("systemctl --user did not report details");
+    Err(ServiceError::SystemdUnavailable(
+        linux_user_systemd_unavailable_message(detail),
+    ))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_user_systemd_unavailable_message(detail: &str) -> String {
+    format!(
+        "Linux user systemd is not available in this session: {detail}\n\
+         The daemon service cannot be installed or started automatically here.\n\
+         Use a normal login session with XDG_RUNTIME_DIR/DBus available, or ask an admin to enable lingering with `loginctl enable-linger $USER` if the daemon should stay available after logout.\n\
+         For headless workstation sessions, use foreground mode: `{} workstation run`.",
+        runt_workspace::cli_command_name()
+    )
 }
 
 impl Default for ServiceManager {
@@ -714,6 +760,8 @@ impl ServiceManager {
     // Linux-specific implementations
     #[cfg(target_os = "linux")]
     fn create_linux_systemd(&self) -> ServiceResult<()> {
+        ensure_linux_user_systemd_available()?;
+
         // Get home directory at service generation time - systemd doesn't expand ~
         let home = dirs::home_dir().ok_or_else(|| {
             ServiceError::InstallFailed(
@@ -768,6 +816,8 @@ WantedBy=default.target
 
     #[cfg(target_os = "linux")]
     fn start_linux(&self) -> ServiceResult<()> {
+        ensure_linux_user_systemd_available()?;
+
         let output = systemctl_command()
             .args(["--user", "start"])
             .arg(systemd_service_unit_name())
@@ -784,6 +834,8 @@ WantedBy=default.target
 
     #[cfg(target_os = "linux")]
     fn stop_linux(&self) -> ServiceResult<()> {
+        ensure_linux_user_systemd_available()?;
+
         let output = systemctl_command()
             .args(["--user", "stop"])
             .arg(systemd_service_unit_name())
@@ -1206,5 +1258,22 @@ mod tests {
                 .any(|(key, value)| *key == std::ffi::OsStr::new(var) && value.is_none());
             assert!(removed, "{var} should be removed for host systemctl");
         }
+    }
+
+    #[test]
+    fn linux_user_systemd_unavailable_message_mentions_foreground_workstation() {
+        let message =
+            linux_user_systemd_unavailable_message("systemctl was not found on this host");
+        let fallback = format!(
+            "For headless workstation sessions, use foreground mode: `{} workstation run`.",
+            runt_workspace::cli_command_name()
+        );
+
+        assert!(message.contains(
+            "Linux user systemd is not available in this session: systemctl was not found on this host"
+        ));
+        assert!(message
+            .contains("The daemon service cannot be installed or started automatically here."));
+        assert!(message.contains(&fallback));
     }
 }

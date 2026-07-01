@@ -936,10 +936,20 @@ fn current_runt_path_for_service() -> Result<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn ensure_user_systemd_available() -> Result<()> {
-    let output = systemctl_command()
+    let output = match systemctl_command()
         .args(["--user", "show-environment"])
         .output()
-        .context("run systemctl --user show-environment")?;
+    {
+        Ok(output) => output,
+        Err(error) => {
+            let detail = if error.kind() == std::io::ErrorKind::NotFound {
+                "systemctl was not found on this host".to_string()
+            } else {
+                format!("could not run systemctl --user show-environment: {error}")
+            };
+            bail!("{}", user_systemd_unavailable_message(&detail));
+        }
+    };
     if output.status.success() {
         return Ok(());
     }
@@ -949,12 +959,17 @@ fn ensure_user_systemd_available() -> Result<()> {
         .into_iter()
         .find(|value| !value.is_empty())
         .unwrap_or("systemctl --user did not report details");
-    bail!(
+    bail!("{}", user_systemd_unavailable_message(detail));
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn user_systemd_unavailable_message(detail: &str) -> String {
+    format!(
         "Linux user systemd is not available in this session: {detail}\n\
          Use a normal login session with XDG_RUNTIME_DIR/DBus available, or ask an admin to enable lingering with `loginctl enable-linger $USER` if this workstation should stay available after logout.\n\
          Fallback: run `{} workstation run` inside tmux.",
         runt_workspace::cli_command_name()
-    );
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -1418,6 +1433,20 @@ mod tests {
             workstation_service_start_action_for_active_state("unknown"),
             "start"
         );
+    }
+
+    #[test]
+    fn user_systemd_unavailable_message_includes_tmux_fallback() {
+        let message = user_systemd_unavailable_message("systemctl was not found on this host");
+        let fallback = format!(
+            "Fallback: run `{} workstation run` inside tmux.",
+            runt_workspace::cli_command_name()
+        );
+
+        assert!(message.contains(
+            "Linux user systemd is not available in this session: systemctl was not found on this host"
+        ));
+        assert!(message.contains(&fallback));
     }
 
     #[test]
