@@ -10,7 +10,9 @@ const peers = [
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-      <span className="text-xs text-muted-foreground" style={{ width: 88 }}>{label}</span>
+      <span className="text-xs text-muted-foreground" style={{ width: 88 }}>
+        {label}
+      </span>
       {children}
     </div>
   );
@@ -19,9 +21,15 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 export function Variants() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Row label="Stack"><CellPresenceIndicators peers={peers} variant="stack" /></Row>
-      <Row label="Inline"><CellPresenceIndicators peers={peers} variant="inline" /></Row>
-      <Row label="Overflow"><CellPresenceIndicators peers={peers} variant="stack" maxVisible={2} /></Row>
+      <Row label="Stack">
+        <CellPresenceIndicators peers={peers} variant="stack" />
+      </Row>
+      <Row label="Inline">
+        <CellPresenceIndicators peers={peers} variant="inline" />
+      </Row>
+      <Row label="Overflow">
+        <CellPresenceIndicators peers={peers} variant="stack" maxVisible={2} />
+      </Row>
     </div>
   );
 }

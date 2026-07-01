@@ -12,10 +12,7 @@ import { Play, Plus, Search, Settings } from "lucide-react";
 
 export function CommandPalette() {
   return (
-    <Command
-      className="rounded-lg border shadow-md"
-      style={{ maxWidth: 380 }}
-    >
+    <Command className="rounded-lg border shadow-md" style={{ maxWidth: 380 }}>
       <CommandInput placeholder="Search commands…" />
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>

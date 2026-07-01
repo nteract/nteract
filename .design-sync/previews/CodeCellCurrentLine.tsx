@@ -1,10 +1,20 @@
 import { CodeCellCurrentLine } from "nteract-elements";
 
-function Cell({ label, detail, children }: { label: string; detail: string; children: React.ReactNode }) {
+function Cell({
+  label,
+  detail,
+  children,
+}: {
+  label: string;
+  detail: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="rounded-md border border-border bg-card" style={{ padding: 12, width: 420 }}>
       <div className="text-sm font-medium">{label}</div>
-      <div className="text-xs text-muted-foreground" style={{ marginTop: 2 }}>{detail}</div>
+      <div className="text-xs text-muted-foreground" style={{ marginTop: 2 }}>
+        {detail}
+      </div>
       <div style={{ marginTop: 12 }}>{children}</div>
     </div>
   );

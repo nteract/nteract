@@ -31,7 +31,10 @@ export function Disabled() {
   return (
     <div className="flex items-center gap-2">
       <Checkbox id="gpu-runtime" disabled />
-      <Label htmlFor="gpu-runtime" className="peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+      <Label
+        htmlFor="gpu-runtime"
+        className="peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+      >
         GPU runtime (unavailable)
       </Label>
     </div>

@@ -30,7 +30,12 @@ export function Markdown() {
 export function DocumentTail() {
   return (
     <Frame label="Document tail">
-      <CellInsertionRibbon activeType="code" terminal forceActionsVisible onInsert={() => undefined} />
+      <CellInsertionRibbon
+        activeType="code"
+        terminal
+        forceActionsVisible
+        onInsert={() => undefined}
+      />
     </Frame>
   );
 }

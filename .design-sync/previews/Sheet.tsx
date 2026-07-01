@@ -15,9 +15,7 @@ export function NotebookSettingsSheet() {
       <SheetContent side="right" className="sm:max-w-sm">
         <SheetHeader>
           <SheetTitle>Notebook settings</SheetTitle>
-          <SheetDescription>
-            Applies to this notebook document only.
-          </SheetDescription>
+          <SheetDescription>Applies to this notebook document only.</SheetDescription>
         </SheetHeader>
         <div className="flex flex-col gap-4 px-4">
           <div className="grid gap-1.5">

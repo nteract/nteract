@@ -16,8 +16,8 @@ export function ConfirmRestart() {
         <DialogHeader>
           <DialogTitle>Restart kernel?</DialogTitle>
           <DialogDescription>
-            This clears every variable held in memory. Outputs already written
-            to the notebook are kept.
+            This clears every variable held in memory. Outputs already written to the notebook are
+            kept.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

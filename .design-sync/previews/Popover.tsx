@@ -1,11 +1,4 @@
-import {
-  Popover,
-  PopoverTrigger,
-  PopoverContent,
-  Button,
-  Label,
-  Input,
-} from "nteract-elements";
+import { Popover, PopoverTrigger, PopoverContent, Button, Label, Input } from "nteract-elements";
 import { Settings2 } from "lucide-react";
 
 export function CellSettingsPopover() {
@@ -22,9 +15,7 @@ export function CellSettingsPopover() {
           <div className="grid gap-3">
             <div className="space-y-1">
               <h4 className="font-medium leading-none">Cell settings</h4>
-              <p className="text-sm text-muted-foreground">
-                Execution behavior for this cell.
-              </p>
+              <p className="text-sm text-muted-foreground">Execution behavior for this cell.</p>
             </div>
             <div className="grid grid-cols-3 items-center gap-2">
               <Label htmlFor="timeout" className="text-sm">

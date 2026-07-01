@@ -36,9 +36,7 @@ export function StackTraceDetails() {
   return (
     <Collapsible defaultOpen style={{ width: 380 }}>
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-destructive">
-          KeyError: &apos;user_id&apos;
-        </span>
+        <span className="text-sm font-medium text-destructive">KeyError: &apos;user_id&apos;</span>
         <CollapsibleTrigger asChild>
           <button
             type="button"
@@ -50,7 +48,7 @@ export function StackTraceDetails() {
       </div>
       <CollapsibleContent>
         <pre className="mt-2 overflow-x-auto rounded bg-muted p-2 text-xs text-muted-foreground">
-          {"Cell In[12], line 4\n      2 df = pd.DataFrame(records)\n----> 4 df[\"user_id\"]"}
+          {'Cell In[12], line 4\n      2 df = pd.DataFrame(records)\n----> 4 df["user_id"]'}
         </pre>
       </CollapsibleContent>
     </Collapsible>

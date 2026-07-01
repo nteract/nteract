@@ -6,8 +6,8 @@ export function NotebookFaq() {
       <AccordionItem value="item-1">
         <AccordionTrigger>How are outputs stored?</AccordionTrigger>
         <AccordionContent>
-          Outputs live in the Automerge document alongside cell source, so every peer sees the
-          same execution results without a separate sync channel.
+          Outputs live in the Automerge document alongside cell source, so every peer sees the same
+          execution results without a separate sync channel.
         </AccordionContent>
       </AccordionItem>
       <AccordionItem value="item-2">
