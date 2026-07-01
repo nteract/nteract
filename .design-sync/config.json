@@ -20,9 +20,17 @@
     "Collapsible": { "cardMode": "column" },
     "Tabs": { "cardMode": "column" },
     "CellInsertionRibbon": { "cardMode": "column" },
-    "CodeCellCurrentLine": { "cardMode": "column" }
+    "CodeCellCurrentLine": { "cardMode": "column" },
+    "AnsiOutput": { "cardMode": "column" },
+    "AnsiStreamOutput": { "cardMode": "column" },
+    "AnsiErrorOutput": { "cardMode": "column" },
+    "JsonOutput": { "cardMode": "column" },
+    "TracebackOutput": { "cardMode": "column" }
   },
   "componentSrcMap": {
+    "AnsiOutput": "../../src/components/outputs/ansi-output.tsx",
+    "AnsiStreamOutput": "../../src/components/outputs/ansi-output.tsx",
+    "AnsiErrorOutput": "../../src/components/outputs/ansi-output.tsx",
     "AccordionContent": null,
     "AccordionItem": null,
     "AccordionTrigger": null,

@@ -43,6 +43,20 @@ const groups = [
       "ExecutionCount",
     ],
   },
+  {
+    // Owned output renderers — we control the React (not mime→passthrough).
+    // html-output is EXCLUDED: it throws unless inside a sandboxed iframe, so it
+    // can't render in a static card. Skipped by owner: plotly, vega, image, pdf,
+    // audio, video, geojson (mime passthroughs). markdown/traceback pull
+    // @codemirror/lang-* + @lezer for static highlighting — synchronous, bundles fine.
+    // math-output is DEFERRED: it does `import "katex/dist/katex.min.css"`, and the
+    // converter's bundle has no .ttf loader for the fonts katex's CSS references
+    // (bundle.mjs loads .woff/.woff2 only). Fixing it means either a declared
+    // .ttf-dataurl bundle override or shipping katex CSS via css-entry — a small
+    // follow-up, not a fork of the bundle contract here.
+    dir: "outputs",
+    mods: ["ansi-output", "json-output", "traceback-output"],
+  },
 ];
 
 // 1. barrel entry (the bundle's import graph = exactly these modules)
@@ -98,8 +112,8 @@ writeFileSync(
       include: [
         "../../src/components/ui/**/*.tsx",
         ...groups
-          .find((g) => g.dir === "cell")
-          .mods.map((m) => `../../src/components/cell/${m}.tsx`),
+          .filter((g) => g.dir !== "ui")
+          .flatMap((g) => g.mods.map((m) => `../../src/components/${g.dir}/${m}.tsx`)),
       ],
       exclude: ["../../src/components/**/*.{test,spec,stories}.tsx"],
     },

@@ -29,23 +29,44 @@ something non-obvious comes up.
 - **Deferred** (need editor/output/notebook-doc/providers, would floor-card): EditableMarkdownCell,
   OutputArea, ReadOnlyNotebook, ReadOnlyNotebookCell.
 
-## Output renderers — future pass (separate session)
+## Output renderers (group: outputs)
 
-`src/components/outputs/*` (plus `packages/sift`) are not synced yet. Direction from the owner:
-sync only the renderers **we own the React for** and can control; skip the ones that are just
-a mime-type → third-party render passthrough.
+Owner direction: sync only the renderers **we own the React for**; skip mime → third-party
+passthroughs. Curated list in `synthpkg/build.mjs` (`groups[].dir === 'outputs'`).
 
-- **Sync candidates (owned render)**: ansi (`ansi-output`: AnsiStreamOutput, AnsiErrorOutput),
-  json (`json-output`), html (`html-output`), markdown (`markdown-output`), math (`math-output`),
-  and sift (`packages/sift` — its own package, handle distinctly). Traceback (`traceback-output`)
-  is likely in this bucket too — confirm ownership next session.
-- **Skip / passthrough (do NOT sync)**: plotly, vega, image, pdf, audio, video, and **geojson**
-  (owner moved geojson to skip on 2026-07-01). These are basically mime → external render; no
-  nteract-specific UI to show.
-- The owned renderers still take output data as props and some read a media/widget provider
-  (`media-provider`, `OutputArea`'s `useWidgetStore`) — this pass needs a fixture provider wired
-  (see `apps/elements/components/output-renderers-example.tsx` + `notebook-scenarios.ts` for how
-  the catalog mounts them standalone). That's why it's a separate session, not a quick add.
+- **Shipped 2026-07-01**: `ansi-output` (AnsiOutput, AnsiStreamOutput, AnsiErrorOutput),
+  `json-output` (JsonOutput), `traceback-output` (TracebackOutput). All prop-driven, no provider.
+  Data shapes: AnsiOutput takes `children: string` (raw ANSI), AnsiStreamOutput
+  `{text, streamName}`, AnsiErrorOutput `{ename, evalue, traceback: string[]}`, JsonOutput
+  `{data, collapsed?, displayDataTypes?}`, TracebackOutput `{data}` where data is the
+  `application/vnd.nteract.traceback+json` payload `{ename, evalue, frames[], language}`.
+- **Deferred — markdown + math (katex)**: both do `import "katex/dist/katex.min.css"`, and the
+  converter's bundle has no `.ttf` loader for katex's fonts (`bundle.mjs` loads .woff/.woff2 only).
+  Shipping them means either a declared `.ttf`-dataurl bundle override, or shipping the katex
+  fonts under `fonts/` + `@import` katex CSS via css-entry with rewritten URLs. Not a fork-free
+  quick add — own pass. markdown also pulls `MarkdownCodeBlock` → CodeMirror langs (fine to bundle).
+- **Skipped — html-output**: `HtmlOutput` throws unless rendered inside a sandboxed iframe
+  (security gate), so it can't render in a static card. Leave it out.
+- **Skip / passthrough (do NOT sync)**: plotly, vega, image, pdf, audio, video, **geojson**
+  (owner moved geojson to skip 2026-07-01). Mime → external render; no nteract-specific UI.
+- **ANSI needs `src/styles/ansi.css`**: the 16-color ANSI palette is theme-aware CSS vars +
+  `.ansi-*` classes defined there (the app ships it via the isolated renderer). css-entry.css
+  now `@import`s it — without it every AnsiOutput renders colorless (black swatches). Same class
+  of bug as the destructive-foreground token: component CSS the DS closure was missing.
+- **Multi-export files need componentSrcMap group pins**: the converter fuzzy-matches
+  component→file by kebab name, so `AnsiOutput`→`ansi-output.tsx` resolves but its siblings
+  `AnsiStreamOutput`/`AnsiErrorOutput` don't, and fall to the default `general` group. Pin each
+  extra export to its source file in `componentSrcMap` (value = path, not null) so they group as
+  `outputs`. Any future multi-component output file needs the same pins.
+- **sift is next (own PR)**: `packages/sift` is a separate package (`@nteract/sift`, main export
+  `SiftTable` + SiftScrollHandoffCue/SiftFocusStatus/sparkline). Owner wants more of sift broken
+  into individual reusable `src/components/*` primitives we style in the guide, THEN synced — so
+  the sift pass is partly a refactor (extract components) then a sync, not just a bundle add.
+- The heavier composed surfaces (`OutputArea`, `ReadOnlyNotebook`, `EditableMarkdownCell`) still
+  need a fixture media/widget provider wired (see
+  `apps/elements/components/output-renderers-example.tsx` + `notebook-scenarios.ts`).
+
+## Groups + curated lists
 - `cfg.srcDir` is `../../src/components` (broadened from `.../ui`) so grouping resolves
   `cell/` → group `cell` and `ui/` → `general`. Adding a new cell primitive: append it to the
   curated list in build.mjs (NOT glob-all — that pulls CodeMirror/plotly/widget deps into the
