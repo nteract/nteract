@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { NotebookShellCapabilities } from "../capabilities";
 import {
@@ -643,22 +643,31 @@ describe("NotebookWorkstationsPanel", () => {
     );
 
     expect(screen.getByTestId("workstation-pairing-command-list")).toBeVisible();
-    expect(screen.getByText("Fresh Debian/Ubuntu only")).toBeVisible();
-    expect(screen.getAllByText("(optional)")).toHaveLength(2);
     expect(screen.getByText("Install nteract headless")).toBeVisible();
     expect(screen.getByText("Use installed CLI in this shell")).toBeVisible();
     expect(screen.getByText("Pair this workstation")).toBeVisible();
     expect(screen.getByText("Linux user systemd service")).toBeVisible();
-    expect(screen.getByText("macOS/non-systemd fallback")).toBeVisible();
+    expect(screen.queryByText("Fresh Debian/Ubuntu only")).toBeNull();
+    expect(screen.queryByText("macOS/non-systemd fallback")).toBeNull();
     const commands = screen.getAllByTestId("workstation-pairing-command");
     expect(commands.map((command) => command.textContent)).toEqual([
-      "sudo apt update && sudo apt install -y curl tmux",
       "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
       'export PATH="$HOME/.local/bin:$PATH"',
       "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
       "runt workstation service install --start",
-      "runt workstation run",
     ]);
+    fireEvent.click(screen.getByRole("button", { name: "Show additional setup options" }));
+    const additionalCommands = within(
+      screen.getByTestId("workstation-pairing-additional-commands"),
+    );
+    expect(additionalCommands.getByText("Fresh Debian/Ubuntu only")).toBeVisible();
+    expect(additionalCommands.getByText("macOS/non-systemd fallback")).toBeVisible();
+    expect(additionalCommands.getAllByText("(optional)")).toHaveLength(2);
+    expect(
+      additionalCommands
+        .getAllByTestId("workstation-pairing-command")
+        .map((command) => command.textContent),
+    ).toEqual(["sudo apt update && sudo apt install -y curl tmux", "runt workstation run"]);
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
       /Waiting for the machine to connect/,
     );
@@ -745,6 +754,8 @@ describe("NotebookWorkstationsPanel", () => {
       screen.getByText("Finish setup with the keep-available command if you have not run it yet:"),
     ).toBeVisible();
     expect(screen.getByText("Linux user systemd service")).toBeVisible();
+    expect(screen.queryByText("macOS/non-systemd fallback")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show additional setup options" }));
     expect(screen.getByText("macOS/non-systemd fallback")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(dismissed).toHaveLength(1);

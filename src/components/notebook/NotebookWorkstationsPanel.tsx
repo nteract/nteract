@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   Check,
+  ChevronDown,
   CircleAlert,
   CircleCheck,
   Cloud,
@@ -255,6 +256,8 @@ function WorkstationPairingCard({
     command.command.includes("workstation service"),
   );
   const hasForegroundFallback = pairingCommands.some((command) => command.id === "foreground-run");
+  const hasAdditionalCommands = pairingCommands.some((command) => command.optional === true);
+  const serviceHelpText = pairingCommandHelpText(hasServiceCommand, hasForegroundFallback);
 
   return (
     <section
@@ -292,13 +295,9 @@ function WorkstationPairingCard({
                 Finish setup with the keep-available command if you have not run it yet:
               </p>
               <PairingCommandList commands={pairingCommands} />
-              <p className="leading-5 text-muted-foreground">
-                {hasServiceCommand && hasForegroundFallback
-                  ? "The Linux service command keeps this workstation available. Use the foreground fallback in tmux for macOS, non-systemd hosts, or manual testing."
-                  : hasServiceCommand
-                    ? "The Linux service command keeps this workstation available after pairing."
-                    : "Keep the command running until the workstation appears in the panel."}
-              </p>
+              {hasAdditionalCommands ? null : (
+                <p className="leading-5 text-muted-foreground">{serviceHelpText}</p>
+              )}
             </div>
           ) : null}
           {onCancel ? (
@@ -329,13 +328,9 @@ function WorkstationPairingCard({
               : "Run these in a terminal on the machine you want to attach:"}
           </p>
           <PairingCommandList commands={pairingCommands} />
-          <p className="leading-5 text-muted-foreground">
-            {hasServiceCommand && hasForegroundFallback
-              ? "The Linux service command keeps this workstation available. Use the foreground fallback in tmux for macOS, non-systemd hosts, or manual testing."
-              : hasServiceCommand
-                ? "The Linux service command keeps this workstation available after pairing."
-                : "Keep the command running until the workstation appears in the panel."}
-          </p>
+          {hasAdditionalCommands ? null : (
+            <p className="leading-5 text-muted-foreground">{serviceHelpText}</p>
+          )}
           <p className="leading-5 text-muted-foreground" aria-live="polite">
             {pairing.status === "redeemed" ? (
               <span data-testid="workstation-pairing-status">
@@ -354,18 +349,36 @@ function WorkstationPairingCard({
   );
 }
 
+function pairingCommandHelpText(
+  hasServiceCommand: boolean,
+  hasForegroundFallback: boolean,
+): string {
+  if (hasServiceCommand && hasForegroundFallback) {
+    return "The Linux service command keeps this workstation available. Use the foreground fallback in tmux for macOS, non-systemd hosts, or manual testing.";
+  }
+  if (hasServiceCommand) {
+    return "The Linux service command keeps this workstation available after pairing.";
+  }
+  return "Keep the command running until the workstation appears in the panel.";
+}
+
 function PairingCommandList({
   commands,
 }: {
   commands: readonly NotebookWorkstationPairingCommandView[];
 }) {
-  const bulkCommandText = commands
-    .filter((command) => command.optional !== true)
-    .map((command) => command.command)
-    .join("\n");
+  const requiredCommands = commands.filter((command) => command.optional !== true);
+  const primaryCommands = requiredCommands.length > 0 ? requiredCommands : commands;
+  const additionalCommands =
+    requiredCommands.length > 0 ? commands.filter((command) => command.optional === true) : [];
+  const hasAdditionalCommands = additionalCommands.length > 0;
+  const additionalPanelId = useId();
+  const [additionalOpen, setAdditionalOpen] = useState(false);
+  const bulkCommandText = primaryCommands.map((command) => command.command).join("\n");
   const hasLinuxServiceBundle = commands.some((command) =>
     command.command.includes("workstation service"),
   );
+  const hasForegroundFallback = commands.some((command) => command.id === "foreground-run");
   const copyLabel = hasLinuxServiceBundle
     ? "Linux workstation setup commands"
     : "workstation setup commands";
@@ -404,20 +417,74 @@ function PairingCommandList({
         </Button>
       </div>
       <ol className="space-y-1.5">
-        {commands.map((command, index) => (
-          <li key={command.id} className="space-y-1">
-            <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-muted-foreground">
-              <span className="font-medium text-foreground">{index + 1}.</span>
-              <span className="truncate">{command.label}</span>
-              {command.optional ? (
-                <span className="shrink-0 text-muted-foreground">(optional)</span>
-              ) : null}
-            </div>
-            <PairingCommand command={command.command} label={command.label} />
-          </li>
+        {primaryCommands.map((command, index) => (
+          <PairingCommandItem key={command.id} command={command} index={index} />
         ))}
       </ol>
+      {hasAdditionalCommands ? (
+        <div className="pt-0.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="-ml-1 h-7 px-1.5 text-[11px] text-muted-foreground"
+            aria-expanded={additionalOpen}
+            aria-controls={additionalPanelId}
+            aria-label={
+              additionalOpen ? "Hide additional setup options" : "Show additional setup options"
+            }
+            onClick={() => setAdditionalOpen((open) => !open)}
+          >
+            <ChevronDown
+              className={cn("size-3.5 transition-transform", additionalOpen && "rotate-180")}
+              aria-hidden="true"
+            />
+            Additional setup options
+          </Button>
+          {additionalOpen ? (
+            <div
+              id={additionalPanelId}
+              className="mt-1.5 space-y-2 rounded-md border border-border/60 bg-muted/[0.03] p-2"
+              data-testid="workstation-pairing-additional-commands"
+            >
+              <ul className="space-y-1.5">
+                {additionalCommands.map((command) => (
+                  <PairingCommandItem key={command.id} command={command} />
+                ))}
+              </ul>
+              <p className="leading-5 text-muted-foreground">
+                {hasLinuxServiceBundle && hasForegroundFallback
+                  ? "Fresh Debian/Ubuntu hosts may need curl and tmux before the install command. Use the foreground fallback in tmux for macOS, non-systemd hosts, or manual testing."
+                  : "Run optional setup commands only when they match the host you are attaching."}
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function PairingCommandItem({
+  command,
+  index,
+}: {
+  command: NotebookWorkstationPairingCommandView;
+  index?: number;
+}) {
+  return (
+    <li className="space-y-1">
+      <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-muted-foreground">
+        {typeof index === "number" ? (
+          <span className="font-medium text-foreground">{index + 1}.</span>
+        ) : null}
+        <span className="truncate">{command.label}</span>
+        {command.optional ? (
+          <span className="shrink-0 text-muted-foreground">(optional)</span>
+        ) : null}
+      </div>
+      <PairingCommand command={command.command} label={command.label} />
+    </li>
   );
 }
 
