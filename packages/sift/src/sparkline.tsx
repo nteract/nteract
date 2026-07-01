@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { NTERACT_HOST_OUTSIDE_INTERACTION_EVENT } from "./events";
 import type {
   BooleanColumnSummary,
