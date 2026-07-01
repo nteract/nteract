@@ -77,14 +77,25 @@ Plumbing:
 - **Contained blast radius.** No repo-wide rewrite; two import swaps, four deletes,
   three config edits. Verified by sift's own `tsc`, `build:lib`, unit, and e2e.
 
-## Follow-up (not this pass)
+## Engine tokens and dark mode
 
-- Sift's own engine chrome (`sparkline.tsx` histograms/category bars,
-  `column-context-menu`) still uses `--sift-*`. Unifying those tokens with ours —
-  or aliasing `--sift-*` to the shared tokens — is the next step toward full native
-  feel. It is engine styling, not shared primitives, so it is separable.
-- Dark mode: the app is class-based (`.dark`); sift's themes are
-  `prefers-color-scheme`. Reconcile so the iframe follows the app's theme.
+The second stage of the same decision, applied to sift's engine chrome:
+
+- The five neutral `--sift-*` tokens alias the app's semantic tokens in
+  `themes/classic.css` (`--sift-bg` → `--background`, `--sift-panel` → `--card`,
+  `--sift-ink` → `--foreground`, `--sift-muted` → `--muted-foreground`,
+  `--sift-rule` → `--border`); their dark values are gone because the app token
+  flip covers them.
+- `--sift-accent` stays a sift-owned token, retuned to the app's output-link
+  blues. Every app semantic token except `--destructive` is achromatic; aliasing
+  the accent would flatten histograms, filter pills, and sort arrows to gray.
+  Boolean green/red stays sift-owned for the same reason — the app has no
+  success/positive token (a candidate addition if more data-viz surfaces need it).
+- Dark mode is explicit-signal only: the token file's dark block is dual-keyed
+  (`.dark, [data-theme="dark"]`), matching the isolated-renderer/frame.html
+  convention, and sift's `prefers-color-scheme` blocks are deleted. Every host
+  (app iframe, sift demo) sets an explicit signal; OS-only theming would
+  split-brain aliased neutrals against sift-owned dark values.
 
 ## Non-goals
 
