@@ -1,3 +1,9 @@
 @import "tailwindcss";
 @import "@nteract/odometer/style.css";
+/* App design tokens + @theme mapping so the shared primitives aliased from
+   @/components/ui/* render with our palette (bg-primary, border-input, ring, …)
+   instead of sift's prototype accent. @source pulls their utility classes into
+   this build since they live outside packages/sift. */
+@import "../../../src/styles/notebook-tokens.css";
+@source "../../../src/components/ui";
 @import "./library.css";

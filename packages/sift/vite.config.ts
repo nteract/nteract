@@ -10,6 +10,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "sift-wasm": wasmPkg,
+      // Share the app's literal UI primitives instead of vendoring copies.
+      // Matches "@/…" only, not "@radix-ui/…". See ADR shared-ui-primitives.
+      "@": resolve(__dirname, "../../src"),
     },
   },
   build: {

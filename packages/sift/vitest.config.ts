@@ -11,6 +11,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "sift-wasm/sift_wasm.js": wasmGluePath,
+      // Match the app-component alias used by vite.config/vite.lib.config.
+      "@": path.resolve(__dirname, "../../src"),
     },
   },
   test: {

@@ -16,7 +16,8 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
-      "sift-wasm/*": ["../../crates/sift-wasm/pkg/*"]
+      "sift-wasm/*": ["../../crates/sift-wasm/pkg/*"],
+      "@/*": ["../../src/*"]
     },
 
     /* Linting */
