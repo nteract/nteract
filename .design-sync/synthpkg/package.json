@@ -1,0 +1,8 @@
+{
+  "name": "nteract-elements",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Synthetic package root for design-sync: real .d.ts + barrel entry over src/components/ui.",
+  "module": "entry.tsx",
+  "types": "types/index.d.ts"
+}

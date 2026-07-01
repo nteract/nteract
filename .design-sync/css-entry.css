@@ -1,0 +1,19 @@
+/* Design-sync compile entry for the nteract Elements component library.
+   Tailwind v4 source file. Compiled to .design-sync/compiled.css (cfg.cssEntry)
+   via cfg.buildCmd. Pulls in the authoritative token set + @theme mapping from
+   notebook-tokens.css, then scans the shipped ui components and the authored
+   previews so every utility class they use lands in the compiled stylesheet.
+   source(none) keeps the output deterministic — only the @source dirs below. */
+@import "tailwindcss" source(none);
+@import "../src/styles/notebook-tokens.css";
+
+@source "../src/components/ui";
+@source "./previews";
+
+/* Safelist the semantic token vocabulary the conventions header documents, so a
+   design built with these classes renders even though Claude Design ships only
+   the static compiled CSS (no Tailwind recompile). Keep in sync with
+   conventions.md's token table. */
+@source inline("{hover:,}{bg,text}-{background,foreground,card,card-foreground,popover,popover-foreground,primary,primary-foreground,secondary,secondary-foreground,muted,muted-foreground,accent,accent-foreground,destructive,destructive-foreground,uv}");
+@source inline("{border,ring}-{border,input,ring,primary,destructive}");
+@source inline("rounded-{sm,md,lg,xl}");

@@ -153,3 +153,15 @@ scripts/apt/debs/*.deb
 
 # Superpowers brainstorming scratch
 .superpowers/
+
+# design-sync (generated/staged; durable inputs under .design-sync/ stay tracked)
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+.design-sync/compiled.css
+.design-sync/synthpkg/entry.tsx
+.design-sync/synthpkg/compiled.css
+.design-sync/synthpkg/types/
+.design-sync/synthpkg/tsconfig.emit.json
