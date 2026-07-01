@@ -1,6 +1,7 @@
 # Shared UI Primitives via Monorepo Aliasing
 
-**Status:** Draft, 2026-07-01.
+**Status:** Accepted, 2026-07-01. Implemented in #3872 (shared primitives via
+aliasing, engine-token unification, explicit-signal dark mode).
 
 ## Context
 
