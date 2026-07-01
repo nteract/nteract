@@ -57,7 +57,11 @@
   --output-document-font: var(--output-ui-font);
 }
 
-.dark {
+/* Dual-keyed to match the isolated-renderer/host-bridge convention
+   (isolated-renderer/styles.css, frame.html): consumers may signal dark via
+   the .dark class (app shell) or data-theme="dark" (iframe/demo hosts). */
+.dark,
+[data-theme="dark"] {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);

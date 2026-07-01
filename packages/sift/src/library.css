@@ -8,16 +8,9 @@
 /* --- Shared overlay fallback surface --- */
 
 :root {
-  --sift-overlay-panel-fallback: #ffffff;
-  --sift-overlay-ink-fallback: #1a1a1a;
-  --sift-overlay-rule-fallback: #e5e7eb;
-}
-
-:root[data-theme="dark"],
-:root.dark {
-  --sift-overlay-panel-fallback: #171717;
-  --sift-overlay-ink-fallback: #e5e5e5;
-  --sift-overlay-rule-fallback: #2a2a2a;
+  --sift-overlay-panel-fallback: var(--card, #ffffff);
+  --sift-overlay-ink-fallback: var(--foreground, #1a1a1a);
+  --sift-overlay-rule-fallback: var(--border, #e5e7eb);
 }
 
 .sift-overlay-surface {
@@ -353,12 +346,6 @@
   animation: summary-fade-in 300ms ease-out;
   -webkit-user-select: none;
   user-select: none;
-  --sift-chart-bg: transparent;
-  --sift-chart-text: var(--sift-muted);
-  --sift-chart-text-secondary: var(--sift-muted);
-  --sift-chart-border: transparent;
-  --sift-chart-grid: transparent;
-  --sift-chart-primary: var(--sift-accent);
 }
 
 .sift-th-summary svg,

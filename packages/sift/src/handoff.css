@@ -4,7 +4,7 @@
   justify-content: center;
   border: 1px solid color-mix(in srgb, var(--sift-rule, var(--border, #e5e7eb)) 82%, transparent);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--sift-panel, var(--background, #ffffff)) 94%, transparent);
+  background: color-mix(in srgb, var(--sift-panel, var(--card, #ffffff)) 94%, transparent);
   color: color-mix(
     in srgb,
     var(--sift-muted, var(--muted-foreground, #6b7280)) 92%,
@@ -26,11 +26,12 @@
     var(--sift-muted, var(--muted-foreground, #6b7280)) 34%,
     var(--sift-rule, var(--border, #e5e7eb))
   );
-  background: var(--sift-panel, var(--background, #ffffff));
+  background: var(--sift-panel, var(--card, #ffffff));
   color: var(--sift-ink, var(--foreground, #111827));
 }
 
 .sift-scroll-handoff-cue:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--sift-accent, var(--ring, #3b82f6)) 45%, transparent);
+  outline: 2px solid
+    color-mix(in srgb, var(--sift-accent, oklch(0.546 0.245 262.881)) 45%, transparent);
   outline-offset: 2px;
 }
