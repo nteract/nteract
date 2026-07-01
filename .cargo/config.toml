@@ -5,6 +5,13 @@ runt = "run --package runt --"
 [env]
 TS_RS_EXPORT_DIR = { value = "src/bindings", relative = true }
 
-# Linker rustflags live in .envrc, gated on `has ld64.lld`. Hard-coding
-# `-fuse-ld=lld` here broke CI runners that don't ship lld, so the rule
-# moved to an env-scoped direnv export. See `.envrc`.
+# macOS arm64 builds runtimed-py (pyo3) and runtimed-node (napi) as
+# host-loaded extension cdylibs whose libpython / Node ABI symbols resolve
+# at load time. The linker needs `-undefined dynamic_lookup` to leave them
+# undefined; both Apple ld and lld accept it, so it's safe to hard-code.
+# The lld selector stays in .envrc instead: `-fuse-ld=lld` is an error on
+# machines without lld, so it can't be unconditional. When .envrc is
+# loaded its CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS supersedes this
+# block and carries the same dynamic_lookup flags (plus lld when present).
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
