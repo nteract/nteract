@@ -207,6 +207,16 @@ fn collect_block(
         block_index,
         code_lang: block.attrs.lang.clone(),
         code_meta: block.attrs.meta.clone(),
+        // Islands carry the content hash so the mid document store can tell an
+        // in-place prop edit (hash changes) from an insert-above that only shifts
+        // offsets (hash holds), keeping a reload from remounting a live island.
+        // Island-only by design: plain markdown has no islands, so plain-.md
+        // projection output is unchanged and the ADR 0003 parity gate still holds.
+        content_hash: if block.kind == NodeKind::Island {
+            Some(crate::content_hash(block).to_string())
+        } else {
+            None
+        },
         element,
         kind,
         island_tag: block.attrs.island_tag.clone(),
@@ -892,6 +902,7 @@ struct JsonBlock {
     block_index: usize,
     code_lang: Option<String>,
     code_meta: Option<String>,
+    content_hash: Option<String>,
     element: &'static str,
     kind: &'static str,
     island_tag: Option<String>,
@@ -985,6 +996,10 @@ impl JsonBlock {
             output.push(',');
             output.push_str("\"islandInline\":");
             output.push_str(if self.island_inline { "true" } else { "false" });
+            output.push(',');
+        }
+        if let Some(content_hash) = &self.content_hash {
+            push_json_key_string(output, "contentHash", content_hash);
             output.push(',');
         }
         if let Some(ordered) = self.ordered {
@@ -1273,6 +1288,37 @@ mod tests {
         assert!(json.contains("\"islandTag\":\"Frog\""), "{json}");
         assert!(json.contains("\"islandInline\":false"), "{json}");
         assert!(json.contains("\"semantic\":\"island\""), "{json}");
+    }
+
+    #[test]
+    fn serializes_content_hash_for_island() {
+        let options = crate::MarkdownProjectOptions {
+            islands: true,
+            ..Default::default()
+        };
+        let project = |source: &str| {
+            let plan = crate::project_markdown_with_options(source, &options).unwrap();
+            render_plan_json(&plan, source, "rust-wasm")
+        };
+        let island_hash = |json: &str| {
+            let key = "\"contentHash\":\"";
+            let start = json.find(key).expect("island block carries contentHash") + key.len();
+            let end = start + json[start..].find('"').unwrap();
+            json[start..end].to_string()
+        };
+
+        let base = project("<Frog size={96} />\n");
+        assert!(base.contains("\"contentHash\":\""), "{base}");
+        let base_hash = island_hash(&base);
+
+        // A prop edit inside the island changes the hash: the store must remount.
+        let edited = project("<Frog size={48} />\n");
+        assert_ne!(island_hash(&edited), base_hash);
+
+        // An insert above shifts the island's offsets but not its source text, so
+        // the hash holds: the store carries the live element forward.
+        let shifted = project("Intro paragraph.\n\n<Frog size={96} />\n");
+        assert_eq!(island_hash(&shifted), base_hash);
     }
 
     #[test]
