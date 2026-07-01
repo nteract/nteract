@@ -41,8 +41,8 @@ overrides:
   vite: 'catalog:'
   vitest: 'catalog:'
   '@codemirror/language': 6.12.2
-  react: 19.2.6
-  react-dom: 19.2.6
+  react: 19.2.7
+  react-dom: 19.2.7
 peerDependencyRules:
   allowAny:
     - vite
