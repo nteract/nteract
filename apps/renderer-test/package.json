@@ -8,14 +8,14 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-react": "^6.0.1",
-    "@types/react": "^19.1.0",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.1.0",
     "typescript": "^5.0.0",
     "vite": "catalog:",
