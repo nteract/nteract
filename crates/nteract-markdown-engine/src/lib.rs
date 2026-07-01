@@ -2,6 +2,10 @@ use markdown::mdast;
 use markdown::unist::Position;
 use markdown::{Constructs, ParseOptions};
 
+mod render_json;
+
+pub use render_json::{error_to_json, render_plan_json};
+
 const DEFAULT_WIDTH: usize = 720;
 const AVG_CHAR_WIDTH: usize = 8;
 const BODY_LINE_HEIGHT: usize = 22;
@@ -12,6 +16,7 @@ pub struct MarkdownProjectOptions {
     pub mdx: MdxMode,
     pub raw_html: RawHtmlMode,
     pub width: usize,
+    pub islands: bool,
 }
 
 impl Default for MarkdownProjectOptions {
@@ -20,6 +25,7 @@ impl Default for MarkdownProjectOptions {
             mdx: MdxMode::Isolate,
             raw_html: RawHtmlMode::Isolate,
             width: DEFAULT_WIDTH,
+            islands: false,
         }
     }
 }
@@ -31,6 +37,12 @@ pub enum MdxMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanMode {
+    Markdown,
+    Mdx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawHtmlMode {
     Escape,
     Isolate,
@@ -39,6 +51,7 @@ pub enum RawHtmlMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkdownPlan {
     pub version: u8,
+    pub mode: PlanMode,
     pub source_len: usize,
     pub root: ProjectedNode,
     pub blocks: Vec<ProjectedNode>,
@@ -91,6 +104,7 @@ pub enum NodeKind {
     FootnoteReference,
     Mdx,
     Frontmatter,
+    Island,
     Unknown,
 }
 
@@ -111,6 +125,8 @@ pub struct NodeAttrs {
     pub align: Vec<TableAlign>,
     pub anchor_slug: Option<String>,
     pub isolation_kind: Option<IsolationKind>,
+    pub island_tag: Option<String>,
+    pub island_inline: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +178,7 @@ pub enum IsolationKind {
     RawHtml,
     ActiveHtml,
     Mdx,
+    Component,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,17 +245,13 @@ pub fn project_markdown(source: &str) -> Result<MarkdownPlan, MarkdownProjectErr
     project_markdown_with_options(source, &MarkdownProjectOptions::default())
 }
 
-pub fn project_markdown_with_options(
+pub fn project_from_mdast(
+    mdast: &markdown::mdast::Node,
     source: &str,
     options: &MarkdownProjectOptions,
-) -> Result<MarkdownPlan, MarkdownProjectError> {
-    let parse_options = parse_options();
-    let mdast =
-        markdown::to_mdast(source, &parse_options).map_err(|message| MarkdownProjectError {
-            message: message.reason,
-        })?;
+) -> MarkdownPlan {
     let mut context = ProjectionContext::new(source, options);
-    let mut root = project_node(&mdast, &mut context);
+    let mut root = project_node(mdast, &mut context);
     root.id = "root".to_string();
 
     let blocks = root.children.clone();
@@ -263,8 +276,13 @@ pub fn project_markdown_with_options(
         .map(|node| node.measurement.estimated_height)
         .sum();
 
-    Ok(MarkdownPlan {
+    MarkdownPlan {
         version: 1,
+        mode: if options.islands {
+            PlanMode::Mdx
+        } else {
+            PlanMode::Markdown
+        },
         source_len: source.len(),
         root,
         blocks,
@@ -276,15 +294,37 @@ pub fn project_markdown_with_options(
             confidence,
             width: options.width,
         },
-    })
+    }
 }
 
-fn parse_options() -> ParseOptions {
+pub fn project_markdown_with_options(
+    source: &str,
+    options: &MarkdownProjectOptions,
+) -> Result<MarkdownPlan, MarkdownProjectError> {
+    let parse_options = parse_options(options.islands);
+    let mdast =
+        markdown::to_mdast(source, &parse_options).map_err(|message| MarkdownProjectError {
+            message: message.reason,
+        })?;
+    Ok(project_from_mdast(&mdast, source, options))
+}
+
+fn parse_options(islands: bool) -> ParseOptions {
     let mut constructs = Constructs::gfm();
     constructs.html_flow = true;
     constructs.html_text = true;
     constructs.math_flow = true;
     constructs.math_text = true;
+    if islands {
+        constructs.mdx_jsx_flow = true;
+        // Flow tries html_flow before mdx_jsx_flow on `<` and only falls through
+        // on failure. A complete tag like `<Frog size={96} />` is valid HTML
+        // flow, so html_flow would swallow block JSX before mdx_jsx_flow sees it.
+        // Routing block `<...>` to MDX JSX requires html_flow off; this is the
+        // islands-on lane only. Islands-off keeps html_flow true and stays
+        // byte-identical. Inline html_text stays on: Stage 2 is block JSX only.
+        constructs.html_flow = false;
+    }
 
     ParseOptions {
         constructs,
@@ -494,6 +534,19 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
             attrs.identifier = Some(reference.identifier.clone());
             attrs.label = reference.label.clone();
         }
+        mdast::Node::MdxJsxFlowElement(element) if context.options.islands => {
+            kind = NodeKind::Island;
+            text = "[isolated MDX region]".to_string();
+            copy_text = source_slice(context.source, &span).to_string();
+            attrs.island_tag = element.name.clone();
+            attrs.island_inline = false;
+            attrs.isolation_kind = Some(IsolationKind::Component);
+            safety = Safety {
+                lane: SafetyLane::Isolated,
+                reason: "isolated-mdx-island".to_string(),
+            };
+            children.clear();
+        }
         mdast::Node::MdxjsEsm(_)
         | mdast::Node::MdxFlowExpression(_)
         | mdast::Node::MdxTextExpression(_)
@@ -641,6 +694,10 @@ fn html_safety(kind: IsolationKind, mode: RawHtmlMode) -> Safety {
             lane: SafetyLane::Isolated,
             reason: "mdx-compiles-to-active-js".to_string(),
         },
+        (IsolationKind::Component, _) => Safety {
+            lane: SafetyLane::Isolated,
+            reason: "isolated component region".to_string(),
+        },
         (IsolationKind::ActiveHtml, _) => Safety {
             lane: SafetyLane::Isolated,
             reason: "raw-html-active-element".to_string(),
@@ -659,6 +716,7 @@ fn html_safety(kind: IsolationKind, mode: RawHtmlMode) -> Safety {
 fn isolated_fallback(kind: IsolationKind) -> &'static str {
     match kind {
         IsolationKind::Mdx => "[isolated MDX region]",
+        IsolationKind::Component => "[isolated component region]",
         IsolationKind::ActiveHtml => "[isolated active HTML region]",
         IsolationKind::RawHtml => "[isolated raw HTML region]",
     }
@@ -708,7 +766,7 @@ fn estimate_node(node: &ProjectedNode, width: usize) -> BlockMeasurement {
             MeasurementConfidence::Low,
             "table row count",
         ),
-        NodeKind::Html | NodeKind::Mdx => measured(
+        NodeKind::Html | NodeKind::Mdx | NodeKind::Island => measured(
             96,
             MeasurementConfidence::Low,
             "isolated or escaped raw region",
@@ -1065,6 +1123,39 @@ mod tests {
         let html_node = find_kind(&plan.blocks[0], NodeKind::Html).unwrap();
         assert_eq!(html_node.safety.lane, SafetyLane::Escaped);
         assert!(plan.isolated_regions.is_empty());
+    }
+
+    #[test]
+    fn islands_option_projects_block_jsx_as_island() {
+        let options = MarkdownProjectOptions {
+            islands: true,
+            ..Default::default()
+        };
+        let plan = project_markdown_with_options("<Frog size={96} />\n", &options).unwrap();
+        assert_eq!(plan.version, 1);
+        assert_eq!(plan.mode, PlanMode::Mdx);
+        let island = plan
+            .blocks
+            .iter()
+            .find(|block| block.kind == NodeKind::Island)
+            .expect("expected an Island node");
+        assert_eq!(island.attrs.island_tag.as_deref(), Some("Frog"));
+        assert_eq!(island.attrs.isolation_kind, Some(IsolationKind::Component));
+    }
+
+    #[test]
+    fn islands_off_leaves_block_jsx_non_island() {
+        let options = MarkdownProjectOptions {
+            islands: false,
+            ..Default::default()
+        };
+        let plan = project_markdown_with_options("<Frog size={96} />\n", &options).unwrap();
+        assert_eq!(plan.version, 1);
+        assert_eq!(plan.mode, PlanMode::Markdown);
+        assert!(plan
+            .blocks
+            .iter()
+            .all(|block| block.kind != NodeKind::Island));
     }
 
     fn contains_kind(node: &ProjectedNode, kind: NodeKind) -> bool {
