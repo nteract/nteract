@@ -1,6 +1,7 @@
 use markdown::mdast;
 use markdown::unist::Position;
 use markdown::{Constructs, ParseOptions};
+use serde::{Deserialize, Serialize};
 
 mod render_json;
 
@@ -61,13 +62,26 @@ pub struct MarkdownPlan {
     pub measurement: MeasurementPlan,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ReconcilerSnapshot {
     root: Option<SnapshotNode>,
     next_id: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl ReconcilerSnapshot {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match serde_json::to_vec(self) {
+            Ok(bytes) => bytes,
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> ReconcilerSnapshot {
+        serde_json::from_slice(bytes).unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SnapshotNode {
     id: String,
     key: StructuralKey,
@@ -75,7 +89,7 @@ struct SnapshotNode {
     children: Vec<SnapshotNode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StructuralKey {
     kind: NodeKind,
     lane: SafetyLane,
@@ -101,7 +115,7 @@ pub struct ProjectedNode {
     pub children: Vec<ProjectedNode>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
     Root,
     Paragraph,
@@ -195,14 +209,14 @@ pub struct Safety {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SafetyLane {
     Host,
     Escaped,
     Isolated,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IsolationKind {
     RawHtml,
     ActiveHtml,
@@ -284,7 +298,7 @@ pub fn project_from_mdast(
     plan
 }
 
-fn project_from_mdast_reconciled(
+pub fn project_from_mdast_reconciled(
     mdast: &markdown::mdast::Node,
     source: &str,
     options: &MarkdownProjectOptions,
@@ -1947,6 +1961,52 @@ mod tests {
         assert_eq!(after.blocks[0].id, beta_id);
         assert_eq!(after.blocks[1].id, alpha_id);
         assert_eq!(after.blocks[2].id, gamma_id);
+    }
+
+    #[test]
+    fn reconciler_snapshot_round_trips_through_bytes() {
+        let (_, snapshot) = reconcile_default("# Title\n\nalpha *beta*\n\n---\n");
+
+        let restored = ReconcilerSnapshot::from_bytes(&snapshot.to_bytes());
+
+        assert_eq!(restored, snapshot);
+    }
+
+    #[test]
+    fn reconciler_snapshot_bytes_preserve_shifted_block_ids() {
+        let source = "alpha\n\nbeta\n\ngamma\n";
+        let (before, snapshot) = reconcile_default(source);
+        let before_ids = before
+            .blocks
+            .iter()
+            .map(|block| block.id.clone())
+            .collect::<Vec<_>>();
+        let restored = ReconcilerSnapshot::from_bytes(&snapshot.to_bytes());
+
+        let (after, _) =
+            reconcile_default_with_snapshot("intro\n\nalpha\n\nbeta\n\ngamma\n", &restored);
+
+        assert_eq!(after.blocks.len(), 4);
+        assert!(after.blocks[0].id.starts_with("node:reconciled:"));
+        assert_eq!(after.blocks[1].id, before_ids[0]);
+        assert_eq!(after.blocks[2].id, before_ids[1]);
+        assert_eq!(after.blocks[3].id, before_ids[2]);
+    }
+
+    #[test]
+    fn reconciler_snapshot_from_bytes_falls_back_to_cold_start() {
+        let source = "alpha\n\nbeta\n";
+        let empty = ReconcilerSnapshot::from_bytes(&[]);
+        let garbage = ReconcilerSnapshot::from_bytes(b"not json");
+
+        assert_eq!(empty, ReconcilerSnapshot::default());
+        assert_eq!(garbage, ReconcilerSnapshot::default());
+
+        let (from_empty, _) = reconcile_default_with_snapshot(source, &empty);
+        let (from_garbage, _) = reconcile_default_with_snapshot(source, &garbage);
+
+        assert_legacy_ids(&from_empty.root);
+        assert_legacy_ids(&from_garbage.root);
     }
 
     #[test]
