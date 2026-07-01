@@ -27,8 +27,25 @@ something non-obvious comes up.
   CodeCellCurrentLine, CompactExecutionButton, ExecutionCount. All prop-driven (no
   providers) — composition patterns come from `apps/elements/components/cell-anatomy-example.tsx`.
 - **Deferred** (need editor/output/notebook-doc/providers, would floor-card): EditableMarkdownCell,
-  OutputArea, ReadOnlyNotebook, ReadOnlyNotebookCell. Output renderers (`src/components/outputs/*`)
-  are also not synced yet — a future pass; several need a media/widget provider + fixtures.
+  OutputArea, ReadOnlyNotebook, ReadOnlyNotebookCell.
+
+## Output renderers — future pass (separate session)
+
+`src/components/outputs/*` (plus `packages/sift`) are not synced yet. Direction from the owner:
+sync only the renderers **we own the React for** and can control; skip the ones that are just
+a mime-type → third-party render passthrough.
+
+- **Sync candidates (owned render)**: ansi (`ansi-output`: AnsiStreamOutput, AnsiErrorOutput),
+  json (`json-output`), html (`html-output`), markdown (`markdown-output`), math (`math-output`),
+  and sift (`packages/sift` — its own package, handle distinctly). Traceback (`traceback-output`)
+  is likely in this bucket too — confirm ownership next session.
+- **Skip / passthrough (do NOT sync)**: plotly, vega, image, pdf, audio, video, and **geojson**
+  (owner moved geojson to skip on 2026-07-01). These are basically mime → external render; no
+  nteract-specific UI to show.
+- The owned renderers still take output data as props and some read a media/widget provider
+  (`media-provider`, `OutputArea`'s `useWidgetStore`) — this pass needs a fixture provider wired
+  (see `apps/elements/components/output-renderers-example.tsx` + `notebook-scenarios.ts` for how
+  the catalog mounts them standalone). That's why it's a separate session, not a quick add.
 - `cfg.srcDir` is `../../src/components` (broadened from `.../ui`) so grouping resolves
   `cell/` → group `cell` and `ui/` → `general`. Adding a new cell primitive: append it to the
   curated list in build.mjs (NOT glob-all — that pulls CodeMirror/plotly/widget deps into the
