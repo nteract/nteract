@@ -2838,10 +2838,18 @@ impl Daemon {
                 .connections
                 .active_peers
                 .load(std::sync::atomic::Ordering::Relaxed);
+            let reservations = room.connections.reservations();
             if active_peers > 0 {
                 debug!(
-                    "[runtimed] Hosted bridge idle teardown skipped for {}: {} active peer(s)",
-                    locator, active_peers
+                    "[runtimed] Hosted bridge idle teardown skipped for {}: {} active peer(s), {} reservation(s)",
+                    locator, active_peers, reservations
+                );
+                return;
+            }
+            if reservations > 1 {
+                debug!(
+                    "[runtimed] Hosted bridge idle teardown skipped for {}: {} reservation(s) including in-flight attach",
+                    locator, reservations
                 );
                 return;
             }
@@ -2897,6 +2905,7 @@ impl Daemon {
         (
             Arc<crate::notebook_sync_server::NotebookRoom>,
             Arc<crate::notebook_sync_server::HostedBridgeHandle>,
+            crate::notebook_sync_server::ReservationGuard,
         ),
         String,
     > {
@@ -2912,7 +2921,10 @@ impl Daemon {
         };
         if let Some(bridge) = existing {
             if let Some((room, _guard)) = self.notebook_rooms.lookup_uuid(bridge.room_id).await {
-                return Ok((room, bridge));
+                room.mark_hosted();
+                let connection_reservation =
+                    crate::notebook_sync_server::ReservationGuard::new(room.clone());
+                return Ok((room, bridge, connection_reservation));
             }
         }
 
@@ -2948,6 +2960,9 @@ impl Daemon {
         )
         .await
         .map_err(|e| format!("Failed to create bridged room for {locator}: {e}"))?;
+        room.mark_hosted();
+        let connection_reservation =
+            crate::notebook_sync_server::ReservationGuard::new(room.clone());
         self.mark_rooms_ever_seen();
 
         let idle_daemon: Weak<Self> = Arc::downgrade(self);
@@ -2990,7 +3005,7 @@ impl Daemon {
                 handle
             }
         };
-        Ok((room, bridge))
+        Ok((room, bridge, connection_reservation))
     }
 
     /// Handle an OpenHostedNotebook connection: attach (or reuse) the hosted
@@ -3014,7 +3029,7 @@ impl Daemon {
 
         info!("[runtimed] OpenHostedNotebook requested for {}", url);
 
-        let (room, bridge) = match self.prepare_hosted_room(&url).await {
+        let (room, bridge, _connection_reservation) = match self.prepare_hosted_room(&url).await {
             Ok(prepared) => prepared,
             Err(message) => {
                 let (_reader, mut writer) = tokio::io::split(stream);

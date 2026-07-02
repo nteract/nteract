@@ -36,10 +36,7 @@ use notebook_wire::NotebookFrameType;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
-use super::{
-    check_and_broadcast_sync_state, check_and_update_trust_state, process_markdown_assets,
-    NotebookRoom,
-};
+use super::{check_and_broadcast_sync_state, check_and_update_trust_state, NotebookRoom};
 
 /// Initial reconnect backoff; doubles per failed attempt.
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
@@ -307,8 +304,20 @@ where
                     NotebookFrameType::SessionControl => {
                         if let Ok(control) = serde_json::from_slice::<serde_json::Value>(&frame.payload) {
                             let ctl = control.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            if ctl != "cloud_frame_accepted" && ctl != "cloud_room_ready" {
-                                debug!("[hosted-bridge] {} control: {}", locator, ctl);
+                            match ctl {
+                                "cloud_frame_accepted" | "cloud_room_ready" => {}
+                                "cloud_frame_rejected" => {
+                                    // Forwarded requests are fire-and-forget; this
+                                    // rejection is the only local failure signal.
+                                    warn!(
+                                        "[hosted-bridge] {} cloud_frame_rejected: {}",
+                                        locator,
+                                        String::from_utf8_lossy(&frame.payload)
+                                    );
+                                }
+                                _ => {
+                                    debug!("[hosted-bridge] {} control: {}", locator, ctl);
+                                }
                             }
                         }
                     }
@@ -404,7 +413,6 @@ async fn apply_cloud_notebook_sync(
             check_and_broadcast_sync_state(room).await;
         }
         check_and_update_trust_state(room).await;
-        process_markdown_assets(room).await;
     }
 
     Ok(reply)
@@ -447,11 +455,14 @@ mod tests {
     use notebook_doc::{NotebookDoc, TextEncoding};
     use notebook_protocol::protocol::ExecutionIdRejectionReason;
     use runtime_doc::RuntimeStateDoc;
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
     use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::WebSocketStream;
 
     use crate::blob_store::BlobStore;
-    use crate::notebook_sync_server::{NotebookRoom, ReservationGuard, RoomConnectionIdentity};
+    use crate::notebook_sync_server::{
+        NotebookRoom, ReservationGuard, RoomConnectionIdentity, RoomCreationOptions,
+    };
 
     const CLOUD_PRINCIPAL: &str = "user:anaconda:kyle";
     const CLOUD_ROOM_ACTOR: &str = "user:anaconda:kyle/host:room:1";
@@ -489,26 +500,23 @@ mod tests {
                 rt_peer: sync::State::new(),
             }
         }
+
+        fn add_cell(&mut self, cell_id: &str, cell_type: &str, source: &str) {
+            let index = self.nb.get_cell_ids().len();
+            self.nb.add_cell(index, cell_id, cell_type).unwrap();
+            self.nb.update_source(cell_id, source).unwrap();
+        }
+
+        fn reset_sync_states(&mut self) {
+            self.nb_peer = sync::State::new();
+            self.rt_peer = sync::State::new();
+        }
     }
 
-    /// Serve one fake hosted-room WebSocket connection: send
-    /// `cloud_room_ready`, then act as the room-authoritative automerge peer
-    /// for NotebookDoc + RuntimeStateDoc and answer `execute_cell` Request
-    /// frames by creating a queued execution in the runtime doc.
-    ///
-    /// `observed` returns each cell id seen in the fake room's doc after
-    /// every applied sync message; `frame_counter` counts inbound
-    /// AutomergeSync frames (echo-storm probe).
-    async fn serve_fake_cloud_room(
-        listener: TcpListener,
-        mut room: FakeCloudRoom,
-        observed_cells: tokio::sync::watch::Sender<Vec<String>>,
-        frame_counter: Arc<AtomicUsize>,
-        request_counter: Arc<AtomicUsize>,
+    async fn send_ready_and_initial_sync(
+        ws: &mut WebSocketStream<TcpStream>,
+        room: &mut FakeCloudRoom,
     ) {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-
         let ready = serde_json::to_vec(&serde_json::json!({
             "type": "cloud_room_ready",
             "actor_label": CLOUD_ROOM_ACTOR,
@@ -536,6 +544,16 @@ mod tests {
             .await
             .unwrap();
         }
+    }
+
+    async fn serve_fake_cloud_connection(
+        mut ws: WebSocketStream<TcpStream>,
+        mut room: FakeCloudRoom,
+        observed_cells: tokio::sync::watch::Sender<Vec<String>>,
+        frame_counter: Arc<AtomicUsize>,
+        request_counter: Arc<AtomicUsize>,
+    ) -> FakeCloudRoom {
+        send_ready_and_initial_sync(&mut ws, &mut room).await;
 
         while let Some(Ok(msg)) = ws.next().await {
             let Message::Binary(data) = msg else { continue };
@@ -625,6 +643,56 @@ mod tests {
                 ws.send(Message::Binary(reply.into())).await.unwrap();
             }
         }
+
+        room
+    }
+
+    /// Serve one fake hosted-room WebSocket connection: send
+    /// `cloud_room_ready`, then act as the room-authoritative automerge peer
+    /// for NotebookDoc + RuntimeStateDoc and answer `execute_cell` Request
+    /// frames by creating a queued execution in the runtime doc.
+    ///
+    /// `observed` returns each cell id seen in the fake room's doc after
+    /// every applied sync message; `frame_counter` counts inbound
+    /// AutomergeSync frames (echo-storm probe).
+    async fn serve_fake_cloud_room(
+        listener: TcpListener,
+        room: FakeCloudRoom,
+        observed_cells: tokio::sync::watch::Sender<Vec<String>>,
+        frame_counter: Arc<AtomicUsize>,
+        request_counter: Arc<AtomicUsize>,
+    ) {
+        let (stream, _) = listener.accept().await.unwrap();
+        let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let _ =
+            serve_fake_cloud_connection(ws, room, observed_cells, frame_counter, request_counter)
+                .await;
+    }
+
+    /// Serve two fake hosted-room WebSocket connections on one listener.
+    /// The first connection sends initial sync and closes; the second starts
+    /// from fresh sync states after a cloud-side document edit.
+    async fn serve_fake_cloud_room_with_reconnect(
+        listener: TcpListener,
+        mut room: FakeCloudRoom,
+        observed_cells: tokio::sync::watch::Sender<Vec<String>>,
+        frame_counter: Arc<AtomicUsize>,
+        request_counter: Arc<AtomicUsize>,
+    ) {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        send_ready_and_initial_sync(&mut ws, &mut room).await;
+        let _ = observed_cells.send(room.nb.get_cell_ids());
+        ws.close(None).await.unwrap();
+
+        room.add_cell("remote-2", "code", "print('after reconnect')");
+        room.reset_sync_states();
+
+        let (stream, _) = listener.accept().await.unwrap();
+        let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let _ =
+            serve_fake_cloud_connection(ws, room, observed_cells, frame_counter, request_counter)
+                .await;
     }
 
     fn test_room(tmp: &tempfile::TempDir) -> Arc<NotebookRoom> {
@@ -636,6 +704,16 @@ mod tests {
             blob_store,
             true,
         ))
+    }
+
+    #[test]
+    fn hosted_flag_defaults_false_and_marks_true() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = test_room(&tmp);
+
+        assert!(!room.is_hosted());
+        room.mark_hosted();
+        assert!(room.is_hosted());
     }
 
     async fn start_bridge(
@@ -754,6 +832,49 @@ mod tests {
             settled,
             "bridge kept exchanging NotebookDoc sync frames after convergence"
         );
+
+        bridge.shutdown();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn bridge_reconnects_with_fresh_sync_state() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (cells_tx, _cells_rx) = tokio::sync::watch::channel(Vec::new());
+        let frames = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server = tokio::spawn(serve_fake_cloud_room_with_reconnect(
+            listener,
+            FakeCloudRoom::new(),
+            cells_tx,
+            frames,
+            requests,
+        ));
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = test_room(&tmp);
+        let bridge = start_bridge(&room, addr).await;
+        bridge
+            .wait_for_principal(Duration::from_secs(10))
+            .await
+            .expect("bridge principal");
+
+        let room_for_wait = room.clone();
+        wait_until(
+            "remote-2 to reach the local room after reconnect",
+            move || {
+                let room = room_for_wait.clone();
+                Box::pin(async move {
+                    room.doc
+                        .read()
+                        .await
+                        .get_cell_ids()
+                        .contains(&"remote-2".to_string())
+                })
+            },
+        )
+        .await;
 
         bridge.shutdown();
         server.abort();
@@ -947,6 +1068,57 @@ mod tests {
             .lock()
             .await
             .insert(bridge.locator.clone(), bridge.clone());
+    }
+
+    #[tokio::test]
+    async fn hosted_bridge_teardown_skips_in_flight_attach_reservation() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let daemon = test_daemon(&tmp);
+        let room = {
+            let (room, _room_guard) = crate::notebook_sync_server::get_or_create_room_result(
+                &daemon.notebook_rooms,
+                uuid::Uuid::new_v4(),
+                RoomCreationOptions {
+                    path: None,
+                    docs_dir: &daemon.config.notebook_docs_dir,
+                    blob_store: daemon.blob_store.clone(),
+                    ephemeral: true,
+                    trusted_packages: daemon.trusted_packages.clone(),
+                },
+            )
+            .await
+            .unwrap();
+            room
+        };
+        let bridge = start_bridge(&room, addr).await;
+        register_bridge(&daemon, &bridge).await;
+
+        {
+            let _attaching_peer = ReservationGuard::new(room.clone());
+            daemon.teardown_hosted_bridge(&bridge.locator).await;
+            let still_registered = {
+                let bridges = daemon.hosted_bridges.lock().await;
+                bridges.contains_key(&bridge.locator)
+            };
+            assert!(
+                still_registered,
+                "bridge must stay registered while an attach reservation is held"
+            );
+        }
+
+        daemon.teardown_hosted_bridge(&bridge.locator).await;
+        let removed = {
+            let bridges = daemon.hosted_bridges.lock().await;
+            !bridges.contains_key(&bridge.locator)
+        };
+        assert!(
+            removed,
+            "bridge should be removed after extra reservation drops"
+        );
     }
 
     #[tokio::test]

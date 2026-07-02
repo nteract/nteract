@@ -1723,6 +1723,7 @@ fn test_room_with_path_and_store(
         file_binding: NotebookFileBinding::new(Some(notebook_path.clone()), false),
         identity: RoomIdentity::new(persist_path),
         connections: RoomConnections::default(),
+        hosted: AtomicBool::new(false),
         blob_store,
         trust_state: Arc::new(RwLock::new(TrustState {
             status: runt_trust::TrustStatus::Untrusted,

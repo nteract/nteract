@@ -817,6 +817,12 @@ pub(crate) fn compute_env_sync_diff(
 /// blob-store hashes, then updates the cell-local `resolved_assets` maps so
 /// isolated markdown rendering can rewrite those refs to blob URLs.
 pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
+    if room.is_hosted() {
+        // Resolved-asset writes are authored by a daemon actor the hosted room's
+        // actor authorization rejects, and the blob refs are local-only.
+        return;
+    }
+
     let notebook_path = room.file_binding.path().await.filter(|p| p.exists());
     // Capture heads BEFORE async resolution. Later, write resolved assets in
     // an isolated transaction at this baseline so the update composes with
