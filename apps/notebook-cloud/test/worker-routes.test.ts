@@ -1980,12 +1980,13 @@ describe("Worker artifact routes", () => {
     assert.equal(body.notebooks[1]?.endpoints.catalog, "/api/n/editor-shared");
   });
 
-  it("omits malformed notebook composition from list rows without dropping language", async () => {
+  it("omits malformed notebook composition and preview cells from list rows without dropping language", async () => {
     const env = fakeEnv();
     seedNotebook(env, "malformed-summary");
     const notebook = env.DB.notebooks.get("malformed-summary");
     assert.ok(notebook);
     notebook.cell_composition = "{not-json";
+    notebook.preview_cells = "{not-json";
     notebook.language = "python";
     seedAcl(env, { notebookId: "malformed-summary", subject: "user:dev:alice", scope: "owner" });
 
@@ -2007,6 +2008,7 @@ describe("Worker artifact routes", () => {
         composition?: unknown;
         language?: string;
         notebook_id: string;
+        preview?: unknown;
       }>;
     };
     const row = body.notebooks.find(
@@ -2014,6 +2016,7 @@ describe("Worker artifact routes", () => {
     );
     assert.ok(row);
     assert.equal(Object.hasOwn(row, "composition"), false);
+    assert.equal(Object.hasOwn(row, "preview"), false);
     assert.equal(row.language, "python");
   });
 
@@ -5768,7 +5771,7 @@ describe("Worker artifact routes", () => {
     assert.equal(renderCacheRoute.status, 404);
   });
 
-  it("persists snapshot cell composition and notebook language for list rows", async () => {
+  it("persists snapshot cell composition, preview cells, and notebook language for list rows", async () => {
     const env = fakeEnv();
     const { notebookBytes, runtimeStateBytes } = pythonSummarySnapshotPair(
       "summary-demo",
@@ -5798,6 +5801,13 @@ describe("Worker artifact routes", () => {
 
     const notebook = env.DB.notebooks.get("summary-demo");
     assert.equal(notebook?.cell_composition, JSON.stringify({ code: 1, markdown: 1, raw: 1 }));
+    assert.equal(
+      notebook?.preview_cells,
+      JSON.stringify([
+        { kind: "markdown", text: "# Summary heading" },
+        { kind: "code", text: "print('first code')" },
+      ]),
+    );
     assert.equal(notebook?.language, "python");
 
     const listResponse = await worker.fetch(
@@ -5817,10 +5827,15 @@ describe("Worker artifact routes", () => {
         composition?: { code: number; markdown: number; raw: number };
         language?: string;
         notebook_id: string;
+        preview?: Array<{ kind: string; text: string; execution_count?: number }>;
       }>;
     };
     const row = listBody.notebooks.find((candidate) => candidate.notebook_id === "summary-demo");
     assert.deepEqual(row?.composition, { code: 1, markdown: 1, raw: 1 });
+    assert.deepEqual(row?.preview, [
+      { kind: "markdown", text: "# Summary heading" },
+      { kind: "code", text: "print('first code')" },
+    ]);
     assert.equal(row?.language, "python");
   });
 
@@ -6039,6 +6054,7 @@ describe("Worker artifact routes", () => {
       env.DB.revisions[0]?.id,
     );
     assert.equal(env.DB.notebooks.get("summary-fail-open")?.cell_composition, null);
+    assert.equal(env.DB.notebooks.get("summary-fail-open")?.preview_cells, null);
     assert.ok(
       warnings.some(
         (entry) =>
@@ -6341,6 +6357,7 @@ describe("catalog schema migrations", () => {
     const notebookColumns = db.tableColumns.get("notebooks");
     assert.ok(notebookColumns);
     notebookColumns.delete("cell_composition");
+    notebookColumns.delete("preview_cells");
     notebookColumns.delete("language");
     const revisionColumns = db.tableColumns.get("notebook_revisions");
     assert.ok(revisionColumns);
@@ -6352,6 +6369,7 @@ describe("catalog schema migrations", () => {
 
     const migrated = db.tableColumns.get("notebooks");
     assert.ok(migrated?.has("cell_composition"), "cell_composition added by migration");
+    assert.ok(migrated?.has("preview_cells"), "preview_cells added by migration");
     assert.ok(migrated?.has("language"), "language added by migration");
     const migratedRevisions = db.tableColumns.get("notebook_revisions");
     assert.ok(migratedRevisions?.has("cover_blob_hash"), "cover_blob_hash added by migration");
@@ -7119,6 +7137,7 @@ function seedNotebook(env: FakeEnv, notebookId: string): void {
     updated_at: "2026-05-22T00:00:00.000Z",
     latest_revision_id: null,
     cell_composition: null,
+    preview_cells: null,
     language: null,
   });
 }
@@ -7322,6 +7341,9 @@ function pythonSummarySnapshotPair(
     notebook.add_cell_after("cell-code", "code", null);
     notebook.add_cell_after("cell-markdown", "markdown", "cell-code");
     notebook.add_cell_after("cell-raw", "raw", "cell-markdown");
+    notebook.update_source("cell-code", "import pandas as pd\nprint('first code')");
+    notebook.update_source("cell-markdown", "# Summary heading\n\nNarrative body");
+    notebook.update_source("cell-raw", "raw note");
     return {
       notebookBytes: notebook.save(),
       runtimeStateBytes: runtime.save(),
@@ -7567,6 +7589,7 @@ interface NotebookRow {
   updated_at: string;
   latest_revision_id: string | null;
   cell_composition: string | null;
+  preview_cells: string | null;
   cover_blob_hash?: string | null;
   cover_mime?: string | null;
   language: string | null;
@@ -7672,6 +7695,7 @@ class FakeD1 implements D1Database {
         "updated_at",
         "latest_revision_id",
         "cell_composition",
+        "preview_cells",
         "language",
       ]),
     ],
@@ -8486,6 +8510,7 @@ class FakeD1Statement implements D1PreparedStatement {
         updated_at: updatedAt,
         latest_revision_id: existing?.latest_revision_id ?? null,
         cell_composition: existing?.cell_composition ?? null,
+        preview_cells: existing?.preview_cells ?? null,
         language: existing?.language ?? null,
       });
       return okResult(undefined, { changes: 1 });
@@ -8493,7 +8518,8 @@ class FakeD1Statement implements D1PreparedStatement {
       if (this.db.failNotebookSummaryUpdate) {
         throw new Error("fake summary update failure");
       }
-      const [cellComposition, language, notebookId] = this.values as [
+      const [cellComposition, previewCells, language, notebookId] = this.values as [
+        string | null,
         string | null,
         string | null,
         string,
@@ -8501,6 +8527,7 @@ class FakeD1Statement implements D1PreparedStatement {
       const existing = this.db.notebooks.get(notebookId);
       if (existing) {
         existing.cell_composition = cellComposition;
+        existing.preview_cells = previewCells;
         existing.language = language;
         return okResult(undefined, { changes: 1 });
       }

@@ -33,12 +33,24 @@ export interface SnapshotNotebookSummary {
   cellComposition: SnapshotCellComposition;
   cover: SnapshotNotebookCover | null;
   language: string | null;
+  previewCells: SnapshotNotebookPreviewCell[];
 }
 
 export interface SnapshotNotebookCover {
   blobHash: string;
   mime: "image/png" | "image/jpeg" | "image/svg+xml";
 }
+
+export type SnapshotNotebookPreviewCell =
+  | {
+      kind: "markdown";
+      text: string;
+    }
+  | {
+      kind: "code";
+      text: string;
+      execution_count?: number;
+    };
 
 export interface MaterializedSnapshotPairRender {
   render: SnapshotRender;
@@ -79,6 +91,7 @@ export async function materializeSnapshotPairRenderWithSummary(
       cellComposition: countCellComposition(cells),
       cover: selectNotebookCoverFromCells(cells),
       language: readDetectedRuntime(handle, metadata),
+      previewCells: deriveNotebookPreviewCells(cells),
     };
     const commsDocId = readOptionalCommsDocId(handle);
     const rawWidgetComms = snapshotWidgetCommsFromRuntimeAndCommsState(runtimeState, commsState);
@@ -244,4 +257,87 @@ export function countCellComposition(cells: unknown): SnapshotCellComposition {
     }
   }
   return composition;
+}
+
+export const SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH = 140;
+
+export function deriveNotebookPreviewCells(cells: unknown): SnapshotNotebookPreviewCell[] {
+  const previews: SnapshotNotebookPreviewCell[] = [];
+  if (!Array.isArray(cells)) {
+    return previews;
+  }
+
+  let markdownPreview: SnapshotNotebookPreviewCell | null = null;
+  let codePreview: SnapshotNotebookPreviewCell | null = null;
+
+  for (const cell of cells) {
+    const cellRecord = objectRecord(cell);
+    if (!cellRecord) {
+      continue;
+    }
+    const cellType = cellRecord.cell_type;
+
+    if (cellType === "markdown" && markdownPreview === null) {
+      // The opening line of the first prose cell - usually the title heading.
+      const sourceLine = firstNonEmptySourceLine(cellRecord.source);
+      if (sourceLine) {
+        markdownPreview = { kind: "markdown", text: truncatePreviewText(sourceLine) };
+      }
+      continue;
+    }
+
+    if (cellType === "code") {
+      // The closing line of the last code cell - the result expression a
+      // reader recognizes, not the imports above it.
+      const sourceLine = lastNonEmptySourceLine(cellRecord.source);
+      if (sourceLine) {
+        const executionCount = parsePositiveExecutionCount(cellRecord.execution_count);
+        codePreview = {
+          kind: "code",
+          text: truncatePreviewText(sourceLine),
+          ...(executionCount ? { execution_count: executionCount } : {}),
+        };
+      }
+    }
+  }
+
+  if (markdownPreview) {
+    previews.push(markdownPreview);
+  }
+  if (codePreview) {
+    previews.push(codePreview);
+  }
+  return previews;
+}
+
+function firstNonEmptySourceLine(source: unknown): string | null {
+  return nonEmptySourceLines(source)[0] ?? null;
+}
+
+function lastNonEmptySourceLine(source: unknown): string | null {
+  return nonEmptySourceLines(source).at(-1) ?? null;
+}
+
+function nonEmptySourceLines(source: unknown): string[] {
+  if (typeof source !== "string") {
+    return [];
+  }
+  return source.split(/\r\n|\n|\r/u).filter((line) => line.trim().length > 0);
+}
+
+function truncatePreviewText(value: string): string {
+  return value.length > SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH
+    ? value.slice(0, SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH)
+    : value;
+}
+
+function parsePositiveExecutionCount(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value !== "string" || !/^\s*[1-9]\d*\s*$/u.test(value)) {
+    return null;
+  }
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }

@@ -822,6 +822,43 @@ describe("cloud notebook dashboard projection", () => {
     assert.equal(cloudNotebookCoverUrl(covered), "/api/n/covered-notebook/blobs/cover-hash");
   });
 
+  it("threads notebook preview cells through list-item validation and dashboard rows", () => {
+    const previewed = notebook({
+      id: "previewed-notebook",
+      title: "Previewed Notebook",
+      scope: "owner",
+      updatedAt: "2026-06-24T00:00:00.000Z",
+      latestRevisionId: "published-previewed",
+      preview: [
+        { kind: "markdown", text: "# Model notes" },
+        { kind: "code", text: "chart = alt.Chart(df)", execution_count: 8 },
+      ],
+    });
+
+    assert.equal(isCloudNotebookListItem(previewed), true);
+    assert.equal(
+      isCloudNotebookListItem({
+        ...previewed,
+        preview: [{ kind: "markdown", text: "# Model notes", execution_count: 1 }],
+      }),
+      false,
+    );
+    assert.equal(
+      isCloudNotebookListItem({
+        ...previewed,
+        preview: [{ kind: "code", text: "run()", execution_count: "8" }],
+      }),
+      false,
+    );
+
+    const model = projectCloudNotebookDashboard([previewed]);
+
+    assert.deepEqual(model.continueRow?.notebook.preview, [
+      { kind: "markdown", text: "# Model notes" },
+      { kind: "code", text: "chart = alt.Chart(df)", execution_count: 8 },
+    ]);
+  });
+
   it("maps compute session status to dashboard runtime status", () => {
     const base = {
       id: "runtime-status",
@@ -891,6 +928,7 @@ function notebook(input: {
   cover?: CloudNotebookListItem["cover"];
   language?: string;
   peers?: CloudNotebookListItem["peers"];
+  preview?: CloudNotebookListItem["preview"];
 }): CloudNotebookListItem {
   return {
     notebook_id: input.id,
@@ -905,6 +943,7 @@ function notebook(input: {
     ...(input.cover ? { cover: input.cover } : {}),
     ...(input.language ? { language: input.language } : {}),
     ...(input.peers ? { peers: input.peers } : {}),
+    ...(input.preview ? { preview: input.preview } : {}),
     viewer_url: `/n/${input.id}/notebook`,
     endpoints: {
       catalog: `/api/n/${input.id}`,

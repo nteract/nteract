@@ -4,9 +4,11 @@ import { readFile } from "node:fs/promises";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import {
   countCellComposition,
+  deriveNotebookPreviewCells,
   detectRuntimeFromMetadata,
   materializeSnapshotPairRender,
   selectNotebookCoverFromCells,
+  SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH,
 } from "../src/snapshot-render.ts";
 import {
   createNotebookCloudBlobResolver,
@@ -412,6 +414,63 @@ describe("snapshot summary derivation helpers", () => {
     assert.deepEqual(countCellComposition(null), { code: 0, markdown: 0, raw: 0 });
     assert.deepEqual(countCellComposition("cells"), { code: 0, markdown: 0, raw: 0 });
     assert.deepEqual(countCellComposition({ cells: [] }), { code: 0, markdown: 0, raw: 0 });
+  });
+
+  it("derives markdown from the first markdown cell and code from the last code cell", () => {
+    assert.deepEqual(
+      deriveNotebookPreviewCells([
+        { cell_type: "code", source: "first_code()", execution_count: "3" },
+        { cell_type: "markdown", source: "\n# First heading\nBody" },
+        { cell_type: "markdown", source: "# Second heading" },
+        {
+          cell_type: "code",
+          source: "import pandas as pd\nresult = fit(df)\nresult.head()\n",
+          execution_count: "12",
+        },
+      ]),
+      [
+        { kind: "markdown", text: "# First heading" },
+        { kind: "code", text: "result.head()", execution_count: 12 },
+      ],
+    );
+  });
+
+  it("truncates preview text at 140 characters", () => {
+    const longMarkdown = `# ${"m".repeat(SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH + 20)}`;
+    const longCode = `print('${"c".repeat(SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH + 20)}')`;
+
+    const preview = deriveNotebookPreviewCells([
+      { cell_type: "markdown", source: longMarkdown },
+      { cell_type: "code", source: longCode },
+    ]);
+
+    assert.equal(preview[0]?.text.length, SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH);
+    assert.equal(preview[0]?.text, longMarkdown.slice(0, SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH));
+    assert.equal(preview[1]?.text.length, SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH);
+    assert.equal(preview[1]?.text, longCode.slice(0, SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH));
+  });
+
+  it("omits execution counts that are not positive integer strings", () => {
+    assert.deepEqual(
+      deriveNotebookPreviewCells([
+        { cell_type: "code", source: "zero()", execution_count: "0" },
+        { cell_type: "code", source: "legacy()", execution_count: "7-ish" },
+      ]),
+      [{ kind: "code", text: "legacy()" }],
+    );
+  });
+
+  it("skips empty and malformed preview cells", () => {
+    assert.deepEqual(
+      deriveNotebookPreviewCells([
+        null,
+        "not-a-cell",
+        { cell_type: "markdown", source: "\n  \n" },
+        { cell_type: "code", source: 42, execution_count: "4" },
+        { cell_type: "raw", source: "raw is not previewed" },
+      ]),
+      [],
+    );
   });
 
   it("detects runtime from kernelspec name, language, language_info, and runt metadata", () => {

@@ -69,6 +69,149 @@
   background: var(--ct-raw);
 }
 
+/* Mini cell strip: rendered dashboard previews of notebook markdown/code plus
+   a real cover thumbnail when the notebook has one. */
+.nb-cellstrip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.nb-cellrow {
+  display: grid;
+  grid-template-columns: 3px 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  overflow: hidden;
+  border-radius: 6px;
+  padding-right: 10px;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.nb-cellrow-md {
+  grid-template-columns: 3px minmax(0, 1fr);
+  align-items: start;
+  height: auto;
+  gap: 11px;
+  padding: 3px 0;
+  background: transparent;
+}
+
+.nb-cellrow-md .nb-cellribbon {
+  align-self: stretch;
+  min-height: 18px;
+}
+
+.nb-cellribbon {
+  align-self: stretch;
+  border-radius: 3px;
+}
+
+.nb-cellribbon[data-ct="code"] {
+  background: var(--ct-code);
+}
+
+.nb-cellribbon[data-ct="markdown"] {
+  background: var(--ct-markdown);
+}
+
+.nb-cellribbon[data-ct="raw"] {
+  background: var(--ct-raw);
+}
+
+.nb-cellgutter {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.nb-cell-exec {
+  min-width: 0;
+  height: auto;
+}
+
+.nb-cellcode {
+  overflow: hidden;
+  color: color-mix(in srgb, var(--foreground) 78%, transparent);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nb-md-preview {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.nb-md-h {
+  display: block;
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 12.5px;
+  font-weight: 680;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nb-md-h[data-lvl="1"] {
+  font-size: 15px;
+}
+
+.nb-md-h[data-lvl="2"] {
+  font-size: 13.5px;
+}
+
+.nb-md-h[data-lvl="3"],
+.nb-md-h[data-lvl="4"] {
+  color: color-mix(in srgb, var(--foreground) 80%, transparent);
+  font-size: 12.5px;
+}
+
+.nb-md-p {
+  color: color-mix(in srgb, var(--foreground) 72%, transparent);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.nb-md-code {
+  border-radius: 4px;
+  padding: 0 4px;
+  background: var(--muted);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.nb-cellout {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 1px;
+}
+
+.nb-cellout .nb-output-img {
+  display: block;
+  width: 152px;
+  height: 60px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: var(--nb-shadow);
+}
+
+.nb-cellout .nb-output-img img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 /* Runtime status: a calm dot with an optional terse label. */
 .nb-kernel {
   display: inline-flex;

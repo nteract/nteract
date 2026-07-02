@@ -1440,6 +1440,15 @@ body {
   gap: 4px;
 }
 
+.nb-row-strip {
+  grid-column: 1 / -1;
+  padding-top: 2px;
+}
+
+.nb-row[data-cover-slot="true"] .nb-row-strip {
+  padding-left: 52px;
+}
+
 .nb-row-icon {
   width: 28px;
   height: 28px;
@@ -1795,6 +1804,11 @@ body {
   }
 
   .nb-subline {
+    display: none;
+  }
+
+  .nb-row-strip,
+  .nb-hero .nb-cellstrip {
     display: none;
   }
 

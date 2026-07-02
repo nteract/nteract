@@ -16,6 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NotebookCellStrip } from "@/components/notebook/NotebookCellStrip";
 import { LanguageMark } from "@/components/runtime/LanguageMark";
 import { NotebookCompositionTicks } from "@/components/notebook/NotebookCompositionTicks";
 import { RuntimeStatusDot } from "@/components/runtime/RuntimeStatusDot";
@@ -214,6 +215,7 @@ function CloudNotebookDashboardHero({
       : null);
   const cellCount = row.composition ? notebookCompositionTotal(row.composition) : null;
   const heroComputeFact = row.facts.find((fact) => fact.kind === "compute") ?? null;
+  const stripThumbnail = cloudNotebookCellStripThumbnail(notebook);
 
   return (
     <section
@@ -250,6 +252,9 @@ function CloudNotebookDashboardHero({
           </div>
           {row.composition ? (
             <NotebookCompositionTicks composition={row.composition} className="nb-hero-fp" />
+          ) : null}
+          {notebook.preview?.length || stripThumbnail ? (
+            <NotebookCellStrip preview={notebook.preview ?? []} thumbnail={stripThumbnail} />
           ) : null}
         </div>
         <div className="nb-hero-side">
@@ -444,9 +449,15 @@ function CloudNotebookDashboardRowView({
   // the column shows the calm dot + terse status, the full label rides title/aria.
   const computeFact = row.facts.find((fact) => fact.kind === "compute") ?? null;
   const languageLabel = cloudNotebookLanguageDisplayLabel(notebook.language);
+  const stripThumbnail = cloudNotebookCellStripThumbnail(notebook);
+  const showStrip = Boolean(notebook.preview?.length || stripThumbnail);
 
   return (
-    <div className={`nb-row${activeNow ? " is-live" : ""}`} data-scope={notebook.scope}>
+    <div
+      className={`nb-row${activeNow ? " is-live" : ""}`}
+      data-cover-slot={showStrip && showCoverSlot ? "true" : undefined}
+      data-scope={notebook.scope}
+    >
       <a
         className="nb-row-lead"
         href={openUrl}
@@ -528,6 +539,11 @@ function CloudNotebookDashboardRowView({
           <ArrowRight aria-hidden="true" />
         </a>
       </span>
+      {showStrip ? (
+        <div className="nb-row-strip">
+          <NotebookCellStrip preview={notebook.preview ?? []} thumbnail={stripThumbnail} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -595,6 +611,13 @@ function CloudNotebookHeroBanner({ notebook }: { notebook: CloudNotebookListItem
       <img className="nb-output-img" src={coverUrl} alt="" />
     </div>
   );
+}
+
+function cloudNotebookCellStripThumbnail(
+  notebook: CloudNotebookListItem,
+): { src: string; alt: string } | null {
+  const src = cloudNotebookCoverUrl(notebook);
+  return src ? { src, alt: "" } : null;
 }
 
 function NotebookCoverFallbackIcon({
