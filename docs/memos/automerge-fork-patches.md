@@ -101,7 +101,7 @@ An upstream path-aware hook could still be useful as a lower-cost optimization o
 
 ### 4. (Speculative) Hooks for signed-change verification
 
-When keyhive's surface stabilizes, signed changes would let us verify cross-space authorship at publish import (lifting the "publish is a fresh document" restriction in the identity ADR). The shape of this depends entirely on what keyhive lands. Tracked as future-compat, not on the current fork roadmap.
+When keyhive's surface stabilizes, signed changes would let us verify cross-space authorship at publish import (the identity ADR's Decision 6 target is publish-time re-authoring; signed changes would let preserved history carry verified attribution instead). The shape of this depends entirely on what keyhive lands. Tracked as future-compat, not on the current fork roadmap.
 
 ## Coordination with upstream
 

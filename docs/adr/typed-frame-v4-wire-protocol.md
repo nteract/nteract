@@ -62,7 +62,7 @@ Both surfaces share the same 100 MiB outer ceiling (`MAX_FRAME_SIZE`) and the sa
 
 The fact that the same protocol-version preamble gates two different framing rules is intentional: pool/settings predate the typed-frame layer and were not worth migrating. New channels should adopt typed framing.
 
-## Decision 3: Ten frame types, fixed numbering
+## Decision 3: Eleven frame types, fixed numbering
 
 `NotebookFrameType` is a `#[repr(u8)]` enum. Adding a new type requires a new byte, a new variant, and a CI-enforced contract test (`cargo test -p notebook-protocol`). The current set:
 
@@ -78,6 +78,7 @@ The fact that the same protocol-version preamble gates two different framing rul
 | `0x07` | `SessionControl` | JSON, `SessionControlMessage` | daemon → client |
 | `0x08` | `PutBlob` | Framed binary (see Decision 6) | client → daemon |
 | `0x09` | `CommsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommsDoc`) | bidirectional |
+| `0x0a` | `CommentsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommentsDoc`) | bidirectional |
 
 ### Direction is policy, not encoding
 
@@ -89,7 +90,15 @@ Direction is enforced by the room peer loop and by the relay, not by anything in
 
 ### Forward-compatibility behavior
 
-Unknown frame types are logged and skipped by `recv_typed_frame`. The loop continues. This makes the format additively forward-compatible at the receive path: a v5 daemon can send a v4-unknown frame type and a v4 client will skip it. The opposite direction (v4 daemon receiving v5 frame from a newer client) is closed off by the handshake preamble check, which fails before any frame is sent. The forward-compat path is therefore daemon-to-client only.
+Unknown frame types are classified before allocation and skipped with a bounded
+discard read (`recv_typed_frame` at
+`crates/notebook-protocol/src/connection/framing.rs:170-183`, bounded discard
+buffer at `:229-241`). The peer loop continues without allocating the unknown
+frame body. This makes the format additively forward-compatible at the receive
+path: a v5 daemon can send a v4-unknown frame type and a v4 client will skip it
+safely. The opposite direction (v4 daemon receiving v5 frame from a newer
+client) is closed off by the handshake preamble check, which fails before any
+frame is sent. The forward-compat path is therefore daemon-to-client only.
 
 ## Decision 4: Per-type size limits trade safety for headroom
 
@@ -104,6 +113,7 @@ Every frame type has a hard cap (reject) and a soft warn threshold (log, continu
 | `Presence` | 4 KiB | 1 KiB | Cursor/selection/focus updates (typically <100 bytes CBOR); matches semantic cap in `notebook-doc::presence` |
 | `RuntimeStateSync` | 64 MiB | 16 MiB | Snapshots of `RuntimeStateDoc` with output manifests |
 | `CommsDocSync` | 64 MiB | 16 MiB | Mutable widget comm state snapshots and sync deltas |
+| `CommentsDocSync` | 64 MiB | 16 MiB | Notebook comments with inline text and resolved thread state |
 | `PoolStateSync` | 1 MiB | 256 KiB | Daemon pool state is small (counts, errors, env paths) |
 | `SessionControl` | 1 MiB | 256 KiB | Tiny readiness JSON |
 | `PutBlob` | 32 MiB | 8 MiB | Single-frame blob upload ceiling |
@@ -113,13 +123,23 @@ The caps and warns are defined in `notebook_wire::frame_size_limits` and generat
 Two tests cover the generated surface:
 
 - `crates/notebook-protocol/src/typescript.rs::generated_typescript_bindings_are_current` asserts generated TS files, including `wire-constants.ts`, are current.
-- `crates/notebook-protocol/src/connection.rs::frame_size_limits_cover_every_known_frame_type` asserts every known Rust type has a tighter cap than the 100 MiB outer ceiling and that warn is strictly less than cap.
+- `crates/notebook-protocol/src/connection.rs::frame_size_limits_cover_every_known_frame_type` enumerates frame types and asserts each has a tighter cap than the 100 MiB outer ceiling and that warn is strictly less than cap. The exhaustive match on `typed_frame_size_limits` is the primary guard; the test's list may lag new frame types until the next protocol pass updates it.
 
 ### Why the cap-first protocol matters
 
-`recv_typed_frame` reads the 4-byte length prefix, then the 1-byte type byte, then looks up the per-type cap and applies it **before allocating the body buffer** (`crates/notebook-protocol/src/connection/framing.rs:144-178`). A garbage length prefix aimed at the `Presence` channel (which legitimately carries ~100 bytes) is rejected after 5 bytes of header read, before the body allocation. Without per-type caps, a 1.8 GB length on a narrow channel would still allocate up to the 100 MiB outer ceiling before failing. The cap structure is an allocator safety boundary, not just a sanity check.
+`recv_typed_frame` reads the 4-byte length prefix, then the 1-byte type byte,
+classifies the frame type, then looks up the per-type cap and applies it
+**before allocating the body buffer**
+(`crates/notebook-protocol/src/connection/framing.rs:144-178`). A garbage
+length prefix aimed at the `Presence` channel (which legitimately carries ~100
+bytes) is rejected after 5 bytes of header read, before the body allocation.
+Without per-type caps, a 1.8 GB length on a narrow channel would still allocate
+up to the 100 MiB outer ceiling before failing. The cap structure is an
+allocator safety boundary, not just a sanity check.
 
-There is one cost to forward-compat: for **unknown** frame types the per-type lookup falls back to the 100 MiB outer ceiling (`crates/notebook-wire/src/lib.rs:97-101`). The body is allocated and read into memory *before* `try_from` rejects the unknown discriminant and the frame is skipped (`framing.rs:204-222`). So a v4 daemon receiving forward-compat unknown bytes from a v5 peer can allocate up to 100 MiB per frame before skipping. Future-proof is not free.
+Unknown frame types are classified before allocation and discarded with a
+bounded discard-read loop (`:229-241`), so forward-compat unknown frames do not
+trigger large allocations before being skipped.
 
 ### Outbound caps mirror inbound
 
@@ -183,14 +203,28 @@ The first frame after the preamble is a JSON `Handshake`, length-prefixed but **
 |---------|---------|------------------------|
 | `Pool` | Pool IPC | Untyped JSON request/response |
 | `SettingsSync` | Global settings doc | Untyped binary Automerge sync |
-| `NotebookSync` | Per-notebook room | Typed frames (0x00 through 0x08) |
+| `NotebookSync` | Per-notebook room | Typed frames (0x00 through 0x0a) |
 | `OpenNotebook` | Per-notebook room from file path | Typed frames |
 | `CreateNotebook` | New untitled room | Typed frames |
+| `OpenHostedNotebook` | Daemon-mediated hosted cloud room bridge | Typed frames |
 | `RuntimeAgent` | Kernel sidecar attached to a room | Typed frames, different request/response payloads |
 
-For typed-frame channels, after the handshake the daemon writes a `ProtocolCapabilities` JSON frame (or `NotebookConnectionInfo` for `OpenNotebook`/`CreateNotebook`) **using the untyped framing** — this is still pre-typed-frame setup. Once that response is read, both sides switch to typed framing for the rest of the connection's life.
+For typed-frame channels, the handshake can request typed bootstrap
+(`typed_bootstrap` flags at
+`crates/notebook-protocol/src/connection/handshake.rs:27-30`, `:53-56`,
+`:73-76`, `:129-132`). When `typed_capabilities` is true
+(`peer_connection.rs:280-287`), the daemon sends `ConnectionBootstrap` as a
+`NotebookFrameType::SessionControl` typed frame instead of untyped JSON. Legacy
+clients omit the flag and receive `NotebookConnectionInfo` /
+`ProtocolCapabilities` using untyped framing before typed frames begin. Once
+the bootstrap is read (typed or untyped), both sides use typed framing for the
+rest of the connection's life.
 
-This split (typed framing only kicks in after capability negotiation) is the reason the handshake JSON itself does not carry a type byte. Conventionally, a client waits for the capability response before sending typed frames, but the server does not enforce this: the post-handshake frame loop starts immediately after `ProtocolCapabilities` is written (`crates/runtimed/src/notebook_sync_server/peer_connection.rs:241`, `peer_loop.rs:161`), so a client that sends typed frames early will have them processed without rejection. The capability response is informational, not gating.
+Conventionally, a client waits for the bootstrap before sending typed frames,
+but the server does not enforce this: the post-handshake frame loop starts
+immediately after the bootstrap is written (`peer_connection.rs:241`,
+`peer_loop.rs:161`), so a client that sends typed frames early will have them
+processed without rejection. The bootstrap is informational, not gating.
 
 ## Decision 8: Session control is daemon-originated readiness, not a request channel
 

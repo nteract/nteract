@@ -24,16 +24,20 @@
 ### Project structure
 
 ```
-apps/notebook/        Tauri desktop app (React + Vite frontend)
-apps/elements/        Elements component library
-crates/               Rust workspace
-  runtimed/           Daemon process — owns kernels and document state
-  notebook/           Tauri application shell
-  runt-mcp/           MCP server
-  notebook-doc/       CRDT document model (Automerge)
-  xtask/              Build task runner
-packages/             Shared JS/TS packages
-plugins/nteract/      Renderer plugins
+apps/notebook/          Tauri desktop app (React + Vite frontend)
+apps/notebook-cloud/    Hosted notebook worker (Cloudflare)
+apps/elements/          Elements design system catalog
+packages/               Shared JS/TS packages
+plugins/nteract/        Agent plugin distribution (Codex)
+crates/                 Rust workspace
+  runtimed/             Daemon — owns kernels and document state
+  notebook/             Tauri application shell
+  runt-mcp/             MCP server
+  notebook-doc/         CRDT document model (Automerge)
+  xtask/                Build task runner
+python/                 Python workspace (uv)
+  runtimed/             Python bindings
+  nteract/              MCP launcher
 ```
 
 ### Frontend
@@ -71,11 +75,13 @@ cargo xtask wasm sift         # rebuild sift-wasm only
 
 ### Python bindings
 
-`uv sync` and `maturin develop` are run automatically by `cargo xtask dev`. To run manually:
+`uv sync` is run automatically by `cargo xtask dev`. Python bindings are no
+longer part of the default build (the MCP server is Rust-native). To build them
+manually:
 
 ```bash
 uv sync
-cd crates/runtimed-py && VIRTUAL_ENV=../../.venv maturin develop
+cd crates/runtimed-py && VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 ```
 
 ### Desktop app

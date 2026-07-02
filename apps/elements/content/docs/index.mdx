@@ -25,8 +25,14 @@ repo-level `docs/` tree.
 Keep the catalog production-backed. It should render shared shell, rail,
 toolbar, identity, package, cell, output, and widget components from
 deterministic fixtures without importing the desktop runtime, sync engine,
-Cloudflare host, or generated runtimed WASM bindings. Renderer-specific assets
-like Sift WASM should stay explicit, docs-served adapters.
+Cloudflare host, or generated runtimed WASM bindings.
+
+Shared UI primitives (`src/components/ui`) are the single source of truth for
+Button, Popover, ContextMenu, and other shadcn-style components
+(`docs/adr/shared-ui-primitives-package.md`, #3872). Sift aliases
+`@/components/ui/*` and consumes notebook tokens, so it renders with the app's
+palette. Renderer-specific assets like Sift WASM stay explicit, docs-served
+adapters.
 
 ## Production-backed catalog
 

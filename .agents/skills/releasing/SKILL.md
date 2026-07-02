@@ -33,17 +33,13 @@ These evolve independently from each other and from the artifact version.
 ## Bumping Versions
 
 ```bash
-# Update the checked-in release sources to the same version:
-#   crates/runtimed/Cargo.toml
-#   crates/runt/Cargo.toml
-#   crates/notebook/Cargo.toml
-#   crates/notebook/tauri.conf.json
-#   python/runtimed/pyproject.toml
-#   python/nteract/pyproject.toml
-
-# Then let Cargo.lock catch up:
-cargo check
+cargo xtask bump patch  # or minor, or major
 ```
+
+This updates all versioned artifacts in lockstep (Rust crates, Python packages,
+frontend packages, plugin manifests, Tauri config) and runs `cargo update -w` to
+refresh `Cargo.lock`. See `crates/xtask/src/bump.rs` for the complete target
+list.
 
 Commit the version bump, then tag to trigger the release.
 
@@ -52,8 +48,8 @@ Commit the version bump, then tag to trigger the release.
 ### Stable Release
 
 ```bash
-git tag v2.1.0
-git push origin v2.1.0
+git tag v2.1.0-stable.202607020900
+git push origin v2.1.0-stable.202607020900
 ```
 
 Triggers `release-stable.yml` which:

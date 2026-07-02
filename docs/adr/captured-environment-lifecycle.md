@@ -1,7 +1,8 @@
 # Captured Environment Lifecycle
 
-**Status:** Draft, 2026-05-24. This document records the target lifecycle
-shape; parts of the implementation remain planned rather than fully enforced.
+**Status:** Accepted, 2026-05-24. Typed disk state (`Missing`, `Partial`,
+`Usable`) and captured repair routing landed. Manual rebuild, explicit refresh,
+and launch-retry remain open follow-ups.
 
 ## Related ADRs
 
@@ -53,12 +54,21 @@ The old question was "does `unified_env_on_disk()` return a Python path?" That b
 | `Partial` | Env dir exists but the expected Python executable is absent. | Route to captured repair. The directory's presence proves the notebook once owned this derived hash. |
 | `Usable` | Env dir exists and expected Python executable exists. | Route as captured cache-hit candidate. |
 
-This distinction is load-bearing. A missing dir is ambiguous and must preserve the existing fallback behavior. A partial dir is not ambiguous: it is a broken on-disk realization of this notebook's captured identity and should be rebuilt through the captured path.
+This distinction is load-bearing. A missing dir is ambiguous and must preserve
+the existing fallback behavior. A partial dir is not ambiguous: it is a broken
+on-disk realization of this notebook's captured identity and should be rebuilt
+through the captured path.
 
-The resolution helper must therefore be typed. A plan that detects `Partial` only inside `acquire_prewarmed_env_with_capture()` is insufficient if the source-resolution layer never routes partial dirs to `uv:prewarmed` or `conda:prewarmed`.
+The resolution helper must therefore be typed. A plan that detects `Partial`
+only inside `acquire_prewarmed_env_with_capture()` is insufficient if the
+source-resolution layer never routes partial dirs to `uv:prewarmed` or
+`conda:prewarmed`.
 
-Implementation note: this is the intended architecture, not the current state
-of every code path. CEL-1 tracks the remaining boolean-path implementation gap.
+Implemented: `CapturedEnvDiskState::{Missing, Partial, Usable}` (defined at
+`crates/runtimed/src/notebook_sync_server/metadata.rs`) and
+`captured_env_disk_state()` classify disk state by environment backend; both
+`Partial` and `Usable` route as captured cache-hit candidates, and
+`prepare_environment_unified()` rebuilds partial dirs before handoff.
 
 ## Decision 3: The happy path stays cheap
 
@@ -206,13 +216,16 @@ Use "declared dependencies", not "saved dependencies"; saved can mean either the
 3. **Full typed launch-error model.** If optional retry hints are too weak or leak into other protocol surfaces, introduce a richer internal launch-error type.
 4. **Manual rebuild `env_id` policy.** Automatic repair keeps `env_id` stable. Manual rebuild can revisit stable versus rotated `env_id` with UI and concurrency constraints in view.
 
-## Implementation Notes
+## Open Follow-ups
 
-The #1969 implementation plan should be updated before coding:
-
-- merge typed disk-state and partial repair into one implementation unit;
-- replace the boolean `is_captured()` gate with typed captured-resolution semantics;
-- prove `Missing` does not route as captured and `Partial` does;
-- classify launch failures in `runtime_agent.rs` before wrapping;
-- keep retry lifecycle in a progressing state until final success/error;
-- add focused tests for UV and Conda disk states, including broken symlink behavior when feasible.
+1. **Launch retry on captured-env handshake failure.** Automatic one-shot repair
+   with coordinator-scoped retry suppression. Requires typed launch-error model
+   with optional retry hints.
+2. **Manual rebuild API.** Explicit user-triggered "rebuild this captured
+   environment" without mutating `env_id` or dependency metadata.
+3. **Refresh workspace defaults.** Update a captured notebook's dependency
+   metadata to match current workspace defaults, invalidating the old captured
+   identity.
+4. **Retry suppression window.** If the one-shot retry proves insufficient
+   under intermittent network/package-index failures, add a short per-room
+   suppression window.

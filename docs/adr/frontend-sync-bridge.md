@@ -88,7 +88,12 @@ Stable-DOM-order rendering keeps every cell's iframe pinned to the same DOM node
 
 ### Why this is load-bearing across the codebase
 
-The invariant lives in `AGENTS.md` (also available through the `CLAUDE.md` symlink). It is asserted three places: the `stableDomOrder` memo at `NotebookView.tsx:519`, the `order: index` style at `NotebookView.tsx:307`, and the parent flex container at `NotebookView.tsx:952`. Any one of them flipping back to "iterate cellIds and let React handle order" reintroduces the iframe reload. CI doesn't catch this; the visible failure is a paper cut that is easy to misdiagnose as "iframes are slow."
+The invariant lives in `AGENTS.md` (also available through the `CLAUDE.md`
+symlink). Three code sites implement it: the `stableDomOrder` memo
+(`NotebookView.tsx`), the `order: index` style, and the parent flex container.
+Any one of them flipping back to "iterate cellIds and let React handle order"
+reintroduces the iframe reload. CI doesn't catch this; the visible failure is a
+paper cut that is easy to misdiagnose as "iframes are slow."
 
 ### Hidden-group rendering composes with this
 
@@ -122,7 +127,12 @@ acts on the request:
 
 The function returns `boolean`, not `void`, because outbound flush is the failure surface where the transport can drop or error. Direct flush callers such as dependency sync and save check `false` and bail before issuing their dependent request. Execute and run-all use the `required_heads` path instead: the daemon fails closed if the triggered flush does not deliver the requested heads before its timeout.
 
-The `required_heads` extension lives in `App.tsx:374`: `NotebookClient` is constructed with `getRequiredHeads: () => getHandle()?.get_heads_hex() ?? []` and `flushBeforeRequiredHeadsRequest: () => getEngine()?.flush()`. Cross-reference `docs/adr/execution-pipeline.md` for the daemon side. The bridge does not own this handshake; it owns the inbound projection that lets a UI read the result.
+The `required_heads` extension lives in `App.tsx`: `NotebookClient` is
+constructed with `getRequiredHeads: () => getHandle()?.get_heads_hex() ?? []`
+and `flushBeforeRequiredHeadsRequest: () => getEngine()?.flush()`.
+Cross-reference `docs/adr/execution-pipeline.md` for the daemon side. The bridge
+does not own this handshake; it owns the inbound projection that lets a UI read
+the result.
 
 ### Why the engine returns `Promise<boolean>` and not a result type
 

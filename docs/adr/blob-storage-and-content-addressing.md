@@ -157,15 +157,18 @@ back to OS-assigned. The server exposes:
 
 - `GET /blob/{hash}` - raw bytes, `Content-Type` from the metadata sidecar
   (falling back to `application/octet-stream`).
-- `GET /plugins/{name}` - embedded renderer plugin assets (out of scope for
-  this ADR; lives on the same listener because the renderer needs both
-  origins and a single port keeps the CSP simple). The renderer can be told
-  to fetch these assets from a different base URL via
-  `NteractEmbedHostContext.nteract.rendererAssetsBaseUrl`
-  (`src/components/isolated/host-context.ts`, added in #2812). Desktop
-  leaves it unset and falls back to `/plugins/{name}` on the daemon's HTTP
-  origin; hosted viewers point it at a cloud-served asset prefix.
+- `GET /renderer-plugins/{name}` - raw renderer plugin assets for isolated
+  output frames (markdown, bokeh, panel, sift). Introduced for the shared
+  isolated renderer; the daemon serves the built plugin bundles directly.
+- `GET /plugins/{name}` - legacy MCP App loader route with JS wrapping, kept for
+  compatibility. New code uses `/renderer-plugins/`.
 - `GET /health` - probe.
+
+The renderer is told which base URL to use for plugin assets via
+`NteractEmbedHostContext.nteract.rendererAssetsBaseUrl`
+(`src/components/isolated/host-context.ts`, added in #2812). Desktop leaves it
+unset and falls back to the daemon's HTTP origin; hosted viewers point it at a
+cloud-served asset prefix.
 
 Response headers:
 

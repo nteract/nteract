@@ -124,7 +124,7 @@ It is the option that actually answers the objection - it replaces an inferred s
 
 ### The predicate
 
-The implementation plan resolved B's open boundary against the pinned automerge fork. A fresh document - daemon **or** cloud - is built by `NotebookDoc::new_with_actor`, which is the frozen genesis plus exactly three ROOT puts (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`); the cloud room host's "schema label" argument is the actor, not a ROOT key, so both hosts produce the identical scaffold. That makes the allowlist exact and host-agnostic. The op types come from the `automerge::legacy` module (that is what `change.decode().operations` yields), and the gate matches on `op.action` and `op.pred` as well as `obj`/`key`, so that a *delete* or *overwrite* of an identity key after creation - which is post-creation history, not the creation scaffold - is correctly rejected:
+The implementation plan resolved B's open boundary against the pinned automerge fork. A fresh document - daemon **or** cloud - is built by `NotebookDoc::new_with_actor`, which is the frozen genesis plus exactly three ROOT puts (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`); the cloud room host's "schema label" argument is the actor, not a ROOT key, so both hosts produce the identical scaffold. The daemon's untitled/ephemeral room creation additionally writes `metadata.ephemeral` before the seeding check runs, so the allowlist admits that single metadata put as creation scaffold (the export path deliberately excludes it so it does not persist). That makes the allowlist exact and host-agnostic. The op types come from the `automerge::legacy` module (that is what `change.decode().operations` yields), and the gate matches on `op.action` and `op.pred` as well as `obj`/`key`, so that a *delete* or *overwrite* of an identity key after creation - which is post-creation history, not the creation scaffold - is correctly rejected:
 
 ```rust
 use automerge::legacy::{Key, ObjectId, OpType}; // decode() yields legacy ops
@@ -137,8 +137,8 @@ pub fn is_pristine(&mut self) -> bool {
     for change in self.doc.get_changes(&[]) {
         if seed.contains(&change.hash()) { continue; }
         for op in change.decode().operations {
-            // only the initial Put (empty pred) of an identity key is scaffold
-            let scaffold_put = matches!(op.action, OpType::Put(_))
+            // Identity puts at ROOT (notebook_id, runtime_state_doc_id, comms_doc_id)
+            let is_identity_put = matches!(op.action, OpType::Put(_))
                 && op.pred.is_empty()
                 && matches!(op.obj, ObjectId::Root)
                 && matches!(
@@ -148,7 +148,13 @@ pub fn is_pristine(&mut self) -> bool {
                             || k == "runtime_state_doc_id"
                             || k == "comms_doc_id"
                 );
-            if !scaffold_put { return false; }
+            // The daemon's ephemeral room-lifecycle flag, stamped into the metadata map
+            // at room creation for untitled/ephemeral rooms. Export deliberately excludes it
+            // so it does not persist, but it is present here before the seeding check runs.
+            let is_ephemeral_flag = matches!(op.action, OpType::Put(_))
+                && op.pred.is_empty()
+                && matches!(&op.key, Key::Map(k) if k.as_str() == "ephemeral");
+            if !(is_identity_put || is_ephemeral_flag) { return false; }
         }
     }
     true
@@ -171,7 +177,7 @@ Any cell insert (op on the `cells` object), metadata write, or post-creation ide
 
 ## Resolved during planning
 
-1. **Exact pristine predicate** - settled: canonical seed hashes plus *initial* (`Put`, empty `pred`) identity puts to ROOT (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`); any other op - including a delete or overwrite of an identity key - means initialized. See the predicate above.
+1. **Exact pristine predicate** - settled: canonical seed hashes plus *initial* (`Put`, empty `pred`) identity puts to ROOT (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`) and the daemon's `ephemeral` metadata flag; any other op - including a delete or overwrite of an identity key - means initialized. See the predicate above.
 2. **Cost** - settled: O(number of changes), ~2 for a fresh doc, walked only on the metadata-absent path; the `metadata.is_some()` short-circuit is a pure optimization for the common already-seeded case, not the soundness mechanism (see The predicate).
 3. **Cloud parity** - settled: the predicate lives in `notebook-doc`; `runtimed` and `runtimed-wasm` both call `NotebookDoc::is_pristine`, no reimplementation.
 4. **Test surface** - settled: unit tests for fresh / metadata-stamped / one-cell / emptied-after-content / overwritten-or-deleted-identity-key / every-fresh-constructor, plus an integration test that empties a notebook, reconnects, and expects zero cells (the headline behavior, previously only covered indirectly).

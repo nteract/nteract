@@ -2,6 +2,12 @@
 version: alpha
 name: nteract Desktop
 description: A dense, calm notebook workspace for local data, code, runtime, and collaboration workflows.
+note: |
+  Token inventory below is historical. Current semantic token implementation lives in:
+  - src/styles/notebook-tokens.css (shared Tailwind semantic tokens)
+  - src/styles/cream-theme.css (cream theme surface)
+  - apps/elements/content/docs/theme-surfaces.mdx (Elements theme surface docs)
+  Implemented in #3872 (d30f7ce3).
 colors:
   primary: "#262626"
   on-primary: "#FAFAFA"

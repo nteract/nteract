@@ -6,15 +6,16 @@ description: Runtime-free CodeMirror fixtures for notebook source editing.
 import { EditorSurfacesExample } from "@/components/editor-surfaces-example";
 
 Notebook source editing is a major nteract-owned surface. The notebook app
-uses the shared editor package for live cell source, read-only source previews,
-static syntax highlighting, search marks, remote cursors, attribution, language
-extensions, and notebook palettes.
+uses the shared editor modules (`src/components/editor`) for live cell source,
+read-only source previews, static syntax highlighting, search marks, remote
+cursors, attribution, language extensions, and notebook palettes.
 
 <EditorSurfacesExample />
 
 ## Adapter notes
 
 This page renders current editor components and pure CodeMirror extensions from
-the shared Elements notebook scenario. Runtime-backed behavior stays outside the
-docs app until there are thin adapters for CRDT source sync, kernel completion,
-presence sending, and app-level editor focus registration.
+the shared Elements notebook scenario (`src/components/editor`). Runtime-backed
+behavior stays outside the docs app until there are thin adapters for CRDT
+source sync, kernel completion, presence sending, and app-level editor focus
+registration.

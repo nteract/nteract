@@ -122,11 +122,16 @@ V1 is original; V2 allows compressed document encoding. Backward-compatible via 
 | Notebook | `0x00` AutomergeSync | `SharedDocState.doc` | Bidirectional |
 | RuntimeState | `0x05` RuntimeStateSync | `SharedDocState.state_doc` | Daemon-authoritative |
 | CommsDoc | `0x09` CommsDocSync | `SharedDocState.comms_doc` | Widget state, gated by RuntimeStateDoc topology |
+| CommentsDoc | `0x0a` CommentsDocSync | Frontend WASM replica (`runtimed-wasm`); daemon replica persisted by `comments_store.rs` | Notebook-room comments sidecar; ingress validates change actor labels against the connection principal |
 | PoolState | `0x06` PoolStateSync | PoolDoc | Frontend owns sync state; daemon carries `pool_peer_state` separately |
 
-`CommentsDoc` is an accepted ADR direction, not an implemented stream yet. If
-you add it, allocate a new frame type, keep optimistic comment rendering inside
-Automerge, and authority-finalize policy fields in the same document.
+For CommentsDoc, see `crates/comments-doc`, daemon persistence at
+`crates/runtimed/src/notebook_sync_server/comments_store.rs`, ingress at
+`peer_comments_sync.rs`. Optimistic client mutations apply via Automerge; the
+daemon validates change actor labels against the connection principal
+(clone-preview) and strips writes from scopes without comment authority. There
+is no daemon finalization step — attribution (`resolved_by_actor_label`,
+`resolved_at`) is projected from admitted change actors.
 
 ### Sync Task Loop (biased select!)
 

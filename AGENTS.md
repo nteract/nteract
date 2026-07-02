@@ -55,7 +55,7 @@ reason.
 
 Three may be visible. Pick by purpose. Full details in `.claude/rules/mcp-servers.md` (auto-loaded everywhere).
 
-- **`nteract-dev`** — default for development. Per-worktree dev daemon, dev tools (`up`, `down`, `status`, `logs`, `vite_logs`) plus 26 proxied notebook tools. Prefer `up` over manual `cargo xtask dev-daemon`.
+- **`nteract-dev`** — default for development. Per-worktree dev daemon. Owner/isolated mode exposes dev tools (`up`, `down`, `status`, `logs`, `vite_logs`); attach mode (Codex) exposes read-only supervisor tools (`status`, `logs`, `vite_logs`) plus proxied notebook tools. Prefer `up` over manual `cargo xtask dev-daemon`.
 - **`nteract-nightly`** — system nightly daemon. Diagnostics only.
 - **`nteract`** — system stable daemon. Diagnostics only.
 - **Codex plugin notebook servers** (`nteract-notebook`, `nightly`, or older `notebook` tool names) — installed release/plugin surfaces. Diagnostics only for source work; they may attach to a different active notebook than the local Browser/Vite app.
@@ -78,7 +78,7 @@ Types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `build`, `perf`
 
 ## Load-bearing invariants
 
-Most invariants auto-load from `.claude/rules/*.md` and nested `AGENTS.md` files when you edit matching paths. Two that don't fit any path scope:
+Most invariants auto-load from `.claude/rules/*.md` and nested `AGENTS.md` files when you edit matching paths. A few that don't fit any path scope:
 
 ### Tokio mutex guards stay within synchronous blocks
 

@@ -1,22 +1,26 @@
 # Non-Stream Output Commit Measurements
 
-**Status:** Measurement, 2026-05-24. This is benchmark evidence for the runtime
-output optimization plan, not an ADR.
+**Status:** Historical baseline measurement, 2026-05-24. Documented synchronous
+commit cost before output_committer queue landed. Production now enqueues
+these outputs through `output_committer`
+(`crates/runtimed/src/output_committer.rs`).
 
-This measurement covers the remaining ordinary output path after the stream
-and `update_display_data` optimizations:
+This measurement covered the ordinary output path after stream and
+`update_display_data` optimizations:
 
 - `display_data`
 - `execute_result`
 - `error`
 
-These outputs still run manifest creation and `RuntimeStateDoc.append_output`
-on the IOPub reader task. For `display_data` and `execute_result`, the
-measurement also includes the current blob-ref buffer preflight call with an
-empty buffer list. The measurement compares that current synchronous shape
-against an ordered-worker model where the IOPub-facing work is only an ordered
-enqueue and the same preflight, manifest, and doc writes happen later on a
-worker.
+**Historical baseline:** These outputs ran manifest creation and
+`RuntimeStateDoc.append_output` on the IOPub reader task. The measurement
+compared that synchronous shape against an ordered-worker model.
+
+**Current path (post-optimization):** Production starts `output_committer`
+from IOPub setup (`crates/runtimed/src/jupyter_kernel.rs:1407-1424`).
+Ordinary outputs enqueue via `OutputCommitterHandle::enqueue_output`
+(`crates/runtimed/src/output_committer.rs:75-100`); worker-side batch append
+uses `sd.append_outputs` (`crates/runtimed/src/output_committer.rs:260-283`).
 
 ## Running
 

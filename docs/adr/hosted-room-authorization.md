@@ -14,12 +14,12 @@
 - the Durable Object can accept typed-frame v4 WebSockets, rewrite CBOR
   presence, enforce frame-size caps, and reject obvious read-only violations.
 
-The next phase should turn that prototype into one hosted room model instead of
-two nearby products. A published read-only notebook, an authenticated editor, a
-future runtime peer, and an anonymous public viewer should all connect to the
-same room abstraction with different scopes. The Worker authenticates the
-connection. D1 decides what that principal can do in this room. The Durable
-Object hosts the live document and persists snapshots.
+The materialized Durable Object room host unifies those pieces. A published
+read-only notebook, an authenticated editor, a future runtime peer, and an
+anonymous public viewer all connect to the same room abstraction with different
+scopes. The Worker authenticates the connection. D1 decides what that principal
+can do in this room. The Durable Object hosts the live document and persists
+snapshots.
 
 Neighbors:
 

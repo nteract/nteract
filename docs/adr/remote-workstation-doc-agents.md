@@ -1,7 +1,7 @@
 # Remote Workstation Doc Agents
 
-**Status:** Accepted / implementation in progress, 2026-06-04. Trimmed
-2026-06-29.
+**Status:** In progress, 2026-06-04. Core CRDT and validator paths landed;
+workstation UI and lifecycle surfaces remain open. Trimmed 2026-06-29.
 
 This ADR records the hosted workstation architecture. Earlier API sketches,
 prototype UI notes, and landed implementation ledgers were removed to keep the

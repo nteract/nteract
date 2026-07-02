@@ -1,16 +1,13 @@
 # Represent Panel Runtime State Explicitly
 
-Status: RFC
+Status: Parked. Display bug (#3750) fixed by renderer work (5171ccb1); typed
+runtime channel exists only on feature branches; static Panel output rendering
+shipped.
 
-Panel should not become another raw Jupyter comm bridge in nteract. Panel's
-live notebook path is a Bokeh document patch protocol carried over PyViz comms,
-and nteract already has better primitives for explicit runtime state: typed
-runtime protocol messages, Automerge documents, blob storage, and execution
-scoped outputs.
-
-This memo frames a separate implementation track for native Panel runtime
-state. It is source-grounded but not yet a durable decision; graduate the
-accepted pieces into ADRs once the prototype proves the shape.
+Panel display rendering (#3752/#3773) fixed the original bug. The typed runtime
+channel design below exists on feature branches but has not merged to main.
+This memo is preserved as design history for if/when live Panel interactivity
+returns as work.
 
 ## Current Evidence
 

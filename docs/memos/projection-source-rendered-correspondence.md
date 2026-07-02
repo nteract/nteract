@@ -218,11 +218,14 @@ here pays forward.
   working. Verify copy explicitly. The shared `--cm-comment-color` /
   `.comment-highlight` surface (`src/styles/comment-highlight.css`) moves from the
   run span to the inner highlight span.
-- **OQ-3 Overlapping anchors.** Two comments overlapping the same characters
-  need nested or layered highlights. Run-granular code sidestepped this by
-  picking the shortest overlapping highlight; character-granular has to decide
-  stacking. Step 1 keeps the single-best-highlight-per-run choice and highlights
-  only that sub-range; multiple-per-run is deferred.
+- **OQ-3 Overlapping anchors (resolved).** Multiple highlights per run landed
+  in commit 1217de09 (`feat(comments): multiple highlights per run + compose
+  selection preview (#3796)`). Code computes multiple highlight ranges and
+  splits run text across all boundaries
+  (`src/components/markdown/ProjectedMarkdownView.tsx:873`), rendering
+  highlight pieces at line 904. Non-overlapping and overlapping per-run
+  highlights are now supported; unresolved stacking semantics, if any, remain
+  open.
 - **OQ-4 IsolatedFrame.** Cells that fall back to `IsolatedFrame` have no
   comment affordance at all today. Out of scope here, tracked separately.
 - **OQ-5 Marker rollout.** The fidelity marker is additive under `version: 1`, so

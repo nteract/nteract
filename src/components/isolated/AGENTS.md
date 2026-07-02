@@ -75,7 +75,7 @@ The core renderer bundle is built inline by `apps/notebook/vite-plugin-isolated-
 
 ## Renderer plugins
 
-Heavy renderers (markdown, plotly, vega, leaflet, sift) are **not** in the core IIFE. They're on-demand CJS modules loaded via `frame.installRenderer()` only when their MIME types appear.
+Heavy renderers (markdown, plotly, bokeh, panel, vega, leaflet, sift) are **not** in the core IIFE. They're on-demand CJS modules loaded via `frame.installRenderer()` only when their MIME types appear.
 
 ```
 ┌──────────────────────────────┐     ┌──────────────────────────┐
@@ -125,8 +125,8 @@ export function install(ctx: {
 ```
 
 2. Extend `apps/notebook/vite-plugin-isolated-renderer.ts`: add the entry path, code/css variables, `invalidateCache()` entry, the `buildRendererPlugin()` call, and a `load()` case for the virtual module.
-3. Declare the virtual module in `apps/notebook/src/vite-env.d.ts`.
-4. In `src/components/isolated/iframe-libraries.ts`, add the MIME → plugin entry to `PLUGIN_MIME_TYPES`. Vega-style pattern matchers can use a shared loader; exact MIME types should live in the map.
+3. Declare the virtual module in `apps/notebook/src/vite-env.d.ts` (e.g., `declare module "virtual:renderer-plugin/bokeh" { ... }`).
+4. In `src/components/isolated/renderer-plugin-info.ts`, add the MIME → plugin mapping. The plugin loader registration lives in `iframe-libraries.ts` with imports from the virtual modules.
 5. Remove the component from `src/isolated-renderer/index.tsx` so it no longer ships in the core bundle.
 
 ## Message protocol

@@ -230,9 +230,13 @@ topology.
 The identity model does not require a local daemon bridge for hosted rooms.
 Supported client-to-room patterns:
 
-- **Browser direct.** The browser connects to the hosted room WebSocket. For the
-  Anaconda-friendly path, the viewer/editor shell performs direct OIDC login and
-  sends a validated bearer token through the non-echoed WebSocket subprotocol.
+- **Browser direct.** The browser connects to the hosted room WebSocket. For
+  first-party app sessions, the viewer/editor shell uses the app-session cookie
+  (set by OIDC login redirects) directly, with trusted `Origin` enforcement.
+  The WebSocket upgrade path reads the session from the cookie and produces an
+  authenticated connection identity (`:720-:778` in `index.ts`). Non-cookie
+  browser clients (embedding shells, explicit MCP bridges) may send a validated
+  bearer token through the non-echoed WebSocket subprotocol.
 - **Native direct.** Desktop, CLI, TUI, and agents connect directly to the room
   WebSocket with an `Authorization` header or equivalent native credential
   transport.
@@ -339,7 +343,10 @@ infer compute from the document host.
 - SSH as the first remote-room transport.
 - Moving kernels into Cloudflare Workers or Durable Objects.
 - Treating JupyterHub as the default document engine for Anaconda-hosted rooms.
-- Preserving pre-publish local Automerge actor history inside hosted rooms.
+- Treating preserved pre-publish actor history as verified attribution.
+  Current publish carries source actor history into hosted rooms;
+  re-authoring at the publish boundary is the target (identity ADR
+  Decision 6).
 - Solving the local same-path autosave bug; #2285 remains the concrete bug for
   local file-binding safety.
 

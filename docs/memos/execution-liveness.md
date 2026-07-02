@@ -42,7 +42,7 @@ We have four independent signals about kernel reality:
 
 | Signal | What it tells us | Where it lives |
 |---|---|---|
-| ZMQ heartbeat | Kernel process is alive and pinging | `jupyter_kernel.rs:2614-2700` (5s interval, 3-failure threshold) |
+| ZMQ heartbeat | Kernel process is alive and pinging | `jupyter_kernel.rs` heartbeat task (5s interval, 3-failure threshold) |
 | IOPub activity | Kernel is *doing* something user-visible (stream, status, comm, display) | IOPub reader in `jupyter_kernel.rs` |
 | Shell socket | The execute_request was accepted; reply pending | `jupyter_kernel.rs` shell reader |
 | Committer queues | The daemon has buffered output work it has not yet committed | `stream_committer` periodic queue, `display_update_committer` pending map |
@@ -69,9 +69,17 @@ The first three are not catastrophes the daemon should "fix" by force-completing
 
 Two existing mechanisms are useful:
 
-1. **Heartbeat task** (`jupyter_kernel.rs:2614`). Pings the kernel every 5s, 3s timeout, 3 consecutive failures → declares the kernel dead and routes through the existing `KernelDied` path. This already covers the case where the kernel process itself has gone away.
+1. **Heartbeat task** (`crates/runtimed/src/jupyter_kernel.rs` heartbeat
+   module). Pings the kernel every 5s, 3s timeout, 3 consecutive failures →
+   declares the kernel dead and routes through the existing `KernelDied` path.
+   This already covers the case where the kernel process itself has gone away.
 
-2. **Committer supervisor `KernelDied` on panic** (`stream_committer.rs:227`, `display_update_committer.rs:259`). If a committer task panics, the supervisor emits `KernelDied` on the lifecycle channel and the queue releases. This covers the case where the committers themselves crash.
+2. **Committer supervisor `KernelDied` on panic**
+   (`crates/runtimed/src/stream_committer.rs` and
+   `crates/runtimed/src/display_update_committer.rs` panic paths). If a
+   committer task panics, the supervisor emits `KernelDied` on the lifecycle
+   channel and the queue releases. This covers the case where the committers
+   themselves crash.
 
 What we **don't** have:
 

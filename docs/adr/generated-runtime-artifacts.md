@@ -74,6 +74,7 @@ Volatile artifacts stay gitignored and are regenerated:
 - `apps/notebook/src/renderer-plugins/markdown.js`
 - `apps/notebook/src/renderer-plugins/markdown.css`
 - `apps/notebook/src/renderer-plugins/bokeh.js`
+- `apps/notebook/src/renderer-plugins/panel.js`
 - `apps/notebook/src/renderer-plugins/sift.js`
 - `apps/notebook/src/renderer-plugins/sift.css`
 - `apps/notebook/src/wasm/runtimed-wasm/`

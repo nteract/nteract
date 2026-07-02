@@ -1,6 +1,7 @@
 # Notebook Identity and Path Binding
 
-**Status:** Proposed, 2026-06-24.
+**Status:** In progress, 2026-06-24. Persistent registry (NIP-1) and untitled
+recovery (NIP-2) landed. NIP-3 reconciliation design remains open.
 
 **Neighbors:**
 - `docs/adr/mcp-session-lifecycle.md` - Decision 8 keys file-backed rejoin on the path; this ADR is the why behind that key and where it must come from.

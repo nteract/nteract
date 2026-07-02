@@ -44,7 +44,7 @@ The daemon (`runtimed`) is a singleton coordinating notebook windows over a Unix
 ### How `cargo xtask build` works (4 phases)
 
 0. **Artifact guard** — verify gitignored WASM, renderer-plugin, and MCP widget outputs. Build/dev commands fingerprint workspace inputs and skip wasm-pack when outputs are current; rebuild only when outputs are missing, invalid, or stale.
-1. **Single Rust compilation** — `cargo build -p runtimed -p runt -p mcp-supervisor -p notebook`. Sidecars copied to `crates/notebook/binaries/`.
+1. **Single Rust compilation** — `cargo build -p runtimed -p runt -p nteract-mcp -p mcp-supervisor`. Sidecars copied to `crates/notebook/binaries/`. The `notebook` crate is intentionally excluded until the Tauri link phase after frontend assets exist.
 2. **Frontend build** — `pnpm build` (TypeScript + Vite). `--rust-only` skips this.
 3. **Tauri link** — `cargo tauri build --debug --no-bundle` with embedded frontend assets. Use `--skip-tauri` only for fast edit checks where updated sidecar binaries are enough; run a normal build before launching the bundled app.
 
@@ -148,7 +148,9 @@ RUNTIMED_SOCKET_PATH="$(./target/debug/runt daemon status --json | python3 -c 'i
 
 The MCP server ships as `runt mcp` (Rust). Run via `cargo xtask run-mcp` for development.
 
-**Advertised tools:** `list_active_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`, `disconnect_notebook`, `get_cell`, `get_all_cells`, `create_cell`, `set_cell`, `delete_cell`, `move_cell`, `execute_cell`, `run_all_cells`, `get_results`, `interrupt_kernel`, `restart_kernel`, `manage_dependencies`, `replace_match`, `replace_regex`.
+**Advertised tools** (`all_tools()`): `list_active_notebooks`, `list_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`, `disconnect_notebook`, `create_cell`, `set_cell`, `delete_cell`, `move_cell`, `execute_cell`, `run_all_cells`, `get_results`, `interrupt_kernel`, `restart_kernel`, `manage_dependencies`, `replace_match`, `replace_regex`.
+
+**Hidden/callable read tools** (`hidden_tools()`): `get_cell`, `get_all_cells`. These are callable but not advertised in `list_tools()` — dispatch-only read paths for clients that prefer direct tool calls over resource URIs.
 
 Legacy dependency and cell-metadata tool names still dispatch for compatibility, but new workflows should use `manage_dependencies` for dependency inspection/edits and `get_results` for execution output lookup by `execution_id`.
 

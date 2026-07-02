@@ -473,10 +473,14 @@ compact.
 
 OC-2: Projection schema v2
 
-The Rust engine has richer structure than the TypeScript plan exposes. Add
+The Rust engine has richer structure than the TypeScript plan exposes. Island
+projection fields (`content_hash`, `island_tag`, `island_inline`) now serialize
+in Rust JSON (`crates/nteract-markdown-engine/src/render_json.rs:210`) but are
+missing from the TypeScript `MarkdownProjectionBlock` interface. Add
 `isolatedRegions`, `root` or a stable tree summary, parse diagnostics,
-`outputArtifacts`, and `componentArtifacts` to the WASM/TS schema before building
-much UI on top of the flattened shape.
+`outputArtifacts`, and `componentArtifacts` to the WASM/TS schema before
+building much UI on top of the flattened shape. Inline JSX islands are created
+at `crates/nteract-markdown-engine/src/lib.rs:1204`.
 
 OC-3: Editor choice
 
@@ -540,8 +544,11 @@ but preserve Automerge as the live collaboration source while the app is open.
    comments placeholders.
 2. Extend the markdown projection engine to parse `<!-- nteract:output ... -->`
    comments after code blocks into output artifact references.
-3. Expose `isolated_regions` and component/diagnostic placeholders through the
-   WASM/TypeScript projection schema.
+3. Refresh TypeScript `MarkdownProjectionBlock` interface to match Rust island
+   fields (`content_hash`, `island_tag`, `island_inline`). Expose
+   `isolated_regions`, `root` or stable tree summary, parse diagnostics,
+   `outputArtifacts`, and `componentArtifacts` through the WASM/TypeScript
+   projection schema.
 4. Draft a comments ADR amendment for generic document locators.
 5. Sketch the hosted catalog/dashboard shape before committing to `/m`-specific
    D1 tables or Durable Object classes.

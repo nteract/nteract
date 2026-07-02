@@ -186,6 +186,35 @@ assume a local `DocHandle`. That abstraction should represent the same stable
 document set (`NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`) rather than copying
 cloud state into React-specific or MCP-specific projections.
 
+### Daemon-mediated bridge vs. direct MCP connector
+
+Two hosted-room connection paths coexist:
+
+**Daemon-mediated bridge** (commit 0745eeab, #3884) — the product default for
+desktop notebook use. The daemon dials the hosted room over
+`CloudWsFrameTransport` and attaches it as one more sync peer of a local
+ephemeral `NotebookRoom` (`hosted_bridge.rs`). Desktop windows and MCP sessions
+connect to that daemon-local room exactly like any daemon-local notebook. Echo
+suppression is structural (one `NotebookDoc`, one `sync::State` per peer). The
+hosted room is authoritative for `RuntimeStateDoc`; execution requests forward
+as hosted `Request` frames.
+
+**Direct MCP connector** (`runt-mcp/src/cloud.rs`) — still implemented but not
+the primary desktop path. `runt mcp` establishes a typed-frame v4 WebSocket
+directly to the hosted room without a daemon bridge.
+
+When to use each:
+
+- **Desktop app, Codex app/CLI:** daemon-mediated bridge. The desktop app
+  attaches to a daemon notebook room; the daemon bridges to the hosted room if
+  the notebook's domain is hosted.
+- **Standalone MCP clients, agents without daemons:** direct connector. No
+  daemon required; the MCP process holds the WebSocket.
+
+Both paths resolve the same machine-local `cloud-domains.toml` (shared via
+`notebook-cloud-transport::registry`) and produce the same principal/operator
+actor labels.
+
 ## Decision 4: Principal comes from the credential; operator comes from local config
 
 Hosted room auth still decides the principal. If the configured credential is

@@ -177,14 +177,17 @@ field:
   "auth": {
     "oidc": {
       "status": "configured",
-      "issuer": "https://auth.stage.anaconda.com/api/auth",
-      "principal_namespace": "user:anaconda"
+      "jwks": "remote",
+      "audience": "client_id",
+      "principal_namespace": "configured"
     }
   }
 }
 ```
 
-Do not expose client secrets, access tokens, refresh tokens, or raw JWT claims.
+The response intentionally omits issuer, client ID, audience values, and
+principal namespace names. Do not expose client secrets, access tokens, refresh
+tokens, or raw JWT claims.
 
 ## Avoid Edge-Only Login
 

@@ -2,7 +2,8 @@
 
 This crate is the client-side sync handle and socket task boundary for
 NotebookDoc, RuntimeStateDoc, CommsDoc, PoolDoc, requests, presence, blobs, and
-session status.
+session status. CommentsDoc frames pass through the relay path but this crate
+holds no comments replica.
 
 ## Main pieces
 
@@ -14,7 +15,9 @@ session status.
 - `sync_task` owns typed-frame I/O. It sends and receives Automerge sync for
   `0x00` NotebookDoc, `0x05` RuntimeStateDoc, `0x06` PoolDoc, and `0x09`
   CommsDoc, plus request, response, presence, session-control, and `PUT_BLOB`
-  frames.
+  frames. It receives and ignores `0x0a` CommentsDocSync — the comments
+  replica lives in frontend WASM (`runtimed-wasm`), reached via `relay_task`,
+  not in `SharedDocState`.
 - `execution_wait` / `execution_watch` observe RuntimeStateDoc terminal state;
   RuntimeStateDoc is the durable execution/output record, not broadcast replay.
 - `relay` / `relay_task` are byte-pipe helpers for app relay paths; they do not

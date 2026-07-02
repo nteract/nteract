@@ -1,6 +1,6 @@
 # Runtime daemon (runtimed)
 
-Scope: `crates/runtimed/**`, `crates/runt/**`, `crates/runtimed-client/**`, `crates/runtimed-outputs/**`, `crates/runtimed-service/**`, `crates/runtimed-settings-sync/**`, `crates/runtimed-py/**`, `crates/runtime-doc/**`, `crates/notebook-wire/**`, `crates/notebook-doc/**`, `crates/notebook-protocol/**`, `crates/notebook-sync/**`, `packages/runtimed/**`.
+Scope: `crates/runtimed/**`, `crates/runt/**`, `crates/runtimed-client/**`, `crates/runtimed-outputs/**`, `crates/runtimed-service/**`, `crates/runtimed-settings-sync/**`, `crates/runtimed-py/**`, `crates/runtime-doc/**`, `crates/comments-doc/**`, `crates/notebook-wire/**`, `crates/notebook-doc/**`, `crates/notebook-protocol/**`, `crates/notebook-sync/**`, `packages/runtimed/**`.
 
 ## Core principles
 
@@ -43,6 +43,7 @@ The Tauri app crate (`crates/notebook/`) is glue — it wires Tauri commands to 
 | Widget state | Daemon/runtime agent + frontend comm deltas | RuntimeStateDoc holds comm topology; CommsDoc holds mutable comm state; the runtime agent gates state by topology, suppresses echoes, and forwards accepted frontend deltas to the kernel |
 | RuntimeStateDoc (kernel status, queue, executions, env, trust) | Local daemon / room host / runtime peer, policy-scoped | Separate per-notebook Automerge doc synced via frame `0x05`; regular clients read it but do not author it |
 | CommsDoc (widget state) | Daemon/runtime agent + frontend comm deltas | Separate per-notebook Automerge doc synced via frame `0x09` |
+| CommentsDoc (notebook comments) | Frontend WASM + daemon | Durable sidecar per-notebook Automerge doc synced via frame `0x0a`; daemon persists to disk and validates change actor labels at ingress, stripping writes from scopes without comment authority |
 
 ## RuntimeStateDoc
 

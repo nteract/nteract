@@ -1,6 +1,7 @@
 # Compute Session Index
 
-**Status:** RFC, 2026-06-23.
+**Status:** Implemented with OwnerComputeIndex, 2026-06-28. Open work:
+workstation grouping, live dashboard push, richer management controls.
 
 ## Context
 
@@ -63,68 +64,54 @@ repair paths, and it should tolerate staleness.
    workstation pages. Avoid "attachment" in user-facing surfaces except where
    discussing implementation.
 
-## Proposed Model
+## Implemented Model
 
-Introduce a platform-neutral `ComputeSessionIndex` projection and an
-owner-scoped compute-session summary:
+A platform-neutral `ComputeSessionIndex` projection with an owner-scoped
+compute-session summary (`packages/runtimed/src/notebook-compute-session.ts:6-20`):
 
 ```ts
 interface NotebookComputeSessionSummary {
   notebook_id: string;
   owner_principal: string;
-  state:
-    | "none"
-    | "starting"
-    | "active"
-    | "busy"
-    | "queued"
-    | "stale"
-    | "error";
-  workstation_id: string | null;
-  workstation_display_name: string | null;
-  job_id: string | null;
+  status: "starting" | "active" | "stale" | "error";
+  workstation_id: string;
+  workstation_display_name: string;
   runtime_session_id: string | null;
   runtime_peer_count: number;
-  kernel_status: string | null;
-  activity: "busy" | "idle" | "unknown";
-  executing_cell_id: string | null;
-  queued_cell_count: number;
+  queue_depth: number;
+  environment_label: string | null;
+  working_directory: string | null;
   status_message: string | null;
   updated_at: string;
   last_runtime_seen_at: string | null;
-  stale_after: string | null;
 }
 ```
 
-Dashboard rows only need a subset: state, workstation label, kernel/running
-hint, and whether attention is needed. The larger shape is intentionally room
-and workstation-page friendly.
+The shipped shape differs from the original proposal: uses `status` instead of
+`state`, replaces `kernel_status` / `activity` / `executing_cell_id` /
+`queued_cell_count` with `queue_depth`, and adds `environment_label` /
+`working_directory`. Dashboard rows project a compact fact from this summary.
 
-### State Derivation
+### Status Derivation (Implemented)
 
-The room host should derive each summary from two inputs:
+The room host derives each summary from
+(`packages/runtimed/src/notebook-compute-session.ts:41-100`):
 
-1. `RuntimeStateDoc` / workstation attachment snapshot:
-   selected workstation, status, runtime session id, kernel status, queue, and
-   executing cell.
-2. Live room membership:
-   runtime peer count and latest runtime-peer join/leave time.
+1. `RuntimeStateDoc` / workstation attachment snapshot: selected workstation,
+   status, runtime session id, queue.
+2. Live room membership: runtime peer count and latest runtime-peer join/leave
+   time.
 
 Rules:
 
-- `active` requires a connected runtime peer and ready/busy kernel state.
-- `busy`/`queued` are refinements of active/starting when queue fields are
-  non-empty.
-- `starting` covers a selected workstation/accepted job where no runtime peer
+- `"active"` requires a connected runtime peer.
+- `"starting"` covers a selected workstation/accepted job where no runtime peer
   has joined yet.
-- `stale` covers queued/running or ready-looking RuntimeStateDoc state with no
-  live runtime peer after the room's grace window.
-- `error` covers explicit failed attachment, kernel error, or repaired runtime
-  loss.
-- `none` means no selected compute target and no queued/running runtime state.
+- `"stale"` covers RuntimeStateDoc state with no live runtime peer after the
+  room's grace window.
+- `"error"` covers explicit failed attachment or repaired runtime loss.
 
-The dashboard may collapse `active`, `busy`, and `queued` into one compact
-"Compute active" affordance until the UI needs more detail.
+The dashboard collapses these into compact compute facts.
 
 ## Cloudflare Implementation Options
 
@@ -228,38 +215,31 @@ Rejected for now:
 - Fails the portability model: a dashboard should query an index, not all live
   actors.
 
-## Recommended Cloudflare Slice
+## Implementation (Completed)
 
-Define the projection contract first, then use **Option A:
-`OwnerComputeIndex` Durable Object** for the Cloudflare prototype. It matches
-the Redis-like mental model, avoids dashboard fan-out, gives one owner-scoped
+Used **Option A: `OwnerComputeIndex` Durable Object**. It matches the
+Redis-like mental model, avoids dashboard fan-out, gives one owner-scoped
 lookup per `/n` load, and keeps expiry/cleanup close to the cache.
 
-D1 remains acceptable as a backend behind the same `ComputeSessionIndex`
-interface if the first implementation needs the absolute smallest code surface,
-but the public API and shared TypeScript/Rust projection names should not expose
-that storage choice. The Rust/Postgres deployment can implement the same
-contract with a Postgres table and optionally add Redis/Valkey/NATS as an
-acceleration layer.
+Implementation:
 
-Implementation slices:
+1. Added `projectNotebookComputeSessionSummary` projection helper in
+   `packages/runtimed/src/notebook-compute-session.ts`.
+2. Added Cloudflare `OwnerComputeIndex` DO with SQLite-backed storage and
+   internal `upsert`, `markGone`, and `list` methods.
+3. `NotebookRoom` publishes summaries on: runtime peer join/restore,
+   runtime-peer-watch reconcile after the grace window, workstation attachment
+   control publish, and runtime-state repair.
+4. Extended `/api/n` response rows with `compute_session`
+   (`apps/notebook-cloud/src/index.ts:1454`).
+5. Extended `apps/notebook-cloud/viewer/notebook-dashboard.ts` facts with
+   compact compute state.
 
-1. Add a pure projection helper in `packages/runtimed`:
-   `projectNotebookComputeSessionSummary({ runtimeState, workstationAttachment,
-   runtimePeerCount, now })`.
-2. Add a Cloudflare `OwnerComputeIndex` DO binding/class with SQLite-backed
-   storage and internal-only `upsert`, `markGone`, and `list` methods.
-3. Have `NotebookRoom` publish a summary on:
-   runtime peer join/restore, runtime-peer-watch reconcile after the grace
-   window, workstation attachment control publish, and runtime-state repair.
-4. Extend `/api/n` response rows with optional `compute_session`.
-5. Extend `apps/notebook-cloud/viewer/notebook-dashboard.ts` facts with compact
-   compute state. Keep rows useful without large cards or noisy labels.
-6. Add owner-scoped workstation page/panel grouping by workstation:
-   active compute sessions, starting sessions, needs-attention sessions.
-7. Add expiry/repair:
-   summaries older than a threshold are displayed as stale unless refreshed;
-   opening the notebook room reconciles RuntimeStateDoc and republishes truth.
+Remaining work:
+
+- Owner-scoped workstation page/panel grouping by workstation.
+- Live dashboard push (SSE).
+- Richer management controls.
 
 ## Non-Cloudflare Shape
 
@@ -344,12 +324,12 @@ Avoid baking Cloudflare into the model:
 5. Should public/view-only notebooks expose active compute? Probably no by
    default; compute liveness may leak owner activity.
 
-## Proposed Next PR
+## Open Follow-ups
 
-Create the projection helper and Cloudflare owner index, publish summaries on
-room runtime peer join/leave and runtime-peer-watch reconcile, and add a compact
-dashboard fact. Defer live dashboard push, workstation grouping, and richer
-management controls until the read-only summary proves correct.
+- Live dashboard push (SSE).
+- Owner-scoped workstation page/panel grouping by workstation: active compute
+  sessions, starting sessions, needs-attention sessions.
+- Richer management controls.
 
 ## References
 

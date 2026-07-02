@@ -1,6 +1,7 @@
 # Desktop Cloud Sessions Mediated by the Daemon
 
-**Status:** Working memo, 2026-07-01. Companion to issue #3861.
+**Status:** V1 implemented in #3884, 2026-06-26. Remaining work (local
+kernels, CommsDoc/CommentsDoc bridging, persistence) tracked in issue #3861.
 
 ## Problem
 
@@ -36,39 +37,40 @@ local runtime/kernel <-> daemon <-> hosted cloud room (policy TBD, later slice)
   `changed_tx` broadcast, and identity enforcement
   (`RoomConnectionIdentity`, actor-principal validation on inbound changes).
 
-## Decision sketch: the bridge is another peer of the daemon room
+## Implemented Design: the bridge is another peer of the daemon room
 
 A hosted daemon session creates an **ephemeral, hosted-flagged
 `NotebookRoom`** keyed by the hosted locator, and attaches a **bridge task**
-that is simply one more peer of that room — except its transport is the
-cloud WebSocket instead of a Unix socket.
+that is one more peer of that room — except its transport is the cloud
+WebSocket instead of a Unix socket
+(`crates/runtimed/src/notebook_sync_server/hosted_bridge.rs`).
 
-Echo suppression falls out of the design rather than being bolted on: the
-daemon room holds exactly one `NotebookDoc` instance; the cloud connection is
-one automerge `sync::State` against that doc, and each local peer is another.
-The sync protocol already guarantees changes are not replayed to the peer they
-came from, and convergence tests assert bounded message counts after quiesce.
+Echo suppression falls out of the design: the daemon room holds exactly one
+`NotebookDoc` instance; the cloud connection is one automerge `sync::State`
+against that doc, and each local peer is another. The sync protocol guarantees
+changes are not replayed to the peer they came from.
 
-Bridged docs, v1: `NotebookDoc` (read/write) and `RuntimeStateDoc`
+Bridged docs (V1): `NotebookDoc` (read/write) and `RuntimeStateDoc`
 (cloud-authoritative, received with `receive_sync_message_with_changes`).
-`CommsDoc`/`CommentsDoc` bridging and local-runtime-peer policy are later
-slices (#3861 slice 5).
+`CommsDoc`/`CommentsDoc` bridging and local-runtime-peer policy are deferred
+(#3861 slice 5).
 
-Execution, v1: hosted rooms do not launch local kernels. `execute_cell`
-requests from local peers are forwarded to the cloud room as hosted
-`Request` frames (the same dispatch `cloud-peer --run-cell` exercises); the
-resulting queue/output state arrives back via RuntimeStateDoc sync.
+Execution (V1): hosted rooms do not launch local kernels. `execute_cell`
+requests from local peers are forwarded to the cloud room as hosted `Request`
+frames (`crates/runtimed/src/requests/mod.rs:217-267`); the resulting
+queue/output state arrives back via RuntimeStateDoc sync.
 
-Persistence, v1: none (ephemeral room). Local-first persistence for hosted
-sessions is #3600 and layers on later.
+Persistence (V1): none (ephemeral room). Local-first persistence for hosted
+sessions is #3600.
 
-## Attribution
+## Attribution (Implemented)
 
 The hosted room rejects changes whose actor principal differs from the
-authenticated principal, so the bridge must not let local peers author under
-the local-Unix principal. When a room is hosted-bridged:
+authenticated principal, so the bridge ensures local peers author under the
+cloud principal. When a room is hosted-bridged
+(`crates/runtimed/src/daemon.rs:2928-3037`):
 
-- the room's connection identity mints local peers' actor labels under the
+- The room's connection identity mints local peers' actor labels under the
   **cloud principal** observed in `cloud_room_ready`, keeping the peer's
   self-declared operator suffix:
 
@@ -77,41 +79,41 @@ user:anaconda:<sub>/operator:desktop:<session>
 user:anaconda:<sub>/operator:codex:<session>
 ```
 
-- the bridge itself never rewrites changes; attribution rides the actor label
-  end to end, so cloud-side history shows which local operator made each
-  change while authorization stays anchored to the one authenticated
-  principal.
-- actor uniqueness: the bridge mints a fresh `:<nonce>` per cloud connect
-  (automerge duplicate-seq rule), and local peers already get per-connection
-  labels from the room host.
+- The bridge never rewrites changes; attribution rides the actor label end to
+  end, so cloud-side history shows which local operator made each change while
+  authorization stays anchored to the one authenticated principal.
+- Actor uniqueness: the bridge mints a fresh `:<nonce>` per cloud connect
+  (automerge duplicate-seq rule), and local peers get per-connection labels
+  from the room host.
 
-## Credentials
+## Credentials (Implemented)
 
-v1 reuses the machine-local cloud domain registry from
+V1 uses the machine-local cloud domain registry from
 `docs/adr/cloud-connected-local-mcp.md` Decision 2, lifted out of `runt-mcp`
-into a shared home so the daemon resolves the same file: routing data in the
-registry, secrets referenced via environment variables (later: keychain /
-device flow — #3861 open question). Credentials never ride the handshake from
-the desktop app; the desktop names a URL, the daemon owns the credential.
+into a shared location so the daemon resolves the same file. Routing data is
+in the registry; secrets are referenced via environment variables.
+Credentials never ride the handshake from the desktop app; the desktop names
+a URL, the daemon owns the credential. Keychain / device flow remain #3861
+open questions.
 
-Direct MCP hosted mode stays as a headless shortcut. Nothing here removes it;
-the daemon-mediated path is the desktop product lifecycle.
+Direct MCP hosted mode stays as a headless shortcut; the daemon-mediated path
+is the desktop product lifecycle.
 
-## Entry point
+## Entry point (Implemented)
 
-New connection handshake channel:
+New connection handshake channel (`crates/notebook-protocol/src/connection/handshake.rs:62-81`):
 
 ```json
 {"channel":"open_hosted_notebook","url":"https://preview.runt.run/n/01KT...","operator":"desktop"}
 ```
 
 The daemon resolves the URL against the registry, creates or joins the
-hosted-bridged room, spawns the bridge if needed, and then serves the
-connection exactly like a normal `notebook_sync` peer (typed bootstrap,
-`NotebookConnectionInfo` with the daemon-local room id). Reconnect/status
-composition in the desktop UI is #3599.
+hosted-bridged room, spawns the bridge if needed, and serves the connection
+like a normal `notebook_sync` peer (typed bootstrap, `NotebookConnectionInfo`
+with the daemon-local room id). Reconnect/status composition in the desktop UI
+is #3599.
 
-## Out of scope for the first slice
+## Remaining Work (see #3861)
 
 - OAuth/device-flow credential acquisition and keychain storage.
 - CommsDoc/CommentsDoc bridging; widget replay across the bridge.
@@ -119,3 +121,4 @@ composition in the desktop UI is #3599.
   separate, existing flow).
 - Offline edits with later cloud rejection UX.
 - Local-first persistence of hosted sessions (#3600).
+- Richer status/presence composition in desktop UI (#3599).

@@ -1,6 +1,6 @@
 # Notebook Schema Evolution and the Frozen Genesis
 
-**Status:** Draft, 2026-05-30.
+**Status:** Accepted, 2026-05-30.
 
 ## Context
 

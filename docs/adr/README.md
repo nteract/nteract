@@ -9,6 +9,9 @@ technical decisions graduate back into this ADR register.
 
 ## ADR Statuses
 
+Use only these four status terms. When a status needs qualification, add a date
+and brief clause after the status term — do not create compound pseudo-statuses.
+
 - **Accepted**: load-bearing decision that current and future work should treat
   as the architectural source of truth.
 - **Draft**: proposed or recently extracted decision that should be reviewed

@@ -24,15 +24,23 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 | Platform | File |
 |----------|------|
 | macOS ARM64 (Apple Silicon) | `nteract-{channel}-darwin-arm64.dmg` |
-| Windows x64 | `nteract-{channel}-windows-x64.exe` |
-| Linux x64 | `nteract-{channel}-linux-x64.AppImage` |
+| macOS x64 (Intel) | `nteract-{channel}-darwin-x64.dmg` |
+| macOS ARM64 updater | `nteract-{channel}-darwin-arm64.app.tar.gz` + `.sig` |
+| macOS x64 updater | `nteract-{channel}-darwin-x64.app.tar.gz` + `.sig` |
+| Windows x64 | `nteract-{channel}-windows-x64.exe` + `.sig` |
+| Linux x64 AppImage | `nteract-{channel}-linux-x64.AppImage` + `.sig` |
 | Installer script (Linux x64, macOS) | `install-linux-release` |
 | CLI (macOS ARM64) | `runt-darwin-arm64` |
+| CLI (macOS x64) | `runt-darwin-x64` |
 | CLI (Linux x64) | `runt-linux-x64` |
+| Standalone daemon (Linux x64) | `runtimed-linux-x64` |
+| Standalone MCP server (Linux x64) | `nteract-mcp-linux-x64` |
+| Updater manifest | `latest.json` |
 
-macOS builds are signed and notarized. Windows builds are not code signed. Linux
-desktop releases publish AppImage only; DEB/RPM/APT installs are not currently
-supported because `runtimed` is a per-user daemon.
+macOS builds are signed and notarized. Windows builds use Azure Trusted Signing
+via `trusted-signing-cli` and `signtool.exe`. Linux desktop releases publish
+AppImage only; DEB/RPM/APT installs are not currently supported because
+`runtimed` is a per-user daemon.
 
 Linux users can also install the released AppImage with:
 
@@ -42,7 +50,11 @@ curl -fsSL https://sh.nteract.io | bash
 
 ### Crate publishing
 
-`runt`, `runtimed-py`, `mcp-supervisor`, `runt-mcp`, and `xtask` are **not published to crates.io** (`publish = false`).
+Many crates are **not published to crates.io** (`publish = false`), including
+`runt`, `runtimed-py`, `mcp-supervisor`, `runt-mcp`, `runt-mcp-proxy`,
+`nteract-mcp`, `runtimed-node`, `runt-publish`, `nteract-markdown-engine`,
+`nteract-markdown-wasm`, `sift-wasm`, and `xtask`. Check `Cargo.toml` for the
+current list.
 
 ## Published Bindings
 

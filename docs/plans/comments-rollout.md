@@ -24,10 +24,14 @@ The core comments architecture has landed:
   humans.
 - **Desktop product polish.** Finish rail/panel flows, stale-anchor display, and
   source/rich-rendered selection repair against live `CommentsDoc` projections.
-- **Hosted room ingress.** Keep Cloud room-host comment writes behind the same
-  actor-binding and scope checks as local daemon ingress.
 - **Publish boundary.** Exclude private review comments from public artifacts by
   default; add an explicit opt-in policy before publishing comments.
+
+Note: Hosted room ingress validates comment writes by scope
+(`apps/notebook-cloud/src/room-materializer.ts:139-148` passes
+`canWriteAllNotebookChanges` to `receive_peer_frame`;
+`crates/runtimed-wasm/src/lib.rs:1063` rejects CommentsDoc changes when the
+flag is false).
 
 ## Guardrail
 

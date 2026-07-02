@@ -36,13 +36,17 @@ conda: binary archives are preferred; post-link scripts are opt-in.
 
 ### 4. nteract package installs are isolated from global caches
 
-nteract executes all Python in a sandboxed context. Packages installed for use
-inside nteract must not share caches with packages installed outside nteract,
-which may have no sandboxing or isolation model. Mixing the two creates
-confusion about which packages have been vetted for sandbox execution and
-contaminates the nteract environment with installs that were never subject to
-nteract's trust model. nteract maintains its own cache directories, separate
-from the user's global package manager caches.
+nteract executes Python **during package installation** in a sandboxed context
+(uv/pip builds, post-link scripts). Packages installed for use inside nteract
+must not share caches with packages installed outside nteract, which may have
+no sandboxing or isolation model. Mixing the two creates confusion about which
+packages have been vetted for sandbox execution and contaminates the nteract
+environment with installs that were never subject to nteract's trust model.
+nteract maintains its own cache directories, separate from the user's global
+package manager caches.
+
+Note: runtime kernel/agent execution is not yet sandboxed; see issue #1307 for
+runtime agent sandboxing policy.
 
 ### 5. Arbitrary execution requires per-notebook isolation
 
