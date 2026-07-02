@@ -10,10 +10,16 @@
    ships these via the isolated renderer; the DS closure needs them too or every
    AnsiOutput/AnsiStreamOutput renders colorless. */
 @import "../src/styles/ansi.css";
+/* Comment affordance + highlight visuals. Both are shared surfaces the app
+   ships once and tunes in Elements: the affordance dot/bubble morph and the
+   open/resolved/pending highlight treatments. */
+@import "../src/styles/comment-affordance.css";
+@import "../src/styles/comment-highlight.css";
 
 @source "../src/components/ui";
 @source "../src/components/cell";
 @source "../src/components/outputs";
+@source "../src/components/comments";
 @source "./previews";
 
 /* Safelist the semantic token vocabulary the conventions header documents, so a
