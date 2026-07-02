@@ -28,8 +28,15 @@ hardcode hex colors; use the token utilities so light/dark and theming stay corr
 | Accent (hover/active) | `bg-accent` / `text-accent-foreground` |
 | Destructive | `bg-destructive` / `text-destructive-foreground` |
 | Borders / focus | `border-border`, `border-input`, `ring-ring` |
-| Brand | `bg-uv` / `text-uv` (the nteract magenta `#de5fe9`) |
+| uv tooling ONLY | `bg-uv` / `text-uv` - the uv package manager's brand magenta, reserved for uv-specific environment UI and current-user identity marks. NEVER a page accent, button color, or brand moment |
 | Radius | `rounded-sm` · `rounded-md` · `rounded-lg` (scale off `--radius`) |
+
+The brand voice is neutral: `--primary` and `--accent` are grayscale (zero-chroma oklch),
+so brand moments come from type weight, spacing, and near-black/near-white contrast - not
+hue. Chromatic color always carries a specific meaning: cell types (`--ct-*` ticks),
+kernel states (`--k-*` dots), live presence green (`--live`), destructive red, language
+marks. If you reach for a saturated color as decoration, stop - use `bg-primary` or
+`bg-muted` instead.
 
 Do layout with plain Tailwind (`flex`, `gap-2`, `grid`, spacing). Reach for a component's
 own `variant`/`size` props before restyling it — e.g. `<Button variant="destructive"
