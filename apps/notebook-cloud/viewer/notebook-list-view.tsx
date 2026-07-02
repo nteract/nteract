@@ -145,7 +145,10 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
     );
     void (async () => {
       try {
-        const response = await fetchCloudNotebookList(authState, controller.signal);
+        const response = await fetchCloudNotebookList(
+          authState,
+          AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]),
+        );
         if (controller.signal.aborted) return;
         if (!response.ok) {
           throw await cloudResponseError(response, "Unable to list notebooks");
@@ -161,9 +164,14 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
         setListState({ kind: "ready", notebooks: body.notebooks });
       } catch (error) {
         if (controller.signal.aborted) return;
+        const timedOut = error instanceof DOMException && error.name === "TimeoutError";
         setListState({
           kind: "error",
-          message: error instanceof Error ? error.message : String(error),
+          message: timedOut
+            ? "Loading notebooks timed out - the service may be mid-deploy. Retry, or hard-refresh if this persists."
+            : error instanceof Error
+              ? error.message
+              : String(error),
         });
       }
     })();
@@ -431,9 +439,16 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
 
       <section className="cloud-notebook-list-content" aria-label="Notebook list">
         {listState.kind === "loading" ? (
-          <div className="cloud-notebook-list-state" data-kind="loading" role="status">
-            <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
-            <span>Loading notebooks</span>
+          <div className="nb-loading" role="status" aria-label="Loading notebooks">
+            <span className="sr-only">Loading notebooks</span>
+            {Array.from({ length: 6 }, (_, index) => (
+              <div key={index} className="nb-loading-row" aria-hidden="true">
+                <span className="nb-loading-bar" data-w="title" />
+                <span className="nb-loading-bar" data-w="meta" />
+                <span className="nb-loading-bar" data-w="meta" />
+                <span className="nb-loading-bar" data-w="time" />
+              </div>
+            ))}
           </div>
         ) : listState.kind === "signed_out" ? (
           <CloudNotebookSignedOutPanel authConfig={authConfig} authState={authState} />
@@ -441,6 +456,10 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
           <div className="cloud-notebook-list-state" data-kind="error" role="alert">
             <AlertCircle aria-hidden="true" />
             <span>{listState.message}</span>
+            <Button type="button" variant="outline" size="sm" onClick={refreshList}>
+              <RotateCcw aria-hidden="true" />
+              Retry
+            </Button>
           </div>
         ) : listState.notebooks.length === 0 ? (
           <CloudNotebookListEmptyState signedIn={signedIn} onNewNotebook={openCreateForm} />

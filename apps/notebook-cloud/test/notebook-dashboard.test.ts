@@ -483,7 +483,7 @@ describe("cloud notebook dashboard projection", () => {
         section.notebooks.map((item) => item.notebook_id),
       ]),
       [
-        ["named", "Recent work", "1 more notebook to reopen", ["workstation-notes"]],
+        ["named", "Recent work", "+1 more", ["workstation-notes"]],
         ["generated", "Generated runs", "1 notebook from smoke and debug work", ["toolbar-smoke"]],
         [
           "untitled",

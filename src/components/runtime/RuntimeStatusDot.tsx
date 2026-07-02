@@ -11,7 +11,7 @@ const RUNTIME_STATUS_LABELS: Record<RuntimeStatus, string> = {
   executing: "Running",
   ready: "Kernel ready",
   starting: "Connecting",
-  stale: "Idle kernel",
+  stale: "Disconnected",
   error: "Runtime error",
   none: "No compute",
 };

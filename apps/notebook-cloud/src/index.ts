@@ -1206,7 +1206,12 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
     }),
     listNotebookPrincipalDisplays(env, notebooks, principal),
   ]);
-  const currentUserDisplay = principalDisplays.get(principal);
+  // Same resolution chain the viewer shell uses: live identity metadata, then
+  // the app session's captured display name, then the profile store.
+  const currentUserDisplay =
+    (!isAnonymousViewer(identity) ? identity.metadata.displayName?.trim() : undefined) ||
+    appSession?.displayName?.trim() ||
+    principalDisplays.get(principal);
   return json({
     ok: true,
     notebooks: notebookListResponseRows(
@@ -1320,7 +1325,7 @@ async function listNotebookRoomPresenceForRows(
           }
           const peers = summary.occupants.filter(
             (occupant) =>
-              isHumanRoomSummaryOccupant(occupant) &&
+              isEditingRoomSummaryOccupant(occupant) &&
               !roomSummaryOccupantMatchesRequester(occupant, requester),
           );
           if (peers.length > 0) {
@@ -1387,12 +1392,12 @@ function isNotebookRoomSummaryOccupant(value: unknown): value is NotebookRoomSum
   );
 }
 
-function isHumanRoomSummaryOccupant(occupant: NotebookRoomSummaryOccupant): boolean {
-  return (
-    occupant.connection_scope === "viewer" ||
-    occupant.connection_scope === "editor" ||
-    occupant.connection_scope === "owner"
-  );
+// Dashboard presence means "editing now": only editor/owner occupants count.
+// Viewers (including anonymous public viewers) are recorded in the room
+// summary for a future viewing/editing split but must not mark a notebook
+// Active or read as editing here.
+function isEditingRoomSummaryOccupant(occupant: NotebookRoomSummaryOccupant): boolean {
+  return occupant.connection_scope === "editor" || occupant.connection_scope === "owner";
 }
 
 function roomSummaryOccupantMatchesRequester(

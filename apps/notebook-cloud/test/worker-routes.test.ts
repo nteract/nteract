@@ -2103,6 +2103,14 @@ describe("Worker artifact routes", () => {
             display_name: "Python",
             connection_scope: "runtime_peer",
           },
+          {
+            // Read-only viewers (incl. anonymous public viewers) never read as
+            // "editing now" on the dashboard.
+            participant_key: "user:dev:vera",
+            actor_label: "user:dev:vera/browser:tab",
+            display_name: "Vera Viewer",
+            connection_scope: "viewer",
+          },
         ],
       }),
     );
