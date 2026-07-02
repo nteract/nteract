@@ -55,6 +55,7 @@ import {
   runtimeStateSnapshotKey,
   snapshotKey,
   setDefaultWorkstation,
+  updateNotebookSnapshotSummary,
   updateNotebookTitle,
   updateWorkstationAttachJobStatus,
   type ListedNotebookRow,
@@ -84,7 +85,10 @@ import {
   type WorkstationAttachJobNotification,
 } from "./workstation-events.ts";
 import { OwnerComputeIndex, listOwnerComputeSessions } from "./compute-session-index.ts";
-import { materializeSnapshotPairRender } from "./snapshot-render.ts";
+import {
+  materializeSnapshotPairRenderWithSummary,
+  type SnapshotNotebookSummary,
+} from "./snapshot-render.ts";
 import { notebookRouteSegmentTitle } from "./notebook-route-title.ts";
 import {
   createNotebookCloudBlobResolver,
@@ -218,6 +222,7 @@ const rendererSidecarAssetNamesCache = new WeakMap<
 type SnapshotPairValidationResult =
   | {
       ok: true;
+      summary: SnapshotNotebookSummary;
     }
   | {
       ok: false;
@@ -1219,6 +1224,7 @@ function notebookListResponseRows(
   return notebooks.map((notebook) => {
     const notebookPathId = encodeURIComponent(notebook.id);
     const apiBasePath = `/api/n/${notebookPathId}`;
+    const composition = parseNotebookCellComposition(notebook.cell_composition);
     const computeSession =
       notebook.owner_principal === computeSessions.get(notebook.id)?.owner_principal
         ? computeSessions.get(notebook.id)
@@ -1231,6 +1237,8 @@ function notebookListResponseRows(
       created_at: notebook.created_at,
       updated_at: notebook.updated_at,
       latest_revision_id: notebook.latest_revision_id,
+      ...(composition ? { composition } : {}),
+      ...(typeof notebook.language === "string" ? { language: notebook.language } : {}),
       compute_session: computeSession,
       viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title, env),
       endpoints: {
@@ -1240,6 +1248,40 @@ function notebookListResponseRows(
       },
     };
   });
+}
+
+function parseNotebookCellComposition(
+  value: string | null,
+): { code: number; markdown: number; raw: number } | undefined {
+  if (!value) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return undefined;
+  }
+  const composition = parsed as { code?: unknown; markdown?: unknown; raw?: unknown };
+  if (
+    isNotebookCellCount(composition.code) &&
+    isNotebookCellCount(composition.markdown) &&
+    isNotebookCellCount(composition.raw)
+  ) {
+    return {
+      code: composition.code,
+      markdown: composition.markdown,
+      raw: composition.raw,
+    };
+  }
+  return undefined;
+}
+
+function isNotebookCellCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && value >= 0;
 }
 
 function parseNotebookListLimit(request: Request): number | Response {
@@ -2766,6 +2808,19 @@ async function routeSnapshot(
     throw error;
   }
 
+  try {
+    await updateNotebookSnapshotSummary(env, notebookId, validated.summary);
+  } catch (error) {
+    cloudLog("warn", "snapshot.summary.update_failed", {
+      notebook_id: notebookId,
+      notebook_heads_hash: headsHash,
+      revision_id: revisionId,
+      error: errorMessage(error),
+      counter: "snapshot_summary_update_failures",
+      counter_delta: 1,
+    });
+  }
+
   return json(
     {
       ok: true,
@@ -3941,9 +3996,9 @@ async function validateSnapshotPair(options: {
     };
   }
 
-  let render: Awaited<ReturnType<typeof materializeSnapshotPairRender>>;
+  let materialized: Awaited<ReturnType<typeof materializeSnapshotPairRenderWithSummary>>;
   try {
-    render = await materializeSnapshotPairRender({
+    materialized = await materializeSnapshotPairRenderWithSummary({
       notebookId: options.notebookId,
       notebookHeadsHash: options.notebookHeadsHash,
       runtimeHeadsHash: options.runtimeHeadsHash,
@@ -3974,6 +4029,7 @@ async function validateSnapshotPair(options: {
       },
     };
   }
+  const { render, summary } = materialized;
 
   if (render.runtime_state_doc_id !== options.expectedRuntimeStateDocId) {
     cloudLog("warn", "snapshot_pair.validation.runtime_state_doc_id_mismatch", {
@@ -4052,7 +4108,7 @@ async function validateSnapshotPair(options: {
     counter: "snapshot_pair_validations",
     counter_delta: 1,
   });
-  return { ok: true };
+  return { ok: true, summary };
 }
 
 async function findMissingSnapshotBlobs(

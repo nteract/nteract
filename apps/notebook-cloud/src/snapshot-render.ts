@@ -23,7 +23,23 @@ export interface SnapshotRender {
   widget_comms: SnapshotWidgetComm[];
 }
 
-export async function materializeSnapshotPairRender(input: {
+export interface SnapshotCellComposition {
+  code: number;
+  markdown: number;
+  raw: number;
+}
+
+export interface SnapshotNotebookSummary {
+  cellComposition: SnapshotCellComposition;
+  language: string | null;
+}
+
+export interface MaterializedSnapshotPairRender {
+  render: SnapshotRender;
+  summary: SnapshotNotebookSummary;
+}
+
+interface MaterializeSnapshotPairRenderInput {
   notebookId: string;
   notebookHeadsHash: string;
   runtimeHeadsHash: string | null;
@@ -32,7 +48,17 @@ export async function materializeSnapshotPairRender(input: {
   commsDocBytes?: Uint8Array;
   blobResolver?: BlobResolver;
   generatedAt?: string;
-}): Promise<SnapshotRender> {
+}
+
+export async function materializeSnapshotPairRender(
+  input: MaterializeSnapshotPairRenderInput,
+): Promise<SnapshotRender> {
+  return (await materializeSnapshotPairRenderWithSummary(input)).render;
+}
+
+export async function materializeSnapshotPairRenderWithSummary(
+  input: MaterializeSnapshotPairRenderInput,
+): Promise<MaterializedSnapshotPairRender> {
   const handle = await loadSnapshotPair(
     input.notebookBytes,
     input.runtimeStateBytes,
@@ -43,27 +69,34 @@ export async function materializeSnapshotPairRender(input: {
     const runtimeState = handle.get_runtime_state();
     const commsState = handle.get_comms_state();
     const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json());
+    const summary = {
+      cellComposition: countCellComposition(cells),
+      language: readDetectedRuntime(handle, metadata),
+    };
     const commsDocId = readOptionalCommsDocId(handle);
     const rawWidgetComms = snapshotWidgetCommsFromRuntimeAndCommsState(runtimeState, commsState);
     const widgetComms = input.blobResolver
       ? resolveSnapshotWidgetComms(rawWidgetComms, input.blobResolver)
       : rawWidgetComms;
     return {
-      schema_version: 1,
-      generated_from: "runtimed-wasm:load_snapshot",
-      generated_at: input.generatedAt ?? new Date().toISOString(),
-      notebook_id: input.notebookId,
-      heads_hash: input.notebookHeadsHash,
-      runtime_state_doc_id: handle.get_runtime_state_doc_id() ?? null,
-      comms_doc_id: commsDocId,
-      runtime_heads_hash: input.runtimeHeadsHash,
-      metadata,
-      source: "snapshot-pair",
-      cells,
-      blob_urls: input.blobResolver
-        ? collectBlobUrls({ cells, widget_comms: rawWidgetComms }, input.blobResolver)
-        : {},
-      widget_comms: widgetComms,
+      render: {
+        schema_version: 1,
+        generated_from: "runtimed-wasm:load_snapshot",
+        generated_at: input.generatedAt ?? new Date().toISOString(),
+        notebook_id: input.notebookId,
+        heads_hash: input.notebookHeadsHash,
+        runtime_state_doc_id: handle.get_runtime_state_doc_id() ?? null,
+        comms_doc_id: commsDocId,
+        runtime_heads_hash: input.runtimeHeadsHash,
+        metadata,
+        source: "snapshot-pair",
+        cells,
+        blob_urls: input.blobResolver
+          ? collectBlobUrls({ cells, widget_comms: rawWidgetComms }, input.blobResolver)
+          : {},
+        widget_comms: widgetComms,
+      },
+      summary,
     };
   } finally {
     handle.free();
@@ -83,4 +116,74 @@ function readOptionalCommsDocId(handle: {
   get_comms_doc_id?: () => string | undefined;
 }): string | null {
   return typeof handle.get_comms_doc_id === "function" ? (handle.get_comms_doc_id() ?? null) : null;
+}
+
+function readDetectedRuntime(
+  handle: { detect_runtime?: () => string | undefined },
+  metadata: unknown,
+): string | null {
+  try {
+    if (typeof handle.detect_runtime === "function") {
+      return handle.detect_runtime() ?? detectRuntimeFromMetadata(metadata);
+    }
+  } catch {
+    return detectRuntimeFromMetadata(metadata);
+  }
+  return detectRuntimeFromMetadata(metadata);
+}
+
+function detectRuntimeFromMetadata(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object") {
+    return null;
+  }
+  const record = metadata as Record<string, unknown>;
+  const kernelspec = objectRecord(record.kernelspec);
+  if (kernelspec) {
+    const name = stringLower(kernelspec.name);
+    if (name?.includes("deno")) return "deno";
+    if (name?.includes("python")) return "python";
+
+    const language = stringLower(kernelspec.language);
+    if (language === "typescript" || language === "javascript") return "deno";
+    if (language === "python") return "python";
+  }
+
+  const languageInfo = objectRecord(record.language_info);
+  if (languageInfo) {
+    const name = stringLower(languageInfo.name);
+    if (name === "deno" || name === "typescript" || name === "javascript") return "deno";
+    if (name === "python") return "python";
+  }
+
+  const runt = objectRecord(record.runt);
+  if (runt) {
+    if (objectRecord(runt.deno)) return "deno";
+    if (objectRecord(runt.uv) || objectRecord(runt.conda)) return "python";
+  }
+  return null;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function stringLower(value: unknown): string | null {
+  return typeof value === "string" ? value.toLowerCase() : null;
+}
+
+function countCellComposition(cells: unknown): SnapshotCellComposition {
+  const composition: SnapshotCellComposition = { code: 0, markdown: 0, raw: 0 };
+  if (!Array.isArray(cells)) {
+    return composition;
+  }
+  for (const cell of cells) {
+    if (!cell || typeof cell !== "object") {
+      continue;
+    }
+    const cellType = (cell as { cell_type?: unknown }).cell_type;
+    if (cellType === "code" || cellType === "markdown" || cellType === "raw") {
+      composition[cellType] += 1;
+    }
+  }
+  return composition;
 }

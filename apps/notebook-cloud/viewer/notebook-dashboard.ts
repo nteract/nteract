@@ -15,6 +15,7 @@ export interface CloudNotebookListItem {
   latest_revision_id: string | null;
   compute_session?: NotebookComputeSessionSummary | null;
   composition?: CloudNotebookComposition;
+  language?: string;
   viewer_url: string;
   endpoints: {
     catalog: string;
@@ -242,6 +243,19 @@ export function cloudNotebookShortId(notebookId: string): string {
   return `${trimmed.slice(0, 8)}...${trimmed.slice(-4)}`;
 }
 
+export function cloudNotebookLanguageDisplayLabel(
+  language: string | null | undefined,
+): string | null {
+  switch (language) {
+    case "python":
+      return "Python";
+    case "deno":
+      return "Deno";
+    default:
+      return null;
+  }
+}
+
 function cloudNotebookDefaultOpenMode(notebook: CloudNotebookListItem): CloudNotebookUrlMode {
   return notebook.scope === "owner" || notebook.scope === "editor" ? "edit" : "view";
 }
@@ -267,6 +281,7 @@ export function isCloudNotebookListItem(value: unknown): value is CloudNotebookL
       candidate.compute_session === null ||
       isNotebookComputeSessionSummary(candidate.compute_session)) &&
     (candidate.composition === undefined || isCloudNotebookComposition(candidate.composition)) &&
+    (candidate.language === undefined || typeof candidate.language === "string") &&
     typeof candidate.viewer_url === "string" &&
     Boolean(candidate.endpoints) &&
     typeof candidate.endpoints?.catalog === "string" &&

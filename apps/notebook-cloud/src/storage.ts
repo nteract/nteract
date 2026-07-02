@@ -14,6 +14,8 @@ export interface NotebookRow {
   created_at: string;
   updated_at: string;
   latest_revision_id: string | null;
+  cell_composition: string | null;
+  language: string | null;
 }
 
 export interface RevisionRow {
@@ -153,7 +155,9 @@ const SCHEMA_STATEMENTS = [
     title TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    latest_revision_id TEXT
+    latest_revision_id TEXT,
+    cell_composition TEXT,
+    language TEXT
   )`,
   `CREATE TABLE IF NOT EXISTS notebook_revisions (
     id TEXT PRIMARY KEY,
@@ -371,6 +375,16 @@ const SCHEMA_MIGRATIONS = [
     column: "comments_snapshot_key",
     statement: `ALTER TABLE notebook_revisions ADD COLUMN comments_snapshot_key TEXT`,
   },
+  {
+    table: "notebooks",
+    column: "cell_composition",
+    statement: `ALTER TABLE notebooks ADD COLUMN cell_composition TEXT`,
+  },
+  {
+    table: "notebooks",
+    column: "language",
+    statement: `ALTER TABLE notebooks ADD COLUMN language TEXT`,
+  },
 ];
 
 // Prototype-local schema memo. The Worker binds every room to the same D1
@@ -486,7 +500,14 @@ export async function getNotebookRow(env: Env, notebookId: string): Promise<Note
 
   await ensureCatalogSchema(env);
   return await env.DB.prepare(
-    `SELECT id, owner_principal, title, created_at, updated_at, latest_revision_id
+    `SELECT id,
+            owner_principal,
+            title,
+            created_at,
+            updated_at,
+            latest_revision_id,
+            cell_composition,
+            language
        FROM notebooks
        WHERE id = ?`,
   )
@@ -509,7 +530,9 @@ export async function getPublicPublishedNotebookRow(
             n.title,
             n.created_at,
             n.updated_at,
-            n.latest_revision_id
+            n.latest_revision_id,
+            n.cell_composition,
+            n.language
        FROM notebooks n
        JOIN notebook_acl a
          ON a.notebook_id = n.id
@@ -547,6 +570,33 @@ export async function updateNotebookTitle(
     return null;
   }
   return await getNotebookRow(env, notebookId);
+}
+
+export async function updateNotebookSnapshotSummary(
+  env: Env,
+  notebookId: string,
+  summary: {
+    cellComposition: {
+      code: number;
+      markdown: number;
+      raw: number;
+    };
+    language: string | null;
+  },
+): Promise<void> {
+  if (!env.DB) {
+    return;
+  }
+
+  await ensureCatalogSchema(env);
+  await env.DB.prepare(
+    `UPDATE notebooks
+        SET cell_composition = ?,
+            language = ?
+      WHERE id = ?`,
+  )
+    .bind(JSON.stringify(summary.cellComposition), summary.language, notebookId)
+    .run();
 }
 
 export async function getNotebookAclRowsForPrincipal(
@@ -602,6 +652,8 @@ export async function listNotebooksForPrincipal(
             n.created_at,
             n.updated_at,
             n.latest_revision_id,
+            n.cell_composition,
+            n.language,
             CASE MAX(
               CASE a.scope
                 WHEN 'owner' THEN 4
@@ -633,7 +685,9 @@ export async function listNotebooksForPrincipal(
                n.title,
                n.created_at,
                n.updated_at,
-               n.latest_revision_id
+               n.latest_revision_id,
+               n.cell_composition,
+               n.language
       ORDER BY n.updated_at DESC, n.created_at DESC, n.id DESC
       LIMIT ?`,
   )
@@ -1575,7 +1629,14 @@ export async function getNotebookCatalog(
 
   await ensureCatalogSchema(env);
   const notebook = await env.DB.prepare(
-    `SELECT id, owner_principal, title, created_at, updated_at, latest_revision_id
+    `SELECT id,
+            owner_principal,
+            title,
+            created_at,
+            updated_at,
+            latest_revision_id,
+            cell_composition,
+            language
        FROM notebooks
        WHERE id = ?`,
   )

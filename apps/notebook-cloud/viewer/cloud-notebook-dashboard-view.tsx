@@ -20,6 +20,7 @@ import { RuntimeStatusDot } from "@/components/runtime/RuntimeStatusDot";
 import {
   cloudNotebookDashboardOpenUrl,
   cloudNotebookDisplayTitle,
+  cloudNotebookLanguageDisplayLabel,
   cloudNotebookShortId,
   projectCloudNotebookDashboardView,
   type CloudNotebookDashboardFilterId,
@@ -194,11 +195,13 @@ function CloudNotebookDashboardHero({
   const notebook = row.notebook;
   const openUrl = cloudNotebookDashboardOpenUrl(notebook);
   const runtimeActive = cloudNotebookRuntimeIsActive(row);
-  const environmentLanguage = row.environmentLabel
-    ? /python/iu.test(row.environmentLabel)
-      ? "Python"
-      : row.environmentLabel
-    : null;
+  const runtimeLanguage =
+    cloudNotebookLanguageDisplayLabel(notebook.language) ??
+    (row.environmentLabel
+      ? /python/iu.test(row.environmentLabel)
+        ? "Python"
+        : row.environmentLabel
+      : null);
   const cellCount = row.composition ? notebookCompositionTotal(row.composition) : null;
   const heroComputeFact = row.facts.find((fact) => fact.kind === "compute") ?? null;
 
@@ -207,9 +210,9 @@ function CloudNotebookDashboardHero({
       className={`nb-hero${runtimeActive ? " is-live" : ""}`}
       aria-label="Pick up where you left off"
     >
-      {row.environmentLabel && environmentLanguage ? (
+      {row.environmentLabel && runtimeLanguage ? (
         <span className="nb-hero-runtime">
-          <LanguageMark language={environmentLanguage} size={16} />
+          <LanguageMark language={runtimeLanguage} size={16} />
           {row.environmentLabel}
         </span>
       ) : null}
@@ -424,6 +427,7 @@ function CloudNotebookDashboardRowView({
   // The compute fact carries the rich label ("lab2 workstation running, 1 queued");
   // the column shows the calm dot + terse status, the full label rides title/aria.
   const computeFact = row.facts.find((fact) => fact.kind === "compute") ?? null;
+  const languageLabel = cloudNotebookLanguageDisplayLabel(notebook.language);
 
   return (
     <div className={`nb-row${runtimeActive ? " is-live" : ""}`} data-scope={notebook.scope}>
@@ -450,6 +454,14 @@ function CloudNotebookDashboardRowView({
       <span className="nb-col nb-col-owner">
         <span className="nb-avatar nb-avatar-sm">{row.ownerInitials}</span>
         <span className="nb-col-owner-name">{row.ownerLabel}</span>
+      </span>
+      <span className="nb-col nb-col-lang">
+        {languageLabel ? (
+          <>
+            <LanguageMark language={languageLabel} size={12} />
+            {languageLabel}
+          </>
+        ) : null}
       </span>
       <span className="nb-col nb-col-status" title={computeFact?.label ?? undefined}>
         {row.runtimeStatus !== "none" ? (

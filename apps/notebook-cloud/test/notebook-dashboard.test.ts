@@ -6,6 +6,7 @@ import {
   cloudNotebookDisplayTitle,
   cloudNotebookOpenUrlWithMode,
   cloudNotebookShortId,
+  isCloudNotebookListItem,
   projectCloudNotebookDashboard,
   projectCloudNotebookDashboardView,
   type CloudNotebookListItem,
@@ -693,6 +694,26 @@ describe("cloud notebook dashboard projection", () => {
     );
   });
 
+  it("threads notebook language through list-item validation and dashboard rows", () => {
+    const deno = notebook({
+      id: "deno-notebook",
+      title: "Deno Notebook",
+      scope: "owner",
+      updatedAt: "2026-06-24T00:00:00.000Z",
+      latestRevisionId: "published-deno",
+      composition: { code: 2, markdown: 1, raw: 0 },
+      language: "deno",
+    });
+
+    assert.equal(isCloudNotebookListItem(deno), true);
+    assert.equal(isCloudNotebookListItem({ ...deno, language: 42 }), false);
+
+    const model = projectCloudNotebookDashboard([deno]);
+
+    assert.equal(model.continueRow?.notebook.language, "deno");
+    assert.deepEqual(model.continueRow?.composition, { code: 2, markdown: 1, raw: 0 });
+  });
+
   it("maps compute session status to dashboard runtime status", () => {
     const base = {
       id: "runtime-status",
@@ -758,6 +779,8 @@ function notebook(input: {
   updatedAt: string;
   latestRevisionId: string | null;
   computeSession?: CloudNotebookListItem["compute_session"];
+  composition?: CloudNotebookListItem["composition"];
+  language?: string;
 }): CloudNotebookListItem {
   return {
     notebook_id: input.id,
@@ -768,6 +791,8 @@ function notebook(input: {
     updated_at: input.updatedAt,
     latest_revision_id: input.latestRevisionId,
     compute_session: input.computeSession ?? null,
+    ...(input.composition ? { composition: input.composition } : {}),
+    ...(input.language ? { language: input.language } : {}),
     viewer_url: `/n/${input.id}/notebook`,
     endpoints: {
       catalog: `/api/n/${input.id}`,
