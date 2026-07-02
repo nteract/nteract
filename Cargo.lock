@@ -7348,6 +7348,7 @@ dependencies = [
  "kernel-env",
  "libc",
  "notebook-doc",
+ "notebook-sync",
  "notify",
  "nteract-telemetry",
  "reqwest 0.12.28",
