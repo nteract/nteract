@@ -2833,7 +2833,8 @@ impl Daemon {
             return;
         };
 
-        if let Some(room) = self.notebook_rooms.peek_uuid(handle.room_id).await {
+        let room = self.notebook_rooms.peek_uuid(handle.room_id).await;
+        if let Some(room) = &room {
             let active_peers = room
                 .connections
                 .active_peers
@@ -2857,10 +2858,23 @@ impl Daemon {
 
         let removed = {
             let mut bridges = self.hosted_bridges.lock().await;
+            // Final atomicity check under the map lock: prepare_hosted_room's
+            // fast path takes its connection reservation *before* re-verifying
+            // the handle is still mapped (also under this lock), so exactly one
+            // of the two observes the other. Reading the room atomics here (no
+            // await) makes an attach that reserved after the advisory check
+            // above still veto the removal.
+            let attach_in_flight = room.as_ref().is_some_and(|room| {
+                room.connections
+                    .active_peers
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    > 0
+                    || room.connections.reservations() > 1
+            });
             let same_handle = bridges
                 .get(locator)
                 .is_some_and(|current| Arc::ptr_eq(current, &handle));
-            if same_handle {
+            if same_handle && !attach_in_flight {
                 bridges.remove(locator)
             } else {
                 None
@@ -2924,7 +2938,22 @@ impl Daemon {
                 room.mark_hosted();
                 let connection_reservation =
                     crate::notebook_sync_server::ReservationGuard::new(room.clone());
-                return Ok((room, bridge, connection_reservation));
+                // Re-verify under the map lock now that the reservation is
+                // held: an idle teardown that decided before this reservation
+                // existed may have removed (and shut down) the bridge. Teardown
+                // re-checks reservations under this same lock before removing,
+                // so observing the handle still mapped here means no teardown
+                // can take it from now on.
+                let still_mapped = {
+                    let bridges = self.hosted_bridges.lock().await;
+                    bridges
+                        .get(&locator)
+                        .is_some_and(|current| Arc::ptr_eq(current, &bridge))
+                };
+                if still_mapped {
+                    return Ok((room, bridge, connection_reservation));
+                }
+                // Torn down mid-lookup; fall through and spawn a fresh bridge.
             }
         }
 
