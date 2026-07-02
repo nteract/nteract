@@ -143,6 +143,7 @@ struct HandshakeSeen {
     user: Option<String>,
 }
 
+#[allow(clippy::result_large_err)] // tokio-tungstenite's handshake callback requires this error shape.
 async fn serve_fake_cloud_room(
     listener: TcpListener,
     mut room: FakeCloudRoom,

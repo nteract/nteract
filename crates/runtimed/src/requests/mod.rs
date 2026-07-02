@@ -177,27 +177,27 @@ fn validate_hosted_execution_id(execution_id: &str) -> Option<NotebookResponse> 
 fn validate_hosted_run_all_execution_ids(
     requested_execution_ids: Option<&HashMap<String, String>>,
     existing_execution_ids: &HashSet<String>,
-) -> Result<HashSet<String>, NotebookResponse> {
+) -> Result<HashSet<String>, Box<NotebookResponse>> {
     let mut supplied = HashSet::new();
     if let Some(requested_execution_ids) = requested_execution_ids {
         for execution_id in requested_execution_ids.values() {
             if uuid::Uuid::parse_str(execution_id).is_err() {
-                return Err(execution_id_rejected(
+                return Err(Box::new(execution_id_rejected(
                     execution_id,
                     ExecutionIdRejectionReason::Malformed,
-                ));
+                )));
             }
             if !supplied.insert(execution_id.clone()) {
-                return Err(execution_id_rejected(
+                return Err(Box::new(execution_id_rejected(
                     execution_id,
                     ExecutionIdRejectionReason::DuplicateInRequest,
-                ));
+                )));
             }
             if existing_execution_ids.contains(execution_id) {
-                return Err(execution_id_rejected(
+                return Err(Box::new(execution_id_rejected(
                     execution_id,
                     ExecutionIdRejectionReason::AlreadyExists,
-                ));
+                )));
             }
         }
     }
@@ -218,12 +218,14 @@ fn forward_hosted_request(
     bridge: &crate::notebook_sync_server::HostedBridgeHandle,
     payload: serde_json::Value,
     operation: &str,
-) -> Result<(), NotebookResponse> {
+) -> Result<(), Box<NotebookResponse>> {
     serde_json::to_vec(&payload)
         .map_err(anyhow::Error::from)
         .and_then(|bytes| bridge.forward_request(bytes))
-        .map_err(|e| NotebookResponse::Error {
-            error: format!("Failed to forward {operation} to hosted room: {e}"),
+        .map_err(|e| {
+            Box::new(NotebookResponse::Error {
+                error: format!("Failed to forward {operation} to hosted room: {e}"),
+            })
         })
 }
 
@@ -261,7 +263,7 @@ async fn handle_hosted_execute_cell(
             cell_id: cell_id.to_string(),
             execution_id,
         },
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 
@@ -295,7 +297,7 @@ async fn handle_hosted_run_all_cells(
         &existing_execution_ids,
     ) {
         Ok(supplied) => supplied,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     let mut allocated_execution_ids = existing_execution_ids;
@@ -340,7 +342,7 @@ async fn handle_hosted_run_all_cells(
             // this list records the request sent across the bridge, not a receipt.
             NotebookResponse::AllCellsQueued { queued }
         }
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 
@@ -354,7 +356,7 @@ fn handle_hosted_interrupt_execution(
         // Best-effort: the room relays to the attached runtime peer and
         // rejects the frame if none is attached.
         Ok(()) => NotebookResponse::InterruptSent {},
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 
@@ -368,7 +370,7 @@ fn handle_hosted_send_comm(
     });
     match forward_hosted_request(bridge, payload, "send_comm") {
         Ok(()) => NotebookResponse::Ok {},
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 
