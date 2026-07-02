@@ -5208,7 +5208,9 @@ async function publicViewerShellMetadata(
   const revisionPart = headsHash
     ? `revision ${shortNotebookId(headsHash)}`
     : `published revision ${shortNotebookId(row.latest_revision_id)}`;
-  const cover = await publicLatestRasterCover(env, notebookId, { verifyBlob: true });
+  const cover = headsHash
+    ? null
+    : await publicLatestRasterCover(env, notebookId, { verifyBlob: true });
   return {
     title: `nteract notebook: ${displayTitle}`,
     description: `${displayTitle} is a public nteract notebook at ${revisionPart}.`,
