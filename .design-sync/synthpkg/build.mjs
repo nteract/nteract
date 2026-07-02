@@ -57,6 +57,15 @@ const groups = [
     dir: "outputs",
     mods: ["ansi-output", "json-output", "traceback-output"],
   },
+  {
+    // Comment affordances — prop-driven pieces of the commenting UI.
+    // NotebookCommentsPanel is DEFERRED with the katex pass: it renders quotes
+    // via ProjectedMarkdownView, which imports katex CSS (the same .ttf loader
+    // wall that defers math-output above). It is otherwise fully prop-driven
+    // (projection + callbacks) and joins this group when katex fonts ship.
+    dir: "comments",
+    mods: ["CommentSelectionAffordance", "CommentMarkIcon"],
+  },
 ];
 
 // 1. barrel entry (the bundle's import graph = exactly these modules)

@@ -66,6 +66,28 @@ passthroughs. Curated list in `synthpkg/build.mjs` (`groups[].dir === 'outputs'`
   need a fixture media/widget provider wired (see
   `apps/elements/components/output-renderers-example.tsx` + `notebook-scenarios.ts`).
 
+## Comment affordances (group: comments)
+
+- Added 2026-07-01: `CommentSelectionAffordance` + `CommentMarkIcon` from
+  `src/components/comments/`. Both prop-driven; author identity flows in via
+  `--comment-author-color` (+ `--comment-author-contrast` for the pill label) set
+  on an ancestor — previews wrap in a scope span with real peer colors.
+- css-entry `@import`s `src/styles/comment-affordance.css` (dot/pill morph) and
+  `src/styles/comment-highlight.css` (open/resolved/pending treatments) — the
+  shared surfaces both editor and rendered-markdown planes use, tunable here.
+  The highlight demo lives as a story inside the affordance's preview (prose
+  with `.comment-highlight`/`-resolved`/`-pending` spans).
+- The affordance is quiet-at-rest by design. Its motion helper
+  (`comment-affordance-motion.ts`) listens for `pointerenter`/`focus` (NOT
+  mouseenter) — the Open story calls `btn.focus()` + dispatches a
+  `PointerEvent("pointerenter")` to play the morph for the screenshot.
+- **NotebookCommentsPanel is DEFERRED with the katex pass**: fully prop-driven
+  (`projection` + callbacks — fixture-friendly) but renders quotes through
+  `ProjectedMarkdownView`, which imports `katex/dist/katex.min.css` (the .ttf
+  loader wall). It joins this group when katex fonts ship, alongside
+  markdown-output/math-output. Its `runtimed` imports (`actorInitials`,
+  `onBehalfOfText`) still need a tree-shake check at that point.
+
 ## Groups + curated lists
 - `cfg.srcDir` is `../../src/components` (broadened from `.../ui`) so grouping resolves
   `cell/` → group `cell` and `ui/` → `general`. Adding a new cell primitive: append it to the
