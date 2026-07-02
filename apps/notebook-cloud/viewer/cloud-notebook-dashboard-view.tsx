@@ -200,6 +200,7 @@ function CloudNotebookDashboardHero({
       : row.environmentLabel
     : null;
   const cellCount = row.composition ? notebookCompositionTotal(row.composition) : null;
+  const heroComputeFact = row.facts.find((fact) => fact.kind === "compute") ?? null;
 
   return (
     <section
@@ -219,7 +220,9 @@ function CloudNotebookDashboardHero({
           </div>
           <h2 className="nb-hero-title">{cloudNotebookDisplayTitle(notebook)}</h2>
           <div className="nb-hero-meta">
-            <RuntimeStatusDot status={row.runtimeStatus} showLabel />
+            <span title={heroComputeFact?.label ?? undefined}>
+              <RuntimeStatusDot status={row.runtimeStatus} showLabel />
+            </span>
             <span className="nb-meta-item">
               <Clock aria-hidden="true" />
               Updated {formatNotebookUpdatedAt(notebook.updated_at)}
@@ -418,6 +421,9 @@ function CloudNotebookDashboardRowView({
   const hasTitle = Boolean(notebook.title?.trim());
   const cellCount = row.composition ? notebookCompositionTotal(row.composition) : null;
   const runtimeActive = cloudNotebookRuntimeIsActive(row);
+  // The compute fact carries the rich label ("lab2 workstation running, 1 queued");
+  // the column shows the calm dot + terse status, the full label rides title/aria.
+  const computeFact = row.facts.find((fact) => fact.kind === "compute") ?? null;
 
   return (
     <div className={`nb-row${runtimeActive ? " is-live" : ""}`} data-scope={notebook.scope}>
@@ -444,6 +450,11 @@ function CloudNotebookDashboardRowView({
       <span className="nb-col nb-col-owner">
         <span className="nb-avatar nb-avatar-sm">{row.ownerInitials}</span>
         <span className="nb-col-owner-name">{row.ownerLabel}</span>
+      </span>
+      <span className="nb-col nb-col-status" title={computeFact?.label ?? undefined}>
+        {row.runtimeStatus !== "none" ? (
+          <RuntimeStatusDot status={row.runtimeStatus} showLabel />
+        ) : null}
       </span>
       <span className="nb-col nb-col-updated">
         <Clock aria-hidden="true" />
