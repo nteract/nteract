@@ -308,6 +308,51 @@ describe("Worker artifact routes", () => {
     assert.match(html, /<meta name="twitter:card" content="summary_large_image" \/>/);
   });
 
+  it("does not attach latest OG image metadata to pinned revision shells", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "pinned-meta-cover");
+    const notebook = env.DB.notebooks.get("pinned-meta-cover");
+    assert.ok(notebook);
+    notebook.title = "Pinned Cover";
+    seedRevision(env, {
+      id: "revision-old-cover",
+      notebookId: "pinned-meta-cover",
+      coverBlobHash: "old-cover",
+      coverMime: "image/png",
+    });
+    seedRevision(env, {
+      id: "revision-latest-cover",
+      notebookId: "pinned-meta-cover",
+      coverBlobHash: "latest-cover",
+      coverMime: "image/png",
+    });
+    seedAcl(env, {
+      notebookId: "pinned-meta-cover",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+    await env.NOTEBOOK_SNAPSHOTS.put(
+      blobKey("pinned-meta-cover", "latest-cover"),
+      new Uint8Array([1]),
+      { httpMetadata: { contentType: "image/png" } },
+    );
+
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/n/pinned-meta-cover/r/${encodeURIComponent("heads:revision-old-cover")}`,
+      ),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Pinned Cover is a public nteract notebook at revision heads:revisi/);
+    assert.doesNotMatch(html, /\/n\/pinned-meta-cover\/r\/latest\/ogImage\.png/);
+    assert.match(html, /<meta name="twitter:card" content="summary" \/>/);
+  });
+
   it("keeps private notebook titles out of server-rendered viewer metadata", async () => {
     const env = fakeEnv();
     seedNotebook(env, "private-meta-demo");
