@@ -63,7 +63,7 @@ const groups = [
     // lives in src/styles/dashboard-atoms.css (shared surface, like
     // comment-affordance.css). NotebookCommentsPanel stays deferred (katex).
     dir: "notebook",
-    mods: ["NotebookCompositionTicks"],
+    mods: ["NotebookCellStrip", "NotebookCompositionTicks"],
   },
   {
     dir: "runtime",

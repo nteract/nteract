@@ -99,6 +99,13 @@ passthroughs. Curated list in `synthpkg/build.mjs` (`groups[].dir === 'outputs'`
   NotebookCompositionTicks.tsx (NOT all of components/notebook - NotebookCommentsPanel
   stays deferred with the katex pass).
 - LanguageMark's Marks story needed cardMode: column (five chips run wide).
+- NotebookCellStrip joined the notebook group 2026-07-02 (cardMode: column - its
+  420px stories run wide). Its UntrustedSource story demonstrates the escaping
+  invariant on-card. The mini markdown parser does NOT inline-parse headings
+  (faithful to the design) - preview fixtures should not put **bold** inside #-lines.
+- The resync driver does not rerun buildCmd when config group lists change without
+  other key changes - run build.mjs + package-build.mjs manually after editing
+  groups, then the driver.
 - NotebookCommentsPanel unlock (katex pass) will join the notebook group.
 
 ## Groups + curated lists
