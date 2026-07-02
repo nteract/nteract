@@ -29,6 +29,7 @@ import {
 import {
   AuthorizationError,
   authorizeNotebookAccess,
+  authorizeNotebookAccessWithNotebook,
   type AuthorizeNotebookAccessOptions,
 } from "./authorization.ts";
 import {
@@ -5317,17 +5318,28 @@ async function initialNotebookViewerCatalogAccess(
     return null;
   }
   const identity = appSessionConnectionIdentity(session, "browser:http", "owner");
-  const authorized = await authorizeNotebookAccess(env, notebookId, identity, "owner", {
-    allowLiveScopeDowngrade: true,
-  });
-  const catalog = await getNotebookCatalog(env, notebookId);
-  if (!catalog) {
-    return null;
-  }
+  const { identity: authorized, notebook } = await authorizeNotebookAccessWithNotebook(
+    env,
+    notebookId,
+    identity,
+    "owner",
+    {
+      allowLiveScopeDowngrade: true,
+    },
+  );
   return {
-    scope: authorized.scope as Exclude<ConnectionScope, "runtime_peer">,
-    title: catalog.notebook.title,
+    scope: browserCatalogAccessScope(authorized.scope),
+    title: notebook.title,
   };
+}
+
+function browserCatalogAccessScope(
+  scope: ConnectionScope,
+): Exclude<ConnectionScope, "runtime_peer"> {
+  if (scope === "runtime_peer") {
+    throw new Error("runtime_peer is not a browser catalog access scope");
+  }
+  return scope;
 }
 
 interface ViewerShellConfig extends Record<string, unknown> {
