@@ -35,12 +35,15 @@ Do layout with plain Tailwind (`flex`, `gap-2`, `grid`, spacing). Reach for a co
 own `variant`/`size` props before restyling it — e.g. `<Button variant="destructive"
 size="sm">`, `<Badge variant="outline">`.
 
-**Groups.** The library has two groups: the general UI primitives, and **Cells** — nteract's
+**Groups.** The library has three groups: the general UI primitives, **Cells** — nteract's
 notebook cell primitives (CellContainer, CellInsertionRibbon, CodeCellCurrentLine,
-CompactExecutionButton, ExecutionCount, CellPresenceIndicators, CellSkeleton). The cell
-primitives are prop-driven: runtime/execution state enters as explicit props (`count`,
-`isExecuting`, `isQueued`, `isErrored`, `cellType`, `isFocused`), never through hooks. Use
-them to assemble notebook surfaces; cell identity and DOM ordering stay outside the component.
+CompactExecutionButton, ExecutionCount, CellPresenceIndicators, CellSkeleton), and
+**Comments** — prop-driven comment affordances (CommentSelectionAffordance, CommentMarkIcon).
+The cell primitives are prop-driven: runtime/execution state enters as explicit props (`count`,
+`isExecuting`, `isQueued`, `isErrored`, `cellType`, `isFocused`), never through hooks. Comment
+affordances take author color from `--comment-author-color` and readable label color from
+`--comment-author-contrast`. Use them to assemble notebook surfaces; cell identity and DOM
+ordering stay outside the component.
 
 **Compound components** (Dialog, Select, DropdownMenu, ContextMenu, Popover, HoverCard,
 Sheet, Tabs, Accordion, Command, RadioGroup, ToggleGroup) are composed from named subparts
