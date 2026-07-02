@@ -39,7 +39,7 @@
   border: none;
   background: transparent;
   /* The open pill paints the label on the author color, so the label needs the
-     author's legible foreground (set with --comment-author-color), not a flat
+     author's legible foreground (set with --comment-author-contrast), not a flat
      white that fails contrast on light author colors. */
   color: var(--comment-author-contrast, var(--primary-foreground, #ffffff));
   cursor: pointer;
@@ -59,7 +59,7 @@
   overflow: hidden;
   border-radius: 999px; /* stadium: a circle at rest, a pill when open */
   background-color: var(--comment-affordance-color);
-  color: #ffffff;
+  color: inherit;
   /* Flat at rest. No shadow, no breathe: a dot that pulses next to code is
      noise, and the resting dot should read as barely there. */
 }
