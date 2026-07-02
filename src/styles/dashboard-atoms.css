@@ -1,0 +1,157 @@
+/* Shared dashboard atoms: the cell-type/runtime/language visual vocabulary
+   consumed by NotebookCompositionTicks, RuntimeStatusDot, and LanguageMark
+   (src/components/{notebook,runtime}). One definition serving the cloud
+   dashboard and the design guide, like ansi.css and comment-affordance.css.
+   Dark values are dual-keyed (.dark, [data-theme="dark"]) per the repo
+   convention. */
+
+:root {
+  --ct-code: #38bdf8;
+  --ci-code: #0284c7;
+  --ct-markdown: #34d399;
+  --ci-markdown: #059669;
+  --ct-raw: #fb7185;
+  --ci-raw: #e11d48;
+  --live: #22c55e;
+  --live-ink: #16a34a;
+  --k-exec: #f59e0b;
+  --k-ready: #22c55e;
+  --k-start: #3b82f6;
+  --k-stale: #9ca3af;
+  --k-error: var(--destructive, #dc2626);
+}
+
+.dark,
+[data-theme="dark"] {
+  --ct-code: #7dd3fc;
+  --ci-code: #7dd3fc;
+  --ct-markdown: #6ee7b7;
+  --ci-markdown: #6ee7b7;
+  --ct-raw: #fda4af;
+  --ci-raw: #fda4af;
+  --live: #4ade80;
+  --live-ink: #4ade80;
+  --k-stale: #6b7280;
+}
+
+/* Composition fingerprint: one tick per cell, colored by type. */
+.nb-fp-wrap {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.nb-fp {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  max-width: 340px;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 3px;
+  opacity: 0.62;
+}
+
+.nb-fp-seg {
+  height: 100%;
+}
+
+.nb-fp-seg[data-ct="code"] {
+  background: var(--ct-code);
+}
+
+.nb-fp-seg[data-ct="markdown"] {
+  background: var(--ct-markdown);
+}
+
+.nb-fp-seg[data-ct="raw"] {
+  background: var(--ct-raw);
+}
+
+/* Runtime status: a calm dot with an optional terse label. */
+.nb-kernel {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.nb-kdot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--k-stale);
+}
+
+.nb-kernel[data-k="executing"] {
+  color: color-mix(in srgb, var(--k-exec) 72%, var(--foreground));
+}
+
+.nb-kernel[data-k="executing"] .nb-kdot {
+  background: var(--k-exec);
+}
+
+.nb-kernel[data-k="ready"] {
+  color: color-mix(in srgb, var(--k-ready) 60%, var(--foreground));
+}
+
+.nb-kernel[data-k="ready"] .nb-kdot {
+  background: var(--k-ready);
+}
+
+.nb-kernel[data-k="starting"] .nb-kdot {
+  background: var(--k-start);
+}
+
+.nb-kernel[data-k="error"] {
+  color: var(--k-error);
+}
+
+.nb-kernel[data-k="error"] .nb-kdot {
+  background: var(--k-error);
+}
+
+.nb-kernel[data-k="none"] .nb-kdot {
+  border: 1.5px solid color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+  background: transparent;
+}
+
+/* Language mark: the Python logo renders as an inline SVG; everything else
+   gets the identity dot. */
+.nb-lang-logo {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.nb-lang-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+}
+
+.nb-lang-dot[data-lang="Python"] {
+  background: #3b82f6;
+}
+
+.nb-lang-dot[data-lang="SQL"] {
+  background: #f59e0b;
+}
+
+.nb-lang-dot[data-lang="TypeScript"] {
+  background: #3178c6;
+}
+
+.nb-lang-dot[data-lang="Deno"] {
+  background: #3178c6;
+}
+
+.nb-lang-dot[data-lang="R"] {
+  background: #2563eb;
+}

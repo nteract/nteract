@@ -15,11 +15,16 @@
    open/resolved/pending highlight treatments. */
 @import "../src/styles/comment-affordance.css";
 @import "../src/styles/comment-highlight.css";
+/* Dashboard atom vocabulary (composition ticks, runtime dot, language marks) -
+   shared with the cloud dashboard via src/styles/dashboard-atoms.css. */
+@import "../src/styles/dashboard-atoms.css";
 
 @source "../src/components/ui";
 @source "../src/components/cell";
 @source "../src/components/outputs";
 @source "../src/components/comments";
+@source "../src/components/notebook/NotebookCompositionTicks.tsx";
+@source "../src/components/runtime";
 @source "./previews";
 
 /* Safelist the semantic token vocabulary the conventions header documents, so a

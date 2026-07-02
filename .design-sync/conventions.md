@@ -35,15 +35,20 @@ Do layout with plain Tailwind (`flex`, `gap-2`, `grid`, spacing). Reach for a co
 own `variant`/`size` props before restyling it — e.g. `<Button variant="destructive"
 size="sm">`, `<Badge variant="outline">`.
 
-**Groups.** The library has three groups: the general UI primitives, **Cells** — nteract's
-notebook cell primitives (CellContainer, CellInsertionRibbon, CodeCellCurrentLine,
-CompactExecutionButton, ExecutionCount, CellPresenceIndicators, CellSkeleton), and
-**Comments** — prop-driven comment affordances (CommentSelectionAffordance, CommentMarkIcon).
-The cell primitives are prop-driven: runtime/execution state enters as explicit props (`count`,
-`isExecuting`, `isQueued`, `isErrored`, `cellType`, `isFocused`), never through hooks. Comment
-affordances take author color from `--comment-author-color` and readable label color from
-`--comment-author-contrast`. Use them to assemble notebook surfaces; cell identity and DOM
-ordering stay outside the component.
+**Groups.** Six groups: the **general** UI primitives; **Cells** — notebook cell primitives
+(CellContainer, CellInsertionRibbon, CodeCellCurrentLine, CompactExecutionButton,
+ExecutionCount, CellPresenceIndicators, CellSkeleton); **Outputs** — owned output renderers
+(AnsiOutput, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, TracebackOutput) that take kernel
+output data as props; **Comments** — comment affordances (CommentSelectionAffordance,
+CommentMarkIcon); **Notebook** — NotebookCompositionTicks, the per-cell composition
+fingerprint (`composition={{ code, markdown, raw }}` — those are the only cell kinds); and
+**Runtime** — RuntimeStatusDot (`status`: executing/ready/starting/stale/error/none, optional
+`showLabel`) and LanguageMark (`language`: "Python" renders the real mark, anything else an
+identity dot). Everything is prop-driven: runtime/execution state enters as explicit props
+(`count`, `isExecuting`, `isQueued`, `isErrored`, `cellType`, `isFocused`), never through
+hooks. Comment affordances take author color from `--comment-author-color` and readable label
+color from `--comment-author-contrast`. Use these to assemble notebook and dashboard surfaces;
+cell identity and DOM ordering stay outside the components.
 
 **Compound components** (Dialog, Select, DropdownMenu, ContextMenu, Popover, HoverCard,
 Sheet, Tabs, Accordion, Command, RadioGroup, ToggleGroup) are composed from named subparts
