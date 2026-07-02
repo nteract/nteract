@@ -63,6 +63,7 @@ function loadConfig(): CloudViewerConfig {
       enable_comments: parsed.featureFlags?.enable_comments === true,
       disable_auto_format: parsed.featureFlags?.disable_auto_format === true,
     },
+    initialCatalogAccess: normalizeInitialCatalogAccess(parsed.initialCatalogAccess),
     session: isCloudAppSession(parsed.session) ? parsed.session : null,
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,
@@ -71,6 +72,21 @@ function loadConfig(): CloudViewerConfig {
     outputDocumentBaseUrl: parsed.outputDocumentBaseUrl ?? null,
     runtimedWasmModulePath: parsed.runtimedWasmModulePath,
     runtimedWasmPath: parsed.runtimedWasmPath,
+  };
+}
+
+function normalizeInitialCatalogAccess(
+  value: CloudViewerConfig["initialCatalogAccess"] | undefined,
+): CloudViewerConfig["initialCatalogAccess"] {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  if (value.scope !== "viewer" && value.scope !== "editor" && value.scope !== "owner") {
+    return null;
+  }
+  return {
+    scope: value.scope,
+    title: typeof value.title === "string" || value.title === null ? value.title : undefined,
   };
 }
 

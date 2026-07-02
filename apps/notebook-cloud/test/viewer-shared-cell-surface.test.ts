@@ -782,20 +782,22 @@ test("cloud notebook list trusts server bootstrap on initial app-session paint",
   );
 });
 
-test("cloud app-session live sync requests the resolved notebook-list scope", () => {
-  const sourceText = viewerCorpus;
+test("cloud app-session live sync uses streamed catalog access facts without awaiting list fetch", () => {
+  const sourceText = viewerFileContaining("function resolveCloudAppSessionSyncScope");
 
-  assert.match(sourceText, /async function resolveCloudAppSessionSyncScope/);
-  assert.match(sourceText, /new URL\("api\/n\?limit=100"/);
+  assert.match(sourceText, /function resolveCloudAppSessionSyncScope/);
   assert.match(sourceText, /createCloudNotebookCatalogAccessLoader\(\{/);
-  assert.match(sourceText, /catalogAccessLoader\.load/);
+  assert.match(sourceText, /loadCatalogAccess: async \(\) => \{/);
+  assert.match(sourceText, /config\.catalogEndpoint/);
+  assert.match(sourceText, /catalogAccessFactsRef\.current/);
   assert.match(sourceText, /cloudNotebookSyncScopeForCatalogAccess\(\{/);
-  assert.match(sourceText, /catalogResolved: false/);
-  assert.match(sourceText, /\.\.\.\(await loadCatalogAccess\(\)\)/);
   assert.match(
     sourceText,
-    /const requestedScope = await resolveCloudAppSessionSyncScope\([\s\S]*catalogAccessLoader\.load,[\s\S]*selectedInteractionMode,[\s\S]*\)/,
+    /const requestedScope = resolveCloudAppSessionSyncScope\([\s\S]*catalogAccessFactsRef\.current,[\s\S]*selectedInteractionModeRef\.current,[\s\S]*\)/,
   );
+  assert.doesNotMatch(sourceText, /new URL\("api\/n\?limit=100"/);
+  assert.doesNotMatch(sourceText, /\.\.\.\(await loadCatalogAccess\(\)\)/);
+  assert.doesNotMatch(sourceText, /await resolveCloudAppSessionSyncScope/);
   assert.doesNotMatch(
     sourceText,
     /cloudSyncAuthFromAppSessionCookie\(\{[\s\S]*requestedScope: "owner"/,

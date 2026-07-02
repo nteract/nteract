@@ -3722,7 +3722,7 @@ describe("NotebookRoom room summary", () => {
   it("writes deduped human occupants and ignores runtime peers", async () => {
     const state = alarmCapableState();
     const bucket = new FakeRoomSummaryBucket();
-    const room = new NotebookRoom(state.state, { NOTEBOOK_SNAPSHOTS: bucket } as Env);
+    const room = new NotebookRoom(state.state, roomEnvWithSnapshots(bucket));
     const harness = roomHarness(room);
 
     const beforeAlice = harness.roomSummaryOccupantKeys();
@@ -3785,7 +3785,7 @@ describe("NotebookRoom room summary", () => {
   it("republishes when a participant's strongest scope changes (viewer to editor)", async () => {
     const state = alarmCapableState();
     const bucket = new FakeRoomSummaryBucket();
-    const room = new NotebookRoom(state.state, { NOTEBOOK_SNAPSHOTS: bucket } as Env);
+    const room = new NotebookRoom(state.state, roomEnvWithSnapshots(bucket));
     const harness = roomHarness(room);
 
     const beforeViewer = harness.roomSummaryOccupantKeys();
@@ -3814,7 +3814,7 @@ describe("NotebookRoom room summary", () => {
   it("writes an empty summary and disarms refresh when the occupant set empties", async () => {
     const state = alarmCapableState();
     const bucket = new FakeRoomSummaryBucket();
-    const room = new NotebookRoom(state.state, { NOTEBOOK_SNAPSHOTS: bucket } as Env);
+    const room = new NotebookRoom(state.state, roomEnvWithSnapshots(bucket));
     const harness = roomHarness(room);
     harness.materializers.set("demo", {
       receiveFrame: async () => noopMaterializedResult(),
@@ -3843,7 +3843,7 @@ describe("NotebookRoom room summary", () => {
   it("publishes and re-arms the summary on refresh alarms", async () => {
     const state = alarmCapableState();
     const bucket = new FakeRoomSummaryBucket();
-    const room = new NotebookRoom(state.state, { NOTEBOOK_SNAPSHOTS: bucket } as Env);
+    const room = new NotebookRoom(state.state, roomEnvWithSnapshots(bucket));
     const harness = roomHarness(room);
     harness.peers.set("alice", summaryPeer("alice", "alice", "owner"));
     harness.publishRoomSummary("demo", "peer_joined");
@@ -3880,7 +3880,7 @@ describe("NotebookRoom room summary", () => {
     const state = alarmCapableState([socket.asCloudflareWebSocket()]);
     const bucket = new FakeRoomSummaryBucket();
 
-    new NotebookRoom(state.state, { NOTEBOOK_SNAPSHOTS: bucket } as Env);
+    new NotebookRoom(state.state, roomEnvWithSnapshots(bucket));
     await state.drain();
 
     assert.deepEqual(bucket.summary("demo").occupants, [
@@ -3997,6 +3997,18 @@ function roomEnvWithComputeIndex(
     },
     OWNER_COMPUTE_INDEX: computeIndex,
   } as Env;
+}
+
+function roomEnvWithSnapshots(bucket: FakeRoomSummaryBucket): Env {
+  return {
+    NOTEBOOK_ROOMS: {
+      idFromName: (name: string) => ({ toString: () => name }),
+      get: () => ({
+        fetch: async () => new Response("not implemented", { status: 501 }),
+      }),
+    },
+    NOTEBOOK_SNAPSHOTS: bucket,
+  };
 }
 
 class FakeRoomSummaryBucket {

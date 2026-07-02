@@ -1,6 +1,7 @@
 import type { ConnectionScope } from "../src/auth-shared";
 import type { NotebookInteractionMode } from "@/components/notebook";
 import { CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC } from "./connection-diagnostics";
+import type { CloudNotebookCatalogResponse } from "./cloud-notebook-title-state";
 import { isCloudNotebookListItem, type CloudNotebookListItem } from "./notebook-dashboard";
 
 export type CloudNotebookCatalogAccessScope = Exclude<
@@ -17,12 +18,18 @@ export interface CloudNotebookAccessScopeProjectionInput {
 export interface CloudNotebookCatalogAccessLoadResult {
   catalogResolved: boolean;
   catalogScope: CloudNotebookCatalogAccessScope | null;
+  catalogTitle?: string | null;
 }
 
-export interface CloudNotebookCatalogAccessLoaderOptions {
-  loadNotebooks: () => Promise<readonly unknown[]>;
-  notebookId: string;
-}
+export type CloudNotebookCatalogAccessLoaderOptions =
+  | {
+      loadCatalogAccess: () => Promise<CloudNotebookCatalogAccessLoadResult>;
+      notebookId: string;
+    }
+  | {
+      loadNotebooks: () => Promise<readonly unknown[]>;
+      notebookId: string;
+    };
 
 export interface CloudNotebookSyncScopeProjectionInput {
   catalogResolved: boolean;
@@ -65,20 +72,41 @@ export function cloudNotebookCatalogAccessFromList(
   };
 }
 
-export function createCloudNotebookCatalogAccessLoader({
-  loadNotebooks,
-  notebookId,
-}: CloudNotebookCatalogAccessLoaderOptions): {
+export function cloudNotebookCatalogAccessFromCatalogResponse(
+  body: CloudNotebookCatalogResponse,
+  notebookId: string,
+): CloudNotebookCatalogAccessLoadResult {
+  const notebook = body.notebook;
+  if (!notebook || notebook.id !== notebookId) {
+    throw new Error("Unable to load notebook catalog: response shape was invalid");
+  }
+  if (notebook.title !== null && typeof notebook.title !== "string") {
+    throw new Error("Unable to load notebook catalog: response shape was invalid");
+  }
+  return {
+    catalogResolved: true,
+    catalogScope: cloudNotebookCatalogAccessScope(body.access?.scope) ?? "viewer",
+    catalogTitle: notebook.title,
+  };
+}
+
+export function createCloudNotebookCatalogAccessLoader(
+  options: CloudNotebookCatalogAccessLoaderOptions,
+): {
   load: () => Promise<CloudNotebookCatalogAccessLoadResult>;
 } {
   let inFlight: Promise<CloudNotebookCatalogAccessLoadResult> | null = null;
   const load = () => {
-    inFlight ??= loadNotebooks()
-      .then((notebooks) => cloudNotebookCatalogAccessFromList(notebooks, notebookId))
-      .catch((error: unknown) => {
-        inFlight = null;
-        throw error;
-      });
+    inFlight ??= (
+      "loadCatalogAccess" in options
+        ? options.loadCatalogAccess()
+        : options
+            .loadNotebooks()
+            .then((notebooks) => cloudNotebookCatalogAccessFromList(notebooks, options.notebookId))
+    ).catch((error: unknown) => {
+      inFlight = null;
+      throw error;
+    });
     return inFlight;
   };
   return { load };
@@ -134,4 +162,11 @@ export function cloudNotebookScopeCanEditDocument(
   scope: string | null | undefined,
 ): scope is Extract<ConnectionScope, "editor" | "owner"> {
   return scope === "editor" || scope === "owner";
+}
+
+function cloudNotebookCatalogAccessScope(value: unknown): CloudNotebookCatalogAccessScope | null {
+  if (value === "viewer" || value === "editor" || value === "owner") {
+    return value;
+  }
+  return null;
 }

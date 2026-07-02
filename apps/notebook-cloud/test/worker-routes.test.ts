@@ -769,6 +769,15 @@ describe("Worker artifact routes", () => {
       ...oidcEnv,
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
     });
+    seedNotebook(env, "viewer-bootstrap-session");
+    const notebook = env.DB.notebooks.get("viewer-bootstrap-session");
+    assert.ok(notebook);
+    notebook.title = "Viewer Bootstrap Notebook";
+    seedAcl(env, {
+      notebookId: "viewer-bootstrap-session",
+      subject: "user:anaconda:viewer-bootstrap-user",
+      scope: "owner",
+    });
     const cookie = await oidcAppSessionCookie(env, token);
 
     const response = await worker.fetch(
@@ -786,6 +795,10 @@ describe("Worker artifact routes", () => {
     assert.equal(config.session?.provider, "oidc");
     assert.equal(typeof config.session?.expires_at, "number");
     assert.equal(typeof config.session?.cache_key, "string");
+    assert.deepEqual(config.initialCatalogAccess, {
+      scope: "owner",
+      title: "Viewer Bootstrap Notebook",
+    });
     assert.doesNotMatch(html, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(html, /viewer-bootstrap@example\.test|viewer-bootstrap-user/);
     assert.doesNotMatch(html, /Viewer Bootstrap User/);
@@ -2002,6 +2015,40 @@ describe("Worker artifact routes", () => {
     assert.ok(row);
     assert.equal(Object.hasOwn(row, "composition"), false);
     assert.equal(row.language, "python");
+  });
+
+  it("returns the authorized caller scope from direct notebook catalog fetches", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "catalog-scope-demo");
+    const notebook = env.DB.notebooks.get("catalog-scope-demo");
+    assert.ok(notebook);
+    notebook.title = "Scoped Catalog";
+    seedAcl(env, {
+      notebookId: "catalog-scope-demo",
+      subject: "user:dev:alice",
+      scope: "editor",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n/catalog-scope-demo", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "browser:tab",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      access?: { scope?: string };
+      notebook?: { id?: string; title?: string | null };
+    };
+    assert.deepEqual(body.access, { scope: "editor" });
+    assert.equal(body.notebook?.id, "catalog-scope-demo");
+    assert.equal(body.notebook?.title, "Scoped Catalog");
   });
 
   it("enriches owned notebook rows with owner-scoped compute sessions", async () => {
@@ -4148,6 +4195,12 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
     assert.equal(catalog.status, 200);
+    const catalogBody = (await catalog.json()) as {
+      access?: { scope?: string };
+      notebook?: { id?: string };
+    };
+    assert.deepEqual(catalogBody.access, { scope: "viewer" });
+    assert.equal(catalogBody.notebook?.id, "public-sharing-demo");
 
     const acl = await worker.fetch(
       new Request("http://localhost/api/n/public-sharing-demo/acl?viewer_session=anon-a"),
@@ -7472,6 +7525,10 @@ function notebookViewerConfig(html: string): {
   featureFlags?: {
     enable_comments?: boolean;
   };
+  initialCatalogAccess?: {
+    scope: string;
+    title?: string | null;
+  } | null;
   session?: {
     provider: string;
     expires_at: number;
@@ -7486,6 +7543,10 @@ function notebookViewerConfig(html: string): {
     featureFlags?: {
       enable_comments?: boolean;
     };
+    initialCatalogAccess?: {
+      scope: string;
+      title?: string | null;
+    } | null;
     session?: {
       provider: string;
       expires_at: number;

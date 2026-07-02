@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   cloudNotebookAccessScopeForShell,
+  cloudNotebookCatalogAccessFromCatalogResponse,
   cloudNotebookCatalogAccessFromList,
   cloudNotebookCatalogScopeFromList,
   cloudNotebookLiveRoomConnectionPolicy,
@@ -43,6 +44,45 @@ describe("cloud notebook catalog access projection", () => {
     );
   });
 
+  it("projects resolved catalog access from the direct notebook catalog response", () => {
+    assert.deepEqual(
+      cloudNotebookCatalogAccessFromCatalogResponse(
+        {
+          notebook: {
+            id: "room",
+            title: "Room Notebook",
+          },
+          access: { scope: "owner" },
+        },
+        "room",
+      ),
+      {
+        catalogResolved: true,
+        catalogScope: "owner",
+        catalogTitle: "Room Notebook",
+      },
+    );
+  });
+
+  it("treats old direct catalog responses without access as viewer access", () => {
+    assert.deepEqual(
+      cloudNotebookCatalogAccessFromCatalogResponse(
+        {
+          notebook: {
+            id: "room",
+            title: null,
+          },
+        },
+        "room",
+      ),
+      {
+        catalogResolved: true,
+        catalogScope: "viewer",
+        catalogTitle: null,
+      },
+    );
+  });
+
   it("coalesces concurrent catalog access loads for one notebook open", async () => {
     let loadCount = 0;
     let releaseLoad!: () => void;
@@ -66,6 +106,33 @@ describe("cloud notebook catalog access projection", () => {
     assert.deepEqual(await Promise.all([first, second]), [
       { catalogResolved: true, catalogScope: "owner" },
       { catalogResolved: true, catalogScope: "owner" },
+    ]);
+    assert.equal(loadCount, 1);
+  });
+
+  it("coalesces concurrent direct catalog access loads for one notebook open", async () => {
+    let loadCount = 0;
+    let releaseLoad!: () => void;
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    const loader = createCloudNotebookCatalogAccessLoader({
+      notebookId: "room",
+      loadCatalogAccess: async () => {
+        loadCount += 1;
+        await loadGate;
+        return { catalogResolved: true, catalogScope: "editor", catalogTitle: "Room" };
+      },
+    });
+
+    const first = loader.load();
+    const second = loader.load();
+    assert.equal(loadCount, 1);
+    releaseLoad();
+
+    assert.deepEqual(await Promise.all([first, second]), [
+      { catalogResolved: true, catalogScope: "editor", catalogTitle: "Room" },
+      { catalogResolved: true, catalogScope: "editor", catalogTitle: "Room" },
     ]);
     assert.equal(loadCount, 1);
   });

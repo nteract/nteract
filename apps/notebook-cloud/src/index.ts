@@ -1509,7 +1509,7 @@ function parseNotebookCellComposition(
 }
 
 function isNotebookCellCount(value: unknown): value is number {
-  return Number.isSafeInteger(value) && value >= 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function parseNotebookListLimit(request: Request): number | Response {
@@ -4153,12 +4153,7 @@ async function routeCatalog(request: Request, env: Env, notebookId: string): Pro
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
-  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
-    request,
-    env,
-    notebookId,
-    "viewer",
-  );
+  const identity = await authenticateNotebookCatalogAccess(request, env, notebookId);
   if (identity instanceof Response) {
     return identity;
   }
@@ -4168,7 +4163,12 @@ async function routeCatalog(request: Request, env: Env, notebookId: string): Pro
     return json({ error: "notebook not found" }, 404);
   }
 
-  return json(catalog);
+  return json({
+    ...catalog,
+    access: {
+      scope: identity.scope,
+    },
+  });
 }
 
 async function routeUpdateNotebookMetadata(
@@ -5092,6 +5092,23 @@ async function authenticateAndAuthorizeOrAppSessionOrResponse(
   return authorizeIdentityOrResponse(env, notebookId, identity, requestedScope);
 }
 
+async function authenticateNotebookCatalogAccess(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<AuthenticatedConnection | Response> {
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return authorizeIdentityOrResponse(env, notebookId, identity, "viewer");
+  }
+  return authorizeIdentityOrResponse(env, notebookId, identity, "owner", {
+    allowLiveScopeDowngrade: true,
+  });
+}
+
 async function authorizeIdentityOrResponse(
   env: Env,
   notebookId: string,
@@ -5251,6 +5268,9 @@ async function viewer(
   const rendererSidecarAssets = await rendererSidecarAssetNames(env);
   const notebookRouteAssets = await notebookRouteAssetNames(env);
   const session = await readCloudAppSession(env, request).catch(() => null);
+  const initialCatalogAccess = session
+    ? await initialNotebookViewerCatalogAccess(env, notebookId, session).catch(() => null)
+    : null;
   const config = {
     notebookId,
     headsHash: headsHash ?? null,
@@ -5271,6 +5291,7 @@ async function viewer(
     featureFlags: {
       enable_comments: true,
     },
+    initialCatalogAccess,
     session: session ? appSessionResponse(session) : null,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
@@ -5285,6 +5306,28 @@ async function viewer(
     request,
     viewerShell(shellMetadata, env, authConfigForRequest(request, env), config),
   );
+}
+
+async function initialNotebookViewerCatalogAccess(
+  env: Env,
+  notebookId: string,
+  session: CloudAppSession,
+): Promise<{ scope: Exclude<ConnectionScope, "runtime_peer">; title: string | null } | null> {
+  if (!env.DB) {
+    return null;
+  }
+  const identity = appSessionConnectionIdentity(session, "browser:http", "owner");
+  const authorized = await authorizeNotebookAccess(env, notebookId, identity, "owner", {
+    allowLiveScopeDowngrade: true,
+  });
+  const catalog = await getNotebookCatalog(env, notebookId);
+  if (!catalog) {
+    return null;
+  }
+  return {
+    scope: authorized.scope as Exclude<ConnectionScope, "runtime_peer">,
+    title: catalog.notebook.title,
+  };
 }
 
 interface ViewerShellConfig extends Record<string, unknown> {

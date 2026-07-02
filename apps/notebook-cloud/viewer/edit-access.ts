@@ -83,7 +83,7 @@ export function projectCloudNotebookDocumentEditReadiness({
     cloudNotebookScopeCanEditDocument(accessScope) &&
     !canAcceptCellMutations &&
     !connectionError &&
-    statusKind === "loading";
+    (statusKind === "loading" || statusKind === "ready" || statusKind === "empty");
   return {
     canAcceptCellMutations,
     selectedEditModeWaitingForRoom,
