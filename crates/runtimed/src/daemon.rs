@@ -3,7 +3,7 @@
 //! The daemon manages prewarmed environment pools and handles requests from
 //! notebook windows via IPC (Unix domain sockets on Unix, named pipes on Windows).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
@@ -1186,6 +1186,12 @@ pub struct Daemon {
     /// open and close between 30-minute GC cycles. Sampling in the GC
     /// loop would miss short-lived sessions and pin the daemon back in
     /// the post-restart state forever.
+    /// Hosted-bridged rooms: normalized hosted locator
+    /// (`https://<host>/n/<id>`) → live bridge handle. The handle keeps the
+    /// bridged room resident; requests against a hosted room are routed to
+    /// the cloud instead of local kernels (see `requests::handle_notebook_request`).
+    pub(crate) hosted_bridges:
+        Mutex<HashMap<String, Arc<crate::notebook_sync_server::HostedBridgeHandle>>>,
     rooms_ever_seen: std::sync::atomic::AtomicBool,
     uv_warming_respawns: std::sync::atomic::AtomicU32,
     conda_warming_respawns: std::sync::atomic::AtomicU32,
@@ -1543,6 +1549,7 @@ impl Daemon {
             blob_port: Mutex::new(None),
             started_at: chrono::Utc::now(),
             notebook_rooms: Arc::new(RoomRegistry::new()),
+            hosted_bridges: Mutex::new(HashMap::new()),
             rooms_ever_seen: std::sync::atomic::AtomicBool::new(false),
             uv_warming_respawns: std::sync::atomic::AtomicU32::new(0),
             conda_warming_respawns: std::sync::atomic::AtomicU32::new(0),
@@ -2713,6 +2720,20 @@ impl Daemon {
                 )
                 .await
             }
+            Handshake::OpenHostedNotebook {
+                url,
+                typed_bootstrap,
+                operator,
+            } => {
+                self.handle_open_hosted_notebook(
+                    stream,
+                    url,
+                    typed_bootstrap.unwrap_or(false),
+                    operator,
+                    client_protocol_version,
+                )
+                .await
+            }
             Handshake::CreateNotebook {
                 runtime,
                 working_dir,
@@ -2783,6 +2804,233 @@ impl Daemon {
     /// Daemon loads the .ipynb file, derives notebook_id, creates room, populates doc.
     /// If the file doesn't exist, creates a new empty notebook at that path.
     /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
+    /// The live hosted bridge serving `room_id`, if the room is
+    /// hosted-bridged. Hosted rooms have no local kernels; execution requests
+    /// are forwarded across the bridge instead.
+    pub(crate) async fn hosted_bridge_for_room(
+        &self,
+        room_id: uuid::Uuid,
+    ) -> Option<Arc<crate::notebook_sync_server::HostedBridgeHandle>> {
+        let bridges = self.hosted_bridges.lock().await;
+        bridges.values().find(|b| b.room_id == room_id).cloned()
+    }
+
+    /// Resolve or create the bridged room + bridge for a hosted locator.
+    ///
+    /// Errors are user-actionable configuration/connectivity messages meant
+    /// for the handshake error response.
+    async fn prepare_hosted_room(
+        self: &Arc<Self>,
+        url: &str,
+    ) -> Result<
+        (
+            Arc<crate::notebook_sync_server::NotebookRoom>,
+            Arc<crate::notebook_sync_server::HostedBridgeHandle>,
+        ),
+        String,
+    > {
+        use notebook_cloud_transport::registry;
+
+        let (domain, hosted_id) = registry::parse_hosted_url(url)?;
+        let locator = registry::hosted_notebook_url(&domain, &hosted_id);
+
+        // Fast path: bridge already running for this locator.
+        let existing = {
+            let bridges = self.hosted_bridges.lock().await;
+            bridges.get(&locator).cloned()
+        };
+        if let Some(bridge) = existing {
+            if let Some((room, _guard)) = self.notebook_rooms.lookup_uuid(bridge.room_id).await {
+                return Ok((room, bridge));
+            }
+        }
+
+        let registry_file = registry::registry_path();
+        let reg = registry::CloudRegistry::load_default()?.ok_or_else(|| {
+            format!(
+                "No cloud domain registry at {}. Configure hosted domains before opening cloud notebooks.",
+                registry_file.display()
+            )
+        })?;
+        let domain_config = reg.domain(&domain)?.ok_or_else(|| {
+            format!(
+                "Cloud domain {domain} is not configured in {}",
+                registry_file.display()
+            )
+        })?;
+        let auth = domain_config.resolve_auth()?;
+
+        // Deterministic local room id per hosted locator, stable across
+        // daemon restarts and shared by concurrent opens of the same URL.
+        let room_uuid = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, locator.as_bytes());
+        let docs_dir = self.config.notebook_docs_dir.clone();
+        let (room, guard) = crate::notebook_sync_server::get_or_create_room_result(
+            &self.notebook_rooms,
+            room_uuid,
+            crate::notebook_sync_server::RoomCreationOptions {
+                path: None,
+                docs_dir: &docs_dir,
+                blob_store: self.blob_store.clone(),
+                ephemeral: true,
+                trusted_packages: self.trusted_packages.clone(),
+            },
+        )
+        .await
+        .map_err(|e| format!("Failed to create bridged room for {locator}: {e}"))?;
+        self.mark_rooms_ever_seen();
+
+        let mut bridges = self.hosted_bridges.lock().await;
+        let bridge = match bridges.entry(locator.clone()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let transport = notebook_cloud_transport::CloudWsFrameTransport::new(
+                    notebook_cloud_transport::CloudWsConfig {
+                        cloud_url: domain_config.base_url.clone(),
+                        notebook_id: hosted_id.clone(),
+                        scope: "editor".to_string(),
+                        auth,
+                        workstation: None,
+                    },
+                );
+                let handle = Arc::new(crate::notebook_sync_server::spawn_hosted_bridge(
+                    room.clone(),
+                    transport,
+                    locator.clone(),
+                    hosted_id.clone(),
+                    guard,
+                ));
+                entry.insert(handle.clone());
+                handle
+            }
+        };
+        Ok((room, bridge))
+    }
+
+    /// Handle an OpenHostedNotebook connection: attach (or reuse) the hosted
+    /// bridge for the URL, wait for the cloud principal, then serve the
+    /// connection as a normal notebook sync peer of the bridged room.
+    async fn handle_open_hosted_notebook<S>(
+        self: Arc<Self>,
+        stream: S,
+        url: String,
+        typed_bootstrap: bool,
+        operator: Option<String>,
+        client_protocol_version: u8,
+    ) -> anyhow::Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        use notebook_protocol::connection::{
+            send_json_frame, send_typed_bootstrap_frame, ConnectionBootstrap,
+            NotebookConnectionInfo, ProtocolCapabilities,
+        };
+
+        info!("[runtimed] OpenHostedNotebook requested for {}", url);
+
+        let (room, bridge) = match self.prepare_hosted_room(&url).await {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                let (_reader, mut writer) = tokio::io::split(stream);
+                send_error_response(&mut writer, message, typed_bootstrap).await?;
+                return Ok(());
+            }
+        };
+
+        let Some(principal) = bridge
+            .wait_for_principal(std::time::Duration::from_secs(30))
+            .await
+        else {
+            let (_reader, mut writer) = tokio::io::split(stream);
+            send_error_response(
+                &mut writer,
+                format!(
+                    "Could not attach to hosted room {} (check credentials and connectivity)",
+                    bridge.locator
+                ),
+                typed_bootstrap,
+            )
+            .await?;
+            return Ok(());
+        };
+
+        // Local peers on a bridged room author under the cloud principal so
+        // the hosted room's actor authorization accepts their changes.
+        let connection_identity =
+            match crate::notebook_sync_server::RoomConnectionIdentity::hosted_bridged(
+                &principal,
+                operator,
+                nteract_identity::ConnectionScope::Editor,
+            ) {
+                Ok(identity) => identity,
+                Err(e) => {
+                    let (_reader, mut writer) = tokio::io::split(stream);
+                    send_error_response(
+                        &mut writer,
+                        format!("Hosted principal {principal} is not usable locally: {e}"),
+                        typed_bootstrap,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+
+        let settings = self.settings.read().await.get_all();
+        let default_runtime = settings.default_runtime;
+        let default_python_env = settings.default_python_env;
+
+        let cell_count = { room.doc.read().await.cell_count() };
+        let comments_doc_id = room
+            .comments
+            .read(|doc| doc.comments_doc_id())
+            .context("read comments doc id for hosted notebook response")?;
+
+        let (reader, mut writer) = tokio::io::split(stream);
+        let response = NotebookConnectionInfo {
+            capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
+                .with_identity(
+                    connection_identity.actor_label().as_str(),
+                    connection_identity.scope().as_str(),
+                )
+                .with_comments_doc_id(comments_doc_id),
+            notebook_id: room.id.to_string(),
+            cell_count,
+            needs_trust_approval: false,
+            error: None,
+            ephemeral: true,
+            notebook_path: None,
+        };
+        if typed_bootstrap {
+            send_typed_bootstrap_frame(
+                &mut writer,
+                &ConnectionBootstrap::notebook_connection_info(response),
+            )
+            .await?;
+        } else {
+            send_json_frame(&mut writer, &response).await?;
+        }
+
+        let notebook_id = room.id.to_string();
+        crate::notebook_sync_server::handle_notebook_sync_connection(
+            reader,
+            writer,
+            room,
+            self.notebook_rooms.clone(),
+            notebook_id,
+            default_runtime,
+            default_python_env,
+            self.clone(),
+            None,  // working_dir: hosted rooms have no local project context
+            None,  // initial_metadata: the cloud room owns metadata
+            true,  // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
+            false, // typed_capabilities unused when skipped
+            None,  // No streaming load; content arrives via the bridge
+            false, // Not a newly-created notebook at a path
+            connection_identity,
+            client_protocol_version,
+        )
+        .await
+    }
+
     async fn handle_open_notebook<S>(
         self: Arc<Self>,
         stream: S,

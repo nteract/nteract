@@ -164,6 +164,54 @@ pub(crate) async fn handle_notebook_request(
         request_label(&request)
     );
 
+    // Hosted-bridged rooms have no local kernel authority: the cloud room
+    // owns execution dispatch and RuntimeStateDoc. Execute requests are
+    // forwarded across the bridge; kernel-lifecycle requests are rejected
+    // with an actionable message instead of launching a local kernel that
+    // would fight the cloud room over runtime state.
+    if let Some(bridge) = daemon.hosted_bridge_for_room(room.id).await {
+        match &request {
+            NotebookRequest::ExecuteCell { cell_id, .. }
+            | NotebookRequest::ExecuteCellGuarded { cell_id, .. } => {
+                let payload = serde_json::json!({
+                    "action": "execute_cell",
+                    "cell_id": cell_id,
+                });
+                return match serde_json::to_vec(&payload)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|bytes| bridge.forward_request(bytes))
+                {
+                    // The cloud room creates the queued execution and it
+                    // arrives back via RuntimeStateDoc sync; there is no
+                    // locally-known execution id to return.
+                    Ok(()) => NotebookResponse::Ok {},
+                    Err(e) => NotebookResponse::Error {
+                        error: format!("Failed to forward execute to hosted room: {e}"),
+                    },
+                };
+            }
+            NotebookRequest::LaunchKernel { .. }
+            | NotebookRequest::ShutdownKernel {}
+            | NotebookRequest::InterruptExecution {}
+            | NotebookRequest::RunAllCells { .. }
+            | NotebookRequest::RunAllCellsGuarded { .. }
+            | NotebookRequest::SyncEnvironment { .. }
+            | NotebookRequest::SaveNotebook { .. } => {
+                return NotebookResponse::Error {
+                    error: format!(
+                        "{} is not supported on a daemon-bridged hosted notebook yet; \
+                         the cloud room owns runtime and persistence",
+                        request_label(&request)
+                    ),
+                };
+            }
+            // Document-local requests (doc bytes, blob upload, trust,
+            // completion against no kernel, clone) keep their normal local
+            // handling below.
+            _ => {}
+        }
+    }
+
     match request {
         NotebookRequest::LaunchKernel {
             kernel_type,

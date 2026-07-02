@@ -172,7 +172,11 @@ where
             .kernel_teardown_destructive
             .load(Ordering::Acquire);
         let effective_has_kernel = has_kernel && !kernel_being_torn_down;
-        let should_auto_launch = !effective_has_kernel
+        // Hosted-bridged rooms never launch local kernels: the cloud room
+        // owns execution and RuntimeStateDoc lifecycle.
+        let is_hosted_bridged = daemon.hosted_bridge_for_room(room.id).await.is_some();
+        let should_auto_launch = !is_hosted_bridged
+            && !effective_has_kernel
             && matches!(
                 trust_status,
                 runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies

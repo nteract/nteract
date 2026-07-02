@@ -4774,13 +4774,19 @@ name = "notebook-cloud-transport"
 version = "0.2.2"
 dependencies = [
  "anyhow",
+ "dirs",
  "futures-util",
  "notebook-protocol",
  "notebook-wire",
+ "runt-workspace",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "toml 1.1.2+spec-1.1.0",
  "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]
