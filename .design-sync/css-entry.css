@@ -23,6 +23,7 @@
 @source "../src/components/cell";
 @source "../src/components/outputs";
 @source "../src/components/comments";
+@source "../src/components/notebook/NotebookCellStrip.tsx";
 @source "../src/components/notebook/NotebookCompositionTicks.tsx";
 @source "../src/components/runtime";
 @source "./previews";
