@@ -4,6 +4,8 @@ import {
   BookOpen,
   Check,
   Clock,
+  Code,
+  FileText,
   Layers,
   Loader2,
   PencilLine,
@@ -18,6 +20,7 @@ import { LanguageMark } from "@/components/runtime/LanguageMark";
 import { NotebookCompositionTicks } from "@/components/notebook/NotebookCompositionTicks";
 import { RuntimeStatusDot } from "@/components/runtime/RuntimeStatusDot";
 import {
+  cloudNotebookCoverUrl,
   cloudNotebookDashboardOpenUrl,
   cloudNotebookDisplayTitle,
   cloudNotebookLanguageDisplayLabel,
@@ -259,6 +262,7 @@ function CloudNotebookDashboardHero({
           </Button>
         </div>
       </div>
+      <CloudNotebookHeroBanner notebook={notebook} />
     </section>
   );
 }
@@ -289,6 +293,7 @@ function CloudNotebookDashboardSectionView({
   const action = section.action?.kind === "rename" && !canRename ? null : section.action;
   const hiddenCount = Math.max(0, section.totalCount - section.notebooks.length);
   const overflowAction = section.overflowAction;
+  const showCoverSlot = section.rows.some((row) => row.notebook.cover);
   const actionAlreadyReviewsOverflow =
     action?.kind === "filter" && action.filterId === overflowAction?.filterId;
 
@@ -330,6 +335,7 @@ function CloudNotebookDashboardSectionView({
           <CloudNotebookDashboardRowView
             key={row.notebook.notebook_id}
             row={row}
+            showCoverSlot={showCoverSlot}
             canRename={canRename}
             renameTitle={
               renameState?.notebookId === row.notebook.notebook_id ? renameState.title : null
@@ -364,6 +370,7 @@ function CloudNotebookDashboardSectionView({
 
 function CloudNotebookDashboardRowView({
   row,
+  showCoverSlot,
   canRename,
   renameTitle,
   renameSaving,
@@ -374,6 +381,7 @@ function CloudNotebookDashboardRowView({
   onSaveRename,
 }: {
   row: CloudNotebookDashboardRow;
+  showCoverSlot: boolean;
   canRename: boolean;
   renameTitle: string | null;
   renameSaving: boolean;
@@ -437,6 +445,7 @@ function CloudNotebookDashboardRowView({
         onFocus={onOpenNotebookIntent}
         onPointerEnter={onOpenNotebookIntent}
       >
+        {showCoverSlot ? <CloudNotebookCoverTile notebook={notebook} /> : null}
         <span className="nb-row-titleblock">
           <span className="nb-title" data-untitled={!hasTitle}>
             {cloudNotebookDisplayTitle(notebook)}
@@ -508,6 +517,62 @@ function CloudNotebookDashboardRowView({
       </span>
     </div>
   );
+}
+
+function CloudNotebookCoverTile({ notebook }: { notebook: CloudNotebookListItem }) {
+  const coverUrl = cloudNotebookCoverUrl(notebook);
+  const fallbackType = dominantNotebookCellType(notebook.composition);
+  return (
+    <span className={`nb-cover${coverUrl ? " has-img" : ""}`} aria-hidden="true">
+      {coverUrl ? (
+        <img className="nb-output-img" src={coverUrl} alt="" loading="lazy" />
+      ) : (
+        <NotebookCoverFallbackIcon cellType={fallbackType} />
+      )}
+    </span>
+  );
+}
+
+function CloudNotebookHeroBanner({ notebook }: { notebook: CloudNotebookListItem }) {
+  const coverUrl = cloudNotebookCoverUrl(notebook);
+  if (!coverUrl) {
+    return null;
+  }
+  return (
+    <div className="nb-hero-banner" aria-hidden="true">
+      <img className="nb-output-img" src={coverUrl} alt="" />
+    </div>
+  );
+}
+
+function NotebookCoverFallbackIcon({
+  cellType,
+}: {
+  cellType: keyof NonNullable<CloudNotebookListItem["composition"]>;
+}) {
+  switch (cellType) {
+    case "markdown":
+      return <BookOpen aria-hidden="true" />;
+    case "raw":
+      return <FileText aria-hidden="true" />;
+    case "code":
+      return <Code aria-hidden="true" />;
+  }
+}
+
+function dominantNotebookCellType(
+  composition: CloudNotebookListItem["composition"],
+): keyof NonNullable<CloudNotebookListItem["composition"]> {
+  if (!composition) {
+    return "code";
+  }
+  if (composition.markdown > composition.code && composition.markdown >= composition.raw) {
+    return "markdown";
+  }
+  if (composition.raw > composition.code && composition.raw > composition.markdown) {
+    return "raw";
+  }
+  return "code";
 }
 
 function CloudNotebookScopeBadge({ notebook }: { notebook: CloudNotebookListItem }) {

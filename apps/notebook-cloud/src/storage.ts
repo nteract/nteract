@@ -15,6 +15,8 @@ export interface NotebookRow {
   updated_at: string;
   latest_revision_id: string | null;
   cell_composition: string | null;
+  cover_blob_hash?: string | null;
+  cover_mime?: string | null;
   language: string | null;
 }
 
@@ -30,6 +32,8 @@ export interface RevisionRow {
   runtime_snapshot_key: string | null;
   comms_snapshot_key: string | null;
   comments_snapshot_key: string | null;
+  cover_blob_hash: string | null;
+  cover_mime: string | null;
   actor_label: string;
   created_at: string;
 }
@@ -171,6 +175,8 @@ const SCHEMA_STATEMENTS = [
     runtime_snapshot_key TEXT,
     comms_snapshot_key TEXT,
     comments_snapshot_key TEXT,
+    cover_blob_hash TEXT,
+    cover_mime TEXT,
     actor_label TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
@@ -374,6 +380,16 @@ const SCHEMA_MIGRATIONS = [
     table: "notebook_revisions",
     column: "comments_snapshot_key",
     statement: `ALTER TABLE notebook_revisions ADD COLUMN comments_snapshot_key TEXT`,
+  },
+  {
+    table: "notebook_revisions",
+    column: "cover_blob_hash",
+    statement: `ALTER TABLE notebook_revisions ADD COLUMN cover_blob_hash TEXT`,
+  },
+  {
+    table: "notebook_revisions",
+    column: "cover_mime",
+    statement: `ALTER TABLE notebook_revisions ADD COLUMN cover_mime TEXT`,
   },
   {
     table: "notebooks",
@@ -599,6 +615,61 @@ export async function updateNotebookSnapshotSummary(
     .run();
 }
 
+export async function updateNotebookRevisionCover(
+  env: Env,
+  revisionId: string,
+  cover: { blobHash: string; mime: string },
+): Promise<void> {
+  if (!env.DB) {
+    return;
+  }
+
+  await ensureCatalogSchema(env);
+  await env.DB.prepare(
+    `UPDATE notebook_revisions
+        SET cover_blob_hash = ?,
+            cover_mime = ?
+      WHERE id = ?`,
+  )
+    .bind(cover.blobHash, cover.mime, revisionId)
+    .run();
+}
+
+export async function getNotebookRevisionRow(
+  env: Env,
+  notebookId: string,
+  revisionId: string,
+): Promise<RevisionRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  return await env.DB.prepare(
+    `SELECT id,
+            notebook_id,
+            runtime_state_doc_id,
+            notebook_heads_hash,
+            runtime_heads_hash,
+            comms_heads_hash,
+            comments_heads_hash,
+            snapshot_key,
+            runtime_snapshot_key,
+            comms_snapshot_key,
+            comments_snapshot_key,
+            cover_blob_hash,
+            cover_mime,
+            actor_label,
+            created_at
+       FROM notebook_revisions
+       WHERE notebook_id = ?
+         AND id = ?
+       LIMIT 1`,
+  )
+    .bind(notebookId, revisionId)
+    .first<RevisionRow>();
+}
+
 export async function getNotebookAclRowsForPrincipal(
   env: Env,
   notebookId: string,
@@ -653,6 +724,8 @@ export async function listNotebooksForPrincipal(
             n.updated_at,
             n.latest_revision_id,
             n.cell_composition,
+            r.cover_blob_hash,
+            r.cover_mime,
             n.language,
             CASE MAX(
               CASE a.scope
@@ -671,6 +744,8 @@ export async function listNotebooksForPrincipal(
        FROM notebooks n
        JOIN notebook_acl a
          ON a.notebook_id = n.id
+       LEFT JOIN notebook_revisions r
+         ON r.id = n.latest_revision_id
       WHERE a.subject_kind = 'principal'
         AND (
           a.subject = ?
@@ -687,6 +762,8 @@ export async function listNotebooksForPrincipal(
                n.updated_at,
                n.latest_revision_id,
                n.cell_composition,
+               r.cover_blob_hash,
+               r.cover_mime,
                n.language
       ORDER BY n.updated_at DESC, n.created_at DESC, n.id DESC
       LIMIT ?`,
@@ -1659,6 +1736,8 @@ export async function getNotebookCatalog(
             runtime_snapshot_key,
             comms_snapshot_key,
             comments_snapshot_key,
+            cover_blob_hash,
+            cover_mime,
             actor_label,
             created_at
        FROM notebook_revisions

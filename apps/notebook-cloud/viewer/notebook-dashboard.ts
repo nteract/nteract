@@ -15,6 +15,7 @@ export interface CloudNotebookListItem {
   latest_revision_id: string | null;
   compute_session?: NotebookComputeSessionSummary | null;
   composition?: CloudNotebookComposition;
+  cover?: CloudNotebookCover;
   language?: string;
   viewer_url: string;
   endpoints: {
@@ -28,6 +29,11 @@ export interface CloudNotebookComposition {
   code: number;
   markdown: number;
   raw: number;
+}
+
+export interface CloudNotebookCover {
+  blob_hash: string;
+  mime: "image/png" | "image/jpeg" | "image/svg+xml";
 }
 
 export type CloudNotebookDashboardRuntimeStatus =
@@ -203,6 +209,14 @@ export function cloudNotebookDashboardOpenUrl(
   });
 }
 
+export function cloudNotebookCoverUrl(notebook: CloudNotebookListItem): string | null {
+  const hash = notebook.cover?.blob_hash;
+  if (!hash) {
+    return null;
+  }
+  return `${trimTrailingSlash(notebook.endpoints.catalog)}/blobs/${encodeURIComponent(hash)}`;
+}
+
 export function cloudNotebookOpenUrlWithMode(
   viewerUrl: string,
   mode: CloudNotebookUrlMode,
@@ -264,6 +278,10 @@ function currentBrowserOrigin(): string | null {
   return typeof window === "undefined" ? null : window.location.origin;
 }
 
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/u, "");
+}
+
 export function isCloudNotebookListItem(value: unknown): value is CloudNotebookListItem {
   if (!value || typeof value !== "object") {
     return false;
@@ -281,12 +299,26 @@ export function isCloudNotebookListItem(value: unknown): value is CloudNotebookL
       candidate.compute_session === null ||
       isNotebookComputeSessionSummary(candidate.compute_session)) &&
     (candidate.composition === undefined || isCloudNotebookComposition(candidate.composition)) &&
+    (candidate.cover === undefined || isCloudNotebookCover(candidate.cover)) &&
     (candidate.language === undefined || typeof candidate.language === "string") &&
     typeof candidate.viewer_url === "string" &&
     Boolean(candidate.endpoints) &&
     typeof candidate.endpoints?.catalog === "string" &&
     typeof candidate.endpoints?.acl === "string" &&
     typeof candidate.endpoints?.access_requests === "string"
+  );
+}
+
+function isCloudNotebookCover(value: unknown): value is CloudNotebookCover {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<CloudNotebookCover>;
+  return (
+    typeof candidate.blob_hash === "string" &&
+    (candidate.mime === "image/png" ||
+      candidate.mime === "image/jpeg" ||
+      candidate.mime === "image/svg+xml")
   );
 }
 

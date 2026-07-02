@@ -42,6 +42,7 @@ import {
   getNotebookAclRows,
   getNotebookRow,
   getNotebookCatalog,
+  getNotebookRevisionRow,
   getPublicPublishedNotebookRow,
   getWorkstationRow,
   grantNotebookAclRow,
@@ -55,6 +56,7 @@ import {
   runtimeStateSnapshotKey,
   snapshotKey,
   setDefaultWorkstation,
+  updateNotebookRevisionCover,
   updateNotebookSnapshotSummary,
   updateNotebookTitle,
   updateWorkstationAttachJobStatus,
@@ -274,6 +276,12 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: routePath("/n/:notebookId/debug", { trailingSlash: "optional" }),
     methods: ["GET", "HEAD"],
     handler: ({ params }, request) => debugViewer(params.notebookId, request),
+  },
+  {
+    match: routePath("/n/:notebookId/r/latest/ogImage.png"),
+    methods: ["GET", "HEAD"],
+    handler: ({ params }, request, env) =>
+      routeLatestNotebookOgImage(request, env, params.notebookId),
   },
   {
     match: routePath("/n/:notebookId/r/:revision", { trailingSlash: "optional" }),
@@ -1229,6 +1237,7 @@ function notebookListResponseRows(
       notebook.owner_principal === computeSessions.get(notebook.id)?.owner_principal
         ? computeSessions.get(notebook.id)
         : null;
+    const cover = notebookCoverResponse(notebook);
     return {
       notebook_id: notebook.id,
       title: notebook.title,
@@ -1238,6 +1247,7 @@ function notebookListResponseRows(
       updated_at: notebook.updated_at,
       latest_revision_id: notebook.latest_revision_id,
       ...(composition ? { composition } : {}),
+      ...(cover ? { cover } : {}),
       ...(typeof notebook.language === "string" ? { language: notebook.language } : {}),
       compute_session: computeSession,
       viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title, env),
@@ -1248,6 +1258,26 @@ function notebookListResponseRows(
       },
     };
   });
+}
+
+function notebookCoverResponse(notebook: {
+  cover_blob_hash?: string | null;
+  cover_mime?: string | null;
+}): { blob_hash: string; mime: "image/png" | "image/jpeg" | "image/svg+xml" } | undefined {
+  if (typeof notebook.cover_blob_hash !== "string" || !isNotebookCoverMime(notebook.cover_mime)) {
+    return undefined;
+  }
+  return { blob_hash: notebook.cover_blob_hash, mime: notebook.cover_mime };
+}
+
+function isNotebookCoverMime(
+  value: unknown,
+): value is "image/png" | "image/jpeg" | "image/svg+xml" {
+  return value === "image/png" || value === "image/jpeg" || value === "image/svg+xml";
+}
+
+function isRasterCoverMime(value: unknown): value is "image/png" | "image/jpeg" {
+  return value === "image/png" || value === "image/jpeg";
 }
 
 function parseNotebookCellComposition(
@@ -2654,6 +2684,18 @@ function viewerUrlForRequest(
   return url.href;
 }
 
+function latestNotebookOgImageUrlForRequest(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): string {
+  const url = new URL(trustedLoopbackBrowserOrigin(request, env) ?? request.url);
+  url.pathname = `/n/${encodeURIComponent(notebookId)}/r/latest/ogImage.png`;
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
 function oidcHealth(env: Env): {
   status: "configured" | "partial" | "disabled";
   jwks: "remote" | "pinned" | "none";
@@ -2819,6 +2861,22 @@ async function routeSnapshot(
       counter: "snapshot_summary_update_failures",
       counter_delta: 1,
     });
+  }
+
+  if (validated.summary.cover) {
+    try {
+      await updateNotebookRevisionCover(env, revisionId, validated.summary.cover);
+    } catch (error) {
+      cloudLog("warn", "snapshot.cover.update_failed", {
+        notebook_id: notebookId,
+        notebook_heads_hash: headsHash,
+        revision_id: revisionId,
+        cover_mime: validated.summary.cover.mime,
+        error: errorMessage(error),
+        counter: "snapshot_cover_update_failures",
+        counter_delta: 1,
+      });
+    }
   }
 
   return json(
@@ -4168,6 +4226,89 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+async function routeLatestNotebookOgImage(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<Response> {
+  const cover = await publicLatestRasterCover(env, notebookId);
+  if (!cover) {
+    return notebookOgImageNotFound(request);
+  }
+
+  const key = blobKey(notebookId, cover.blobHash);
+  if (request.method === "HEAD") {
+    const object = await env.NOTEBOOK_SNAPSHOTS?.head(key);
+    if (!object) {
+      return notebookOgImageNotFound(request);
+    }
+    return withCors(new Response(null, { headers: notebookOgImageHeaders(object, cover.mime) }));
+  }
+
+  const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
+  if (!object) {
+    return notebookOgImageNotFound(request);
+  }
+  return withCors(
+    new Response(object.body, { headers: notebookOgImageHeaders(object, cover.mime) }),
+  );
+}
+
+function notebookOgImageNotFound(request: Request): Response {
+  if (request.method === "HEAD") {
+    return withCors(new Response(null, { status: 404 }));
+  }
+  return json({ error: "notebook image not found" }, 404);
+}
+
+function notebookOgImageHeaders(
+  object: { httpEtag: string; size: number },
+  contentType: "image/png" | "image/jpeg",
+): Headers {
+  return new Headers({
+    "Cache-Control": "public, max-age=300",
+    "Content-Length": object.size.toString(),
+    "Content-Type": contentType,
+    ETag: object.httpEtag,
+    "X-Content-Type-Options": "nosniff",
+  });
+}
+
+async function publicLatestRasterCover(
+  env: Env,
+  notebookId: string,
+  options: { verifyBlob?: boolean } = {},
+): Promise<{ blobHash: string; mime: "image/png" | "image/jpeg" } | null> {
+  // Fail-open: the cover is derived convenience for shell metadata and the OG
+  // route. A transient D1/R2 error yields "no cover", never a 500 on the
+  // public viewer page.
+  try {
+    const row = await getPublicPublishedNotebookRow(env, notebookId);
+    if (!row?.latest_revision_id) {
+      return null;
+    }
+    const revision = await getNotebookRevisionRow(env, notebookId, row.latest_revision_id);
+    if (typeof revision?.cover_blob_hash !== "string" || !isRasterCoverMime(revision.cover_mime)) {
+      return null;
+    }
+    if (options.verifyBlob) {
+      const object = await env.NOTEBOOK_SNAPSHOTS?.head(
+        blobKey(notebookId, revision.cover_blob_hash),
+      );
+      if (!object) {
+        return null;
+      }
+    }
+    return { blobHash: revision.cover_blob_hash, mime: revision.cover_mime };
+  } catch (error) {
+    console.warn("[notebook-cloud] latest raster cover lookup failed", {
+      notebook_id: notebookId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 async function routeBlob(
   request: Request,
   env: Env,
@@ -4901,6 +5042,7 @@ async function viewer(
   }
 
   const shellMetadata = await publicViewerShellMetadata(
+    request,
     env,
     notebookId,
     headsHash,
@@ -5039,9 +5181,14 @@ function viewerShellHead(env: Env): Response {
 interface ViewerShellMetadata {
   title: string;
   description: string;
+  ogImage?: {
+    type: "image/png" | "image/jpeg";
+    url: string;
+  };
 }
 
 async function publicViewerShellMetadata(
+  request: Request,
   env: Env,
   notebookId: string,
   headsHash?: string,
@@ -5061,9 +5208,18 @@ async function publicViewerShellMetadata(
   const revisionPart = headsHash
     ? `revision ${shortNotebookId(headsHash)}`
     : `published revision ${shortNotebookId(row.latest_revision_id)}`;
+  const cover = await publicLatestRasterCover(env, notebookId, { verifyBlob: true });
   return {
     title: `nteract notebook: ${displayTitle}`,
     description: `${displayTitle} is a public nteract notebook at ${revisionPart}.`,
+    ...(cover
+      ? {
+          ogImage: {
+            type: cover.mime,
+            url: latestNotebookOgImageUrlForRequest(request, env, notebookId),
+          },
+        }
+      : {}),
   };
 }
 
@@ -5102,6 +5258,8 @@ function viewerShell(
 ): Response {
   const title = escapeHtml(metadata.title);
   const description = escapeHtml(metadata.description);
+  const ogImage = metadata.ogImage;
+  const twitterCard = ogImage ? "summary_large_image" : "summary";
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -5112,7 +5270,13 @@ function viewerShell(
   <meta property="og:title" content="${title}" />
   <meta property="og:description" content="${description}" />
   <meta property="og:type" content="article" />
-  <meta name="twitter:card" content="summary" />
+  ${
+    ogImage
+      ? `<meta property="og:image" content="${escapeHtml(ogImage.url)}" />
+  <meta property="og:image:type" content="${escapeHtml(ogImage.type)}" />`
+      : ""
+  }
+  <meta name="twitter:card" content="${twitterCard}" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style id="nteract-cloud-viewer-theme-surface">${viewerThemeFirstPaintStyle()}</style>
   <script>${viewerThemeBootstrapScript()}</script>

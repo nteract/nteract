@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  cloudNotebookCoverUrl,
   cloudNotebookDashboardRuntimeStatus,
   cloudNotebookDashboardOpenUrl,
   cloudNotebookDisplayTitle,
@@ -714,6 +715,38 @@ describe("cloud notebook dashboard projection", () => {
     assert.deepEqual(model.continueRow?.composition, { code: 2, markdown: 1, raw: 0 });
   });
 
+  it("threads notebook cover through list-item validation and dashboard rows", () => {
+    const covered = notebook({
+      id: "covered-notebook",
+      title: "Covered Notebook",
+      scope: "owner",
+      updatedAt: "2026-06-24T00:00:00.000Z",
+      latestRevisionId: "published-covered",
+      cover: { blob_hash: "cover-hash", mime: "image/svg+xml" },
+    });
+
+    assert.equal(isCloudNotebookListItem(covered), true);
+    assert.equal(
+      isCloudNotebookListItem({
+        ...covered,
+        cover: { blob_hash: "cover-hash", mime: "text/html" },
+      }),
+      false,
+    );
+    assert.equal(
+      isCloudNotebookListItem({ ...covered, cover: { blob_hash: 42, mime: "image/png" } }),
+      false,
+    );
+
+    const model = projectCloudNotebookDashboard([covered]);
+
+    assert.deepEqual(model.continueRow?.notebook.cover, {
+      blob_hash: "cover-hash",
+      mime: "image/svg+xml",
+    });
+    assert.equal(cloudNotebookCoverUrl(covered), "/api/n/covered-notebook/blobs/cover-hash");
+  });
+
   it("maps compute session status to dashboard runtime status", () => {
     const base = {
       id: "runtime-status",
@@ -780,6 +813,7 @@ function notebook(input: {
   latestRevisionId: string | null;
   computeSession?: CloudNotebookListItem["compute_session"];
   composition?: CloudNotebookListItem["composition"];
+  cover?: CloudNotebookListItem["cover"];
   language?: string;
 }): CloudNotebookListItem {
   return {
@@ -792,6 +826,7 @@ function notebook(input: {
     latest_revision_id: input.latestRevisionId,
     compute_session: input.computeSession ?? null,
     ...(input.composition ? { composition: input.composition } : {}),
+    ...(input.cover ? { cover: input.cover } : {}),
     ...(input.language ? { language: input.language } : {}),
     viewer_url: `/n/${input.id}/notebook`,
     endpoints: {
