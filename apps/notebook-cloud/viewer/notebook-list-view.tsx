@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -9,9 +9,16 @@ import {
   RotateCcw,
   Search,
   Sparkles,
-  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useTheme } from "@/hooks/useTheme";
 import {
@@ -357,11 +364,12 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
                 <Button
                   type="button"
                   variant="outline"
+                  aria-label="Refresh notebooks"
                   disabled={listState.kind === "loading"}
                   onClick={refreshList}
                 >
                   <RotateCcw aria-hidden="true" />
-                  Refresh
+                  <span className="nb-btn-label">Refresh</span>
                 </Button>
                 <Button
                   type="button"
@@ -375,9 +383,9 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
                   )}
                   {createState === "starting" ? "Creating" : "New notebook"}
                 </Button>
-                <Button type="button" variant="ghost" onClick={signOut}>
+                <Button type="button" variant="ghost" aria-label="Sign out" onClick={signOut}>
                   <LogOut aria-hidden="true" />
-                  Sign out
+                  <span className="nb-btn-label">Sign out</span>
                 </Button>
                 <span className="nb-avatar-me" title={headerDetail}>
                   {currentUserInitials}
@@ -505,54 +513,34 @@ function CloudNotebookCreateDialog({
   onCreate: (event: FormEvent<HTMLFormElement>) => void;
   onTitleChange: (title: string) => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
+  const busy = createState === "starting";
   return (
-    <div className="nb-overlay" onMouseDown={onClose}>
-      <form
-        className="nb-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cloud-new-notebook-dialog-title"
-        onMouseDown={(event) => event.stopPropagation()}
-        onSubmit={onCreate}
-      >
-        <div className="nb-dialog-head">
-          <h2 id="cloud-new-notebook-dialog-title">New notebook</h2>
-          <button
-            type="button"
-            className="nb-dialog-x"
-            disabled={createState === "starting"}
-            aria-label="Close"
-            onClick={onClose}
-          >
-            <X aria-hidden="true" />
-          </button>
-        </div>
-        <div className="nb-dialog-body">
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        // The shared Dialog owns focus trap, background inerting, Escape, and
+        // focus restore. Ignore close requests while the create is in flight.
+        if (!open && !busy) {
+          onClose();
+        }
+      }}
+    >
+      <DialogContent className="nb-create-dialog" showCloseButton={!busy}>
+        <form onSubmit={onCreate}>
+          <DialogHeader>
+            <DialogTitle>New notebook</DialogTitle>
+            <DialogDescription>
+              Give it a title now, or rename it later from the dashboard.
+            </DialogDescription>
+          </DialogHeader>
           <div className="nb-field">
             <label htmlFor="cloud-new-notebook-title">Title</label>
             <Input
-              ref={inputRef}
               id="cloud-new-notebook-title"
               type="text"
               value={title}
               maxLength={160}
-              disabled={createState === "starting"}
+              disabled={busy}
               placeholder="Untitled notebook"
               onChange={(event) => onTitleChange(event.currentTarget.value)}
             />
@@ -562,27 +550,22 @@ function CloudNotebookCreateDialog({
               {error}
             </div>
           ) : null}
-        </div>
-        <div className="nb-dialog-foot">
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={createState === "starting"}
-            onClick={onClose}
-          >
-            Cancel
-          </Button>
-          <Button type="submit" disabled={createState === "starting"}>
-            {createState === "starting" ? (
-              <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
-            ) : (
-              <Plus aria-hidden="true" />
-            )}
-            {createState === "starting" ? "Creating" : "Create"}
-          </Button>
-        </div>
-      </form>
-    </div>
+          <DialogFooter>
+            <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? (
+                <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+              ) : (
+                <Plus aria-hidden="true" />
+              )}
+              {busy ? "Creating" : "Create"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 

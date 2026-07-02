@@ -877,7 +877,9 @@ body {
 
 .nb-header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -1328,7 +1330,7 @@ body {
 .nb-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 124px 150px minmax(118px, auto) 72px;
+  grid-template-columns: minmax(180px, 1fr) 124px 128px 150px minmax(118px, auto) 72px;
   align-items: center;
   min-height: 68px;
   column-gap: 14px;
@@ -1581,73 +1583,13 @@ body {
   line-height: 1.5;
 }
 
-.nb-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: color-mix(in srgb, var(--foreground) 32%, transparent);
-  backdrop-filter: blur(3px);
-}
-
-.nb-dialog {
-  width: min(100%, 540px);
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--card);
-  color: var(--foreground);
-  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.35);
-}
-
-.nb-dialog-head,
-.nb-dialog-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 18px 20px;
-}
-
-.nb-dialog-head {
-  border-bottom: 1px solid var(--border);
-}
-
-.nb-dialog-head h2 {
-  margin: 0;
-  font-size: 16.5px;
-  font-weight: 700;
-}
-
-.nb-dialog-x {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border: 0;
-  border-radius: 8px;
-  color: var(--muted-foreground);
-  background: transparent;
-  cursor: pointer;
-}
-
-.nb-dialog-x:hover {
-  color: var(--foreground);
-  background: var(--muted);
-}
-
-.nb-dialog-x svg {
-  width: 16px;
-  height: 16px;
-}
-
-.nb-dialog-body {
+/* Create dialog rides the shared @/components/ui/dialog primitive (focus trap,
+   background inerting, Escape, focus restore come from Radix). These rules only
+   shape the form inside it. */
+.nb-create-dialog form {
   display: flex;
   flex-direction: column;
   gap: 18px;
-  padding: 20px;
 }
 
 .nb-field {
@@ -1662,16 +1604,10 @@ body {
   font-weight: 650;
 }
 
-.nb-dialog .cloud-notebook-list-banner {
+.nb-create-dialog .cloud-notebook-list-banner {
   border: 1px solid color-mix(in srgb, var(--destructive) 28%, var(--border));
   border-radius: 8px;
   padding: 0.625rem 0.75rem;
-}
-
-.nb-dialog-foot {
-  justify-content: flex-end;
-  border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--muted) 40%, var(--card));
 }
 
 .cloud-notebook-list-state {
@@ -1818,7 +1754,12 @@ body {
   }
 
   .nb-col-owner,
+  .nb-col-status,
   .nb-col-badges {
+    display: none;
+  }
+
+  .nb-btn-label {
     display: none;
   }
 
