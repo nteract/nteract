@@ -4,6 +4,8 @@ import {
   actorInitials,
   notebookActorIdentityFromProjection,
   notebookActorProjectionFromLabel,
+  colorForActorIdentity,
+  contrastColorForActorIdentity,
 } from "runtimed";
 
 export type CloudViewerPresenceConnection = "connecting" | "connected" | "disconnected";
@@ -362,6 +364,9 @@ export function cloudPresenceRuntimePeerCount(state: CloudViewerPresenceState): 
 }
 
 export const cloudPresenceInitials: (label: string) => string = actorInitials;
+export const cloudPresenceColor: (actorLabel: string) => string = colorForActorIdentity;
+export const cloudPresenceContrastColor: (actorLabel: string) => string =
+  contrastColorForActorIdentity;
 
 export interface CloudFriendlyPeerLabelInput {
   displayName?: string | null;

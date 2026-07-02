@@ -1356,7 +1356,7 @@ body {
 .nb-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 124px 96px 128px 150px minmax(118px, auto) 72px;
+  grid-template-columns: minmax(180px, 1fr) 124px 96px 128px 116px 150px minmax(118px, auto) 72px;
   align-items: center;
   min-height: 68px;
   column-gap: 14px;
@@ -1525,6 +1525,50 @@ body {
 
 .nb-col-badges {
   gap: 8px;
+}
+
+.nb-col-peers {
+  min-width: 0;
+  gap: 7px;
+}
+
+.nb-peers {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.nb-peer {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--background);
+  border-radius: 999px;
+  background: var(--nb-peer-bg, color-mix(in srgb, var(--foreground) 12%, var(--background)));
+  color: var(--nb-peer-fg, var(--foreground));
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.nb-peer + .nb-peer {
+  margin-left: -7px;
+}
+
+.nb-peer-more {
+  background: color-mix(in srgb, var(--background) 88%, var(--foreground) 12%);
+  color: color-mix(in srgb, var(--foreground) 76%, transparent);
+}
+
+.nb-peers-label {
+  overflow: hidden;
+  color: color-mix(in srgb, var(--foreground) 62%, transparent);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nb-row-actions,
@@ -1815,6 +1859,7 @@ body {
   .nb-col-owner,
   .nb-col-lang,
   .nb-col-status,
+  .nb-col-peers,
   .nb-col-badges {
     display: none;
   }

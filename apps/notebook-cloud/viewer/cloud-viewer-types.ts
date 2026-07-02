@@ -24,6 +24,8 @@ export type ViewerRuntimeState =
 export interface CloudNotebookListResponse {
   ok: boolean;
   notebooks: CloudNotebookListItem[];
+  /** Requester's unified-profile display name, when the store has one. */
+  current_user_display?: string;
 }
 
 export interface CloudNotebookListBootstrap {

@@ -35,6 +35,7 @@ import {
 } from "../src/protocol.ts";
 import { decodePresenceFrame, encodePresenceFrame } from "../src/runtimed-wasm.ts";
 import type { RoomHostFrameResult } from "../src/room-materializer.ts";
+import { roomSummaryKey, type NotebookRoomSummary } from "../src/storage.ts";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 
 before(async () => {
@@ -3691,6 +3692,180 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
   });
 });
 
+describe("NotebookRoom room summary", () => {
+  function summaryPeer(
+    id: string,
+    user: string,
+    scope: "viewer" | "editor" | "owner" | "runtime_peer",
+    options: { operator?: string; displayName?: string } = {},
+  ): PeerForTest {
+    const operator = options.operator ?? `browser:${id}`;
+    const identity = authenticateDevRequest(
+      new Request(
+        `https://cloud.test/n/demo/sync?user=${user}&operator=${operator}&scope=${scope}`,
+      ),
+    );
+    return {
+      id,
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity: {
+        ...identity,
+        metadata: {
+          ...identity.metadata,
+          ...(options.displayName ? { displayName: options.displayName } : {}),
+        },
+      },
+      connectedAt: "2026-06-05T00:00:00.000Z",
+    };
+  }
+
+  it("writes deduped human occupants and ignores runtime peers", async () => {
+    const state = alarmCapableState();
+    const bucket = new FakeRoomSummaryBucket();
+    const room = new NotebookRoom(state.state, { NOTEBOOK_SNAPSHOTS: bucket } as Env);
+    const harness = roomHarness(room);
+
+    const beforeAlice = harness.roomSummaryOccupantKeys();
+    harness.peers.set(
+      "alice-a",
+      summaryPeer("alice-a", "alice", "owner", {
+        displayName: "Alice Demo",
+        operator: "browser:a",
+      }),
+    );
+    harness.publishRoomSummaryIfHumanOccupantsChanged("demo", beforeAlice, "peer_joined");
+    await state.drain();
+
+    assert.deepEqual(bucket.summary("demo").occupants, [
+      {
+        participant_key: "user:dev:alice",
+        actor_label: "user:dev:alice/browser:a",
+        display_name: "Alice Demo",
+        connection_scope: "owner",
+      },
+    ]);
+    assert.equal(await state.getAlarm(), state.now + 60_000);
+    const putsAfterAlice = bucket.puts.length;
+
+    const beforeDuplicate = harness.roomSummaryOccupantKeys();
+    harness.peers.set(
+      "alice-b",
+      summaryPeer("alice-b", "alice", "editor", { operator: "browser:b" }),
+    );
+    harness.publishRoomSummaryIfHumanOccupantsChanged("demo", beforeDuplicate, "peer_joined");
+    await state.drain();
+    assert.equal(bucket.puts.length, putsAfterAlice, "same participant does not rewrite summary");
+
+    const beforeRuntime = harness.roomSummaryOccupantKeys();
+    harness.peers.set("runtime", summaryPeer("runtime", "alice", "runtime_peer"));
+    harness.publishRoomSummaryIfHumanOccupantsChanged("demo", beforeRuntime, "peer_joined");
+    await state.drain();
+    assert.equal(bucket.puts.length, putsAfterAlice, "runtime peer does not rewrite summary");
+
+    const beforeBob = harness.roomSummaryOccupantKeys();
+    harness.peers.set("bob", summaryPeer("bob", "bob", "editor", { displayName: "Bob Editor" }));
+    harness.publishRoomSummaryIfHumanOccupantsChanged("demo", beforeBob, "peer_joined");
+    await state.drain();
+
+    assert.deepEqual(
+      bucket
+        .summary("demo")
+        .occupants.map((occupant) => [
+          occupant.participant_key,
+          occupant.display_name ?? null,
+          occupant.connection_scope,
+        ]),
+      [
+        ["user:dev:alice", "Alice Demo", "owner"],
+        ["user:dev:bob", "Bob Editor", "editor"],
+      ],
+    );
+  });
+
+  it("writes an empty summary and disarms refresh when the occupant set empties", async () => {
+    const state = alarmCapableState();
+    const bucket = new FakeRoomSummaryBucket();
+    const room = new NotebookRoom(state.state, { NOTEBOOK_SNAPSHOTS: bucket } as Env);
+    const harness = roomHarness(room);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+    } as never);
+
+    const firstAlice = summaryPeer("alice-a", "alice", "owner");
+    const secondAlice = summaryPeer("alice-b", "alice", "owner", { operator: "browser:b" });
+    harness.peers.set(firstAlice.id, firstAlice);
+    harness.peers.set(secondAlice.id, secondAlice);
+    harness.publishRoomSummary("demo", "peer_joined");
+    await state.drain();
+    const putsAfterInitial = bucket.puts.length;
+
+    harness.removePeer("demo", firstAlice);
+    await state.drain();
+    assert.equal(bucket.puts.length, putsAfterInitial, "remaining tab keeps occupant set stable");
+
+    harness.removePeer("demo", secondAlice);
+    await state.drain();
+    assert.deepEqual(bucket.summary("demo").occupants, []);
+    assert.equal(await state.getAlarm(), null);
+  });
+
+  it("publishes and re-arms the summary on refresh alarms", async () => {
+    const state = alarmCapableState();
+    const bucket = new FakeRoomSummaryBucket();
+    const room = new NotebookRoom(state.state, { NOTEBOOK_SNAPSHOTS: bucket } as Env);
+    const harness = roomHarness(room);
+    harness.peers.set("alice", summaryPeer("alice", "alice", "owner"));
+    harness.publishRoomSummary("demo", "peer_joined");
+    await state.drain();
+    const putsAfterInitial = bucket.puts.length;
+
+    await state.state.storage.put("room_summary_refresh", "demo");
+    await state.state.storage.put("room_summary_refresh_alarm_at", 0);
+    await (room as unknown as { alarm(): Promise<void> }).alarm();
+    await state.drain();
+
+    assert.equal(bucket.puts.length, putsAfterInitial + 1);
+    assert.notEqual(await state.getAlarm(), null);
+  });
+
+  it("restores hibernated human peers into the room summary and refresh alarm", async () => {
+    const socket = new FakeSocket();
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=carol&operator=browser:c&scope=editor"),
+    );
+    socket.serializeAttachment({
+      notebookId: "demo",
+      peerId: "carol",
+      identity: {
+        ...identity,
+        metadata: {
+          ...identity.metadata,
+          displayName: "Carol Editor",
+        },
+      },
+      connectedAt: "2026-06-05T00:00:00.000Z",
+      workstation: null,
+    });
+    const state = alarmCapableState([socket.asCloudflareWebSocket()]);
+    const bucket = new FakeRoomSummaryBucket();
+
+    new NotebookRoom(state.state, { NOTEBOOK_SNAPSHOTS: bucket } as Env);
+    await state.drain();
+
+    assert.deepEqual(bucket.summary("demo").occupants, [
+      {
+        participant_key: "user:dev:carol",
+        actor_label: "user:dev:carol/browser:c",
+        display_name: "Carol Editor",
+        connection_scope: "editor",
+      },
+    ]);
+    assert.equal(await state.getAlarm(), state.now + 60_000);
+  });
+});
+
 type PeerForTest = {
   id: string;
   socket: CloudflareWebSocket;
@@ -3723,6 +3898,16 @@ interface RoomHarness {
     }
   >;
   refreshRuntimePeerWatch?(notebookId: string): void;
+  roomSummaryOccupantKeys(): Set<string>;
+  publishRoomSummaryIfHumanOccupantsChanged(
+    notebookId: string,
+    previousOccupantKeys: ReadonlySet<string>,
+    reason: "peer_joined" | "peer_left",
+  ): void;
+  publishRoomSummary(
+    notebookId: string,
+    reason: "peer_joined" | "peer_left" | "hibernation_restore" | "refresh_alarm",
+  ): void;
   runtimePeerAuthorityError?(
     notebookId: string,
     workstation: PeerForTest["workstation"],
@@ -3783,6 +3968,35 @@ function roomEnvWithComputeIndex(
     },
     OWNER_COMPUTE_INDEX: computeIndex,
   } as Env;
+}
+
+class FakeRoomSummaryBucket {
+  readonly objects = new Map<string, string>();
+  readonly puts: Array<{ key: string; value: string }> = [];
+
+  summary(notebookId: string): NotebookRoomSummary {
+    const value = this.objects.get(roomSummaryKey(notebookId));
+    assert.ok(value, `expected room summary for ${notebookId}`);
+    return JSON.parse(value) as NotebookRoomSummary;
+  }
+
+  async get(): Promise<null> {
+    return null;
+  }
+
+  async head(): Promise<null> {
+    return null;
+  }
+
+  async put(key: string, value: string): Promise<never> {
+    this.objects.set(key, value);
+    this.puts.push({ key, value });
+    return { key } as never;
+  }
+
+  async delete(key: string): Promise<void> {
+    this.objects.delete(key);
+  }
 }
 
 interface FakeOwnerComputeIndexRequest {
@@ -3995,7 +4209,7 @@ function hibernatedState(sockets: CloudflareWebSocket[]): {
 /// a `drain()` that awaits everything passed to `waitUntil` (so the watchdog's
 /// fire-and-forget arm/disarm work completes before assertions). `now` is fixed
 /// so the armed alarm time is predictable in tests.
-function alarmCapableState(): {
+function alarmCapableState(sockets: CloudflareWebSocket[] = []): {
   state: DurableObjectState;
   now: number;
   getAlarm(): Promise<number | null>;
@@ -4022,6 +4236,7 @@ function alarmCapableState(): {
         alarmAt = null;
       },
     },
+    getWebSockets: () => sockets,
     waitUntil: (promise: Promise<unknown>) => {
       pending.push(promise.catch(() => undefined));
     },
