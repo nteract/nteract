@@ -12,6 +12,13 @@ code and git history. 153 artifacts were classified; 101 findings survived
 independent adversarial verification (13 high, 56 medium, 32 low). Findings
 whose evidence did not reproduce were dropped.
 
+**Resolution status:** execution batches 1-5 below (protocol truth, agent
+guidance, status hygiene, hosted refresh, release/ops truth) were applied in
+the PR that introduced this audit, so the per-file findings they cover are
+fixed as of that PR and kept here as evidence. Still live: the two Decisions
+Needed below, batch 6 (issue gardening on the tracker), and any follow-ups
+recorded in the owning docs.
+
 Headline: the architecture docs are structurally healthy (64 artifacts fully
 current), but a June burst of landed work — CommentsDoc sync, daemon-mediated
 hosted rooms (#3884), the hosted artifact/dashboard wave, release signing —
@@ -86,7 +93,7 @@ These are implemented and load-bearing but still say Draft/Proposed:
   questions as follow-ups.
 - `docs/adr/schema-evolution-and-genesis.md` → Accepted; frozen-genesis and
   max-reader rules are enforced in code.
-- `docs/adr/notebook-identity-and-path-binding.md` → Accepted/partial: NIP-1
+- `docs/adr/notebook-identity-and-path-binding.md` → In progress: NIP-1
   and NIP-2 landed (e.g. untitled recovery, #3818); NIP-3 remains design.
 - `docs/adr/README.md` itself: three ADRs use compound statuses
   ("Accepted / implementation in progress") outside the defined vocabulary —
@@ -256,7 +263,7 @@ status). Artifacts judged fully current (64) are omitted.
 - `docs/adr/0001-notebook-seeding-invariant.md` — **needs-update**: Update the exact pristine predicate to include the daemon ephemeral room flag scaffold exception.
 - `docs/adr/runtime-state-document-identity.md` — **needs-update**: Change status from Draft to Accepted/implemented and keep open questions as follow-ups.
 - `docs/adr/schema-evolution-and-genesis.md` — **needs-update**: Change status from Draft to Accepted; the frozen-genesis and schema-version max-reader rules are implemented.
-- `docs/adr/notebook-identity-and-path-binding.md` — **needs-update**: Change status from Proposed to Accepted/partially implemented; NIP-1 and NIP-2 have landed while NIP-3 remains design.
+- `docs/adr/notebook-identity-and-path-binding.md` — **needs-update**: Change status from Proposed to In progress; NIP-1 and NIP-2 have landed while NIP-3 remains design.
 - `docs/adr/notebook-comments-document.md` — **in-flight**: Keep as in-flight; core CommentsDoc and hosted/local sync landed, while MCP tools, polish, and publish policy remain tracked in the rollout plan.
 - `docs/adr/execution-pipeline.md` — **misfiled**: Accurate and load-bearing; graduate Draft to Accepted after refreshing a few stale line references.
 - `docs/adr/typed-frame-v4-wire-protocol.md` — **needs-update**: Core framing story is right, but the frame table/bootstrap/forward-compat details lag current v4 code.

@@ -5,8 +5,8 @@
 
 ## Context
 
-`NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` sync between peers via
-typed-frame v4 over a Unix socket today, with same-UID trust covering
+`NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`, and `CommentsDoc` sync between
+peers via typed-frame v4 over a Unix socket today, with same-UID trust covering
 attribution. We want to
 extend the same protocol to hosted multi-user rooms (Anaconda hosted,
 JupyterHub-backed compute, future deployments) without forking the wire format,
@@ -141,9 +141,9 @@ Bearer-token replay is a separate, well-known property of bearer auth: if a user
 
 The room-host enforces scope at frame ingress by inspecting frame type and emptiness:
 
-- **viewer** scope: any inbound document sync frame (`0x00`, `0x05`, or `0x09`) with non-empty `Message.changes` is rejected. Empty negotiation frames (heads/have/need with `ChunkList::empty()`) pass.
+- **viewer** scope: any inbound document sync frame (`0x00`, `0x05`, `0x09`, or `0x0a`) with non-empty `Message.changes` is rejected. Empty negotiation frames (heads/have/need with `ChunkList::empty()`) pass.
 - **runtime_peer** scope: any inbound `0x00` (NotebookDoc) frame with non-empty changes is rejected. `RuntimeStateDoc` writes are allowed only for runtime progress/output over already accepted execution entries, lifecycle state, comm topology, and output routing; trust, environment, path, save metadata, and project context remain room-host/daemon-owned. Execution intent creation still goes through `ExecuteCell`/`RunAllCells`. In the hosted prototype, runtime authorship uses a `RuntimeStatePeerHandle` surface separate from the browser `NotebookHandle`, so a runtime peer can publish execution progress/output state without acquiring notebook editing APIs.
-- **editor** scope: `0x00` NotebookDoc edits are allowed only within the room host's current document-write policy. `0x09` CommsDoc edits are allowed for mutable widget comm state, with kernel forwarding gated by RuntimeStateDoc comm topology. `0x05` RuntimeStateDoc edits are rejected for editor scope; execution, queue, kernel, environment, output, comm topology, and schema/root changes are runtime-owned.
+- **editor** scope: `0x00` NotebookDoc edits are allowed only within the room host's current document-write policy. `0x09` CommsDoc edits are allowed for mutable widget comm state, with kernel forwarding gated by RuntimeStateDoc comm topology. `0x0a` CommentsDoc edits are allowed; ingress validates change actor labels against the connection principal. `0x05` RuntimeStateDoc edits are rejected for editor scope; execution, queue, kernel, environment, output, comm topology, and schema/root changes are runtime-owned.
 - **owner** scope: same frame-level document rules as `editor`, plus ACL-mutation requests are honored. Owner does not imply arbitrary RuntimeStateDoc authorship; runtime lifecycle, execution progress, and output state still require `runtime_peer`, while execution intent still requires the request API.
 
 For non-empty `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` sync messages, the room-host also performs a v1 clone-preview validator: clone the current Automerge doc and sync state, apply the incoming message to the clone, extract the actors in the newly applied changes, and reject the frame if any new change's principal differs from the connection's authenticated principal. The real room document is mutated only after this preview succeeds.
@@ -370,7 +370,7 @@ The extraction logic (parse subprotocol header, look up ticket, read cookie, que
 
 A connection carries exactly one scope, determined at authentication time. The four scopes are:
 
-- `viewer` - read-only. May send and receive sync, presence, and session-control frames, **but inbound sync frames must carry no changes**. Automerge sync is bidirectional even when the client never authors: a read-only consumer still negotiates heads/have/need with the server, applies incoming changes from the server, and produces reply frames through the normal `notebook-sync` task loop. The trust gate rejects any inbound `0x00`, `0x05`, or `0x09` frame from a viewer connection whose `Message.changes` is non-empty; empty negotiation frames pass. Request frames are limited to read-only operations. The server's outbound to the viewer is unrestricted.
+- `viewer` - read-only. May send and receive sync, presence, and session-control frames, **but inbound sync frames must carry no changes**. Automerge sync is bidirectional even when the client never authors: a read-only consumer still negotiates heads/have/need with the server, applies incoming changes from the server, and produces reply frames through the normal `notebook-sync` task loop. The trust gate rejects any inbound `0x00`, `0x05`, `0x09`, or `0x0a` frame from a viewer connection whose `Message.changes` is non-empty; empty negotiation frames pass. Request frames are limited to read-only operations. The server's outbound to the viewer is unrestricted.
   - Note on the upstream Automerge `read_only` API: `State::new_read_only()` and `MessageFlags::READ_ONLY` are **not** the client-side viewer primitive. Upstream `read_only` means "the holder of this state will not apply incoming changes but will still send its own" (publish-only semantics; see `rust/automerge/src/sync.rs:408` and `rust/automerge/src/sync/state.rs:65-67`). A viewer client that uses `State::new_read_only()` will not apply live room updates. Hosted room hosts may still use `State::new_read_only()` for their per-viewer peer state as an optimization and protocol hint: the host will not apply that peer's changes while still sending room changes to the peer. That is not the authorization boundary; the server must still reject any viewer `Message.changes` explicitly.
 - `editor` - live edit on `NotebookDoc` within the room host's document-write policy, plus write access to `CommsDoc` for mutable widget comm state. RuntimeStateDoc comm topology remains the membership authority for kernel forwarding. Editor `RuntimeStateDoc` writes are rejected. Editors cannot create executions, manipulate queue/kernel/environment state, rewrite output routing, create/remove comm topology, or add hidden RuntimeStateDoc root keys.
 - `runtime_peer` - permitted to write `RuntimeStateDoc` execution progress, output, lifecycle, and comm topology state for already accepted executions. It cannot create execution intent or edit `NotebookDoc`. Used by future remote-runtime services and by JupyterHub-spawned runtime sidecars/services when they connect a kernel. The hosted Worker prototype exercises this as direct `0x05` sync from a runtime authoring handle; it still does not host kernels inside the Durable Object.
@@ -396,7 +396,7 @@ may render.
 Scope is enforced server-side at three points in the target architecture, each
 with a clear boundary:
 
-1. **Frame ingress** (in `peer_notebook_sync.rs::handle_notebook_doc_frame`, `peer_runtime_sync.rs`, `peer_comms_sync.rs`, and the hosted WASM room host): the validator consults `AuthenticatedConnection.scope` and rejects frames that exceed the scope: viewer with non-empty changes on any doc, `runtime_peer` sending changes to `NotebookDoc`, editor/owner `RuntimeStateDoc` changes, or unauthorized `CommsDoc` changes. The hosted Worker and daemon share the same RuntimeStateDoc policy helper so this is no longer a hosted-only TODO.
+1. **Frame ingress** (in `peer_notebook_sync.rs::handle_notebook_doc_frame`, `peer_runtime_sync.rs`, `peer_comms_sync.rs`, `peer_comments_sync.rs`, and the hosted WASM room host): the validator consults `AuthenticatedConnection.scope` and rejects frames that exceed the scope: viewer with non-empty changes on any doc, `runtime_peer` sending changes to `NotebookDoc`, editor/owner `RuntimeStateDoc` changes, unauthorized `CommsDoc` changes, or `CommentsDoc` changes from scopes without comment authority. The hosted Worker and daemon share the same RuntimeStateDoc policy helper so this is no longer a hosted-only TODO.
 2. **Request dispatch**: each `NotebookRequest` variant declares its minimum required scope via an annotation or registry lookup. The request handler rejects with a typed `Unauthorized` response before any side effect. New scope-gated requests declare their requirement at the definition site; no scattered `if scope == ...` checks elsewhere.
 3. **ACL mutations** are owner-only. The hosted Worker prototype exposes owner-only HTTP ACL management for individual D1 rows. No in-band Automerge ACL change is honored from a non-owner connection.
 
@@ -435,8 +435,8 @@ actor labels, including any `local:*` actors from a desktop source.
 
 Concretely: `crates/runt-publish/src/lib.rs` uploads
 `source_snapshot.snapshot.notebook_bytes` and
-`source_snapshot.snapshot.runtime_bytes` as raw Automerge save payloads
-(`:297`, `:303`), and `apps/notebook-cloud/src/index.ts` stores the uploaded
+`source_snapshot.snapshot.runtime_state_bytes` as raw Automerge save payloads
+(`:297`, `:250`), and `apps/notebook-cloud/src/index.ts` stores the uploaded
 body in R2 (`:3041`) before creating a catalog revision row (`:3054-3101`).
 
 **Target:** The target decision remains fresh-document re-authoring at the

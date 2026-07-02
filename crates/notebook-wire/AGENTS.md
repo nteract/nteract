@@ -252,7 +252,7 @@ Kernel produces output
 | `daemon:ready` event | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
 | `daemon:disconnected` event | Relay → Frontend | — | Connection lost |
 
-Outgoing frames use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` via `tauri::ipc::Request`. Relay accepts frontend-originated `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x0a`; `0x02`, `0x03`, `0x07` are daemon-originated.
+Outgoing frames use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` via `tauri::ipc::Request`. Relay accepts frontend-originated `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0a`; `0x02`, `0x03`, `0x07` are daemon-originated.
 
 ### In-memory frame bus
 

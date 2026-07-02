@@ -227,9 +227,10 @@ runtime-agent actor, while the shared policy filters what each scope may mutate.
   metadata and the runtime/comms projection; the live CommsDoc is dropped on
   room eviction.
 - **`CommentsDoc`** is **persisted** to disk as a durable sidecar. The daemon
-  writes CommentsDoc to `~/.cache/<namespace>/comments/{notebook_hash}.am` and
-  loads it on room join. Optimistic comments render immediately; authority
-  fields are finalized by the daemon/room host
+  writes CommentsDoc to
+  `~/.cache/<namespace>/comments/<sha256-of-comments-doc-id>.automerge`
+  (sibling of `notebook-docs/`) and loads it on room join. Optimistic comments
+  render immediately; ingress validates change actor labels and scope
   (`crates/runtimed/src/notebook_sync_server/peer_comments_sync.rs`).
 - **`PoolDoc`** is **not** persisted. It is built fresh from `PoolDoc::new()` on daemon startup, hydrated from in-process pool state on each daemon tick (`Daemon::update_pool_doc`). On daemon restart it is empty until the pools come back online.
 
@@ -248,7 +249,7 @@ So the durable footprint of one notebook is: the `.ipynb` (or untitled `.automer
 | `NotebookDoc` | On room load (either from `.ipynb` or fresh) | Per-notebook UUID; schema seed actor `nteract:notebook-schema:v5` | On room eviction; persisted file deleted on save-as transition |
 | `RuntimeStateDoc` | On room load (fresh from schema seed; load code populates synthetic executions when the `.ipynb` carries legacy outputs, `crates/runtimed/src/notebook_sync_server/load.rs:709, :731, :741`) | Runtime-state document id referenced by `NotebookDoc.runtime_state_doc_id`; schema seed actor `nteract:runtime-state-schema:v2`; daemon writes under actor `runtimed:state`; runtime-agent peer writes under its own actor (`crates/runtimed/src/runtime_agent.rs:96`) | On room eviction |
 | `CommsDoc` | On room load (fresh from schema seed; load code hydrates widget state when `.ipynb` widget metadata is present) | Per-notebook side document; schema seed actor `nteract:comms-doc-schema:v1` | On room eviction |
-| `CommentsDoc` | On room load (loaded from disk or fresh from schema seed) | Per-notebook sidecar document; schema seed actor `nteract:comments-doc-schema:v1`; daemon applies optimistic rendering + authority finalization | On room eviction; persisted sidecar survives eviction |
+| `CommentsDoc` | On room load (loaded from disk or fresh from schema seed) | Per-notebook sidecar document; schema seed actor `nteract:comments-doc-schema:v1`; ingress validates change actor labels and scope | On room eviction; persisted sidecar survives eviction |
 | `PoolDoc` | On daemon startup | Singleton; daemon writes under actor `runtimed:pool` | On daemon shutdown |
 
 The schema seed actor is what makes initial sync correct. Every peer scaffolds
@@ -275,8 +276,10 @@ Each doc's `receive_sync_message` makes a different choice about client changes:
   widget state changes. Runtime forwarding and orphan cleanup use
   `RuntimeStateDoc` topology as the membership authority.
 - **`CommentsDoc::receive_sync_message_with_changes_recovering`** applies
-  optimistic comment changes. The daemon/room host finalizes authority-policy
-  fields (`finalized`, `finalized_at`, `finalized_by`) after ingress.
+  optimistic comment changes. The daemon/room host validates change actor
+  labels against the connection principal and strips writes from scopes
+  without comment authority; there is no daemon finalization step —
+  attribution is projected from admitted change actors.
 - **`PoolDoc::receive_sync_message`** (`crates/notebook-doc/src/pool_state.rs:341`) explicitly clears `message.changes = Vec::<Vec<u8>>::new().into()` before passing to Automerge. The `heads`, `need`, and `have` fields are preserved by omission so the sync handshake still completes (bloom-filter exchange, ACKs); only the change payload is dropped.
 
 This is a set of different ingress shapes for what looks like one protocol.

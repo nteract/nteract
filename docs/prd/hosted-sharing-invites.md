@@ -158,14 +158,12 @@ Pending invites are not ACL rows and cannot authorize a socket.
    and insert an immediate principal ACL row if found? This would grant access
    without requiring the recipient to log in again, but requires deciding when
    to prefer immediate grants vs. pending invites for auditing or notification
-   purposes.
-7. The share dialog shows:
+   purposes. If immediate grants land, the API may still create an accepted
+   invite audit row; the ACL subject stays the resolved principal.
+6. The share dialog shows:
    - resolved collaborators by display name;
    - pending invites by email;
    - public viewer as a separate "Anyone with the link" row.
-
-The API may create an accepted invite audit row even for immediate grants, but
-the ACL subject is still the resolved principal.
 
 The initial Worker surface is deliberately small and owner-scoped:
 
