@@ -1946,6 +1946,10 @@ impl Daemon {
             self.run_windows_server().await?;
         }
 
+        // Shut down hosted bridges before draining rooms so their reservations
+        // release and room cleanup proceeds through the normal exit path.
+        self.shutdown_hosted_bridges().await;
+
         // Shut down all runtime agents before exiting.
         //
         // Runtime agents are spawned in their own process group (process_group(0)),
@@ -2815,6 +2819,73 @@ impl Daemon {
         bridges.values().find(|b| b.room_id == room_id).cloned()
     }
 
+    pub(crate) async fn teardown_hosted_bridge(&self, locator: &str) {
+        let handle = {
+            let bridges = self.hosted_bridges.lock().await;
+            bridges.get(locator).cloned()
+        };
+
+        let Some(handle) = handle else {
+            debug!(
+                "[runtimed] Hosted bridge idle teardown skipped for {}: bridge absent",
+                locator
+            );
+            return;
+        };
+
+        if let Some(room) = self.notebook_rooms.peek_uuid(handle.room_id).await {
+            let active_peers = room
+                .connections
+                .active_peers
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if active_peers > 0 {
+                debug!(
+                    "[runtimed] Hosted bridge idle teardown skipped for {}: {} active peer(s)",
+                    locator, active_peers
+                );
+                return;
+            }
+        }
+
+        let removed = {
+            let mut bridges = self.hosted_bridges.lock().await;
+            let same_handle = bridges
+                .get(locator)
+                .is_some_and(|current| Arc::ptr_eq(current, &handle));
+            if same_handle {
+                bridges.remove(locator)
+            } else {
+                None
+            }
+        };
+
+        let Some(handle) = removed else {
+            debug!(
+                "[runtimed] Hosted bridge idle teardown skipped for {}: bridge changed",
+                locator
+            );
+            return;
+        };
+
+        info!("[runtimed] Tearing down hosted bridge for {}", locator);
+        handle.shutdown();
+    }
+
+    async fn shutdown_hosted_bridges(&self) {
+        let bridges: Vec<_> = {
+            let mut bridges = self.hosted_bridges.lock().await;
+            bridges.drain().collect()
+        };
+
+        for (locator, handle) in bridges {
+            info!(
+                "[runtimed] Shutting down hosted bridge for {} on daemon shutdown",
+                locator
+            );
+            handle.shutdown();
+        }
+    }
+
     /// Resolve or create the bridged room + bridge for a hosted locator.
     ///
     /// Errors are user-actionable configuration/connectivity messages meant
@@ -2879,6 +2950,21 @@ impl Daemon {
         .map_err(|e| format!("Failed to create bridged room for {locator}: {e}"))?;
         self.mark_rooms_ever_seen();
 
+        let idle_daemon: Weak<Self> = Arc::downgrade(self);
+        let idle_locator = locator.clone();
+        let bridge_options = crate::notebook_sync_server::HostedBridgeOptions {
+            on_idle: Some(Arc::new(move || {
+                let daemon = idle_daemon.clone();
+                let locator = idle_locator.clone();
+                tokio::spawn(async move {
+                    if let Some(daemon) = daemon.upgrade() {
+                        daemon.teardown_hosted_bridge(&locator).await;
+                    }
+                });
+            })),
+            ..Default::default()
+        };
+
         let mut bridges = self.hosted_bridges.lock().await;
         let bridge = match bridges.entry(locator.clone()) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
@@ -2898,6 +2984,7 @@ impl Daemon {
                     locator.clone(),
                     hosted_id.clone(),
                     guard,
+                    bridge_options,
                 ));
                 entry.insert(handle.clone());
                 handle

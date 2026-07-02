@@ -24,6 +24,7 @@
 //! room as hosted `Request` frames (see `requests::mod`), and queue/output
 //! state converges back through RuntimeStateDoc sync.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,6 +50,20 @@ const BACKOFF_RESET_AFTER: Duration = Duration::from_secs(30);
 /// Bound on queued forwarded request frames while (re)connecting.
 const FORWARD_QUEUE_CAPACITY: usize = 32;
 
+pub(crate) struct HostedBridgeOptions {
+    pub idle_after: Duration,
+    pub on_idle: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl Default for HostedBridgeOptions {
+    fn default() -> Self {
+        Self {
+            idle_after: Duration::from_secs(15 * 60),
+            on_idle: None,
+        }
+    }
+}
+
 /// Handle to a running hosted-room bridge, owned by the daemon and keyed by
 /// the room's local UUID plus the normalized hosted locator.
 pub struct HostedBridgeHandle {
@@ -60,10 +75,9 @@ pub struct HostedBridgeHandle {
     principal_rx: watch::Receiver<Option<String>>,
     request_tx: mpsc::Sender<Vec<u8>>,
     task: tokio::task::JoinHandle<()>,
-    /// Keeps the bridged room resident (`reservations > 0`) so the peer-less
-    /// room reaper cannot evict it out from under the live cloud connection.
-    /// Idle-teardown policy for hosted rooms is a follow-up; dropping the
-    /// handle releases the room to normal eviction.
+    idle_task: Option<tokio::task::JoinHandle<()>>,
+    /// Keeps the bridged room resident (`reservations > 0`) while the bridge
+    /// is live. Idle teardown drops the handle so normal room eviction applies.
     _reservation: super::ReservationGuard,
 }
 
@@ -103,6 +117,9 @@ impl HostedBridgeHandle {
     /// eviction.
     pub fn shutdown(&self) {
         self.task.abort();
+        if let Some(idle_task) = &self.idle_task {
+            idle_task.abort();
+        }
     }
 }
 
@@ -116,11 +133,23 @@ pub(crate) fn spawn_hosted_bridge(
     locator: String,
     hosted_notebook_id: String,
     reservation: super::ReservationGuard,
+    options: HostedBridgeOptions,
 ) -> HostedBridgeHandle {
     let (principal_tx, principal_rx) = watch::channel(None);
     let (request_tx, request_rx) = mpsc::channel(FORWARD_QUEUE_CAPACITY);
     let room_id = room.id;
     let task_locator = locator.clone();
+    let HostedBridgeOptions {
+        idle_after,
+        on_idle,
+    } = options;
+    let idle_task = on_idle.map(|on_idle| {
+        let idle_room = room.clone();
+        let idle_locator = locator.clone();
+        tokio::spawn(async move {
+            monitor_idle(idle_room, idle_locator, idle_after, on_idle).await;
+        })
+    });
     let task = tokio::spawn(async move {
         run_bridge(room, transport, task_locator, principal_tx, request_rx).await;
     });
@@ -131,8 +160,47 @@ pub(crate) fn spawn_hosted_bridge(
         principal_rx,
         request_tx,
         task,
+        idle_task,
         _reservation: reservation,
     }
+}
+
+async fn monitor_idle(
+    room: Arc<NotebookRoom>,
+    locator: String,
+    idle_after: Duration,
+    on_idle: Arc<dyn Fn() + Send + Sync>,
+) {
+    let mut tick = tokio::time::interval(idle_check_interval(idle_after));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut zero_since: Option<tokio::time::Instant> = None;
+    let mut fired_for_span = false;
+
+    loop {
+        tick.tick().await;
+        let active_peers = room.connections.active_peers.load(Ordering::Relaxed);
+        if active_peers > 0 {
+            zero_since = None;
+            fired_for_span = false;
+            continue;
+        }
+
+        let now = tokio::time::Instant::now();
+        let since = zero_since.get_or_insert(now);
+        if !fired_for_span && now.duration_since(*since) >= idle_after {
+            debug!(
+                "[hosted-bridge] {} idle for {:?}; signaling daemon teardown",
+                locator, idle_after
+            );
+            on_idle();
+            fired_for_span = true;
+        }
+    }
+}
+
+fn idle_check_interval(idle_after: Duration) -> Duration {
+    let coarse = (idle_after / 4).min(Duration::from_secs(60));
+    coarse.max(Duration::from_millis(50))
 }
 
 async fn run_bridge(
@@ -371,11 +439,13 @@ fn apply_cloud_runtime_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use futures::{SinkExt, StreamExt};
     use notebook_cloud_transport::{CloudAuth, CloudWsConfig};
     use notebook_doc::{NotebookDoc, TextEncoding};
+    use notebook_protocol::protocol::ExecutionIdRejectionReason;
     use runtime_doc::RuntimeStateDoc;
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::Message;
@@ -402,9 +472,15 @@ mod tests {
 
     impl FakeCloudRoom {
         fn new() -> Self {
+            Self::with_cells(&[("remote-1", "code", "print('from cloud')")])
+        }
+
+        fn with_cells(cells: &[(&str, &str, &str)]) -> Self {
             let mut nb = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, CLOUD_ROOM_ACTOR);
-            nb.add_cell(0, "remote-1", "code").unwrap();
-            nb.update_source("remote-1", "print('from cloud')").unwrap();
+            for (index, (cell_id, cell_type, source)) in cells.iter().enumerate() {
+                nb.add_cell(index, cell_id, cell_type).unwrap();
+                nb.update_source(cell_id, source).unwrap();
+            }
             let rt = RuntimeStateDoc::try_new_with_actor(CLOUD_ROOM_ACTOR).unwrap();
             Self {
                 nb,
@@ -428,6 +504,7 @@ mod tests {
         mut room: FakeCloudRoom,
         observed_cells: tokio::sync::watch::Sender<Vec<String>>,
         frame_counter: Arc<AtomicUsize>,
+        request_counter: Arc<AtomicUsize>,
     ) {
         let (stream, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
@@ -491,23 +568,57 @@ mod tests {
                     ));
                 }
             } else if frame_type == NotebookFrameType::Request as u8 {
+                request_counter.fetch_add(1, Ordering::SeqCst);
                 let request: serde_json::Value = serde_json::from_slice(payload).unwrap();
-                assert_eq!(
-                    request.get("action").and_then(|v| v.as_str()),
-                    Some("execute_cell")
-                );
-                let cell_id = request
-                    .get("cell_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap()
-                    .to_string();
-                let execution_id = format!("exec-{cell_id}");
-                room.rt.create_execution(&execution_id).unwrap();
-                if let Some(m) = room.rt.generate_sync_message(&mut room.rt_peer) {
-                    replies.push(encode_ws_frame(
-                        NotebookFrameType::RuntimeStateSync,
-                        &m.encode(),
-                    ));
+                match request.get("action").and_then(|v| v.as_str()) {
+                    Some("execute_cell") | Some("execute_cell_guarded") => {
+                        let cell_id = request
+                            .get("cell_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap()
+                            .to_string();
+                        let execution_id = request
+                            .get("execution_id")
+                            .and_then(|v| v.as_str())
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| format!("exec-{cell_id}"));
+                        room.rt.create_execution(&execution_id).unwrap();
+                        if let Some(m) = room.rt.generate_sync_message(&mut room.rt_peer) {
+                            replies.push(encode_ws_frame(
+                                NotebookFrameType::RuntimeStateSync,
+                                &m.encode(),
+                            ));
+                        }
+                    }
+                    Some("run_all_cells") | Some("run_all_cells_guarded") => {
+                        let cell_execution_ids: HashMap<String, String> = serde_json::from_value(
+                            request
+                                .get("cell_execution_ids")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!({})),
+                        )
+                        .unwrap();
+                        for execution_id in cell_execution_ids.values() {
+                            room.rt.create_execution(execution_id).unwrap();
+                        }
+                        if let Some(m) = room.rt.generate_sync_message(&mut room.rt_peer) {
+                            replies.push(encode_ws_frame(
+                                NotebookFrameType::RuntimeStateSync,
+                                &m.encode(),
+                            ));
+                        }
+                    }
+                    Some("interrupt_execution") | Some("send_comm") => {
+                        let accepted = serde_json::to_vec(&serde_json::json!({
+                            "type": "cloud_frame_accepted",
+                        }))
+                        .unwrap();
+                        replies.push(encode_ws_frame(
+                            NotebookFrameType::SessionControl,
+                            &accepted,
+                        ));
+                    }
+                    action => panic!("unexpected fake room request action: {action:?}"),
                 }
             }
             for reply in replies {
@@ -530,7 +641,15 @@ mod tests {
     async fn start_bridge(
         room: &Arc<NotebookRoom>,
         addr: std::net::SocketAddr,
-    ) -> HostedBridgeHandle {
+    ) -> Arc<HostedBridgeHandle> {
+        start_bridge_with_options(room, addr, HostedBridgeOptions::default()).await
+    }
+
+    async fn start_bridge_with_options(
+        room: &Arc<NotebookRoom>,
+        addr: std::net::SocketAddr,
+        options: HostedBridgeOptions,
+    ) -> Arc<HostedBridgeHandle> {
         let transport = CloudWsFrameTransport::new(CloudWsConfig {
             cloud_url: format!("http://{addr}"),
             notebook_id: "hosted-test".to_string(),
@@ -542,13 +661,14 @@ mod tests {
             workstation: None,
         });
         let guard = ReservationGuard::new(room.clone());
-        spawn_hosted_bridge(
+        Arc::new(spawn_hosted_bridge(
             room.clone(),
             transport,
             "https://cloud.test/n/hosted-test".to_string(),
             "hosted-test".to_string(),
             guard,
-        )
+            options,
+        ))
     }
 
     async fn wait_until<F>(what: &str, mut check: F)
@@ -573,11 +693,13 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let (cells_tx, mut cells_rx) = tokio::sync::watch::channel(Vec::new());
         let frames = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(AtomicUsize::new(0));
         let server = tokio::spawn(serve_fake_cloud_room(
             listener,
             FakeCloudRoom::new(),
             cells_tx,
             frames.clone(),
+            requests,
         ));
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -643,11 +765,13 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let (cells_tx, _cells_rx) = tokio::sync::watch::channel(Vec::new());
         let frames = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(AtomicUsize::new(0));
         let server = tokio::spawn(serve_fake_cloud_room(
             listener,
             FakeCloudRoom::new(),
             cells_tx,
             frames,
+            requests,
         ));
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -678,6 +802,398 @@ mod tests {
                     .read(|sd| sd.read_state().executions.contains_key("exec-remote-1"))
                     .unwrap_or(false)
             })
+        })
+        .await;
+
+        bridge.shutdown();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn idle_on_idle_fires() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = test_room(&tmp);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let bridge = start_bridge_with_options(
+            &room,
+            addr,
+            HostedBridgeOptions {
+                idle_after: Duration::from_millis(200),
+                on_idle: Some(Arc::new(move || {
+                    let _ = tx.send(());
+                })),
+            },
+        )
+        .await;
+
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("idle signal timed out")
+            .expect("idle signal channel closed");
+
+        bridge.shutdown();
+    }
+
+    #[tokio::test]
+    async fn idle_on_idle_does_not_fire_while_peer_attached() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = test_room(&tmp);
+        room.connections
+            .active_peers
+            .fetch_add(1, Ordering::Relaxed);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let bridge = start_bridge_with_options(
+            &room,
+            addr,
+            HostedBridgeOptions {
+                idle_after: Duration::from_millis(200),
+                on_idle: Some(Arc::new(move || {
+                    let _ = tx.send(());
+                })),
+            },
+        )
+        .await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .is_err(),
+            "idle signal fired while a peer was attached"
+        );
+
+        bridge.shutdown();
+        room.connections
+            .active_peers
+            .fetch_sub(1, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn idle_on_idle_fires_once_per_idle_span() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = test_room(&tmp);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let bridge = start_bridge_with_options(
+            &room,
+            addr,
+            HostedBridgeOptions {
+                idle_after: Duration::from_millis(200),
+                on_idle: Some(Arc::new(move || {
+                    let _ = tx.send(());
+                })),
+            },
+        )
+        .await;
+
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("first idle signal timed out")
+            .expect("idle signal channel closed");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .is_err(),
+            "idle signal fired more than once in one idle span"
+        );
+
+        bridge.shutdown();
+    }
+
+    fn test_daemon(tmp: &tempfile::TempDir) -> Arc<crate::daemon::Daemon> {
+        #[cfg(windows)]
+        let socket_path = {
+            let unique = tmp.path().file_name().unwrap_or_default().to_string_lossy();
+            std::path::PathBuf::from(format!(r"\\.\pipe\runtimed-hosted-bridge-{unique}"))
+        };
+        #[cfg(not(windows))]
+        let socket_path = tmp.path().join("hosted-bridge-test.sock");
+
+        crate::daemon::Daemon::new_for_test(crate::daemon::DaemonConfig {
+            socket_path,
+            cache_dir: tmp.path().join("envs"),
+            blob_store_dir: tmp.path().join("daemon-blobs"),
+            execution_store_dir: tmp.path().join("executions"),
+            notebook_docs_dir: tmp.path().join("daemon-notebook-docs"),
+            trusted_packages_db_path: tmp.path().join("trusted-packages.sqlite"),
+            notebook_registry_db_path: tmp.path().join("notebook-registry.sqlite"),
+            uv_pool_size: 0,
+            conda_pool_size: 0,
+            max_age_secs: 3600,
+            lock_dir: Some(tmp.path().to_path_buf()),
+            use_preferred_blob_port: false,
+            settings_json_path: Some(tmp.path().join("settings.json")),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    async fn register_bridge(
+        daemon: &Arc<crate::daemon::Daemon>,
+        bridge: &Arc<HostedBridgeHandle>,
+    ) {
+        daemon
+            .hosted_bridges
+            .lock()
+            .await
+            .insert(bridge.locator.clone(), bridge.clone());
+    }
+
+    #[tokio::test]
+    async fn hosted_execute_request_returns_cell_queued_and_syncs_back() {
+        use crate::protocol::{NotebookRequest, NotebookResponse};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (cells_tx, _cells_rx) = tokio::sync::watch::channel(Vec::new());
+        let frames = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server = tokio::spawn(serve_fake_cloud_room(
+            listener,
+            FakeCloudRoom::new(),
+            cells_tx,
+            frames,
+            requests.clone(),
+        ));
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = test_room(&tmp);
+        let bridge = start_bridge(&room, addr).await;
+        bridge
+            .wait_for_principal(Duration::from_secs(10))
+            .await
+            .expect("bridge principal");
+        let daemon = test_daemon(&tmp);
+        register_bridge(&daemon, &bridge).await;
+
+        // Daemon-minted execution id: response is CellQueued with a UUID, and
+        // the cloud room creates exactly that execution.
+        let response = crate::requests::handle_notebook_request(
+            &room,
+            NotebookRequest::ExecuteCell {
+                cell_id: "remote-1".to_string(),
+                execution_id: None,
+            },
+            daemon.clone(),
+            None,
+        )
+        .await;
+        let NotebookResponse::CellQueued {
+            cell_id,
+            execution_id,
+        } = response
+        else {
+            panic!("expected CellQueued, got {response:?}");
+        };
+        assert_eq!(cell_id, "remote-1");
+        uuid::Uuid::parse_str(&execution_id).expect("minted execution id is a UUID");
+        let room_for_wait = room.clone();
+        let expected = execution_id.clone();
+        wait_until("minted execution to sync back from the cloud", move || {
+            let room = room_for_wait.clone();
+            let expected = expected.clone();
+            Box::pin(async move {
+                room.state
+                    .read(|sd| sd.read_state().executions.contains_key(&expected))
+                    .unwrap_or(false)
+            })
+        })
+        .await;
+
+        // Caller-supplied valid id is echoed back verbatim.
+        let supplied = uuid::Uuid::new_v4().to_string();
+        let response = crate::requests::handle_notebook_request(
+            &room,
+            NotebookRequest::ExecuteCell {
+                cell_id: "remote-1".to_string(),
+                execution_id: Some(supplied.clone()),
+            },
+            daemon.clone(),
+            None,
+        )
+        .await;
+        match response {
+            NotebookResponse::CellQueued { execution_id, .. } => {
+                assert_eq!(execution_id, supplied);
+            }
+            other => panic!("expected CellQueued, got {other:?}"),
+        }
+
+        // The supplied-id forward is async; let it land before sampling the
+        // request counter for the negative assertion below.
+        let requests_for_wait = requests.clone();
+        wait_until("supplied-id execute to reach the cloud room", move || {
+            let requests = requests_for_wait.clone();
+            Box::pin(async move { requests.load(Ordering::SeqCst) >= 2 })
+        })
+        .await;
+
+        // Malformed id is rejected locally without contacting the cloud room.
+        let requests_before = requests.load(Ordering::SeqCst);
+        let response = crate::requests::handle_notebook_request(
+            &room,
+            NotebookRequest::ExecuteCell {
+                cell_id: "remote-1".to_string(),
+                execution_id: Some("not-a-uuid".to_string()),
+            },
+            daemon.clone(),
+            None,
+        )
+        .await;
+        match response {
+            NotebookResponse::ExecutionIdRejected { reason, .. } => {
+                assert_eq!(reason, ExecutionIdRejectionReason::Malformed);
+            }
+            other => panic!("expected ExecutionIdRejected, got {other:?}"),
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            requests_before,
+            "malformed execution id must not reach the cloud room"
+        );
+
+        bridge.shutdown();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn hosted_run_all_request_queues_exactly_the_code_cells() {
+        use crate::protocol::{NotebookRequest, NotebookResponse};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (cells_tx, _cells_rx) = tokio::sync::watch::channel(Vec::new());
+        let frames = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server = tokio::spawn(serve_fake_cloud_room(
+            listener,
+            FakeCloudRoom::with_cells(&[
+                ("c1", "code", "x = 1"),
+                ("m1", "markdown", "# heading"),
+                ("c2", "code", "y = 2"),
+            ]),
+            cells_tx,
+            frames,
+            requests.clone(),
+        ));
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = test_room(&tmp);
+        let bridge = start_bridge(&room, addr).await;
+        bridge
+            .wait_for_principal(Duration::from_secs(10))
+            .await
+            .expect("bridge principal");
+        let daemon = test_daemon(&tmp);
+        register_bridge(&daemon, &bridge).await;
+
+        // The run-all handler reads code cells from the bridged room doc, so
+        // the cloud content must have converged first.
+        let room_for_wait = room.clone();
+        wait_until("cloud cells to reach the local room", move || {
+            let room = room_for_wait.clone();
+            Box::pin(async move {
+                let ids = room.doc.read().await.get_cell_ids();
+                ids.contains(&"c1".to_string()) && ids.contains(&"c2".to_string())
+            })
+        })
+        .await;
+
+        let response = crate::requests::handle_notebook_request(
+            &room,
+            NotebookRequest::RunAllCells {
+                cell_execution_ids: None,
+            },
+            daemon.clone(),
+            None,
+        )
+        .await;
+        let NotebookResponse::AllCellsQueued { queued } = response else {
+            panic!("expected AllCellsQueued, got {response:?}");
+        };
+        let queued_cells: Vec<&str> = queued.iter().map(|e| e.cell_id.as_str()).collect();
+        assert_eq!(
+            queued_cells,
+            vec!["c1", "c2"],
+            "exactly the code cells, in document order"
+        );
+        for entry in &queued {
+            uuid::Uuid::parse_str(&entry.execution_id).expect("minted execution id is a UUID");
+        }
+
+        let expected: Vec<String> = queued.iter().map(|e| e.execution_id.clone()).collect();
+        let room_for_wait = room.clone();
+        wait_until("run-all executions to sync back", move || {
+            let room = room_for_wait.clone();
+            let expected = expected.clone();
+            Box::pin(async move {
+                room.state
+                    .read(|sd| {
+                        let state = sd.read_state();
+                        expected.iter().all(|id| state.executions.contains_key(id))
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .await;
+
+        bridge.shutdown();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn hosted_interrupt_request_forwards_and_acks() {
+        use crate::protocol::{NotebookRequest, NotebookResponse};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (cells_tx, _cells_rx) = tokio::sync::watch::channel(Vec::new());
+        let frames = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server = tokio::spawn(serve_fake_cloud_room(
+            listener,
+            FakeCloudRoom::new(),
+            cells_tx,
+            frames,
+            requests.clone(),
+        ));
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = test_room(&tmp);
+        let bridge = start_bridge(&room, addr).await;
+        bridge
+            .wait_for_principal(Duration::from_secs(10))
+            .await
+            .expect("bridge principal");
+        let daemon = test_daemon(&tmp);
+        register_bridge(&daemon, &bridge).await;
+
+        let response = crate::requests::handle_notebook_request(
+            &room,
+            NotebookRequest::InterruptExecution {},
+            daemon.clone(),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(response, NotebookResponse::InterruptSent {}),
+            "expected InterruptSent, got {response:?}"
+        );
+        let requests_for_wait = requests.clone();
+        wait_until("interrupt request to reach the cloud room", move || {
+            let requests = requests_for_wait.clone();
+            Box::pin(async move { requests.load(Ordering::SeqCst) >= 1 })
         })
         .await;
 
