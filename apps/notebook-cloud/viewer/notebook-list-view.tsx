@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   ArrowUpRight,
   BookOpen,
-  FilePlus2,
   Loader2,
   LogOut,
+  Plus,
   RotateCcw,
+  Search,
   Sparkles,
+  X,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useTheme } from "@/hooks/useTheme";
 import {
   clearCloudPrototypeDevAuth,
@@ -17,7 +21,10 @@ import {
 } from "./collaborator-auth";
 import { cloudResponseError } from "./cloud-response";
 import { clearCloudAppSession, establishCloudAppSession } from "./app-session";
-import { CloudNotebookDashboard } from "./cloud-notebook-dashboard-view";
+import {
+  CloudNotebookDashboard,
+  CloudNotebookDashboardSearchInput,
+} from "./cloud-notebook-dashboard-view";
 import { projectHostedCatalogAuthState } from "./hosted-catalog-auth";
 import { loadCloudNotebookListBootstrap } from "./cloud-viewer-config";
 import type { CloudAppSession } from "./app-session";
@@ -74,6 +81,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   const [createError, setCreateError] = useState<string | null>(null);
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [createTitle, setCreateTitle] = useState(() => defaultCloudNotebookTitle());
+  const [dashboardQuery, setDashboardQuery] = useState("");
   const [renameState, setRenameState] = useState<CloudNotebookRenameState | null>(null);
   const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -309,6 +317,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
 
   const signOut = () => {
     setBootstrap(null);
+    setDashboardQuery("");
     appSessionStatus.clearAppSessionStatus();
     clearCachedCloudNotebookListFromWindow();
     void clearCloudAppSession()
@@ -321,36 +330,59 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   };
 
   const headerDetail = cloudNotebookListHeaderDetail(authState, hasAppSession, authConfig);
+  const currentUserInitials = cloudNotebookListCurrentUserInitials(authState);
 
   return (
-    <main className="cloud-notebook-list-page">
-      <header className="cloud-notebook-list-header">
-        <div>
-          <a className="cloud-notebook-list-brand" href="/n">
-            nteract
+    <main className="cloud-notebook-list-page nb-app">
+      <header className="nb-header">
+        <div className="nb-header-inner">
+          <a className="nb-brand" href="/n">
+            <span className="nb-brand-mark" aria-hidden="true" />
+            <span className="nb-brand-name">nteract</span>
+            <span className="nb-brand-sep">/</span>
+            <span className="nb-brand-scope">{headerDetail}</span>
           </a>
-          <h1>Notebooks</h1>
-          <p>{headerDetail}</p>
-        </div>
-        <div className="cloud-notebook-list-actions">
+          <span className="nb-header-spacer" />
           {signedIn ? (
             <>
-              <button type="button" disabled={listState.kind === "loading"} onClick={refreshList}>
-                <RotateCcw aria-hidden="true" />
-                Refresh
-              </button>
-              <button type="button" disabled={createState === "starting"} onClick={openCreateForm}>
-                {createState === "starting" ? (
-                  <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
-                ) : (
-                  <FilePlus2 aria-hidden="true" />
-                )}
-                {createState === "starting" ? "Creating" : "New notebook"}
-              </button>
-              <button type="button" onClick={signOut}>
-                <LogOut aria-hidden="true" />
-                Sign out
-              </button>
+              <label className="nb-search">
+                <Search aria-hidden="true" />
+                <CloudNotebookDashboardSearchInput
+                  query={dashboardQuery}
+                  disabled={listState.kind !== "ready"}
+                  onQueryChange={setDashboardQuery}
+                />
+              </label>
+              <div className="nb-header-actions">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={listState.kind === "loading"}
+                  onClick={refreshList}
+                >
+                  <RotateCcw aria-hidden="true" />
+                  Refresh
+                </Button>
+                <Button
+                  type="button"
+                  disabled={createState === "starting"}
+                  onClick={openCreateForm}
+                >
+                  {createState === "starting" ? (
+                    <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+                  ) : (
+                    <Plus aria-hidden="true" />
+                  )}
+                  {createState === "starting" ? "Creating" : "New notebook"}
+                </Button>
+                <Button type="button" variant="ghost" onClick={signOut}>
+                  <LogOut aria-hidden="true" />
+                  Sign out
+                </Button>
+                <span className="nb-avatar-me" title={headerDetail}>
+                  {currentUserInitials}
+                </span>
+              </div>
             </>
           ) : null}
         </div>
@@ -365,39 +397,20 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
           {authRenewal.message}
         </div>
       ) : null}
-      {createError ? (
-        <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
-          {createError}
-        </div>
-      ) : null}
       {renameError ? (
         <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
           {renameError}
         </div>
       ) : null}
       {createFormOpen ? (
-        <form className="cloud-new-notebook-form" onSubmit={createNotebook}>
-          <label htmlFor="cloud-new-notebook-title">Notebook title</label>
-          <input
-            id="cloud-new-notebook-title"
-            type="text"
-            value={createTitle}
-            maxLength={160}
-            disabled={createState === "starting"}
-            onChange={(event) => setCreateTitle(event.currentTarget.value)}
-          />
-          <button type="submit" disabled={createState === "starting"}>
-            {createState === "starting" ? (
-              <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
-            ) : (
-              <FilePlus2 aria-hidden="true" />
-            )}
-            Create
-          </button>
-          <button type="button" disabled={createState === "starting"} onClick={closeCreateForm}>
-            Cancel
-          </button>
-        </form>
+        <CloudNotebookCreateDialog
+          title={createTitle}
+          createState={createState}
+          error={createError}
+          onClose={closeCreateForm}
+          onCreate={createNotebook}
+          onTitleChange={setCreateTitle}
+        />
       ) : null}
 
       <section className="cloud-notebook-list-content" aria-label="Notebook list">
@@ -414,19 +427,18 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
             <span>{listState.message}</span>
           </div>
         ) : listState.notebooks.length === 0 ? (
-          <div className="cloud-notebook-list-state" data-kind="empty">
-            <BookOpen aria-hidden="true" />
-            <span>No notebooks yet.</span>
-          </div>
+          <CloudNotebookListEmptyState signedIn={signedIn} onNewNotebook={openCreateForm} />
         ) : dashboardModel ? (
           <CloudNotebookDashboard
             model={dashboardModel}
             canRename={signedIn}
+            query={dashboardQuery}
             renameState={renameState}
             renameSavingId={renameSavingId}
             onOpenNotebookIntent={preloadNotebookRoute}
             onOpenRename={openRenameForm}
             onCancelRename={closeRenameForm}
+            onQueryChange={setDashboardQuery}
             onRenameTitleChange={(title) =>
               setRenameState((current) => (current ? { ...current, title } : current))
             }
@@ -478,6 +490,126 @@ function CloudNotebookSignedOutPanel({
   );
 }
 
+function CloudNotebookCreateDialog({
+  title,
+  createState,
+  error,
+  onClose,
+  onCreate,
+  onTitleChange,
+}: {
+  title: string;
+  createState: "idle" | "starting";
+  error: string | null;
+  onClose: () => void;
+  onCreate: (event: FormEvent<HTMLFormElement>) => void;
+  onTitleChange: (title: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="nb-overlay" onMouseDown={onClose}>
+      <form
+        className="nb-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cloud-new-notebook-dialog-title"
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={onCreate}
+      >
+        <div className="nb-dialog-head">
+          <h2 id="cloud-new-notebook-dialog-title">New notebook</h2>
+          <button
+            type="button"
+            className="nb-dialog-x"
+            disabled={createState === "starting"}
+            aria-label="Close"
+            onClick={onClose}
+          >
+            <X aria-hidden="true" />
+          </button>
+        </div>
+        <div className="nb-dialog-body">
+          <div className="nb-field">
+            <label htmlFor="cloud-new-notebook-title">Title</label>
+            <Input
+              ref={inputRef}
+              id="cloud-new-notebook-title"
+              type="text"
+              value={title}
+              maxLength={160}
+              disabled={createState === "starting"}
+              placeholder="Untitled notebook"
+              onChange={(event) => onTitleChange(event.currentTarget.value)}
+            />
+          </div>
+          {error ? (
+            <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
+              {error}
+            </div>
+          ) : null}
+        </div>
+        <div className="nb-dialog-foot">
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={createState === "starting"}
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+          <Button type="submit" disabled={createState === "starting"}>
+            {createState === "starting" ? (
+              <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+            ) : (
+              <Plus aria-hidden="true" />
+            )}
+            {createState === "starting" ? "Creating" : "Create"}
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function CloudNotebookListEmptyState({
+  signedIn,
+  onNewNotebook,
+}: {
+  signedIn: boolean;
+  onNewNotebook: () => void;
+}) {
+  return (
+    <div className="nb-empty">
+      <span className="nb-empty-badge">
+        <BookOpen aria-hidden="true" />
+      </span>
+      <h2>No notebooks yet</h2>
+      <p>Create a notebook to start working with a live document and attach compute when needed.</p>
+      {signedIn ? (
+        <Button type="button" onClick={onNewNotebook}>
+          <Plus aria-hidden="true" />
+          New notebook
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function cloudNotebookListHeaderDetail(
   authState: CloudPrototypeAuthState,
   hasAppSession: boolean,
@@ -494,6 +626,24 @@ function cloudNotebookListHeaderDetail(
   }
   const firstName = cloudNotebookListFirstName(authState);
   return firstName ? `by ${firstName}` : "Signed in";
+}
+
+function cloudNotebookListCurrentUserInitials(authState: CloudPrototypeAuthState): string {
+  const label =
+    authState.oidcClaims?.name?.trim() ||
+    authState.oidcClaims?.email?.trim() ||
+    (authState.mode === "dev" ? authState.user?.trim() : "") ||
+    "You";
+  const parts = label
+    .replace(/[_+.-]+/gu, " ")
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+  const initials =
+    parts.length >= 2
+      ? `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`
+      : (parts[0]?.slice(0, 2) ?? "YO");
+  return initials.toUpperCase();
 }
 
 function cloudNotebookListFirstName(authState: CloudPrototypeAuthState): string | null {

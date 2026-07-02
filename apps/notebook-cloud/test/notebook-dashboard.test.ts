@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  cloudNotebookDashboardRuntimeStatus,
   cloudNotebookDashboardOpenUrl,
   cloudNotebookDisplayTitle,
   cloudNotebookOpenUrlWithMode,
@@ -42,6 +43,9 @@ describe("cloud notebook dashboard projection", () => {
       facts: [],
       identityLabel: null,
       notebook: newOwner,
+      ownerInitials: "AL",
+      ownerLabel: "alice",
+      runtimeStatus: "none",
     });
     assert.deepEqual(
       model.notebooks.map((item) => item.notebook_id),
@@ -677,6 +681,8 @@ describe("cloud notebook dashboard projection", () => {
         tone: "active",
       },
     ]);
+    assert.equal(model.continueRow?.environmentLabel, "Current Python");
+    assert.equal(model.continueRow?.runtimeStatus, "executing");
     assert.deepEqual(
       computeView.sections.map((section) => [
         section.id,
@@ -684,6 +690,63 @@ describe("cloud notebook dashboard projection", () => {
         section.notebooks.map((item) => item.notebook_id),
       ]),
       [["compute", "Active compute", ["topic-viz"]]],
+    );
+  });
+
+  it("maps compute session status to dashboard runtime status", () => {
+    const base = {
+      id: "runtime-status",
+      title: "Runtime status",
+      scope: "owner" as const,
+      updatedAt: "2026-06-23T00:00:00.000Z",
+      latestRevisionId: null,
+    };
+    const computeSession = {
+      environment_label: "Current Python",
+      last_runtime_seen_at: "2026-06-23T00:00:00.000Z",
+      notebook_id: "runtime-status",
+      owner_principal: "user:dev:alice",
+      queue_depth: 0,
+      runtime_peer_count: 1,
+      runtime_session_id: "job-1",
+      status: "active" as const,
+      status_message: null,
+      updated_at: "2026-06-23T00:00:00.000Z",
+      working_directory: "/home/ubuntu/project",
+      workstation_display_name: "lab2 workstation",
+      workstation_id: "ws-lab2",
+    };
+
+    assert.equal(cloudNotebookDashboardRuntimeStatus(notebook(base)), "none");
+    assert.equal(
+      cloudNotebookDashboardRuntimeStatus(
+        notebook({ ...base, computeSession: { ...computeSession, status: "starting" } }),
+      ),
+      "starting",
+    );
+    assert.equal(
+      cloudNotebookDashboardRuntimeStatus(
+        notebook({ ...base, computeSession: { ...computeSession, status: "stale" } }),
+      ),
+      "stale",
+    );
+    assert.equal(
+      cloudNotebookDashboardRuntimeStatus(
+        notebook({ ...base, computeSession: { ...computeSession, status: "error" } }),
+      ),
+      "error",
+    );
+    assert.equal(
+      cloudNotebookDashboardRuntimeStatus(
+        notebook({ ...base, computeSession: { ...computeSession, queue_depth: 0 } }),
+      ),
+      "ready",
+    );
+    assert.equal(
+      cloudNotebookDashboardRuntimeStatus(
+        notebook({ ...base, computeSession: { ...computeSession, queue_depth: 2 } }),
+      ),
+      "executing",
     );
   });
 });
