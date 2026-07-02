@@ -1,6 +1,6 @@
 # Tokio Mutex Discipline and the Concurrency-Invariant Family
 
-**Status:** Draft, 2026-05-22.
+**Status:** Accepted, 2026-05-22.
 
 ## Context
 

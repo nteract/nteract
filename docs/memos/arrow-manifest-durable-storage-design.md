@@ -1,17 +1,17 @@
 # Arrow Manifest Durable Storage Design
 
-**Status:** Exploration.
+**Status:** Implemented, 2026-05-24 — save/load transforms, active-room GC,
+and characterization coverage landed; closed-room asset index remains open.
 
 ## Objective
 
 PR #2658 made Arrow stream manifests renderable and added complete multi-chunk
-automatic `pyarrow.Table` output for oversized tables. This follow-up defines
-and tests the saved-notebook durability contract for those manifests.
+automatic `pyarrow.Table` output for oversized tables. This memo defined and
+tested the saved-notebook durability contract for those manifests.
 
-The goal is not to build direct daemon upload, coalesced artifacts, or
-viewport-driven fetch. The goal is to make it unambiguous how an Arrow stream
-manifest survives save, close, blob GC, and reopen when the chunk bytes already
-exist in the daemon blob store.
+The implementation built save/load transforms and active-room GC but did not
+cover direct daemon upload, coalesced artifacts, or viewport-driven fetch.
+The closed-room output asset index remains an open gap.
 
 ## Current State
 
@@ -107,110 +107,87 @@ The runtime/render shape keeps `hash` as a string. The saved form is only for
 `.ipynb` JSON and only at the save/load boundary. Frontend and Sift renderer
 code should not need to handle the durable shape in normal live output state.
 
-## Save Transform
+## Save Transform (Implemented)
 
-`resolve_data_bundle()` should keep its existing single-blob behavior for
-direct Arrow IPC and parquet MIME entries. For
-`application/vnd.nteract.arrow-stream-manifest+json`, it should parse the
-manifest JSON and walk only the known manifest ref slots.
+`resolve_data_bundle()` keeps its existing single-blob behavior for direct
+Arrow IPC and parquet MIME entries. For
+`application/vnd.nteract.arrow-stream-manifest+json`, it parses the manifest
+JSON and walks known manifest ref slots
+(`crates/runtimed/src/output_store.rs:1351`).
 
-For each slot, save should:
+For each slot, save:
 
-1. Require a string `hash`.
-2. Determine the expected content type from the slot.
-3. Determine `size` from the slot when present, or from blob metadata if the
+1. Requires a string `hash`.
+2. Determines the expected content type from the slot.
+3. Determines `size` from the slot when present, or from blob metadata if the
    slot omits it.
-4. Verify the hash exists in the blob store before writing the durable ref.
-5. Replace the string hash with `{ blob, size, content_type }`.
+4. Verifies the hash exists in the blob store before writing the durable ref.
+5. Replaces the string hash with `{ blob, size, content_type }`.
 
-If a referenced blob is missing, save should not silently produce a durable
-manifest that looks complete. The smallest acceptable behavior for this first
-PR is to return an error from `resolve_manifest()` so the save call can surface
-the same class of "output could not be resolved" failure it already uses for
-missing blobs. A future UX pass can add a more specific user-facing diagnostic.
-
-The transform must preserve all non-ref manifest fields exactly: row counts,
+If a referenced blob is missing, save returns an error so the save call
+surfaces the same "output could not be resolved" failure it uses for missing
+blobs. The transform preserves all non-ref manifest fields: row counts,
 record-batch counts, summary, completion state, abort state, encoding, table
 hints, and unknown future fields.
 
-## Load Transform
+## Load Transform (Implemented)
 
-`convert_data_bundle()` should keep its existing top-level
+`convert_data_bundle()` keeps its existing top-level
 `application/vnd.nteract.blob-ref+json` handling. For
-`application/vnd.nteract.arrow-stream-manifest+json`, it should parse the JSON
-manifest and reverse only the known durable ref slots.
+`application/vnd.nteract.arrow-stream-manifest+json`, it parses the JSON
+manifest and reverses known durable ref slots
+(`crates/runtimed/src/output_store.rs:1201`).
 
-For each durable slot, load should:
+For each durable slot, load:
 
-1. Require `{ blob: string, size: number }`.
-2. Preserve or restore `content_type`.
-3. Check that the blob exists in the local blob store.
-4. Convert back to runtime shape with `hash: blob`, `size`, and
+1. Requires `{ blob: string, size: number }`.
+2. Preserves or restores `content_type`.
+3. Checks that the blob exists in the local blob store.
+4. Converts back to runtime shape with `hash: blob`, `size`, and
    `content_type`.
 
-If the blob is missing, load should keep the manifest structurally intact but
-mark the manifest as unusable rather than pretending the table is complete. For
-the test-focused PR, use the existing safe fallback behavior: drop only the
-manifest MIME from the loaded data bundle and preserve fallback siblings such
-as `text/plain` / `text/llm+plain`. A later renderer UX pass can replace that
-with a manifest-level diagnostic field. Silent fallback to a partial table is
-not acceptable.
+If the blob is missing, load keeps the manifest structurally intact but marks
+it unusable: drops only the manifest MIME from the loaded data bundle and
+preserves fallback siblings such as `text/plain` / `text/llm+plain`. A later
+renderer UX pass can add a manifest-level diagnostic field.
 
-## GC Contract
+## GC Contract (Active Rooms: Implemented)
 
-The awkward part is retention. It has two separate cases:
+Retention has two separate cases:
 
-1. **Active rooms.** RuntimeStateDoc outputs exist in memory. The GC walker can
-   inspect those output manifests, but Arrow manifest chunk hashes are nested
-   inside JSON payloads rather than top-level `ContentRef::Blob` fields.
-2. **Closed file-backed rooms.** RuntimeStateDoc outputs are not persisted into
-   `NotebookDoc`. Saved `.ipynb` files contain output JSON, but the current GC
-   walker scans active rooms, comm state, notebook-doc persisted `.automerge`
-   files, and execution records. It does not generally scan arbitrary saved
-   `.ipynb` files for output blob refs.
+1. **Active rooms (implemented).** RuntimeStateDoc outputs exist in memory. The
+   GC walker inspects those output manifests and collects Arrow manifest chunk
+   hashes nested inside JSON payloads (`crates/runtimed/src/daemon.rs:5157-5187`).
+   `arrow_manifest_blob_hash` extracts manifest blob hashes from outputs, then
+   `collect_arrow_manifest_blob_hashes` resolves each manifest and walks its
+   chunk/coalesced refs.
+
+2. **Closed file-backed rooms (open gap).** RuntimeStateDoc outputs are not
+   persisted into `NotebookDoc`. Saved `.ipynb` files contain output JSON, but
+   the GC walker scans active rooms, comm state, notebook-doc persisted
+   `.automerge` files, and execution records — not arbitrary saved `.ipynb`
+   files for output blob refs.
 
 The durable JSON shape helps because `{ blob, size, content_type }` is
-self-describing and can be collected recursively once it is inside a structure
-the daemon actually scans. It does not, by itself, make closed file-backed
-notebook outputs GC-safe forever.
+self-describing and can be collected recursively once inside a structure the
+daemon scans. Active-room GC is manifest-aware; closed-room GC needs a
+notebook-owned output asset index for stronger retention than the existing
+orphan grace period.
 
-The first implementation should therefore make two contracts explicit:
-
-- Active-room GC must be manifest-aware enough to collect live
-  `chunks[].hash` / `coalesced.*.hash` refs from selected Arrow manifest MIME
-  payloads. If the manifest JSON itself is blob-backed, the collector either
-  needs blob-store access to resolve it, or an already-derived asset list.
-- Closed-room GC needs a notebook-owned output asset index if we want stronger
-  retention than the existing orphan grace period. The index should be written
-  at save time from the resolved `.ipynb` outputs and stored in a document-owned
-  structure GC already scans, or in a new persisted sidecar with equivalent
-  retention semantics.
-
-The recommended long-term shape is a dedicated output asset index, not an
-overload of markdown `resolved_assets`. The index keys can be opaque but should
-be stable enough to replace on each successful save, for example:
+The recommended shape is a dedicated output asset index, not an overload of
+markdown `resolved_assets`. Index keys should be stable enough to replace on
+each successful save, for example:
 
 ```text
 outputs/<cell_id>/<output_id>/<mime>/<slot>
 ```
 
-The values are blob hashes. The index is for retention only; renderers should
-continue reading normal output manifests.
+Values are blob hashes. The index is for retention only; renderers continue
+reading normal output manifests.
 
-The focused tests should cover both paths without pretending the second path is
-already solved:
+## Test Coverage (Implemented)
 
-1. A runtime output manifest with a selected Arrow manifest MIME contributes
-   its nested chunk/coalesced blob refs to active-room GC collection.
-2. A characterization test documents that persisted NotebookDoc files do not
-   currently retain RuntimeStateDoc outputs after eviction. That test should
-   justify the output asset index rather than hiding the gap.
-3. A helper-level test proves recursive collection can find durable nested refs
-   once they are present in a scanned persisted structure.
-
-## Focused Tests
-
-Add tests before changing broad behavior:
+Tests added with the implementation:
 
 - `resolve_manifest` saves an Arrow stream manifest with two chunks using
   durable nested refs, not plain string hashes.
@@ -222,11 +199,12 @@ Add tests before changing broad behavior:
 - Missing chunk blob on load drops the Arrow manifest MIME and preserves
   fallback text siblings.
 - Recursive blob collection finds manifest `chunks` and `coalesced` refs in
-  both direct runtime shape and saved durable shape where applicable.
+  active rooms.
 - `schema.hash` stays a plain string fingerprint and is not treated as a blob
-  ref until schema bytes are actually stored.
-- A characterization test shows closed file-backed rooms need an output asset
-  index for GC-safe saved output blobs after RuntimeStateDoc outputs disappear.
+  ref.
+- A characterization test documents that closed file-backed rooms need an
+  output asset index for GC-safe saved output blobs after RuntimeStateDoc
+  outputs disappear.
 - Existing direct Arrow IPC/parquet blob-ref save/load tests keep passing.
 
 ## Non-Goals

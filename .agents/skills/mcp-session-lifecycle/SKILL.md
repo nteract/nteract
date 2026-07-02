@@ -172,11 +172,12 @@ not for the entire tool execution. `DocHandle` is cheaply cloneable
 | Notebook type | Identified by | Rejoin method | Eviction check |
 |--------------|---------------|---------------|----------------|
 | File-backed | Has file path | `connect_open(path)` | File exists on disk |
-| Ephemeral (untitled) | UUID only | `connect(uuid)` | `list_rooms` check |
+| Ephemeral (untitled) | UUID only | `connect(uuid)` | Daemon-authoritative refusal |
 
-**Ephemeral notebooks** get an explicit `list_rooms` check before rejoin.
-If the room was evicted during disconnect, we clear the session
-immediately instead of creating a phantom empty room.
+**Ephemeral notebooks** call `connect(uuid)` directly and trust the daemon's
+resident/recoverable-room handling. The daemon is authoritative about whether
+a notebook still exists — a refusal comes back as `NotebookUnavailable` and
+is handled as evicted with no retry. No pre-check `list_rooms` call.
 
 **File-backed notebooks** use `connect_open(path)` which lets the daemon
 reload from disk. The `.automerge` persist files for file-backed rooms

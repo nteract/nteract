@@ -96,7 +96,12 @@ corepack prepare pnpm@latest --activate
 
 ## 5. First build
 
-`cargo xtask dev` handles the full first-run sequence: installs pnpm dependencies, builds WASM artifacts, runs `uv sync`, builds Python bindings via `maturin develop`, compiles Rust, and starts the dev daemon and Vite dev server.
+`cargo xtask dev` handles the full first-run sequence: installs pnpm
+dependencies, runs `uv sync`, builds WASM artifacts and the MCP widget, compiles
+Rust sidecars, and starts the dev daemon and Vite dev server. Python bindings
+are no longer part of the default build (the MCP server is Rust-native). Agents
+iterating on `runtimed-py` should use `cargo xtask integration` (which runs
+`maturin develop`) or rebuild via the nteract-dev MCP (`up rebuild=true`).
 
 ```bash
 cargo xtask dev

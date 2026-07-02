@@ -5,38 +5,62 @@ description: Hosted notebook home, inventory precedence, workstation context, an
 
 import { CloudDashboardExample } from "@/components/cloud-dashboard-example";
 
-The hosted dashboard is app-level product chrome. It should help a signed-in
-user open the right room quickly without becoming another notebook shell,
-metrics board, or project-management surface.
+The hosted dashboard (`/n`) is app-level notebook inventory chrome. It helps a
+signed-in user open the right notebook quickly without becoming another
+notebook shell, metrics board, or project-management surface.
 
-This fixture keeps the notebook list search-first. The surrounding controls are
-only there to make a large inventory readable: pin important rooms, find recent
-activity, expose cleanup work, and summarize host-owned context.
+The shipped dashboard uses:
 
-The example below models three behaviors:
+- **Notebooks page head** with total count and active-now count.
+- **Header search input** for title filtering.
+- **Grouped filter chips**: "Notebook views" (All notebooks, Shared with me,
+  Active now) and "Cleanup" (Generated, Untitled).
+- **Continue hero** showing the most recent notebook with cover, runtime facts,
+  composition ticks, and a rich-detail cell strip (first markdown prose, last
+  code cell closing line with execution count, output thumbnail).
+- **Sections**: Recent work, Shared with me, Active now, Generated, Untitled —
+  each with counts, overflow actions, and inline rename affordances.
+- **Row details**: runtime language/environment label, composition ticks
+  (markdown/code/output counts), presence stack (active-now peer avatars),
+  owner display, and optional cell strip.
 
-- Search and filters refine the inventory by title, project, title-cleanup
-  state, and published state.
-- Pinned work and recent activity create precedence so real notebooks stay
-  ahead of smoke-test clutter.
-- Workstation and sharing summaries stay informational. Opening a notebook is
-  where execution, runtime state, and access management move into the notebook
-  shell.
+The catalog-summary pattern shipped in #3883, #3885, #3892, #3895. The old
+search-first, pinned/recent design was replaced; pinned-first behavior is no
+longer a filter.
 
 <CloudDashboardExample />
 
 ## Surface contract
 
-- `/n` should feel like a notebook switcher first.
-- Search is the first action; filters refine inventory rather than becoming a
-  separate task queue.
-- Pinned and recently active notebooks stay above generated testing noise.
-- Untitled and smoke-test rooms remain visible for cleanup, but they should not
-  dominate the scan path.
-- Workstation readiness is host-owned context. It can summarize a selected
-  default target without owning notebook execution controls.
-- Sharing facts are safe host metadata. Private notebooks should not leak
-  content through previews; public previews require explicit published revision
-  data.
-- Opening a room hands off to the shared document shell, rail, toolbar, and
+- `/n` is a notebook switcher first.
+- Search filters by title; filter chips refine by work type and cleanup state.
+- Recent-work section prioritizes named notebooks above generated testing noise.
+- Untitled and generated notebooks remain visible for cleanup but do not
+  dominate the scan path (limited to secondary-section caps).
+- Workstation and runtime facts are host-owned context. The dashboard
+  summarizes compute and environment state without owning notebook execution
+  controls.
+- Sharing facts are safe host metadata. Private notebooks do not leak content
+  through previews; public previews require explicit published revision data.
+- Opening a notebook hands off to the shared document shell, rail, toolbar, and
   cell/output surfaces.
+
+## Loading, identity, and presence
+
+- **Bootstrap/cache seeding**: The dashboard seeds ready state from bootstrap
+  and cache responses (`notebook-list-view.tsx`) and preserves loading
+  resilience during app-session waiting, timeout, and retry states.
+- **Unified identity**: The model carries `current_user_display` for the
+  current user (`cloud-viewer-types.ts:28`) and `owner_display` for notebook
+  owners (`notebook-dashboard.ts:16`). Owner labels project from principal
+  profiles (`notebook-dashboard.ts:718`).
+- **Presence and active-now**: The model includes `peers`
+  (`notebook-dashboard.ts:22`) and projects active-now presence from room
+  summaries (`src/index.ts:1321`). The active-now filter and section surface
+  notebooks with live collaborators.
+
+## Covers and OG images
+
+Dashboard rows may show derived notebook covers from output embeds. Public OG
+images are revision-aware: latest OG images are withheld from pinned revision
+shells (commit 739fad72, #3889).

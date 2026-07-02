@@ -1,6 +1,7 @@
 # Hosted Notebook Sharing and Invites
 
-**Status:** PRD draft, 2026-05-24.
+**Status:** Implemented — shipped Worker routes, storage, tests. Open product
+decisions documented below.
 
 This PRD defines the user-facing sharing requirements and the product/data path
 from "share with email" to principal-backed `notebook_acl` rows. It relies on
@@ -15,11 +16,12 @@ Related docs:
 - `docs/adr/hosted-credential-transport.md`
 - `docs/runbooks/hosted-direct-oidc-demo-runbook.md`
 
-Prototype code:
+Implementation files:
 
 - `apps/notebook-cloud/src/sharing.ts`
 - `apps/notebook-cloud/src/sharing-storage.ts`
-- `apps/notebook-cloud/src/index.ts`
+- `apps/notebook-cloud/src/index.ts` (routes at `:387-:427`)
+- `apps/notebook-cloud/migrations/0005_sharing_invites.sql`
 - `apps/notebook-cloud/test/sharing.test.ts`
 - `apps/notebook-cloud/test/sharing-storage.test.ts`
 - `apps/notebook-cloud/test/worker-routes.test.ts`
@@ -102,11 +104,25 @@ CREATE TABLE notebook_invites (
 );
 
 CREATE INDEX notebook_invites_pending_lookup_idx
-  ON notebook_invites(provider_hint, email_normalized, status);
+  ON notebook_invites(email_normalized, status, provider_hint);
+
+CREATE UNIQUE INDEX notebook_invites_pending_provider_unique_idx
+  ON notebook_invites(notebook_id, email_normalized, provider_hint, scope)
+  WHERE status = 'pending' AND provider_hint IS NOT NULL;
+
+CREATE UNIQUE INDEX notebook_invites_pending_wildcard_unique_idx
+  ON notebook_invites(notebook_id, email_normalized, scope)
+  WHERE status = 'pending' AND provider_hint IS NULL;
 
 CREATE INDEX notebook_invites_notebook_idx
   ON notebook_invites(notebook_id, status);
 ```
+
+The shipped schema is in `migrations/0005_sharing_invites.sql`. Index order and
+uniqueness constraints differ from this early sketch: the pending lookup index
+puts `email_normalized` first for resolution queries, and partial unique
+indexes prevent duplicate pending invites per notebook/email/scope (split by
+provider-hint presence).
 
 `provider_hint` is normalized to lowercase provider ids. It should be
 `anaconda` for the direct Anaconda OIDC demo. It may be `NULL` only when the
@@ -134,21 +150,15 @@ Pending invites are not ACL rows and cannot authorize a socket.
    trim + lowercase
    ```
 
-4. The API looks for a verified `principal_profiles` row with the same
-   provider hint and normalized email.
-5. If a matching profile exists, the API inserts the principal ACL row
-   immediately:
-
-   ```json
-   {
-     "subject_kind": "principal",
-     "subject": "user:anaconda:<encoded-anaconda-sub>",
-     "scope": "editor"
-   }
-   ```
-
-6. If no matching profile exists, the API creates a `pending` invite row and
-   sends or exposes an invite link.
+4. **Current behavior:** The API always creates or returns a `pending` invite
+   row (`createPendingNotebookInvite` in `index.ts:3399`). Invites resolve to
+   principal ACL rows on the recipient's first login.
+5. **Open product decision:** Should the API look for a verified
+   `principal_profiles` row with matching provider hint and normalized email,
+   and insert an immediate principal ACL row if found? This would grant access
+   without requiring the recipient to log in again, but requires deciding when
+   to prefer immediate grants vs. pending invites for auditing or notification
+   purposes.
 7. The share dialog shows:
    - resolved collaborators by display name;
    - pending invites by email;

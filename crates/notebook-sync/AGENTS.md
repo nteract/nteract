@@ -1,20 +1,21 @@
 # notebook-sync
 
 This crate is the client-side sync handle and socket task boundary for
-NotebookDoc, RuntimeStateDoc, CommsDoc, PoolDoc, requests, presence, blobs, and
-session status.
+NotebookDoc, RuntimeStateDoc, CommsDoc, CommentsDoc, PoolDoc, requests,
+presence, blobs, and session status.
 
 ## Main pieces
 
 - `DocHandle` is the caller-facing API. Synchronous document mutations go
   through `with_doc` or typed helpers, then notify the sync task.
 - `SharedDocState` stores the local NotebookDoc, RuntimeStateDoc, CommsDoc,
-  PoolDoc, snapshots, request waiters, blob waiters, and readiness phases
-  shared with the socket task.
+  CommentsDoc, PoolDoc, snapshots, request waiters, blob waiters, and readiness
+  phases shared with the socket task.
 - `sync_task` owns typed-frame I/O. It sends and receives Automerge sync for
-  `0x00` NotebookDoc, `0x05` RuntimeStateDoc, `0x06` PoolDoc, and `0x09`
-  CommsDoc, plus request, response, presence, session-control, and `PUT_BLOB`
-  frames.
+  `0x00` NotebookDoc, `0x05` RuntimeStateDoc, `0x06` PoolDoc, `0x09` CommsDoc,
+  and `0x0a` CommentsDoc, plus request, response, presence, session-control,
+  and `PUT_BLOB` frames. The Python sync task ignores `0x0a` CommentsDocSync
+  frames; frontend/WASM handles comments directly.
 - `execution_wait` / `execution_watch` observe RuntimeStateDoc terminal state;
   RuntimeStateDoc is the durable execution/output record, not broadcast replay.
 - `relay` / `relay_task` are byte-pipe helpers for app relay paths; they do not

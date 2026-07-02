@@ -5,7 +5,7 @@ Development home for nteract Python packages. The UV workspace root (`pyproject.
 | Package | Description |
 |---------|-------------|
 | `python/runtimed/` | Low-level Python bindings for the runtimed daemon (maturin/PyO3) |
-| `python/nteract/` | MCP server for AI agents — composes runtimed primitives |
+| `python/nteract/` | Thin launcher for the Rust-native `runt mcp` MCP server |
 | `python/dx/` | Display and blob-store helpers used from Python kernels |
 | `python/nteract-kernel-launcher/` | Embedded launcher package vendored by the daemon into kernel environments |
 | `python/prewarm/` | Environment warm-up utility for Python kernels |

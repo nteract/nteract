@@ -1,6 +1,6 @@
 # Cell Execution Pipeline and Control-Plane Separation
 
-**Status:** Draft, 2026-05-22.
+**Status:** Accepted, 2026-05-22.
 
 ## Context
 

@@ -1,7 +1,7 @@
 # Carried-forward node identity for the markdown plan
 
-**Status:** Exploration. Engine design, downstream-driven. No-op for nteract's
-current surfaces beyond cheaper remounts; see "What this buys nteract."
+**Status:** Implemented in #3862, 2026-06-02. Engine and tests landed; snapshot
+encoding uses serde_json; cross-WASM snapshot transport remains unexposed.
 
 ## Objective
 
@@ -66,33 +66,34 @@ plan is a disposable projection parsed fresh from source. The reconciler
 stabilizes the projection's node handles across reparses. It does not replace,
 duplicate, or interact with Automerge's source identity.
 
-## Design
+## Design (Implemented)
 
-A new `project_markdown_reconciled(source, options, &prev) -> (MarkdownPlan, ReconcilerSnapshot)`
-runs three phases:
+`project_markdown_reconciled(source, options, &prev) -> (MarkdownPlan, ReconcilerSnapshot)`
+runs three phases (`crates/nteract-markdown-engine/src/lib.rs:393-506`):
 
-1. **Build.** Run `project_node` as today, but leave `ProjectedNode.id` empty and
-   defer anchor and isolated-region emission. This drops the provisional-id remap
-   and the `SourceSpan::empty()` id collision.
-2. **Reconcile.** Assign ids top-down. One recursive `reconcile_children` runs at
-   every children list (blocks, then list items / table rows / cells, then inline
-   runs), so block and inline ids fall out of the same pass. Root keeps the
-   literal `"root"`; only its children align.
-3. **Finalize.** A document-order DFS over the now-id-stable tree rebuilds anchors
-   (`block_id = node.id`), isolated regions (`id = "isolation:" + node.id`), and
-   the heading-slug counter, then serializes the new snapshot from
-   `MarkdownPlan.root` (never from the flattened block/run view).
+1. **Build.** Run `project_node`, but leave `ProjectedNode.id` empty and defer
+   anchor and isolated-region emission. This drops the provisional-id remap and
+   the `SourceSpan::empty()` id collision.
+2. **Reconcile.** Assign ids top-down. One recursive `reconcile_children` runs
+   at every children list (blocks, then list items / table rows / cells, then
+   inline runs), so block and inline ids fall out of the same pass. Root keeps
+   the literal `"root"`; only its children align.
+3. **Finalize.** A document-order DFS over the now-id-stable tree rebuilds
+   anchors (`block_id = node.id`), isolated regions (`id = "isolation:" +
+   node.id`), and the heading-slug counter, then serializes the new snapshot
+   from `MarkdownPlan.root` (never from the flattened block/run view).
 
 Identity is a two-tier predicate:
 
-- `eq(a, b)` = `(kind, lane, iso, isolation_tag)` equal **and** `content_hash`
-  equal. The unchanged-anchor test that trim and LCS anchor on.
-- `compat(a, b)` = `(kind, lane, iso, isolation_tag)` equal, content may differ.
-  The edit-inside-vs-replace gate.
+- `eq(a, b)` = `(kind, lane, iso, isolation_tag, island_tag, island_inline)`
+  equal **and** `content_hash` equal. The unchanged-anchor test that trim and
+  LCS anchor on.
+- `compat(a, b)` = `(kind, lane, iso, isolation_tag, island_tag,
+  island_inline)` equal, content may differ. The edit-inside-vs-replace gate.
 
 Content decides changed-vs-unchanged, never identity. Identity is alignment
-position plus `compat`. Duplicates (two `---`, two `## Notes`, two identical
-`$x$`) disambiguate by order, which alignment gives for free.
+position plus `compat`. Duplicates disambiguate by order, which alignment
+gives for free.
 
 `reconcile_children` is: ambiguity-guarded two-ended trim under `eq`, then LCS on
 the residual middle under `eq` with match-late backtrack, then a
@@ -102,19 +103,22 @@ left. A node matched under `eq` has an equal `content_hash`, so its subtree is
 byte-identical and its ids are preserved without recursing. Only `compat` carries
 (content differs) recurse to re-align changed children.
 
-Two requirements the edit scenarios force:
+Edit-scenario requirements:
 
 - **`content_hash` is a recursive Merkle digest** over `kind, lane, iso,
-  isolation_tag`, the rendering-salient attrs, `copy_text` for leaves, and each
-  child's hash in document order. A flat `copy_text` scalar compares a
-  formatting-only edit (`the cat sat` to `the *cat* sat`) and a same-text reorder
-  (`**alpha**` vs `alpha`) equal at the parent, which silently drops the edit and
-  collapses the reorder. "Equal `content_hash` implies subtree byte-identical" is
-  what the subtree short-circuit and the `eq` anchor depend on.
-- **The structural tuple includes `isolation_tag`**, a new `NodeAttrs` field
-  carrying the MDX component name or active-HTML element tag, so two isolated
-  nodes of the same `IsolationKind` (`<video>` to `<iframe>`) are not `compat` and
-  remount instead of aliasing.
+  isolation_tag, island_tag, island_inline`
+  (`crates/nteract-markdown-engine/src/lib.rs:830-848`), the rendering-salient
+  attrs, `copy_text` for leaves, and each child's hash in document order. A
+  flat `copy_text` scalar would compare a formatting-only edit (`the cat sat`
+  to `the *cat* sat`) equal at the parent, silently dropping the edit. "Equal
+  `content_hash` implies subtree byte-identical" is what the subtree
+  short-circuit and the `eq` anchor depend on.
+- **The structural tuple includes `isolation_tag`, `island_tag`, and
+  `island_inline`** (`crates/nteract-markdown-engine/src/lib.rs:96-109`), so
+  two isolated nodes of the same `IsolationKind` (`<video>` to `<iframe>`) are
+  not `compat` and remount instead of aliasing. `island_tag` covers MDX
+  components (`<Frog />` to `<Chart />`); `island_inline` distinguishes block
+  vs inline JSX islands for the same component tag.
 
 The front-surplus zip hard-codes an insert-above preference: surplus leading
 nodes with no `eq` match mint fresh before the remainder zips, so a block inserted
@@ -128,7 +132,7 @@ node is fresh and existing call sites are unchanged. A consumer that wants
 stability threads the snapshot back in. The whole identity matrix runs as FFI-free
 `cargo` tests because the engine stays a pure function of `(source, prev-snapshot)`.
 
-## Behavioral coverage
+## Behavioral coverage (Implemented tests)
 
 | Test | Pins |
 | --- | --- |
@@ -147,20 +151,20 @@ stability threads the snapshot back in. The whole identity matrix runs as FFI-fr
 | `offset_decoupling_heading_slug_renumber` | Node id stable; only the slug-derived anchor own-id renumbers, by design. |
 | `cold_start_all_fresh` | Empty snapshot and the stateless path both mint fresh from 1; root is `"root"`. |
 | `snapshot_wire_roundtrip_total` | Round-trip is faithful; malformed or skewed bytes return `Default`, never panic. |
+| Island identity tests (from #3859/#3878) | `island_tag` and `island_inline` remount behavior for MDX components. |
 
 ## Open decisions
 
-- **Snapshot transport.** How the opaque previous-plan snapshot crosses the wasm
-  boundary, and the encoding (hand-rolled little-endian with a total `from_wire`,
-  vs adding `serde_json` to the engine). The interface is free to change since
-  callers rebuild against it.
+- **Cross-WASM snapshot transport.** Engine snapshot encoding uses `serde_json`
+  (`crates/nteract-markdown-engine/src/lib.rs:71`), but the WASM bridge
+  exposes only stateless `project_markdown` JSON
+  (`crates/nteract-markdown-wasm/src/lib.rs:60`). Cross-WASM snapshot
+  transport remains unexposed; mark this decided if not planned.
 - **Id representation.** Keep `String` ids (`node:{n}`) so the JSON contract is
   unchanged, vs integers with a consumer-side stringify.
-- **Merkle hash function and attr set.** FNV-1a vs xxhash, and which attrs beyond
-  `copy_text` feed the digest (depth, lang, meta, url, ordered, checked, align,
-  isolation_tag).
-- **`isolation_tag` extraction.** How to parse the component / element name out of
-  `html.value`, and whether expression-kind MDX nodes need a finer discriminator.
+- **Merkle hash function and attr set.** FNV-1a vs xxhash, and which attrs
+  beyond `copy_text` feed the digest (depth, lang, meta, url, ordered, checked,
+  align, isolation_tag, island_tag, island_inline).
 
 ## Risks and why it stays safe for nteract
 

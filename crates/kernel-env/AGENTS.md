@@ -43,7 +43,7 @@ Project files win over inline deps because inline deps are promoted into the pro
 
 ### Deno kernels
 
-No environment pools. Get deno via `kernel_launch::tools::get_deno_path()` (PATH first, then bootstrap from conda-forge). Launch: `deno jupyter --kernel --conn <connection_file>`.
+No environment pools. Get deno via `kernel_launch::tools::get_deno_path()` (PATH first with acceptable version check, then download from Deno GitHub releases). Launch: `deno jupyter --kernel --conn <connection_file>`.
 
 ## Environment source labels
 

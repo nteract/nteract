@@ -1,6 +1,7 @@
 # Output Rendering Segmentation
 
-**Status:** Draft, 2026-05-26.
+**Status:** Accepted, 2026-05-26. Segmentation with six output lanes landed;
+Sift, Vega, and Plotly each use standalone frames.
 
 ## Context
 
@@ -39,22 +40,33 @@ Related docs:
 preserves the original output order, but it may render consecutive outputs in
 separate lane segments when their interaction contracts differ.
 
-The lanes are:
+The lanes (defined at `src/components/isolated/output-lane-policy.ts:22-28`):
 
-1. **Main DOM lane.** Outputs that are safe for the parent DOM: streams, classic
-   errors/rich tracebacks, plain text, raster images, JSON, audio, and video.
-   These render without an iframe.
-2. **Static isolated lane.** Document-like output that needs sandbox isolation
-   but should not capture page scroll by default, such as markdown, HTML, and
-   SVG. These frames use the existing scroll-passthrough / click-to-engage
+1. **Main DOM lane (`dom`).** Outputs that are safe for the parent DOM: streams,
+   classic errors/rich tracebacks, plain text, raster images, JSON, audio, and
+   video. These render without an iframe.
+2. **Static isolated lane (`static-frame`).** Document-like output that needs
+   sandbox isolation but should not capture page scroll by default, such as
+   markdown, HTML, and SVG. These frames use scroll-passthrough / click-to-engage
    behavior.
-3. **Interactive isolated lane.** Widgets, output widgets, charts, maps,
-   JavaScript, and unknown rich MIME outputs. These may need iframe-local
+3. **Interactive isolated lane (`interactive-frame`).** Widgets, output widgets,
+   maps, JavaScript, and unknown rich MIME outputs. These may need iframe-local
    pointer and wheel handling, and consecutive interactive outputs can share a
    frame.
-4. **Sift isolated lane.** Each Sift-capable DataFrame output gets its own
-   isolated frame. Sift remains click-to-engage so large tables do not trap
-   notebook page scrolling until the user deliberately focuses the table.
+4. **Sift isolated lane (`sift-frame`).** Each Sift-capable DataFrame output
+   gets its own isolated frame. Sift remains click-to-engage so large tables do
+   not trap notebook page scrolling until the user deliberately focuses the
+   table.
+5. **Vega isolated lane (`vega-frame`).** Vega/Vega-Lite chart outputs render in
+   standalone frames to own wheel/pan interactions without affecting surrounding
+   outputs. Each Vega output gets its own frame.
+6. **Plotly isolated lane (`plotly-frame`).** Plotly chart outputs render in
+   standalone frames for the same wheel/pan ownership reasons. Each Plotly
+   output gets its own frame.
+
+Lanes 4-6 are **standalone**: consecutive outputs in these lanes never coalesce
+into a shared frame, because their wheel/pan interactions must not extend over
+neighboring outputs (see `laneStandsAlone` at `output-lane-policy.ts:227-232`).
 
 For example, a cell that emits:
 

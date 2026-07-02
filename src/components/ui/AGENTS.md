@@ -10,10 +10,17 @@ Scope: `src/components/ui/**`, `src/components/cell/**`, `src/components/editor/
 ├── tailwind.config.js       ← Tailwind config (covers src/ and apps/)
 ├── src/
 │   ├── components/
-│   │   ├── ui/              ← 24 shared shadcn primitives (Button, Dialog, etc.)
+│   │   ├── ui/              ← Shared shadcn primitives (Button, Dialog, etc.)
 │   │   ├── cell/            ← Cell container, controls, execution count
 │   │   ├── editor/          ← CodeMirror wrappers, extensions, themes
-│   │   └── outputs/         ← Output renderers (MediaRouter, AnsiOutput, etc.)
+│   │   ├── outputs/         ← Output renderers (MediaRouter, AnsiOutput, etc.)
+│   │   ├── comments/        ← Commenting UI
+│   │   ├── environment/     ← Runtime/package UI
+│   │   ├── isolated/        ← Isolated iframe renderer
+│   │   ├── markdown/        ← Markdown rendering
+│   │   ├── notebook/        ← Notebook-level UI
+│   │   ├── notebook-rail/   ← Notebook rail components
+│   │   └── widgets/         ← Widget rendering
 │   └── lib/utils.ts         ← cn() utility
 └── apps/
     └── notebook/            ← Uses @/components/* via path alias

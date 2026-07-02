@@ -55,9 +55,17 @@ The revision row records:
 - `runtime_snapshot_key`
 - `comms_heads_hash`
 - `comms_snapshot_key`
+- `comments_heads_hash`
+- `comments_snapshot_key`
 - `actor_label`
+- `cell_composition` — derived CSV of cell languages for catalog filtering
+- `language` — primary notebook language for catalog display
+- `cover_blob_hash` — derived notebook cover image hash (first raster output embed)
+- `cover_mime` — MIME type of the cover blob
 
-Derived render JSON is not a durable artifact. The publish API validates the
+Derived render JSON is not a durable artifact. Public OG images for a notebook
+use the latest revision's cover metadata; pinned revisions do not override the
+latest OG image (commit 739fad72). The publish API validates the
 snapshot bundle before recording the catalog row: if the `NotebookDoc` /
 `RuntimeStateDoc` pair cannot load, if a recorded `CommsDoc` snapshot cannot
 load, or if any projected cell, widget comm, or manifest child points at a

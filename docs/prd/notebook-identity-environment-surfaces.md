@@ -1,6 +1,7 @@
 # Notebook Identity and Environment Surfaces
 
-**Status:** PRD draft, 2026-05-31.
+**Status:** Implemented product contract — acceptance criteria met. Remaining
+work in "Suggested Work Slices."
 
 **Owners:** nteract notebook UI, Cloud/Auth, Desktop runtime.
 
@@ -18,7 +19,7 @@ Related docs:
 - `docs/adr/notebook-host-shell-convergence.md`
 - `apps/elements/content/docs/identity-environment-surfaces.mdx`
 
-Prototype and shared component surfaces:
+Shared component surfaces and projections:
 
 - `src/components/notebook/capabilities.ts`
 - `src/components/notebook/NotebookIdentity.tsx`
@@ -27,7 +28,12 @@ Prototype and shared component surfaces:
 - `src/components/notebook/NotebookToolbarIdentity.tsx`
 - `src/components/notebook/NotebookEnvironmentSummary.tsx`
 - `src/components/notebook/interaction-mode.ts`
-- `apps/elements/components/notebook-scenarios.ts`
+- `packages/runtimed/src/notebook-shell-capabilities.ts` — exported shared
+  projections for actor attribution, runtime authorship, access facts, runtime
+  state, and environment capabilities
+- `apps/elements/components/notebook-scenarios.ts` — shipped scenario ids
+  including `cloud-public-viewer`, `agent-on-behalf`, `mixed-idp-authorship`,
+  `runtime-peer`, `runtime-unavailable`, `untrusted-dependencies`
 
 ## Problem
 

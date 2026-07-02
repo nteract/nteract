@@ -1,23 +1,33 @@
 # Output Widget Replay Measurements
 
-**Status:** Measurement, 2026-05-24. This is benchmark evidence for the runtime
-output optimization plan, not an ADR.
+**Status:** Pre-optimization baseline, 2026-05-24. Recorded triangular
+resolution cost before the per-comm replay cache landed. Production now uses
+cached resolution (`crates/runtimed/src/jupyter_kernel.rs:347-387`).
 
-This note records the reproducible measurement surface for the current
-runtime-agent to IPython Output widget replay path. It is intentionally a
-measurement baseline, not an optimization.
+This note records the reproducible measurement surface for the Output widget
+replay path. It is a historical baseline documenting the optimization need,
+not current behavior.
 
-## What Is Measured
+## What Was Measured (Historical)
 
-When a Jupyter Output widget captures output, the IOPub task currently:
+When a Jupyter Output widget captured output, the IOPub task:
 
-1. appends one output manifest to `RuntimeStateDoc.comms[*].outputs`;
-2. mirrors the full outputs list into the comm state `outputs` property;
-3. resolves every manifest in that full list back to nbformat JSON;
-4. sends one best-effort `SendCommUpdate` replay to the kernel.
+1. appended one output manifest to `RuntimeStateDoc.comms[*].outputs`;
+2. mirrored the full outputs list into the comm state `outputs` property;
+3. resolved every manifest in that full list back to nbformat JSON;
+4. sent one best-effort `SendCommUpdate` replay to the kernel.
 
-The durable record remains `RuntimeStateDoc`. The kernel-facing replay is
-best-effort convenience for the Python-side Output widget object.
+This resulted in `N * (N + 1) / 2` manifest resolutions for `N` captured
+outputs. The durable record remains `RuntimeStateDoc`. The kernel-facing
+replay is best-effort convenience for the Python-side Output widget object.
+
+## Current Path (Post-optimization)
+
+Production now uses a per-comm replay cache
+(`crates/runtimed/src/jupyter_kernel.rs:1435-1438`).
+`resolve_output_widget_replay_state` resolves only the appended manifest when
+the cache length matches (`crates/runtimed/src/jupyter_kernel.rs:347-387`),
+linearizing the resolution cost.
 
 ## Rust Measurement
 
@@ -30,10 +40,11 @@ cargo run -p runtimed --example output_widget_replay_measure
 ```
 
 Each output line is JSON with a `strategy` and nested `metrics`. The key field
-is `metrics.manifest_resolutions`: with the current replay loop, `N` captured
-outputs resolve `N * (N + 1) / 2` manifests because every replay update
-resolves the full output list. The cached strategy resolves only the newly
-appended manifest when its local cache matches the durable output list.
+is `metrics.manifest_resolutions`: the historical "current" replay loop
+resolved `N * (N + 1) / 2` manifests for `N` captured outputs because every
+replay update resolved the full output list. The cached strategy (now in
+production) resolves only the newly appended manifest when its local cache
+matches the durable output list.
 
 Example shape:
 

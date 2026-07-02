@@ -24,7 +24,9 @@ Three nteract MCP servers may be available. Always use the right one:
 
 ## nteract-dev tool surface
 
-Two verbs plus three read-only tools, layered on top of the proxied `runt mcp` toolset:
+The advertised tool list varies by mode:
+
+**Owner/isolated mode** (Claude Code `.mcp.json`) — manages daemon lifecycle:
 
 | Tool | Purpose |
 |------|---------|
@@ -33,6 +35,16 @@ Two verbs plus three read-only tools, layered on top of the proxied `runt mcp` t
 | `status` | Read-only report of `nteract-dev`, child, daemon, and managed-process state. |
 | `logs` | Tail the daemon log. Arg: `lines` (default 50). |
 | `vite_logs` | Tail the Vite dev server log. Arg: `lines` (default 50). |
+
+**Attach mode** (Codex `.codex/config.toml`) — connects to an existing daemon:
+
+| Tool | Purpose |
+|------|---------|
+| `status` | Read-only report of `nteract-dev`, child, and daemon state. |
+| `logs` | Tail the daemon log. Arg: `lines` (default 50). |
+| `vite_logs` | Tail the Vite dev server log. Arg: `lines` (default 50). |
+
+All modes proxy the full `runt mcp` notebook tool surface.
 
 ## MCP Server
 

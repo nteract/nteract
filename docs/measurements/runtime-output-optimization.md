@@ -40,32 +40,35 @@ new consumer protocol.
 
 ## Decision 2: Optimize duplicated flat-path work first
 
-The first safe stack should keep the manifest shape unchanged while removing
-known repeated work:
+Keep the manifest shape unchanged while removing known repeated work:
 
-1. Exact output lookup by `(execution_id, output_id)` so display updates can use
-   `display_index` without sorting and scanning every output in the execution.
-2. Cached or indexed output ordering metadata so append/upsert paths do not
-   recompute order by decoding all manifests.
-3. Targeted RuntimeStateDoc readers for runtime-agent queue and comm handling
-   so state-sync bookkeeping does not materialize every flat output when it
-   only needs queued execution metadata or widget comm state.
-4. WASM-side output-id indexing so runtime sync handling does not repeatedly
-   read the full runtime state just to derive output deltas.
-5. Remove the dormant frontend optimistic `update_display_data` overlay instead
-   of indexing it. RuntimeStateDoc changesets already carry display updates to
-   the output store, so the best optimization is not maintaining unused work.
-6. In-place WASM output-id diff snapshots so runtime sync compares the flat
-   output set without cloning every unchanged manifest into a fresh snapshot on
-   each frame.
-7. Frontend output materialization cleanup so runtime outputs flow through the
-   output store rather than repeated whole-output JSON cache keys. Notebook-wide
-   derived views should subscribe to the narrowest output signal they need:
-   tail pinning still observes every output payload change, while hidden-group
-   membership and error counts observe only output adds/removals/type changes.
+1. ✅ **Done (a2bfef02).** Exact output lookup by `(execution_id, output_id)`
+   via `get_display_index_entries` and `get_output`
+   (`crates/runtimed/src/output_prep.rs:316-329`). Display updates no longer
+   sort and scan every output in the execution.
+2. **Open.** Cached or indexed output ordering metadata so append/upsert paths
+   do not recompute order by decoding all manifests.
+3. ✅ **Done (614ec946, 3c18ce8f).** Targeted RuntimeStateDoc readers for
+   runtime-agent queue and comm handling. Measured via `doc.get_comms()` and
+   `doc.get_queued_executions()`
+   (`crates/runtimed/src/output_commit_measure.rs:345-348`). State-sync
+   bookkeeping no longer materializes every flat output when it only needs
+   queued execution metadata or widget comm state.
+4. **Open.** WASM-side output-id indexing so runtime sync handling does not
+   repeatedly read the full runtime state just to derive output deltas.
+5. ✅ **Done (038caec2).** Removed the dormant frontend optimistic
+   `update_display_data` overlay. RuntimeStateDoc changesets carry display
+   updates to the output store.
+6. ✅ **Done.** In-place WASM output-id diff snapshots
+   (`crates/runtimed-wasm/src/lib.rs:2908-2910`). Runtime sync compares the
+   flat output set without cloning every unchanged manifest into a fresh
+   snapshot on each frame.
+7. **Partially done.** Frontend output materialization cleanup. Runtime outputs
+   flow through the output store; tail pinning and derived views remain active
+   work.
 
-Each item is independently mergeable and should include a small benchmark or
-stress case that proves the eliminated work.
+Each item should include a small benchmark or stress case proving the
+eliminated work.
 
 ## Decision 3: Segment storage needs projection before writing
 

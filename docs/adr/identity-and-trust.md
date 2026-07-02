@@ -424,25 +424,58 @@ authority and still enforces scope at frame ingress, request dispatch, and ACL
 mutation boundaries. A `viewer` connection remains a full sync, presence, and
 projection peer; only its changes and mutating requests are denied.
 
-## Decision 6: Publish is a fresh document in the destination space
+## Decision 6: Publish preserves source actor history; re-authoring is planned
 
-A publish operation produces a **fresh Automerge document** in the destination's identity space. Historical actor labels from the source space are not carried across the boundary.
+**Current:** Publish uploads the saved source Automerge document bytes
+directly. Historical actor labels from the source space are preserved in the
+destination room. The destination records who published the snapshot (via ACL
+enforcement and catalog metadata), but the ingested `NotebookDoc` and
+`RuntimeStateDoc` carry the source document's full Automerge change history and
+actor labels, including any `local:*` actors from a desktop source.
 
-The reason is the same one that makes git commits with arbitrary `Author:` lines untrustworthy without GPG: actor labels in Automerge are self-attested. If we copied `local:quill/desktop:abc` historical changes into an Anaconda-hosted room, the room would be vouching for authorship it has no way to verify. Anyone could fabricate a doc claiming any local-space attribution and publish it. Better to make the publish boundary explicit: history-of-edits stops at the boundary, and the destination space records who *published* the snapshot, not who authored each historical edit.
+Concretely: `crates/runt-publish/src/lib.rs` uploads
+`source_snapshot.snapshot.notebook_bytes` and
+`source_snapshot.snapshot.runtime_bytes` as raw Automerge save payloads
+(`:297`, `:303`), and `apps/notebook-cloud/src/index.ts` stores the uploaded
+body in R2 (`:3041`) before creating a catalog revision row (`:3054-3101`).
 
-Concretely: quill publishes a local untitled notebook to Anaconda.
+**Target:** The target decision remains fresh-document re-authoring at the
+publish boundary. Actor labels in Automerge are self-attested; if we accept
+`local:quill/desktop:abc` historical changes into an Anaconda-hosted room, the
+room vouches for authorship it cannot verify. Anyone can fabricate a local doc
+claiming any attribution and publish it. The publish boundary should be
+explicit: history-of-edits stops at the boundary, and the destination records
+who *published* the snapshot, not who authored each historical edit.
 
-1. Desktop captures the current rendered state of the local `NotebookDoc` and `RuntimeStateDoc`: cells, metadata, outputs, blob references. This is essentially the `.ipynb`-equivalent plus output blobs.
-2. The destination creates a **new** Automerge document in its own identity space. The current canonical schema seed actor establishes the schema; a fresh publisher actor (`user:anaconda:550e.../publisher:<timestamp>`) authors all the imported cells, metadata, and outputs as a single round of changes. Future schema bumps should move the seed actor toward the `system/schema:*` target naming above.
-3. Blob references are uploaded by SHA-256 hash. R2 dedupes; the destination room references them by the same hashes.
-4. The destination registers the room in its catalog (D1 row, latest revision pointer).
-5. Future edits in the destination room author under destination-space principals normally. There are no `local:*` actors in the doc.
+The target publish flow:
 
-Attribution after publish reflects what the destination can actually vouch for: "this snapshot was published by `user:anaconda:550e...` on `<timestamp>`." Per-edit history of the source notebook is not preserved. Side effects:
+1. Desktop captures the current rendered state of `NotebookDoc` and
+   `RuntimeStateDoc`: cells, metadata, outputs, blob references (the
+   `.ipynb`-equivalent plus output blobs).
+2. The destination creates a **new** Automerge document in its own identity
+   space. A fresh publisher actor (`user:anaconda:550e.../publisher:<timestamp>`)
+   authors all imported cells, metadata, and outputs as a single round of
+   changes. The schema seed actor establishes the schema; future schema bumps
+   should move the seed actor toward the `system/schema:*` target naming.
+3. Blob references are uploaded by SHA-256 hash (R2 dedupes); the destination
+   room references them by the same hashes.
+4. The destination registers the room in its catalog (D1 row, latest revision
+   pointer).
+5. Future edits in the destination room author under destination-space
+   principals normally. No `local:*` actors remain in the doc.
 
-- **Import-time forgery is closed.** A hosted deployment never accepts a *published* doc that contains historical Automerge attribution from outside its own scope; the import path strips source-space history and re-authors as a fresh publisher actor. Live in-room principal forgery is also rejected by the v1 clone-preview validator; the remaining caveat is its performance cost until the Automerge fork patch lands.
-- **History is lost on publish.** Anyone who needs the pre-publish authorship trail keeps the source notebook around (it still lives in the source space). Re-publishing produces a new snapshot in the destination; old snapshots are immutable revisions.
-- **Future cryptographic verification.** When Automerge gains signed-change support (keyhive direction; see `https://www.inkandswitch.com/keyhive/notebook/`), historical authorship from a source space could be carried across publish if every historical change is signed by its claimed author. Until then, this ADR closes the door on cross-space attribution.
+Attribution after re-authoring reflects what the destination can vouch for:
+"this snapshot was published by `user:anaconda:550e...` on `<timestamp>`."
+Per-edit history of the source notebook is not preserved in the destination
+room. When Automerge gains signed-change support (keyhive direction; see
+`https://www.inkandswitch.com/keyhive/notebook/`), historical authorship could
+be carried across publish if every change is signed by its claimed author.
+
+## Open Follow-ups
+
+- **Publish-time re-authoring:** Implement the fresh-document flow in
+  `runt-publish` before relying on cross-space attribution closure (see threat
+  table row).
 
 ## Limitations
 
@@ -455,7 +488,7 @@ The threat surface this leaves:
 | Unauthorized read | ACL check at connect | closed |
 | Unauthorized write at all | Bearer auth + ACL at connect | closed |
 | Scope escalation (viewer authoring, runtime_peer editing NotebookDoc) | Scope-based frame rejection | closed |
-| Import-time cross-IdP forgery (publishing a doc with historical foreign actor labels) | Publish-as-fresh-doc (Decision 6) | closed |
+| Import-time cross-IdP forgery (publishing a doc with historical foreign actor labels) | Publish-time re-authoring (Decision 6 target) | open — current publish preserves source actor history |
 | **Live actor-principal spoofing** (an authenticated peer authors a new change under a different principal) | Clone-preview actor validation before apply | closed in v1 |
 | Bearer-token replay (stolen JWT opens a new socket) | DPoP / mTLS / short token lifetimes | deferred |
 | Clone-preview validator cost on large/high-churn docs | `sync_message_new_changes` Automerge fork patch | deferred performance hardening |

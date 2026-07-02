@@ -39,7 +39,7 @@ logger.warn("[component] Recoverable issue");
 logger.error("[component] Failure:", error);
 ```
 
-Route through `logger`, not raw `console.*`. The level filter is applied server-side by `tauri-plugin-log`. In dev (`import.meta.env.DEV`) `attachConsole()` mirrors everything into the browser devtools. In packaged builds the Rust-side app log level decides what's visible.
+Route through `logger`, not raw `console.*`. The level filter is applied server-side by `tauri-plugin-log`. In dev (`import.meta.env.DEV`) `attachLogger()` mirrors Rust log entries into the browser devtools by dispatching to the original console methods (not the wrapped forwarder) so no feedback loop occurs. In packaged builds the Rust-side app log level decides what's visible.
 
 ## Level guidelines
 

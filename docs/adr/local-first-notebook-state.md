@@ -1,6 +1,6 @@
 # Local-First Notebook State
 
-**Status:** Accepted / implemented direction, 2026-06-11. Trimmed 2026-06-29.
+**Status:** Accepted, 2026-06-11. Trimmed 2026-06-29.
 
 This ADR records the local-first contract for cloud notebook handles. Historical
 PR sequencing and landed implementation notes belong in Git history, not in the

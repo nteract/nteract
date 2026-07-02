@@ -101,19 +101,17 @@ runt workstation service status  # Linux user systemd service state
 ```
 
 The service launches `runtimed workstation-agent`, which heartbeats the
-registration, keeps a server-sent event stream open for attach-job wakeups, and
-spawns one `runtimed cloud-runtime-agent` runtime peer per job (pending →
-accepted → running → completed/failed). The event stream is the fast path;
-low-frequency attach-job polling remains as recovery for missed events, older
-servers, and jobs that existed before the agent started. The stream is
-deliberately only a wakeup signal, not a replay log: attach jobs are durable in
-the hosted database, so reconnect recovery polls the queue instead of relying
-on SSE `Last-Event-ID` state. Keeping idle presence and wakeups on one SSE
-request avoids the request churn of tight polling or a per-workstation control
-WebSocket. The credential rides the environment (`RUNT_CLOUD_TOKEN`), never
-argv. `RUNT_CLOUD_TOKEN` / `RUNT_CLOUD_URL` environment variables override the
-stored credential for foreground `runt workstation run`; the service path uses
-the stored credential file written by `connect`.
+registration, keeps a hibernatable workstation event WebSocket open for
+attach-job wakeups, and spawns one `runtimed cloud-runtime-agent` runtime peer
+per job (pending → accepted → running → completed/failed). The event WebSocket
+is the fast path; low-frequency attach-job polling remains as recovery for
+missed wakeup events and jobs that existed before the agent started. The socket
+is deliberately only a wakeup signal, not a replay log: attach jobs are durable
+in the hosted database, so reconnect recovery polls the queue. The credential
+rides the environment (`RUNT_CLOUD_TOKEN`), never argv. `RUNT_CLOUD_TOKEN` /
+`RUNT_CLOUD_URL` environment variables override the stored credential for
+foreground `runt workstation run`; the service path uses the stored credential
+file written by `connect`.
 
 In the hosted notebook, attaching compute to a workstation dispatches an attach
 job; the agent accepts it and the runtime peer attaches to the room as

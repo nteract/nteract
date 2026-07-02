@@ -162,11 +162,12 @@ document path that later references the content hash.
    only from notebook fields and mutable widget state in `CommsDoc`. Owner
    inherits both write surfaces.
 4. **Content metadata mutation is multi-user sensitive.** The desktop blob
-   store intentionally lets a duplicate put update `media_type`. In hosted or
-   remote-peer deployments, the host should prevent a lower-scope peer from
-   rewriting how an existing hash is served to other rooms/users. Either make
-   metadata first-writer-wins per backend object, or move media type to the
-   room/reference layer.
+   store intentionally lets a duplicate put update `media_type`. Hosted
+   duplicate PUT metadata is now first-writer-wins: blob PUT skips R2 rewrite
+   for existing objects (`index.ts:4716-4717`), and D1 recording uses
+   `ON CONFLICT(notebook_id, hash) DO NOTHING` (`storage.ts:1729`). The
+   remaining issue is that an arbitrary first-writer `Content-Type` is stored;
+   see #3887 for Content-Type allow-list or `nosniff` hardening.
 5. **Blob reads must be room-scoped in hosted deployments.** "Knows the hash"
    is not enough once blobs leave single-user loopback. The resolver should
    prove viewer-or-better access to the room or issue a short-lived signed URL

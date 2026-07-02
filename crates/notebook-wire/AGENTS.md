@@ -37,7 +37,7 @@ The frontend talks to the Tauri relay through `invoke()` calls, a generation-sco
    { "channel": "notebook_sync", "notebook_id": "/path/to/notebook.ipynb", "protocol": "v4" }
    ```
 
-   `Handshake` uses `#[serde(tag = "channel", rename_all = "snake_case")]`, so the wire form is flat. Optional fields (`working_dir`, `initial_metadata`) omit when `None`. Other variants: `Pool`, `SettingsSync`, `OpenNotebook { path }`, `CreateNotebook { runtime, … }`, `RuntimeAgent { … }`. `OpenNotebook` / `CreateNotebook` are the desktop paths; `NotebookSync` is used by programmatic clients (Python bindings). Blob uploads ride the `NotebookSync` channel as `PUT_BLOB` (`0x08`) frames; the localhost blob HTTP port is a separate server on a different socket, not a handshake channel.
+   `Handshake` uses `#[serde(tag = "channel", rename_all = "snake_case")]`, so the wire form is flat. Optional fields (`working_dir`, `initial_metadata`) omit when `None`. Other variants: `Pool`, `SettingsSync`, `OpenNotebook { path }`, `CreateNotebook { runtime, … }`, `OpenHostedNotebook { url, … }`, `RuntimeAgent { … }`. `OpenNotebook` / `CreateNotebook` are the desktop paths; `NotebookSync` is used by programmatic clients (Python bindings); `OpenHostedNotebook` is used by daemon-mediated hosted cloud notebook bridges. Blob uploads ride the `NotebookSync` channel as `PUT_BLOB` (`0x08`) frames; the localhost blob HTTP port is a separate server on a different socket, not a handshake channel.
 
    The daemon responds with `NotebookConnectionInfo`:
 
@@ -61,6 +61,7 @@ The runtimed socket is **same-UID trusted**, not app-private. Unix permissions p
 | `NotebookSync` | Peer access to a notebook room and its runtime-state sync |
 | `OpenNotebook` | Load or create a file-backed notebook from a path |
 | `CreateNotebook` | Create an untitled or ephemeral notebook room |
+| `OpenHostedNotebook` | Daemon-mediated bridge to a hosted cloud notebook room; delegates authority to the cloud room host |
 | `RuntimeAgent` | Attach a runtime-agent peer to a notebook room |
 
 A new handshake variant inherits this model. For tighter authority on a channel, design an explicit capability or guard instead of assuming "only the desktop app can reach it."
@@ -99,12 +100,14 @@ After the handshake, frames carry a leading type byte:
 | `0x07` | SessionControl | JSON (`SessionControlMessage`, daemon-originated readiness/status) |
 | `0x08` | PutBlob | Framed binary blob upload (`PutBlobHeader` + bytes) |
 | `0x09` | CommsDocSync | Binary (per-notebook `CommsDoc` Automerge sync) |
+| `0x0a` | CommentsDocSync | Binary (per-notebook `CommentsDoc` Automerge sync) |
 
 | Sender | Valid types |
 |--------|-------------|
-| Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09` |
-| Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09` |
+| Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0a` |
+| Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09`, `0x0a` |
 | Runtime agent peer | `0x00`, `0x01` (RuntimeAgentRequest/Envelope), `0x02` (RuntimeAgentResponse/Envelope), `0x05`, `0x09` |
+| Cloud viewer bridge | `0x00`, `0x04`, `0x05`, `0x09`, `0x0a` |
 
 `NotebookRequest` / `NotebookResponse` payloads travel in flattened `NotebookRequestEnvelope` / `NotebookResponseEnvelope`. Concurrent requests carry an `id`; clients route responses by id because broadcasts, state sync, and out-of-order responses interleave freely.
 
@@ -249,7 +252,7 @@ Kernel produces output
 | `daemon:ready` event | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
 | `daemon:disconnected` event | Relay → Frontend | — | Connection lost |
 
-Outgoing frames use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` via `tauri::ipc::Request`. Relay accepts frontend-originated `0x00`, `0x01`, `0x04`, `0x05`, `0x06`; `0x02`, `0x03`, `0x07` are daemon-originated.
+Outgoing frames use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` via `tauri::ipc::Request`. Relay accepts frontend-originated `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x0a`; `0x02`, `0x03`, `0x07` are daemon-originated.
 
 ### In-memory frame bus
 

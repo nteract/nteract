@@ -24,9 +24,9 @@ but that does not mean the browser becomes the runtime peer or that the runtime
 peer gains notebook-editing authority. Likewise, a local kernel should have a
 principal for attribution before it ever talks to the hosted room.
 
-## Decision 1: Local runtime connections have local principals
+## Decision 1: Local runtime connections have local principals (planned)
 
-A local-only kernel or daemon runtime uses a local principal and a runtime
+A local-only kernel or daemon runtime should use a local principal and a runtime
 operator even when no hosted credential exists:
 
 ```text
@@ -40,6 +40,10 @@ an Anaconda, OIDC, JupyterHub, or hosted account principal.
 Local runtime identity is useful for attribution, diagnostics, presence, and
 future UI, but it is not remote room authorization. A hosted room must not infer
 remote write authority from a local principal string.
+
+**Not yet implemented**: UDS runtime agents currently keep the daemon-supplied
+`runtime_agent_id` unchanged. Local principal naming format should be applied
+when local workstation promotion lands.
 
 ## Decision 2: Promotion adopts the remote room principal
 

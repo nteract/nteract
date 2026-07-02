@@ -1,7 +1,7 @@
 # Notebook Comments Document
 
-**Status:** Accepted / implementation in progress, 2026-06-07. Trimmed
-2026-06-29.
+**Status:** In progress, 2026-06-07. Core `CommentsDoc` structure landed;
+presence and UI surfaces remain open. Trimmed 2026-06-29.
 
 This ADR records the durable architecture for notebook comments. Historical
 phase plans and file-by-file implementation checklists were removed once the

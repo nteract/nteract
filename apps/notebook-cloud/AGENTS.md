@@ -36,7 +36,7 @@ The cloud room host materializes and validates the notebook-room documents:
 | `NotebookDoc` | notebook room | owners write all; editors write allowed cell surface only; viewers and runtime peers read |
 | `RuntimeStateDoc` | notebook room | room host writes execution intent and room facts; runtime peers write policy-allowed lifecycle, progress, output, and comm topology for accepted work; viewer/editor/owner clients read only |
 | `CommsDoc` | notebook room | editor/owner/runtime-peer widget-state writes gated by RuntimeStateDoc topology |
-| `CommentsDoc` | proposed notebook-room sidecar | ADR only; if implemented, keep optimistic local-first writes inside Automerge and authority-finalize policy fields |
+| `CommentsDoc` | notebook room sidecar | editor/owner write policy; live room host checkpoints at `CHECKPOINT_COMMENTS_DOC_KEY`, routes `FrameType.COMMENTS_DOC_SYNC` frames, and saves `comments_doc_id` to peers (commit 778fc53e); revision rows record `comments_heads_hash` and `comments_snapshot_key` for catalog recovery |
 | `PoolDoc` | daemon scoped | not a notebook room document; hosted deployments should not assume it belongs in room identity |
 
 Permission and durability boundaries are the reason for separate documents.

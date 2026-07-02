@@ -1,6 +1,7 @@
 # Runtime State Document Identity
 
-**Status:** Draft, 2026-05-29.
+**Status:** Accepted, 2026-05-29. Implemented: `NotebookDoc.runtime_state_doc_id`
+and `RuntimeStateDoc` self-identity landed with schema v5.
 
 ## Context
 
