@@ -2,7 +2,11 @@ import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
-import { materializeSnapshotPairRender } from "../src/snapshot-render.ts";
+import {
+  countCellComposition,
+  detectRuntimeFromMetadata,
+  materializeSnapshotPairRender,
+} from "../src/snapshot-render.ts";
 import {
   createNotebookCloudBlobResolver,
   notebookCloudBlobBasePath,
@@ -299,3 +303,43 @@ describe("snapshot pair render materialization", () => {
 async function readJson(url: URL): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(url, "utf8")) as Record<string, unknown>;
 }
+
+describe("snapshot summary derivation helpers", () => {
+  it("counts only code/markdown/raw cell types and ignores unknowns", () => {
+    assert.deepEqual(
+      countCellComposition([
+        { cell_type: "code" },
+        { cell_type: "code" },
+        { cell_type: "markdown" },
+        { cell_type: "raw" },
+        { cell_type: "sql" },
+        { cell_type: 42 },
+        {},
+        null,
+      ]),
+      { code: 2, markdown: 1, raw: 1 },
+    );
+  });
+
+  it("returns zero composition for non-array cell payloads", () => {
+    assert.deepEqual(countCellComposition(null), { code: 0, markdown: 0, raw: 0 });
+    assert.deepEqual(countCellComposition("cells"), { code: 0, markdown: 0, raw: 0 });
+    assert.deepEqual(countCellComposition({ cells: [] }), { code: 0, markdown: 0, raw: 0 });
+  });
+
+  it("detects runtime from kernelspec name, language, language_info, and runt metadata", () => {
+    assert.equal(detectRuntimeFromMetadata({ kernelspec: { name: "python3" } }), "python");
+    assert.equal(detectRuntimeFromMetadata({ kernelspec: { name: "deno" } }), "deno");
+    assert.equal(detectRuntimeFromMetadata({ kernelspec: { language: "typescript" } }), "deno");
+    assert.equal(detectRuntimeFromMetadata({ language_info: { name: "python" } }), "python");
+    assert.equal(detectRuntimeFromMetadata({ runt: { uv: {} } }), "python");
+    assert.equal(detectRuntimeFromMetadata({ runt: { deno: {} } }), "deno");
+  });
+
+  it("returns null when metadata carries no runtime signal", () => {
+    assert.equal(detectRuntimeFromMetadata(null), null);
+    assert.equal(detectRuntimeFromMetadata({}), null);
+    assert.equal(detectRuntimeFromMetadata({ kernelspec: { name: "julia" } }), null);
+    assert.equal(detectRuntimeFromMetadata("python"), null);
+  });
+});

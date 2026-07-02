@@ -30,7 +30,7 @@ import type {
   R2PutOptions,
 } from "../src/cloudflare-types.ts";
 import type { NotebookComputeSessionSummary } from "runtimed";
-import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
+import { NotebookHandle, RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import {
   WORKSTATION_ATTACH_JOB_STALE_MS,
   blobKey,
@@ -39,6 +39,7 @@ import {
   getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
   runtimeStateSnapshotKey,
+  runCatalogMigrations,
   snapshotKey,
 } from "../src/storage.ts";
 import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
@@ -1858,6 +1859,43 @@ describe("Worker artifact routes", () => {
     assert.equal(body.notebooks[1]?.title, "Editor Shared");
     assert.equal(body.notebooks[1]?.viewer_url, "http://localhost/n/editor-shared/Editor%20Shared");
     assert.equal(body.notebooks[1]?.endpoints.catalog, "/api/n/editor-shared");
+  });
+
+  it("omits malformed notebook composition from list rows without dropping language", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "malformed-summary");
+    const notebook = env.DB.notebooks.get("malformed-summary");
+    assert.ok(notebook);
+    notebook.cell_composition = "{not-json";
+    notebook.language = "python";
+    seedAcl(env, { notebookId: "malformed-summary", subject: "user:dev:alice", scope: "owner" });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      notebooks: Array<{
+        composition?: unknown;
+        language?: string;
+        notebook_id: string;
+      }>;
+    };
+    const row = body.notebooks.find(
+      (notebookRow) => notebookRow.notebook_id === "malformed-summary",
+    );
+    assert.ok(row);
+    assert.equal(Object.hasOwn(row, "composition"), false);
+    assert.equal(row.language, "python");
   });
 
   it("enriches owned notebook rows with owner-scoped compute sessions", async () => {
@@ -5234,6 +5272,30 @@ describe("Worker artifact routes", () => {
         ["route-demo", "public", "anonymous", "viewer"],
       ],
     );
+    const routeNotebook = env.DB.notebooks.get("route-demo");
+    assert.equal(routeNotebook?.cell_composition, JSON.stringify({ code: 1, markdown: 0, raw: 0 }));
+    const listResponse = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(listResponse.status, 200);
+    const listBody = (await listResponse.json()) as {
+      notebooks: Array<{
+        composition?: { code: number; markdown: number; raw: number };
+        notebook_id: string;
+      }>;
+    };
+    assert.deepEqual(
+      listBody.notebooks.find((notebook) => notebook.notebook_id === "route-demo")?.composition,
+      { code: 1, markdown: 0, raw: 0 },
+    );
     const response = await worker.fetch(
       new Request("http://localhost/api/n/route-demo/snapshots/heads-fixture"),
       env,
@@ -5276,6 +5338,126 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
     assert.equal(renderCacheRoute.status, 404);
+  });
+
+  it("persists snapshot cell composition and notebook language for list rows", async () => {
+    const env = fakeEnv();
+    const { notebookBytes, runtimeStateBytes } = pythonSummarySnapshotPair(
+      "summary-demo",
+      "runtime:summary-demo",
+    );
+
+    const runtimePut = await ownerPut(
+      env,
+      "/api/n/summary-demo/runtime-snapshots/runtime-summary",
+      runtimeStateBytes,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:summary-demo",
+      },
+    );
+    assert.equal(runtimePut.status, 201);
+
+    const notebookPut = await ownerPut(
+      env,
+      "/api/n/summary-demo/snapshots/heads-summary",
+      notebookBytes,
+      {
+        "X-Runtime-Heads-Hash": "runtime-summary",
+        "X-Runtime-State-Doc-Id": "runtime:summary-demo",
+      },
+    );
+    assert.equal(notebookPut.status, 201);
+
+    const notebook = env.DB.notebooks.get("summary-demo");
+    assert.equal(notebook?.cell_composition, JSON.stringify({ code: 1, markdown: 1, raw: 1 }));
+    assert.equal(notebook?.language, "python");
+
+    const listResponse = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(listResponse.status, 200);
+    const listBody = (await listResponse.json()) as {
+      notebooks: Array<{
+        composition?: { code: number; markdown: number; raw: number };
+        language?: string;
+        notebook_id: string;
+      }>;
+    };
+    const row = listBody.notebooks.find((candidate) => candidate.notebook_id === "summary-demo");
+    assert.deepEqual(row?.composition, { code: 1, markdown: 1, raw: 1 });
+    assert.equal(row?.language, "python");
+  });
+
+  it("does not fail snapshot publish when derived summary persistence fails", async () => {
+    const env = fakeEnv();
+    env.DB.failNotebookSummaryUpdate = true;
+    const [notebookBytes, runtimeStateBytes] = await Promise.all([
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/output_streaming/doc.bin",
+          import.meta.url,
+        ),
+      ),
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/output_streaming/state_doc.bin",
+          import.meta.url,
+        ),
+      ),
+    ]);
+
+    const runtimePut = await ownerPut(
+      env,
+      "/api/n/summary-fail-open/runtime-snapshots/runtime-fixture",
+      runtimeStateBytes,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:output-streaming",
+      },
+    );
+    assert.equal(runtimePut.status, 201);
+
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    let response: Response;
+    try {
+      response = await ownerPut(
+        env,
+        "/api/n/summary-fail-open/snapshots/heads-fixture",
+        notebookBytes,
+        {
+          "X-Runtime-Heads-Hash": "runtime-fixture",
+          "X-Runtime-State-Doc-Id": "runtime:output-streaming",
+        },
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(response.status, 201);
+    assert.equal(env.DB.revisions.length, 1);
+    assert.equal(
+      env.DB.notebooks.get("summary-fail-open")?.latest_revision_id,
+      env.DB.revisions[0]?.id,
+    );
+    assert.equal(env.DB.notebooks.get("summary-fail-open")?.cell_composition, null);
+    assert.ok(
+      warnings.some(
+        (entry) =>
+          entry[0] === "[notebook-cloud]" &&
+          (entry[1] as { event?: string }).event === "snapshot.summary.update_failed",
+      ),
+    );
   });
 
   it("rejects snapshot publish when the header runtime id disagrees with the NotebookDoc pointer", async () => {
@@ -5495,6 +5677,24 @@ describe("Worker artifact routes", () => {
     };
     assert.deepEqual(snapshotBlobRefsOverCap(over, 4), { count: 5, cap: 4, over: true });
     assert.deepEqual(snapshotBlobRefsOverCap(over, 5), { count: 5, cap: 5, over: false });
+  });
+});
+
+describe("catalog schema migrations", () => {
+  it("adds cell_composition and language via ALTER TABLE when absent", async () => {
+    const db = new FakeD1();
+    // Simulate a pre-migration deployment: the columns do not exist yet.
+    const notebookColumns = db.tableColumns.get("notebooks");
+    assert.ok(notebookColumns);
+    notebookColumns.delete("cell_composition");
+    notebookColumns.delete("language");
+
+    const env = fakeEnv({ DB: db });
+    await runCatalogMigrations(env);
+
+    const migrated = db.tableColumns.get("notebooks");
+    assert.ok(migrated?.has("cell_composition"), "cell_composition added by migration");
+    assert.ok(migrated?.has("language"), "language added by migration");
   });
 });
 
@@ -6257,6 +6457,8 @@ function seedNotebook(env: FakeEnv, notebookId: string): void {
     created_at: "2026-05-22T00:00:00.000Z",
     updated_at: "2026-05-22T00:00:00.000Z",
     latest_revision_id: null,
+    cell_composition: null,
+    language: null,
   });
 }
 
@@ -6398,6 +6600,40 @@ function seedAccessRequest(
 async function sha256Hex(body: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", body);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function pythonSummarySnapshotPair(
+  notebookId: string,
+  runtimeStateDocId: string,
+): { notebookBytes: Uint8Array; runtimeStateBytes: Uint8Array } {
+  const notebook = new NotebookHandle(notebookId);
+  const runtime = new RuntimeStatePeerHandle("runtime");
+  try {
+    notebook.set_runtime_state_doc_id(runtimeStateDocId);
+    notebook.set_metadata_snapshot_value({
+      kernelspec: {
+        display_name: "Python 3",
+        language: "python",
+        name: "python3",
+      },
+      language_info: {
+        name: "python",
+      },
+      runt: {
+        schema_version: "1",
+      },
+    });
+    notebook.add_cell_after("cell-code", "code", null);
+    notebook.add_cell_after("cell-markdown", "markdown", "cell-code");
+    notebook.add_cell_after("cell-raw", "raw", "cell-markdown");
+    return {
+      notebookBytes: notebook.save(),
+      runtimeStateBytes: runtime.save(),
+    };
+  } finally {
+    notebook.free();
+    runtime.free();
+  }
 }
 
 interface FakeEnv extends Env {
@@ -6626,6 +6862,8 @@ interface NotebookRow {
   created_at: string;
   updated_at: string;
   latest_revision_id: string | null;
+  cell_composition: string | null;
+  language: string | null;
 }
 
 interface NotebookAclRow {
@@ -6715,7 +6953,41 @@ class FakeD1 implements D1Database {
   readonly workstationPairingCodes = new Map<string, WorkstationPairingCodeRow>();
   readonly workstationCredentials = new Map<string, WorkstationCredentialRow>();
   readonly batchSizes: number[] = [];
+  readonly tableColumns = new Map<string, Set<string>>([
+    [
+      "notebooks",
+      new Set([
+        "id",
+        "owner_principal",
+        "title",
+        "created_at",
+        "updated_at",
+        "latest_revision_id",
+        "cell_composition",
+        "language",
+      ]),
+    ],
+    [
+      "notebook_revisions",
+      new Set([
+        "id",
+        "notebook_id",
+        "runtime_state_doc_id",
+        "notebook_heads_hash",
+        "runtime_heads_hash",
+        "comms_heads_hash",
+        "comments_heads_hash",
+        "snapshot_key",
+        "runtime_snapshot_key",
+        "comms_snapshot_key",
+        "comments_snapshot_key",
+        "actor_label",
+        "created_at",
+      ]),
+    ],
+  ]);
   afterBlockedOwnerDelete?: () => void;
+  failNotebookSummaryUpdate = false;
 
   prepare(query: string): D1PreparedStatement {
     return new FakeD1Statement(this, query);
@@ -6849,7 +7121,15 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async run<T = unknown>(): Promise<D1Result<T>> {
-    if (this.query.includes("INSERT OR IGNORE INTO notebook_acl")) {
+    const alterMatch = this.query.match(/ALTER TABLE\s+(\w+)\s+ADD COLUMN\s+(\w+)/i);
+    if (alterMatch) {
+      const [, table, column] = alterMatch;
+      if (table && column) {
+        const columns = this.db.tableColumns.get(table) ?? new Set<string>();
+        columns.add(column);
+        this.db.tableColumns.set(table, columns);
+      }
+    } else if (this.query.includes("INSERT OR IGNORE INTO notebook_acl")) {
       if (this.query.includes("'principal'") && this.query.includes("owner_principal")) {
         for (const notebook of this.db.notebooks.values()) {
           this.insertAclIfMissing({
@@ -7494,8 +7774,26 @@ class FakeD1Statement implements D1PreparedStatement {
         created_at: existing?.created_at ?? createdAt ?? updatedAt,
         updated_at: updatedAt,
         latest_revision_id: existing?.latest_revision_id ?? null,
+        cell_composition: existing?.cell_composition ?? null,
+        language: existing?.language ?? null,
       });
       return okResult(undefined, { changes: 1 });
+    } else if (this.query.includes("UPDATE notebooks") && this.query.includes("cell_composition")) {
+      if (this.db.failNotebookSummaryUpdate) {
+        throw new Error("fake summary update failure");
+      }
+      const [cellComposition, language, notebookId] = this.values as [
+        string | null,
+        string | null,
+        string,
+      ];
+      const existing = this.db.notebooks.get(notebookId);
+      if (existing) {
+        existing.cell_composition = cellComposition;
+        existing.language = language;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT INTO notebook_revisions")) {
       const [
         id,
@@ -7833,6 +8131,11 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async all<T = unknown>(): Promise<D1Result<T>> {
+    const pragmaMatch = this.query.match(/PRAGMA table_info\((\w+)\)/i);
+    if (pragmaMatch) {
+      const columns = this.db.tableColumns.get(pragmaMatch[1] ?? "") ?? new Set<string>();
+      return okResult([...columns].map((name) => ({ name })) as T[]);
+    }
     if (
       this.query.includes("FROM workstation_credentials") &&
       this.query.includes("WHERE owner_principal")
