@@ -155,6 +155,9 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
           throw new Error("Unable to list notebooks: response shape was invalid");
         }
         writeCachedCloudNotebookListToWindow(authState, appSessionStatus.session, body.notebooks);
+        if (typeof body.current_user_display === "string" && body.current_user_display.trim()) {
+          setCurrentUserDisplay(body.current_user_display.trim());
+        }
         setListState({ kind: "ready", notebooks: body.notebooks });
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -337,7 +340,12 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   };
 
   const headerDetail = cloudNotebookListHeaderDetail(authState, hasAppSession, authConfig);
-  const currentUserInitials = cloudNotebookListCurrentUserInitials(authState);
+  const [currentUserDisplay, setCurrentUserDisplay] = useState<string | null>(null);
+  // Prefer the unified user store's display name (delivered with the list
+  // response) over auth-claim parsing for the header identity.
+  const currentUserInitials = currentUserDisplay
+    ? cloudNotebookInitialsFromLabel(currentUserDisplay)
+    : cloudNotebookListCurrentUserInitials(authState);
 
   return (
     <main className="cloud-notebook-list-page nb-app">
@@ -387,7 +395,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
                   <LogOut aria-hidden="true" />
                   <span className="nb-btn-label">Sign out</span>
                 </Button>
-                <span className="nb-avatar-me" title={headerDetail}>
+                <span className="nb-avatar-me" title={currentUserDisplay ?? headerDetail}>
                   {currentUserInitials}
                 </span>
               </div>
@@ -617,6 +625,10 @@ function cloudNotebookListCurrentUserInitials(authState: CloudPrototypeAuthState
     authState.oidcClaims?.email?.trim() ||
     (authState.mode === "dev" ? authState.user?.trim() : "") ||
     "You";
+  return cloudNotebookInitialsFromLabel(label);
+}
+
+function cloudNotebookInitialsFromLabel(label: string): string {
   const parts = label
     .replace(/[_+.-]+/gu, " ")
     .trim()

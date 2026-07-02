@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
   ArrowRight,
   BookOpen,
@@ -31,7 +31,14 @@ import {
   type CloudNotebookDashboardRow,
   type CloudNotebookDashboardSection,
   type CloudNotebookListItem,
+  type CloudNotebookPresencePeer,
 } from "./notebook-dashboard";
+import {
+  cloudPresenceColor,
+  cloudPresenceContrastColor,
+  cloudPresenceInitials,
+  cloudVisiblePeerLabel,
+} from "./presence";
 
 interface CloudNotebookDashboardRenameState {
   notebookId: string;
@@ -73,7 +80,7 @@ export function CloudNotebookDashboard({
   );
   const continued = view.filterId === "all" && view.query.length === 0 ? model.continueRow : null;
   const totalCount = model.notebooks.length;
-  const computeCount = model.filters.find((filter) => filter.id === "compute")?.count ?? 0;
+  const activeCount = model.filters.find((filter) => filter.id === "compute")?.count ?? 0;
   const hasNoMatches = !continued && view.sections.length === 0;
 
   const clearFocus = () => {
@@ -87,7 +94,7 @@ export function CloudNotebookDashboard({
         <div>
           <h1>Notebooks</h1>
           <p>
-            {totalCount} notebook{totalCount === 1 ? "" : "s"} · {computeCount} active compute
+            {totalCount} notebook{totalCount === 1 ? "" : "s"} · {activeCount} active now
           </p>
         </div>
         {view.showResultCount ? (
@@ -197,7 +204,7 @@ function CloudNotebookDashboardHero({
 }) {
   const notebook = row.notebook;
   const openUrl = cloudNotebookDashboardOpenUrl(notebook);
-  const runtimeActive = cloudNotebookRuntimeIsActive(row);
+  const activeNow = cloudNotebookIsActiveNow(row);
   const runtimeLanguage =
     cloudNotebookLanguageDisplayLabel(notebook.language) ??
     (row.environmentLabel
@@ -210,7 +217,7 @@ function CloudNotebookDashboardHero({
 
   return (
     <section
-      className={`nb-hero${runtimeActive ? " is-live" : ""}`}
+      className={`nb-hero${activeNow ? " is-live" : ""}`}
       aria-label="Pick up where you left off"
     >
       {row.environmentLabel && runtimeLanguage ? (
@@ -222,7 +229,7 @@ function CloudNotebookDashboardHero({
       <div className="nb-hero-top">
         <div className="nb-hero-body">
           <div className="nb-hero-eyebrow">
-            {runtimeActive ? "Pick up where you left off" : "Jump back in"}
+            {activeNow ? "Pick up where you left off" : "Jump back in"}
           </div>
           <h2 className="nb-hero-title">{cloudNotebookDisplayTitle(notebook)}</h2>
           <div className="nb-hero-meta">
@@ -239,6 +246,7 @@ function CloudNotebookDashboardHero({
                 {cellCount} cells
               </span>
             ) : null}
+            <CloudNotebookPresenceStack peers={notebook.peers} />
           </div>
           {row.composition ? (
             <NotebookCompositionTicks composition={row.composition} className="nb-hero-fp" />
@@ -247,7 +255,7 @@ function CloudNotebookDashboardHero({
         <div className="nb-hero-side">
           <Button asChild className="nb-hero-open">
             <a href={openUrl} onFocus={onOpenNotebookIntent} onPointerEnter={onOpenNotebookIntent}>
-              {runtimeActive ? (
+              {activeNow ? (
                 <>
                   <Play aria-hidden="true" />
                   Resume
@@ -431,14 +439,14 @@ function CloudNotebookDashboardRowView({
   const openUrl = cloudNotebookDashboardOpenUrl(notebook);
   const hasTitle = Boolean(notebook.title?.trim());
   const cellCount = row.composition ? notebookCompositionTotal(row.composition) : null;
-  const runtimeActive = cloudNotebookRuntimeIsActive(row);
+  const activeNow = cloudNotebookIsActiveNow(row);
   // The compute fact carries the rich label ("lab2 workstation running, 1 queued");
   // the column shows the calm dot + terse status, the full label rides title/aria.
   const computeFact = row.facts.find((fact) => fact.kind === "compute") ?? null;
   const languageLabel = cloudNotebookLanguageDisplayLabel(notebook.language);
 
   return (
-    <div className={`nb-row${runtimeActive ? " is-live" : ""}`} data-scope={notebook.scope}>
+    <div className={`nb-row${activeNow ? " is-live" : ""}`} data-scope={notebook.scope}>
       <a
         className="nb-row-lead"
         href={openUrl}
@@ -477,6 +485,7 @@ function CloudNotebookDashboardRowView({
           <RuntimeStatusDot status={row.runtimeStatus} showLabel />
         ) : null}
       </span>
+      <CloudNotebookPresenceStack peers={notebook.peers} />
       <span className="nb-col nb-col-updated">
         <Clock aria-hidden="true" />
         {formatNotebookUpdatedAt(notebook.updated_at)}
@@ -517,6 +526,45 @@ function CloudNotebookDashboardRowView({
       </span>
     </div>
   );
+}
+
+function CloudNotebookPresenceStack({ peers }: { peers?: readonly CloudNotebookPresencePeer[] }) {
+  if (!peers?.length) {
+    return <span className="nb-col nb-col-peers" aria-hidden="true" />;
+  }
+
+  const visiblePeers = peers.slice(0, 3);
+  const hiddenCount = Math.max(0, peers.length - visiblePeers.length);
+  const label =
+    peers.length === 1
+      ? `${cloudNotebookPresencePeerLabel(peers[0]!)} editing now`
+      : `${peers.length} people editing now`;
+
+  return (
+    <span className="nb-col nb-col-peers" aria-label={label} title={label}>
+      <span className="nb-peers" aria-hidden="true">
+        {visiblePeers.map((peer) => {
+          const actorColorKey = peer.actor_label || peer.participant_key;
+          const style = {
+            "--nb-peer-bg": cloudPresenceColor(actorColorKey),
+            "--nb-peer-fg": cloudPresenceContrastColor(actorColorKey),
+          } as CSSProperties;
+          const peerLabel = cloudNotebookPresencePeerLabel(peer);
+          return (
+            <span key={peer.participant_key} className="nb-peer" style={style} title={peerLabel}>
+              {cloudPresenceInitials(peerLabel)}
+            </span>
+          );
+        })}
+        {hiddenCount > 0 ? <span className="nb-peer nb-peer-more">+{hiddenCount}</span> : null}
+      </span>
+      <span className="nb-peers-label">editing now</span>
+    </span>
+  );
+}
+
+function cloudNotebookPresencePeerLabel(peer: CloudNotebookPresencePeer): string {
+  return cloudVisiblePeerLabel(peer.display_name, peer.actor_label);
 }
 
 function CloudNotebookCoverTile({ notebook }: { notebook: CloudNotebookListItem }) {
@@ -625,11 +673,12 @@ function cloudNotebookScopeLabel(notebook: CloudNotebookListItem): string | null
   }
 }
 
-function cloudNotebookRuntimeIsActive(row: CloudNotebookDashboardRow): boolean {
+function cloudNotebookIsActiveNow(row: CloudNotebookDashboardRow): boolean {
   return (
     row.runtimeStatus === "executing" ||
     row.runtimeStatus === "ready" ||
-    row.runtimeStatus === "starting"
+    row.runtimeStatus === "starting" ||
+    Boolean(row.notebook.peers?.length)
   );
 }
 

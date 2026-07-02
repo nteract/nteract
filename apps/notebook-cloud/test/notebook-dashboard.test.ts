@@ -46,7 +46,9 @@ describe("cloud notebook dashboard projection", () => {
       identityLabel: null,
       notebook: newOwner,
       ownerInitials: "AL",
-      ownerLabel: "alice",
+      // Owner-scope rows read "You" (the requester owns them); initials stay
+      // derived from the real identity so the avatar keeps meaning.
+      ownerLabel: "You",
       runtimeStatus: "none",
     });
     assert.deepEqual(
@@ -634,7 +636,7 @@ describe("cloud notebook dashboard projection", () => {
     assert.equal(generatedView.sections[0]?.overflowAction, null);
   });
 
-  it("surfaces active compute as a row fact and drill-in filter", () => {
+  it("surfaces active notebooks from compute and editing peers", () => {
     const active = notebook({
       id: "topic-viz",
       title: "Topic Visualization",
@@ -664,16 +666,32 @@ describe("cloud notebook dashboard projection", () => {
       updatedAt: "2026-06-22T00:00:00.000Z",
       latestRevisionId: null,
     });
+    const editing = notebook({
+      id: "shared-edit",
+      title: "Shared Edit",
+      scope: "editor",
+      updatedAt: "2026-06-21T00:00:00.000Z",
+      latestRevisionId: null,
+      peers: [
+        {
+          participant_key: "user:dev:bob",
+          actor_label: "user:dev:bob/browser:tab",
+          display_name: "Bob",
+          connection_scope: "editor",
+        },
+      ],
+    });
 
-    const model = projectCloudNotebookDashboard([idle, active]);
+    const model = projectCloudNotebookDashboard([idle, active, editing]);
     const computeView = projectCloudNotebookDashboardView(model, { filterId: "compute" });
 
     assert.deepEqual(
       model.filters.map((filter) => [filter.id, filter.count]),
       [
-        ["all", 2],
+        ["all", 3],
         ["owned", 2],
-        ["compute", 1],
+        ["shared", 1],
+        ["compute", 2],
       ],
     );
     assert.deepEqual(model.continueRow?.facts, [
@@ -691,7 +709,7 @@ describe("cloud notebook dashboard projection", () => {
         section.title,
         section.notebooks.map((item) => item.notebook_id),
       ]),
-      [["compute", "Active compute", ["topic-viz"]]],
+      [["compute", "Active now", ["topic-viz", "shared-edit"]]],
     );
   });
 
@@ -713,6 +731,63 @@ describe("cloud notebook dashboard projection", () => {
 
     assert.equal(model.continueRow?.notebook.language, "deno");
     assert.deepEqual(model.continueRow?.composition, { code: 2, markdown: 1, raw: 0 });
+  });
+
+  it("prefers the unified-profile owner display over the raw principal", () => {
+    const shared = notebook({
+      id: "shared-notebook",
+      title: "Shared Notebook",
+      scope: "viewer",
+      updatedAt: "2026-06-24T00:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const withDisplay = { ...shared, owner_display: "Mara Osei" };
+
+    assert.equal(isCloudNotebookListItem(withDisplay), true);
+    assert.equal(isCloudNotebookListItem({ ...shared, owner_display: 42 }), false);
+
+    const model = projectCloudNotebookDashboard([withDisplay]);
+    assert.equal(model.continueRow?.ownerLabel, "Mara Osei");
+    assert.equal(model.continueRow?.ownerInitials, "MO");
+
+    // Without a profile display, the principal-derived fallback still applies.
+    const fallback = projectCloudNotebookDashboard([shared]);
+    assert.notEqual(fallback.continueRow?.ownerLabel, "Mara Osei");
+  });
+
+  it("threads room peers through list-item validation and active filtering", () => {
+    const withPeers = notebook({
+      id: "presence-notebook",
+      title: "Presence Notebook",
+      scope: "owner",
+      updatedAt: "2026-06-24T00:00:00.000Z",
+      latestRevisionId: null,
+      peers: [
+        {
+          participant_key: "user:dev:bob",
+          actor_label: "user:dev:bob/browser:tab",
+          display_name: "Bob",
+          connection_scope: "editor",
+        },
+      ],
+    });
+
+    assert.equal(isCloudNotebookListItem(withPeers), true);
+    assert.equal(
+      isCloudNotebookListItem({
+        ...withPeers,
+        peers: [{ participant_key: "user:dev:bob", actor_label: 42, connection_scope: "editor" }],
+      }),
+      false,
+    );
+
+    const view = projectCloudNotebookDashboardView(projectCloudNotebookDashboard([withPeers]), {
+      filterId: "compute",
+    });
+    assert.deepEqual(
+      view.sections.map((section) => [section.id, section.notebooks[0]?.notebook_id]),
+      [["compute", "presence-notebook"]],
+    );
   });
 
   it("threads notebook cover through list-item validation and dashboard rows", () => {
@@ -815,6 +890,7 @@ function notebook(input: {
   composition?: CloudNotebookListItem["composition"];
   cover?: CloudNotebookListItem["cover"];
   language?: string;
+  peers?: CloudNotebookListItem["peers"];
 }): CloudNotebookListItem {
   return {
     notebook_id: input.id,
@@ -828,6 +904,7 @@ function notebook(input: {
     ...(input.composition ? { composition: input.composition } : {}),
     ...(input.cover ? { cover: input.cover } : {}),
     ...(input.language ? { language: input.language } : {}),
+    ...(input.peers ? { peers: input.peers } : {}),
     viewer_url: `/n/${input.id}/notebook`,
     endpoints: {
       catalog: `/api/n/${input.id}`,

@@ -13,10 +13,12 @@ export interface CloudNotebookListItem {
   created_at: string;
   updated_at: string;
   latest_revision_id: string | null;
+  owner_display?: string;
   compute_session?: NotebookComputeSessionSummary | null;
   composition?: CloudNotebookComposition;
   cover?: CloudNotebookCover;
   language?: string;
+  peers?: CloudNotebookPresencePeer[];
   viewer_url: string;
   endpoints: {
     catalog: string;
@@ -34,6 +36,13 @@ export interface CloudNotebookComposition {
 export interface CloudNotebookCover {
   blob_hash: string;
   mime: "image/png" | "image/jpeg" | "image/svg+xml";
+}
+
+export interface CloudNotebookPresencePeer {
+  participant_key: string;
+  actor_label: string;
+  display_name?: string;
+  connection_scope: "viewer" | "editor" | "owner" | "runtime_peer";
 }
 
 export type CloudNotebookDashboardRuntimeStatus =
@@ -301,11 +310,30 @@ export function isCloudNotebookListItem(value: unknown): value is CloudNotebookL
     (candidate.composition === undefined || isCloudNotebookComposition(candidate.composition)) &&
     (candidate.cover === undefined || isCloudNotebookCover(candidate.cover)) &&
     (candidate.language === undefined || typeof candidate.language === "string") &&
+    (candidate.owner_display === undefined || typeof candidate.owner_display === "string") &&
+    (candidate.peers === undefined ||
+      (Array.isArray(candidate.peers) && candidate.peers.every(isCloudNotebookPresencePeer))) &&
     typeof candidate.viewer_url === "string" &&
     Boolean(candidate.endpoints) &&
     typeof candidate.endpoints?.catalog === "string" &&
     typeof candidate.endpoints?.acl === "string" &&
     typeof candidate.endpoints?.access_requests === "string"
+  );
+}
+
+function isCloudNotebookPresencePeer(value: unknown): value is CloudNotebookPresencePeer {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<CloudNotebookPresencePeer>;
+  return (
+    typeof candidate.participant_key === "string" &&
+    typeof candidate.actor_label === "string" &&
+    (candidate.display_name === undefined || typeof candidate.display_name === "string") &&
+    (candidate.connection_scope === "viewer" ||
+      candidate.connection_scope === "editor" ||
+      candidate.connection_scope === "owner" ||
+      candidate.connection_scope === "runtime_peer")
   );
 }
 
@@ -344,7 +372,7 @@ function cloudNotebookDashboardFilters(
 ): CloudNotebookDashboardFilter[] {
   const generatedCount = notebooks.filter(cloudNotebookIsGeneratedRun).length;
   const ownerCount = notebooks.filter((notebook) => notebook.scope === "owner").length;
-  const computeCount = notebooks.filter(cloudNotebookHasComputeSession).length;
+  const activeCount = notebooks.filter(cloudNotebookIsActiveNow).length;
   const publishedCount = notebooks.filter((notebook) =>
     Boolean(notebook.latest_revision_id),
   ).length;
@@ -359,8 +387,8 @@ function cloudNotebookDashboardFilters(
   if (sharedCount > 0) {
     filters.push({ id: "shared", label: "Shared with me", count: sharedCount, group: "work" });
   }
-  if (computeCount > 0) {
-    filters.push({ id: "compute", label: "Compute", count: computeCount, group: "work" });
+  if (activeCount > 0) {
+    filters.push({ id: "compute", label: "Active now", count: activeCount, group: "work" });
   }
   if (publishedCount > 0) {
     filters.push({ id: "published", label: "Published", count: publishedCount, group: "work" });
@@ -559,12 +587,12 @@ function computeNotebookSection(
 ): CloudNotebookDashboardSection {
   return {
     action: null,
-    detail: bucketDetail(notebooks.length, "with compute state"),
+    detail: bucketDetail(notebooks.length, "active now"),
     id: "compute",
     notebooks,
     overflowAction: null,
     rows: dashboardRows(notebooks),
-    title: "Active compute",
+    title: "Active now",
     totalCount: notebooks.length,
   };
 }
@@ -646,7 +674,9 @@ function dashboardRow(notebook: CloudNotebookListItem | null): CloudNotebookDash
   if (!notebook) {
     return null;
   }
-  const ownerLabel = cloudNotebookOwnerLabel(notebook.owner_principal);
+  const ownerDisplaySource =
+    notebook.owner_display?.trim() || cloudNotebookOwnerLabel(notebook.owner_principal);
+  const ownerLabel = notebook.scope === "owner" ? "You" : ownerDisplaySource;
   return {
     ...(notebook.composition ? { composition: notebook.composition } : {}),
     contextLabel: cloudNotebookDashboardRowContextLabel(notebook),
@@ -658,7 +688,7 @@ function dashboardRow(notebook: CloudNotebookListItem | null): CloudNotebookDash
       ? null
       : cloudNotebookShortId(notebook.notebook_id),
     notebook,
-    ownerInitials: cloudNotebookOwnerInitials(ownerLabel),
+    ownerInitials: cloudNotebookOwnerInitials(ownerDisplaySource),
     ownerLabel,
     runtimeStatus: cloudNotebookDashboardRuntimeStatus(notebook),
   };
@@ -747,6 +777,14 @@ function cloudNotebookHasComputeSession(notebook: CloudNotebookListItem): boolea
   return Boolean(notebook.compute_session);
 }
 
+function cloudNotebookHasPresencePeers(notebook: CloudNotebookListItem): boolean {
+  return Boolean(notebook.peers?.length);
+}
+
+function cloudNotebookIsActiveNow(notebook: CloudNotebookListItem): boolean {
+  return cloudNotebookHasComputeSession(notebook) || cloudNotebookHasPresencePeers(notebook);
+}
+
 function isCloudNotebookComposition(value: unknown): value is CloudNotebookComposition {
   if (!value || typeof value !== "object") {
     return false;
@@ -801,7 +839,7 @@ function cloudNotebookMatchesFilter(
     case "shared":
       return notebook.scope !== "owner";
     case "compute":
-      return cloudNotebookHasComputeSession(notebook);
+      return cloudNotebookIsActiveNow(notebook);
     case "published":
       return Boolean(notebook.latest_revision_id);
     case "generated":
@@ -820,6 +858,7 @@ function cloudNotebookMatchesSearch(notebook: CloudNotebookListItem, query: stri
     notebook.latest_revision_id ? "published" : "private",
     cloudNotebookDisplayTitle(notebook),
     notebook.compute_session ? "compute runtime workstation active starting stale" : null,
+    notebook.peers?.length ? "active now editing presence peers" : null,
   ]
     .filter(Boolean)
     .join(" ")
@@ -843,7 +882,7 @@ function cloudNotebookDashboardEmptyMessage(
     case "shared":
       return "No notebooks have been shared with this account.";
     case "compute":
-      return "No notebooks have active compute state.";
+      return "No notebooks are active now.";
     case "published":
       return "No published notebooks yet.";
     case "generated":

@@ -61,6 +61,20 @@ export interface ListedNotebookRow extends NotebookRow {
   scope: NotebookAclRow["scope"];
 }
 
+export interface NotebookRoomSummaryOccupant {
+  participant_key: string;
+  actor_label: string;
+  display_name?: string;
+  connection_scope: AuthenticatedConnection["scope"];
+}
+
+export interface NotebookRoomSummary {
+  version: 1;
+  notebook_id: string;
+  occupants: NotebookRoomSummaryOccupant[];
+  updated_at: string;
+}
+
 export interface NotebookAclInput {
   notebookId: string;
   subjectKind: NotebookAclRow["subject_kind"];
@@ -425,6 +439,10 @@ export function commsDocSnapshotKey(runtimeStateDocId: string, headsHash: string
 
 export function blobKey(notebookId: string, hash: string): string {
   return `n/${encodePathComponent(notebookId)}/blobs/${encodePathComponent(hash)}`;
+}
+
+export function roomSummaryKey(notebookId: string): string {
+  return `n/${encodePathComponent(notebookId)}/room-summary.json`;
 }
 
 export async function ensureCatalogSchema(env: Env): Promise<void> {
