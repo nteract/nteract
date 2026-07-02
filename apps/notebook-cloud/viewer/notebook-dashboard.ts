@@ -14,6 +14,7 @@ export interface CloudNotebookListItem {
   updated_at: string;
   latest_revision_id: string | null;
   compute_session?: NotebookComputeSessionSummary | null;
+  composition?: CloudNotebookComposition;
   viewer_url: string;
   endpoints: {
     catalog: string;
@@ -21,6 +22,20 @@ export interface CloudNotebookListItem {
     access_requests: string;
   };
 }
+
+export interface CloudNotebookComposition {
+  code: number;
+  markdown: number;
+  raw: number;
+}
+
+export type CloudNotebookDashboardRuntimeStatus =
+  | "executing"
+  | "ready"
+  | "starting"
+  | "stale"
+  | "error"
+  | "none";
 
 export type CloudNotebookDashboardFilterId =
   | "all"
@@ -66,10 +81,15 @@ export interface CloudNotebookDashboardSection {
 }
 
 export interface CloudNotebookDashboardRow {
+  composition?: CloudNotebookComposition;
   contextLabel: string | null;
+  environmentLabel?: string;
   facts: readonly CloudNotebookDashboardRowFact[];
   identityLabel: string | null;
   notebook: CloudNotebookListItem;
+  ownerInitials: string;
+  ownerLabel: string;
+  runtimeStatus: CloudNotebookDashboardRuntimeStatus;
 }
 
 export interface CloudNotebookDashboardRowFact {
@@ -246,6 +266,7 @@ export function isCloudNotebookListItem(value: unknown): value is CloudNotebookL
     (candidate.compute_session === undefined ||
       candidate.compute_session === null ||
       isNotebookComputeSessionSummary(candidate.compute_session)) &&
+    (candidate.composition === undefined || isCloudNotebookComposition(candidate.composition)) &&
     typeof candidate.viewer_url === "string" &&
     Boolean(candidate.endpoints) &&
     typeof candidate.endpoints?.catalog === "string" &&
@@ -578,14 +599,41 @@ function dashboardRow(notebook: CloudNotebookListItem | null): CloudNotebookDash
   if (!notebook) {
     return null;
   }
+  const ownerLabel = cloudNotebookOwnerLabel(notebook.owner_principal);
   return {
+    ...(notebook.composition ? { composition: notebook.composition } : {}),
     contextLabel: cloudNotebookDashboardRowContextLabel(notebook),
+    ...(notebook.compute_session?.environment_label
+      ? { environmentLabel: notebook.compute_session.environment_label }
+      : {}),
     facts: Object.freeze(cloudNotebookDashboardRowFacts(notebook)),
     identityLabel: cloudNotebookHasTitle(notebook)
       ? null
       : cloudNotebookShortId(notebook.notebook_id),
     notebook,
+    ownerInitials: cloudNotebookOwnerInitials(ownerLabel),
+    ownerLabel,
+    runtimeStatus: cloudNotebookDashboardRuntimeStatus(notebook),
   };
+}
+
+export function cloudNotebookDashboardRuntimeStatus(
+  notebook: CloudNotebookListItem,
+): CloudNotebookDashboardRuntimeStatus {
+  const session = notebook.compute_session;
+  if (!session) {
+    return "none";
+  }
+  switch (session.status) {
+    case "starting":
+      return "starting";
+    case "stale":
+      return "stale";
+    case "error":
+      return "error";
+    case "active":
+      return session.queue_depth > 0 ? "executing" : "ready";
+  }
 }
 
 function cloudNotebookDashboardRowContextLabel(notebook: CloudNotebookListItem): string | null {
@@ -650,6 +698,48 @@ function cloudNotebookIsGeneratedRun(notebook: CloudNotebookListItem): boolean {
 
 function cloudNotebookHasComputeSession(notebook: CloudNotebookListItem): boolean {
   return Boolean(notebook.compute_session);
+}
+
+function isCloudNotebookComposition(value: unknown): value is CloudNotebookComposition {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<CloudNotebookComposition>;
+  return (
+    isNonNegativeFiniteNumber(candidate.code) &&
+    isNonNegativeFiniteNumber(candidate.markdown) &&
+    isNonNegativeFiniteNumber(candidate.raw)
+  );
+}
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function cloudNotebookOwnerLabel(principal: string): string {
+  const trimmed = principal.trim();
+  if (!trimmed) {
+    return "Unknown";
+  }
+  const emailLocal = trimmed.match(/([^:@\s]+)@[^@\s]+$/u)?.[1];
+  if (emailLocal) {
+    return emailLocal;
+  }
+  const parts = trimmed.split(":").filter(Boolean);
+  return parts.at(-1) ?? trimmed;
+}
+
+function cloudNotebookOwnerInitials(label: string): string {
+  const normalized = label
+    .replace(/[_+.-]+/gu, " ")
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+  const initials =
+    normalized.length >= 2
+      ? `${normalized[0]?.[0] ?? ""}${normalized[1]?.[0] ?? ""}`
+      : (normalized[0]?.slice(0, 2) ?? label.slice(0, 2));
+  return initials.toUpperCase() || "??";
 }
 
 function cloudNotebookMatchesFilter(
