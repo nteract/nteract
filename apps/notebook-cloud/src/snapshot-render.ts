@@ -31,7 +31,13 @@ export interface SnapshotCellComposition {
 
 export interface SnapshotNotebookSummary {
   cellComposition: SnapshotCellComposition;
+  cover: SnapshotNotebookCover | null;
   language: string | null;
+}
+
+export interface SnapshotNotebookCover {
+  blobHash: string;
+  mime: "image/png" | "image/jpeg" | "image/svg+xml";
 }
 
 export interface MaterializedSnapshotPairRender {
@@ -71,6 +77,7 @@ export async function materializeSnapshotPairRenderWithSummary(
     const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json());
     const summary = {
       cellComposition: countCellComposition(cells),
+      cover: selectNotebookCoverFromCells(cells),
       language: readDetectedRuntime(handle, metadata),
     };
     const commsDocId = readOptionalCommsDocId(handle);
@@ -164,11 +171,62 @@ export function detectRuntimeFromMetadata(metadata: unknown): string | null {
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function stringLower(value: unknown): string | null {
   return typeof value === "string" ? value.toLowerCase() : null;
+}
+
+const COVER_MIME_PRIORITY = ["image/png", "image/jpeg", "image/svg+xml"] as const;
+
+export function selectNotebookCoverFromCells(cells: unknown): SnapshotNotebookCover | null {
+  try {
+    if (!Array.isArray(cells)) {
+      return null;
+    }
+    let selected: SnapshotNotebookCover | null = null;
+    for (const cell of cells) {
+      const cellRecord = objectRecord(cell);
+      const outputs = Array.isArray(cellRecord?.outputs) ? cellRecord.outputs : [];
+      for (const output of outputs) {
+        const cover = selectOutputCover(output);
+        if (cover) {
+          selected = cover;
+        }
+      }
+    }
+    return selected;
+  } catch {
+    return null;
+  }
+}
+
+function selectOutputCover(output: unknown): SnapshotNotebookCover | null {
+  const outputRecord = objectRecord(output);
+  const data = objectRecord(outputRecord?.data);
+  if (!data) {
+    return null;
+  }
+
+  for (const mime of COVER_MIME_PRIORITY) {
+    const ref = objectRecord(data[mime]);
+    const blobHash = readBlobHash(ref);
+    if (blobHash) {
+      return { blobHash, mime };
+    }
+  }
+  return null;
+}
+
+function readBlobHash(value: Record<string, unknown> | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const blob = value.blob ?? value.hash;
+  return typeof blob === "string" && blob.trim() ? blob : null;
 }
 
 export function countCellComposition(cells: unknown): SnapshotCellComposition {

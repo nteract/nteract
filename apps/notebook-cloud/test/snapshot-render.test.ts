@@ -6,6 +6,7 @@ import {
   countCellComposition,
   detectRuntimeFromMetadata,
   materializeSnapshotPairRender,
+  selectNotebookCoverFromCells,
 } from "../src/snapshot-render.ts";
 import {
   createNotebookCloudBlobResolver,
@@ -305,6 +306,92 @@ async function readJson(url: URL): Promise<Record<string, unknown>> {
 }
 
 describe("snapshot summary derivation helpers", () => {
+  it("selects the last image output across cells", () => {
+    assert.deepEqual(
+      selectNotebookCoverFromCells([
+        {
+          outputs: [
+            {
+              data: {
+                "image/png": { blob: "first-png" },
+              },
+            },
+          ],
+        },
+        {
+          outputs: [
+            {
+              data: {
+                "image/svg+xml": { blob: "last-svg" },
+              },
+            },
+          ],
+        },
+      ]),
+      { blobHash: "last-svg", mime: "image/svg+xml" },
+    );
+  });
+
+  it("uses raster MIME priority only within one output's alternates", () => {
+    assert.deepEqual(
+      selectNotebookCoverFromCells([
+        {
+          outputs: [
+            {
+              data: {
+                "image/jpeg": { blob: "plot-jpeg" },
+                "image/png": { blob: "plot-png" },
+                "image/svg+xml": { blob: "plot-svg" },
+              },
+            },
+          ],
+        },
+      ]),
+      { blobHash: "plot-png", mime: "image/png" },
+    );
+    assert.deepEqual(
+      selectNotebookCoverFromCells([
+        {
+          outputs: [
+            {
+              data: {
+                "image/png": { blob: "earlier-png" },
+              },
+            },
+            {
+              data: {
+                "image/jpeg": { blob: "later-jpeg" },
+              },
+            },
+          ],
+        },
+      ]),
+      { blobHash: "later-jpeg", mime: "image/jpeg" },
+    );
+  });
+
+  it("ignores non-image and malformed output manifests", () => {
+    assert.equal(
+      selectNotebookCoverFromCells([
+        { outputs: [{ data: { "text/html": { blob: "html-blob" } } }] },
+        { outputs: [{ data: { "image/png": { inline: "not-addressable" } } }] },
+        { outputs: [{ data: { "image/jpeg": "base64" } }] },
+        { outputs: [{ data: { "image/svg+xml": { hash: "" } } }] },
+        null,
+      ]),
+      null,
+    );
+  });
+
+  it("accepts hash-backed ContentRefs for image alternates", () => {
+    assert.deepEqual(
+      selectNotebookCoverFromCells([
+        { outputs: [{ data: { "image/jpeg": { hash: "jpeg-hash" } } }] },
+      ]),
+      { blobHash: "jpeg-hash", mime: "image/jpeg" },
+    );
+  });
+
   it("counts only code/markdown/raw cell types and ignores unknowns", () => {
     assert.deepEqual(
       countCellComposition([

@@ -269,6 +269,45 @@ describe("Worker artifact routes", () => {
     assert.match(html, /published revision revision-pub/);
   });
 
+  it("emits public OG image metadata for raster revision covers", async () => {
+    const env = fakeEnv();
+    const coverHash = "public-meta-cover-hash";
+    seedNotebook(env, "public-meta-cover");
+    const notebook = env.DB.notebooks.get("public-meta-cover");
+    assert.ok(notebook);
+    notebook.title = "Public Cover";
+    seedRevision(env, {
+      id: "revision-public-cover",
+      notebookId: "public-meta-cover",
+      coverBlobHash: coverHash,
+      coverMime: "image/jpeg",
+    });
+    seedAcl(env, {
+      notebookId: "public-meta-cover",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+    await env.NOTEBOOK_SNAPSHOTS.put(blobKey("public-meta-cover", coverHash), new Uint8Array([1]), {
+      httpMetadata: { contentType: "image/jpeg" },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/public-meta-cover/public-cover"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(
+      html,
+      /<meta property="og:image" content="http:\/\/localhost\/n\/public-meta-cover\/r\/latest\/ogImage\.png" \/>/,
+    );
+    assert.match(html, /<meta property="og:image:type" content="image\/jpeg" \/>/);
+    assert.match(html, /<meta name="twitter:card" content="summary_large_image" \/>/);
+  });
+
   it("keeps private notebook titles out of server-rendered viewer metadata", async () => {
     const env = fakeEnv();
     seedNotebook(env, "private-meta-demo");
@@ -3541,6 +3580,144 @@ describe("Worker artifact routes", () => {
     assert.equal(env.DB.blobs.get(`runtime-demo:${hash}`)?.content_type, "image/png");
   });
 
+  it("returns 404 for latest OG image when the notebook is not public", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "private-og-demo");
+    seedRevision(env, {
+      id: "revision-private-og",
+      notebookId: "private-og-demo",
+      coverBlobHash: "private-og-cover",
+      coverMime: "image/png",
+    });
+    await env.NOTEBOOK_SNAPSHOTS.put(
+      blobKey("private-og-demo", "private-og-cover"),
+      new Uint8Array([1]),
+      { httpMetadata: { contentType: "image/png" } },
+    );
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/private-og-demo/r/latest/ogImage.png"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+  });
+
+  it("returns 404 for latest OG image when the public revision has no cover", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "no-cover-og-demo");
+    seedRevision(env, { id: "revision-no-cover-og", notebookId: "no-cover-og-demo" });
+    seedAcl(env, {
+      notebookId: "no-cover-og-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/no-cover-og-demo/r/latest/ogImage.png"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+  });
+
+  it("returns 404 for latest OG image when the public cover is SVG-only", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "svg-og-demo");
+    seedRevision(env, {
+      id: "revision-svg-og",
+      notebookId: "svg-og-demo",
+      coverBlobHash: "svg-cover",
+      coverMime: "image/svg+xml",
+    });
+    seedAcl(env, {
+      notebookId: "svg-og-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+    await env.NOTEBOOK_SNAPSHOTS.put(blobKey("svg-og-demo", "svg-cover"), "<svg></svg>", {
+      httpMetadata: { contentType: "image/svg+xml" },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/svg-og-demo/r/latest/ogImage.png"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+  });
+
+  it("returns 404 for latest OG image when the cover blob is missing", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "missing-cover-og-demo");
+    seedRevision(env, {
+      id: "revision-missing-cover-og",
+      notebookId: "missing-cover-og-demo",
+      coverBlobHash: "missing-cover",
+      coverMime: "image/jpeg",
+    });
+    seedAcl(env, {
+      notebookId: "missing-cover-og-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/missing-cover-og-demo/r/latest/ogImage.png"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+  });
+
+  it("serves the latest public raster cover as an OG image", async () => {
+    const env = fakeEnv();
+    const body = new Uint8Array([137, 80, 78, 71]);
+    const coverHash = "public-og-cover";
+    seedNotebook(env, "public-og-demo");
+    seedRevision(env, {
+      id: "revision-public-og",
+      notebookId: "public-og-demo",
+      coverBlobHash: coverHash,
+      coverMime: "image/png",
+    });
+    seedAcl(env, {
+      notebookId: "public-og-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+    await env.NOTEBOOK_SNAPSHOTS.put(blobKey("public-og-demo", coverHash), body, {
+      httpMetadata: { contentType: "image/png" },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/public-og-demo/r/latest/ogImage.png"),
+      env,
+      fakeContext(),
+    );
+    const head = await worker.fetch(
+      new Request("http://localhost/n/public-og-demo/r/latest/ogImage.png", { method: "HEAD" }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), "image/png");
+    assert.equal(response.headers.get("Cache-Control"), "public, max-age=300");
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), body);
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get("Content-Type"), "image/png");
+    assert.equal(head.headers.get("Cache-Control"), "public, max-age=300");
+  });
+
   it("caches authorized immutable blob reads at the Worker edge", async () => {
     const env = fakeEnv();
     seedNotebook(env, "blob-cache-demo");
@@ -5396,6 +5573,166 @@ describe("Worker artifact routes", () => {
     assert.equal(row?.language, "python");
   });
 
+  it("persists snapshot covers from image output manifests for list rows", async () => {
+    const env = fakeEnv();
+    const coverHash = "fake_image_blob_hash_for_fixture_testing_only_not_real";
+    const [notebookBytes, runtimeStateBytes] = await Promise.all([
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/display_data_output/doc.bin",
+          import.meta.url,
+        ),
+      ),
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/display_data_output/state_doc.bin",
+          import.meta.url,
+        ),
+      ),
+    ]);
+    await env.NOTEBOOK_SNAPSHOTS.put(blobKey("cover-demo", coverHash), new Uint8Array([1, 2, 3]), {
+      httpMetadata: { contentType: "image/png" },
+    });
+
+    const runtimePut = await ownerPut(
+      env,
+      "/api/n/cover-demo/runtime-snapshots/runtime-display",
+      runtimeStateBytes,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:display-data",
+      },
+    );
+    assert.equal(runtimePut.status, 201);
+
+    const notebookPut = await ownerPut(
+      env,
+      "/api/n/cover-demo/snapshots/heads-display",
+      notebookBytes,
+      {
+        "X-Runtime-Heads-Hash": "runtime-display",
+        "X-Runtime-State-Doc-Id": "runtime:display-data",
+      },
+    );
+    assert.equal(notebookPut.status, 201);
+    assert.equal(env.DB.revisions[0]?.cover_blob_hash, coverHash);
+    assert.equal(env.DB.revisions[0]?.cover_mime, "image/png");
+
+    const listResponse = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(listResponse.status, 200);
+    const listBody = (await listResponse.json()) as {
+      notebooks: Array<{
+        cover?: { blob_hash: string; mime: string };
+        notebook_id: string;
+      }>;
+    };
+    assert.deepEqual(
+      listBody.notebooks.find((notebook) => notebook.notebook_id === "cover-demo")?.cover,
+      { blob_hash: coverHash, mime: "image/png" },
+    );
+  });
+
+  it("ignores malformed image output manifests when deriving snapshot covers", async () => {
+    const env = fakeEnv();
+    const [notebookBytes, runtimeStateBytes] = await Promise.all([
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/output_streaming/doc.bin",
+          import.meta.url,
+        ),
+      ),
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/output_streaming/state_doc.bin",
+          import.meta.url,
+        ),
+      ),
+    ]);
+    const fixtureHandle = NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+    const cells = JSON.parse(fixtureHandle.get_cells_json()) as Array<{
+      execution_id?: unknown;
+    }>;
+    fixtureHandle.free();
+    const executionId = cells[0]?.execution_id;
+    if (typeof executionId !== "string") {
+      assert.fail("output_streaming fixture should have a synced execution id");
+    }
+
+    const runtimeHandle = RuntimeStatePeerHandle.load(runtimeStateBytes, "runtime:test");
+    let malformedRuntimeStateBytes: Uint8Array;
+    try {
+      runtimeHandle.append_output_json(
+        executionId,
+        JSON.stringify({
+          output_type: "display_data",
+          output_id: "malformed-image-output",
+          data: {
+            "image/png": "not-a-content-ref",
+          },
+          metadata: {},
+        }),
+      );
+      malformedRuntimeStateBytes = runtimeHandle.save();
+    } finally {
+      runtimeHandle.free();
+    }
+
+    const runtimePut = await ownerPut(
+      env,
+      "/api/n/malformed-cover-demo/runtime-snapshots/runtime-malformed",
+      malformedRuntimeStateBytes,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:output-streaming",
+      },
+    );
+    assert.equal(runtimePut.status, 201);
+
+    const notebookPut = await ownerPut(
+      env,
+      "/api/n/malformed-cover-demo/snapshots/heads-malformed",
+      notebookBytes,
+      {
+        "X-Runtime-Heads-Hash": "runtime-malformed",
+        "X-Runtime-State-Doc-Id": "runtime:output-streaming",
+      },
+    );
+    assert.equal(notebookPut.status, 201);
+    assert.equal(env.DB.revisions[0]?.cover_blob_hash, null);
+    assert.equal(env.DB.revisions[0]?.cover_mime, null);
+
+    const listResponse = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(listResponse.status, 200);
+    const listBody = (await listResponse.json()) as {
+      notebooks: Array<{
+        cover?: unknown;
+        notebook_id: string;
+      }>;
+    };
+    assert.equal(
+      listBody.notebooks.find((notebook) => notebook.notebook_id === "malformed-cover-demo")?.cover,
+      undefined,
+    );
+  });
+
   it("does not fail snapshot publish when derived summary persistence fails", async () => {
     const env = fakeEnv();
     env.DB.failNotebookSummaryUpdate = true;
@@ -5456,6 +5793,72 @@ describe("Worker artifact routes", () => {
         (entry) =>
           entry[0] === "[notebook-cloud]" &&
           (entry[1] as { event?: string }).event === "snapshot.summary.update_failed",
+      ),
+    );
+  });
+
+  it("does not fail snapshot publish when derived cover persistence fails", async () => {
+    const env = fakeEnv();
+    env.DB.failNotebookCoverUpdate = true;
+    const coverHash = "fake_image_blob_hash_for_fixture_testing_only_not_real";
+    const [notebookBytes, runtimeStateBytes] = await Promise.all([
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/display_data_output/doc.bin",
+          import.meta.url,
+        ),
+      ),
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/display_data_output/state_doc.bin",
+          import.meta.url,
+        ),
+      ),
+    ]);
+    await env.NOTEBOOK_SNAPSHOTS.put(
+      blobKey("cover-fail-open", coverHash),
+      new Uint8Array([1, 2, 3]),
+      { httpMetadata: { contentType: "image/png" } },
+    );
+
+    const runtimePut = await ownerPut(
+      env,
+      "/api/n/cover-fail-open/runtime-snapshots/runtime-display",
+      runtimeStateBytes,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:display-data",
+      },
+    );
+    assert.equal(runtimePut.status, 201);
+
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    let response: Response;
+    try {
+      response = await ownerPut(
+        env,
+        "/api/n/cover-fail-open/snapshots/heads-display",
+        notebookBytes,
+        {
+          "X-Runtime-Heads-Hash": "runtime-display",
+          "X-Runtime-State-Doc-Id": "runtime:display-data",
+        },
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(response.status, 201);
+    assert.equal(env.DB.revisions.length, 1);
+    assert.equal(env.DB.revisions[0]?.cover_blob_hash, null);
+    assert.ok(
+      warnings.some(
+        (entry) =>
+          entry[0] === "[notebook-cloud]" &&
+          (entry[1] as { event?: string }).event === "snapshot.cover.update_failed",
       ),
     );
   });
@@ -5681,13 +6084,17 @@ describe("Worker artifact routes", () => {
 });
 
 describe("catalog schema migrations", () => {
-  it("adds cell_composition and language via ALTER TABLE when absent", async () => {
+  it("adds dashboard summary and cover columns via ALTER TABLE when absent", async () => {
     const db = new FakeD1();
     // Simulate a pre-migration deployment: the columns do not exist yet.
     const notebookColumns = db.tableColumns.get("notebooks");
     assert.ok(notebookColumns);
     notebookColumns.delete("cell_composition");
     notebookColumns.delete("language");
+    const revisionColumns = db.tableColumns.get("notebook_revisions");
+    assert.ok(revisionColumns);
+    revisionColumns.delete("cover_blob_hash");
+    revisionColumns.delete("cover_mime");
 
     const env = fakeEnv({ DB: db });
     await runCatalogMigrations(env);
@@ -5695,6 +6102,9 @@ describe("catalog schema migrations", () => {
     const migrated = db.tableColumns.get("notebooks");
     assert.ok(migrated?.has("cell_composition"), "cell_composition added by migration");
     assert.ok(migrated?.has("language"), "language added by migration");
+    const migratedRevisions = db.tableColumns.get("notebook_revisions");
+    assert.ok(migratedRevisions?.has("cover_blob_hash"), "cover_blob_hash added by migration");
+    assert.ok(migratedRevisions?.has("cover_mime"), "cover_mime added by migration");
   });
 });
 
@@ -6482,6 +6892,41 @@ function seedAcl(
   });
 }
 
+function seedRevision(
+  env: FakeEnv,
+  input: {
+    id: string;
+    notebookId: string;
+    coverBlobHash?: string | null;
+    coverMime?: string | null;
+  },
+): void {
+  env.DB.revisions.push({
+    id: input.id,
+    notebook_id: input.notebookId,
+    runtime_state_doc_id: `runtime:${input.notebookId}`,
+    notebook_heads_hash: `heads:${input.id}`,
+    runtime_heads_hash: `runtime:${input.id}`,
+    comms_heads_hash: null,
+    comments_heads_hash: null,
+    snapshot_key: snapshotKey(input.notebookId, `heads:${input.id}`),
+    runtime_snapshot_key: runtimeStateSnapshotKey(
+      `runtime:${input.notebookId}`,
+      `runtime:${input.id}`,
+    ),
+    comms_snapshot_key: null,
+    comments_snapshot_key: null,
+    cover_blob_hash: input.coverBlobHash ?? null,
+    cover_mime: input.coverMime ?? null,
+    actor_label: "user:dev:alice/desktop:test",
+    created_at: "2026-05-22T00:00:00.000Z",
+  });
+  const notebook = env.DB.notebooks.get(input.notebookId);
+  if (notebook) {
+    notebook.latest_revision_id = input.id;
+  }
+}
+
 function seedWorkstation(
   env: FakeEnv,
   input: {
@@ -6863,6 +7308,8 @@ interface NotebookRow {
   updated_at: string;
   latest_revision_id: string | null;
   cell_composition: string | null;
+  cover_blob_hash?: string | null;
+  cover_mime?: string | null;
   language: string | null;
 }
 
@@ -6901,6 +7348,8 @@ interface RevisionRow {
   runtime_snapshot_key: string | null;
   comms_snapshot_key: string | null;
   comments_snapshot_key: string | null;
+  cover_blob_hash: string | null;
+  cover_mime: string | null;
   actor_label: string;
   created_at: string;
 }
@@ -6981,12 +7430,15 @@ class FakeD1 implements D1Database {
         "runtime_snapshot_key",
         "comms_snapshot_key",
         "comments_snapshot_key",
+        "cover_blob_hash",
+        "cover_mime",
         "actor_label",
         "created_at",
       ]),
     ],
   ]);
   afterBlockedOwnerDelete?: () => void;
+  failNotebookCoverUpdate = false;
   failNotebookSummaryUpdate = false;
 
   prepare(query: string): D1PreparedStatement {
@@ -7834,9 +8286,26 @@ class FakeD1Statement implements D1PreparedStatement {
         runtime_snapshot_key: runtimeSnapshotKey,
         comms_snapshot_key: commsSnapshotKey,
         comments_snapshot_key: commentsSnapshotKey,
+        cover_blob_hash: null,
+        cover_mime: null,
         actor_label: actorLabel,
         created_at: new Date().toISOString(),
       });
+    } else if (
+      this.query.includes("UPDATE notebook_revisions") &&
+      this.query.includes("cover_blob_hash")
+    ) {
+      if (this.db.failNotebookCoverUpdate) {
+        throw new Error("fake cover update failure");
+      }
+      const [coverBlobHash, coverMime, revisionId] = this.values as [string, string, string];
+      const revision = this.db.revisions.find((row) => row.id === revisionId);
+      if (revision) {
+        revision.cover_blob_hash = coverBlobHash;
+        revision.cover_mime = coverMime;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (
       this.query.includes("UPDATE notebooks") &&
       this.query.includes("latest_revision_id")
@@ -8121,6 +8590,14 @@ class FakeD1Statement implements D1PreparedStatement {
       );
       return (notebook?.latest_revision_id && publicViewer ? notebook : null) as T | null;
     }
+    if (this.query.includes("FROM notebook_revisions")) {
+      const [notebookId, revisionId] = this.values as [string, string];
+      return (
+        (this.db.revisions.find(
+          (revision) => revision.notebook_id === notebookId && revision.id === revisionId,
+        ) as T | undefined) ?? null
+      );
+    }
     if (this.query.includes("FROM notebooks")) {
       return (this.db.notebooks.get(this.values[0] as string) as T | undefined) ?? null;
     }
@@ -8255,8 +8732,13 @@ class FakeD1Statement implements D1PreparedStatement {
         const rank = scopeRank(row.scope);
         const existing = byNotebook.get(notebook.id);
         if (!existing || rank > existing.scopeRank) {
+          const revision = this.db.revisions.find(
+            (candidate) => candidate.id === notebook.latest_revision_id,
+          );
           byNotebook.set(notebook.id, {
             ...notebook,
+            cover_blob_hash: revision?.cover_blob_hash ?? null,
+            cover_mime: revision?.cover_mime ?? null,
             scope: row.scope,
             scopeRank: rank,
           });
