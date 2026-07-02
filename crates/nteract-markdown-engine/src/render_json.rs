@@ -486,6 +486,9 @@ fn collect_inline(
             context.image_title = previous_title;
         }
         NodeKind::List => collect_list(source, context, node, context.item_path.len()),
+        NodeKind::Island => {
+            context.add_island_run(node);
+        }
         _ => collect_children(source, context, &node.children, semantic),
     }
 }
@@ -730,12 +733,57 @@ impl RunContext<'_> {
         semantic: &'static str,
         rendered_html: Option<String>,
     ) -> JsonRun {
+        self.push_run(
+            source_start,
+            source_end,
+            rendered_text,
+            semantic,
+            rendered_html,
+            None,
+        )
+    }
+
+    /// Inline island (`<Badge/>` inside a paragraph). The run is zero-width on the
+    /// rendered-text axis so surrounding text runs keep tiling in place, and it
+    /// carries the island tag + content hash so the host mounts the component in
+    /// flow and the store can tell a prop edit (hash moves) from an offset shift.
+    fn add_island_run(&mut self, node: &ProjectedNode) -> JsonRun {
+        self.push_run(
+            node.span.start,
+            node.span.end,
+            String::new(),
+            "island",
+            None,
+            Some(IslandRun {
+                tag: node.attrs.island_tag.clone(),
+                inline: node.attrs.island_inline,
+                content_hash: crate::content_hash(node).to_string(),
+            }),
+        )
+    }
+
+    fn push_run(
+        &mut self,
+        source_start: usize,
+        source_end: usize,
+        rendered_text: String,
+        semantic: &'static str,
+        rendered_html: Option<String>,
+        island: Option<IslandRun>,
+    ) -> JsonRun {
         let inline_id = format!("{}:inline:{}", self.block_id, self.inline_index);
         self.inline_index += 1;
         let rendered_start = self.rendered_cursor;
         self.rendered_cursor += rendered_text.encode_utf16().count();
+        let (island_tag, island_inline, content_hash) = match island {
+            Some(island) => (island.tag, island.inline, Some(island.content_hash)),
+            None => (None, false, None),
+        };
         let run = JsonRun {
             block_id: self.block_id.clone(),
+            content_hash,
+            island_inline,
+            island_tag,
             image_alt: self.image_alt.clone(),
             image_src: self.image_src.clone(),
             image_title: self.image_title.clone(),
@@ -776,9 +824,21 @@ impl RunContext<'_> {
     }
 }
 
+/// Island metadata carried on an inline island run (`<Badge/>` in a paragraph).
+/// Block islands carry the same fields on their `JsonBlock`; inline islands have
+/// no block of their own, so the run carries them.
+struct IslandRun {
+    tag: Option<String>,
+    inline: bool,
+    content_hash: String,
+}
+
 #[derive(Clone)]
 struct JsonRun {
     block_id: String,
+    content_hash: Option<String>,
+    island_inline: bool,
+    island_tag: Option<String>,
     image_alt: Option<String>,
     image_src: Option<String>,
     image_title: Option<String>,
@@ -861,6 +921,20 @@ impl JsonRun {
         output.push(',');
         push_json_key_string(output, "semantic", self.semantic);
         output.push(',');
+        // Inline island metadata, mirroring the block island keys. Guarded on
+        // island_tag so a non-island run emits no new keys and its JSON stays
+        // byte-identical (islands are an .mdx-only, opt-in lane).
+        if let Some(island_tag) = &self.island_tag {
+            push_json_key_string(output, "islandTag", island_tag);
+            output.push(',');
+            output.push_str("\"islandInline\":");
+            output.push_str(if self.island_inline { "true" } else { "false" });
+            output.push(',');
+        }
+        if let Some(content_hash) = &self.content_hash {
+            push_json_key_string(output, "contentHash", content_hash);
+            output.push(',');
+        }
         push_json_key_span(output, "sourceSpanByte", self.source_span_byte);
         output.push(',');
         push_json_key_span(output, "sourceSpanUtf16", self.source_span_utf16);
@@ -1319,6 +1393,56 @@ mod tests {
         // the hash holds: the store carries the live element forward.
         let shifted = project("Intro paragraph.\n\n<Frog size={96} />\n");
         assert_eq!(island_hash(&shifted), base_hash);
+    }
+
+    #[test]
+    fn serializes_inline_island_as_a_run() {
+        let options = crate::MarkdownProjectOptions {
+            islands: true,
+            ..Default::default()
+        };
+        let source = "Text with <Frog /> after.\n";
+        let plan = crate::project_markdown_with_options(source, &options).unwrap();
+        let json = render_plan_json(&plan, source, "rust-wasm");
+
+        // The inline island is a run inside the paragraph, carrying its metadata.
+        assert!(json.contains("\"semantic\":\"island\""), "{json}");
+        assert!(json.contains("\"islandTag\":\"Frog\""), "{json}");
+        assert!(json.contains("\"islandInline\":true"), "{json}");
+        assert!(json.contains("\"contentHash\":\""), "{json}");
+        // The run is zero-width on the rendered axis, so the prose still tiles.
+        assert!(json.contains("Text with "), "{json}");
+        assert!(json.contains(" after."), "{json}");
+    }
+
+    #[test]
+    fn inline_island_content_hash_moves_on_prop_edit_only() {
+        let options = crate::MarkdownProjectOptions {
+            islands: true,
+            ..Default::default()
+        };
+        let project = |source: &str| {
+            let plan = crate::project_markdown_with_options(source, &options).unwrap();
+            render_plan_json(&plan, source, "rust-wasm")
+        };
+        let island_hash = |json: &str| {
+            let key = "\"contentHash\":\"";
+            let start = json.find(key).expect("inline island carries contentHash") + key.len();
+            let end = start + json[start..].find('"').unwrap();
+            json[start..end].to_string()
+        };
+
+        let base = island_hash(&project("Text with <Frog size={96} /> after.\n"));
+        // A prop edit moves the hash.
+        assert_ne!(
+            island_hash(&project("Text with <Frog size={48} /> after.\n")),
+            base
+        );
+        // An insert above only shifts offsets, so the hash holds.
+        assert_eq!(
+            island_hash(&project("Lead.\n\nText with <Frog size={96} /> after.\n")),
+            base
+        );
     }
 
     #[test]

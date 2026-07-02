@@ -98,6 +98,15 @@ struct StructuralKey {
     // two distinct nodes, which breaks id-anchored comments and collab state.
     isolation_tag: Option<String>,
     island_tag: Option<String>,
+    // island_inline distinguishes a block <Frog/> from an inline <Frog/> for the
+    // same reason: they share a kind and tag, so without this a block->inline swap
+    // would alias the id instead of remounting. They are never siblings today, but
+    // keeping it in the key means a future flow/text unification stays correct.
+    // serde(default) keeps snapshot bytes serialized before this field existed
+    // deserializable: from_bytes is total (any error means cold start), so a
+    // missing-field error would silently drop every carried-forward id.
+    #[serde(default)]
+    island_inline: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -403,14 +412,16 @@ fn parse_options(islands: bool) -> ParseOptions {
     constructs.math_flow = true;
     constructs.math_text = true;
     if islands {
+        // Flow and text both try the HTML construct before the MDX-JSX one on `<`
+        // and only fall through on failure. A complete tag like `<Frog size={96} />`
+        // is valid HTML, so html_flow/html_text would swallow the JSX before
+        // mdx_jsx_flow/mdx_jsx_text sees it. Routing block and inline `<...>` to MDX
+        // JSX requires the HTML constructs off. This is the islands-on lane only;
+        // islands-off keeps them on, so plain `.md` stays byte-identical.
         constructs.mdx_jsx_flow = true;
-        // Flow tries html_flow before mdx_jsx_flow on `<` and only falls through
-        // on failure. A complete tag like `<Frog size={96} />` is valid HTML
-        // flow, so html_flow would swallow block JSX before mdx_jsx_flow sees it.
-        // Routing block `<...>` to MDX JSX requires html_flow off; this is the
-        // islands-on lane only. Islands-off keeps html_flow true and stays
-        // byte-identical. Inline html_text stays on: Stage 2 is block JSX only.
+        constructs.mdx_jsx_text = true;
         constructs.html_flow = false;
+        constructs.html_text = false;
     }
 
     ParseOptions {
@@ -823,6 +834,7 @@ fn structural_key(node: &ProjectedNode) -> StructuralKey {
         isolation_kind: node.attrs.isolation_kind,
         isolation_tag: node.attrs.isolation_tag.clone(),
         island_tag: node.attrs.island_tag.clone(),
+        island_inline: node.attrs.island_inline,
     }
 }
 
@@ -1186,6 +1198,24 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
                     MdxMode::Disabled | MdxMode::Isolate => SafetyLane::Isolated,
                 },
                 reason: "mdx-compiles-to-active-js".to_string(),
+            };
+            children.clear();
+        }
+        mdast::Node::MdxJsxTextElement(element) if context.options.islands => {
+            // Inline island (`<Badge/>` inside a paragraph). Mirrors the block
+            // MdxJsxFlowElement island arm above, but island_inline marks it so the
+            // host mounts it in flow. island_tag is part of the structural key, so a
+            // `<Frog/>` -> `<Chart/>` swap replaces the id rather than aliasing it.
+            kind = NodeKind::Island;
+            text = "[isolated MDX region]".to_string();
+            copy_text = source_slice(context.source, &span).to_string();
+            attrs.island_tag = element.name.clone();
+            attrs.isolation_tag = element.name.clone();
+            attrs.island_inline = true;
+            attrs.isolation_kind = Some(IsolationKind::Component);
+            safety = Safety {
+                lane: SafetyLane::Isolated,
+                reason: "isolated-mdx-island".to_string(),
             };
             children.clear();
         }
@@ -1894,6 +1924,48 @@ mod tests {
     }
 
     #[test]
+    fn islands_option_projects_inline_jsx_as_inline_island() {
+        let options = MarkdownProjectOptions {
+            islands: true,
+            ..Default::default()
+        };
+        let plan = project_markdown_with_options("Text with <Frog /> after.\n", &options).unwrap();
+        assert_eq!(plan.mode, PlanMode::Mdx);
+        let paragraph = plan
+            .blocks
+            .iter()
+            .find(|block| block.kind == NodeKind::Paragraph)
+            .expect("expected a paragraph block");
+        let island = paragraph
+            .children
+            .iter()
+            .find(|child| child.kind == NodeKind::Island)
+            .expect("expected an inline Island child inside the paragraph");
+        assert_eq!(island.attrs.island_tag.as_deref(), Some("Frog"));
+        assert!(island.attrs.island_inline);
+        assert_eq!(island.attrs.isolation_kind, Some(IsolationKind::Component));
+    }
+
+    #[test]
+    fn islands_off_leaves_inline_jsx_non_island() {
+        let plan = project_markdown_with_options(
+            "Text with <Frog /> after.\n",
+            &MarkdownProjectOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.mode, PlanMode::Markdown);
+        let paragraph = plan
+            .blocks
+            .iter()
+            .find(|block| block.kind == NodeKind::Paragraph)
+            .expect("expected a paragraph block");
+        assert!(paragraph
+            .children
+            .iter()
+            .all(|child| child.kind != NodeKind::Island));
+    }
+
+    #[test]
     fn reconciler_insert_above_keeps_following_ids() {
         let (before, snapshot) = reconcile_default("alpha\n\nbeta\n");
         let alpha_id = before.blocks[0].id.clone();
@@ -1979,6 +2051,36 @@ mod tests {
             .map(|block| block.id.clone())
             .collect::<Vec<_>>();
         let restored = ReconcilerSnapshot::from_bytes(&snapshot.to_bytes());
+
+        let (after, _) =
+            reconcile_default_with_snapshot("intro\n\nalpha\n\nbeta\n\ngamma\n", &restored);
+
+        assert_eq!(after.blocks.len(), 4);
+        assert!(after.blocks[0].id.starts_with("node:reconciled:"));
+        assert_eq!(after.blocks[1].id, before_ids[0]);
+        assert_eq!(after.blocks[2].id, before_ids[1]);
+        assert_eq!(after.blocks[3].id, before_ids[2]);
+    }
+
+    #[test]
+    fn reconciler_snapshot_bytes_without_island_inline_still_carry_ids() {
+        // Snapshot bytes serialized before StructuralKey had island_inline must
+        // still deserialize and carry ids forward. from_bytes is total (any
+        // deserialize error means cold start), so without serde(default) these
+        // bytes would silently drop every carried-forward id.
+        let source = "alpha\n\nbeta\n\ngamma\n";
+        let (before, snapshot) = reconcile_default(source);
+        let before_ids = before
+            .blocks
+            .iter()
+            .map(|block| block.id.clone())
+            .collect::<Vec<_>>();
+
+        let json = String::from_utf8(snapshot.to_bytes()).unwrap();
+        let pre_field_json = json.replace(",\"island_inline\":false", "");
+        assert_ne!(pre_field_json, json, "expected the field in fresh bytes");
+        let restored = ReconcilerSnapshot::from_bytes(pre_field_json.as_bytes());
+        assert_ne!(restored, ReconcilerSnapshot::default());
 
         let (after, _) =
             reconcile_default_with_snapshot("intro\n\nalpha\n\nbeta\n\ngamma\n", &restored);
