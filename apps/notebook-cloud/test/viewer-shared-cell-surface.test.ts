@@ -757,7 +757,7 @@ test("cloud notebook list waits for app-session cookies before catalog fetches",
   );
   assert.match(
     sourceText,
-    /fetchCloudNotebookList\(authState, controller\.signal\)/,
+    /fetchCloudNotebookList\(\s*authState,\s*AbortSignal\.any\(\[controller\.signal, AbortSignal\.timeout\(/,
     "catalog fetch should still use the existing auth helper once the cookie-backed state is ready",
   );
 });

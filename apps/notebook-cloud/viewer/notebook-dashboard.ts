@@ -970,7 +970,7 @@ function bucketDetail(count: number, label: string): string {
 }
 
 function remainingNotebookDetail(count: number): string {
-  return `${count} more notebook${count === 1 ? "" : "s"} to reopen`;
+  return `+${count} more`;
 }
 
 function startOfUtcDay(time: number): number {

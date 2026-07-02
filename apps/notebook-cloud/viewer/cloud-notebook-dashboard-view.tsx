@@ -469,8 +469,12 @@ function CloudNotebookDashboardRowView({
         </span>
       </a>
       <span className="nb-col nb-col-owner">
-        <span className="nb-avatar nb-avatar-sm">{row.ownerInitials}</span>
-        <span className="nb-col-owner-name">{row.ownerLabel}</span>
+        {notebook.scope === "owner" ? null : (
+          <>
+            <span className="nb-avatar nb-avatar-sm">{row.ownerInitials}</span>
+            <span className="nb-col-owner-name">{row.ownerLabel}</span>
+          </>
+        )}
       </span>
       <span className="nb-col nb-col-lang">
         {languageLabel ? (

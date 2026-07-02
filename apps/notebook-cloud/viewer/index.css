@@ -1574,6 +1574,61 @@ body {
   padding: 0.625rem 0.75rem;
 }
 
+/* Loading skeleton: ghost rows in the list grid's shape, calm shimmer. */
+.nb-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 1.25rem;
+}
+
+.nb-loading-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 124px 128px 150px;
+  align-items: center;
+  column-gap: 14px;
+  min-height: 52px;
+  padding: 0 14px 0 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.nb-loading-bar {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--muted-foreground) 14%, transparent);
+  animation: nb-loading-fade 1.6s ease-in-out infinite;
+}
+
+.nb-loading-bar[data-w="title"] {
+  width: 62%;
+  height: 14px;
+}
+
+.nb-loading-bar[data-w="meta"] {
+  width: 70%;
+}
+
+.nb-loading-bar[data-w="time"] {
+  width: 85%;
+}
+
+@keyframes nb-loading-fade {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nb-loading-bar {
+    animation: none;
+  }
+}
+
 .cloud-notebook-list-state {
   display: inline-flex;
   align-items: center;

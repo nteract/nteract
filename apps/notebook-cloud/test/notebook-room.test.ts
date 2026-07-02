@@ -3782,6 +3782,35 @@ describe("NotebookRoom room summary", () => {
     );
   });
 
+  it("republishes when a participant's strongest scope changes (viewer to editor)", async () => {
+    const state = alarmCapableState();
+    const bucket = new FakeRoomSummaryBucket();
+    const room = new NotebookRoom(state.state, { NOTEBOOK_SNAPSHOTS: bucket } as Env);
+    const harness = roomHarness(room);
+
+    const beforeViewer = harness.roomSummaryOccupantKeys();
+    harness.peers.set(
+      "vera-view",
+      summaryPeer("vera-view", "vera", "viewer", { operator: "browser:a" }),
+    );
+    harness.publishRoomSummaryIfHumanOccupantsChanged("demo", beforeViewer, "peer_joined");
+    await state.drain();
+    assert.equal(bucket.summary("demo").occupants[0]?.connection_scope, "viewer");
+    const putsAfterViewer = bucket.puts.length;
+
+    // Same participant opens an editing connection: the dashboard only counts
+    // editing scopes, so this transition must publish immediately.
+    const beforeEditor = harness.roomSummaryOccupantKeys();
+    harness.peers.set(
+      "vera-edit",
+      summaryPeer("vera-edit", "vera", "editor", { operator: "browser:b" }),
+    );
+    harness.publishRoomSummaryIfHumanOccupantsChanged("demo", beforeEditor, "peer_joined");
+    await state.drain();
+    assert.ok(bucket.puts.length > putsAfterViewer, "scope transition republishes");
+    assert.equal(bucket.summary("demo").occupants[0]?.connection_scope, "editor");
+  });
+
   it("writes an empty summary and disarms refresh when the occupant set empties", async () => {
     const state = alarmCapableState();
     const bucket = new FakeRoomSummaryBucket();

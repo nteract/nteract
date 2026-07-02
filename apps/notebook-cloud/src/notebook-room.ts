@@ -2122,7 +2122,13 @@ export class NotebookRoom {
   }
 
   private roomSummaryOccupantKeys(): Set<string> {
-    return new Set(this.roomSummaryOccupants().map((occupant) => occupant.participant_key));
+    // Scope is part of the key: a viewer socket upgrading to an editor socket
+    // must publish immediately (the dashboard only counts editing scopes).
+    return new Set(
+      this.roomSummaryOccupants().map(
+        (occupant) => `${occupant.participant_key}\u0000${occupant.connection_scope}`,
+      ),
+    );
   }
 
   private roomSummaryOccupants(): NotebookRoomSummaryOccupant[] {
