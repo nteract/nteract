@@ -92,7 +92,9 @@ import {
 } from "./workstation-events.ts";
 import { OwnerComputeIndex, listOwnerComputeSessions } from "./compute-session-index.ts";
 import {
+  SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH,
   materializeSnapshotPairRenderWithSummary,
+  type SnapshotNotebookPreviewCell,
   type SnapshotNotebookSummary,
 } from "./snapshot-render.ts";
 import { notebookRouteSegmentTitle } from "./notebook-route-title.ts";
@@ -1427,6 +1429,7 @@ function notebookListResponseRows(
     const notebookPathId = encodeURIComponent(notebook.id);
     const apiBasePath = `/api/n/${notebookPathId}`;
     const composition = parseNotebookCellComposition(notebook.cell_composition);
+    const preview = parseNotebookPreviewCells(notebook.preview_cells);
     const computeSession =
       notebook.owner_principal === computeSessions.get(notebook.id)?.owner_principal
         ? computeSessions.get(notebook.id)
@@ -1445,6 +1448,7 @@ function notebookListResponseRows(
         ? { owner_display: principalDisplays.get(notebook.owner_principal) }
         : {}),
       ...(composition ? { composition } : {}),
+      ...(preview?.length ? { preview } : {}),
       ...(cover ? { cover } : {}),
       ...(typeof notebook.language === "string" ? { language: notebook.language } : {}),
       compute_session: computeSession,
@@ -1511,6 +1515,62 @@ function parseNotebookCellComposition(
 
 function isNotebookCellCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function parseNotebookPreviewCells(
+  value: string | null,
+): SnapshotNotebookPreviewCell[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed) || parsed.length > 2) {
+    return undefined;
+  }
+  const preview: SnapshotNotebookPreviewCell[] = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") {
+      return undefined;
+    }
+    const candidate = entry as {
+      execution_count?: unknown;
+      kind?: unknown;
+      text?: unknown;
+    };
+    if (candidate.kind !== "markdown" && candidate.kind !== "code") {
+      return undefined;
+    }
+    if (typeof candidate.text !== "string" || candidate.text.length === 0) {
+      return undefined;
+    }
+    const text = candidate.text.slice(0, SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH);
+    if (candidate.kind === "markdown") {
+      if (candidate.execution_count !== undefined) {
+        return undefined;
+      }
+      preview.push({ kind: "markdown", text });
+      continue;
+    }
+    if (candidate.execution_count === undefined) {
+      preview.push({ kind: "code", text });
+      continue;
+    }
+    const executionCount = candidate.execution_count;
+    if (
+      typeof executionCount !== "number" ||
+      !Number.isSafeInteger(executionCount) ||
+      executionCount <= 0
+    ) {
+      return undefined;
+    }
+    preview.push({ kind: "code", text, execution_count: executionCount });
+  }
+  return preview;
 }
 
 function parseNotebookListLimit(request: Request): number | Response {

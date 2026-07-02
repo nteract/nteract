@@ -17,6 +17,7 @@ export interface CloudNotebookListItem {
   compute_session?: NotebookComputeSessionSummary | null;
   composition?: CloudNotebookComposition;
   cover?: CloudNotebookCover;
+  preview?: CloudNotebookPreviewCell[];
   language?: string;
   peers?: CloudNotebookPresencePeer[];
   viewer_url: string;
@@ -37,6 +38,17 @@ export interface CloudNotebookCover {
   blob_hash: string;
   mime: "image/png" | "image/jpeg" | "image/svg+xml";
 }
+
+export type CloudNotebookPreviewCell =
+  | {
+      kind: "markdown";
+      text: string;
+    }
+  | {
+      kind: "code";
+      text: string;
+      execution_count?: number;
+    };
 
 export interface CloudNotebookPresencePeer {
   participant_key: string;
@@ -309,6 +321,7 @@ export function isCloudNotebookListItem(value: unknown): value is CloudNotebookL
       isNotebookComputeSessionSummary(candidate.compute_session)) &&
     (candidate.composition === undefined || isCloudNotebookComposition(candidate.composition)) &&
     (candidate.cover === undefined || isCloudNotebookCover(candidate.cover)) &&
+    (candidate.preview === undefined || isCloudNotebookPreviewCells(candidate.preview)) &&
     (candidate.language === undefined || typeof candidate.language === "string") &&
     (candidate.owner_display === undefined || typeof candidate.owner_display === "string") &&
     (candidate.peers === undefined ||
@@ -347,6 +360,33 @@ function isCloudNotebookCover(value: unknown): value is CloudNotebookCover {
     (candidate.mime === "image/png" ||
       candidate.mime === "image/jpeg" ||
       candidate.mime === "image/svg+xml")
+  );
+}
+
+function isCloudNotebookPreviewCells(value: unknown): value is CloudNotebookPreviewCell[] {
+  return Array.isArray(value) && value.length <= 2 && value.every(isCloudNotebookPreviewCell);
+}
+
+function isCloudNotebookPreviewCell(value: unknown): value is CloudNotebookPreviewCell {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as { execution_count?: unknown; kind?: unknown; text?: unknown };
+  if (
+    (candidate.kind !== "markdown" && candidate.kind !== "code") ||
+    typeof candidate.text !== "string"
+  ) {
+    return false;
+  }
+  if (candidate.kind === "markdown") {
+    return !("execution_count" in candidate);
+  }
+  const executionCount = candidate.execution_count;
+  return (
+    executionCount === undefined ||
+    (typeof executionCount === "number" &&
+      Number.isSafeInteger(executionCount) &&
+      executionCount > 0)
   );
 }
 

@@ -15,6 +15,7 @@ export interface NotebookRow {
   updated_at: string;
   latest_revision_id: string | null;
   cell_composition: string | null;
+  preview_cells: string | null;
   cover_blob_hash?: string | null;
   cover_mime?: string | null;
   language: string | null;
@@ -175,6 +176,7 @@ const SCHEMA_STATEMENTS = [
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     latest_revision_id TEXT,
     cell_composition TEXT,
+    preview_cells TEXT,
     language TEXT
   )`,
   `CREATE TABLE IF NOT EXISTS notebook_revisions (
@@ -412,6 +414,11 @@ const SCHEMA_MIGRATIONS = [
   },
   {
     table: "notebooks",
+    column: "preview_cells",
+    statement: `ALTER TABLE notebooks ADD COLUMN preview_cells TEXT`,
+  },
+  {
+    table: "notebooks",
     column: "language",
     statement: `ALTER TABLE notebooks ADD COLUMN language TEXT`,
   },
@@ -541,6 +548,7 @@ export async function getNotebookRow(env: Env, notebookId: string): Promise<Note
             updated_at,
             latest_revision_id,
             cell_composition,
+            preview_cells,
             language
        FROM notebooks
        WHERE id = ?`,
@@ -566,6 +574,7 @@ export async function getPublicPublishedNotebookRow(
             n.updated_at,
             n.latest_revision_id,
             n.cell_composition,
+            n.preview_cells,
             n.language
        FROM notebooks n
        JOIN notebook_acl a
@@ -616,6 +625,7 @@ export async function updateNotebookSnapshotSummary(
       raw: number;
     };
     language: string | null;
+    previewCells: Array<{ kind: "markdown" | "code"; text: string; execution_count?: number }>;
   },
 ): Promise<void> {
   if (!env.DB) {
@@ -626,10 +636,16 @@ export async function updateNotebookSnapshotSummary(
   await env.DB.prepare(
     `UPDATE notebooks
         SET cell_composition = ?,
+            preview_cells = ?,
             language = ?
       WHERE id = ?`,
   )
-    .bind(JSON.stringify(summary.cellComposition), summary.language, notebookId)
+    .bind(
+      JSON.stringify(summary.cellComposition),
+      JSON.stringify(summary.previewCells),
+      summary.language,
+      notebookId,
+    )
     .run();
 }
 
@@ -742,6 +758,7 @@ export async function listNotebooksForPrincipal(
             n.updated_at,
             n.latest_revision_id,
             n.cell_composition,
+            n.preview_cells,
             r.cover_blob_hash,
             r.cover_mime,
             n.language,
@@ -780,6 +797,7 @@ export async function listNotebooksForPrincipal(
                n.updated_at,
                n.latest_revision_id,
                n.cell_composition,
+               n.preview_cells,
                r.cover_blob_hash,
                r.cover_mime,
                n.language
@@ -1731,6 +1749,7 @@ export async function getNotebookCatalog(
             updated_at,
             latest_revision_id,
             cell_composition,
+            preview_cells,
             language
        FROM notebooks
        WHERE id = ?`,
