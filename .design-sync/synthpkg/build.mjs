@@ -58,6 +58,18 @@ const groups = [
     mods: ["ansi-output", "json-output", "traceback-output"],
   },
   {
+    // Dashboard atoms from the /n redesign - prop-driven, shared between the
+    // cloud dashboard and (eventually) desktop remote-room listings. Styling
+    // lives in src/styles/dashboard-atoms.css (shared surface, like
+    // comment-affordance.css). NotebookCommentsPanel stays deferred (katex).
+    dir: "notebook",
+    mods: ["NotebookCompositionTicks"],
+  },
+  {
+    dir: "runtime",
+    mods: ["RuntimeStatusDot", "LanguageMark"],
+  },
+  {
     // Comment affordances — prop-driven pieces of the commenting UI.
     // NotebookCommentsPanel is DEFERRED with the katex pass: it renders quotes
     // via ProjectedMarkdownView, which imports katex CSS (the same .ttf loader

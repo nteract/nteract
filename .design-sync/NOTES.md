@@ -88,6 +88,19 @@ passthroughs. Curated list in `synthpkg/build.mjs` (`groups[].dir === 'outputs'`
   markdown-output/math-output. Its `runtimed` imports (`actorInitials`,
   `onBehalfOfText`) still need a tree-shake check at that point.
 
+## Dashboard atoms (groups: notebook, runtime)
+
+- Added 2026-07-02: NotebookCompositionTicks (notebook group), RuntimeStatusDot +
+  LanguageMark (runtime group) - the /n dashboard redesign's prop-driven atoms, shared
+  with the cloud viewer. Their styling lives in `src/styles/dashboard-atoms.css`
+  (extracted FROM apps/notebook-cloud/viewer/index.css, which now @imports it) -
+  the same shared-surface pattern as ansi.css/comment-affordance.css. css-entry
+  @imports it and @sources src/components/runtime + the single
+  NotebookCompositionTicks.tsx (NOT all of components/notebook - NotebookCommentsPanel
+  stays deferred with the katex pass).
+- LanguageMark's Marks story needed cardMode: column (five chips run wide).
+- NotebookCommentsPanel unlock (katex pass) will join the notebook group.
+
 ## Groups + curated lists
 - `cfg.srcDir` is `../../src/components` (broadened from `.../ui`) so grouping resolves
   `cell/` → group `cell` and `ui/` → `general`. Adding a new cell primitive: append it to the
