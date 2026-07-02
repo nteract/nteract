@@ -1,0 +1,121 @@
+# Desktop Cloud Sessions Mediated by the Daemon
+
+**Status:** Working memo, 2026-07-01. Companion to issue #3861.
+
+## Problem
+
+Desktop-hosted cloud notebooks should be mediated by the local daemon. Today
+the only native path into a hosted room is direct: `runt mcp` (and the
+cloud-runtime-agent / workstation peers) dial `wss://<host>/n/<id>/sync` with
+`CloudWsFrameTransport` and sync as standalone peers. The desktop UI has no
+hosted path at all, and nothing gives UI, MCP agents, local kernels, and
+persistence one local authority for a cloud notebook.
+
+Target topology (from #3861):
+
+```text
+Desktop UI  <->  local daemon room  <->  hosted cloud room
+MCP client  <->  local daemon room  <->  hosted cloud room
+local runtime/kernel <-> daemon <-> hosted cloud room (policy TBD, later slice)
+```
+
+## What already exists
+
+- `notebook-cloud-transport`: `CloudWsConfig`/`CloudAuth`/`CloudWsFrameTransport`
+  with reconnect-oriented design, token refresher hook, `cloud_room_ready`
+  principal observation, and workstation metadata headers.
+- `runtimed cloud-peer` (`crates/runtimed/src/cloud_peer.rs`): a diagnostic
+  daemon-side peer that already syncs NotebookDoc + RuntimeStateDoc with a
+  hosted room and authors as `<principal>/<operator>:<nonce>`.
+- `runt-mcp` hosted sessions: target parsing (`NotebookTarget::Hosted`) and the
+  machine-local cloud domain registry (`CloudRegistry`, env-referenced
+  credentials) in `crates/runt-mcp/src/cloud.rs`, per
+  `docs/adr/cloud-connected-local-mcp.md` Decision 2.
+- Daemon rooms: `NotebookRoom` owns the canonical `NotebookDoc` plus
+  `RuntimeStateDoc`/`CommsDoc`/`CommentsDoc` handles, per-peer sync states, a
+  `changed_tx` broadcast, and identity enforcement
+  (`RoomConnectionIdentity`, actor-principal validation on inbound changes).
+
+## Decision sketch: the bridge is another peer of the daemon room
+
+A hosted daemon session creates an **ephemeral, hosted-flagged
+`NotebookRoom`** keyed by the hosted locator, and attaches a **bridge task**
+that is simply one more peer of that room — except its transport is the
+cloud WebSocket instead of a Unix socket.
+
+Echo suppression falls out of the design rather than being bolted on: the
+daemon room holds exactly one `NotebookDoc` instance; the cloud connection is
+one automerge `sync::State` against that doc, and each local peer is another.
+The sync protocol already guarantees changes are not replayed to the peer they
+came from, and convergence tests assert bounded message counts after quiesce.
+
+Bridged docs, v1: `NotebookDoc` (read/write) and `RuntimeStateDoc`
+(cloud-authoritative, received with `receive_sync_message_with_changes`).
+`CommsDoc`/`CommentsDoc` bridging and local-runtime-peer policy are later
+slices (#3861 slice 5).
+
+Execution, v1: hosted rooms do not launch local kernels. `execute_cell`
+requests from local peers are forwarded to the cloud room as hosted
+`Request` frames (the same dispatch `cloud-peer --run-cell` exercises); the
+resulting queue/output state arrives back via RuntimeStateDoc sync.
+
+Persistence, v1: none (ephemeral room). Local-first persistence for hosted
+sessions is #3600 and layers on later.
+
+## Attribution
+
+The hosted room rejects changes whose actor principal differs from the
+authenticated principal, so the bridge must not let local peers author under
+the local-Unix principal. When a room is hosted-bridged:
+
+- the room's connection identity mints local peers' actor labels under the
+  **cloud principal** observed in `cloud_room_ready`, keeping the peer's
+  self-declared operator suffix:
+
+```text
+user:anaconda:<sub>/operator:desktop:<session>
+user:anaconda:<sub>/operator:codex:<session>
+```
+
+- the bridge itself never rewrites changes; attribution rides the actor label
+  end to end, so cloud-side history shows which local operator made each
+  change while authorization stays anchored to the one authenticated
+  principal.
+- actor uniqueness: the bridge mints a fresh `:<nonce>` per cloud connect
+  (automerge duplicate-seq rule), and local peers already get per-connection
+  labels from the room host.
+
+## Credentials
+
+v1 reuses the machine-local cloud domain registry from
+`docs/adr/cloud-connected-local-mcp.md` Decision 2, lifted out of `runt-mcp`
+into a shared home so the daemon resolves the same file: routing data in the
+registry, secrets referenced via environment variables (later: keychain /
+device flow — #3861 open question). Credentials never ride the handshake from
+the desktop app; the desktop names a URL, the daemon owns the credential.
+
+Direct MCP hosted mode stays as a headless shortcut. Nothing here removes it;
+the daemon-mediated path is the desktop product lifecycle.
+
+## Entry point
+
+New connection handshake channel:
+
+```json
+{"channel":"open_hosted_notebook","url":"https://preview.runt.run/n/01KT...","operator":"desktop"}
+```
+
+The daemon resolves the URL against the registry, creates or joins the
+hosted-bridged room, spawns the bridge if needed, and then serves the
+connection exactly like a normal `notebook_sync` peer (typed bootstrap,
+`NotebookConnectionInfo` with the daemon-local room id). Reconnect/status
+composition in the desktop UI is #3599.
+
+## Out of scope for the first slice
+
+- OAuth/device-flow credential acquisition and keychain storage.
+- CommsDoc/CommentsDoc bridging; widget replay across the bridge.
+- Offering local daemon compute to the hosted room (workstation attach is a
+  separate, existing flow).
+- Offline edits with later cloud rejection UX.
+- Local-first persistence of hosted sessions (#3600).

@@ -278,6 +278,63 @@ pub async fn connect_open(
         })
 }
 
+/// Connect and open a hosted cloud notebook through the daemon-mediated
+/// bridge.
+///
+/// The daemon resolves `url` against its machine-local cloud domain registry,
+/// dials the hosted room with its own credential, and serves this connection
+/// from the bridged daemon-local room. The returned connection info carries
+/// the daemon-local room id and the cloud-principal actor label this peer
+/// must author under.
+pub async fn connect_open_hosted(
+    socket_path: PathBuf,
+    url: &str,
+    operator: Option<String>,
+) -> Result<OpenResult, SyncError> {
+    let stream = connect_stream!(&socket_path);
+    let (reader, writer) = tokio::io::split(stream);
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut writer = tokio::io::BufWriter::new(writer);
+
+    connection::send_preamble(&mut writer).await?;
+
+    let handshake = Handshake::OpenHostedNotebook {
+        url: url.to_string(),
+        typed_bootstrap: Some(true),
+        operator,
+    };
+    connection::send_json_frame(&mut writer, &handshake)
+        .await
+        .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
+
+    let info = recv_typed_connection_info(&mut reader).await?;
+
+    if let Some(ref error) = info.error {
+        return Err(SyncError::Protocol(error.clone()));
+    }
+
+    let notebook_id = info.notebook_id.clone();
+    let actor_label =
+        info.capabilities.actor_label.clone().ok_or_else(|| {
+            SyncError::Protocol("hosted open returned no actor label".to_string())
+        })?;
+
+    let bootstrap = notebook_doc::NotebookDoc::bootstrap(
+        notebook_doc::TextEncoding::UnicodeCodePoint,
+        &actor_label,
+    );
+    let doc = bootstrap.into_inner();
+    let peer_state = sync::State::new();
+
+    build_and_spawn(doc, peer_state, notebook_id, reader, writer)
+        .await
+        .map(|(handle, broadcast_rx)| OpenResult {
+            handle,
+            broadcast_rx,
+            info,
+        })
+}
+
 /// Connect and create a new notebook.
 ///
 /// The daemon creates an empty notebook room with one code cell and

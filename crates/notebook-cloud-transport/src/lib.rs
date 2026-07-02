@@ -39,6 +39,9 @@
 //! an agent-loop policy decision, recorded in the #16 decision log; this crate
 //! only moves bytes.
 
+#[cfg(feature = "registry")]
+pub mod registry;
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;

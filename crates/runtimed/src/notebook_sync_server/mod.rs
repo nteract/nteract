@@ -51,6 +51,7 @@ mod attachments;
 mod blob_upload;
 mod catalog;
 mod comments_store;
+mod hosted_bridge;
 mod identity;
 mod load;
 mod metadata;
@@ -79,6 +80,8 @@ mod workstation_attachment;
 
 pub(crate) use attachments::*;
 pub(crate) use catalog::*;
+pub use hosted_bridge::HostedBridgeHandle;
+pub(crate) use hosted_bridge::*;
 pub(crate) use identity::*;
 pub(crate) use load::*;
 pub(crate) use metadata::*;

@@ -746,6 +746,9 @@ pub struct NotebookRoom {
     pub identity: RoomIdentity,
     /// Per-connection accounting: active_peers + had_peers.
     pub connections: RoomConnections,
+    /// Hosted rooms are cloud-authoritative and must not auto-launch local kernels.
+    /// Read via `is_hosted()`; set once via `mark_hosted()` before peers attach.
+    pub(crate) hosted: AtomicBool,
     /// Blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
@@ -805,6 +808,16 @@ pub struct NotebookRoom {
 }
 
 impl NotebookRoom {
+    /// True when this room is bridged to a hosted cloud notebook.
+    pub fn is_hosted(&self) -> bool {
+        self.hosted.load(Ordering::Relaxed)
+    }
+
+    /// Mark this room as hosted. This flag is monotonic for the room lifetime.
+    pub fn mark_hosted(&self) {
+        self.hosted.store(true, Ordering::Relaxed);
+    }
+
     /// Create a fresh room, ignoring any persisted state.
     ///
     /// The .ipynb file is the source of truth. When a room is created, we start
@@ -1000,6 +1013,7 @@ impl NotebookRoom {
             file_binding: NotebookFileBinding::new(path, ephemeral),
             identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
+            hosted: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
@@ -1120,6 +1134,7 @@ impl NotebookRoom {
             file_binding: NotebookFileBinding::new(path, false),
             identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
+            hosted: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
