@@ -1,19 +1,21 @@
-//! Hosted notebook target parsing and machine-local cloud domain registry.
+//! Hosted notebook target parsing and hosted-room connection for MCP sessions.
 //!
-//! The registry stores routing metadata and credential references only. Secret
-//! values are resolved at connect time from their referenced environment
-//! variables.
-
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+//! The machine-local cloud domain registry lives in
+//! `notebook_cloud_transport::registry` (shared with the daemon's hosted-room
+//! bridge); this module re-exports it and adds the MCP-facing pieces: connect
+//! target parsing and the direct hosted-room connector.
 
 use notebook_cloud_transport::{CloudAuth, CloudWsConfig, CloudWsFrameTransport};
 use notebook_protocol::connection::FrameTransport;
 use notebook_sync::connect::ConnectResult;
-use serde::Deserialize;
-use url::Url;
 
-const REGISTRY_ENV_VAR: &str = "NTERACT_MCP_CLOUD_REGISTRY";
+pub use notebook_cloud_transport::registry::{
+    hosted_notebook_url, normalize_domain, registry_path, CloudDomainConfig, CloudRegistry,
+    CredentialRef, ResolvedCloudDomain,
+};
+
+/// Default operator suffix when the registry entry does not configure one.
+pub const DEFAULT_MCP_OPERATOR: &str = "agent:nteract-mcp";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotebookTarget {
@@ -53,132 +55,6 @@ impl NotebookTarget {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct CloudRegistry {
-    #[serde(default)]
-    pub default_domain: Option<String>,
-    #[serde(default)]
-    pub domains: Vec<CloudDomainConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct CloudDomainConfig {
-    #[serde(alias = "domain", alias = "url")]
-    pub base_url: String,
-    #[serde(default)]
-    pub operator: Option<String>,
-    pub credential: CredentialRef,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum CredentialRef {
-    #[serde(alias = "bearer-env")]
-    OidcBearerEnv {
-        env: String,
-    },
-    AnacondaApiKeyEnv {
-        env: String,
-    },
-    WorkstationCredentialEnv {
-        env: String,
-    },
-    DevTokenEnv {
-        env: String,
-        user: String,
-    },
-}
-
-impl CloudRegistry {
-    pub fn load_default() -> Result<Option<Self>, String> {
-        let path = registry_path();
-        Self::load_from_path(&path)
-    }
-
-    pub fn load_from_path(path: &Path) -> Result<Option<Self>, String> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let contents = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read cloud registry {}: {e}", path.display()))?;
-        let registry: Self = toml::from_str(&contents)
-            .map_err(|e| format!("Failed to parse cloud registry {}: {e}", path.display()))?;
-        registry.validate()?;
-        Ok(Some(registry))
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        let mut seen = HashSet::new();
-        for domain in &self.domains {
-            let normalized = normalize_domain(&domain.base_url)?;
-            if !seen.insert(normalized.clone()) {
-                return Err(format!("Duplicate cloud domain in registry: {normalized}"));
-            }
-        }
-        if let Some(default_domain) = self.default_domain.as_deref() {
-            let normalized_default = normalize_domain(default_domain)?;
-            if !seen.contains(&normalized_default) {
-                return Err(format!(
-                    "default_domain {normalized_default} is not present in [[domains]]"
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub fn default_domain(&self) -> Result<Option<String>, String> {
-        self.default_domain
-            .as_deref()
-            .map(normalize_domain)
-            .transpose()
-    }
-
-    pub fn domain(&self, domain: &str) -> Result<Option<ResolvedCloudDomain>, String> {
-        let normalized = normalize_domain(domain)?;
-        for config in &self.domains {
-            if normalize_domain(&config.base_url)? == normalized {
-                return Ok(Some(ResolvedCloudDomain {
-                    base_url: normalized,
-                    operator: config.operator.clone(),
-                    credential: config.credential.clone(),
-                    #[cfg(test)]
-                    auth_override: None,
-                }));
-            }
-        }
-        Ok(None)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ResolvedCloudDomain {
-    pub base_url: String,
-    pub operator: Option<String>,
-    credential: CredentialRef,
-    #[cfg(test)]
-    auth_override: Option<CloudAuth>,
-}
-
-impl ResolvedCloudDomain {
-    pub fn resolve_auth(&self) -> Result<CloudAuth, String> {
-        #[cfg(test)]
-        if let Some(auth) = self.auth_override.clone() {
-            return Ok(auth);
-        }
-
-        self.credential.resolve()
-    }
-
-    pub fn actor_label(&self, principal: &str) -> String {
-        let operator = self
-            .operator
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("agent:nteract-mcp");
-        format!("{principal}/{operator}:{}", short_nonce())
-    }
-}
-
 pub async fn connect_hosted_notebook(
     domain: &ResolvedCloudDomain,
     notebook_id: &str,
@@ -197,7 +73,7 @@ pub async fn connect_hosted_notebook(
     let principal = transport
         .principal()
         .ok_or_else(|| "Hosted room did not provide an authenticated principal".to_string())?;
-    let actor_label = domain.actor_label(principal);
+    let actor_label = domain.actor_label(principal, DEFAULT_MCP_OPERATOR);
     notebook_sync::connect::connect_frame_io(notebook_id.to_string(), &actor_label, source, sink)
         .await
         .map_err(|e| format!("Failed to start hosted notebook sync: {e}"))
@@ -250,45 +126,6 @@ fn apply_reqwest_auth(
             .header("X-Notebook-Cloud-Dev-Token", token)
             .header("X-User", user),
     }
-}
-
-impl CredentialRef {
-    fn resolve(&self) -> Result<CloudAuth, String> {
-        match self {
-            Self::OidcBearerEnv { env } => Ok(CloudAuth::OidcBearer {
-                token: read_secret_env(env)?,
-            }),
-            Self::AnacondaApiKeyEnv { env } => Ok(CloudAuth::AnacondaApiKey {
-                token: read_secret_env(env)?,
-            }),
-            Self::WorkstationCredentialEnv { env } => Ok(CloudAuth::WorkstationCredential {
-                token: read_secret_env(env)?,
-            }),
-            Self::DevTokenEnv { env, user } => Ok(CloudAuth::Dev {
-                token: read_secret_env(env)?,
-                user: user.clone(),
-            }),
-        }
-    }
-}
-
-fn read_secret_env(name: &str) -> Result<String, String> {
-    std::env::var(name).map_err(|_| format!("Credential env var {name} is not set"))
-}
-
-pub fn registry_path() -> PathBuf {
-    std::env::var_os(REGISTRY_ENV_VAR)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(runt_workspace::config_namespace())
-                .join("cloud-domains.toml")
-        })
-}
-
-pub fn hosted_notebook_url(domain: &str, notebook_id: &str) -> String {
-    format!("{}/n/{}", domain.trim_end_matches('/'), notebook_id)
 }
 
 pub fn parse_connect_target(
@@ -367,19 +204,12 @@ fn parse_local_notebook_id(id: &str) -> Result<NotebookTarget, String> {
 }
 
 fn parse_hosted_url_target(target: &str) -> Result<NotebookTarget, String> {
-    let url = Url::parse(target).map_err(|e| format!("Invalid hosted notebook URL: {e}"))?;
-    let domain = normalize_url_domain(&url)?;
-    let mut segments = url
-        .path_segments()
-        .ok_or_else(|| "Hosted notebook URL has no path".to_string())?;
-    match (segments.next(), segments.next()) {
-        (Some("n"), Some(id)) if !id.is_empty() => Ok(NotebookTarget::Hosted {
-            domain,
-            notebook_id: id.to_string(),
-            source: HostedTargetSource::Url,
-        }),
-        _ => Err("Hosted notebook URL must look like https://host/n/<notebook_id>".to_string()),
-    }
+    let (domain, notebook_id) = notebook_cloud_transport::registry::parse_hosted_url(target)?;
+    Ok(NotebookTarget::Hosted {
+        domain,
+        notebook_id,
+        source: HostedTargetSource::Url,
+    })
 }
 
 fn looks_like_uuid(value: &str) -> bool {
@@ -398,31 +228,6 @@ fn looks_like_ulid(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'A'..=b'H' | b'J'..=b'K' | b'M'..=b'N' | b'P'..=b'T' | b'V'..=b'Z'))
-}
-
-pub fn normalize_domain(domain: &str) -> Result<String, String> {
-    let url = Url::parse(domain).map_err(|e| format!("Invalid cloud domain {domain:?}: {e}"))?;
-    normalize_url_domain(&url)
-}
-
-fn normalize_url_domain(url: &Url) -> Result<String, String> {
-    match url.scheme() {
-        "https" | "http" => {}
-        other => return Err(format!("Unsupported cloud domain scheme: {other}")),
-    }
-    let host = url
-        .host_str()
-        .ok_or_else(|| "Cloud domain must include a host".to_string())?;
-    let mut normalized = format!("{}://{}", url.scheme(), host);
-    if let Some(port) = url.port() {
-        normalized.push(':');
-        normalized.push_str(&port.to_string());
-    }
-    Ok(normalized)
-}
-
-fn short_nonce() -> String {
-    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
 }
 
 #[cfg(test)]
@@ -477,7 +282,7 @@ mod tests {
                 None,
                 None,
                 Some("01KTZA152886TK1WAHYA48G7HJ"),
-                Some("https://preview.runt.run/")
+                Some("https://preview.runt.run")
             )
             .unwrap(),
             NotebookTarget::Hosted {
@@ -528,16 +333,17 @@ mod tests {
 
     #[test]
     fn registry_validates_default_domain() {
-        let registry = CloudRegistry {
-            default_domain: Some("https://preview.runt.run/".to_string()),
-            domains: vec![CloudDomainConfig {
-                base_url: "https://preview.runt.run".to_string(),
-                operator: Some("agent:codex".to_string()),
-                credential: CredentialRef::AnacondaApiKeyEnv {
-                    env: "NTERACT_TEST_TOKEN".to_string(),
-                },
-            }],
-        };
+        let registry: CloudRegistry = toml::from_str(
+            r#"
+default_domain = "https://preview.runt.run/"
+
+[[domains]]
+url = "https://preview.runt.run"
+operator = "agent:codex"
+credential = { kind = "anaconda-api-key-env", env = "NTERACT_TEST_TOKEN" }
+"#,
+        )
+        .unwrap();
 
         registry.validate().unwrap();
         assert_eq!(
@@ -640,16 +446,13 @@ credential = { kind = "anaconda-api-key-env", env = "NTERACT_TEST_ANACONDA_KEY" 
             }
         });
 
-        let domain = ResolvedCloudDomain {
-            base_url: format!("http://{addr}"),
-            operator: Some("agent:test".to_string()),
-            credential: CredentialRef::AnacondaApiKeyEnv {
-                env: "UNUSED_IN_TEST".to_string(),
-            },
-            auth_override: Some(CloudAuth::AnacondaApiKey {
+        let domain = ResolvedCloudDomain::with_auth_override(
+            format!("http://{addr}"),
+            Some("agent:test".to_string()),
+            CloudAuth::AnacondaApiKey {
                 token: "secret-key".to_string(),
-            }),
-        };
+            },
+        );
 
         let result = connect_hosted_notebook(&domain, "hosted-test")
             .await

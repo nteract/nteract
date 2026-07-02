@@ -59,6 +59,27 @@ pub enum Handshake {
         operator: Option<String>,
     },
 
+    /// Open a hosted cloud notebook through the daemon-mediated bridge.
+    ///
+    /// The daemon resolves `url` against its machine-local cloud domain
+    /// registry, dials the hosted room with its own credential, and serves
+    /// this connection from the bridged daemon-local room. The daemon returns
+    /// `NotebookConnectionInfo` (with the daemon-local room id) before
+    /// starting sync; after that the connection is a normal notebook sync
+    /// connection. Credentials never ride this handshake.
+    OpenHostedNotebook {
+        /// Hosted notebook URL, `https://<host>/n/<notebook_id>[/...]`.
+        url: String,
+        /// When true, the daemon sends `NotebookConnectionInfo` as a typed
+        /// SessionControl frame instead of a standalone untyped JSON frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        typed_bootstrap: Option<bool>,
+        /// Self-declared operator suffix for the authenticated actor label.
+        /// The principal prefix comes from the daemon's cloud credential.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operator: Option<String>,
+    },
+
     /// Runtime agent handshake. Sent by the coordinator to a spawned runtime
     /// agent subprocess on its stdin. The runtime agent reads this, bootstraps
     /// its RuntimeStateDoc, and begins processing kernel requests.

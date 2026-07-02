@@ -48,6 +48,37 @@ impl RoomConnectionIdentity {
         })
     }
 
+    /// Identity for a local same-UID peer on a hosted-bridged room.
+    ///
+    /// The hosted room's actor-authorization check rejects any change whose
+    /// actor principal differs from the authenticated cloud principal, so
+    /// local peers on a bridged room must author under that principal — the
+    /// local operator suffix carries the per-client attribution
+    /// (`user:anaconda:<sub>/desktop:<session>`). Legacy operator-only actor
+    /// labels are rejected: they would collapse into the daemon's identity on
+    /// the cloud side.
+    pub(crate) fn hosted_bridged(
+        cloud_principal: &str,
+        presented_operator: Option<String>,
+        scope: ConnectionScope,
+    ) -> anyhow::Result<Self> {
+        let principal = nteract_identity::Principal::new(cloud_principal.to_string())?;
+        let auth = AuthenticatedConnection::new(principal, scope);
+        let fallback_operator = fallback_operator("desktop");
+        let operator = presented_operator
+            .as_deref()
+            .and_then(|value| Operator::from_actor_label_or_operator(value).ok())
+            .unwrap_or_else(|| fallback_operator.clone());
+        let actor_label = auth.actor_label_for(operator.clone())?;
+
+        Ok(Self {
+            auth,
+            actor_label,
+            fallback_operator: operator,
+            legacy_operator_actor_policy: LegacyOperatorActorPolicy::Reject,
+        })
+    }
+
     pub(crate) fn actor_label(&self) -> &ActorLabel {
         &self.actor_label
     }

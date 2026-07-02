@@ -71,7 +71,9 @@ where
             *room_wd = Some(wd.clone());
         }
 
-        if update_workstation_directory {
+        if update_workstation_directory && !room.is_hosted() {
+            // Hosted rooms must not write local workstation state into the
+            // cloud-authoritative RuntimeStateDoc.
             super::workstation_attachment::publish_local_workstation_attachment_for_working_dir(
                 &room.state,
                 Some(wd.as_path()),
@@ -172,7 +174,11 @@ where
             .kernel_teardown_destructive
             .load(Ordering::Acquire);
         let effective_has_kernel = has_kernel && !kernel_being_torn_down;
-        let should_auto_launch = !effective_has_kernel
+        // The hosted flag outlives bridge teardown, so a formerly-bridged room
+        // can never auto-launch a local kernel.
+        let is_hosted = room.is_hosted();
+        let should_auto_launch = !is_hosted
+            && !effective_has_kernel
             && matches!(
                 trust_status,
                 runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
