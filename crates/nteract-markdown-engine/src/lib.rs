@@ -102,6 +102,10 @@ struct StructuralKey {
     // same reason: they share a kind and tag, so without this a block->inline swap
     // would alias the id instead of remounting. They are never siblings today, but
     // keeping it in the key means a future flow/text unification stays correct.
+    // serde(default) keeps snapshot bytes serialized before this field existed
+    // deserializable: from_bytes is total (any error means cold start), so a
+    // missing-field error would silently drop every carried-forward id.
+    #[serde(default)]
     island_inline: bool,
 }
 
@@ -2047,6 +2051,36 @@ mod tests {
             .map(|block| block.id.clone())
             .collect::<Vec<_>>();
         let restored = ReconcilerSnapshot::from_bytes(&snapshot.to_bytes());
+
+        let (after, _) =
+            reconcile_default_with_snapshot("intro\n\nalpha\n\nbeta\n\ngamma\n", &restored);
+
+        assert_eq!(after.blocks.len(), 4);
+        assert!(after.blocks[0].id.starts_with("node:reconciled:"));
+        assert_eq!(after.blocks[1].id, before_ids[0]);
+        assert_eq!(after.blocks[2].id, before_ids[1]);
+        assert_eq!(after.blocks[3].id, before_ids[2]);
+    }
+
+    #[test]
+    fn reconciler_snapshot_bytes_without_island_inline_still_carry_ids() {
+        // Snapshot bytes serialized before StructuralKey had island_inline must
+        // still deserialize and carry ids forward. from_bytes is total (any
+        // deserialize error means cold start), so without serde(default) these
+        // bytes would silently drop every carried-forward id.
+        let source = "alpha\n\nbeta\n\ngamma\n";
+        let (before, snapshot) = reconcile_default(source);
+        let before_ids = before
+            .blocks
+            .iter()
+            .map(|block| block.id.clone())
+            .collect::<Vec<_>>();
+
+        let json = String::from_utf8(snapshot.to_bytes()).unwrap();
+        let pre_field_json = json.replace(",\"island_inline\":false", "");
+        assert_ne!(pre_field_json, json, "expected the field in fresh bytes");
+        let restored = ReconcilerSnapshot::from_bytes(pre_field_json.as_bytes());
+        assert_ne!(restored, ReconcilerSnapshot::default());
 
         let (after, _) =
             reconcile_default_with_snapshot("intro\n\nalpha\n\nbeta\n\ngamma\n", &restored);
