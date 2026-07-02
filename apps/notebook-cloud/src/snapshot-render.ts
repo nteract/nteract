@@ -132,7 +132,7 @@ function readDetectedRuntime(
   return detectRuntimeFromMetadata(metadata);
 }
 
-function detectRuntimeFromMetadata(metadata: unknown): string | null {
+export function detectRuntimeFromMetadata(metadata: unknown): string | null {
   if (!metadata || typeof metadata !== "object") {
     return null;
   }
@@ -171,7 +171,7 @@ function stringLower(value: unknown): string | null {
   return typeof value === "string" ? value.toLowerCase() : null;
 }
 
-function countCellComposition(cells: unknown): SnapshotCellComposition {
+export function countCellComposition(cells: unknown): SnapshotCellComposition {
   const composition: SnapshotCellComposition = { code: 0, markdown: 0, raw: 0 };
   if (!Array.isArray(cells)) {
     return composition;

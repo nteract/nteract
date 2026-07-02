@@ -39,6 +39,7 @@ import {
   getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
   runtimeStateSnapshotKey,
+  runCatalogMigrations,
   snapshotKey,
 } from "../src/storage.ts";
 import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
@@ -5676,6 +5677,24 @@ describe("Worker artifact routes", () => {
     };
     assert.deepEqual(snapshotBlobRefsOverCap(over, 4), { count: 5, cap: 4, over: true });
     assert.deepEqual(snapshotBlobRefsOverCap(over, 5), { count: 5, cap: 5, over: false });
+  });
+});
+
+describe("catalog schema migrations", () => {
+  it("adds cell_composition and language via ALTER TABLE when absent", async () => {
+    const db = new FakeD1();
+    // Simulate a pre-migration deployment: the columns do not exist yet.
+    const notebookColumns = db.tableColumns.get("notebooks");
+    assert.ok(notebookColumns);
+    notebookColumns.delete("cell_composition");
+    notebookColumns.delete("language");
+
+    const env = fakeEnv({ DB: db });
+    await runCatalogMigrations(env);
+
+    const migrated = db.tableColumns.get("notebooks");
+    assert.ok(migrated?.has("cell_composition"), "cell_composition added by migration");
+    assert.ok(migrated?.has("language"), "language added by migration");
   });
 });
 

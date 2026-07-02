@@ -432,7 +432,7 @@ async function initializeCatalogSchema(env: Env): Promise<void> {
   await backfillNotebookAcl(env);
 }
 
-async function runCatalogMigrations(env: Env): Promise<void> {
+export async function runCatalogMigrations(env: Env): Promise<void> {
   for (const migration of SCHEMA_MIGRATIONS) {
     if (await tableHasColumn(env, migration.table, migration.column)) {
       continue;
