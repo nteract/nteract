@@ -38,6 +38,7 @@ import {
   createNotebookWithOwnerAcl,
   getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
+  roomSummaryKey,
   runtimeStateSnapshotKey,
   runCatalogMigrations,
   snapshotKey,
@@ -648,6 +649,24 @@ describe("Worker artifact routes", () => {
       scope: "owner",
     });
     const cookie = await oidcAppSessionCookie(env, token);
+    // A live peer in the room: their identity must not leak into served HTML
+    // any more than the requester's does (presence rides the API, not SSR).
+    await env.NOTEBOOK_SNAPSHOTS.put(
+      roomSummaryKey("bootstrap-visible"),
+      JSON.stringify({
+        version: 1,
+        notebook_id: "bootstrap-visible",
+        updated_at: "2999-01-01T00:00:00.000Z",
+        occupants: [
+          {
+            participant_key: "user:anaconda:peer-person",
+            actor_label: "user:anaconda:peer-person/browser:tab",
+            display_name: "Peer Person",
+            connection_scope: "editor",
+          },
+        ],
+      }),
+    );
 
     const response = await worker.fetch(
       new Request("https://cloud.test/n", {
@@ -668,7 +687,10 @@ describe("Worker artifact routes", () => {
     assert.equal(typeof bootstrap.session?.expires_at, "number");
     assert.equal(typeof bootstrap.session?.cache_key, "string");
     assert.doesNotMatch(html, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.doesNotMatch(html, /bootstrap@example\.test|bootstrap-user|Bootstrap User/);
+    assert.doesNotMatch(
+      html,
+      /bootstrap@example\.test|bootstrap-user|Bootstrap User|Peer Person|peer-person/,
+    );
   });
 
   it("keeps authenticated notebook home bootstrap free of notebook route asset hints", async () => {
@@ -2048,6 +2070,129 @@ describe("Worker artifact routes", () => {
       compute.requests.map((request) => [request.objectName, request.notebookIds]),
       [["owner-compute:v1:user:dev:alice", ["owned-active"]]],
     );
+  });
+
+  it("hydrates fresh room presence and excludes stale, runtime, and requester occupants", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "fresh-presence");
+    seedNotebook(env, "stale-presence");
+    seedAcl(env, { notebookId: "fresh-presence", subject: "user:dev:alice", scope: "owner" });
+    seedAcl(env, { notebookId: "stale-presence", subject: "user:dev:alice", scope: "owner" });
+    await env.NOTEBOOK_SNAPSHOTS.put(
+      roomSummaryKey("fresh-presence"),
+      JSON.stringify({
+        version: 1,
+        notebook_id: "fresh-presence",
+        updated_at: "2999-01-01T00:00:00.000Z",
+        occupants: [
+          {
+            participant_key: "user:dev:alice",
+            actor_label: "user:dev:alice/desktop:test",
+            display_name: "Alice",
+            connection_scope: "owner",
+          },
+          {
+            participant_key: "user:dev:bob",
+            actor_label: "user:dev:bob/browser:tab",
+            display_name: "Bob",
+            connection_scope: "editor",
+          },
+          {
+            participant_key: "user:dev:alice-runtime",
+            actor_label: "user:dev:alice/runtime:py",
+            display_name: "Python",
+            connection_scope: "runtime_peer",
+          },
+        ],
+      }),
+    );
+    await env.NOTEBOOK_SNAPSHOTS.put(
+      roomSummaryKey("stale-presence"),
+      JSON.stringify({
+        version: 1,
+        notebook_id: "stale-presence",
+        updated_at: "2000-01-01T00:00:00.000Z",
+        occupants: [
+          {
+            participant_key: "user:dev:bob",
+            actor_label: "user:dev:bob/browser:tab",
+            display_name: "Bob",
+            connection_scope: "editor",
+          },
+        ],
+      }),
+    );
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      notebooks: Array<{
+        notebook_id: string;
+        peers?: Array<{
+          participant_key: string;
+          actor_label: string;
+          display_name?: string;
+          connection_scope: string;
+        }>;
+      }>;
+    };
+    assert.deepEqual(
+      body.notebooks.find((notebook) => notebook.notebook_id === "fresh-presence")?.peers,
+      [
+        {
+          participant_key: "user:dev:bob",
+          actor_label: "user:dev:bob/browser:tab",
+          display_name: "Bob",
+          connection_scope: "editor",
+        },
+      ],
+    );
+    assert.equal(
+      Object.hasOwn(
+        body.notebooks.find((notebook) => notebook.notebook_id === "stale-presence") ?? {},
+        "peers",
+      ),
+      false,
+    );
+  });
+
+  it("caps room presence hydration and fails open on R2 read errors", async () => {
+    const snapshots = new FailingGetR2Bucket();
+    const env = fakeEnv({ NOTEBOOK_SNAPSHOTS: snapshots });
+    for (let index = 0; index < 205; index += 1) {
+      const notebookId = `presence-${String(index).padStart(3, "0")}`;
+      seedNotebook(env, notebookId);
+      seedAcl(env, { notebookId, subject: "user:dev:alice", scope: "owner" });
+    }
+    snapshots.failNextGet = true;
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n?limit=205", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { notebooks: unknown[] };
+    assert.equal(body.notebooks.length, 205);
+    assert.equal(snapshots.getKeys.length, 200);
   });
 
   it("requires sign-in before listing notebooks", async () => {
@@ -8927,6 +9072,19 @@ class FakeR2Bucket implements R2Bucket {
 
   async delete(key: string): Promise<void> {
     this.objects.delete(key);
+  }
+}
+
+class FailingGetR2Bucket extends FakeR2Bucket {
+  failNextGet = false;
+
+  override async get(key: string): Promise<R2ObjectBody | null> {
+    this.getKeys.push(key);
+    if (this.failNextGet) {
+      this.failNextGet = false;
+      throw new Error("R2 unavailable");
+    }
+    return this.objects.get(key) ?? null;
   }
 }
 

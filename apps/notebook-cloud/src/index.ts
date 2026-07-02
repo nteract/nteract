@@ -53,6 +53,7 @@ import {
   recordRevision,
   registerWorkstation,
   revokeNotebookAclRow,
+  roomSummaryKey,
   runtimeStateSnapshotKey,
   snapshotKey,
   setDefaultWorkstation,
@@ -64,6 +65,8 @@ import {
   type NotebookAclRow,
   type NotebookAccessRequestRow,
   type NotebookAccessRequestStatus,
+  type NotebookRoomSummary,
+  type NotebookRoomSummaryOccupant,
   type WorkstationAttachJobRow,
   type WorkstationAttachJobStatus,
   type WorkstationRegistrationInput,
@@ -1155,6 +1158,9 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
 
 const DEFAULT_NOTEBOOK_LIST_LIMIT = 100;
 const MAX_NOTEBOOK_LIST_LIMIT = 500;
+const NOTEBOOK_LIST_ROOM_SUMMARY_LIMIT = 200;
+const NOTEBOOK_LIST_ROOM_SUMMARY_CONCURRENCY = 20;
+const ROOM_SUMMARY_FRESH_MS = 150_000;
 
 async function routeListNotebooks(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") {
@@ -1189,11 +1195,60 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
   }
 
   const notebooks = await listNotebooksForPrincipal(env, principal, limit);
-  const computeSessions = await listNotebookComputeSessionsForOwnedRows(env, notebooks);
+  // The hydrations are independent fan-outs (owner-bucketed DO calls, bounded
+  // R2 GETs, one batched D1 profile lookup) - overlap them instead of paying
+  // the latencies in series.
+  const [computeSessions, roomPresence, principalDisplays] = await Promise.all([
+    listNotebookComputeSessionsForOwnedRows(env, notebooks),
+    listNotebookRoomPresenceForRows(env, notebooks, {
+      actorLabel: isAnonymousViewer(identity) ? null : identity.actorLabel,
+      principal,
+    }),
+    listNotebookPrincipalDisplays(env, notebooks, principal),
+  ]);
+  const currentUserDisplay = principalDisplays.get(principal);
   return json({
     ok: true,
-    notebooks: notebookListResponseRows(request, notebooks, env, computeSessions),
+    notebooks: notebookListResponseRows(
+      request,
+      notebooks,
+      env,
+      computeSessions,
+      roomPresence,
+      principalDisplays,
+    ),
+    ...(currentUserDisplay ? { current_user_display: currentUserDisplay } : {}),
   });
+}
+
+// Owner name cards resolve through the unified user store (principal_profiles),
+// not the raw principal string. Fail-open: no profile data degrades to the
+// client's principal-derived fallback, never a failed list.
+async function listNotebookPrincipalDisplays(
+  env: Env,
+  notebooks: readonly ListedNotebookRow[],
+  requesterPrincipal: string,
+): Promise<Map<string, string>> {
+  const displays = new Map<string, string>();
+  try {
+    const principals = Array.from(
+      new Set([...notebooks.map((notebook) => notebook.owner_principal), requesterPrincipal]),
+    );
+    const profiles = await getPrincipalProfiles(env, principals);
+    for (const profile of profiles) {
+      const display = profile.display_name?.trim();
+      if (display) {
+        displays.set(profile.principal, display);
+      }
+    }
+  } catch (error) {
+    cloudLog("warn", "notebook.list.profile_hydration_failed", {
+      error: errorMessage(error),
+      counter: "notebook_list_profile_hydration_failures",
+      counter_delta: 1,
+    });
+  }
+  return displays;
 }
 
 async function listNotebookComputeSessionsForOwnedRows(
@@ -1223,11 +1278,144 @@ async function listNotebookComputeSessionsForOwnedRows(
   return sessions;
 }
 
+interface NotebookListRequesterPresence {
+  actorLabel: string | null;
+  principal: string;
+}
+
+async function listNotebookRoomPresenceForRows(
+  env: Env,
+  notebooks: readonly ListedNotebookRow[],
+  requester: NotebookListRequesterPresence,
+): Promise<Map<string, NotebookRoomSummaryOccupant[]>> {
+  const bucket = env.NOTEBOOK_SNAPSHOTS;
+  if (!bucket || notebooks.length === 0) {
+    return new Map();
+  }
+
+  const hydrated = notebooks.slice(0, NOTEBOOK_LIST_ROOM_SUMMARY_LIMIT);
+  if (notebooks.length > hydrated.length) {
+    cloudLog("info", "notebook_list.room_presence_hydration_capped", {
+      row_count: notebooks.length,
+      hydrated_count: hydrated.length,
+      skipped_count: notebooks.length - hydrated.length,
+      counter: "notebook_list_room_presence_hydration_capped",
+      counter_delta: 1,
+    });
+  }
+
+  const presence = new Map<string, NotebookRoomSummaryOccupant[]>();
+  for (let index = 0; index < hydrated.length; index += NOTEBOOK_LIST_ROOM_SUMMARY_CONCURRENCY) {
+    const chunk = hydrated.slice(index, index + NOTEBOOK_LIST_ROOM_SUMMARY_CONCURRENCY);
+    await Promise.all(
+      chunk.map(async (notebook) => {
+        try {
+          const object = await bucket.get(roomSummaryKey(notebook.id));
+          if (!object) {
+            return;
+          }
+          const summary = parseNotebookRoomSummary(await object.text(), notebook.id);
+          if (!summary || roomSummaryIsStale(summary.updated_at)) {
+            return;
+          }
+          const peers = summary.occupants.filter(
+            (occupant) =>
+              isHumanRoomSummaryOccupant(occupant) &&
+              !roomSummaryOccupantMatchesRequester(occupant, requester),
+          );
+          if (peers.length > 0) {
+            presence.set(notebook.id, peers);
+          }
+        } catch (error) {
+          cloudLog("warn", "notebook_list.room_presence_hydration_failed", {
+            notebook_id: notebook.id,
+            error: errorMessage(error),
+            counter: "notebook_list_room_presence_hydration_failures",
+            counter_delta: 1,
+          });
+        }
+      }),
+    );
+  }
+
+  return presence;
+}
+
+function parseNotebookRoomSummary(value: string, notebookId: string): NotebookRoomSummary | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return null;
+  }
+  const candidate = parsed as Partial<NotebookRoomSummary>;
+  if (
+    candidate.version !== 1 ||
+    candidate.notebook_id !== notebookId ||
+    typeof candidate.updated_at !== "string" ||
+    Number.isNaN(Date.parse(candidate.updated_at)) ||
+    !Array.isArray(candidate.occupants)
+  ) {
+    return null;
+  }
+  const occupants = candidate.occupants.filter(isNotebookRoomSummaryOccupant);
+  return {
+    version: 1,
+    notebook_id: notebookId,
+    occupants,
+    updated_at: candidate.updated_at,
+  };
+}
+
+function roomSummaryIsStale(updatedAt: string): boolean {
+  return Date.now() - Date.parse(updatedAt) > ROOM_SUMMARY_FRESH_MS;
+}
+
+function isNotebookRoomSummaryOccupant(value: unknown): value is NotebookRoomSummaryOccupant {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<NotebookRoomSummaryOccupant>;
+  return (
+    typeof candidate.participant_key === "string" &&
+    typeof candidate.actor_label === "string" &&
+    (candidate.display_name === undefined || typeof candidate.display_name === "string") &&
+    typeof candidate.connection_scope === "string"
+  );
+}
+
+function isHumanRoomSummaryOccupant(occupant: NotebookRoomSummaryOccupant): boolean {
+  return (
+    occupant.connection_scope === "viewer" ||
+    occupant.connection_scope === "editor" ||
+    occupant.connection_scope === "owner"
+  );
+}
+
+function roomSummaryOccupantMatchesRequester(
+  occupant: NotebookRoomSummaryOccupant,
+  requester: NotebookListRequesterPresence,
+): boolean {
+  if (occupant.participant_key === requester.principal) {
+    return true;
+  }
+  return Boolean(requester.actorLabel && occupant.actor_label === requester.actorLabel);
+}
+
+// The row UI shows three avatars + "+N"; eight keeps headroom without letting
+// a crowded room bloat every list payload.
+const MAX_NOTEBOOK_LIST_PEERS_PER_ROW = 8;
+
 function notebookListResponseRows(
   request: Request,
   notebooks: ListedNotebookRow[],
   env?: Env,
   computeSessions: ReadonlyMap<string, NotebookComputeSessionSummary> = new Map(),
+  roomPresence: ReadonlyMap<string, NotebookRoomSummaryOccupant[]> = new Map(),
+  principalDisplays: ReadonlyMap<string, string> = new Map(),
 ): Array<Record<string, unknown>> {
   return notebooks.map((notebook) => {
     const notebookPathId = encodeURIComponent(notebook.id);
@@ -1238,6 +1426,7 @@ function notebookListResponseRows(
         ? computeSessions.get(notebook.id)
         : null;
     const cover = notebookCoverResponse(notebook);
+    const peers = (roomPresence.get(notebook.id) ?? []).slice(0, MAX_NOTEBOOK_LIST_PEERS_PER_ROW);
     return {
       notebook_id: notebook.id,
       title: notebook.title,
@@ -1246,10 +1435,14 @@ function notebookListResponseRows(
       created_at: notebook.created_at,
       updated_at: notebook.updated_at,
       latest_revision_id: notebook.latest_revision_id,
+      ...(principalDisplays.has(notebook.owner_principal)
+        ? { owner_display: principalDisplays.get(notebook.owner_principal) }
+        : {}),
       ...(composition ? { composition } : {}),
       ...(cover ? { cover } : {}),
       ...(typeof notebook.language === "string" ? { language: notebook.language } : {}),
       compute_session: computeSession,
+      ...(peers.length ? { peers } : {}),
       viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title, env),
       endpoints: {
         catalog: apiBasePath,
@@ -5336,6 +5529,10 @@ async function notebookListBootstrap(
     session.principal,
     DEFAULT_NOTEBOOK_LIST_LIMIT,
   );
+  // The SSR bootstrap is embedded in served HTML, which is PII-free by
+  // invariant (see the "bootstraps the notebook home" leak-guard test): no
+  // profile display names and no presence occupant identities here. The
+  // authenticated /api/n fetch that follows carries both.
   const computeSessions = await listNotebookComputeSessionsForOwnedRows(env, notebooks);
   return {
     kind: "notebook-list",

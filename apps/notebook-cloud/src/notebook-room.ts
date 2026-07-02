@@ -42,7 +42,12 @@ import {
   type SyncFrameBudgetDirection,
   type SyncFrameBudgetSummary,
 } from "./sync-frame-budget.ts";
-import { getNotebookRow } from "./storage.ts";
+import {
+  getNotebookRow,
+  roomSummaryKey,
+  type NotebookRoomSummary,
+  type NotebookRoomSummaryOccupant,
+} from "./storage.ts";
 
 interface Peer {
   id: string;
@@ -123,6 +128,7 @@ interface PendingRuntimePeerResponse {
 /// kernel that is about to come back: if a `runtime_peer` rejoins inside the
 /// window the alarm is disarmed.
 const RUNTIME_PEER_GONE_GRACE_MS = 30_000;
+const ROOM_SUMMARY_REFRESH_MS = 60_000;
 const MAX_CONSECUTIVE_REJECTED_FRAMES = 8;
 const REJECTED_FRAME_POLICY_CLOSE_CODE = 1008;
 const REJECTED_FRAME_POLICY_CLOSE_REASON = "too many rejected frames";
@@ -133,6 +139,9 @@ const DUPLICATE_RUNTIME_PEER_CLOSE_REASON = "replaced by newer runtime peer";
 /// reconciliation alarm. Persisted so a DO that hibernates between the alarm
 /// being set and firing still knows which room to reconcile.
 const RUNTIME_PEER_WATCH_KEY = "runtime_peer_gone_watch";
+const RUNTIME_PEER_WATCH_ALARM_AT_KEY = "runtime_peer_gone_watch_alarm_at";
+const ROOM_SUMMARY_REFRESH_KEY = "room_summary_refresh";
+const ROOM_SUMMARY_REFRESH_ALARM_AT_KEY = "room_summary_refresh_alarm_at";
 const runtimePeerForwardedRequestActions = new Set<RuntimePeerForwardedRequestAction>([
   "interrupt_execution",
   "send_comm",
@@ -239,6 +248,11 @@ export class NotebookRoom {
   >();
   private readonly computeSessionQueueDepths = new Map<string, number>();
   private readonly computeSessionSummaryPublishes = new Map<string, Promise<void>>();
+  // Room-summary publishes chain per notebook for the same reason compute-session
+  // summaries do: unserialized writes can land out of order (a stale "empty"
+  // publish overwriting a newer "occupied" one) and the trailing rearm would
+  // disarm the refresh alarm against live occupancy.
+  private readonly roomSummaryPublishes = new Map<string, Promise<void>>();
   private readonly dirtyComputeSessionSummaries = new Set<string>();
   private readonly restoredPeersReady: Promise<void>;
   private readonly pendingRuntimePeerResponses = new Map<string, PendingRuntimePeerResponse>();
@@ -334,6 +348,7 @@ export class NotebookRoom {
     if (identity.scope === "runtime_peer") {
       this.removeDuplicateRuntimePeers(notebookId, peer);
     }
+    const humanOccupantsBeforeJoin = this.roomSummaryOccupantKeys();
     this.acceptPeerSocket(notebookId, peer);
     this.peers.set(peer.id, peer);
     // A runtime_peer (re)joining cancels any pending reconciliation alarm: the
@@ -385,6 +400,11 @@ export class NotebookRoom {
         timestamp: peer.connectedAt,
       },
       peer.id,
+    );
+    this.publishRoomSummaryIfHumanOccupantsChanged(
+      notebookId,
+      humanOccupantsBeforeJoin,
+      "peer_joined",
     );
     this.state.waitUntil(this.syncPeerFromRoomHost(notebookId, peer));
 
@@ -696,6 +716,13 @@ export class NotebookRoom {
         }
       }),
     );
+
+    const humanNotebookIds = new Set(
+      activeRestored.filter(({ peer }) => isHumanPeer(peer)).map(({ notebookId }) => notebookId),
+    );
+    for (const notebookId of humanNotebookIds) {
+      this.publishRoomSummary(notebookId, "hibernation_restore");
+    }
   }
 
   private removeDuplicateRestoredRuntimePeers(
@@ -1968,6 +1995,7 @@ export class NotebookRoom {
       return;
     }
 
+    const humanOccupantsBeforeLeave = this.roomSummaryOccupantKeys();
     if (!this.peers.delete(peer.id)) {
       return;
     }
@@ -2018,6 +2046,11 @@ export class NotebookRoom {
       this.refreshRuntimePeerWatch(notebookId);
       this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
     }
+    this.publishRoomSummaryIfHumanOccupantsChanged(
+      notebookId,
+      humanOccupantsBeforeLeave,
+      "peer_left",
+    );
   }
 
   private recordFrameBudget(
@@ -2088,6 +2121,134 @@ export class NotebookRoom {
     return count;
   }
 
+  private roomSummaryOccupantKeys(): Set<string> {
+    return new Set(this.roomSummaryOccupants().map((occupant) => occupant.participant_key));
+  }
+
+  private roomSummaryOccupants(): NotebookRoomSummaryOccupant[] {
+    const occupants = new Map<string, NotebookRoomSummaryOccupant>();
+    for (const peer of this.peers.values()) {
+      if (!isHumanPeer(peer)) {
+        continue;
+      }
+      const participantKey = roomPeerParticipantKey(peer);
+      const existing = occupants.get(participantKey);
+      if (
+        existing &&
+        roomSummaryScopeRank(existing.connection_scope) >= roomSummaryScopeRank(peer.identity.scope)
+      ) {
+        continue;
+      }
+      occupants.set(participantKey, {
+        participant_key: participantKey,
+        actor_label: peer.identity.actorLabel,
+        ...(peer.identity.metadata.displayName
+          ? { display_name: peer.identity.metadata.displayName }
+          : {}),
+        connection_scope: peer.identity.scope,
+      });
+    }
+    return Array.from(occupants.values()).sort((left, right) =>
+      left.participant_key.localeCompare(right.participant_key),
+    );
+  }
+
+  private publishRoomSummaryIfHumanOccupantsChanged(
+    notebookId: string,
+    previousOccupantKeys: ReadonlySet<string>,
+    reason: "peer_joined" | "peer_left",
+  ): void {
+    const nextOccupantKeys = this.roomSummaryOccupantKeys();
+    if (sameStringSet(previousOccupantKeys, nextOccupantKeys)) {
+      return;
+    }
+    this.publishRoomSummary(notebookId, reason);
+  }
+
+  private publishRoomSummary(
+    notebookId: string,
+    reason: "peer_joined" | "peer_left" | "hibernation_restore" | "refresh_alarm",
+  ): void {
+    const previous = this.roomSummaryPublishes.get(notebookId) ?? Promise.resolve();
+    const publish = previous
+      .catch(() => undefined)
+      .then(() => this.publishRoomSummaryNow(notebookId, reason));
+    this.roomSummaryPublishes.set(notebookId, publish);
+    this.state.waitUntil(
+      publish.finally(() => {
+        if (this.roomSummaryPublishes.get(notebookId) === publish) {
+          this.roomSummaryPublishes.delete(notebookId);
+        }
+      }),
+    );
+  }
+
+  private async publishRoomSummaryNow(
+    notebookId: string,
+    reason: "peer_joined" | "peer_left" | "hibernation_restore" | "refresh_alarm",
+  ): Promise<void> {
+    const bucket = this.env.NOTEBOOK_SNAPSHOTS;
+    if (!bucket) {
+      await this.refreshRoomSummaryWatch(notebookId, 0);
+      return;
+    }
+
+    const summary: NotebookRoomSummary = {
+      version: 1,
+      notebook_id: notebookId,
+      occupants: this.roomSummaryOccupants(),
+      updated_at: new Date().toISOString(),
+    };
+
+    try {
+      await bucket.put(roomSummaryKey(notebookId), JSON.stringify(summary), {
+        httpMetadata: { contentType: "application/json; charset=utf-8" },
+      });
+      cloudLog("info", "room.summary.published", {
+        notebook_id: notebookId,
+        occupant_count: summary.occupants.length,
+        reason,
+        counter: "room_summaries_published",
+        counter_delta: 1,
+      });
+    } catch (error) {
+      cloudLog("warn", "room.summary.publish_failed", {
+        notebook_id: notebookId,
+        occupant_count: summary.occupants.length,
+        reason,
+        error: errorMessage(error),
+        counter: "room_summary_publish_failures",
+        counter_delta: 1,
+      });
+    } finally {
+      await this.refreshRoomSummaryWatch(notebookId, summary.occupants.length);
+    }
+  }
+
+  private async refreshRoomSummaryWatch(notebookId: string, occupantCount: number): Promise<void> {
+    const storage = this.state.storage;
+    if (!storage.setAlarm || !storage.deleteAlarm) {
+      return;
+    }
+    try {
+      if (occupantCount <= 0) {
+        await storage.delete(ROOM_SUMMARY_REFRESH_KEY);
+        await storage.delete(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY);
+        await this.rescheduleRoomAlarm();
+        return;
+      }
+      const alarmAt = Date.now() + ROOM_SUMMARY_REFRESH_MS;
+      await storage.put(ROOM_SUMMARY_REFRESH_KEY, notebookId);
+      await storage.put(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY, alarmAt);
+      await this.rescheduleRoomAlarm();
+    } catch (error) {
+      cloudLog("warn", "room.summary_watch.refresh_failed", {
+        notebook_id: notebookId,
+        error: errorMessage(error),
+      });
+    }
+  }
+
   /// Arm or disarm the runtime_peer-gone reconciliation alarm to match current
   /// membership: arm (grace window) when no `runtime_peer` is attached, disarm
   /// when one is present. Called when a `runtime_peer` joins or leaves. A no-op
@@ -2101,12 +2262,15 @@ export class NotebookRoom {
       (async () => {
         try {
           if (this.hasRuntimePeer()) {
-            await storage.deleteAlarm?.();
             await storage.delete(RUNTIME_PEER_WATCH_KEY);
+            await storage.delete(RUNTIME_PEER_WATCH_ALARM_AT_KEY);
+            await this.rescheduleRoomAlarm();
             return;
           }
+          const alarmAt = Date.now() + RUNTIME_PEER_GONE_GRACE_MS;
           await storage.put(RUNTIME_PEER_WATCH_KEY, notebookId);
-          await storage.setAlarm?.(Date.now() + RUNTIME_PEER_GONE_GRACE_MS);
+          await storage.put(RUNTIME_PEER_WATCH_ALARM_AT_KEY, alarmAt);
+          await this.rescheduleRoomAlarm();
         } catch (error) {
           cloudLog("warn", "room.runtime_peer_watch.refresh_failed", {
             notebook_id: notebookId,
@@ -2117,19 +2281,73 @@ export class NotebookRoom {
     );
   }
 
-  /// DurableObject alarm handler. Fires `RUNTIME_PEER_GONE_GRACE_MS` after the
-  /// last `runtime_peer` left. If one has since rejoined, it's a no-op (the blip
-  /// recovered). Otherwise it reconciles the room's authoritative RuntimeStateDoc
-  /// — terminalizing orphaned executions and flipping a phantom-live kernel to
-  /// Error — and broadcasts the corrected state to the surviving peers.
-  async alarm(): Promise<void> {
+  private async rescheduleRoomAlarm(): Promise<void> {
     const storage = this.state.storage;
-    const notebookId = await storage.get<string>(RUNTIME_PEER_WATCH_KEY);
-    if (!notebookId) {
+    if (!storage.setAlarm || !storage.deleteAlarm) {
       return;
     }
-    await storage.delete(RUNTIME_PEER_WATCH_KEY);
 
+    const alarmTimes = [
+      await storage.get<unknown>(RUNTIME_PEER_WATCH_ALARM_AT_KEY),
+      await storage.get<unknown>(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY),
+    ]
+      .filter(isFiniteTimestamp)
+      .sort((left, right) => left - right);
+
+    if (alarmTimes.length === 0) {
+      await storage.deleteAlarm();
+      return;
+    }
+    await storage.setAlarm(alarmTimes[0]);
+  }
+
+  /// DurableObject alarm handler. Fires `RUNTIME_PEER_GONE_GRACE_MS` after the
+  /// last `runtime_peer` left, or periodically while human occupants remain so
+  /// `/api/n` can read a fresh room summary from R2. Each task stores its own
+  /// due time; the single DO alarm always points at the earliest task.
+  async alarm(): Promise<void> {
+    const storage = this.state.storage;
+    const nowMs = Date.now();
+    const runtimeWatch = await this.dueAlarmTask(
+      RUNTIME_PEER_WATCH_KEY,
+      RUNTIME_PEER_WATCH_ALARM_AT_KEY,
+      nowMs,
+    );
+    const roomSummaryRefresh = await this.dueAlarmTask(
+      ROOM_SUMMARY_REFRESH_KEY,
+      ROOM_SUMMARY_REFRESH_ALARM_AT_KEY,
+      nowMs,
+    );
+
+    if (runtimeWatch) {
+      await storage.delete(RUNTIME_PEER_WATCH_KEY);
+      await storage.delete(RUNTIME_PEER_WATCH_ALARM_AT_KEY);
+      await this.handleRuntimePeerWatchAlarm(runtimeWatch);
+    }
+
+    if (roomSummaryRefresh) {
+      await storage.delete(ROOM_SUMMARY_REFRESH_KEY);
+      await storage.delete(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY);
+      await this.publishRoomSummaryNow(roomSummaryRefresh, "refresh_alarm");
+    }
+
+    await this.rescheduleRoomAlarm();
+  }
+
+  private async dueAlarmTask(
+    key: string,
+    alarmAtKey: string,
+    nowMs: number,
+  ): Promise<string | null> {
+    const notebookId = await this.state.storage.get<unknown>(key);
+    if (typeof notebookId !== "string" || notebookId.length === 0) {
+      return null;
+    }
+    const alarmAt = await this.state.storage.get<unknown>(alarmAtKey);
+    return !isFiniteTimestamp(alarmAt) || alarmAt <= nowMs ? notebookId : null;
+  }
+
+  private async handleRuntimePeerWatchAlarm(notebookId: string): Promise<void> {
     if (this.hasRuntimePeer()) {
       cloudLog("info", "room.runtime_peer_watch.recovered", {
         notebook_id: notebookId,
@@ -2295,6 +2513,41 @@ function roomPeerParticipantKey(peer: Peer): string {
     return `anonymous:${peer.id}`;
   }
   return peer.identity.principal;
+}
+
+function isHumanPeer(peer: Peer): boolean {
+  return peer.identity.scope !== "runtime_peer";
+}
+
+// A participant with both a viewer tab and an editor tab is editing, not
+// merely viewing: dedupe keeps the strongest scope.
+function roomSummaryScopeRank(scope: string): number {
+  switch (scope) {
+    case "owner":
+      return 3;
+    case "editor":
+      return 2;
+    case "viewer":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function sameStringSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isFiniteTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 export function runtimePeerWorkstationMetadataFromRequest(
