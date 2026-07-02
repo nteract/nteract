@@ -10,6 +10,7 @@ import {
   getNotebookRow,
   getPublicNotebookAclRows,
   type NotebookAclRow,
+  type NotebookRow,
 } from "./storage.ts";
 
 const CAP_READ = 1 << 0;
@@ -38,10 +39,16 @@ export interface AuthorizeNotebookAccessOptions {
   allowViewerDowngrade?: boolean;
   /**
    * Browser live-room tickets may optimistically request owner so the room
-   * opens with the user's best available control surface. Use this only for
-   * connection tickets; mutation routes must keep exact requested authority.
+   * opens with the user's best available control surface. Read-only discovery
+   * routes may also use this to report the caller's effective scope. Mutation
+   * routes must keep exact requested authority.
    */
   allowLiveScopeDowngrade?: boolean;
+}
+
+export interface AuthorizedNotebookAccess {
+  identity: AuthenticatedConnection;
+  notebook: NotebookRow;
 }
 
 export async function authorizeNotebookAccess(
@@ -51,6 +58,18 @@ export async function authorizeNotebookAccess(
   requestedScope: ConnectionScope = identity.scope,
   options: AuthorizeNotebookAccessOptions = {},
 ): Promise<AuthenticatedConnection> {
+  return (
+    await authorizeNotebookAccessWithNotebook(env, notebookId, identity, requestedScope, options)
+  ).identity;
+}
+
+export async function authorizeNotebookAccessWithNotebook(
+  env: Env,
+  notebookId: string,
+  identity: AuthenticatedConnection,
+  requestedScope: ConnectionScope = identity.scope,
+  options: AuthorizeNotebookAccessOptions = {},
+): Promise<AuthorizedNotebookAccess> {
   if (!env.DB) {
     throw new AuthorizationError("D1 binding DB is not configured", 503);
   }
@@ -71,17 +90,17 @@ export async function authorizeNotebookAccess(
       throw new AuthorizationError("notebook not found", 404);
     }
 
-    return { ...identity, scope: "viewer" };
+    return { identity: { ...identity, scope: "viewer" }, notebook };
   }
 
   const principalRows = await getNotebookAclRowsForPrincipal(env, notebookId, identity.principal);
   if (aclRowsCoverScope(principalRows, requestedScope)) {
-    return { ...identity, scope: requestedScope };
+    return { identity: { ...identity, scope: requestedScope }, notebook };
   }
   if (options.allowLiveScopeDowngrade) {
     const downgradedScope = bestDowngradedLiveScope(principalRows, requestedScope);
     if (downgradedScope) {
-      return { ...identity, scope: downgradedScope };
+      return { identity: { ...identity, scope: downgradedScope }, notebook };
     }
   }
   if (
@@ -89,19 +108,19 @@ export async function authorizeNotebookAccess(
     requestedScope === "editor" &&
     aclRowsCoverScope(principalRows, "viewer")
   ) {
-    return { ...identity, scope: "viewer" };
+    return { identity: { ...identity, scope: "viewer" }, notebook };
   }
 
   const publicRows = await getPublicNotebookAclRows(env, notebookId);
   if (aclRowsCoverScope(publicRows, "viewer")) {
     if (requestedScope === "viewer") {
-      return { ...identity, scope: "viewer" };
+      return { identity: { ...identity, scope: "viewer" }, notebook };
     }
     if (options.allowLiveScopeDowngrade && requestedScope !== "runtime_peer") {
-      return { ...identity, scope: "viewer" };
+      return { identity: { ...identity, scope: "viewer" }, notebook };
     }
     if (options.allowViewerDowngrade && requestedScope === "editor") {
-      return { ...identity, scope: "viewer" };
+      return { identity: { ...identity, scope: "viewer" }, notebook };
     }
   }
 

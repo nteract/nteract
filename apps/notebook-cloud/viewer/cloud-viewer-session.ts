@@ -136,6 +136,10 @@ export interface CloudViewerConfig {
     enable_comments?: boolean;
     disable_auto_format?: boolean;
   };
+  initialCatalogAccess?: {
+    scope: "viewer" | "editor" | "owner";
+    title?: string | null;
+  } | null;
   session?: CloudAppSession | null;
   syncEndpoint: string;
   blobBasePath: string;

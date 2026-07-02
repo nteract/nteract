@@ -57,6 +57,24 @@ describe("cloud notebook document edit readiness projection", () => {
     );
   });
 
+  it("keeps edit mode pending when catalog grants edit access but the live room is still viewer", () => {
+    assert.deepEqual(
+      projectCloudNotebookDocumentEditReadiness({
+        accessScope: "owner",
+        connectionError: null,
+        connectionPeerId: "peer-1",
+        connectionScope: "viewer",
+        selectedMode: "edit",
+        statusKind: "ready",
+      }),
+      {
+        canAcceptCellMutations: false,
+        selectedEditModeWaitingForRoom: true,
+        editAccessRequestPending: true,
+      },
+    );
+  });
+
   it("shows connection errors as errors instead of pending edit access", () => {
     assert.deepEqual(
       projectCloudNotebookDocumentEditReadiness({

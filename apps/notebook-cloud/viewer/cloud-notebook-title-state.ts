@@ -17,6 +17,9 @@ export interface CloudNotebookCatalogResponse {
     id?: unknown;
     title?: unknown;
   };
+  access?: {
+    scope?: unknown;
+  };
 }
 
 const UNTITLED_NOTEBOOK_LABEL = "Untitled notebook";
