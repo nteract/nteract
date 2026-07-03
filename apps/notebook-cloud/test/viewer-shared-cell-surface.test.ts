@@ -444,7 +444,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(shellHookSourceText, /cloudNotebookShellCapabilities/);
   assert.match(shellHookSourceText, /selectedMode/);
   assert.match(shellHookSourceText, /editAccessRequestPending/);
-  assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
+  assert.match(sourceText, /onModeChange=\{handleSelectInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
   assert.match(sourceText, /reconnecting=\{sustainedReconnecting\}/);
   assert.match(
@@ -486,11 +486,19 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
   assert.doesNotMatch(cssText, /cloud-command-toolbar-placeholder/);
   assert.match(editModeButtonSourceText, /if \(mode === "edit" && !canSwitchToEdit\) \{/);
-  assert.match(sourceText, /projectCloudAccessRequestTransition\(\{/);
-  assert.match(
-    sourceText,
-    /if \(transition\.requestedScope\) \{[\s\S]*storeCloudRequestedScope\(window\.localStorage, transition\.requestedScope\);/,
+  // The loaded-request transition and its scope-persist side effect moved into
+  // the access-request store; the viewer delegates through requestEditAccess.
+  const accessRequestStoreText = readFileSync(
+    new URL("../viewer/cloud-access-request-store.ts", import.meta.url),
+    "utf8",
   );
+  assert.doesNotMatch(sourceText, /projectCloudAccessRequestTransition/);
+  assert.match(accessRequestStoreText, /projectCloudAccessRequestTransition\(\{/);
+  assert.match(
+    accessRequestStoreText,
+    /if \(transition\.requestedScope\) \{[\s\S]*deps\.storeRequestedScope\(transition\.requestedScope\);/,
+  );
+  assert.match(accessRequestStoreText, /storeCloudRequestedScope\(window\.localStorage, scope\);/);
   assert.doesNotMatch(sourceText, /mode === "edit" \? "editor" : NOTEBOOK_CLOUD_DEFAULT_SCOPE/);
   assert.doesNotMatch(sourceText, /className="cloud-scope-toggle-button"/);
   assert.doesNotMatch(cssText, /cloud-scope-toggle-button/);
@@ -790,7 +798,7 @@ test("cloud app-session live sync uses streamed catalog access facts without awa
   assert.match(sourceText, /cloudNotebookSyncScopeForCatalogAccess\(\{/);
   assert.match(
     sourceText,
-    /const requestedScope = resolveCloudAppSessionSyncScope\([\s\S]*catalogAccessFactsRef\.current,[\s\S]*selectedInteractionModeRef\.current,[\s\S]*\)/,
+    /const requestedScope = resolveCloudAppSessionSyncScope\([\s\S]*catalogAccessFactsRef\.current,[\s\S]*cloudAccessRequestStore\.selectedModeSnapshot,[\s\S]*\)/,
   );
   assert.doesNotMatch(sourceText, /new URL\("api\/n\?limit=100"/);
   assert.doesNotMatch(sourceText, /\.\.\.\(await loadCatalogAccess\(\)\)/);

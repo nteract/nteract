@@ -151,17 +151,23 @@ test("cloud notebook startup loading uses route-shaped shell chrome", () => {
 });
 
 test("cloud viewer keeps pending access-request polling quiet", () => {
-  const sourceText = viewerFileContaining("CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS");
-
-  assert.match(sourceText, /const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 30_000;/);
-  assert.match(sourceText, /function shouldPollPendingCloudAccessRequest\(\): boolean/);
-  assert.match(sourceText, /document\.visibilityState !== "hidden"/);
-  assert.match(sourceText, /let pollInFlight = false;/);
-  assert.match(sourceText, /if \(!shouldPollPendingCloudAccessRequest\(\) \|\| pollInFlight\)/);
-  assert.match(
-    sourceText,
-    /document\.addEventListener\("visibilitychange", handleVisibilityChange\)/,
+  // The poll moved into the access-request store: a 30s fixed-rate createPoll
+  // whose single exhaustMap and document-visibility gate replace the viewer's
+  // hand-rolled setInterval + pollInFlight boolean + visibilitychange listener.
+  const storeText = readFileSync(
+    new URL("../viewer/cloud-access-request-store.ts", import.meta.url),
+    "utf8",
   );
+  assert.match(storeText, /const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 30_000;/);
+  assert.match(storeText, /strategy: "fixed-rate"/);
+  assert.match(storeText, /effectiveAccessRequest\?\.status === "pending"/);
+  assert.match(storeText, /active\$: visible\$/);
+  assert.match(storeText, /documentVisible\$/);
+
+  // The viewer entry delegates to the store and no longer hand-rolls the poll.
+  assert.match(viewerCorpus, /useCloudAccessRequestController\(/);
+  assert.doesNotMatch(viewerCorpus, /shouldPollPendingCloudAccessRequest/);
+  assert.doesNotMatch(viewerCorpus, /let pollInFlight = false;/);
 });
 
 test("cloud viewer routes notebook header controls through the shared shell chrome", () => {
@@ -225,7 +231,12 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /onSignInAgain=\{authConfig\.localDev \|\| authConfig\.oidc \? beginNotebookAuth : undefined\}/,
   );
   assert.match(sourceText, /const hasAppSession = Boolean\(appSessionStatus\.session\)/);
-  assert.match(sourceText, /projectCloudAccessRequestTransition\(\{/);
+  // Edit-access requests delegate to the access-request store; the loaded-request
+  // transition itself lives in the store, not the viewer entry.
+  assert.match(
+    sourceText,
+    /const requestCloudEditAccess = useCallback\(\(\) => \{[\s\S]*cloudAccessRequestStore\.requestEditAccess\(\);/,
+  );
   // The connection/identity slot is filled by the shared quiet component:
   // avatar + connectivity dot, driven by the stable status bridge. It must
   // never regress into a text pill or a second status label surface. The

@@ -252,40 +252,77 @@ export function cloudAccessFactsProjectionEquals(
   a: CloudAccessFactsProjection,
   b: CloudAccessFactsProjection,
 ): boolean {
-  return cloudAccessFactsProjectionKey(a) === cloudAccessFactsProjectionKey(b);
+  return (
+    a === b ||
+    (a.accessConnectionScope === b.accessConnectionScope &&
+      accessRequestNoticeEquals(a.accessRequestNotice, b.accessRequestNotice) &&
+      a.catalogGrantsDocumentEdit === b.catalogGrantsDocumentEdit &&
+      a.connectionReadyForAccessScope === b.connectionReadyForAccessScope &&
+      effectiveAccessRequestEquals(a.effectiveAccessRequest, b.effectiveAccessRequest) &&
+      liveRoomPolicyEquals(a.liveRoomPolicy, b.liveRoomPolicy) &&
+      a.selectedInteractionModeForAccess === b.selectedInteractionModeForAccess &&
+      a.selectedModeCorrection === b.selectedModeCorrection &&
+      a.shouldFallbackEditUrlToView === b.shouldFallbackEditUrlToView &&
+      a.shouldLoadOwnEditAccessRequest === b.shouldLoadOwnEditAccessRequest)
+  );
+}
+// Adding a field to `CloudAccessFactsProjection` breaks this manifest's
+// typecheck, flagging the comparator for update.
+const _CLOUD_ACCESS_FACTS_FIELDS = {
+  accessConnectionScope: true,
+  accessRequestNotice: true,
+  catalogGrantsDocumentEdit: true,
+  connectionReadyForAccessScope: true,
+  effectiveAccessRequest: true,
+  liveRoomPolicy: true,
+  selectedInteractionModeForAccess: true,
+  selectedModeCorrection: true,
+  shouldFallbackEditUrlToView: true,
+  shouldLoadOwnEditAccessRequest: true,
+} satisfies Record<keyof CloudAccessFactsProjection, true>;
+void _CLOUD_ACCESS_FACTS_FIELDS;
+
+/** Dedup identity for the frozen notice sub-object. */
+function accessRequestNoticeEquals(
+  a: CloudAccessRequestNoticeProjection | null,
+  b: CloudAccessRequestNoticeProjection | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.kind === b.kind && a.tone === b.tone && a.title === b.title && a.message === b.message;
 }
 
-function cloudAccessFactsProjectionKey(projection: CloudAccessFactsProjection): string {
-  return [
-    projection.accessConnectionScope ?? "",
-    cloudAccessRequestNoticeKey(projection.accessRequestNotice),
-    projection.catalogGrantsDocumentEdit ? "edit" : "read",
-    projection.connectionReadyForAccessScope ? "ready" : "not-ready",
-    cloudAccessRequestKey(projection.effectiveAccessRequest),
-    projection.liveRoomPolicy.shouldConnectLiveRoom ? "connect" : "hold",
-    projection.liveRoomPolicy.disabledStatus?.kind ?? "",
-    projection.liveRoomPolicy.disabledStatus?.message ?? "",
-    projection.selectedInteractionModeForAccess,
-    projection.selectedModeCorrection ?? "",
-    projection.shouldFallbackEditUrlToView ? "fallback" : "",
-    projection.shouldLoadOwnEditAccessRequest ? "load-request" : "",
-  ].join("\u001f");
+/**
+ * Dedup identity for the effective request: the fields a viewer's live-room
+ * decision keys off. The actor labels and `created_at` are display-only, so a
+ * change there does not re-emit.
+ */
+function effectiveAccessRequestEquals(
+  a: CloudNotebookAccessRequest | null,
+  b: CloudNotebookAccessRequest | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.id === b.id &&
+    a.notebook_id === b.notebook_id &&
+    a.requester_principal === b.requester_principal &&
+    a.scope === b.scope &&
+    a.status === b.status &&
+    a.updated_at === b.updated_at &&
+    (a.resolved_at ?? null) === (b.resolved_at ?? null)
+  );
 }
 
-function cloudAccessRequestKey(request: CloudNotebookAccessRequest | null): string {
-  if (!request) return "";
-  return [
-    request.id,
-    request.notebook_id,
-    request.requester_principal,
-    request.scope,
-    request.status,
-    request.updated_at,
-    request.resolved_at ?? "",
-  ].join("\u001e");
-}
-
-function cloudAccessRequestNoticeKey(notice: CloudAccessRequestNoticeProjection | null): string {
-  if (!notice) return "";
-  return [notice.kind, notice.tone, notice.title, notice.message].join("\u001e");
+/** Dedup identity for the live-room policy sub-object. */
+function liveRoomPolicyEquals(
+  a: CloudNotebookLiveRoomConnectionPolicy,
+  b: CloudNotebookLiveRoomConnectionPolicy,
+): boolean {
+  return (
+    a === b ||
+    (a.shouldConnectLiveRoom === b.shouldConnectLiveRoom &&
+      (a.disabledStatus?.kind ?? null) === (b.disabledStatus?.kind ?? null) &&
+      (a.disabledStatus?.message ?? null) === (b.disabledStatus?.message ?? null))
+  );
 }

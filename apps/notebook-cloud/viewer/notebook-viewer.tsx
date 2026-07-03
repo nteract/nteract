@@ -84,7 +84,6 @@ import {
   cloudSyncAuthFromAppSessionCookie,
   cloudSyncAuthFromPrototypeAuthState,
   prepareCloudOidcViewerLogin,
-  storeCloudRequestedScope,
   shouldShowCloudHeaderSignIn,
 } from "./collaborator-auth";
 import type { ConnectionScope } from "../src/auth-shared";
@@ -142,17 +141,13 @@ import {
 import { useOfflineMergeNoticeAutoClear } from "./use-offline-merge-notice";
 import { useSustainedReconnecting } from "./use-sustained-reconnecting";
 import type { ViewerStatus } from "./notice-types";
-import type { CloudNotebookAccessRequest } from "./sharing-client";
 import { CloudSharingControls } from "./sharing-controls";
 import { createCloudNotebookHost } from "./cloud-notebook-host";
 import { cloudResponseError } from "./cloud-response";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
-import {
-  projectCloudAccessRequestTransition,
-  type CloudAccessRequestNoticeProjection,
-} from "./cloud-access-request-state";
+import type { CloudAccessRequestNoticeProjection } from "./cloud-access-request-state";
 import {
   cloudNotebookCatalogAccessFromCatalogResponse,
   cloudNotebookSyncScopeForCatalogAccess,
@@ -160,10 +155,7 @@ import {
   type CloudNotebookCatalogAccessScope,
 } from "./cloud-notebook-catalog-access";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
-import {
-  cloudNotebookModeFromSearch,
-  replaceCloudNotebookModeInCurrentUrl,
-} from "./cloud-notebook-mode";
+import { replaceCloudNotebookModeInCurrentUrl } from "./cloud-notebook-mode";
 import {
   CloudAccessFactsStore,
   cloudCatalogAccessFacts,
@@ -185,6 +177,12 @@ import {
   useCloudAuthState,
   useCloudSyncAuthConnectionKey,
 } from "./use-cloud-auth-store";
+import { cloudAccessRequestStore } from "./cloud-access-request-store";
+import {
+  useCloudAccessRequestController,
+  useCloudAccessRequestFacts,
+  useCloudSelectedMode,
+} from "./use-cloud-access-request-controller";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
@@ -206,7 +204,6 @@ const cloudNotebookClientLogger: SyncEngineLogger = {
 };
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
-const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 30_000;
 const CLOUD_EMPTY_ROOM_GRACE_MS = 900;
 
 function decodeHashAnchorId(hash: string): string {
@@ -216,10 +213,6 @@ function decodeHashAnchorId(hash: string): string {
   } catch {
     return raw;
   }
-}
-
-function shouldPollPendingCloudAccessRequest(): boolean {
-  return typeof document === "undefined" || document.visibilityState !== "hidden";
 }
 
 function useCloudAccessFactsProjection(source: CloudAccessSourceFacts): CloudAccessFactsProjection {
@@ -259,9 +252,14 @@ export function NotebookViewer({
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const commentsUiEnabled = config.featureFlags?.enable_comments === true;
   const { store: widgetStore } = useWidgetStoreRequired();
-  const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
-    () => cloudNotebookModeFromSearch(window.location.search),
-  );
+  // Selected interaction mode and the user's edit-access request are owned by the
+  // access-request store; this component reads them through its domain hooks and
+  // writes them through store actions (setSelectedMode, requestEditAccess, reset).
+  const selectedInteractionMode = useCloudSelectedMode();
+  const accessRequestFacts = useCloudAccessRequestFacts();
+  const handleSelectInteractionMode = useCallback((mode: NotebookInteractionMode) => {
+    cloudAccessRequestStore.setSelectedMode(mode);
+  }, []);
   const appSessionStatus = useCloudAppSession();
   const hasAppSession = Boolean(appSessionStatus.session);
   const authState = useCloudAuthState();
@@ -298,9 +296,6 @@ export function NotebookViewer({
     null,
   );
   const handledHeadingHashRef = useRef<string | null>(null);
-  const [latestAccessRequest, setLatestAccessRequest] = useState<CloudNotebookAccessRequest | null>(
-    null,
-  );
   const [catalogAccessScope, setCatalogAccessScope] =
     useState<CloudNotebookCatalogAccessScope | null>(
       () => config.initialCatalogAccess?.scope ?? null,
@@ -309,16 +304,6 @@ export function NotebookViewer({
     Boolean(config.initialCatalogAccess),
   );
   const [catalogAccessLoadFailed, setCatalogAccessLoadFailed] = useState(false);
-  const [accessRequestError, setAccessRequestError] = useState<string | null>(null);
-  const [editAccessRequestedByUser, setEditAccessRequestedByUser] = useState(false);
-  // Scope resolution reads the latest selected mode at connect time, but
-  // access-mode correction itself must not rebuild the live-room callback:
-  // viewer-owned `?mode=edit` links are corrected to view mode after access is
-  // known, and making that correction a dependency tears the room down.
-  const selectedInteractionModeRef = useRef(selectedInteractionMode);
-  useEffect(() => {
-    selectedInteractionModeRef.current = selectedInteractionMode;
-  }, [selectedInteractionMode]);
   const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
   const browserApiAuthState = useBrowserApiAuthState();
   const canUseAuthenticatedCloudApi = cloudBrowserCanUseAuthenticatedApi({
@@ -422,7 +407,7 @@ export function NotebookViewer({
       if (appSession) {
         const requestedScope = resolveCloudAppSessionSyncScope(
           catalogAccessFactsRef.current,
-          selectedInteractionModeRef.current,
+          cloudAccessRequestStore.selectedModeSnapshot,
         );
         return cloudSyncAuthFromAppSessionCookie({
           requestedScope,
@@ -633,11 +618,6 @@ export function NotebookViewer({
   useEffect(() => {
     replaceCloudNotebookModeInCurrentUrl(selectedInteractionMode);
   }, [selectedInteractionMode]);
-  useEffect(() => {
-    if (selectedInteractionMode !== "edit") {
-      setEditAccessRequestedByUser(false);
-    }
-  }, [selectedInteractionMode]);
 
   const getOutlineStatusLabel = useOutlineStatusLabel();
   const notebookViewModel = useNotebookViewModel({
@@ -769,40 +749,39 @@ export function NotebookViewer({
         statusKind: status.kind,
       },
       hasBrowserAppIdentity,
-      request: {
-        error: accessRequestError,
-        latest: latestAccessRequest,
-        requestedByUser: editAccessRequestedByUser,
-      },
+      request: accessRequestFacts,
       selectedMode: selectedInteractionMode,
     }),
     [
-      accessRequestError,
+      accessRequestFacts,
       canUseAuthenticatedCloudApi,
       catalogAccessFacts,
       connectionError,
       connectionPeerId,
       connectionScope,
-      editAccessRequestedByUser,
       hasBrowserAppIdentity,
-      latestAccessRequest,
       selectedInteractionMode,
       status.kind,
     ],
   );
   const cloudAccessFacts = useCloudAccessFactsProjection(cloudAccessSourceFacts);
-  const {
-    accessConnectionScope,
-    catalogGrantsDocumentEdit,
-    effectiveAccessRequest,
-    selectedInteractionModeForAccess,
-    shouldLoadOwnEditAccessRequest,
-  } = cloudAccessFacts;
-  useEffect(() => {
-    if (cloudAccessFacts.shouldFallbackEditUrlToView) {
-      setSelectedInteractionMode("view");
-    }
-  }, [cloudAccessFacts.shouldFallbackEditUrlToView]);
+  const { accessConnectionScope, catalogGrantsDocumentEdit, selectedInteractionModeForAccess } =
+    cloudAccessFacts;
+  // The access-request store owns the poll, the mode corrections, and the
+  // loaded-request transition. It reads this gate/context through the controller
+  // seam; connection facts stay React-owned this branch (Phase 6 folds them in).
+  useCloudAccessRequestController({
+    facts: cloudAccessFacts,
+    browserAuth: browserApiAuthState,
+    authState: { mode: authState.mode, requestedScope: authState.requestedScope },
+    hasAppSession,
+    connectionScope,
+    catalogAccessScope,
+    endpoint: config.accessRequestsEndpoint,
+    notebookId: config.notebookId,
+    onRetryLiveConnection: retryLiveConnection,
+    onRefreshAuth: refreshAuthState,
+  });
   const saveCloudNotebookTitle = useCallback(
     async (nextTitle: string): Promise<boolean> => {
       if (!canUseAuthenticatedCloudApi || !catalogGrantsDocumentEdit || notebookTitleSaving) {
@@ -877,11 +856,6 @@ export function NotebookViewer({
       ? cloudRuntimeStatus.label
       : null
     : null;
-  useEffect(() => {
-    if (cloudAccessFacts.selectedModeCorrection) {
-      setSelectedInteractionMode(cloudAccessFacts.selectedModeCorrection);
-    }
-  }, [cloudAccessFacts.selectedModeCorrection]);
   const { shellCapabilities, canAcceptCellMutations, editAccessPending } =
     useCloudShellCapabilities({
       accessConnectionScope,
@@ -1558,9 +1532,7 @@ export function NotebookViewer({
       console.warn("[notebook-cloud] app session clear failed", error);
     });
     clearCloudPrototypeDevAuth(window.localStorage);
-    setLatestAccessRequest(null);
-    setAccessRequestError(null);
-    setSelectedInteractionMode("view");
+    cloudAccessRequestStore.reset();
     refreshAuthState();
   }, [refreshAuthState]);
   const beginNotebookAuth = useCallback(async () => {
@@ -1584,175 +1556,9 @@ export function NotebookViewer({
       console.warn("[notebook-cloud] sign-in start failed", error);
     }
   }, [authConfig.localDev, authConfig.oidc, resetPrototypeAuth]);
-  const applyLatestAccessRequest = useCallback(
-    (
-      request: CloudNotebookAccessRequest | null,
-      options?: { selectedMode?: NotebookInteractionMode },
-    ) => {
-      setLatestAccessRequest(request);
-      const transition = projectCloudAccessRequestTransition({
-        accessScope: catalogAccessScope,
-        authState: {
-          mode: authState.mode,
-          requestedScope: authState.requestedScope,
-        },
-        connectionScope,
-        hasAppSession,
-        request: catalogGrantsDocumentEdit ? null : request,
-        selectedMode: options?.selectedMode ?? selectedInteractionMode,
-      });
-      if (transition.requestedScope) {
-        storeCloudRequestedScope(window.localStorage, transition.requestedScope);
-      }
-      if (transition.selectedMode) {
-        setSelectedInteractionMode(transition.selectedMode);
-      }
-      if (transition.retryLiveConnection) {
-        retryLiveConnection();
-      }
-      if (transition.refreshPrototypeAuth) {
-        refreshAuthState();
-      }
-    },
-    [
-      authState.mode,
-      authState.requestedScope,
-      catalogAccessScope,
-      catalogGrantsDocumentEdit,
-      connectionScope,
-      hasAppSession,
-      refreshAuthState,
-      retryLiveConnection,
-      selectedInteractionMode,
-    ],
-  );
-  const loadOwnAccessRequest = useCallback(
-    async (options?: { signal?: AbortSignal }) => {
-      if (!shouldLoadOwnEditAccessRequest) {
-        return;
-      }
-
-      try {
-        const response = await fetchWithCloudPrototypeAuth(
-          config.accessRequestsEndpoint,
-          { headers: { Accept: "application/json" }, signal: options?.signal },
-          browserApiAuthState,
-        );
-        if (options?.signal?.aborted) {
-          return;
-        }
-        if (!response.ok) {
-          return;
-        }
-        const body = (await response.json()) as {
-          access_requests?: CloudNotebookAccessRequest[];
-        };
-        setAccessRequestError(null);
-        applyLatestAccessRequest(
-          Array.isArray(body.access_requests) ? (body.access_requests[0] ?? null) : null,
-        );
-      } catch {
-        return;
-      }
-    },
-    [
-      applyLatestAccessRequest,
-      browserApiAuthState,
-      config.accessRequestsEndpoint,
-      shouldLoadOwnEditAccessRequest,
-    ],
-  );
-  useEffect(() => {
-    if (!shouldLoadOwnEditAccessRequest) {
-      setLatestAccessRequest(null);
-      return;
-    }
-    const controller = new AbortController();
-    void loadOwnAccessRequest({ signal: controller.signal });
-    return () => controller.abort();
-  }, [loadOwnAccessRequest, shouldLoadOwnEditAccessRequest]);
-  useEffect(() => {
-    if (effectiveAccessRequest?.status !== "pending" || !shouldLoadOwnEditAccessRequest) {
-      return;
-    }
-
-    const controller = new AbortController();
-    let pollInFlight = false;
-    const poll = () => {
-      if (!shouldPollPendingCloudAccessRequest() || pollInFlight) {
-        return;
-      }
-      pollInFlight = true;
-      void loadOwnAccessRequest({ signal: controller.signal }).finally(() => {
-        pollInFlight = false;
-      });
-    };
-    const intervalId = window.setInterval(() => {
-      poll();
-    }, CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS);
-    const handleVisibilityChange = () => {
-      poll();
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      controller.abort();
-      window.clearInterval(intervalId);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [effectiveAccessRequest?.status, loadOwnAccessRequest, shouldLoadOwnEditAccessRequest]);
   const requestCloudEditAccess = useCallback(() => {
-    void (async () => {
-      setEditAccessRequestedByUser(true);
-      setAccessRequestError(null);
-      try {
-        const response = await fetchWithCloudPrototypeAuth(
-          config.accessRequestsEndpoint,
-          {
-            method: "POST",
-            headers: {
-              Accept: "application/json",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ scope: "editor" }),
-          },
-          browserApiAuthState,
-        );
-        if (!response.ok) {
-          throw await cloudResponseError(response, "Unable to request edit access");
-        }
-        const body = (await response.json()) as {
-          access_request?: CloudNotebookAccessRequest | null;
-          access_status?: string;
-        };
-        if (body.access_status === "granted") {
-          applyLatestAccessRequest(
-            {
-              id: "already-granted",
-              notebook_id: config.notebookId,
-              requester_principal: "",
-              scope: "editor",
-              status: "approved",
-              requested_by_actor_label: "",
-              resolved_by_actor_label: null,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-              resolved_at: new Date().toISOString(),
-            },
-            { selectedMode: "edit" },
-          );
-          return;
-        }
-        applyLatestAccessRequest(body.access_request ?? null, { selectedMode: "edit" });
-      } catch (error) {
-        setAccessRequestError(error instanceof Error ? error.message : String(error));
-      }
-    })();
-  }, [
-    applyLatestAccessRequest,
-    browserApiAuthState,
-    config.accessRequestsEndpoint,
-    config.notebookId,
-  ]);
+    cloudAccessRequestStore.requestEditAccess();
+  }, []);
   const shouldShowPackageEnvironmentSummary =
     shellCapabilities.canExecute || shellCapabilities.canManagePackages;
   const shouldShowCloudWorkstationsPanel =
@@ -1919,7 +1725,7 @@ export function NotebookViewer({
           accessLevel={shellCapabilities.access.level}
           accessPending={editAccessPending}
           reconnecting={sustainedReconnecting}
-          onModeChange={setSelectedInteractionMode}
+          onModeChange={handleSelectInteractionMode}
           onRequestEditAccess={requestCloudEditAccess}
         />
       }
