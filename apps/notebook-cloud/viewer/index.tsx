@@ -11,10 +11,13 @@ import {
   isOidcCallbackPath,
   isWorkstationsPath,
   loadAuthConfig,
+  loadCloudNotebookListBootstrap,
   loadViewerRuntime,
   requireElement,
 } from "./cloud-viewer-config";
 import type { CloudViewerAuthConfig, ViewerRuntimeState } from "./cloud-viewer-types";
+import { cloudAuthStore } from "./cloud-auth-store";
+import { cloudNotebookModeFromSearch } from "./cloud-notebook-mode";
 import { cloudNotebookRouteTitleFromPathname } from "./cloud-notebook-title-state";
 import { CloudHomeView } from "./home-view";
 import { CloudNotebookListView } from "./notebook-list-view";
@@ -43,6 +46,44 @@ setOpenUrlHost({
 });
 
 installDocumentThemeSync();
+
+/**
+ * Start the app-wide auth store before React's first render, so the drivers own
+ * auth/app-session from boot and the seeded snapshot is available to the
+ * instant-paint matcher (F7). Config is route-derived: the notebook route seeds
+ * the bootstrap session and enables OIDC refresh for edit-mode links (the store
+ * ORs in a live app session), while the other routes always keep sign-in fresh.
+ */
+function bootCloudAuthStore(): void {
+  if (isOidcCallbackPath()) {
+    // The callback route consumes no store hooks and redirects away; leave the
+    // drivers dormant so nothing kicks off a session fetch mid-exchange.
+    return;
+  }
+  const authConfig = loadAuthConfig();
+  if (isHomePath() || isWorkstationsPath()) {
+    cloudAuthStore.activate({ authConfig, initialSession: null, appSessionRefreshFallback: true });
+    return;
+  }
+  if (isNotebookListPath()) {
+    cloudAuthStore.activate({
+      authConfig,
+      initialSession: loadCloudNotebookListBootstrap()?.session ?? null,
+      appSessionRefreshFallback: true,
+    });
+    return;
+  }
+  const runtime = loadViewerRuntime();
+  const initialSession = runtime.kind === "ready" ? (runtime.runtime.config.session ?? null) : null;
+  cloudAuthStore.activate({
+    authConfig,
+    initialSession,
+    appSessionRefreshFallback: true,
+    autoRefreshOidc: cloudNotebookModeFromSearch(window.location.search) === "edit",
+  });
+}
+
+bootCloudAuthStore();
 
 function App() {
   const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());

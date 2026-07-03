@@ -706,20 +706,20 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
   assert.match(sourceText, /isRecoverableSocketCloseConsoleMessage/);
 });
 
-test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange", () => {
-  const sourceText = viewerCorpus;
+test("cloud auth store re-establishes and refreshes cookie-backed state after OIDC exchange", () => {
   const routeSourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
   const routeSourceText = readFileSync(routeSourcePath, "utf8");
-  const authSourcePath = new URL("../viewer/use-cloud-auth.ts", import.meta.url);
-  const authSourceText = readFileSync(authSourcePath, "utf8");
+  const storeSourcePath = new URL("../viewer/cloud-auth-store.ts", import.meta.url);
+  const storeSourceText = readFileSync(storeSourcePath, "utf8");
 
+  // The establish-then-refresh handshake lives in the auth store's establish
+  // driver, not a per-view hook: a fresh OIDC token exchanges for an app-session
+  // cookie, then the store re-reads /api/auth/session so the cookie-backed state
+  // is current.
+  assert.match(storeSourceText, /establishCloudAppSession/);
   assert.match(
-    sourceText,
-    /useCloudAppSessionBridge\(\s*authState,\s*appSessionStatus\.session,\s*appSessionStatus\.status === "loading",\s*appSessionStatus\.refreshAppSessionStatus,\s*\)/,
-  );
-  assert.match(
-    authSourceText,
-    /establishCloudAppSession\(authState\)[\s\S]*\.then\(\(\) => \{[\s\S]*onEstablished\?\.\(\)/,
+    storeSourceText,
+    /this\.establishAppSessionOp\(authState\)\s*\.then\(\(\) => \{[\s\S]*this\.refreshAppSessionStatus\(\);/,
   );
   assert.match(
     routeSourceText,
@@ -734,7 +734,7 @@ test("cloud notebook list refresh re-establishes app sessions before listing not
   assert.match(routeSourceText, /import \{ clearCloudAppSession, establishCloudAppSession \}/);
   assert.match(
     routeSourceText,
-    /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*establishCloudAppSession\(authState\)[\s\S]*appSessionStatus\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
+    /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*establishCloudAppSession\(authState\)[\s\S]*cloudAuthStore\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
     "manual notebook-list refresh should re-run the trusted session exchange so pending invites can resolve",
   );
 });
@@ -747,10 +747,7 @@ test("cloud notebook list waits for app-session cookies before catalog fetches",
     sourceText,
     /const \{[\s\S]*canFetchCatalog: canFetchNotebookList,[\s\S]*hasAppSession,[\s\S]*signedIn,[\s\S]*waitingForAppSession,[\s\S]*\} = hostedAuth;/,
   );
-  assert.match(
-    sourceText,
-    /useHostedCatalogAuth\(\{[\s\S]*authState,[\s\S]*appSession: appSessionStatus\.session,[\s\S]*appSessionLoading: appSessionStatus\.status === "loading"/,
-  );
+  assert.match(sourceText, /const hostedAuth = useHostedCatalogAuth\(\);/);
   assert.match(
     sourceText,
     /if \(!canFetchNotebookList\) \{[\s\S]*if \(waitingForAppSession\) \{[\s\S]*\{ kind: "loading" \}[\s\S]*return;/,

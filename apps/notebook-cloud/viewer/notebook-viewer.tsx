@@ -90,10 +90,6 @@ import {
 import type { ConnectionScope } from "../src/auth-shared";
 
 import { useCloudViewerSession } from "./cloud-viewer-session";
-import {
-  cloudBrowserApiAuthStateForFetch,
-  cloudSyncAuthConnectionKey,
-} from "./session-auth-stability";
 import { NotebookView } from "../../notebook/src/notebook-surface";
 import { InlineCommentComposer } from "../../notebook/src/components/InlineCommentComposer";
 import {
@@ -181,11 +177,14 @@ import type {
   CloudViewerAuthConfig,
   ViewerRuntime,
 } from "./cloud-viewer-types";
+import { cloudAuthStore } from "./cloud-auth-store";
 import {
-  useCloudAppSessionBridge,
-  useCloudAppSessionStatus,
-  useCloudPrototypeAuth,
-} from "./use-cloud-auth";
+  useBrowserApiAuthState,
+  useCloudAppSession,
+  useCloudAuthRenewal,
+  useCloudAuthState,
+  useCloudSyncAuthConnectionKey,
+} from "./use-cloud-auth-store";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
@@ -263,28 +262,13 @@ export function NotebookViewer({
   const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
     () => cloudNotebookModeFromSearch(window.location.search),
   );
-  const appSessionStatus = useCloudAppSessionStatus(config.session ?? null);
+  const appSessionStatus = useCloudAppSession();
   const hasAppSession = Boolean(appSessionStatus.session);
-  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
-    appSessionRefreshFallback: true,
-    appSessionLoading: appSessionStatus.status === "loading",
-    appSession: appSessionStatus.session,
-    autoRefreshOidc: hasAppSession || selectedInteractionMode === "edit",
-  });
-  const authStateRef = useRef(authState);
-  useEffect(() => {
-    authStateRef.current = authState;
-  }, [authState]);
-  const appSessionStatusRef = useRef(appSessionStatus);
-  useEffect(() => {
-    appSessionStatusRef.current = appSessionStatus;
-  }, [appSessionStatus]);
-  useCloudAppSessionBridge(
-    authState,
-    appSessionStatus.session,
-    appSessionStatus.status === "loading",
-    appSessionStatus.refreshAppSessionStatus,
-  );
+  const authState = useCloudAuthState();
+  const authRenewal = useCloudAuthRenewal();
+  const refreshAuthState = useCallback(() => {
+    cloudAuthStore.refreshAuthState();
+  }, []);
   // Cell focus is owned by the shared cell-ui-state store, not host React state.
   // NotebookView already writes and synchronously flushes the interaction target
   // on user focus (publishInteractionTarget, which carries the real
@@ -336,16 +320,7 @@ export function NotebookViewer({
     selectedInteractionModeRef.current = selectedInteractionMode;
   }, [selectedInteractionMode]);
   const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
-  const browserApiAuthState = useMemo(
-    () => cloudBrowserApiAuthStateForFetch(authState),
-    [
-      authState.mode,
-      authState.mode === "dev" ? authState.token : null,
-      authState.mode === "dev" ? authState.user : null,
-      authState.mode === "dev" ? authState.requestedScope : null,
-      authState.mode === "dev" ? authState.problem : null,
-    ],
-  );
+  const browserApiAuthState = useBrowserApiAuthState();
   const canUseAuthenticatedCloudApi = cloudBrowserCanUseAuthenticatedApi({
     authState,
     hasAppSession,
@@ -432,15 +407,13 @@ export function NotebookViewer({
     },
     [config.blobBasePath, config.rendererAssetsBasePath, config.rendererAssets.siftWasm],
   );
-  const syncAuthConnectionKey = cloudSyncAuthConnectionKey(authState, {
-    hasAppSession,
-  });
+  const syncAuthConnectionKey = useCloudSyncAuthConnectionKey();
   const liveRoomDisabledStatus = loadingPolicy.shouldConnectLiveRoom
     ? catalogLiveRoomPolicy.disabledStatus
     : null;
   const resolveSyncAuth = useCallback(
     async (sessionId: string) => {
-      const currentAppSessionStatus = appSessionStatusRef.current;
+      const currentAppSessionStatus = cloudAuthStore.appSessionSnapshot;
       const appSession =
         currentAppSessionStatus.session ??
         (currentAppSessionStatus.status === "loading"
@@ -456,7 +429,7 @@ export function NotebookViewer({
           sessionId,
         });
       }
-      return cloudSyncAuthFromPrototypeAuthState(authStateRef.current);
+      return cloudSyncAuthFromPrototypeAuthState(cloudAuthStore.authSnapshot);
     },
     [config.notebookId, syncAuthConnectionKey],
   );

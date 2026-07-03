@@ -59,9 +59,15 @@ describe("cloud projection flicker wiring", () => {
       sessionSource,
       /const syncAuthConnectionKey = cloudSyncAuthConnectionKey\(authState, \{ hasAppSession \}\);/,
     );
+    // The connect/diagnostic paths read the latest auth from the store snapshot,
+    // not from a dependency, so the effect stays keyed by the credential shape.
     assert.match(
       sessionSource,
-      /const authStateRef = useRef\(authState\);\s*authStateRef\.current = authState;[\s\S]*const hasAppSessionRef = useRef\(hasAppSession\);/,
+      /cloudSyncAuthFromPrototypeAuthState\(cloudAuthStore\.authSnapshot\)/,
+    );
+    assert.match(
+      sessionSource,
+      /const hasAppSessionRef = useRef\(hasAppSession\);\s*hasAppSessionRef\.current = hasAppSession;/,
     );
     const liveRoomDependencies = sessionSource.match(
       /\[\s*blobResolver,[\s\S]*?widgetStore,\s*\]\);/,

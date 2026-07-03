@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { Subject, VirtualAction, VirtualTimeScheduler } from "rxjs";
+import { CloudAuthStore, type CloudAuthStoreDeps } from "../viewer/cloud-auth-store";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
-import {
-  cloudBrowserApiAuthStateForFetch,
-  cloudBlobAuthStateForBrowserFetch,
-  cloudSyncAuthConnectionKey,
-} from "../viewer/session-auth-stability";
+import type { CloudAppSession } from "../viewer/app-session";
 
 function authState(overrides: Partial<CloudPrototypeAuthState> = {}): CloudPrototypeAuthState {
   return {
@@ -19,13 +17,38 @@ function authState(overrides: Partial<CloudPrototypeAuthState> = {}): CloudProto
   };
 }
 
-describe("cloud session auth stability", () => {
-  it("keeps cookie-backed browser API fetch auth stable across OIDC token churn", () => {
-    const first = cloudBrowserApiAuthStateForFetch(authState({ token: "token-a" }));
-    const second = cloudBrowserApiAuthStateForFetch(authState({ token: "token-b" }));
+/** Deps whose timers never fire (the scheduler is never flushed) and whose
+ *  network operations are inert, so activate() only seeds synchronous state. */
+function inertDeps(session: CloudAppSession | null): CloudAuthStoreDeps {
+  return {
+    scheduler: new VirtualTimeScheduler(VirtualAction, Infinity),
+    now: () => 0,
+    windowFocus$: new Subject<void>(),
+    documentVisible$: new Subject<boolean>(),
+    cloudAuthStorage$: new Subject<StorageEvent>(),
+    readAppSessionStatus: async () => ({ ok: true, session }),
+    establishAppSession: async () => {},
+  };
+}
 
-    assert.equal(first, second);
-    assert.deepEqual(first, {
+// The browser API fetch identity and the live-room connection key drive the
+// resolveSyncAuth -> live-room effect dependency. The store's projections must
+// hold both stable across OIDC token refreshes that do not change the effective
+// socket credentials, or the live room tears down and reconnects gratuitously.
+describe("cloud session auth stability (store projections)", () => {
+  it("holds one cookie-backed browser API fetch auth object across OIDC token churn", () => {
+    let current = authState({ token: "token-a" });
+    const store = new CloudAuthStore({ readAuthState: () => current });
+    const values: CloudPrototypeAuthState[] = [];
+    const sub = store.browserApiAuthState$.subscribe((value) => values.push(value));
+
+    current = authState({ token: "token-b" });
+    store.refreshAuthState();
+
+    // Non-dev modes collapse to one frozen cookie object, so OIDC token churn
+    // does not re-emit and the fetch identity stays reference-stable.
+    assert.equal(values.length, 1);
+    assert.deepEqual(values[0], {
       mode: "anonymous",
       token: null,
       user: null,
@@ -33,58 +56,52 @@ describe("cloud session auth stability", () => {
       requestedScope: null,
       problem: null,
     });
+    sub.unsubscribe();
   });
 
-  it("keeps cookie-backed blob fetch auth stable across OIDC token churn", () => {
-    const first = cloudBlobAuthStateForBrowserFetch(authState({ token: "token-a" }));
-    const second = cloudBlobAuthStateForBrowserFetch(authState({ token: "token-b" }));
+  it("keys dev-token browser API fetch auth by the dev headers", () => {
+    let current = authState({ mode: "dev", token: "dev-a", requestedScope: "owner" });
+    const store = new CloudAuthStore({ readAuthState: () => current });
+    const values: CloudPrototypeAuthState[] = [];
+    const sub = store.browserApiAuthState$.subscribe((value) => values.push(value));
 
-    assert.equal(first, second);
-    assert.deepEqual(first, {
-      mode: "anonymous",
-      token: null,
-      user: null,
-      oidcClaims: null,
-      requestedScope: null,
-      problem: null,
-    });
+    current = authState({ mode: "dev", token: "dev-b", requestedScope: "owner" });
+    store.refreshAuthState();
+
+    assert.equal(values.length, 2);
+    assert.equal(values[0].mode, "dev");
+    assert.equal(values[0].token, "dev-a");
+    assert.equal(values[1].token, "dev-b");
+    sub.unsubscribe();
   });
 
-  it("keeps dev-token blob fetch auth keyed by the dev headers", () => {
-    const first = cloudBlobAuthStateForBrowserFetch(
-      authState({ mode: "dev", token: "dev-a", requestedScope: "owner" }),
-    );
-    const second = cloudBlobAuthStateForBrowserFetch(
-      authState({ mode: "dev", token: "dev-b", requestedScope: "owner" }),
+  it("keys the live-room connection to the session transport when an app session exists", () => {
+    const session: CloudAppSession = { provider: "oidc", expires_at: 10_000, cache_key: "cache-a" };
+    const store = new CloudAuthStore({ readAuthState: () => authState({ token: "token-a" }) });
+    const keys: string[] = [];
+    const sub = store.syncAuthConnectionKey$.subscribe((key) => keys.push(key));
+
+    const dispose = store.activate(
+      { authConfig: { oidc: null, localDev: null }, initialSession: session },
+      inertDeps(session),
     );
 
-    assert.notEqual(first, second);
-    assert.equal(first.mode, "dev");
-    assert.equal(first.token, "dev-a");
-    assert.equal(second.token, "dev-b");
+    assert.equal(keys.at(-1), "app-session");
+    sub.unsubscribe();
+    dispose();
   });
 
-  it("keeps app-session live room auth keyed to the session transport mode", () => {
-    assert.equal(
-      cloudSyncAuthConnectionKey(authState({ token: "token-a" }), { hasAppSession: true }),
-      "app-session",
-    );
-    assert.equal(
-      cloudSyncAuthConnectionKey(authState({ token: "token-b" }), { hasAppSession: true }),
-      "app-session",
-    );
-  });
+  it("keys the live-room connection by effective socket credentials without an app session", () => {
+    let current = authState({ token: "token-a" });
+    const store = new CloudAuthStore({ readAuthState: () => current });
+    const keys: string[] = [];
+    const sub = store.syncAuthConnectionKey$.subscribe((key) => keys.push(key));
 
-  it("keeps token-backed live room auth keyed by effective socket credentials", () => {
-    const first = cloudSyncAuthConnectionKey(authState({ token: "token-a" }), {
-      hasAppSession: false,
-    });
-    const second = cloudSyncAuthConnectionKey(authState({ token: "token-b" }), {
-      hasAppSession: false,
-    });
+    current = authState({ token: "token-b" });
+    store.refreshAuthState();
 
-    assert.notEqual(first, second);
-    assert.equal(first, "oidc:token-a:user@example.test:owner");
-    assert.equal(second, "oidc:token-b:user@example.test:owner");
+    assert.equal(keys[0], "oidc:token-a:user@example.test:owner");
+    assert.equal(keys.at(-1), "oidc:token-b:user@example.test:owner");
+    sub.unsubscribe();
   });
 });

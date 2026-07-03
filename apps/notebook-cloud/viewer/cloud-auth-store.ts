@@ -50,7 +50,12 @@ import {
 } from "./app-session";
 import { cloudOidcRenewalFailureMessage } from "./auth-renewal-copy";
 import { documentVisible$, windowFocus$, cloudAuthStorage$ } from "./browser-signals";
-import { cloudPrototypeAuthFromWindow, type CloudPrototypeAuthState } from "./collaborator-auth";
+import {
+  cloudBrowserApiAuthStateForFetch,
+  cloudPrototypeAuthFromWindow,
+  cloudSyncAuthConnectionKey,
+  type CloudPrototypeAuthState,
+} from "./collaborator-auth";
 import type { CloudViewerAuthConfig } from "./cloud-viewer-types";
 import {
   projectHostedCatalogAuthState,
@@ -64,10 +69,6 @@ import {
   type CloudOidcStorage,
   type CloudOidcTokenState,
 } from "./oidc-auth";
-import {
-  cloudBrowserApiAuthStateForFetch,
-  cloudSyncAuthConnectionKey,
-} from "./session-auth-stability";
 import { cloudAppSessionsEqual, type CloudAppSessionViewState } from "./use-cloud-auth";
 
 /** Cadence of the OIDC refresh and app-session establish timers. */
@@ -218,6 +219,8 @@ export class CloudAuthStore {
   readonly authState$: Observable<CloudPrototypeAuthState>;
   /** The current app session, reference-held across content-equal fetches. */
   readonly appSession$: Observable<CloudAppSession | null>;
+  /** Full app-session view (status/session/error), for the domain hook. */
+  readonly appSessionView$: Observable<CloudAppSessionViewState>;
   /** Whether the app session is still resolving. */
   readonly appSessionLoading$: Observable<boolean>;
   /** OIDC renewal notice. */
@@ -260,6 +263,7 @@ export class CloudAuthStore {
 
     this.authState$ = this._authState$.pipe(distinctUntilChanged(cloudPrototypeAuthStateEquals));
     this.appSession$ = select(this._appSession$, (view) => view.session, cloudAppSessionsEqual);
+    this.appSessionView$ = this._appSession$.pipe(distinctUntilChanged(cloudAppSessionViewEquals));
     this.appSessionLoading$ = select(this._appSession$, (view) => view.status === "loading");
     this.renewal$ = this._renewal$.pipe(distinctUntilChanged(cloudAuthRenewalEquals));
     this.hostedAuth$ = combineLatest([
@@ -439,7 +443,13 @@ export class CloudAuthStore {
 
   private async runRefreshOidc(): Promise<void> {
     const oidc = this.authConfig?.oidc ?? null;
-    if (!this.autoRefreshOidc || !oidc || !this.shouldRefreshStoredOidc()) {
+    // The configured flag is the "refresh even without an app session" intent
+    // (the notebook route enables it only for edit-mode links). An existing app
+    // session always needs its OIDC token kept fresh, so a live session forces
+    // refresh on - reproducing the view's `hasAppSession || editMode` gate now
+    // that the store owns hasAppSession.
+    const autoRefresh = this.autoRefreshOidc || Boolean(this._appSession$.getValue().session);
+    if (!autoRefresh || !oidc || !this.shouldRefreshStoredOidc()) {
       return;
     }
     if (this.appSessionRefreshFallback) {
@@ -541,6 +551,16 @@ export class CloudAuthStore {
 
 function cloudAuthRenewalEquals(a: CloudAuthRenewalState, b: CloudAuthRenewalState): boolean {
   return a === b || (a.kind === b.kind && a.message === b.message);
+}
+
+function cloudAppSessionViewEquals(
+  a: CloudAppSessionViewState,
+  b: CloudAppSessionViewState,
+): boolean {
+  return (
+    a === b ||
+    (a.status === b.status && a.error === b.error && cloudAppSessionsEqual(a.session, b.session))
+  );
 }
 
 /**

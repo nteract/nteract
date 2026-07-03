@@ -7,13 +7,12 @@ import { projectWorkstationsPage, WorkstationsManagementPage } from "@/component
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
 import type { CloudViewerAuthConfig } from "./cloud-viewer-types";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
-import { useHostedCatalogAuth } from "./use-cloud-auth-store";
-import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import {
-  useCloudAppSessionBridge,
-  useCloudAppSessionStatus,
-  useCloudPrototypeAuth,
-} from "./use-cloud-auth";
+  useCloudAuthRenewal,
+  useCloudAuthState,
+  useHostedCatalogAuth,
+} from "./use-cloud-auth-store";
+import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import { useCloudWorkstationPairing } from "./use-cloud-workstation-pairing";
 import {
   CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS,
@@ -37,23 +36,9 @@ type CloudWorkstationsViewState =
  */
 export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const appSessionStatus = useCloudAppSessionStatus(null);
-  const { authState, authRenewal } = useCloudPrototypeAuth(authConfig, {
-    appSessionRefreshFallback: true,
-    appSessionLoading: appSessionStatus.status === "loading",
-    appSession: appSessionStatus.session,
-  });
-  useCloudAppSessionBridge(
-    authState,
-    appSessionStatus.session,
-    appSessionStatus.status === "loading",
-    appSessionStatus.refreshAppSessionStatus,
-  );
-  const hostedAuth = useHostedCatalogAuth({
-    authState,
-    appSession: appSessionStatus.session,
-    appSessionLoading: appSessionStatus.status === "loading",
-  });
+  const authState = useCloudAuthState();
+  const authRenewal = useCloudAuthRenewal();
+  const hostedAuth = useHostedCatalogAuth();
   const { canFetchCatalog, waitingForAppSession } = hostedAuth;
 
   const [viewState, setViewState] = useState<CloudWorkstationsViewState>({ kind: "loading" });
