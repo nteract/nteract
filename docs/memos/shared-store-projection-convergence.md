@@ -99,6 +99,20 @@ the flush strands the update (marked dirty, never emitted).
   invalidates suspended output retries so stale async blob resolutions cannot
   repaint after notebook teardown or switch. Cloud imports these headless
   helpers directly instead of reaching through a desktop-only store facade.
+- **Cloud async source state → viewer RxJS stores.**
+  `apps/notebook-cloud/viewer/cloud-auth-store.ts`,
+  `cloud-access-request-store.ts`, `cloud-catalog-store.ts`, and
+  `cloud-workstations-store.ts` own auth/session renewal, edit-access request
+  load/poll/request, catalog access plus notebook title, and workstation
+  registry/pairing/mutation state as module-level `ObservableStore` subclasses
+  (`packages/runtimed/src/observable-store.ts`) with driver pipelines built on
+  the shared `createPoll`/`fetchLatest` primitives and named domain hooks over
+  one internal `useSyncExternalStore` binding. The duplicated per-view auth
+  timers collapse into one activated driver set, and the three
+  chained-`setTimeout` polls collapse into the shared primitives. Authority
+  stays host-owned: the stores run the pure `projectHostedCatalogAuthState`/
+  `projectCloudAccessRequestTransition`/policy functions unchanged. Decision
+  record: `docs/adr/frontend-sync-bridge.md` Decision 8.
 
 ## Remaining work (ranked)
 
@@ -110,8 +124,9 @@ output focus, reconnect) before merge.
    facts pass centralizes catalog access, selected vs effective interaction
    mode, own edit-request status, edit-link fallback, live-room connect policy,
    share ledger rows, public-link state, and panel loading/copy/invite readiness.
-   Remaining cloud-local second sources of truth are owner mutation refresh
-   state and diagnostics fetch helpers. Keep D1/ACL/OIDC fetching, mutation, and
+   Remaining cloud-local second sources of truth are the sharing panel's owner
+   mutation refresh state and diagnostics fetch helpers (workstation mutation
+   refresh now lives in `cloud-workstations-store.ts`). Keep D1/ACL/OIDC fetching, mutation, and
    URL normalization in the cloud host; stores own the projection of those facts,
    not the authority. Do not move this policy into `runtimed-wasm`: WASM should
    receive already-negotiated room/document facts, not know what an OIDC invite,
