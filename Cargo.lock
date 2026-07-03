@@ -7647,6 +7647,7 @@ dependencies = [
  "log",
  "runt-workspace",
  "smappservice-rs",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

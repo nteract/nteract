@@ -15,5 +15,8 @@ dirs = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 smappservice-rs = "0.1"
