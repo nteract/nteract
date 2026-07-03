@@ -364,6 +364,35 @@ describe("createPoll (after-settle)", () => {
     subscription.unsubscribe();
     expect(calls[0].signal.aborted).toBe(true);
   });
+
+  it("swallows a rejected fetch and re-arms the loop", async () => {
+    const scheduler = newScheduler();
+    const errors: unknown[] = [];
+    let call = 0;
+    const fetch = (): Promise<string> => {
+      call += 1;
+      return call === 1 ? Promise.reject(new Error("boom")) : Promise.resolve("ok");
+    };
+    const { values } = collect(
+      createPoll({
+        strategy: "after-settle",
+        interval$: of(2_000),
+        fetch,
+        scheduler,
+        onError: (error) => errors.push(error),
+      }),
+    );
+
+    advanceBy(scheduler, 2_000);
+    await drainMicrotasks();
+    expect(errors).toHaveLength(1);
+    expect(values).toEqual([]);
+
+    // A rejected fetch emits nothing; the loop must still re-arm from settle.
+    advanceBy(scheduler, 2_000);
+    await drainMicrotasks();
+    expect(values).toEqual(["ok"]);
+  });
 });
 
 describe("fetchLatest", () => {

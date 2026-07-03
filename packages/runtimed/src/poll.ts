@@ -19,13 +19,13 @@ import {
   defer,
   distinctUntilChanged,
   exhaustMap,
-  expand,
   filter,
   finalize,
   from,
   merge,
   of,
   pairwise,
+  repeat,
   switchMap,
   timer,
   withLatestFrom,
@@ -78,7 +78,7 @@ export type PollDefinition<T> = AfterSettlePoll<T> | FixedRatePoll<T>;
  *   any wakeups share ONE `exhaustMap`, so overlapping triggers collapse into
  *   a single in-flight guard (reproduces a hand-rolled `pollInFlight` boolean).
  * - `after-settle`: the gap is measured AFTER each fetch settles, via
- *   `concatMap` + `expand`, so slow fetches cannot overlap and cannot be
+ *   `concatMap` + `repeat`, so slow fetches cannot overlap and cannot be
  *   perturbed by wakeups.
  *
  * Either way, `interval$` drives an outer `switchMap`: a new cadence (or
@@ -127,10 +127,14 @@ export function createPoll<T>(def: PollDefinition<T>): Observable<T> {
     distinctUntilChanged(),
     switchMap((ms) => {
       if (ms === null) return EMPTY;
-      // `timer(ms)` then re-arm through `expand` only after the fetch settles,
-      // so the gap is measured from settle, not from the previous tick.
-      const step = (): Observable<T> => timer(ms, def.scheduler).pipe(concatMap(() => runOnce()));
-      return step().pipe(expand(() => step()));
+      // `timer(ms)` then one fetch; the sequence completes on settle whether or
+      // not it emitted (a swallowed rejection emits nothing), and `repeat()`
+      // re-arms on completion. Re-arming on emission instead would let a single
+      // failed fetch kill the loop.
+      return timer(ms, def.scheduler).pipe(
+        concatMap(() => runOnce()),
+        repeat(),
+      );
     }),
   );
 }
