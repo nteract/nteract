@@ -7,6 +7,7 @@
 @import "../../../src/styles/cream-theme.css";
 @import "../../../src/styles/comment-highlight.css";
 @import "../../../src/styles/comment-affordance.css";
+@import "../../../src/styles/dashboard-atoms.css";
 
 @source "../**/*.{ts,tsx,mdx}";
 @source "../../../src/components/cell/**/*.{ts,tsx}";
@@ -17,8 +18,10 @@
 @source "../../../src/components/notebook/**/*.{ts,tsx}";
 @source "../../../src/components/outputs/**/*.{ts,tsx}";
 @source "../../../src/components/rail/**/*.{ts,tsx}";
+@source "../../../src/components/runtime/**/*.{ts,tsx}";
 @source "../../../src/components/ui/**/*.{ts,tsx}";
 @source "../../../src/components/widgets/**/*.{ts,tsx}";
+@source "../../../src/components/workstations/**/*.{ts,tsx}";
 @source "../../../packages/sift/src/**/*.{ts,tsx}";
 
 :root {

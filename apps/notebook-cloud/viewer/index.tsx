@@ -9,6 +9,7 @@ import {
   isHomePath,
   isNotebookListPath,
   isOidcCallbackPath,
+  isWorkstationsPath,
   loadAuthConfig,
   loadViewerRuntime,
   requireElement,
@@ -19,6 +20,7 @@ import { CloudHomeView } from "./home-view";
 import { CloudNotebookListView } from "./notebook-list-view";
 import { loadNotebookRouteModule } from "./notebook-route-preload";
 import { OidcCallbackView } from "./oidc-callback-view";
+import { CloudWorkstationsView } from "./workstations-view";
 import "./index.css";
 
 const NotebookRoute = lazy(() =>
@@ -45,7 +47,9 @@ installDocumentThemeSync();
 function App() {
   const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());
   const [runtimeState] = useState<ViewerRuntimeState | null>(() =>
-    isOidcCallbackPath() || isHomePath() || isNotebookListPath() ? null : loadViewerRuntime(),
+    isOidcCallbackPath() || isHomePath() || isNotebookListPath() || isWorkstationsPath()
+      ? null
+      : loadViewerRuntime(),
   );
 
   if (isHomePath()) {
@@ -57,6 +61,10 @@ function App() {
 
   if (isNotebookListPath()) {
     return <CloudNotebookListView authConfig={authConfig} />;
+  }
+
+  if (isWorkstationsPath()) {
+    return <CloudWorkstationsView authConfig={authConfig} />;
   }
 
   if (isOidcCallbackPath()) {

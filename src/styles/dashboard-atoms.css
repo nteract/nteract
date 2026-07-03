@@ -212,6 +212,46 @@
   object-fit: cover;
 }
 
+/* Workstation status spine: the workstations page marks transport status with
+   a 3px full-height capsule, deliberately not a dot-with-ring indicator.
+   Offline and unknown share the stale gray; attention uses the error ink.
+   .ws-spine-mark is the fixed-height variant used beside the detail title. */
+.ws-spine {
+  align-self: stretch;
+  flex: 0 0 auto;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--k-stale);
+}
+
+.ws-spine[data-status="online"] {
+  background: var(--live);
+}
+
+.ws-spine[data-status="connecting"] {
+  background: var(--k-start);
+  animation: ws-spine-pulse 1.3s ease-in-out infinite;
+}
+
+.ws-spine[data-status="attention"] {
+  background: var(--k-error);
+}
+
+.ws-spine-mark {
+  align-self: auto;
+  height: 15px;
+}
+
+@keyframes ws-spine-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
 /* Runtime status: a calm dot with an optional terse label. */
 .nb-kernel {
   display: inline-flex;
