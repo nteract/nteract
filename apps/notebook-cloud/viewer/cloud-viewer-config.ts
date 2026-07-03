@@ -198,6 +198,10 @@ export function isNotebookListPath(): boolean {
   return window.location.pathname.replace(/\/+$/, "") === "/n";
 }
 
+export function isWorkstationsPath(): boolean {
+  return window.location.pathname.replace(/\/+$/, "") === "/workstations";
+}
+
 function isCloudNotebookListBootstrap(value: unknown): value is CloudNotebookListBootstrap {
   if (!value || typeof value !== "object") {
     return false;

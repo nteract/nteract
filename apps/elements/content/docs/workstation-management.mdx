@@ -1,0 +1,48 @@
+---
+title: Workstation management
+description: Full-page management surface for paired remote workstations.
+---
+
+import { WorkstationManagementExample } from "@/components/workstation-management-example";
+
+The workstations page answers "what machines do I have, and what's running on
+them." It complements the in-notebook workstations rail panel, which answers
+the narrower question of what compute is attached to the current notebook.
+Attaching stays on the notebook side by design: this page never grows a
+Connect button.
+
+The fixture below is interactive. Select rows, reconnect or disconnect a
+machine, adjust the idle policy, open the pairing dialog, and unpair a
+workstation.
+
+<WorkstationManagementExample />
+
+## Vocabulary
+
+- **Workstation** — a paired machine the user owns or was granted. Never
+  "instance" or "server".
+- **Kernel / compute session** — what runs on a workstation on behalf of a
+  notebook.
+- **Unpair** — forget the machine on our side. The workstation and everything
+  on it stays put; it can pair again with a new code. For JupyterHub- and
+  Outerbounds-sourced workstations, machine lifecycle belongs to that platform.
+
+## Status language
+
+Transport status renders as a full-row-height 3px capsule (the status spine),
+deliberately not a dot-with-ring indicator. Online uses the shared `--live`
+green, connecting pulses in `--k-start` blue, offline and unknown share the
+`--k-stale` gray, and attention maps to the `--k-error` ink with the status
+message surfaced in the row subline. Kernel rows reuse `RuntimeStatusDot`;
+the kernel-count column uses `--live-ink` only when a kernel is executing or
+ready. uv magenta appears only as env-manager ink, never as a page accent.
+
+## Data honesty
+
+Registry facts (name, provider, status, vCPU, memory, working directory,
+last-seen) come from the hosted workstation registry today. The fixture also
+shows design-target facts the registry does not expose yet — per-workstation
+kernel inventory, idle auto-shutdown policy, GPU, OS/arch, and env-manager
+labels. The shared component treats those as optional host facts: hosts that
+lack the API omit the data and the section does not render, so the live cloud
+page ships without placeholder or invented values.

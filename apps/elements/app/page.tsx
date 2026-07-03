@@ -16,6 +16,7 @@ import {
   PanelLeft,
   PanelTop,
   Search,
+  Server,
   ShieldCheck,
   SlidersHorizontal,
   SquareCode,
@@ -70,6 +71,12 @@ const catalogGroups = [
         description: "Rail, environment, and connect-flow options for workstations.",
         href: "/docs/compute-placement",
         icon: Workflow,
+      },
+      {
+        title: "Workstation management",
+        description: "Full-page paired-machine list, detail, pairing, and unpair flows.",
+        href: "/docs/workstation-management",
+        icon: Server,
       },
       {
         title: "Context controls",

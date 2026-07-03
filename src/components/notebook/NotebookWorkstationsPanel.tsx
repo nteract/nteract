@@ -362,7 +362,7 @@ function pairingCommandHelpText(
   return "Keep the command running until the workstation appears in the panel.";
 }
 
-function PairingCommandList({
+export function PairingCommandList({
   commands,
 }: {
   commands: readonly NotebookWorkstationPairingCommandView[];
@@ -527,7 +527,7 @@ function PairingCommand({ command, label }: { command: string; label: string }) 
   );
 }
 
-function PairingCountdown({ expiresAt }: { expiresAt: string }) {
+export function PairingCountdown({ expiresAt }: { expiresAt: string }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);

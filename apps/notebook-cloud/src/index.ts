@@ -270,6 +270,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     handler: (_match, request, env) => notebookListViewer(request, env),
   },
   {
+    match: exactPath("/workstations", "/workstations/"),
+    methods: ["GET", "HEAD"],
+    handler: (_match, request, env) => workstationsViewer(request, env),
+  },
+  {
     match: exactPath("/oidc"),
     methods: ["GET", "HEAD"],
     handler: (_match, request, env) => oidcCallbackViewer(request, env),
@@ -5446,6 +5451,25 @@ async function notebookListViewer(request: Request, env: Env): Promise<Response>
       authConfigForRequest(request, env),
       null,
       bootstrap,
+      null,
+    ),
+  );
+}
+
+function workstationsViewer(request: Request, env: Env): Response {
+  if (request.method === "HEAD") {
+    return viewerShellHead(env);
+  }
+
+  return responseForRequestMethod(
+    request,
+    viewerShell(
+      {
+        title: "nteract cloud workstations",
+        description: "Manage the remote workstations paired to your nteract cloud account.",
+      },
+      env,
+      authConfigForRequest(request, env),
       null,
     ),
   );
