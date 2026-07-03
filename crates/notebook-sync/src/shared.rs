@@ -12,6 +12,7 @@ use automerge_recovery::{
     catch_automerge_panic, is_recoverable_sync_error, recoverable_automerge_operation,
     AutomergeOperationError, AutomergeRebuildError,
 };
+use comments_doc::CommentsDoc;
 use log::warn;
 use notebook_doc::presence::PresenceState;
 use runtime_doc::{CommsDoc, RuntimeStateDoc};
@@ -46,6 +47,12 @@ pub struct SharedDocState {
     /// Automerge sync protocol state for the CommsDoc peer.
     pub(crate) comms_peer_state: sync::State,
 
+    /// Comments doc — synced alongside notebook content.
+    pub(crate) comments_doc: CommentsDoc,
+
+    /// Automerge sync protocol state for the CommentsDoc peer.
+    pub(crate) comments_peer_state: sync::State,
+
     #[cfg(test)]
     panic_on_next_doc_sync: bool,
     #[cfg(test)]
@@ -58,6 +65,13 @@ impl SharedDocState {
         doc: AutoCommit,
         notebook_id: String,
     ) -> Result<Self, runtime_doc::RuntimeStateError> {
+        // CommentsDoc starts empty — identity arrives from daemon via sync.
+        // Author under the same actor as the notebook doc (set from the
+        // connection actor label at bootstrap) so comments ingress validation
+        // and attribution projection see the connection principal.
+        let mut comments_doc = CommentsDoc::new_empty_for_sync();
+        comments_doc.doc_mut().set_actor(doc.get_actor().clone());
+
         Ok(Self {
             doc,
             peer_state: sync::State::new(),
@@ -67,6 +81,8 @@ impl SharedDocState {
             state_peer_state: sync::State::new(),
             comms_doc: CommsDoc::try_new_empty()?,
             comms_peer_state: sync::State::new(),
+            comments_doc,
+            comments_peer_state: sync::State::new(),
             #[cfg(test)]
             panic_on_next_doc_sync: false,
             #[cfg(test)]
@@ -265,6 +281,64 @@ impl SharedDocState {
         rebuilt
     }
 
+    // ── CommentsDoc sync ────────────────────────────────────────────
+
+    pub(crate) fn generate_comments_sync_message_recovering(
+        &mut self,
+        label: &str,
+    ) -> Result<Option<sync::Message>, AutomergeOperationError> {
+        self.comments_doc
+            .generate_sync_message_recovering(&mut self.comments_peer_state, label)
+    }
+
+    pub(crate) fn receive_comments_sync_message(
+        &mut self,
+        message: sync::Message,
+    ) -> Result<(), automerge::AutomergeError> {
+        self.comments_doc
+            .doc_mut()
+            .sync()
+            .receive_sync_message(&mut self.comments_peer_state, message)
+    }
+
+    pub(crate) fn receive_comments_sync_message_recovering(
+        &mut self,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<(), AutomergeOperationError> {
+        let mut context = SharedDocReceiveRecoveryContext {
+            state: self,
+            next_message: Some(message.clone()),
+            retry_message: message,
+        };
+        recoverable_automerge_operation(
+            label,
+            &mut context,
+            |context| {
+                let message = context
+                    .next_message
+                    .take()
+                    .unwrap_or_else(|| context.retry_message.clone());
+                context.state.receive_comments_sync_message(message)
+            },
+            is_recoverable_sync_error,
+            |context| context.state.rebuild_comments_doc(),
+        )
+    }
+
+    pub(crate) fn rebuild_comments_doc(&mut self) -> Result<(), AutomergeRebuildError> {
+        let rebuilt = self.comments_doc.rebuild_from_save();
+        if let Err(err) = &rebuilt {
+            warn!(
+                "[notebook-sync] Failed to rebuild CommentsDoc after recoverable Automerge failure: {}; \
+                 resetting comments sync protocol only",
+                err
+            );
+        }
+        self.comments_peer_state = sync::State::new();
+        rebuilt
+    }
+
     /// Rebuild the RuntimeStateDoc via save→load and reset its sync state.
     ///
     /// Used after a caller-marked recoverable Automerge failure during
@@ -348,6 +422,18 @@ struct SharedDocReceiveRecoveryContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comments_doc_inherits_notebook_doc_actor() {
+        let mut doc = AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from("agent:claude:s1".as_bytes()));
+        let state = SharedDocState::new(doc, "test-notebook".into());
+        assert_eq!(
+            state.comments_doc.doc().get_actor(),
+            &automerge::ActorId::from("agent:claude:s1".as_bytes()),
+            "comments replica must author under the connection actor from construction"
+        );
+    }
 
     #[test]
     fn rebuild_state_doc_preserves_state_and_restarts_sync_handshake() {

@@ -1,23 +1,22 @@
 # notebook-sync
 
 This crate is the client-side sync handle and socket task boundary for
-NotebookDoc, RuntimeStateDoc, CommsDoc, PoolDoc, requests, presence, blobs, and
-session status. CommentsDoc frames pass through the relay path but this crate
-holds no comments replica.
+NotebookDoc, RuntimeStateDoc, CommsDoc, CommentsDoc, PoolDoc, requests,
+presence, blobs, and session status.
 
 ## Main pieces
 
 - `DocHandle` is the caller-facing API. Synchronous document mutations go
-  through `with_doc` or typed helpers, then notify the sync task.
+  through `with_doc` or typed helpers (including comment CRUD methods), then
+  notify the sync task.
 - `SharedDocState` stores the local NotebookDoc, RuntimeStateDoc, CommsDoc,
-  PoolDoc, snapshots, request waiters, blob waiters, and readiness phases
-  shared with the socket task.
+  CommentsDoc, PoolDoc, snapshots, request waiters, blob waiters, and readiness
+  phases shared with the socket task.
 - `sync_task` owns typed-frame I/O. It sends and receives Automerge sync for
-  `0x00` NotebookDoc, `0x05` RuntimeStateDoc, `0x06` PoolDoc, and `0x09`
-  CommsDoc, plus request, response, presence, session-control, and `PUT_BLOB`
-  frames. It receives and ignores `0x0a` CommentsDocSync — the comments
-  replica lives in frontend WASM (`runtimed-wasm`), reached via `relay_task`,
-  not in `SharedDocState`.
+  `0x00` NotebookDoc, `0x05` RuntimeStateDoc, `0x06` PoolDoc, `0x09` CommsDoc,
+  and `0x0a` CommentsDocSync, plus request, response, presence, session-control,
+  and `PUT_BLOB` frames. Frontend WASM (`runtimed-wasm`) relays CommentsDocSync
+  via `relay_task` for UI integration.
 - `execution_wait` / `execution_watch` observe RuntimeStateDoc terminal state;
   RuntimeStateDoc is the durable execution/output record, not broadcast replay.
 - `relay` / `relay_task` are byte-pipe helpers for app relay paths; they do not

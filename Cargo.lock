@@ -4829,6 +4829,8 @@ version = "0.5.2"
 dependencies = [
  "automerge",
  "automerge-recovery",
+ "chrono",
+ "comments-doc",
  "hex",
  "log",
  "notebook-doc",
@@ -7376,6 +7378,7 @@ version = "0.5.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "comments-doc",
  "dirs",
  "fancy-regex 0.14.0",
  "futures-util",

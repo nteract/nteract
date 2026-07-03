@@ -135,6 +135,21 @@ impl CommentsDoc {
             .unwrap_or_else(|err| panic!("seed comments doc schema: {err}"))
     }
 
+    /// Create an empty CommentsDoc for use in sync clients.
+    ///
+    /// The identity (comments_doc_id, notebook_ref) arrives from the daemon
+    /// via the first sync message. The shared genesis doc ensures no ROOT map
+    /// conflicts when local mutations race ahead of the first sync frame.
+    pub fn new_empty_for_sync() -> Self {
+        let mut doc = Self::schema_seed_doc()
+            .unwrap_or_else(|err| panic!("load comments doc genesis: {err}"));
+        doc.set_actor(ActorId::random());
+        Self {
+            doc,
+            comments_doc_id: String::new(),
+        }
+    }
+
     fn schema_seed_doc() -> Result<AutoCommit, CommentsDocError> {
         AutoCommit::load(COMMENTS_DOC_GENESIS_V1_BYTES).map_err(Into::into)
     }

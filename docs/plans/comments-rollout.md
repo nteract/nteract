@@ -18,10 +18,6 @@ The core comments architecture has landed:
 
 ## Remaining Work
 
-- **MCP tools and resources.** Add first-class comment mutation tools
-  (`create_comment`, `reply_comment`, `resolve_comment`, `reopen_comment`) and
-  `nteract://` read resources so agents use the same authored-change model as
-  humans.
 - **Desktop product polish.** Finish rail/panel flows, stale-anchor display, and
   source/rich-rendered selection repair against live `CommentsDoc` projections.
 - **Publish boundary.** Exclude private review comments from public artifacts by

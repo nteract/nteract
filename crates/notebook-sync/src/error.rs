@@ -59,6 +59,10 @@ pub enum SyncError {
     /// Runtime state document setup or mutation failed.
     #[error("Runtime state error: {0}")]
     RuntimeState(#[from] runtime_doc::RuntimeStateError),
+
+    /// Comments document setup or mutation failed.
+    #[error("Comments error: {0}")]
+    Comments(#[from] comments_doc::CommentsDocError),
 }
 
 impl From<serde_json::Error> for SyncError {
