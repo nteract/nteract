@@ -152,16 +152,14 @@ import {
   cloudNotebookCatalogAccessFromCatalogResponse,
   cloudNotebookSyncScopeForCatalogAccess,
   createCloudNotebookCatalogAccessLoader,
-  type CloudNotebookCatalogAccessScope,
 } from "./cloud-notebook-catalog-access";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import { replaceCloudNotebookModeInCurrentUrl } from "./cloud-notebook-mode";
 import {
   CloudAccessFactsStore,
-  cloudCatalogAccessFacts,
-  projectCloudAccessLiveRoomPolicy,
   type CloudAccessFactsProjection,
   type CloudAccessSourceFacts,
+  type CloudCatalogAccessFacts,
 } from "./cloud-access-facts";
 import { useCloudFactsProjection } from "./cloud-facts-react";
 import type {
@@ -183,6 +181,14 @@ import {
   useCloudAccessRequestFacts,
   useCloudSelectedMode,
 } from "./use-cloud-access-request-controller";
+import { cloudCatalogStore } from "./cloud-catalog-store";
+import {
+  useCloudCatalogAccessFacts,
+  useCloudCatalogController,
+  useCloudCatalogLiveRoomPolicy,
+  useCloudNotebookTitle,
+  useCloudNotebookTitleError,
+} from "./use-cloud-catalog-store";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
@@ -220,7 +226,7 @@ function useCloudAccessFactsProjection(source: CloudAccessSourceFacts): CloudAcc
 }
 
 function resolveCloudAppSessionSyncScope(
-  catalog: ReturnType<typeof cloudCatalogAccessFacts>,
+  catalog: CloudCatalogAccessFacts,
   selectedMode: NotebookInteractionMode,
 ): Exclude<ConnectionScope, "runtime_peer"> {
   return cloudNotebookSyncScopeForCatalogAccess({
@@ -239,15 +245,7 @@ export function NotebookViewer({
 }) {
   const { config } = runtime;
   const routeTitle = useMemo(() => cloudNotebookRouteTitle(), []);
-  const [catalogNotebookTitle, setCatalogNotebookTitle] = useState<string | null | undefined>(
-    () => config.initialCatalogAccess?.title,
-  );
   const [notebookTitleSaving, setNotebookTitleSaving] = useState(false);
-  const [notebookTitleError, setNotebookTitleError] = useState<string | null>(null);
-  const notebookTitle = useMemo(
-    () => cloudNotebookTitleDisplay(catalogNotebookTitle, routeTitle),
-    [catalogNotebookTitle, routeTitle],
-  );
   const loadingPolicy = useMemo(() => cloudViewerLoadingPolicy(config), [config.headsHash]);
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const commentsUiEnabled = config.featureFlags?.enable_comments === true;
@@ -296,14 +294,6 @@ export function NotebookViewer({
     null,
   );
   const handledHeadingHashRef = useRef<string | null>(null);
-  const [catalogAccessScope, setCatalogAccessScope] =
-    useState<CloudNotebookCatalogAccessScope | null>(
-      () => config.initialCatalogAccess?.scope ?? null,
-    );
-  const [catalogAccessResolved, setCatalogAccessResolved] = useState(() =>
-    Boolean(config.initialCatalogAccess),
-  );
-  const [catalogAccessLoadFailed, setCatalogAccessLoadFailed] = useState(false);
   const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
   const browserApiAuthState = useBrowserApiAuthState();
   const canUseAuthenticatedCloudApi = cloudBrowserCanUseAuthenticatedApi({
@@ -334,32 +324,30 @@ export function NotebookViewer({
       }),
     [browserApiAuthState, config.catalogEndpoint, config.notebookId],
   );
-  const catalogAccessFacts = useMemo(
-    () =>
-      cloudCatalogAccessFacts({
-        canUseAuthenticatedCloudApi,
-        loadFailed: catalogAccessLoadFailed,
-        resolved: catalogAccessResolved,
-        scope: catalogAccessScope,
-      }),
-    [
-      canUseAuthenticatedCloudApi,
-      catalogAccessLoadFailed,
-      catalogAccessResolved,
-      catalogAccessScope,
-    ],
+  // Catalog access and the notebook title are owned by the catalog store. The
+  // loader is host-built (it carries the browser API auth identity); the store
+  // drives the fetch, projects the access facts and live-room policy, and is the
+  // single writer of the title. `loadCatalogAccess` ignores the abort signal to
+  // match the loader's coalescing contract; fetchLatest's switchMap drops the
+  // superseded result.
+  const loadCatalogAccess = useCallback(
+    (_signal: AbortSignal) => catalogAccessLoader.load(),
+    [catalogAccessLoader],
   );
-  const catalogAccessFactsRef = useRef(catalogAccessFacts);
-  useEffect(() => {
-    catalogAccessFactsRef.current = catalogAccessFacts;
-  }, [catalogAccessFacts]);
-  const catalogLiveRoomPolicy = useMemo(
-    () =>
-      projectCloudAccessLiveRoomPolicy({
-        canUseAuthenticatedCloudApi,
-        catalog: catalogAccessFacts,
-      }),
-    [canUseAuthenticatedCloudApi, catalogAccessFacts],
+  useCloudCatalogController({
+    canUseAuthenticatedCloudApi,
+    loadCatalogAccess,
+    initialCatalogAccess: config.initialCatalogAccess,
+  });
+  const catalogAccessFacts = useCloudCatalogAccessFacts();
+  const catalogAccessScope = catalogAccessFacts.scope;
+  const catalogAccessResolved = catalogAccessFacts.status === "ready";
+  const catalogLiveRoomPolicy = useCloudCatalogLiveRoomPolicy();
+  const catalogNotebookTitle = useCloudNotebookTitle();
+  const notebookTitleError = useCloudNotebookTitleError();
+  const notebookTitle = useMemo(
+    () => cloudNotebookTitleDisplay(catalogNotebookTitle, routeTitle),
+    [catalogNotebookTitle, routeTitle],
   );
   const effectiveLoadingPolicy = useMemo(
     () => ({
@@ -406,7 +394,7 @@ export function NotebookViewer({
           : null);
       if (appSession) {
         const requestedScope = resolveCloudAppSessionSyncScope(
-          catalogAccessFactsRef.current,
+          cloudCatalogStore.catalogAccessFactsSnapshot,
           cloudAccessRequestStore.selectedModeSnapshot,
         );
         return cloudSyncAuthFromAppSessionCookie({
@@ -689,55 +677,6 @@ export function NotebookViewer({
   }, []);
   const hasBrowserAppIdentity =
     hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
-  const preserveInitialCatalogAccessRef = useRef(Boolean(config.initialCatalogAccess));
-  useEffect(() => {
-    if (!canUseAuthenticatedCloudApi) {
-      setCatalogAccessScope(null);
-      setCatalogAccessResolved(false);
-      setCatalogAccessLoadFailed(false);
-      setCatalogNotebookTitle(undefined);
-      setNotebookTitleError(null);
-      preserveInitialCatalogAccessRef.current = false;
-      return;
-    }
-
-    let cancelled = false;
-    if (preserveInitialCatalogAccessRef.current) {
-      preserveInitialCatalogAccessRef.current = false;
-    } else {
-      setCatalogAccessScope(null);
-      setCatalogAccessResolved(false);
-      setCatalogNotebookTitle(undefined);
-    }
-    setCatalogAccessLoadFailed(false);
-    void (async () => {
-      try {
-        const access = await catalogAccessLoader.load();
-        if (!cancelled) {
-          setCatalogAccessScope(access.catalogScope);
-          setCatalogAccessResolved(access.catalogResolved);
-          setCatalogAccessLoadFailed(false);
-          if ("catalogTitle" in access) {
-            setCatalogNotebookTitle(access.catalogTitle ?? null);
-            setNotebookTitleError(null);
-          }
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setCatalogAccessScope(null);
-          setCatalogAccessResolved(false);
-          setCatalogAccessLoadFailed(true);
-          setCatalogNotebookTitle(undefined);
-          setNotebookTitleError(error instanceof Error ? error.message : String(error));
-        }
-        return;
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [canUseAuthenticatedCloudApi, catalogAccessLoader]);
   const cloudAccessSourceFacts = useMemo<CloudAccessSourceFacts>(
     () => ({
       canUseAuthenticatedCloudApi,
@@ -790,7 +729,7 @@ export function NotebookViewer({
 
       try {
         setNotebookTitleSaving(true);
-        setNotebookTitleError(null);
+        cloudCatalogStore.clearTitleError();
         const response = await fetchWithCloudPrototypeAuth(
           config.catalogEndpoint,
           {
@@ -813,7 +752,7 @@ export function NotebookViewer({
         if (body.ok !== true || body.notebook_id !== config.notebookId) {
           throw new Error("Unable to rename notebook: response shape was invalid");
         }
-        setCatalogNotebookTitle(body.title ?? null);
+        cloudCatalogStore.applyTitleSaved(body.title ?? null);
         if (body.viewer_url) {
           const nextHref = cloudNotebookUrlAfterRename(window.location.href, body.viewer_url);
           if (nextHref !== window.location.href) {
@@ -822,7 +761,9 @@ export function NotebookViewer({
         }
         return true;
       } catch (error) {
-        setNotebookTitleError(error instanceof Error ? error.message : String(error));
+        cloudCatalogStore.applyTitleSaveFailure(
+          error instanceof Error ? error.message : String(error),
+        );
         return false;
       } finally {
         setNotebookTitleSaving(false);
