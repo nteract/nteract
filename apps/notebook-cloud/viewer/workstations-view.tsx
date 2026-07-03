@@ -6,27 +6,22 @@ import { useTheme } from "@/hooks/useTheme";
 import { projectWorkstationsPage, WorkstationsManagementPage } from "@/components/workstations";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
 import type { CloudViewerAuthConfig } from "./cloud-viewer-types";
-import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import {
   useCloudAuthRenewal,
   useCloudAuthState,
   useHostedCatalogAuth,
 } from "./use-cloud-auth-store";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
-import { useCloudWorkstationPairing } from "./use-cloud-workstation-pairing";
+import { cloudWorkstationsStore } from "./cloud-workstations-store";
 import {
-  CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS,
-  fetchCloudWorkstations,
-  type CloudWorkstationsState,
-} from "./workstations-client";
+  useCloudWorkstationPairing,
+  useCloudWorkstationsController,
+  useCloudWorkstationsError,
+  useCloudWorkstationsRegistry,
+  useCloudWorkstationsStatus,
+} from "./use-cloud-workstations-store";
 
 const WORKSTATIONS_ENDPOINT = "/api/workstations";
-
-type CloudWorkstationsViewState =
-  | { kind: "loading" }
-  | { kind: "signed_out" }
-  | { kind: "error"; message: string }
-  | { kind: "ready"; state: CloudWorkstationsState };
 
 /**
  * Standalone /workstations route: account-level management of paired
@@ -41,94 +36,42 @@ export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerA
   const hostedAuth = useHostedCatalogAuth();
   const { canFetchCatalog, waitingForAppSession } = hostedAuth;
 
-  const [viewState, setViewState] = useState<CloudWorkstationsViewState>({ kind: "loading" });
-  const [refreshIndex, setRefreshIndex] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
   }, [resolvedTheme]);
 
-  const loadWorkstations = useCallback(
-    async (authStateForFetch: CloudPrototypeAuthState, signal: AbortSignal) => {
-      const next = await fetchCloudWorkstations(WORKSTATIONS_ENDPOINT, authStateForFetch, signal);
-      if (signal.aborted) return;
-      setViewState({ kind: "ready", state: next });
+  // The store owns the registry poll and pairing lifecycle. The page has no
+  // attach/default mutations; a closed gate flips to loading (while the app
+  // session resolves) or signed_out without wiping the last-good registry.
+  useCloudWorkstationsController({
+    auth: authState,
+    workstationsEndpoint: WORKSTATIONS_ENDPOINT,
+    defaultEndpoint: undefined,
+    attachEndpoint: undefined,
+    canFetch: canFetchCatalog,
+    panelIsOpen: true,
+    closedGate: {
+      status: waitingForAppSession ? "loading" : "signed_out",
+      wipeRegistry: false,
     },
-    [],
-  );
+  });
 
-  useEffect(() => {
-    if (!canFetchCatalog) {
-      setViewState(waitingForAppSession ? { kind: "loading" } : { kind: "signed_out" });
-      return;
-    }
-    const controller = new AbortController();
-    setViewState((previous) => (previous.kind === "ready" ? previous : { kind: "loading" }));
-    void loadWorkstations(authState, controller.signal).catch((error: unknown) => {
-      if (controller.signal.aborted) return;
-      setViewState({
-        kind: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
-    return () => controller.abort();
-  }, [authState, canFetchCatalog, loadWorkstations, refreshIndex, waitingForAppSession]);
+  const status = useCloudWorkstationsStatus();
+  const registry = useCloudWorkstationsRegistry();
+  const registryError = useCloudWorkstationsError();
+  const pairing = useCloudWorkstationPairing();
 
-  // Background refresh keeps status spines honest while the page stays open.
-  // Chained timeouts serialize refreshes so ticks never overlap or land out of
-  // order, and cleanup aborts the in-flight fetch; otherwise a slow fetch from
-  // a signed-out session could land late and overwrite the signed_out state
-  // with stale registry data.
-  useEffect(() => {
-    if (!canFetchCatalog || viewState.kind !== "ready") {
-      return;
-    }
-    let disposed = false;
-    let timer: number | null = null;
-    let activeController: AbortController | null = null;
-    const scheduleRefresh = () => {
-      timer = window.setTimeout(() => {
-        const controller = new AbortController();
-        activeController = controller;
-        void loadWorkstations(authState, controller.signal)
-          .catch(() => {
-            // Transient refresh failures keep the last good registry view.
-          })
-          .finally(() => {
-            if (activeController === controller) {
-              activeController = null;
-            }
-            if (!disposed) {
-              scheduleRefresh();
-            }
-          });
-      }, CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS);
-    };
-    scheduleRefresh();
-    return () => {
-      disposed = true;
-      if (timer !== null) {
-        window.clearTimeout(timer);
-      }
-      activeController?.abort();
-    };
-  }, [authState, canFetchCatalog, loadWorkstations, viewState.kind]);
-
-  const workstations = viewState.kind === "ready" ? viewState.state.workstations : [];
-  const defaultWorkstationId =
-    viewState.kind === "ready" ? viewState.state.defaultWorkstationId : null;
+  const isReady = status === "ready";
+  const workstations = isReady ? registry.workstations : [];
+  const defaultWorkstationId = isReady ? registry.defaultWorkstationId : null;
 
   const refreshRegistry = useCallback(() => {
-    setRefreshIndex((value) => value + 1);
+    void cloudWorkstationsStore.refreshNow();
   }, []);
-
-  const { pairing, startPairing, cancelPairing } = useCloudWorkstationPairing({
-    workstationsEndpoint: WORKSTATIONS_ENDPOINT,
-    authState,
-    workstations,
-    onRegistered: refreshRegistry,
-  });
+  const startPairing = useCallback(() => cloudWorkstationsStore.startPairing(), []);
+  const cancelPairing = useCallback(() => cloudWorkstationsStore.cancelPairing(), []);
 
   const pageView = useMemo(() => {
     const selection = projectNotebookWorkstationSelection({
@@ -162,7 +105,7 @@ export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerA
             <span className="nb-brand-scope">workstations</span>
           </a>
           <span className="nb-header-spacer" />
-          {viewState.kind === "ready" || viewState.kind === "error" ? (
+          {status === "ready" || status === "error" ? (
             <div className="nb-header-actions">
               <Button
                 type="button"
@@ -192,7 +135,7 @@ export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerA
         className="mx-auto w-full max-w-[1188px] flex-1 px-6 pb-10 pt-6"
         aria-label="Workstations"
       >
-        {viewState.kind === "loading" ? (
+        {status === "loading" || status === "idle" ? (
           <div
             className="flex h-64 items-center justify-center gap-2 text-sm text-muted-foreground"
             role="status"
@@ -200,7 +143,7 @@ export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerA
             <Loader2 className="size-4 animate-spin" aria-hidden="true" />
             Loading workstations
           </div>
-        ) : viewState.kind === "signed_out" ? (
+        ) : status === "signed_out" ? (
           <div className="flex flex-col items-center gap-4 py-24 text-center">
             <h2 className="text-lg font-semibold">Sign in to manage workstations</h2>
             <p className="max-w-md text-sm text-muted-foreground">
@@ -209,10 +152,10 @@ export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerA
             </p>
             <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
           </div>
-        ) : viewState.kind === "error" ? (
+        ) : status === "error" ? (
           <div className="cloud-notebook-list-state" data-kind="error" role="alert">
             <AlertCircle aria-hidden="true" />
-            <span>{viewState.message}</span>
+            <span>{registryError}</span>
             <Button type="button" variant="outline" size="sm" onClick={refreshRegistry}>
               <RotateCcw aria-hidden="true" />
               Retry

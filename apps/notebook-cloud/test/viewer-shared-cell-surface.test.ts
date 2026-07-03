@@ -330,10 +330,12 @@ test("cloud package rail stays package-only and leaves sync/env state to app chr
   assert.doesNotMatch(sourceText, /Live sync connected/);
 });
 
-test("cloud workstation registry state lives in the workstation manager hook", () => {
+test("cloud workstation registry state lives in the workstations store", () => {
   const sourceText = viewerFileContaining("export function NotebookViewer");
   const hookSourcePath = new URL("../viewer/use-cloud-workstations.ts", import.meta.url);
   const hookSourceText = readFileSync(hookSourcePath, "utf8");
+  const storeSourcePath = new URL("../viewer/cloud-workstations-store.ts", import.meta.url);
+  const storeSourceText = readFileSync(storeSourcePath, "utf8");
 
   assert.match(sourceText, /useCloudWorkstationManager/);
   assert.match(sourceText, /cloudBrowserCanUseAuthenticatedApi/);
@@ -352,13 +354,24 @@ test("cloud workstation registry state lives in the workstation manager hook", (
   assert.doesNotMatch(sourceText, /projectNotebookWorkstationSelection/);
   assert.doesNotMatch(sourceText, /projectNotebookWorkstationSurface/);
   assert.doesNotMatch(sourceText, /cloudWorkstationRefreshIntervalMs/);
-  assert.match(hookSourceText, /fetchCloudWorkstations/);
-  assert.match(hookSourceText, /setCloudDefaultWorkstation/);
-  assert.match(hookSourceText, /requestCloudWorkstationAttachment/);
+
+  // The manager hook delegates the registry poll, mutations, and pairing to the
+  // store; it only shapes the presentational workstation surface for the rail.
+  assert.match(hookSourceText, /useCloudWorkstationsController/);
+  assert.match(hookSourceText, /cloudWorkstationsStore/);
   assert.match(hookSourceText, /projectNotebookWorkstationSurface/);
+  assert.doesNotMatch(hookSourceText, /fetchCloudWorkstations/);
+  assert.doesNotMatch(hookSourceText, /setCloudDefaultWorkstation/);
+  assert.doesNotMatch(hookSourceText, /requestCloudWorkstationAttachment/);
   assert.doesNotMatch(hookSourceText, /projectNotebookWorkstationSelection/);
   assert.doesNotMatch(hookSourceText, /projectNotebookWorkstationLaunchReadiness/);
-  assert.match(hookSourceText, /cloudWorkstationRefreshIntervalMs/);
+  assert.doesNotMatch(hookSourceText, /cloudWorkstationRefreshIntervalMs/);
+
+  // The store owns the registry/mutation client calls and the dynamic cadence.
+  assert.match(storeSourceText, /fetchCloudWorkstations/);
+  assert.match(storeSourceText, /setCloudDefaultWorkstation/);
+  assert.match(storeSourceText, /requestCloudWorkstationAttachment/);
+  assert.match(storeSourceText, /cloudWorkstationRefreshIntervalMs/);
 });
 
 test("cloud identity chrome renders through the shared actor projection surface", () => {
