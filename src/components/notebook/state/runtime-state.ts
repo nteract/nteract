@@ -7,7 +7,7 @@
  * without importing through either app.
  */
 
-import { useSyncExternalStore } from "react";
+import { useObservableProjection, type SynchronousObservable } from "./observable-binding";
 
 export type {
   CommDocEntry,
@@ -30,10 +30,6 @@ import {
   type RuntimeStatusKey,
   type WorkstationAttachmentState,
 } from "runtimed";
-
-interface SynchronousObservable<T> {
-  subscribe(callback: (value: T) => void): { unsubscribe(): void };
-}
 
 /**
  * App-wide runtime-state store. Both the desktop sync bridge and the cloud
@@ -68,49 +64,13 @@ export function isRuntimeStateLoaded(): boolean {
 }
 
 /**
- * Per-observable binding cache so `getSnapshot` returns the same value between
- * emissions. `useSyncExternalStore` requires snapshot stability to avoid render
- * loops. RuntimeStateStore projections emit synchronously on subscribe, so the
- * first subscription seeds the cached value.
- */
-const projectionCache = new WeakMap<
-  SynchronousObservable<unknown>,
-  { subscribe: (cb: () => void) => () => void; getSnapshot: () => unknown }
->();
-
-function bindingFor<T>(observable: SynchronousObservable<T>): {
-  subscribe: (cb: () => void) => () => void;
-  getSnapshot: () => T;
-} {
-  let binding = projectionCache.get(observable as SynchronousObservable<unknown>);
-  if (!binding) {
-    let current: unknown;
-    const seed = observable.subscribe((value) => {
-      current = value;
-    });
-    seed.unsubscribe();
-    binding = {
-      subscribe: (cb: () => void) => {
-        const sub = observable.subscribe((value) => {
-          current = value;
-          cb();
-        });
-        return () => sub.unsubscribe();
-      },
-      getSnapshot: () => current,
-    };
-    projectionCache.set(observable as SynchronousObservable<unknown>, binding);
-  }
-  return binding as { subscribe: (cb: () => void) => () => void; getSnapshot: () => T };
-}
-
-/**
- * Subscribe a React component to a projection observable from the shared store.
- * The observable must emit synchronously on subscribe.
+ * Runtime store's named domain binding. Subscribes a component to a projection
+ * observable from the shared store; the observable must emit synchronously on
+ * subscribe. Wraps the shared tearing-safe binding so the runtime projections
+ * (`state$`, `loaded$`, `workstation$`, ...) route through one cache.
  */
 export function useRuntimeProjection<T>(observable: SynchronousObservable<T>): T {
-  const binding = bindingFor(observable);
-  return useSyncExternalStore(binding.subscribe, binding.getSnapshot, binding.getSnapshot);
+  return useObservableProjection(observable);
 }
 
 /** Subscribe to the runtime state from RuntimeStateDoc. */
