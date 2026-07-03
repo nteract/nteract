@@ -22,6 +22,7 @@ notebook-cloud-transport = { path = "../notebook-cloud-transport", features = ["
 notebook-sync = { path = "../notebook-sync" }
 notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
+comments-doc = { path = "../comments-doc" }
 mcp-client-branding = { path = "../mcp-client-branding" }
 runt-workspace = { path = "../runt-workspace" }
 tokio = { workspace = true, features = ["full"] }

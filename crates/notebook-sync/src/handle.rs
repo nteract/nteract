@@ -102,14 +102,17 @@ pub struct DocHandle {
 /// saved `RuntimeStateDoc` whose execution/output manifests are resolved by
 /// `execution_id` from the notebook cells. `comms_doc_bytes` are the saved
 /// `CommsDoc` whose widget values pair with RuntimeStateDoc comm topology.
+/// `comments_doc_bytes` are the saved `CommentsDoc` whose threads attach to cells.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotPairBytes {
     pub notebook_bytes: Vec<u8>,
     pub runtime_state_bytes: Vec<u8>,
     pub comms_doc_bytes: Vec<u8>,
+    pub comments_doc_bytes: Vec<u8>,
     pub notebook_heads: Vec<String>,
     pub runtime_state_heads: Vec<String>,
     pub comms_doc_heads: Vec<String>,
+    pub comments_doc_heads: Vec<String>,
 }
 
 impl std::fmt::Debug for DocHandle {
@@ -158,9 +161,9 @@ impl DocHandle {
     /// (e.g., `"agent:claude"`, `"runtimed-py:<session>"`).
     pub fn set_actor(&self, actor_label: &str) -> Result<(), SyncError> {
         let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
-        state
-            .doc
-            .set_actor(automerge::ActorId::from(actor_label.as_bytes()));
+        let actor_id = automerge::ActorId::from(actor_label.as_bytes());
+        state.doc.set_actor(actor_id.clone());
+        state.comments_doc.doc_mut().set_actor(actor_id);
         Ok(())
     }
 
@@ -744,17 +747,26 @@ impl DocHandle {
             .into_iter()
             .map(|head| hex::encode(head.as_ref()))
             .collect();
+        let comments_doc_heads = state
+            .comments_doc
+            .get_heads()
+            .into_iter()
+            .map(|head| hex::encode(head.as_ref()))
+            .collect();
         let notebook_bytes = state.doc.save();
         let runtime_state_bytes = state.state_doc.doc_mut().save();
         let comms_doc_bytes = state.comms_doc.doc_mut().save();
+        let comments_doc_bytes = state.comments_doc.doc_mut().save();
 
         Ok(SnapshotPairBytes {
             notebook_bytes,
             runtime_state_bytes,
             comms_doc_bytes,
+            comments_doc_bytes,
             notebook_heads,
             runtime_state_heads,
             comms_doc_heads,
+            comments_doc_heads,
         })
     }
 
@@ -802,6 +814,89 @@ impl DocHandle {
             .await
             .map_err(|_| SyncError::Disconnected)?;
         crate::reply::recv(reply_rx).await
+    }
+
+    // ── Comment operations ──────────────────────────────────────────
+
+    /// Create a new comment thread anchored to a cell or notebook.
+    pub fn create_comment_thread(
+        &self,
+        anchor: comments_doc::CommentAnchor,
+        body: String,
+    ) -> Result<String, SyncError> {
+        let thread_id = uuid::Uuid::new_v4().to_string();
+        let message_id = uuid::Uuid::new_v4().to_string();
+        let created_at = chrono::Utc::now().to_rfc3339();
+
+        {
+            let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+            state.comments_doc.create_thread(
+                &thread_id,
+                &message_id,
+                &anchor,
+                &body,
+                None,
+                &created_at,
+            )?;
+        }
+
+        // Notify sync task that CommentsDoc changed
+        let _ = self.changed_tx.send(());
+
+        Ok(thread_id)
+    }
+
+    /// Reply to an existing comment thread.
+    pub fn reply_to_comment(&self, thread_id: &str, body: String) -> Result<String, SyncError> {
+        let message_id = uuid::Uuid::new_v4().to_string();
+        let created_at = chrono::Utc::now().to_rfc3339();
+
+        {
+            let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+            state
+                .comments_doc
+                .reply(thread_id, &message_id, &body, None, &created_at)?;
+        }
+
+        // Notify sync task that CommentsDoc changed
+        let _ = self.changed_tx.send(());
+
+        Ok(message_id)
+    }
+
+    /// Mark a comment thread as resolved.
+    pub fn resolve_comment_thread(&self, thread_id: &str) -> Result<(), SyncError> {
+        let resolved_at = chrono::Utc::now().to_rfc3339();
+
+        {
+            let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+            state.comments_doc.resolve_thread(thread_id, &resolved_at)?;
+        }
+
+        // Notify sync task that CommentsDoc changed
+        let _ = self.changed_tx.send(());
+
+        Ok(())
+    }
+
+    /// Reopen a resolved comment thread.
+    pub fn reopen_comment_thread(&self, thread_id: &str) -> Result<(), SyncError> {
+        {
+            let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+            state.comments_doc.reopen_thread(thread_id)?;
+        }
+
+        // Notify sync task that CommentsDoc changed
+        let _ = self.changed_tx.send(());
+
+        Ok(())
+    }
+
+    /// Read the current comments projection (all threads and messages).
+    pub fn get_comments_projection(&self) -> Result<comments_doc::CommentsProjection, SyncError> {
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        let projection = state.comments_doc.read_projection(None)?;
+        Ok(projection)
     }
 
     fn readiness_error(status: &SyncStatus) -> Option<SyncError> {
@@ -1086,5 +1181,114 @@ fn read_execution_id(doc: &AutoCommit, cell_id: &str) -> Option<String> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use comments_doc::CommentAnchor;
+    use tokio::sync::broadcast;
+
+    fn test_handle() -> DocHandle {
+        let shared = Arc::new(Mutex::new(SharedDocState::new(
+            notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
+            "test-notebook".into(),
+        )));
+
+        // Initialize CommentsDoc with identity (normally arrives from daemon via sync)
+        {
+            let mut state = shared.lock().unwrap();
+            let notebook_ref = comments_doc::NotebookCommentRef::LocalPath {
+                canonical_path: "/test.ipynb".into(),
+            };
+            state.comments_doc =
+                comments_doc::CommentsDoc::new("comments:test-notebook", &notebook_ref);
+        }
+
+        let initial_snapshot = {
+            let state = shared.lock().unwrap();
+            NotebookSnapshot::from_doc(&state.doc)
+        };
+        let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
+        let snapshot_tx = Arc::new(snapshot_tx);
+        let (_runtime_state_tx, runtime_state_rx) =
+            watch::channel(runtime_doc::RuntimeState::default());
+        let (_status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
+        let (changed_tx, _changed_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, _cmd_rx) = mpsc::channel(32);
+        let (_broadcast_tx, _broadcast_rx) =
+            broadcast::channel::<notebook_protocol::protocol::NotebookBroadcast>(32);
+
+        DocHandle::new(
+            Arc::clone(&shared),
+            changed_tx,
+            cmd_tx,
+            Arc::clone(&snapshot_tx),
+            snapshot_rx,
+            runtime_state_rx,
+            status_rx,
+            "test-notebook".to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn comment_crud_operations() {
+        let handle = test_handle();
+
+        // Set authenticated actor
+        handle.set_actor("agent:test").unwrap();
+
+        // Create a thread
+        let thread_id = handle
+            .create_comment_thread(
+                CommentAnchor::Cell {
+                    cell_id: "cell-1".into(),
+                    observed_cell_position: None,
+                },
+                "test comment".into(),
+            )
+            .unwrap();
+
+        // Read projection
+        let projection = handle.get_comments_projection().unwrap();
+        assert_eq!(projection.threads.len(), 1);
+        assert_eq!(projection.threads[0].messages[0].body, "test comment");
+        assert_eq!(
+            projection.threads[0].created_by_actor_label.as_deref(),
+            Some("agent:test"),
+            "thread creator should match set actor"
+        );
+
+        // Reply to thread
+        let _message_id = handle.reply_to_comment(&thread_id, "reply".into()).unwrap();
+
+        let projection = handle.get_comments_projection().unwrap();
+        assert_eq!(projection.threads[0].messages.len(), 2);
+        // Messages may be in any order depending on position calculation
+        let bodies: Vec<&str> = projection.threads[0]
+            .messages
+            .iter()
+            .map(|m| m.body.as_str())
+            .collect();
+        assert!(bodies.contains(&"test comment"));
+        assert!(bodies.contains(&"reply"));
+
+        // Resolve thread
+        handle.resolve_comment_thread(&thread_id).unwrap();
+
+        let projection = handle.get_comments_projection().unwrap();
+        assert!(projection.threads[0].resolved_at.is_some());
+        assert_eq!(
+            projection.threads[0].resolved_by_actor_label.as_deref(),
+            Some("agent:test"),
+            "thread resolver should match set actor"
+        );
+
+        // Reopen thread
+        handle.reopen_comment_thread(&thread_id).unwrap();
+
+        let projection = handle.get_comments_projection().unwrap();
+        assert!(projection.threads[0].resolved_at.is_none());
     }
 }

@@ -135,6 +135,21 @@ impl CommentsDoc {
             .unwrap_or_else(|err| panic!("seed comments doc schema: {err}"))
     }
 
+    /// Create an empty CommentsDoc for use in sync clients.
+    ///
+    /// The identity (comments_doc_id, notebook_ref) arrives from the daemon
+    /// via the first sync message. The shared genesis doc ensures no ROOT map
+    /// conflicts when local mutations race ahead of the first sync frame.
+    pub fn new_empty_for_sync() -> Self {
+        let mut doc = Self::schema_seed_doc()
+            .unwrap_or_else(|err| panic!("load comments doc genesis: {err}"));
+        doc.set_actor(ActorId::random());
+        Self {
+            doc,
+            comments_doc_id: String::new(),
+        }
+    }
+
     fn schema_seed_doc() -> Result<AutoCommit, CommentsDocError> {
         AutoCommit::load(COMMENTS_DOC_GENESIS_V1_BYTES).map_err(Into::into)
     }
@@ -195,6 +210,27 @@ impl CommentsDoc {
         self.comments_doc_id = comments_doc_id.to_string();
         self.doc.put(&ROOT, "comments_doc_id", comments_doc_id)?;
         Ok(())
+    }
+
+    /// Adopt a `comments_doc_id` that arrived in the document via sync into
+    /// the cached identity.
+    ///
+    /// Sync clients scaffold from the shared genesis with no identity
+    /// (`new_empty_for_sync`); the daemon-authoritative id reaches the
+    /// document through the first sync round. Returns `true` if an identity
+    /// was adopted, `false` if the cache was already set or the document
+    /// carries no id yet. Errors if the document's id is invalid or
+    /// conflicted.
+    pub fn adopt_synced_identity(&mut self) -> Result<bool, CommentsDocError> {
+        if !self.comments_doc_id.is_empty() {
+            return Ok(false);
+        }
+        let Some(raw) = self.raw_comments_doc_id() else {
+            return Ok(false);
+        };
+        self.ensure_raw_comments_doc_id_matches_value(&raw)?;
+        self.comments_doc_id = raw;
+        Ok(true)
     }
 
     fn ensure_raw_comments_doc_id_matches(&self) -> Result<(), CommentsDocError> {

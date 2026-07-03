@@ -429,6 +429,8 @@ impl SyncReactor {
         if let Some(generation) = self.send_doc_sync_round(writer).await? {
             mark_unsent_confirm_waiters(&mut self.state.confirm_waiters, generation);
         }
+        // Also send CommentsDoc changes
+        send_comments_sync_message(&self.io.doc, writer).await?;
         self.resolve_confirm_waiters();
         Ok(())
     }
@@ -474,6 +476,8 @@ impl SyncReactor {
                 if let Err(e) = send_state_sync_message(&self.io.doc, writer).await {
                     let _ = reply.send(Err(e));
                 } else if let Err(e) = send_comms_sync_message(&self.io.doc, writer).await {
+                    let _ = reply.send(Err(e));
+                } else if let Err(e) = send_comments_sync_message(&self.io.doc, writer).await {
                     let _ = reply.send(Err(e));
                 } else {
                     let now = Instant::now();
@@ -855,12 +859,66 @@ impl SyncReactor {
             }
 
             NotebookFrameType::CommentsDocSync => {
-                // CommentsDoc sync is a frontend WASM concern, like PoolStateSync.
-                // The Python client sync task holds no comments replica.
-                debug!(
-                    "[notebook-sync] Ignoring CommentsDocSync frame for {} (handled by frontend)",
-                    self.io.notebook_id
-                );
+                let msg = match sync::Message::decode(&frame.payload) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Failed to decode CommentsDocSync for {}: {}",
+                            self.io.notebook_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let reply_bytes = {
+                    let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+                    match state
+                        .receive_comments_sync_message_recovering(msg, "comments-doc-sync-receive")
+                    {
+                        Ok(()) => {}
+                        Err(e @ AutomergeOperationError::Panic(_))
+                        | Err(e @ AutomergeOperationError::RebuildFailed { .. }) => {
+                            warn!(
+                                "[notebook-sync] CommentsDocSync failure for {} (comments degrade alone): {}",
+                                self.io.notebook_id, e
+                            );
+                            state.comments_peer_state = sync::State::new();
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Failed to apply CommentsDocSync for {} (comments degrade alone): {}",
+                                self.io.notebook_id, e
+                            );
+                            state.comments_peer_state = sync::State::new();
+                            return Ok(());
+                        }
+                    };
+                    match state.generate_comments_sync_message_recovering("comments-doc-sync-reply")
+                    {
+                        Ok(message) => message.map(|msg| msg.encode()),
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Failed to generate CommentsDocSync reply for {}: {}",
+                                self.io.notebook_id, e
+                            );
+                            state.comments_peer_state = sync::State::new();
+                            return Ok(());
+                        }
+                    }
+                };
+
+                if let Some(bytes) = reply_bytes {
+                    if let Err(e) = writer
+                        .send_frame(NotebookFrameType::CommentsDocSync, &bytes)
+                        .await
+                    {
+                        warn!(
+                            "[notebook-sync] Failed to send CommentsDocSync reply for {}: {}",
+                            self.io.notebook_id, e
+                        );
+                    }
+                }
                 Ok(())
             }
 
@@ -1187,6 +1245,28 @@ async fn send_comms_sync_message<W: FrameSink>(
     if let Some(bytes) = msg_bytes {
         writer
             .send_frame(NotebookFrameType::CommsDocSync, &bytes)
+            .await
+            .map_err(SyncError::Io)?;
+    }
+
+    Ok(())
+}
+
+async fn send_comments_sync_message<W: FrameSink>(
+    doc: &Arc<Mutex<SharedDocState>>,
+    writer: &mut W,
+) -> Result<(), SyncError> {
+    let msg_bytes = {
+        let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .generate_comments_sync_message_recovering("comments-doc-sync-outbound")
+            .map_err(|e| SyncError::Protocol(e.to_string()))?
+            .map(|msg| msg.encode())
+    };
+
+    if let Some(bytes) = msg_bytes {
+        writer
+            .send_frame(NotebookFrameType::CommentsDocSync, &bytes)
             .await
             .map_err(SyncError::Io)?;
     }

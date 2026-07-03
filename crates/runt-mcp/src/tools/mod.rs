@@ -62,6 +62,7 @@ fn cell_resource_content(notebook_id: &str, cell_id: &str) -> Content {
 mod cell_crud;
 mod cell_meta;
 pub(crate) mod cell_read;
+mod comments;
 mod deps;
 mod editing;
 mod execution;
@@ -245,6 +246,41 @@ pub fn all_tools() -> Vec<Tool> {
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
         .with_meta(app_tool_meta()),
+        // -- Comments --
+        Tool::new(
+            "create_comment",
+            "Create a comment thread anchored to a cell or the notebook.",
+            schema_for::<comments::CreateCommentParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
+        Tool::new(
+            "reply_comment",
+            "Reply to an existing comment thread.",
+            schema_for::<comments::ReplyCommentParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
+        Tool::new(
+            "resolve_comment",
+            "Mark a comment thread as resolved.",
+            schema_for::<comments::ResolveCommentParams>(),
+        )
+        .annotate(
+            ToolAnnotations::new()
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+        ),
+        Tool::new(
+            "reopen_comment",
+            "Reopen a resolved comment thread.",
+            schema_for::<comments::ReopenCommentParams>(),
+        )
+        .annotate(
+            ToolAnnotations::new()
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+        ),
     ];
 
     attach_icons(&mut tools);
@@ -345,6 +381,11 @@ pub async fn dispatch(
         // Editing
         "replace_match" => editing::replace_match(server, request).await,
         "replace_regex" => editing::replace_regex(server, request).await,
+        // Comments
+        "create_comment" => comments::create_comment(server, request).await,
+        "reply_comment" => comments::reply_comment(server, request).await,
+        "resolve_comment" => comments::resolve_comment(server, request).await,
+        "reopen_comment" => comments::reopen_comment(server, request).await,
         _ => Err(McpError::invalid_params(
             format!("Unknown tool: {}", request.name),
             None,

@@ -123,6 +123,14 @@ pub fn list_resource_templates() -> ListResourceTemplatesResult {
             IconKind::ReadCell,
             NOTEBOOK_CONTEXT_PRIORITY,
         ),
+        assistant_resource_template(
+            "nteract://notebooks/{notebook_id}/comments",
+            "nteract notebook comments",
+            "Comment threads for a connected or parked notebook session",
+            "application/json",
+            IconKind::ListActiveNotebooks,
+            NOTEBOOK_CONTEXT_PRIORITY,
+        ),
     ];
 
     ListResourceTemplatesResult {
@@ -168,6 +176,18 @@ pub async fn read_resource(
         } => {
             let handle = handle_for_notebook(server, &notebook_id).await?;
             let text = cell_json(&notebook_id, &handle, &cell_id)?;
+            Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
+        }
+        NotebookResourceUri::Comments { notebook_id } => {
+            let handle = handle_for_notebook(server, &notebook_id).await?;
+            // Settle pending comments/state frames so a read right after join
+            // does not race the daemon's initial CommentsDocSync.
+            let _ = handle.confirm_state_sync().await;
+            let projection = handle
+                .get_comments_projection()
+                .map_err(|e| McpError::internal_error(format!("read comments: {e}"), None))?;
+            let text = serde_json::to_string_pretty(&projection)
+                .map_err(|e| McpError::internal_error(format!("serialize comments: {e}"), None))?;
             Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
         }
     }
@@ -422,6 +442,9 @@ enum NotebookResourceUri {
         notebook_id: String,
         cell_id: String,
     },
+    Comments {
+        notebook_id: String,
+    },
 }
 
 fn parse_notebook_resource_uri(uri: &str) -> Result<NotebookResourceUri, String> {
@@ -440,6 +463,9 @@ fn parse_notebook_resource_uri(uri: &str) -> Result<NotebookResourceUri, String>
         [notebook_id, "cells", cell_id] => Ok(NotebookResourceUri::Cell {
             notebook_id: decode_segment(notebook_id)?,
             cell_id: decode_segment(cell_id)?,
+        }),
+        [notebook_id, "comments"] => Ok(NotebookResourceUri::Comments {
+            notebook_id: decode_segment(notebook_id)?,
         }),
         _ => Err(format!("Unknown nteract resource URI: {uri}")),
     }

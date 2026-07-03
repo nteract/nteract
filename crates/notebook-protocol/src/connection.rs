@@ -630,6 +630,7 @@ mod tests {
             ft::RUNTIME_STATE_SYNC,
             ft::COMMS_DOC_SYNC,
             ft::POOL_STATE_SYNC,
+            ft::COMMENTS_DOC_SYNC,
             ft::SESSION_CONTROL,
             ft::PUT_BLOB,
         ] {
