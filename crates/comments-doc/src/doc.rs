@@ -212,6 +212,27 @@ impl CommentsDoc {
         Ok(())
     }
 
+    /// Adopt a `comments_doc_id` that arrived in the document via sync into
+    /// the cached identity.
+    ///
+    /// Sync clients scaffold from the shared genesis with no identity
+    /// (`new_empty_for_sync`); the daemon-authoritative id reaches the
+    /// document through the first sync round. Returns `true` if an identity
+    /// was adopted, `false` if the cache was already set or the document
+    /// carries no id yet. Errors if the document's id is invalid or
+    /// conflicted.
+    pub fn adopt_synced_identity(&mut self) -> Result<bool, CommentsDocError> {
+        if !self.comments_doc_id.is_empty() {
+            return Ok(false);
+        }
+        let Some(raw) = self.raw_comments_doc_id() else {
+            return Ok(false);
+        };
+        self.ensure_raw_comments_doc_id_matches_value(&raw)?;
+        self.comments_doc_id = raw;
+        Ok(true)
+    }
+
     fn ensure_raw_comments_doc_id_matches(&self) -> Result<(), CommentsDocError> {
         self.ensure_raw_comments_doc_id_matches_value(&self.comments_doc_id)
     }

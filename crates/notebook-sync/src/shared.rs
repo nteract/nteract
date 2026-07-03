@@ -298,7 +298,18 @@ impl SharedDocState {
         self.comments_doc
             .doc_mut()
             .sync()
-            .receive_sync_message(&mut self.comments_peer_state, message)
+            .receive_sync_message(&mut self.comments_peer_state, message)?;
+        // The replica scaffolds without identity; the daemon-authoritative
+        // comments_doc_id arrives inside the synced document. Adopt it so
+        // projections work after the first sync round. Adoption failure is a
+        // degrade-alone comments concern, not a sync error.
+        if let Err(err) = self.comments_doc.adopt_synced_identity() {
+            warn!(
+                "[notebook-sync] CommentsDoc identity adoption failed for {}: {}",
+                self.notebook_id, err
+            );
+        }
+        Ok(())
     }
 
     pub(crate) fn receive_comments_sync_message_recovering(
@@ -433,6 +444,59 @@ mod tests {
             &automerge::ActorId::from("agent:claude:s1".as_bytes()),
             "comments replica must author under the connection actor from construction"
         );
+    }
+
+    #[test]
+    fn comments_projection_works_after_initial_daemon_sync() {
+        use automerge::sync::SyncDoc;
+
+        // Client starts from the real empty sync seed — no identity.
+        let mut state = SharedDocState::new(AutoCommit::new(), "test-notebook".into());
+
+        // Daemon-side doc carries the authoritative identity.
+        let notebook_ref = comments_doc::NotebookCommentRef::LocalPath {
+            canonical_path: "/test.ipynb".into(),
+        };
+        let mut daemon_doc = comments_doc::CommentsDoc::new_with_actor(
+            "comments:local-path:abc123",
+            &notebook_ref,
+            "local:tester/desktop",
+        );
+        let mut daemon_peer = sync::State::new();
+
+        // Drive sync to convergence in both directions.
+        for _ in 0..10 {
+            let mut progressed = false;
+            if let Some(msg) = daemon_doc.generate_sync_message(&mut daemon_peer) {
+                state
+                    .receive_comments_sync_message(msg)
+                    .expect("client applies daemon comments sync");
+                progressed = true;
+            }
+            if let Some(msg) = state
+                .generate_comments_sync_message_recovering("test-comments-outbound")
+                .expect("client generates comments sync")
+            {
+                daemon_doc
+                    .doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut daemon_peer, msg)
+                    .expect("daemon applies client comments sync");
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+
+        // The client replica must have adopted the daemon identity: this is
+        // the path the nteract:// comments resource and post-mutation reads
+        // exercise, which fail with MissingCommentsDocId without adoption.
+        let projection = state
+            .comments_doc
+            .read_projection(None)
+            .expect("projection readable after initial daemon sync");
+        assert_eq!(projection.comments_doc_id, "comments:local-path:abc123");
     }
 
     #[test]
