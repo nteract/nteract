@@ -90,17 +90,43 @@ export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerA
   }, [authState, canFetchCatalog, loadWorkstations, refreshIndex, waitingForAppSession]);
 
   // Background refresh keeps status spines honest while the page stays open.
+  // Chained timeouts serialize refreshes so ticks never overlap or land out of
+  // order, and cleanup aborts the in-flight fetch; otherwise a slow fetch from
+  // a signed-out session could land late and overwrite the signed_out state
+  // with stale registry data.
   useEffect(() => {
     if (!canFetchCatalog || viewState.kind !== "ready") {
       return;
     }
-    const timer = window.setInterval(() => {
-      const controller = new AbortController();
-      void loadWorkstations(authState, controller.signal).catch(() => {
-        // Transient refresh failures keep the last good registry view.
-      });
-    }, CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    let disposed = false;
+    let timer: number | null = null;
+    let activeController: AbortController | null = null;
+    const scheduleRefresh = () => {
+      timer = window.setTimeout(() => {
+        const controller = new AbortController();
+        activeController = controller;
+        void loadWorkstations(authState, controller.signal)
+          .catch(() => {
+            // Transient refresh failures keep the last good registry view.
+          })
+          .finally(() => {
+            if (activeController === controller) {
+              activeController = null;
+            }
+            if (!disposed) {
+              scheduleRefresh();
+            }
+          });
+      }, CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS);
+    };
+    scheduleRefresh();
+    return () => {
+      disposed = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+      activeController?.abort();
+    };
   }, [authState, canFetchCatalog, loadWorkstations, viewState.kind]);
 
   const workstations = viewState.kind === "ready" ? viewState.state.workstations : [];
