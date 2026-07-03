@@ -7,7 +7,7 @@ import { projectWorkstationsPage, WorkstationsManagementPage } from "@/component
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
 import type { CloudViewerAuthConfig } from "./cloud-viewer-types";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
-import { projectHostedCatalogAuthState } from "./hosted-catalog-auth";
+import { useHostedCatalogAuth } from "./use-cloud-auth-store";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import {
   useCloudAppSessionBridge,
@@ -49,7 +49,8 @@ export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerA
     appSessionStatus.status === "loading",
     appSessionStatus.refreshAppSessionStatus,
   );
-  const hostedAuth = projectHostedCatalogAuthState(authState, {
+  const hostedAuth = useHostedCatalogAuth({
+    authState,
     appSession: appSessionStatus.session,
     appSessionLoading: appSessionStatus.status === "loading",
   });

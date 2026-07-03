@@ -749,7 +749,7 @@ test("cloud notebook list waits for app-session cookies before catalog fetches",
   );
   assert.match(
     sourceText,
-    /projectHostedCatalogAuthState\(authState,[\s\S]*appSession: appSessionStatus\.session,[\s\S]*appSessionLoading: appSessionStatus\.status === "loading"/,
+    /useHostedCatalogAuth\(\{[\s\S]*authState,[\s\S]*appSession: appSessionStatus\.session,[\s\S]*appSessionLoading: appSessionStatus\.status === "loading"/,
   );
   assert.match(
     sourceText,

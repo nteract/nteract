@@ -32,7 +32,7 @@ import {
   CloudNotebookDashboard,
   CloudNotebookDashboardSearchInput,
 } from "./cloud-notebook-dashboard-view";
-import { projectHostedCatalogAuthState } from "./hosted-catalog-auth";
+import { useHostedCatalogAuth } from "./use-cloud-auth-store";
 import { loadCloudNotebookListBootstrap } from "./cloud-viewer-config";
 import type { CloudAppSession } from "./app-session";
 import type {
@@ -92,7 +92,8 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   const [renameState, setRenameState] = useState<CloudNotebookRenameState | null>(null);
   const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
-  const hostedAuth = projectHostedCatalogAuthState(authState, {
+  const hostedAuth = useHostedCatalogAuth({
+    authState,
     appSession: appSessionStatus.session,
     appSessionLoading: appSessionStatus.status === "loading",
   });
