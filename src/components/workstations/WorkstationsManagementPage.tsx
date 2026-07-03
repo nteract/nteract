@@ -96,9 +96,9 @@ export function WorkstationsManagementPage({
         ) : null}
       </header>
 
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <aside
-          className="flex w-[392px] shrink-0 flex-col border-r border-border"
+          className="flex max-h-72 w-full shrink-0 flex-col border-b border-border lg:max-h-none lg:w-[392px] lg:border-b-0 lg:border-r"
           aria-label="Paired machines"
         >
           <div className="border-b border-border px-4 py-2.5 text-[11px] uppercase tracking-[0.07em] text-muted-foreground">
@@ -122,7 +122,7 @@ export function WorkstationsManagementPage({
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-1 flex-col" aria-label="Workstation detail">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Workstation detail">
           {selected ? (
             <WorkstationDetail
               item={selected}
