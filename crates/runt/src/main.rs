@@ -2604,7 +2604,12 @@ async fn doctor_command(
                     }
                 } else if !manager.is_installed() {
                     // Fresh install needed
-                    match manager.install(bundled_path) {
+                    let result = if no_start {
+                        manager.install_no_start(bundled_path)
+                    } else {
+                        manager.install(bundled_path)
+                    };
+                    match result {
                         Ok(()) => {
                             actions_taken
                                 .push(format!("Installed daemon from {}", bundled_path.display()));
@@ -2625,11 +2630,10 @@ async fn doctor_command(
 
         // Start if installed but not running.
         //
-        // Skipped when --no-start is set. The NSIS post-install hook passes
-        // --no-start so the daemon binary and startup script are written to
-        // disk without spawning a long-running child inside the installer's
-        // Windows Job Object. The daemon will start automatically at next
-        // login via the Startup folder entry that create_service_config() writes.
+        // Skipped when --no-start is set. The NSIS post-install hook uses this
+        // to avoid spawning a long-running child inside the installer's Windows
+        // Job Object, while Linux packaging smokes use it to stage daemon files
+        // without requiring a live user systemd session.
         if manager.is_installed() && !daemon_running_before && !no_start {
             match manager.start() {
                 Ok(()) => {
