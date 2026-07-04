@@ -364,4 +364,78 @@ describe("CloudAuthStore app-session establish driver", () => {
     assert.equal(establishCalls, 0);
     dispose();
   });
+
+  it("re-triggers establish when the initial session fetch settles (no 60s stall)", async () => {
+    const scheduler = newScheduler();
+    const establishes: string[] = [];
+    let resolveStatus: ((status: CloudAppSessionStatus) => void) | undefined;
+    const store = new CloudAuthStore({ readAuthState: oidcAuth });
+    const dispose = store.activate(
+      { authConfig: { oidc: null, localDev: null }, initialSession: null },
+      baseDeps({
+        scheduler,
+        readAppSessionStatus: () =>
+          new Promise<CloudAppSessionStatus>((resolve) => {
+            resolveStatus = resolve;
+          }),
+        establishAppSession: async (authState) => {
+          establishes.push(authState.token ?? "");
+        },
+      }),
+    );
+
+    // The boot tick fires while the initial GET is still in flight; the
+    // loading guard skips establish.
+    advanceBy(scheduler, 0);
+    await drainMicrotasks();
+    assert.equal(establishes.length, 0);
+
+    // The fetch settling must itself re-trigger the driver - the next timer
+    // tick is a minute away.
+    resolveStatus?.({ ok: true, session: null });
+    await drainMicrotasks();
+    assert.deepEqual(establishes, ["oidc-token"]);
+
+    dispose();
+  });
+});
+
+describe("CloudAuthStore renewal notice", () => {
+  it("refreshAuthState clears a stale failure once storage no longer needs a refresh", async () => {
+    const scheduler = newScheduler();
+    let storedToken: string | null = JSON.stringify({
+      accessToken: "stored-access",
+      refreshToken: "stored-refresh",
+      expiresAt: 0,
+      claims: { sub: "subject-1" },
+    });
+    const storage: CloudOidcStorage = {
+      getItem: (key) => (key === NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY ? storedToken : null),
+      setItem: () => {},
+      removeItem: () => {},
+    };
+    const store = new CloudAuthStore({ readAuthState: oidcAuth });
+    const dispose = store.activate(
+      { authConfig: { oidc: oidcConfig, localDev: null }, initialSession: null },
+      baseDeps({
+        scheduler,
+        oidcStorage: storage,
+        refreshOidcToken: async () => {
+          throw new Error("refresh failed");
+        },
+      }),
+    );
+    await drainMicrotasks();
+    advanceBy(scheduler, 0);
+    await drainMicrotasks();
+    assert.equal(store.renewalSnapshot.kind, "failed");
+
+    // Another tab signs out: the stored token is gone, no refresh is owed,
+    // so the failure notice clears with the re-read.
+    storedToken = null;
+    store.refreshAuthState();
+    assert.equal(store.renewalSnapshot.kind, "idle");
+
+    dispose();
+  });
 });

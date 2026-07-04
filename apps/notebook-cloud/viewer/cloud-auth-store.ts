@@ -308,6 +308,15 @@ export class CloudAuthStore {
   /** Re-read auth from storage. The access-request reducer and drivers call this. */
   refreshAuthState(): void {
     this._authState$.next(this.readAuthState());
+    // A renewal failure is only meaningful while a refresh is still owed. When
+    // storage no longer needs one (sign-out, cross-tab token replacement) or a
+    // fresh app session covers us, the notice clears with the re-read.
+    if (
+      !this.shouldRefreshStoredOidc() ||
+      cloudAppSessionIsFresh(this._appSession$.getValue().session, this.nowSeconds())
+    ) {
+      this.setRenewal(RENEWAL_IDLE);
+    }
   }
 
   /** Trigger an app-session status refetch. */
@@ -345,6 +354,16 @@ export class CloudAuthStore {
       pairwise(),
       filter(([prev, next]) => !prev && next),
     );
+    // A session fetch settling (loading -> ready/error) re-triggers both
+    // drivers: their loading guards skip work while the initial GET is in
+    // flight, and without this edge nothing re-fires until the next interval
+    // tick, leaving hosted auth stuck in waitingForAppSession for up to 60s.
+    const appSessionSettled$ = this._appSession$.pipe(
+      map((view) => view.status !== "loading"),
+      distinctUntilChanged(),
+      pairwise(),
+      filter(([wasSettled, isSettled]) => !wasSettled && isSettled),
+    );
 
     this.seedAppSession(config.initialSession ?? null);
 
@@ -358,6 +377,7 @@ export class CloudAuthStore {
         timer(0, AUTH_REFRESH_INTERVAL_MS, scheduler),
         focus$,
         visibleRise$,
+        appSessionSettled$,
         storage$.pipe(tap(() => this.refreshAuthState())),
       )
         .pipe(exhaustMap(() => from(this.runRefreshOidc())))
@@ -390,9 +410,12 @@ export class CloudAuthStore {
     // change, backoff, and renewal skew internally, so a plain trigger stream
     // is enough.
     subscription.add(
-      merge(timer(0, AUTH_REFRESH_INTERVAL_MS, scheduler), focus$, visibleRise$).subscribe(() =>
-        this.renewIfNeeded(),
-      ),
+      merge(
+        timer(0, AUTH_REFRESH_INTERVAL_MS, scheduler),
+        focus$,
+        visibleRise$,
+        appSessionSettled$,
+      ).subscribe(() => this.renewIfNeeded()),
     );
 
     if (!cloudAppSessionIsFresh(config.initialSession, this.nowSeconds())) {
