@@ -50,6 +50,30 @@ describe("ObservableStore", () => {
     expect(loaded).toEqual([false, true, false]);
   });
 
+  it("never exposes loaded=true alongside a not-yet-applied state", () => {
+    const store = new CounterStore();
+    // Interleave both streams: the loaded gate must only read true after the
+    // state that made it true has landed, and must read false before a reset
+    // default lands.
+    const timeline: string[] = [];
+    store.state$.subscribe((state) => timeline.push(`state:${state.count}`));
+    store.loaded$.subscribe((loaded) => {
+      timeline.push(`loaded:${loaded}:seeing:${store.snapshot.count}`);
+    });
+
+    store.put({ count: 1, label: "one" });
+    store.clear();
+
+    expect(timeline).toEqual([
+      "state:0",
+      "loaded:false:seeing:0",
+      "state:1",
+      "loaded:true:seeing:1",
+      "loaded:false:seeing:1",
+      "state:0",
+    ]);
+  });
+
   it("updateState derives the next state from the current snapshot", () => {
     const store = new CounterStore();
     store.bump();

@@ -97,10 +97,16 @@ export class ObservableStore<T> {
     return this._loaded$.getValue();
   }
 
-  /** Apply a new state and mark loaded. Subclasses wrap this in named mutators. */
+  /**
+   * Apply a new state and mark loaded. Subclasses wrap this in named mutators.
+   * State emits before the loaded gate so a subscriber that reacts to
+   * `loaded$` (or combines it with `state$`) never treats the default state
+   * as authoritative; `resetState` flips the gate in the opposite order for
+   * the same reason.
+   */
   protected setState(next: T): void {
-    this._loaded$.next(true);
     this._state$.next(next);
+    this._loaded$.next(true);
   }
 
   /** Derive the next state from the current snapshot, then `setState`. */
