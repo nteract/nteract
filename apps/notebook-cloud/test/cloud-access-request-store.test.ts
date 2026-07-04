@@ -111,13 +111,20 @@ function inputsFrom(
 /** A `loadOwnAccessRequest` whose promises the test resolves on demand. */
 function deferredLoad() {
   const calls: Array<{
+    auth: CloudPrototypeAuthState;
     signal: AbortSignal;
     resolve: (value: CloudNotebookAccessRequest | null) => void;
     reject: (error: unknown) => void;
   }> = [];
-  const loadOwnAccessRequest = ({ signal }: { signal: AbortSignal }) =>
+  const loadOwnAccessRequest = ({
+    auth,
+    signal,
+  }: {
+    auth: CloudPrototypeAuthState;
+    signal: AbortSignal;
+  }) =>
     new Promise<CloudNotebookAccessRequest | null>((resolve, reject) => {
-      calls.push({ signal, resolve, reject });
+      calls.push({ auth, signal, resolve, reject });
     });
   return { loadOwnAccessRequest, calls };
 }
@@ -198,6 +205,32 @@ describe("CloudAccessRequestStore initial load", () => {
     await drainMicrotasks();
     assert.equal(store.snapshot.latest, null);
     assert.match(store.snapshot.error ?? "", /post failed/);
+
+    dispose();
+  });
+
+  it("aborts the in-flight load and refetches when the fetch identity changes while the gate holds", async () => {
+    const store = new CloudAccessRequestStore({ readSelectedMode: () => "edit" });
+    const inputs$ = new BehaviorSubject<CloudAccessRequestInputs>(inputsFrom(pendingSource()));
+    const { loadOwnAccessRequest, calls } = deferredLoad();
+    const dispose = store.activate(inputs$, baseDeps({ loadOwnAccessRequest }));
+
+    // The eligible gate issues one load under the first identity.
+    await drainMicrotasks();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].signal.aborted, false);
+    assert.equal(calls[0].auth.token, "dev-token");
+
+    // The gate stays true; only the browser-auth identity changes.
+    const rotated = { ...browserAuth(), token: "rotated-token" };
+    inputs$.next(inputsFrom(pendingSource(), { browserAuth: rotated }));
+    await drainMicrotasks();
+
+    // The superseded load aborts and a fresh load issues under the new identity.
+    assert.equal(calls[0].signal.aborted, true);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].signal.aborted, false);
+    assert.equal(calls[1].auth.token, "rotated-token");
 
     dispose();
   });
@@ -427,7 +460,7 @@ describe("CloudAccessRequestStore edit-access request", () => {
         now: () => 1_700_000_000_000,
         onRetryLiveConnection: () => (retries += 1),
         postEditAccessRequest: async (): Promise<CloudAccessRequestPostResult> => ({
-          accessStatus: "granted",
+          access_status: "granted",
         }),
       }),
     );
@@ -463,6 +496,78 @@ describe("CloudAccessRequestStore edit-access request", () => {
 
     dispose();
   });
+
+  it("parses a granted snake_case POST body through the default fetch and applies it", async () => {
+    const originalFetch = globalThis.fetch;
+    // The worker returns snake_case; the default parser casts the JSON straight
+    // to CloudAccessRequestPostResult, so a camelCase shape would read undefined.
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          notebook_id: "notebook-1",
+          access_status: "granted",
+          access_request: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    try {
+      const store = new CloudAccessRequestStore({ readSelectedMode: () => "edit" });
+      const inputs$ = new BehaviorSubject<CloudAccessRequestInputs>(inputsFrom(baseSource()));
+      let retries = 0;
+      const dispose = store.activate(
+        inputs$,
+        baseDeps({
+          now: () => 1_700_000_000_000,
+          onRetryLiveConnection: () => (retries += 1),
+          // Undefined so the store uses the real default parser over the wire body.
+          postEditAccessRequest: undefined,
+        }),
+      );
+
+      store.requestEditAccess();
+      await drainMicrotasks();
+
+      assert.equal(store.snapshot.latest?.id, "already-granted");
+      assert.equal(store.snapshot.latest?.status, "approved");
+      assert.equal(retries, 1);
+
+      dispose();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("parses a pending snake_case POST body through the default fetch and applies the request", async () => {
+    const originalFetch = globalThis.fetch;
+    const pending = accessRequest({ status: "pending" });
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          notebook_id: "notebook-1",
+          access_status: "pending",
+          access_request: pending,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    try {
+      const store = new CloudAccessRequestStore({ readSelectedMode: () => "edit" });
+      const inputs$ = new BehaviorSubject<CloudAccessRequestInputs>(inputsFrom(baseSource()));
+      const dispose = store.activate(inputs$, baseDeps({ postEditAccessRequest: undefined }));
+
+      store.requestEditAccess();
+      await drainMicrotasks();
+
+      assert.equal(store.snapshot.latest?.status, "pending");
+      assert.equal(store.snapshot.latest?.id, pending.id);
+      assert.equal(store.snapshot.selectedMode, "edit");
+
+      dispose();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe("CloudAccessRequestStore selected mode", () => {
@@ -473,7 +578,7 @@ describe("CloudAccessRequestStore selected mode", () => {
       inputs$,
       baseDeps({
         postEditAccessRequest: async () => ({
-          accessRequest: accessRequest({ status: "pending" }),
+          access_request: accessRequest({ status: "pending" }),
         }),
       }),
     );

@@ -111,10 +111,15 @@ export interface CloudAccessRequestStoreDeps {
   }) => Promise<CloudAccessRequestPostResult>;
 }
 
-/** Parsed shape of the POST edit-access response. */
+/**
+ * Parsed shape of the POST edit-access response. The field names are the
+ * worker's snake_case wire shape (`access_status` / `access_request`); the
+ * default parser casts the JSON body straight to this type, so the names must
+ * track the wire exactly or the granted/pending branch reads `undefined`.
+ */
 export interface CloudAccessRequestPostResult {
-  accessStatus?: string;
-  accessRequest?: CloudNotebookAccessRequest | null;
+  access_status?: string;
+  access_request?: CloudNotebookAccessRequest | null;
 }
 
 interface CloudAccessRequestStoreOptions {
@@ -137,6 +142,23 @@ interface ResolvedAccessRequestDeps {
     endpoint: string;
     auth: CloudPrototypeAuthState;
   }) => Promise<CloudAccessRequestPostResult>;
+}
+
+/**
+ * The initial-load gate: the poll-eligibility flag plus the fetch identity.
+ * Keying `fetchLatest` on this (not the flag alone) makes a browser-auth or
+ * endpoint change while the gate holds supersede the in-flight load - the prior
+ * request aborts and a fresh one issues under the new identity, matching the
+ * mount-load effect that re-ran when its fetch-identity dependency changed.
+ */
+interface AccessRequestLoadGate {
+  shouldLoad: boolean;
+  auth: CloudPrototypeAuthState;
+  endpoint: string;
+}
+
+function accessRequestLoadGateEquals(a: AccessRequestLoadGate, b: AccessRequestLoadGate): boolean {
+  return a.shouldLoad === b.shouldLoad && a.auth === b.auth && a.endpoint === b.endpoint;
 }
 
 function defaultSelectedMode(): CloudNotebookUrlMode {
@@ -271,7 +293,7 @@ export class CloudAccessRequestStore extends ObservableStore<CloudAccessRequestS
           endpoint: inputs.endpoint,
           auth: inputs.browserAuth,
         });
-        if (result.accessStatus === "granted") {
+        if (result.access_status === "granted") {
           const stamp = new Date(deps.now()).toISOString();
           this.applyLoaded(
             {
@@ -290,7 +312,7 @@ export class CloudAccessRequestStore extends ObservableStore<CloudAccessRequestS
           );
           return;
         }
-        this.applyLoaded(result.accessRequest ?? null, { overrideSelectedMode: "edit" });
+        this.applyLoaded(result.access_request ?? null, { overrideSelectedMode: "edit" });
       } catch (error) {
         this.updateState((state) => ({
           ...state,
@@ -330,13 +352,23 @@ export class CloudAccessRequestStore extends ObservableStore<CloudAccessRequestS
     subscription.add(inputs$.subscribe((inputs) => (this.latestInputs = inputs)));
 
     // Initial load: a rise in `shouldLoad` fetches once; a fall clears `latest`
-    // (leaving `error` and `requestedByUser` untouched). `fetchLatest` aborts a
-    // superseded request when the gate flips.
+    // (leaving `error` and `requestedByUser` untouched). The gate also carries
+    // the fetch identity, so a browser-auth or endpoint change while the gate
+    // holds supersedes the in-flight load and refetches. `fetchLatest` aborts a
+    // superseded request whenever the gate flips or the identity changes.
     subscription.add(
       fetchLatest(
-        select(inputs$, (inputs) => inputs.facts.shouldLoadOwnEditAccessRequest),
-        (shouldLoad, signal) =>
-          shouldLoad
+        select(
+          inputs$,
+          (inputs): AccessRequestLoadGate => ({
+            shouldLoad: inputs.facts.shouldLoadOwnEditAccessRequest,
+            auth: inputs.browserAuth,
+            endpoint: inputs.endpoint,
+          }),
+          accessRequestLoadGateEquals,
+        ),
+        (gate, signal) =>
+          gate.shouldLoad
             ? from(this.runLoad(resolved, signal)).pipe(
                 map((request) => ({ apply: true as const, request })),
                 catchError(() => EMPTY),
