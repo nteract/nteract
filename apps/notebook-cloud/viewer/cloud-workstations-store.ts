@@ -148,6 +148,15 @@ export interface CloudWorkstationsInputs {
   canFetch: boolean;
   /** Feeds the dynamic cadence (rail: panel open; page: always true). */
   panelIsOpen: boolean;
+  /**
+   * Hold the background cadence until the registry status settles (ready or
+   * error). The standalone page sets this so a first load with zero registered
+   * workstations cannot start the 10s poll while the initial load is still
+   * pending, overlapping it. The rail leaves it false and polls off the shared
+   * cadence policy alone, having no lifecycle status to gate on. `error` stays a
+   * polling state either way, so a failed load auto-recovers.
+   */
+  gateCadenceUntilSettled: boolean;
   /** The closed-gate outcome for this surface. */
   closedGate: CloudWorkstationsClosedGate;
 }
@@ -445,15 +454,17 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     // Background poll: dynamic cadence off `cloudWorkstationRefreshIntervalMs`,
     // fed the store-derived mutation kind and registry size so an attach speeds
     // it up. `after-settle` cannot overlap, and failures are swallowed to keep
-    // the last-good registry.
+    // the last-good registry. Each result carries the auth it was fetched under,
+    // so an auth flip mid-flight drops the stale response at apply time (the poll
+    // loop does not resubscribe on an auth change, unlike the gate driver).
     subscription.add(
-      createPoll<CloudWorkstationsRegistry>({
+      createPoll<RegistryTick>({
         strategy: "after-settle",
         interval$: this.registryInterval$(),
         scheduler: deps.scheduler,
-        fetch: (signal) => this.runCurrentLoad(signal),
+        fetch: (signal) => this.runBackgroundLoad(signal),
         onError: () => {},
-      }).subscribe((registry) => this.applyRegistrySuccess(registry)),
+      }).subscribe((tick) => this.applyRegistryTickIfCurrent(tick)),
     );
 
     // Ordered refetch actions: mutation refetches, the pairing `onRegistered`
@@ -486,7 +497,8 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     );
 
     // Pairing redemption poll: chases {pending, redeemed} at 2s, stops on
-    // {registered, expired}. Stale responses are dropped by the id guard.
+    // {registered, expired}. Stale responses are dropped by the id guard, and by
+    // the auth-identity guard when an auth flip lands mid-flight.
     subscription.add(
       createPoll<PairingStatusTick>({
         strategy: "after-settle",
@@ -660,7 +672,12 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     return new Promise<void>((resolve) => this.refetchRequests$.next(resolve));
   }
 
-  /** The dynamic registry cadence: null / 2.5s / 10s per the shared policy. */
+  /**
+   * The dynamic registry cadence: null / 2.5s / 10s per the shared policy. When
+   * the surface asks to gate on a settled status, an unsettled status (idle or
+   * loading) forces null so a background tick cannot overlap the initial load;
+   * `ready` and `error` both poll, keeping error auto-recovery.
+   */
   private registryInterval$(): Observable<number | null> {
     return combineLatest([
       this._inputs$.pipe(
@@ -673,14 +690,31 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
         map((inputs) => Boolean(inputs?.panelIsOpen)),
         distinctUntilChanged(),
       ),
+      this._inputs$.pipe(
+        map((inputs) => Boolean(inputs?.gateCadenceUntilSettled)),
+        distinctUntilChanged(),
+      ),
+      this.select((state) => state.status),
     ]).pipe(
-      map(([canFetch, hasRegisteredWorkstations, mutationKind, panelIsOpen]) =>
-        cloudWorkstationRefreshIntervalMs({
-          canChooseHostedWorkstation: canFetch,
+      map(
+        ([
+          canFetch,
           hasRegisteredWorkstations,
           mutationKind,
           panelIsOpen,
-        }),
+          gateUntilSettled,
+          status,
+        ]) => {
+          if (gateUntilSettled && status !== "ready" && status !== "error") {
+            return null;
+          }
+          return cloudWorkstationRefreshIntervalMs({
+            canChooseHostedWorkstation: canFetch,
+            hasRegisteredWorkstations,
+            mutationKind,
+            panelIsOpen,
+          });
+        },
       ),
       distinctUntilChanged(),
     );
@@ -700,7 +734,23 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     });
   }
 
-  /** Fetch the current pairing's redemption status, tagged with its id. */
+  /**
+   * Fetch the registry for the background poll, tagged with the auth identity it
+   * was issued under. The apply step drops a tick whose identity no longer
+   * matches, so an auth flip mid-flight cannot overwrite the registry with data
+   * fetched under the superseded identity.
+   */
+  private runBackgroundLoad(signal: AbortSignal): Promise<RegistryTick> {
+    const auth = this.latestInputs?.auth ?? null;
+    return this.runCurrentLoad(signal).then((registry) => ({
+      // `runCurrentLoad` rejects when inputs (and thus auth) are missing, so a
+      // resolved registry always carries a captured identity.
+      auth: auth as CloudPrototypeAuthState,
+      registry,
+    }));
+  }
+
+  /** Fetch the current pairing's redemption status, tagged with its id and auth. */
   private async runPairingStatus(signal: AbortSignal): Promise<PairingStatusTick> {
     const inputs = this.latestInputs;
     const deps = this.resolvedDeps;
@@ -708,14 +758,15 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     if (!inputs || !deps || !inputs.workstationsEndpoint || !pairing || !pairing.id) {
       return Promise.reject(POLL_SKIP);
     }
+    const auth = inputs.auth;
     const pairingId = pairing.id;
     const status = await deps.fetchPairingStatus({
       endpoint: inputs.workstationsEndpoint,
-      auth: inputs.auth,
+      auth,
       pairingId,
       signal,
     });
-    return { pairingId, status };
+    return { pairingId, auth, status };
   }
 
   /** Reset to loading before a fetch, unless the registry is already shown. */
@@ -728,6 +779,17 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
   /** Apply a resolved registry: mark ready and clear the error. */
   private applyRegistrySuccess(registry: CloudWorkstationsRegistry): void {
     this.updateState((state) => ({ ...state, status: "ready", registry, error: null }));
+  }
+
+  /**
+   * Apply a background poll result, dropping a response whose issuing auth no
+   * longer matches the current fetch identity (an auth flip landed mid-flight).
+   */
+  private applyRegistryTickIfCurrent(tick: RegistryTick): void {
+    if (this.latestInputs?.auth !== tick.auth) {
+      return;
+    }
+    this.applyRegistrySuccess(tick.registry);
   }
 
   /** Surface a registry load failure without dropping the last-good registry. */
@@ -748,9 +810,14 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     }));
   }
 
-  /** Apply a pairing status tick, dropping a stale-id response. */
+  /** Apply a pairing status tick, dropping a stale-id or stale-auth response. */
   private applyPairingStatus(tick: PairingStatusTick): void {
-    const { pairingId, status } = tick;
+    const { pairingId, auth, status } = tick;
+    // An auth flip landed mid-flight: the status was fetched under a superseded
+    // identity, so drop it rather than apply it to the current pairing.
+    if (this.latestInputs?.auth !== auth) {
+      return;
+    }
     const current = this.snapshot.pairing;
     if (!current || current.id !== pairingId) {
       return;
@@ -831,9 +898,16 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
   }
 }
 
-/** One pairing redemption poll result, tagged with the id it was fetched for. */
+/** One background registry poll result, tagged with the auth it was fetched under. */
+interface RegistryTick {
+  auth: CloudPrototypeAuthState;
+  registry: CloudWorkstationsRegistry;
+}
+
+/** One pairing redemption poll result, tagged with the id and auth it used. */
 interface PairingStatusTick {
   pairingId: string;
+  auth: CloudPrototypeAuthState;
   status: CloudWorkstationPairingStatusState;
 }
 

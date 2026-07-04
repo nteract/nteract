@@ -25,6 +25,7 @@ import {
   type CloudWorkstationsStoreDeps,
 } from "../viewer/cloud-workstations-store";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
+import type { CloudWorkstationPairingStatusState } from "../viewer/workstations-client";
 
 /** Advance the virtual clock by `ms`, stopping at the target frame. */
 function advanceBy(scheduler: VirtualTimeScheduler, ms: number): void {
@@ -100,6 +101,7 @@ function baseInputs(overrides: Partial<CloudWorkstationsInputs> = {}): CloudWork
     attachEndpoint: "/api/n/nb-1/workstation-attachments",
     canFetch: true,
     panelIsOpen: true,
+    gateCadenceUntilSettled: false,
     closedGate: { status: "signed_out", wipeRegistry: false },
     ...overrides,
   };
@@ -126,16 +128,26 @@ function baseDeps(overrides: Partial<CloudWorkstationsStoreDeps> = {}): CloudWor
 /** A `loadWorkstations` whose promises the test resolves on demand. */
 function deferredLoad() {
   const calls: Array<{
+    auth: CloudPrototypeAuthState;
     signal: AbortSignal;
     resolve: (value: CloudWorkstationsRegistry) => void;
     reject: (error: unknown) => void;
   }> = [];
-  const loadWorkstations = ({ signal }: { signal: AbortSignal }) =>
+  const loadWorkstations = ({
+    auth,
+    signal,
+  }: {
+    auth: CloudPrototypeAuthState;
+    signal: AbortSignal;
+  }) =>
     new Promise<CloudWorkstationsRegistry>((resolve, reject) => {
-      calls.push({ signal, resolve, reject });
+      calls.push({ auth, signal, resolve, reject });
     });
   return { loadWorkstations, calls };
 }
+
+/** A distinct auth reference: a fetch-identity flip is a new reference. */
+const ROTATED_AUTH: CloudPrototypeAuthState = { ...STABLE_AUTH, token: "rotated-token" };
 
 describe("CloudWorkstationsStore registry gate", () => {
   it("loads once when the gate is open and marks the registry ready", async () => {
@@ -243,6 +255,47 @@ describe("CloudWorkstationsStore registry gate", () => {
     assert.equal(store.snapshot.status, "ready");
     assert.equal(store.snapshot.error, null);
     assert.equal(store.snapshot.registry.workstations.length, 1);
+
+    dispose();
+  });
+
+  it("drops a background poll response when auth flips mid-flight", async () => {
+    const scheduler = newScheduler();
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const { loadWorkstations, calls } = deferredLoad();
+    const dispose = store.activate(inputs$, baseDeps({ scheduler, loadWorkstations }));
+
+    // Settle the initial gate load under the first identity.
+    await drainMicrotasks();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].auth, STABLE_AUTH);
+    calls[0].resolve(registry({ workstations: [workstation("ws-1", "Lab")] }));
+    await drainMicrotasks();
+    assert.equal(store.snapshot.registry.workstations[0]?.id, "ws-1");
+
+    // A background poll tick fires and stays in flight under the first identity.
+    advanceBy(scheduler, 10_000);
+    await drainMicrotasks();
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].auth, STABLE_AUTH);
+
+    // Auth flips: the gate driver reloads under the new identity, but the poll
+    // loop keeps its in-flight fetch (its cadence does not key on auth).
+    inputs$.next(baseInputs({ auth: ROTATED_AUTH }));
+    await drainMicrotasks();
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].auth, ROTATED_AUTH);
+
+    // The stale poll response (first identity) resolves after the flip: dropped.
+    calls[1].resolve(registry({ workstations: [workstation("ws-stale", "Stale")] }));
+    await drainMicrotasks();
+    assert.equal(store.snapshot.registry.workstations[0]?.id, "ws-1");
+
+    // The new-identity gate load applies normally.
+    calls[2].resolve(registry({ workstations: [workstation("ws-2", "Fresh")] }));
+    await drainMicrotasks();
+    assert.equal(store.snapshot.registry.workstations[0]?.id, "ws-2");
 
     dispose();
   });
@@ -360,6 +413,37 @@ describe("CloudWorkstationsStore registry cadence", () => {
 
     dispose();
     assert.equal(calls[0].signal.aborted, true);
+  });
+
+  it("holds the page background cadence until the initial load settles", async () => {
+    const scheduler = newScheduler();
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(
+      baseInputs({ gateCadenceUntilSettled: true }),
+    );
+    const { loadWorkstations, calls } = deferredLoad();
+    const dispose = store.activate(inputs$, baseDeps({ scheduler, loadWorkstations }));
+
+    // Initial gate load in flight (status "loading"), zero registered workstations.
+    await drainMicrotasks();
+    assert.equal(calls.length, 1);
+    assert.equal(store.snapshot.status, "loading");
+
+    // While the status is unsettled the cadence is null: no background tick fires
+    // no matter how far the clock advances.
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+    assert.equal(calls.length, 1);
+
+    // Settling the load flips to "ready": the 10s cadence starts from there.
+    calls[0].resolve(registry());
+    await drainMicrotasks();
+    assert.equal(store.snapshot.status, "ready");
+    advanceBy(scheduler, 10_000);
+    await drainMicrotasks();
+    assert.equal(calls.length, 2);
+
+    dispose();
   });
 });
 
@@ -670,6 +754,53 @@ describe("CloudWorkstationsStore pairing", () => {
     advanceBy(scheduler, 5_000);
     await drainMicrotasks();
     assert.equal(store.snapshot.pairing?.status, "expired");
+
+    dispose();
+  });
+
+  it("drops a pairing status response when auth flips mid-flight", async () => {
+    const scheduler = newScheduler();
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const statusCalls: Array<{
+      pairingId: string;
+      auth: CloudPrototypeAuthState;
+      resolve: (value: CloudWorkstationPairingStatusState) => void;
+    }> = [];
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        scheduler,
+        mintPairing: async () => ({
+          id: "pair-1",
+          code: "ABCD-EFGH",
+          expiresAt: new Date(600_000).toISOString(),
+        }),
+        fetchPairingStatus: ({ pairingId, auth }) =>
+          new Promise((resolve) => statusCalls.push({ pairingId, auth, resolve })),
+      }),
+    );
+    await drainMicrotasks();
+
+    await store.startPairing();
+    await drainMicrotasks();
+    advanceBy(scheduler, 2_000);
+    await drainMicrotasks();
+    assert.equal(statusCalls.length, 1);
+    assert.equal(statusCalls[0].pairingId, "pair-1");
+    assert.equal(statusCalls[0].auth, STABLE_AUTH);
+
+    // Auth flips while the pairing status fetch is in flight; the poll loop does
+    // not resubscribe on an auth change, so the fetch stays in flight.
+    inputs$.next(baseInputs({ auth: ROTATED_AUTH }));
+    await drainMicrotasks();
+
+    // The stale response (first identity) resolves as registered: it must not
+    // apply, so the pairing stays pending and no registration refetch runs.
+    statusCalls[0].resolve({ status: "registered", expiresAt: null, workstationId: "ws-hub" });
+    await drainMicrotasks();
+    assert.equal(store.snapshot.pairing?.status, "pending");
+    assert.equal(store.snapshot.pairing?.workstationId, null);
 
     dispose();
   });

@@ -52,6 +52,7 @@ export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerA
     attachEndpoint: undefined,
     canFetch: canFetchCatalog,
     panelIsOpen: true,
+    gateCadenceUntilSettled: true,
     closedGate: {
       status: waitingForAppSession ? "loading" : "signed_out",
       wipeRegistry: false,

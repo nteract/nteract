@@ -64,6 +64,7 @@ export function useCloudWorkstationManager({
     attachEndpoint: config.workstationAttachEndpoint,
     canFetch: canLoadHostedWorkstations,
     panelIsOpen,
+    gateCadenceUntilSettled: false,
     closedGate: {
       status: capabilities.auth.canUseAuthenticatedIdentity ? "loading" : "signed_out",
       wipeRegistry: !capabilities.auth.canUseAuthenticatedIdentity,
