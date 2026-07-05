@@ -855,6 +855,50 @@ describe("CloudWorkstationsStore stale-completion guards", () => {
     await drainMicrotasks();
     assert.equal(calls.length, 2);
     assert.equal(store.snapshot.registry.workstations[0]?.id, "ws-1");
+    // The superseded action's own indicator cannot stay stuck under the new
+    // identity: dropping the completion also clears the mutation it wrote.
+    assert.equal(store.snapshot.mutation.kind, "idle");
+
+    dispose();
+  });
+
+  it("leaves a newer identity's mutation intact when a stale completion clears its own", async () => {
+    const scheduler = newScheduler();
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const { loadWorkstations } = deferredLoad();
+    const attachCalls: Array<{ resolve: () => void }> = [];
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        scheduler,
+        loadWorkstations,
+        attachWorkstation: () =>
+          new Promise<void>((resolve) => {
+            attachCalls.push({ resolve: () => resolve() });
+          }),
+      }),
+    );
+    await drainMicrotasks();
+
+    // First identity starts an attach that hangs.
+    void store.attach("ws-1");
+    await drainMicrotasks();
+    assert.equal(store.snapshot.mutation.workstationId, "ws-1");
+
+    // Auth flips and the new identity starts its own attach.
+    inputs$.next(baseInputs({ auth: ROTATED_AUTH }));
+    await drainMicrotasks();
+    void store.attach("ws-2");
+    await drainMicrotasks();
+    assert.equal(store.snapshot.mutation.workstationId, "ws-2");
+
+    // The stale first attach resolves: it may clear only the mutation object it
+    // wrote, and that object was already replaced by the new identity's attach.
+    attachCalls[0].resolve();
+    await drainMicrotasks();
+    assert.equal(store.snapshot.mutation.kind, "attach");
+    assert.equal(store.snapshot.mutation.workstationId, "ws-2");
 
     dispose();
   });
@@ -935,6 +979,82 @@ describe("CloudWorkstationsStore stale-completion guards", () => {
     await drainMicrotasks();
     assert.equal(store.snapshot.registry.defaultWorkstationId, "ws-1");
     assert.equal(calls.length, 2);
+    // The dropped completion clears the indicator it owns rather than leaving a
+    // stuck "default" mutation under the new identity.
+    assert.equal(store.snapshot.mutation.kind, "idle");
+
+    dispose();
+  });
+
+  it("drops a mint completion that resolves after the gate closes", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const mintCalls: Array<{ resolve: (value: MintedCloudWorkstationPairing) => void }> = [];
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        mintPairing: () =>
+          new Promise<MintedCloudWorkstationPairing>((resolve) => {
+            mintCalls.push({ resolve });
+          }),
+      }),
+    );
+    await drainMicrotasks();
+
+    // The mint hangs while the gate closes under the SAME auth reference and
+    // endpoint - only the closed gate itself invalidates the captured issue.
+    void store.startPairing();
+    await drainMicrotasks();
+    inputs$.next(
+      baseInputs({ canFetch: false, closedGate: { status: "signed_out", wipeRegistry: true } }),
+    );
+    await drainMicrotasks();
+    assert.equal(store.snapshot.pairing, null);
+
+    // The mint resolves after the close: the pairing card must not come back.
+    mintCalls[0].resolve({
+      id: "pair-1",
+      code: "AAAA-BBBB",
+      expiresAt: new Date(600_000).toISOString(),
+    });
+    await drainMicrotasks();
+    assert.equal(store.snapshot.pairing, null);
+
+    dispose();
+  });
+
+  it("drops a stale refetch response that lands after an auth flip", async () => {
+    const scheduler = newScheduler();
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const { loadWorkstations, calls } = deferredLoad();
+    const dispose = store.activate(inputs$, baseDeps({ scheduler, loadWorkstations }));
+
+    // Settle the initial gate load under the first identity.
+    await drainMicrotasks();
+    calls[0].resolve(registry({ workstations: [workstation("ws-a", "Old")] }));
+    await drainMicrotasks();
+
+    // A manual refresh issues a refetch under the first identity and hangs.
+    void store.refreshNow();
+    await drainMicrotasks();
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].auth, STABLE_AUTH);
+
+    // Auth flips; the gate driver loads and lands the new identity's registry.
+    inputs$.next(baseInputs({ auth: ROTATED_AUTH }));
+    await drainMicrotasks();
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].auth, ROTATED_AUTH);
+    calls[2].resolve(registry({ workstations: [workstation("ws-b", "New")] }));
+    await drainMicrotasks();
+    assert.equal(store.snapshot.registry.workstations[0]?.id, "ws-b");
+
+    // The first identity's refetch resolves last: its response is dropped, so
+    // the superseded registry cannot overwrite the current one.
+    calls[1].resolve(registry({ workstations: [workstation("ws-a", "Old")] }));
+    await drainMicrotasks();
+    assert.equal(store.snapshot.registry.workstations[0]?.id, "ws-b");
 
     dispose();
   });

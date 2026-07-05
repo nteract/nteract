@@ -485,11 +485,18 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
           concatMap((done) =>
             defer(() => {
               this.beginLoad();
+              // The refetch runs under whichever identity is current when its
+              // turn in the queue comes, but its response can land after a
+              // later flip - so it is tagged and dropped at apply exactly like
+              // a background tick, and its error write is guarded the same way.
+              const auth = this.latestInputs?.auth ?? null;
               const controller = new AbortController();
               return from(this.runCurrentLoad(controller.signal)).pipe(
-                map((registry) => ({ registry })),
+                // `runCurrentLoad` rejects when inputs (and thus auth) are
+                // missing, so a resolved registry always carries an identity.
+                map((registry) => ({ auth: auth as CloudPrototypeAuthState, registry })),
                 catchError((error) => {
-                  if (error !== POLL_SKIP) {
+                  if (error !== POLL_SKIP && this.latestInputs?.auth === auth) {
                     this.applyRegistryError(errorMessage(error));
                   }
                   return EMPTY;
@@ -502,7 +509,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
             }),
           ),
         )
-        .subscribe((result) => this.applyRegistrySuccess(result.registry)),
+        .subscribe((tick) => this.applyRegistryTickIfCurrent(tick)),
     );
 
     // Pairing redemption poll: chases {pending, redeemed} at 2s, stops on
@@ -626,7 +633,12 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       return;
     }
     const issue = this.captureMutationIssue(inputs.auth, inputs.defaultEndpoint);
-    this.setMutation({ kind: "default", message: null, workstationId });
+    const mutation: CloudWorkstationMutationState = {
+      kind: "default",
+      message: null,
+      workstationId,
+    };
+    this.setMutation(mutation);
     try {
       const defaultWorkstationId = await deps.setDefaultWorkstation({
         endpoint: inputs.defaultEndpoint,
@@ -634,6 +646,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
         workstationId,
       });
       if (!this.mutationStillCurrent(issue, this.latestInputs?.defaultEndpoint)) {
+        this.clearMutationIfOwned(mutation);
         return;
       }
       this.updateState((state) => ({
@@ -648,11 +661,13 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     } catch (error) {
       if (this.mutationStillCurrent(issue, this.latestInputs?.defaultEndpoint)) {
         this.setError(errorMessage(error));
+      } else {
+        this.clearMutationIfOwned(mutation);
       }
     } finally {
-      // Only clear the mutation the still-current action owns: a superseded
-      // identity's `idle` write would clobber a fresh mutation the new identity
-      // started, and its own stale indicator is cleared by `applyClosedGate`.
+      // A still-current action clears to idle unconditionally. A superseded one
+      // must not write idle over a mutation the new identity started; it clears
+      // only the object it owns (already done on its drop path above).
       if (this.mutationStillCurrent(issue, this.latestInputs?.defaultEndpoint)) {
         this.setMutation({ kind: "idle", message: null, workstationId: null });
       }
@@ -675,11 +690,12 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       return false;
     }
     const issue = this.captureMutationIssue(inputs.auth, inputs.attachEndpoint);
-    this.setMutation({
+    const mutation: CloudWorkstationMutationState = {
       kind: "attach",
       message: options.message ?? DEFAULT_ATTACH_MESSAGE,
       workstationId,
-    });
+    };
+    this.setMutation(mutation);
     try {
       await deps.attachWorkstation({
         endpoint: inputs.attachEndpoint,
@@ -688,6 +704,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
         replaceExisting: options.replaceExisting === true,
       });
       if (!this.mutationStillCurrent(issue, this.latestInputs?.attachEndpoint)) {
+        this.clearMutationIfOwned(mutation);
         return false;
       }
       this.clearError();
@@ -695,6 +712,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       return true;
     } catch (error) {
       if (!this.mutationStillCurrent(issue, this.latestInputs?.attachEndpoint)) {
+        this.clearMutationIfOwned(mutation);
         return false;
       }
       this.setError(errorMessage(error));
@@ -842,6 +860,11 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
    * survive it into the next identity.
    */
   private applyClosedGate(gate: CloudWorkstationsClosedGate): void {
+    // Captured mutation issues die with the gate: a mint/attach/set-default
+    // resolving after the close must stay dropped even when the auth reference
+    // and endpoint are unchanged, so clearing the visible card below is not
+    // enough on its own.
+    this.activationEpoch += 1;
     this.updateState((state) => ({
       ...state,
       status: gate.status,
@@ -931,6 +954,19 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
 
   private setMutation(mutation: CloudWorkstationMutationState): void {
     this.updateState((state) => ({ ...state, mutation }));
+  }
+
+  /**
+   * Clear a mutation indicator written by a now-superseded action. Ownership is
+   * the exact object the action wrote: a newer identity's `setMutation` has
+   * replaced the object, so a stale clear can never clobber a mutation the
+   * current identity started, while a stuck indicator from the old identity
+   * cannot outlive its dropped completion.
+   */
+  private clearMutationIfOwned(owned: CloudWorkstationMutationState): void {
+    if (this.snapshot.mutation === owned) {
+      this.setMutation({ kind: "idle", message: null, workstationId: null });
+    }
   }
 
   private setError(message: string): void {
