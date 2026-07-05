@@ -9,24 +9,26 @@ import {
   notebookCloudWorkspaceRoot,
 } from "./local-dev.mjs";
 
-// `--no-local-oidc` opts out of the default-on local OIDC issuer. Strip it here
-// so it never reaches Wrangler, which would reject the unknown flag.
+// Strip our own flags plus any caller `--ip` before args reach Wrangler.
+// `--no-local-oidc` is ours (Wrangler would reject the unknown flag). `--ip` is
+// removed deliberately: the dev worker binds the derived loopback host and
+// offers no host override, because the mounted dev OIDC issuer mints real
+// tokens and the app-session secret is fixed. Binding off-box would turn a
+// localhost convenience into a reachable auth bypass.
 const rawExtraArgs = process.argv.slice(2);
 const localOidcEnabled = !rawExtraArgs.includes("--no-local-oidc");
-const extraArgs = rawExtraArgs.filter((arg) => arg !== "--no-local-oidc");
+const extraArgs = stripDevOnlyArgs(rawExtraArgs);
 const workspaceRoot = notebookCloudWorkspaceRoot();
 const configPath = path.relative(workspaceRoot, path.join(notebookCloudAppDir(), "wrangler.toml"));
 const { host, port, inspectorPort, worktreeHash } = notebookCloudDevPorts({ workspaceRoot });
-const requestedHost = optionValue(extraArgs, "ip") ?? host;
 const requestedPort = optionValue(extraArgs, "port") ?? String(port);
 const requestedInspectorPort = optionValue(extraArgs, "inspector-port") ?? String(inspectorPort);
-const localUrl = `http://${formatHostForUrl(requestedHost)}:${requestedPort}`;
+const localUrl = `http://${formatHostForUrl(host)}:${requestedPort}`;
 
 const args = ["--workspace-root", "exec", "wrangler", "dev", "--config", configPath];
 
-if (!hasOption(extraArgs, "ip")) {
-  args.push("--ip", host);
-}
+// Loopback host only; no `--ip` reaches Wrangler, so there is nothing to override.
+args.push("--ip", host);
 if (!hasOption(extraArgs, "port")) {
   args.push("--port", String(port));
 }
@@ -90,6 +92,27 @@ child.on("close", (code, signal) => {
   }
   process.exitCode = code ?? 1;
 });
+
+// Drop `--no-local-oidc` (our flag) and any `--ip`/`--ip=` host override (with
+// its value) so neither reaches Wrangler. The loopback bind is fixed above.
+function stripDevOnlyArgs(args) {
+  const result = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--no-local-oidc") {
+      continue;
+    }
+    if (arg === "--ip") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--ip=")) {
+      continue;
+    }
+    result.push(arg);
+  }
+  return result;
+}
 
 function hasOption(args, name) {
   const flag = `--${name}`;
