@@ -200,8 +200,9 @@ function ViewerStartupLoading({ title }: { title: string }) {
  * carries `?profile=1`, wrap the root in a React `<Profiler>` that tallies
  * commit counts on `window.__nteractRenderCounts` keyed by Profiler id, for the
  * local profiling harness (`scripts/profile-local.mjs`) to read after settle.
- * Invariant: absent the flag no Profiler mounts and the tree is returned
- * unchanged, so production renders stay byte-for-byte identical and pay nothing.
+ * Invariant: without the flag no Profiler mounts and nothing attaches to
+ * window; the tree is returned unchanged. The helper itself and its one
+ * URLSearchParams parse still ship in the normal bundle.
  */
 function withRenderProfiler(node: ReactNode): ReactNode {
   if (new URLSearchParams(window.location.search).get("profile") !== "1") {

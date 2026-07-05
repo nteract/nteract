@@ -14,6 +14,16 @@ import { notebookCloudBaseUrl } from "./local-dev.mjs";
 // freshly created notebook room (loopback dev auth), or on /n when a room
 // cannot be created. One JSON report goes to stdout; a human table to stderr.
 //
+// A property that could not be measured is reported as unavailable, never as a
+// clean zero: a detached long-task observer yields tbtProxyMs null, an
+// interaction that never landed yields inpProxyMs null, and the reconnect check
+// asserts its own stability. A failed reconnect assertion (a new WebSocket or a
+// document reload) fails the process with a non-zero exit.
+//
+// Litter: each run creates one reconnect probe notebook and the worker exposes
+// no notebook-delete endpoint, so probes accumulate. Their titles carry an
+// ISO-8601 timestamp prefix so an operator can find and sweep them by age.
+//
 // Auth is loopback dev-token only. The worker trusts these localStorage keys and
 // the matching x-notebook-cloud-dev-token header on loopback hosts when started
 // with NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS:true (scripts/dev.mjs sets it). The
@@ -59,6 +69,7 @@ async function main() {
     scopeKey: DEV_SCOPE_STORAGE_KEY,
     scope: DEV_SCOPE,
   });
+  await context.addInitScript(visibilityOverrideInitScript);
 
   const limitations = [];
   let created = null;
@@ -115,8 +126,9 @@ async function main() {
       );
     }
 
+    const reconnect = notebook.reconnect;
     const report = {
-      ok: true,
+      ok: reconnect.stable,
       baseUrl,
       settleMs: SETTLE_MS,
       generatedAt: new Date().toISOString(),
@@ -127,6 +139,21 @@ async function main() {
     };
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     writeHumanTable(report);
+
+    // The reconnect check is an assertion, not a metric: a stable session must
+    // not dial a new WebSocket or reload the document across a focus/visibility
+    // cycle. Fail the process loudly so a regression cannot pass silently.
+    if (!reconnect.stable) {
+      const failed = Object.entries(reconnect.assertions)
+        .filter(([, assertion]) => !assertion.pass)
+        .map(([name, assertion]) => `${name} (${assertion.detail})`)
+        .join(", ");
+      logStderr(
+        `reconnect stability check FAILED for ${notebook.mode}: ${failed}. ` +
+          "A stable session must not open a new WebSocket or reload the document.",
+      );
+      process.exitCode = 1;
+    }
   } finally {
     await browser.close().catch(() => {});
   }
@@ -147,6 +174,7 @@ function profileInitScript(seed) {
   const store = (window.__nteractProfile = window.__nteractProfile || {
     longTasks: [],
     events: [],
+    longTaskObserverAttached: false,
   });
   try {
     new PerformanceObserver((list) => {
@@ -154,8 +182,12 @@ function profileInitScript(seed) {
         store.longTasks.push({ startTime: entry.startTime, duration: entry.duration });
       }
     }).observe({ type: "longtask", buffered: true });
+    // Only mark attached once observe() returns; a swallowed setup error must not
+    // masquerade as a zero-long-task run, which reads as a perfect TBT proxy.
+    store.longTaskObserverAttached = true;
   } catch {
-    // longtask timing is Chromium-only; absence degrades to an empty TBT proxy.
+    // longtask timing is Chromium-only; when the observer cannot attach the TBT
+    // proxy is reported as unavailable, never a misleading 0.
   }
   try {
     new PerformanceObserver((list) => {
@@ -171,6 +203,58 @@ function profileInitScript(seed) {
   } catch {
     // event timing is Chromium-only; absence degrades to a null INP proxy.
   }
+}
+
+// Runs before the viewer bundle so browser-signals.ts reads a controllable
+// visibility state. documentVisible$ gates on `document.visibilityState ===
+// "visible"`; that property is read-only, so dispatching `visibilitychange`
+// without changing it never flips the gate. These prototype getters read a
+// window-scoped override and fall back to the real value when the harness has
+// not set one, letting driveVisibilityCycle exercise both the hidden and visible
+// edges of the real gate code.
+function visibilityOverrideInitScript() {
+  const proto = Document.prototype;
+  const realVisibility = Object.getOwnPropertyDescriptor(proto, "visibilityState");
+  const realHidden = Object.getOwnPropertyDescriptor(proto, "hidden");
+  if (!realVisibility?.get || !realHidden?.get) {
+    return;
+  }
+  const override = () => {
+    const value = window.__nteractVisibilityOverride;
+    return value === "visible" || value === "hidden" ? value : null;
+  };
+  Object.defineProperty(proto, "visibilityState", {
+    configurable: true,
+    get() {
+      return override() ?? realVisibility.get.call(this);
+    },
+  });
+  Object.defineProperty(proto, "hidden", {
+    configurable: true,
+    get() {
+      const value = override();
+      return value === null ? realHidden.get.call(this) : value === "hidden";
+    },
+  });
+}
+
+// Drives one hidden -> visible cycle through the override the gate reads, firing
+// the same blur/focus and visibilitychange events a real tab-switch does. The
+// override flip is what makes browser-signals' documentVisible$ actually observe
+// false then true.
+async function driveVisibilityCycle(page) {
+  await page.evaluate(() => {
+    window.__nteractVisibilityOverride = "hidden";
+    window.dispatchEvent(new Event("blur"));
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.waitForTimeout(500);
+  await page.evaluate(() => {
+    window.__nteractVisibilityOverride = "visible";
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.waitForTimeout(2_000);
 }
 
 async function profileRoute(
@@ -194,7 +278,10 @@ async function profileRoute(
   const interaction = await runInteractionProbe(page, interactionCandidates);
   await page.waitForTimeout(1_000);
 
-  const metrics = await page.evaluate(collectPageMetrics, interaction.clickStart);
+  const metrics = await page.evaluate(collectPageMetrics, {
+    clickStart: interaction.clickStart,
+    clicked: interaction.clicked,
+  });
   const renderCounts = await page.evaluate(() => window.__nteractRenderCounts ?? null);
   await network.settle();
   await page.close();
@@ -209,7 +296,10 @@ async function profileRoute(
     longTasks: metrics.longTasks,
     interaction: {
       target: interaction.target,
+      clicked: metrics.interaction.clicked,
+      inpAvailable: metrics.interaction.available,
       inpProxyMs: metrics.interaction.maxDurationMs,
+      inpUnavailableReason: metrics.interaction.unavailableReason,
       eventCount: metrics.interaction.count,
       sampleEvents: metrics.interaction.sample,
     },
@@ -251,16 +341,7 @@ async function profileNotebookReconnect(context, { origin, created }) {
   // browser-signals visibility subject listen for these; a stable session must
   // not dial a new WebSocket or reload the document in response.
   for (let cycle = 0; cycle < 2; cycle += 1) {
-    await page.evaluate(() => {
-      window.dispatchEvent(new Event("blur"));
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await page.waitForTimeout(500);
-    await page.evaluate(() => {
-      window.dispatchEvent(new Event("focus"));
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await page.waitForTimeout(2_000);
+    await driveVisibilityCycle(page);
   }
 
   const wsAfter = network.webSockets().length;
@@ -271,8 +352,6 @@ async function profileNotebookReconnect(context, { origin, created }) {
   const renderCounts = await page.evaluate(() => window.__nteractRenderCounts ?? null);
   await page.close();
 
-  const reloaded = !nonceSurvived;
-  const openedNewWebSocket = wsAfter > wsBefore;
   return {
     mode: "notebook-room",
     notebookId: created.notebookId,
@@ -281,13 +360,11 @@ async function profileNotebookReconnect(context, { origin, created }) {
     marks,
     navigationTiming,
     webSockets: network.webSockets(),
-    reconnect: {
+    reconnect: summarizeReconnect({
       webSocketsBefore: wsBefore,
       webSocketsAfter: wsAfter,
-      openedNewWebSocket,
-      reloaded,
-      stable: !openedNewWebSocket && !reloaded,
-    },
+      reloaded: !nonceSurvived,
+    }),
     renderCounts,
   };
 }
@@ -309,16 +386,7 @@ async function profileListReconnect(context, { baseUrl }) {
     return value;
   });
   for (let cycle = 0; cycle < 2; cycle += 1) {
-    await page.evaluate(() => {
-      window.dispatchEvent(new Event("blur"));
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await page.waitForTimeout(500);
-    await page.evaluate(() => {
-      window.dispatchEvent(new Event("focus"));
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await page.waitForTimeout(2_000);
+    await driveVisibilityCycle(page);
   }
   const wsAfter = network.webSockets().length;
   const nonceSurvived = await page.evaluate(
@@ -327,22 +395,43 @@ async function profileListReconnect(context, { baseUrl }) {
   );
   await page.close();
 
-  const reloaded = !nonceSurvived;
-  const openedNewWebSocket = wsAfter > wsBefore;
   return {
     mode: "notebook-list",
     wallClockMs: null,
     marks: [],
     navigationTiming: null,
     webSockets: network.webSockets(),
-    reconnect: {
+    reconnect: summarizeReconnect({
       webSocketsBefore: wsBefore,
       webSocketsAfter: wsAfter,
-      openedNewWebSocket,
-      reloaded,
-      stable: !openedNewWebSocket && !reloaded,
-    },
+      reloaded: !nonceSurvived,
+    }),
     renderCounts: null,
+  };
+}
+
+// Turns the raw reconnect observations into named pass/fail assertions plus an
+// overall stable flag. The stability contract is the invariant the process exit
+// code enforces: no new WebSocket, no document reload across a focus cycle.
+function summarizeReconnect({ webSocketsBefore, webSocketsAfter, reloaded }) {
+  const openedNewWebSocket = webSocketsAfter > webSocketsBefore;
+  const assertions = {
+    noNewWebSocket: {
+      pass: !openedNewWebSocket,
+      detail: `webSockets ${webSocketsBefore} -> ${webSocketsAfter}`,
+    },
+    documentNotReloaded: {
+      pass: !reloaded,
+      detail: reloaded ? "reload nonce did not survive" : "reload nonce survived",
+    },
+  };
+  return {
+    webSocketsBefore,
+    webSocketsAfter,
+    openedNewWebSocket,
+    reloaded,
+    stable: assertions.noNewWebSocket.pass && assertions.documentNotReloaded.pass,
+    assertions,
   };
 }
 
@@ -358,10 +447,19 @@ async function runInteractionProbe(page, candidates) {
       continue;
     }
     const clickStart = await page.evaluate(() => performance.now());
-    await locator.click({ timeout: 5_000 }).catch(() => {});
-    return { target: candidate.label, selector: candidate.selector, clickStart };
+    // A swallowed click failure must not read as a successful interaction, so
+    // record the outcome instead of dropping the error. Only a click that
+    // actually resolved lets the INP proxy report a value.
+    let clicked = false;
+    try {
+      await locator.click({ timeout: 5_000 });
+      clicked = true;
+    } catch (error) {
+      logStderr(`interaction probe: click on ${candidate.selector} failed (${errorText(error)})`);
+    }
+    return { target: candidate.label, selector: candidate.selector, clickStart, clicked };
   }
-  return { target: null, selector: null, clickStart: 0 };
+  return { target: null, selector: null, clickStart: null, clicked: false };
 }
 
 function attachNetworkCollectors(page) {
@@ -410,9 +508,14 @@ function attachNetworkCollectors(page) {
 }
 
 // Evaluated in the page. `clickStart` scopes the event-timing entries to the one
-// scripted interaction so the INP proxy is that interaction's worst event.
-function collectPageMetrics(clickStart) {
-  const store = window.__nteractProfile || { longTasks: [], events: [] };
+// scripted interaction so the INP proxy is that interaction's worst event, and
+// `clicked` gates whether an INP value is reportable at all.
+function collectPageMetrics({ clickStart, clicked }) {
+  const store = window.__nteractProfile || {
+    longTasks: [],
+    events: [],
+    longTaskObserverAttached: false,
+  };
 
   const marks = performance
     .getEntriesByType("mark")
@@ -438,16 +541,36 @@ function collectPageMetrics(clickStart) {
     paint[entry.name] = Math.round(entry.startTime);
   }
 
+  // Without a live observer the long-task array is empty for the wrong reason,
+  // so the TBT proxy is unavailable rather than a clean 0.
+  const longTaskObserverAttached = Boolean(store.longTaskObserverAttached);
   const longTasks = store.longTasks || [];
-  const longTaskTotalMs = Math.round(longTasks.reduce((sum, task) => sum + task.duration, 0));
-  const tbtProxyMs = Math.round(
-    longTasks.reduce((sum, task) => sum + Math.max(0, task.duration - 50), 0),
-  );
+  const longTaskTotalMs = longTaskObserverAttached
+    ? Math.round(longTasks.reduce((sum, task) => sum + task.duration, 0))
+    : null;
+  const tbtProxyMs = longTaskObserverAttached
+    ? Math.round(longTasks.reduce((sum, task) => sum + Math.max(0, task.duration - 50), 0))
+    : null;
 
-  const interactionEvents = (store.events || []).filter((entry) => entry.startTime >= clickStart);
-  const maxDurationMs = interactionEvents.length
+  // Report an INP proxy only when the scripted click verifiably landed and the
+  // event-timing API attributed entries to it (a non-zero interactionId). A
+  // clickStart of 0/null must not admit unrelated events, and no click means no
+  // value: unavailable, never a fabricated fallback.
+  const clickLanded = clicked === true && typeof clickStart === "number" && clickStart > 0;
+  const interactionEvents = clickLanded
+    ? (store.events || []).filter(
+        (entry) => entry.startTime >= clickStart && entry.interactionId !== 0,
+      )
+    : [];
+  const inpAvailable = clickLanded && interactionEvents.length > 0;
+  const maxDurationMs = inpAvailable
     ? Math.round(Math.max(...interactionEvents.map((entry) => entry.duration)))
     : null;
+  const inpUnavailableReason = inpAvailable
+    ? null
+    : clicked === true
+      ? "click landed but produced no correlated event-timing entries"
+      : "no interaction target was clicked";
 
   const jsResourceTimingBytes = performance
     .getEntriesByType("resource")
@@ -458,10 +581,19 @@ function collectPageMetrics(clickStart) {
     marks,
     navigationTiming,
     paint,
-    longTasks: { count: longTasks.length, totalMs: longTaskTotalMs, tbtProxyMs },
+    longTasks: {
+      observerAttached: longTaskObserverAttached,
+      count: longTasks.length,
+      totalMs: longTaskTotalMs,
+      tbtProxyMs,
+      unavailableReason: longTaskObserverAttached ? null : "longtask observer failed to attach",
+    },
     interaction: {
+      clicked: clicked === true,
+      available: inpAvailable,
       count: interactionEvents.length,
       maxDurationMs,
+      unavailableReason: inpUnavailableReason,
       sample: interactionEvents.slice(0, 8).map((entry) => ({
         name: entry.name,
         durationMs: Math.round(entry.duration),
@@ -504,7 +636,9 @@ async function createLoopbackNotebook(context, baseUrl, origin) {
       "Content-Type": "application/json",
       Origin: origin,
     },
-    data: { title: "profile-local reconnect probe" },
+    // The worker exposes no notebook-delete endpoint, so this probe outlives the
+    // run. The ISO-8601 prefix lets an operator find and sweep old probes by age.
+    data: { title: `${new Date().toISOString()} profile-local reconnect probe` },
   });
   if (response.status() !== 201) {
     throw new Error(`create notebook returned ${response.status()}: ${await response.text()}`);
@@ -557,8 +691,8 @@ function writeHumanTable(report) {
         pad(routePath, 15),
         pad(String(route.marks.length), 7),
         pad(numOrDash(route.navigationTiming?.domContentLoadedMs), 7),
-        pad(numOrDash(route.longTasks.tbtProxyMs), 7),
-        pad(numOrDash(route.interaction.inpProxyMs), 7),
+        pad(tbtCell(route.longTasks), 7),
+        pad(inpCell(route.interaction), 7),
         pad(kb(bestJsBytes(route.jsTransferBytes)), 8),
         pad(String(route.webSockets.length), 4),
         pad(renderTotal(route.renderCounts), 8),
@@ -572,7 +706,7 @@ function writeHumanTable(report) {
     lines.push(
       `  ws ${nb.reconnect.webSocketsBefore} -> ${nb.reconnect.webSocketsAfter}` +
         `  newWs=${nb.reconnect.openedNewWebSocket}  reloaded=${nb.reconnect.reloaded}` +
-        `  stable=${nb.reconnect.stable}`,
+        `  stable=${nb.reconnect.stable}  [${nb.reconnect.stable ? "PASS" : "FAIL"}]`,
     );
     if (nb.marks.length) {
       lines.push(
@@ -617,6 +751,17 @@ function rebaseUrl(value, origin) {
 
 function numOrDash(value) {
   return value === null || value === undefined ? "-" : String(value);
+}
+
+// TBT and INP cells distinguish "measured as 0" from "could not measure": an
+// unattached long-task observer or an interaction that never landed prints
+// "unavail" so a reader never mistakes an absent property for a clean zero.
+function tbtCell(longTasks) {
+  return longTasks.observerAttached ? numOrDash(longTasks.tbtProxyMs) : "unavail";
+}
+
+function inpCell(interaction) {
+  return interaction.inpAvailable ? numOrDash(interaction.inpProxyMs) : "unavail";
 }
 
 function kb(bytes) {
