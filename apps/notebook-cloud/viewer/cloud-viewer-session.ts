@@ -38,7 +38,7 @@ import {
   type CloudPrototypeAuthState,
   type CloudSyncAuth,
 } from "./collaborator-auth";
-import { cloudAuthStore } from "./cloud-auth-store";
+import { useCloudStores } from "./cloud-stores-context";
 import { materializeCloudNotebookView } from "./cloud-view-model";
 import { CloudLivePresenceStore } from "./live-presence";
 import {
@@ -228,6 +228,13 @@ export function useCloudViewerSession({
   resolveSyncAuth,
   widgetStore,
 }: UseCloudViewerSessionOptions): CloudViewerSession {
+  // Auth snapshot reads below (connection diagnostics, the instant-paint
+  // principal gate, the sync-auth fallback) resolve through this context bundle
+  // so a CloudStoresProvider override drives the same store this hook reads. The
+  // context default is the singleton, a stable reference, so the `auth` entries
+  // added to the effect deps below cannot retrigger a connect in production;
+  // each read still takes the latest snapshot at read time.
+  const { auth } = useCloudStores();
   const [status, setStatus] = useState<ViewerStatus>({
     kind: "loading",
     message: loadingPolicy.initialStatusMessage,
@@ -341,7 +348,7 @@ export function useCloudViewerSession({
       diagnose: () =>
         diagnoseCloudConnectionAccess({
           accessRequestsEndpoint: config.accessRequestsEndpoint,
-          authState: cloudAuthStore.authSnapshot,
+          authState: auth.authSnapshot,
           hasAppSession: hasAppSessionRef.current,
         }),
       onDiagnostic: (diagnostic) => {
@@ -361,7 +368,7 @@ export function useCloudViewerSession({
       subscription.unsubscribe();
       tracker.dispose();
     };
-  }, [connectionStatusBridge, config.accessRequestsEndpoint]);
+  }, [auth, connectionStatusBridge, config.accessRequestsEndpoint]);
 
   useEffect(() => {
     const previousKind = previousAuthRenewalKindRef.current;
@@ -878,7 +885,7 @@ export function useCloudViewerSession({
         ranConnectionDiagnostics = true;
         void diagnoseCloudConnectionAccess({
           accessRequestsEndpoint: config.accessRequestsEndpoint,
-          authState: cloudAuthStore.authSnapshot,
+          authState: auth.authSnapshot,
           hasAppSession: hasAppSessionRef.current,
         })
           .then((diagnostic) => {
@@ -1083,7 +1090,7 @@ export function useCloudViewerSession({
       // null (no derivable principal) skips the paint. Shared with the
       // storage bindings, which use it to pick the matching principal's
       // chunk sub-range.
-      const instantPaintMatcher = cloudInstantPaintPrincipalMatcher(cloudAuthStore.authSnapshot, {
+      const instantPaintMatcher = cloudInstantPaintPrincipalMatcher(auth.authSnapshot, {
         hasAppSession: hasAppSessionRef.current,
       });
       await runCloudInstantPaint({
@@ -1200,7 +1207,7 @@ export function useCloudViewerSession({
         resolveAuth: (attemptSessionId) =>
           resolveSyncAuth
             ? resolveSyncAuth(attemptSessionId)
-            : cloudSyncAuthFromPrototypeAuthState(cloudAuthStore.authSnapshot),
+            : cloudSyncAuthFromPrototypeAuthState(auth.authSnapshot),
       }),
       runtimedWasmModulePath: config.runtimedWasmModulePath,
       runtimedWasmPath: config.runtimedWasmPath,
@@ -1475,7 +1482,7 @@ export function useCloudViewerSession({
         if (cloudConnectionErrorAcceptsAccessDiagnostic(message)) {
           void diagnoseCloudConnectionAccess({
             accessRequestsEndpoint: config.accessRequestsEndpoint,
-            authState: cloudAuthStore.authSnapshot,
+            authState: auth.authSnapshot,
             hasAppSession: hasAppSessionRef.current,
           })
             .then((diagnostic) => {
@@ -1567,6 +1574,7 @@ export function useCloudViewerSession({
       setConnectionPeerLabel(null);
     };
   }, [
+    auth,
     blobResolver,
     config.accessRequestsEndpoint,
     config.blobBasePath,
