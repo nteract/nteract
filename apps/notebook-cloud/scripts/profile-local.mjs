@@ -141,8 +141,10 @@ async function main() {
     }
 
     const reconnect = notebook.reconnect;
+    const renewalRan = Boolean(renewal?.active && renewal?.ran);
+    const renewalHolds = !renewalRan || (renewal.tokenRotated && renewal.reconnect.stable);
     const report = {
-      ok: reconnect.stable,
+      ok: reconnect.stable && renewalHolds,
       baseUrl,
       settleMs: SETTLE_MS,
       generatedAt: new Date().toISOString(),
@@ -167,6 +169,25 @@ async function main() {
         `reconnect stability check FAILED for ${notebook.mode}: ${failed}. ` +
           "A stable session must not open a new WebSocket or reload the document.",
       );
+      process.exitCode = 1;
+    }
+
+    // Same discipline for the renewal check when it ran: a rotation that never
+    // landed in storage, or a socket that churned across it, is a failure, not
+    // a footnote. Skips (issuer not mounted, setup failed) stay skips and are
+    // already named in limitations.
+    if (renewalRan && !renewalHolds) {
+      const failed = [];
+      if (!renewal.tokenRotated) {
+        failed.push("tokenRotated (the refreshed token never landed in storage)");
+      }
+      if (!renewal.reconnect.stable) {
+        failed.push(
+          `renewalReconnect (ws ${renewal.reconnect.webSocketsBefore} -> ` +
+            `${renewal.reconnect.webSocketsAfter}, reloaded=${renewal.reconnect.reloaded})`,
+        );
+      }
+      logStderr(`renewal check FAILED: ${failed.join(", ")}`);
       process.exitCode = 1;
     }
   } finally {
