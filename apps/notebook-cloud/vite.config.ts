@@ -9,12 +9,20 @@ import { isolatedRendererPlugin } from "../notebook/vite-plugin-isolated-rendere
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(appDir, "../..");
 
+// Profiling build only: swap the root renderer for react-dom/profiling so the
+// `?profile=1` <Profiler> hook's onRender actually fires. React makes Profiler
+// timing inert in the default production react-dom build, so the render-count
+// harness needs this variant. Gated on an env flag; unset, the shipped bundle
+// resolves react-dom/client and is byte-identical.
+const profileReactBuild = process.env.NOTEBOOK_CLOUD_PROFILE_REACT === "1";
+
 export default defineConfig({
   plugins: [react(), tailwindcss(), isolatedRendererPlugin()],
   resolve: {
     alias: {
       "@/": path.join(repoRoot, "src") + "/",
       "~/": path.join(repoRoot, "apps/notebook/src") + "/",
+      ...(profileReactBuild ? { "react-dom/client": "react-dom/profiling" } : {}),
     },
   },
   build: {

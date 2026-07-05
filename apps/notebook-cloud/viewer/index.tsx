@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Profiler, Suspense, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { BookOpen, House, Loader2 } from "lucide-react";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -195,10 +195,37 @@ function ViewerStartupLoading({ title }: { title: string }) {
   );
 }
 
+/**
+ * Dev/profiling instrumentation, not a product surface. When the viewer URL
+ * carries `?profile=1`, wrap the root in a React `<Profiler>` that tallies
+ * commit counts on `window.__nteractRenderCounts` keyed by Profiler id, for the
+ * local profiling harness (`scripts/profile-local.mjs`) to read after settle.
+ * Invariant: absent the flag no Profiler mounts and the tree is returned
+ * unchanged, so production renders stay byte-for-byte identical and pay nothing.
+ */
+function withRenderProfiler(node: ReactNode): ReactNode {
+  if (new URLSearchParams(window.location.search).get("profile") !== "1") {
+    return node;
+  }
+  const counters = ((
+    window as unknown as { __nteractRenderCounts?: Record<string, number> }
+  ).__nteractRenderCounts ??= {});
+  return (
+    <Profiler
+      id="cloud-viewer-app"
+      onRender={(id) => {
+        counters[id] = (counters[id] ?? 0) + 1;
+      }}
+    >
+      {node}
+    </Profiler>
+  );
+}
+
 createRoot(requireElement("#root")).render(
   <ErrorBoundary
     fallback={(error) => <ViewerStartupError message={`Cloud viewer crashed: ${error.message}`} />}
   >
-    <App />
+    {withRenderProfiler(<App />)}
   </ErrorBoundary>,
 );
