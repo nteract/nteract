@@ -88,10 +88,37 @@ rail registry poll had any tests before. The pairing poll and the standalone
 page poll shipped with zero coverage; both now sit behind `createPoll` inside
 stores with 29- and 20-test suites.
 
+## Measured locally (wrangler + Playwright)
+
+`pnpm --dir apps/notebook-cloud profile:local` (scripts/profile-local.mjs)
+drives local wrangler with Playwright: cold-route timing, long-task and
+event-timing proxies, WebSocket census, render commits via the `?profile=1`
+`<Profiler>` hook (needs `NOTEBOOK_CLOUD_PROFILE_REACT=1 build:viewer` - the
+default react-dom keeps `<Profiler>` inert), and a reconnect-stability check.
+
+Results on this machine (profiling build, 10s settle):
+
+- **Reconnect stability, the property the auth store must hold:** on a live
+  notebook room, two focus/visibility refresh cycles produced
+  `openedNewWebSocket=false, reloaded=false` - one socket before, one after.
+  The reference-held `appSession$` does its job in a real browser, not just
+  in virtual time.
+- Render commits after settle: `/n` 7, `/workstations` 7, notebook room 16.
+- Notebook-route marks: `viewer-start@~490ms`, `live-room-ready@~525`,
+  `live-initial-cells@~615`, `live-ready@~635` (fresh empty notebook, so the
+  live path fires rather than instant paint).
+- TBT proxy 0 (no >50ms long tasks during load+settle); INP proxy sits at the
+  Event Timing API's 16ms floor for the scripted interactions.
+
+Harness limits: wrangler dev serves uncompressed (byte figures there are raw,
+not gzip - use the bundle table above for payload comparisons); headless
+cannot truly background a tab, so the reconnect check drives synthetic
+focus/visibility events; instant-paint marks need a notebook with a persisted
+snapshot.
+
 ## Not measured here
 
-Runtime render counts (React Profiler), INP/TBT, and reconnect behavior under
-auth renewal need a live browser session against a hosted or wrangler-served
-build - the store suites cover the semantics in virtual time, but interactive
-timing needs the browser. Candidate harness: the hosted smoke scripts plus a
-profiler pass, or a nightly-gremlins run.
+Renewal-path behavior against a real OIDC issuer (token rotation ->
+`authState$` identity -> live-room key stability) still needs either a hosted
+session or a local dev issuer; the loopback-trust auth mode local wrangler
+uses does not exercise the OIDC refresh driver end to end.
