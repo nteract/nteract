@@ -220,7 +220,7 @@ The same three-layer shape now applies to these sources:
    `select(project, equals)` projections deduped by named field-by-field
    comparators.
 3. **React bridge.** Each store exposes named domain hooks
-   (`useCloudAuthState`, `useHostedCatalogAuth`, `useCloudWorkstations`, ...)
+   (`useCloudAuthState`, `useHostedCatalogAuth`, `useCloudWorkstationsRegistry`, ...)
    defined next to its module-level projections. The hooks share one internal
    tearing-safe binding (`src/components/notebook/state/observable-binding.ts`,
    extracted from the runtime-state binding) but the binding is plumbing, not

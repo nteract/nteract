@@ -161,6 +161,17 @@ function accessRequestLoadGateEquals(a: AccessRequestLoadGate, b: AccessRequestL
   return a.shouldLoad === b.shouldLoad && a.auth === b.auth && a.endpoint === b.endpoint;
 }
 
+/**
+ * The identity a `requestEditAccess` POST captured at issue. Its post-await guard
+ * drops the completion when the activation epoch, browser auth reference, or
+ * endpoint no longer matches the live activation.
+ */
+interface AccessRequestIssue {
+  epoch: number;
+  auth: CloudPrototypeAuthState;
+  endpoint: string;
+}
+
 function defaultSelectedMode(): CloudNotebookUrlMode {
   if (typeof window === "undefined") {
     return "view";
@@ -245,6 +256,14 @@ export class CloudAccessRequestStore extends ObservableStore<CloudAccessRequestS
 
   private latestInputs: CloudAccessRequestInputs | null = null;
   private resolvedDeps: ResolvedAccessRequestDeps | null = null;
+  /**
+   * Monotonic activation counter, bumped on every `activate`, its disposer, and
+   * `reset`. A `requestEditAccess` POST captures the epoch it was issued under so
+   * a completion that lands after a reset, sign-out, or dispose/re-activate drops
+   * itself rather than restoring `latest`, forcing edit mode, and firing the
+   * transition side effects for a context that is no longer live.
+   */
+  private activationEpoch = 0;
 
   constructor(options: CloudAccessRequestStoreOptions = {}) {
     const readSelectedMode = options.readSelectedMode ?? defaultSelectedMode;
@@ -272,6 +291,7 @@ export class CloudAccessRequestStore extends ObservableStore<CloudAccessRequestS
 
   /** Sign-out reset: drop the request, the error, and fall back to view mode. */
   reset(): void {
+    this.activationEpoch += 1;
     this.setState({ latest: null, error: null, requestedByUser: false, selectedMode: "view" });
   }
 
@@ -286,6 +306,11 @@ export class CloudAccessRequestStore extends ObservableStore<CloudAccessRequestS
     if (!inputs || !deps) {
       return;
     }
+    const issue: AccessRequestIssue = {
+      epoch: this.activationEpoch,
+      auth: inputs.browserAuth,
+      endpoint: inputs.endpoint,
+    };
     this.updateState((state) => ({ ...state, requestedByUser: true, error: null }));
     void (async () => {
       try {
@@ -293,6 +318,13 @@ export class CloudAccessRequestStore extends ObservableStore<CloudAccessRequestS
           endpoint: inputs.endpoint,
           auth: inputs.browserAuth,
         });
+        // A reset, sign-out, or dispose/re-activate can land while the POST is in
+        // flight; the store is a shared singleton, so drop the completion rather
+        // than restore `latest`, force edit mode, and fire the transition side
+        // effects for a superseded identity.
+        if (!this.requestStillCurrent(issue)) {
+          return;
+        }
         if (result.access_status === "granted") {
           const stamp = new Date(deps.now()).toISOString();
           this.applyLoaded(
@@ -314,12 +346,29 @@ export class CloudAccessRequestStore extends ObservableStore<CloudAccessRequestS
         }
         this.applyLoaded(result.access_request ?? null, { overrideSelectedMode: "edit" });
       } catch (error) {
+        if (!this.requestStillCurrent(issue)) {
+          return;
+        }
         this.updateState((state) => ({
           ...state,
           error: error instanceof Error ? error.message : String(error),
         }));
       }
     })();
+  }
+
+  /**
+   * Whether a `requestEditAccess` POST issued under `issue` may still apply its
+   * completion. A bumped epoch (reset or dispose/re-activate) or a changed browser
+   * auth reference or endpoint means a fresh identity took over while the POST was
+   * in flight, so both the state writes and the transition side effects drop.
+   */
+  private requestStillCurrent(issue: AccessRequestIssue): boolean {
+    return (
+      this.activationEpoch === issue.epoch &&
+      this.latestInputs?.browserAuth === issue.auth &&
+      this.latestInputs?.endpoint === issue.endpoint
+    );
   }
 
   /**
@@ -331,6 +380,7 @@ export class CloudAccessRequestStore extends ObservableStore<CloudAccessRequestS
     inputs$: Observable<CloudAccessRequestInputs>,
     deps: CloudAccessRequestStoreDeps,
   ): () => void {
+    const epoch = (this.activationEpoch += 1);
     const resolved: ResolvedAccessRequestDeps = {
       notebookId: deps.notebookId,
       now: deps.now ?? (() => Date.now()),
@@ -416,6 +466,9 @@ export class CloudAccessRequestStore extends ObservableStore<CloudAccessRequestS
     );
 
     return () => {
+      if (this.activationEpoch === epoch) {
+        this.activationEpoch += 1;
+      }
       subscription.unsubscribe();
       this.resolvedDeps = null;
       this.latestInputs = null;

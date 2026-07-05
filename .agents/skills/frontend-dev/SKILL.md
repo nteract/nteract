@@ -138,8 +138,9 @@ Use this subsection when editing RxJS or shared-store code such as
 `packages/runtimed/src/sync-engine.ts`,
 `packages/runtimed/src/*store*.ts`,
 `src/components/notebook/state/*`,
-`apps/notebook/src/lib/notebook-sync-store-bridge.ts`, or
-`apps/notebook-cloud/viewer/*facts*.ts`.
+`apps/notebook/src/lib/notebook-sync-store-bridge.ts`,
+`apps/notebook-cloud/viewer/*facts*.ts`, or
+`apps/notebook-cloud/viewer/*store*.ts`.
 
 ### State Boundary
 
@@ -200,6 +201,55 @@ Use this subsection when editing RxJS or shared-store code such as
 - If a change crosses the WASM projection boundary, regenerate or freshness-check
   runtime WASM artifacts with the repo xtask flow before trusting TypeScript
   results.
+
+### Module-Singleton Source Stores
+
+For non-CRDT async sources (auth, catalog, access requests, workstations) held
+in a module-level `ObservableStore` singleton, follow Decision 8
+(`docs/adr/frontend-sync-bridge.md`). The store outlives every component, so
+each async completion is a stale-write risk:
+
+- **Domain hooks are the API; the binding is plumbing.** Components import
+  `useCloudAuthState`/`useHostedCatalogAuth`/`useCloudWorkstationsRegistry`, never
+  `store.select(...)` inline in a render body and never
+  `observable-binding.ts` directly. One binding, shared desktop and cloud.
+- **Capture at issue, drop at apply — for every completion.** Poll ticks AND
+  imperative actions capture `{epoch, auth reference, endpoint}` when the
+  request starts; after every `await` (success, error, and any follow-up
+  refetch), the result is discarded if the identity moved. A guarded first
+  await followed by an unguarded second await is the recurring hole.
+- **Invalidation covers bookkeeping, not just visible state.** `dispose`,
+  `reset`, and a signed-out closed gate bump the activation epoch so captured
+  issues die with them (a transient `loading` gate is a recoverable dip and
+  keeps in-flight work alive); a dropped completion also clears any indicator
+  it wrote (by object-reference ownership, so it can never clobber a newer
+  identity's own state).
+- **After-settle loops re-arm on settle, never on emission.** A self-scheduling
+  poll re-arms via `repeat()` on completion, so a swallowed inner rejection
+  cannot kill the loop. Keep `catchError` on the inner fetch.
+- **One in-flight guard, one `exhaustMap`.** Fixed-rate triggers that must
+  not overlap (interval tick, visibility rise, manual wakeup) feed a single
+  `exhaustMap`; do not give each trigger its own guard. After-settle stores
+  instead serialize manual refresh and mutation refetches through a dedicated
+  `concatMap` action stream off the poll loop, so the coupling stays ordered
+  and the cadence unperturbed.
+- **Inject every clock.** `scheduler`, `now`, and the network operations are
+  `activate(deps)` arguments, so tests run entirely on virtual time and the
+  suite proves cadence, gates, aborts, and stale drops deterministically.
+- **Named comparators with the manifest tripwire.** `distinctUntilChanged`
+  uses a named `fooEquals(a, b)` with a colocated
+  `satisfies Record<keyof T, true>` manifest. The manifest forces every key to
+  be *listed* when the type grows; it does not prove every key is *compared* -
+  treat a break as a prompt to revisit the comparator body, not proof of
+  correctness. A projection that allocates an array or object each tick needs
+  a structural comparator (length plus per-element identity/fields); a
+  reference check on a re-allocated value dedups nothing. The manifest break
+  surfaces as a tsc error (`pnpm --dir apps/notebook-cloud typecheck`); the
+  node test script alone will not catch it.
+- **`loaded$` gates readiness, not state.** The state subject emits its seeded
+  default before the gate opens (state emits first, then the gate); a consumer
+  that must tell "loading" from "loaded empty" reads `loaded$`, never infers
+  from an empty snapshot.
 
 ## Hot Reload
 

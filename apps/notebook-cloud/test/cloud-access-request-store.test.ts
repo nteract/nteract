@@ -7,9 +7,10 @@
  * virtual-time total while fetch resolution stays under test control.
  *
  * The load-bearing cases: the fixed-rate poll shares one in-flight guard across
- * the interval and the visibility rise (F4), and a `pending -> granted`
- * transition settles the poll with no infinite re-arm (the reactive-cycle
- * convergence guard).
+ * the interval and the visibility rise (F4), a `pending -> granted` transition
+ * settles the poll with no infinite re-arm (the reactive-cycle convergence
+ * guard), and a `requestEditAccess` POST resolving after a reset or an auth flip
+ * drops its completion rather than applying it to a superseded identity.
  */
 
 import assert from "node:assert/strict";
@@ -567,6 +568,82 @@ describe("CloudAccessRequestStore edit-access request", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("drops a POST completion issued before reset (no applyLoaded, no side effects)", async () => {
+    const store = new CloudAccessRequestStore({ readSelectedMode: () => "edit" });
+    const inputs$ = new BehaviorSubject<CloudAccessRequestInputs>(inputsFrom(baseSource()));
+    let retries = 0;
+    let refreshes = 0;
+    const scopes: string[] = [];
+    const postCalls: Array<{ resolve: (value: CloudAccessRequestPostResult) => void }> = [];
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        onRetryLiveConnection: () => (retries += 1),
+        onRefreshAuth: () => (refreshes += 1),
+        storeRequestedScope: (scope) => scopes.push(scope),
+        postEditAccessRequest: () =>
+          new Promise<CloudAccessRequestPostResult>((resolve) => {
+            postCalls.push({ resolve });
+          }),
+      }),
+    );
+
+    // Issue the request, then reset before the POST resolves.
+    store.requestEditAccess();
+    assert.equal(store.snapshot.requestedByUser, true);
+    store.reset();
+    assert.equal(store.snapshot.selectedMode, "view");
+
+    // The stale granted response resolves after the reset: it must not restore
+    // `latest`, force edit mode, or fire any transition side effect.
+    postCalls[0].resolve({ access_status: "granted" });
+    await drainMicrotasks();
+    assert.equal(store.snapshot.latest, null);
+    assert.equal(store.snapshot.selectedMode, "view");
+    assert.equal(retries, 0);
+    assert.equal(refreshes, 0);
+    assert.deepEqual(scopes, []);
+
+    dispose();
+  });
+
+  it("drops a POST completion when browser auth flips mid-flight", async () => {
+    const store = new CloudAccessRequestStore({ readSelectedMode: () => "edit" });
+    const inputs$ = new BehaviorSubject<CloudAccessRequestInputs>(inputsFrom(baseSource()));
+    let retries = 0;
+    const scopes: string[] = [];
+    const postCalls: Array<{ resolve: (value: CloudAccessRequestPostResult) => void }> = [];
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        onRetryLiveConnection: () => (retries += 1),
+        storeRequestedScope: (scope) => scopes.push(scope),
+        postEditAccessRequest: () =>
+          new Promise<CloudAccessRequestPostResult>((resolve) => {
+            postCalls.push({ resolve });
+          }),
+      }),
+    );
+
+    store.requestEditAccess();
+    await drainMicrotasks();
+
+    // Browser auth flips while the POST is in flight; the gate is not load-eligible
+    // (view-only source), so only the fetch identity changes.
+    const rotated = { ...browserAuth(), token: "rotated-token" };
+    inputs$.next(inputsFrom(baseSource(), { browserAuth: rotated }));
+    await drainMicrotasks();
+
+    // The stale granted response resolves under the superseded identity: dropped.
+    postCalls[0].resolve({ access_status: "granted" });
+    await drainMicrotasks();
+    assert.equal(store.snapshot.latest, null);
+    assert.equal(retries, 0);
+    assert.deepEqual(scopes, []);
+
+    dispose();
   });
 });
 
