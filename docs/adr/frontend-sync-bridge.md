@@ -280,6 +280,13 @@ stores are driven. Context is a consumption override with a singleton default,
 never a requirement: the default keeps `useCloudStores()` provider-free, and the
 singleton keeps owning boot and instant paint.
 
+Boot-path discipline follows from the same split: only the auth store may be
+module-evaluated on the entry chunk (its synchronous seed is what instant paint
+reads). Every other store rides its route's chunk - the workstations surface
+loads with the lazy `/workstations` route, not with the notebook or dashboard
+entry. A new store landing in the entry chunk needs an instant-paint-grade
+reason recorded here.
+
 ### The convention layer stays a convention layer
 
 The generic surface is deliberately small: `ObservableStore`, `select`,
