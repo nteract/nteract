@@ -201,6 +201,47 @@ Use this subsection when editing RxJS or shared-store code such as
   runtime WASM artifacts with the repo xtask flow before trusting TypeScript
   results.
 
+### Module-Singleton Source Stores
+
+For non-CRDT async sources (auth, catalog, access requests, workstations) held
+in a module-level `ObservableStore` singleton, follow Decision 8
+(`docs/adr/frontend-sync-bridge.md`). The store outlives every component, so
+each async completion is a stale-write risk:
+
+- **Domain hooks are the API; the binding is plumbing.** Components import
+  `useCloudAuthState`/`useHostedCatalogAuth`/`useCloudWorkstations`, never
+  `store.select(...)` inline in a render body and never
+  `observable-binding.ts` directly. One binding, shared desktop and cloud.
+- **Capture at issue, drop at apply — for every completion.** Poll ticks AND
+  imperative actions capture `{epoch, auth reference, endpoint}` when the
+  request starts; after every `await` (success, error, and any follow-up
+  refetch), the result is discarded if the identity moved. A guarded first
+  await followed by an unguarded second await is the recurring hole.
+- **Invalidation covers bookkeeping, not just visible state.** `dispose`,
+  `reset`, and a closed gate bump the activation epoch so captured issues die
+  with them; a dropped completion also clears any indicator it wrote (by
+  object-reference ownership, so it can never clobber a newer identity's own
+  state).
+- **After-settle loops re-arm on settle, never on emission.** A self-scheduling
+  poll re-arms via `repeat()` on completion, so a swallowed inner rejection
+  cannot kill the loop. Keep `catchError` on the inner fetch.
+- **One in-flight guard, one `exhaustMap`.** Triggers that must not overlap
+  (interval tick, visibility rise, manual wakeup) feed a single `exhaustMap`;
+  do not give each trigger its own guard.
+- **Inject every clock.** `scheduler`, `now`, and the network operations are
+  `activate(deps)` arguments, so tests run entirely on virtual time and the
+  suite proves cadence, gates, aborts, and stale drops deterministically.
+- **Named comparators with the manifest tripwire.** `distinctUntilChanged`
+  uses a named `fooEquals(a, b)` with a colocated
+  `satisfies Record<keyof T, true>` manifest. The manifest forces every key to
+  be *listed* when the type grows; it does not prove every key is *compared* -
+  treat a break as a prompt to revisit the comparator body, not proof of
+  correctness.
+- **`loaded$` gates readiness, not state.** The state subject emits its seeded
+  default before the gate opens (state emits first, then the gate); a consumer
+  that must tell "loading" from "loaded empty" reads `loaded$`, never infers
+  from an empty snapshot.
+
 ## Hot Reload
 
 Best for UI/React development. Start the dev daemon and Vite from agent terminals; let the human launch the Tauri GUI from their own terminal.

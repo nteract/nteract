@@ -70,6 +70,26 @@ stores, not from using document boundaries as a rerender workaround.
   authenticated notebook APIs. Do not serve user blobs from the renderer asset
   origin.
 
+### Viewer async state
+
+- The four source stores (`cloud-auth-store.ts`,
+  `cloud-access-request-store.ts`, `cloud-catalog-store.ts`,
+  `cloud-workstations-store.ts` in `viewer/`) extend `ObservableStore` and hold
+  cloud host policy per `docs/adr/frontend-sync-bridge.md` Decision 8.
+  Mechanism (`ObservableStore`/`select`/`createPoll`/`fetchLatest`) stays
+  DOM-free in `packages/runtimed`; these stores stay viewer-side per the
+  convergence memo's do-not-converge list.
+- Components consume named domain hooks (`useCloudAuthState`,
+  `useHostedCatalogAuth`, `useCloudWorkstations`, ...), never
+  `store.select(...)` in a render body and never a second React binding.
+- The stores are module singletons shared across surfaces, so every async
+  completion - poll tick, imperative action, and any follow-up refetch - is
+  captured at issue and dropped at apply against an activation epoch plus the
+  auth reference; `dispose`, `reset`, and a closed gate bump the epoch.
+  Comparators are named field-by-field functions with a colocated completeness
+  manifest, never deep-equal or JSON. Full pattern: frontend-dev skill,
+  "Module-Singleton Source Stores".
+
 ## Verification
 
 Use the narrowest relevant command:
