@@ -364,6 +364,14 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
   private readonly _inputs$ = new BehaviorSubject<CloudWorkstationsInputs | null>(null);
   private latestInputs: CloudWorkstationsInputs | null = null;
   private resolvedDeps: ResolvedWorkstationsDeps | null = null;
+  /**
+   * Monotonic activation counter, bumped on every `activate` and its disposer.
+   * An imperative mutation captures the epoch it was issued under so a completion
+   * that lands after a dispose/re-activate drops itself rather than writing into
+   * the current mount. This is the mint/attach/set-default analogue of the poll
+   * paths' `RegistryTick`/`PairingStatusTick` auth tag.
+   */
+  private activationEpoch = 0;
   /** Ordered refetch action stream; each carries a settle callback. */
   private readonly refetchRequests$ = new Subject<() => void>();
 
@@ -392,6 +400,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     inputs$: Observable<CloudWorkstationsInputs>,
     deps: CloudWorkstationsStoreDeps,
   ): () => void {
+    const epoch = (this.activationEpoch += 1);
     this.resetState(EMPTY_STATE);
     const resolved = this.resolveDeps(deps);
     this.resolvedDeps = resolved;
@@ -542,6 +551,9 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     }
 
     return () => {
+      if (this.activationEpoch === epoch) {
+        this.activationEpoch += 1;
+      }
       subscription.unsubscribe();
       this.resolvedDeps = null;
       this.latestInputs = null;
@@ -556,8 +568,12 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       return;
     }
     const endpoint = inputs.workstationsEndpoint;
+    const issue = this.captureMutationIssue(inputs.auth, endpoint);
     try {
       const minted = await deps.mintPairing({ endpoint, auth: inputs.auth });
+      if (!this.mutationStillCurrent(issue, this.latestInputs?.workstationsEndpoint)) {
+        return;
+      }
       this.updateState((state) => ({
         ...state,
         pairing: {
@@ -573,6 +589,9 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
         },
       }));
     } catch (error) {
+      if (!this.mutationStillCurrent(issue, this.latestInputs?.workstationsEndpoint)) {
+        return;
+      }
       this.updateState((state) => ({
         ...state,
         pairing: {
@@ -606,6 +625,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     if (!inputs || !deps || !inputs.defaultEndpoint) {
       return;
     }
+    const issue = this.captureMutationIssue(inputs.auth, inputs.defaultEndpoint);
     this.setMutation({ kind: "default", message: null, workstationId });
     try {
       const defaultWorkstationId = await deps.setDefaultWorkstation({
@@ -613,6 +633,9 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
         auth: inputs.auth,
         workstationId,
       });
+      if (!this.mutationStillCurrent(issue, this.latestInputs?.defaultEndpoint)) {
+        return;
+      }
       this.updateState((state) => ({
         ...state,
         registry: {
@@ -623,9 +646,16 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       this.clearError();
       await this.refreshNow();
     } catch (error) {
-      this.setError(errorMessage(error));
+      if (this.mutationStillCurrent(issue, this.latestInputs?.defaultEndpoint)) {
+        this.setError(errorMessage(error));
+      }
     } finally {
-      this.setMutation({ kind: "idle", message: null, workstationId: null });
+      // Only clear the mutation the still-current action owns: a superseded
+      // identity's `idle` write would clobber a fresh mutation the new identity
+      // started, and its own stale indicator is cleared by `applyClosedGate`.
+      if (this.mutationStillCurrent(issue, this.latestInputs?.defaultEndpoint)) {
+        this.setMutation({ kind: "idle", message: null, workstationId: null });
+      }
     }
   }
 
@@ -644,6 +674,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     if (!inputs || !deps || !inputs.attachEndpoint) {
       return false;
     }
+    const issue = this.captureMutationIssue(inputs.auth, inputs.attachEndpoint);
     this.setMutation({
       kind: "attach",
       message: options.message ?? DEFAULT_ATTACH_MESSAGE,
@@ -656,10 +687,16 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
         workstationId,
         replaceExisting: options.replaceExisting === true,
       });
+      if (!this.mutationStillCurrent(issue, this.latestInputs?.attachEndpoint)) {
+        return false;
+      }
       this.clearError();
       await this.refreshNow();
       return true;
     } catch (error) {
+      if (!this.mutationStillCurrent(issue, this.latestInputs?.attachEndpoint)) {
+        return false;
+      }
       this.setError(errorMessage(error));
       this.setMutation({ kind: "idle", message: null, workstationId: null });
       await this.refreshNow();
@@ -799,7 +836,10 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
 
   /**
    * Apply the surface's closed-gate outcome: flip status, wipe the registry only
-   * when asked (rail lost-identity), and always clear the error.
+   * when asked (rail lost-identity), clear the error, and drop the mutation and
+   * pairing. A closed gate is the singleton's stand-in for the manager hook
+   * unmounting, so the pairing card and any in-flight mutation bookkeeping cannot
+   * survive it into the next identity.
    */
   private applyClosedGate(gate: CloudWorkstationsClosedGate): void {
     this.updateState((state) => ({
@@ -807,6 +847,8 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       status: gate.status,
       registry: gate.wipeRegistry ? EMPTY_REGISTRY : state.registry,
       error: null,
+      mutation: { kind: "idle", message: null, workstationId: null },
+      pairing: null,
     }));
   }
 
@@ -860,6 +902,33 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     }
   }
 
+  /** Snapshot the identity an imperative mutation is issued under. */
+  private captureMutationIssue(
+    auth: CloudPrototypeAuthState,
+    endpoint: string,
+  ): WorkstationsMutationIssue {
+    return { epoch: this.activationEpoch, auth, endpoint };
+  }
+
+  /**
+   * Whether a mutation issued under `issue` may still apply its completion. The
+   * store is one singleton shared by the rail and `/workstations`, so a sign-out,
+   * auth flip, or dispose/re-activate can land while a mint/attach/set-default is
+   * in flight. A bumped epoch or a changed auth reference or endpoint means the
+   * resolved (or rejected) response belongs to a superseded identity, so its
+   * state writes and refetch dispatches drop, mirroring the poll paths' auth tag.
+   */
+  private mutationStillCurrent(
+    issue: WorkstationsMutationIssue,
+    currentEndpoint: string | undefined,
+  ): boolean {
+    return (
+      this.activationEpoch === issue.epoch &&
+      this.latestInputs?.auth === issue.auth &&
+      currentEndpoint === issue.endpoint
+    );
+  }
+
   private setMutation(mutation: CloudWorkstationMutationState): void {
     this.updateState((state) => ({ ...state, mutation }));
   }
@@ -896,6 +965,17 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
           fetchCloudWorkstationPairingStatus(endpoint, auth, pairingId, signal)),
     };
   }
+}
+
+/**
+ * The identity an imperative mutation captured at issue. Its post-await guard
+ * drops the completion when the activation epoch, auth reference, or endpoint no
+ * longer matches the live activation.
+ */
+interface WorkstationsMutationIssue {
+  epoch: number;
+  auth: CloudPrototypeAuthState;
+  endpoint: string;
 }
 
 /** One background registry poll result, tagged with the auth it was fetched under. */
