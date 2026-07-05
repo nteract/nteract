@@ -38,7 +38,7 @@ import {
   useCloudAuthState,
   useHostedCatalogAuth,
 } from "./use-cloud-auth-store";
-import { cloudAuthStore } from "./cloud-auth-store";
+import { useCloudStores } from "./cloud-stores-context";
 import { loadCloudNotebookListBootstrap } from "./cloud-viewer-config";
 import type { CloudAppSession } from "./app-session";
 import type {
@@ -66,6 +66,7 @@ import { preloadNotebookRoute } from "./notebook-route-preload";
 
 export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { auth } = useCloudStores();
   const [bootstrap, setBootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
     loadCloudNotebookListBootstrap(),
   );
@@ -184,7 +185,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
           console.warn("[notebook-cloud] app session refresh before notebook list failed", error);
         })
         .finally(() => {
-          cloudAuthStore.refreshAppSessionStatus();
+          auth.refreshAppSessionStatus();
           setRefreshIndex((value) => value + 1);
         });
       return;
@@ -325,15 +326,15 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   const signOut = () => {
     setBootstrap(null);
     setDashboardQuery("");
-    cloudAuthStore.clearAppSessionStatus();
+    auth.clearAppSessionStatus();
     clearCachedCloudNotebookListFromWindow();
     void clearCloudAppSession()
       .catch((error: unknown) => {
         console.warn("[notebook-cloud] app session clear failed", error);
       })
-      .finally(() => cloudAuthStore.refreshAppSessionStatus());
+      .finally(() => auth.refreshAppSessionStatus());
     clearCloudPrototypeDevAuth(window.localStorage);
-    cloudAuthStore.refreshAuthState();
+    auth.refreshAuthState();
   };
 
   const headerDetail = cloudNotebookListHeaderDetail(authState, hasAppSession, authConfig);

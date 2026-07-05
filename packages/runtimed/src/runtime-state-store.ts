@@ -1,13 +1,14 @@
 /**
- * Reactive runtime-state store — framework-agnostic projections over the
+ * Reactive runtime-state store: framework-agnostic projections over the
  * daemon's RuntimeStateDoc snapshots.
  *
- * One BehaviorSubject of `RuntimeState` plus fluent, deduplicated
- * projections. Hosts (desktop bridge, cloud viewer session) push snapshots
- * with `set()`; consumers subscribe to a projection observable or read the
- * synchronous snapshot. React bindings stay in the apps — this module has
- * no framework dependency, so projections are testable headlessly and any
- * future host (CLI, MCP surface) consumes the same streams.
+ * `RuntimeStateStore` extends `ObservableStore<RuntimeState>` for the state
+ * spine (`state$`/`loaded$`/`select`/`snapshot`) and adds the runtime-specific
+ * projections and comparators. Hosts (desktop bridge, cloud viewer session)
+ * push snapshots with `set()`; consumers subscribe to a projection observable
+ * or read the synchronous snapshot. React bindings stay in the apps, so this
+ * module has no framework dependency and projections are testable headlessly;
+ * any future host (CLI, MCP surface) consumes the same streams.
  *
  * Why projections live here and not in `useMemo` chains: a `useMemo` on the
  * whole `RuntimeState` recomputes (and re-renders its component) on every
@@ -19,8 +20,8 @@
  */
 
 import {
-  BehaviorSubject,
   Observable,
+  type SchedulerLike,
   defer,
   distinctUntilChanged,
   map,
@@ -30,6 +31,7 @@ import {
   switchMap,
   timer,
 } from "rxjs";
+import { ObservableStore } from "./observable-store";
 import {
   deriveEnvSyncState,
   deriveKernelInfo,
@@ -69,7 +71,7 @@ export const BUSY_THROTTLE_MS = 60;
  * production callers omit it.
  */
 export function throttleBusyStatus(
-  scheduler?: Parameters<typeof timer>[1],
+  scheduler?: SchedulerLike,
 ): (source: Observable<RuntimeStatusKey>) => Observable<RuntimeStatusKey> {
   return (source) =>
     source.pipe(
@@ -89,20 +91,10 @@ export function throttleBusyStatus(
  * viewer session both `set()` snapshots from `SyncEngine.runtimeState$`,
  * and both apps' React hooks subscribe to the same projections.
  */
-export class RuntimeStateStore {
-  private readonly _state$ = new BehaviorSubject<RuntimeState>(DEFAULT_RUNTIME_STATE);
-  private readonly _loaded$ = new BehaviorSubject<boolean>(false);
-
-  /** Every snapshot pushed by the host, starting with the default state. */
-  readonly state$: Observable<RuntimeState> = this._state$.asObservable();
-
-  /**
-   * Whether the daemon has pushed at least one snapshot since
-   * connect/reset. While false, the current snapshot is
-   * `DEFAULT_RUNTIME_STATE` and fields like `trust.status` must not be
-   * treated as authoritative (the default would fail-open trust gates).
-   */
-  readonly loaded$: Observable<boolean> = this._loaded$.pipe(distinctUntilChanged());
+export class RuntimeStateStore extends ObservableStore<RuntimeState> {
+  constructor() {
+    super(DEFAULT_RUNTIME_STATE);
+  }
 
   /** Kernel type + env source. Emits only when the projection changes. */
   readonly kernelInfo$: Observable<KernelInfo> = this.select(deriveKernelInfo, kernelInfoEquals);
@@ -163,38 +155,14 @@ export class RuntimeStateStore {
       notebookShellWorkstationAttachmentCacheKey(b),
   );
 
-  /**
-   * Fluent projection builder: derive a slice of `RuntimeState` and emit it
-   * only when it changes. `equals` defaults to `Object.is`; pass a
-   * structural comparator when the projector allocates.
-   */
-  select<T>(
-    project: (state: RuntimeState) => T,
-    equals: (a: T, b: T) => boolean = Object.is,
-  ): Observable<T> {
-    return this._state$.pipe(map(project), distinctUntilChanged(equals));
-  }
-
-  /** Current snapshot (synchronous, non-reactive). */
-  get snapshot(): RuntimeState {
-    return this._state$.getValue();
-  }
-
-  /** Whether a real snapshot has been applied since connect/reset. */
-  get isLoaded(): boolean {
-    return this._loaded$.getValue();
-  }
-
   /** Push a new daemon snapshot. Host bridges call this. */
   set(state: RuntimeState): void {
-    this._loaded$.next(true);
-    this._state$.next(state);
+    this.setState(state);
   }
 
   /** Reset to the default state (disconnect, room change). */
   reset(): void {
-    this._loaded$.next(false);
-    this._state$.next(DEFAULT_RUNTIME_STATE);
+    this.resetState(DEFAULT_RUNTIME_STATE);
   }
 }
 

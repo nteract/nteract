@@ -235,7 +235,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   // transition itself lives in the store, not the viewer entry.
   assert.match(
     sourceText,
-    /const requestCloudEditAccess = useCallback\(\(\) => \{[\s\S]*cloudAccessRequestStore\.requestEditAccess\(\);/,
+    /const requestCloudEditAccess = useCallback\(\(\) => \{[\s\S]*accessRequest\.requestEditAccess\(\);/,
   );
   // The connection/identity slot is filled by the shared quiet component:
   // avatar + connectivity dot, driven by the stable status bridge. It must

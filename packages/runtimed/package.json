@@ -9,6 +9,9 @@
     ".": "./src/index.ts",
     "./src/*": "./src/*"
   },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.test.json --noEmit"
+  },
   "dependencies": {
     "rxjs": "^7.8.2"
   },

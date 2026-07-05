@@ -7,9 +7,9 @@ import {
   type NotebookShellCapabilities,
 } from "@/components/notebook";
 
+import { useCloudStores } from "./cloud-stores-context";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import type { CloudViewerConfig } from "./cloud-viewer-session";
-import { cloudWorkstationsStore } from "./cloud-workstations-store";
 import {
   useCloudWorkstationMutation,
   useCloudWorkstationPairing,
@@ -48,6 +48,7 @@ export function useCloudWorkstationManager({
   panelIsOpen,
   onOpenWorkstationsRail,
 }: UseCloudWorkstationManagerInput) {
+  const { workstations } = useCloudStores();
   const canChooseHostedWorkstation =
     capabilities.access.source === "cloud" &&
     capabilities.auth.canUseAuthenticatedIdentity &&
@@ -77,8 +78,8 @@ export function useCloudWorkstationManager({
   const pairingWithName = useCloudWorkstationPairing();
 
   const handleSetDefaultWorkstation = useCallback(
-    (workstationId: string) => cloudWorkstationsStore.setDefault(workstationId),
-    [],
+    (workstationId: string) => workstations.setDefault(workstationId),
+    [workstations],
   );
 
   const handleAttachWorkstation = useCallback(
@@ -89,16 +90,16 @@ export function useCloudWorkstationManager({
       if (options.revealPanel) {
         onOpenWorkstationsRail();
       }
-      return cloudWorkstationsStore.attach(workstationId, {
+      return workstations.attach(workstationId, {
         message: options.message,
         replaceExisting: options.replaceExisting,
       });
     },
-    [config.workstationAttachEndpoint, onOpenWorkstationsRail],
+    [config.workstationAttachEndpoint, onOpenWorkstationsRail, workstations],
   );
 
-  const handleStartPairing = useCallback(() => cloudWorkstationsStore.startPairing(), []);
-  const handleCancelPairing = useCallback(() => cloudWorkstationsStore.cancelPairing(), []);
+  const handleStartPairing = useCallback(() => workstations.startPairing(), [workstations]);
+  const handleCancelPairing = useCallback(() => workstations.cancelPairing(), [workstations]);
 
   const workstationSurface = useMemo(
     () =>

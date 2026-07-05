@@ -18,38 +18,43 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import { BehaviorSubject } from "rxjs";
 import { runtimeStateStore } from "@/components/notebook/state/runtime-state";
 import { useObservableProjection } from "@/components/notebook/state/observable-binding";
-import {
-  cloudWorkstationsStore,
-  type CloudWorkstationMutationState,
-  type CloudWorkstationPairing,
-  type CloudWorkstationsInputs,
-  type CloudWorkstationsRegistry,
-  type CloudWorkstationsRegistryStatus,
+import { useCloudStores } from "./cloud-stores-context";
+import type {
+  CloudWorkstationMutationState,
+  CloudWorkstationPairing,
+  CloudWorkstationsInputs,
+  CloudWorkstationsRegistry,
+  CloudWorkstationsRegistryStatus,
 } from "./cloud-workstations-store";
 
 /** The registered workstations + default id. */
 export function useCloudWorkstationsRegistry(): CloudWorkstationsRegistry {
-  return useObservableProjection(cloudWorkstationsStore.registry$);
+  const { workstations } = useCloudStores();
+  return useObservableProjection(workstations.registry$);
 }
 
 /** Registry lifecycle status (loading / signed-out / error / ready). */
 export function useCloudWorkstationsStatus(): CloudWorkstationsRegistryStatus {
-  return useObservableProjection(cloudWorkstationsStore.status$);
+  const { workstations } = useCloudStores();
+  return useObservableProjection(workstations.status$);
 }
 
 /** Last surfaced registry error. */
 export function useCloudWorkstationsError(): string | null {
-  return useObservableProjection(cloudWorkstationsStore.error$);
+  const { workstations } = useCloudStores();
+  return useObservableProjection(workstations.error$);
 }
 
 /** The in-flight mutation for the toolbar/panel. */
 export function useCloudWorkstationMutation(): CloudWorkstationMutationState {
-  return useObservableProjection(cloudWorkstationsStore.mutation$);
+  const { workstations } = useCloudStores();
+  return useObservableProjection(workstations.mutation$);
 }
 
 /** The pairing with its registered workstation's display name resolved. */
 export function useCloudWorkstationPairing(): CloudWorkstationPairing | null {
-  return useObservableProjection(cloudWorkstationsStore.pairingWithName$);
+  const { workstations } = useCloudStores();
+  return useObservableProjection(workstations.pairingWithName$);
 }
 
 /**
@@ -74,10 +79,10 @@ function useLiveInputs<T>(value: T): BehaviorSubject<T> {
  * live workstation-attachment projection feeds the attach cross-channel confirm.
  */
 export function useCloudWorkstationsController(inputs: CloudWorkstationsInputs): void {
+  const { workstations } = useCloudStores();
   const inputs$ = useLiveInputs(inputs);
   useEffect(
-    () =>
-      cloudWorkstationsStore.activate(inputs$, { workstation$: runtimeStateStore.workstation$ }),
-    [inputs$],
+    () => workstations.activate(inputs$, { workstation$: runtimeStateStore.workstation$ }),
+    [inputs$, workstations],
   );
 }

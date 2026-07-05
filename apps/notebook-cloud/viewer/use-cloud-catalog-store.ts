@@ -17,32 +17,33 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BehaviorSubject } from "rxjs";
 import { useObservableProjection } from "@/components/notebook/state/observable-binding";
-import {
-  cloudCatalogStore,
-  type CloudCatalogInputs,
-  type CloudCatalogSeed,
-} from "./cloud-catalog-store";
+import { useCloudStores } from "./cloud-stores-context";
+import type { CloudCatalogInputs, CloudCatalogSeed } from "./cloud-catalog-store";
 import type { CloudCatalogAccessFacts } from "./cloud-access-facts";
 import type { CloudNotebookLiveRoomConnectionPolicy } from "./cloud-notebook-catalog-access";
 
 /** Catalog access facts (status + scope) for the current identity. */
 export function useCloudCatalogAccessFacts(): CloudCatalogAccessFacts {
-  return useObservableProjection(cloudCatalogStore.catalogAccessFacts$);
+  const { catalog } = useCloudStores();
+  return useObservableProjection(catalog.catalogAccessFacts$);
 }
 
 /** Live-room connection policy derived from the catalog facts. */
 export function useCloudCatalogLiveRoomPolicy(): CloudNotebookLiveRoomConnectionPolicy {
-  return useObservableProjection(cloudCatalogStore.catalogLiveRoomPolicy$);
+  const { catalog } = useCloudStores();
+  return useObservableProjection(catalog.catalogLiveRoomPolicy$);
 }
 
 /** Loaded catalog title (undefined until a load carries one). */
 export function useCloudNotebookTitle(): string | null | undefined {
-  return useObservableProjection(cloudCatalogStore.title$);
+  const { catalog } = useCloudStores();
+  return useObservableProjection(catalog.title$);
 }
 
 /** Catalog-load / rename error for the title chrome. */
 export function useCloudNotebookTitleError(): string | null {
-  return useObservableProjection(cloudCatalogStore.titleError$);
+  const { catalog } = useCloudStores();
+  return useObservableProjection(catalog.titleError$);
 }
 
 export interface UseCloudCatalogControllerParams {
@@ -80,9 +81,11 @@ export function useCloudCatalogController({
   loadCatalogAccess,
   initialCatalogAccess,
 }: UseCloudCatalogControllerParams): void {
+  const { catalog } = useCloudStores();
+
   // Seed synchronously on first render, before any title/facts projection read.
   useState(() => {
-    cloudCatalogStore.seedFromSsr(initialCatalogAccess, canUseAuthenticatedCloudApi);
+    catalog.seedFromSsr(initialCatalogAccess, canUseAuthenticatedCloudApi);
     return null;
   });
 
@@ -91,5 +94,5 @@ export function useCloudCatalogController({
     loadCatalogAccess,
   });
 
-  useEffect(() => cloudCatalogStore.activate(inputs$), [inputs$]);
+  useEffect(() => catalog.activate(inputs$), [inputs$, catalog]);
 }

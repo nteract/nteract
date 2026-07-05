@@ -6,13 +6,15 @@
  * and the component tree.
  *
  * The store's drivers own the auth/app-session sources (they run from boot via
- * `cloudAuthStore.activate`), so each hook binds a store-owned projection
- * through the shared `useObservableProjection`. The projections are stable
- * module-level observables, so the binding cache stays hot across renders.
+ * `auth.activate`), so each hook binds a store-owned projection through the
+ * shared `useObservableProjection`. The projections are stable per store
+ * instance, so the binding cache stays hot across renders. The store instance
+ * comes from `useCloudStores()`, which is the singleton by default and an
+ * override under `CloudStoresProvider`.
  */
 
 import { useObservableProjection } from "@/components/notebook/state/observable-binding";
-import { cloudAuthStore } from "./cloud-auth-store";
+import { useCloudStores } from "./cloud-stores-context";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import type { HostedCatalogAuthProjection } from "./hosted-catalog-auth";
 import type { CloudAuthRenewalState } from "./notice-types";
@@ -20,30 +22,36 @@ import type { CloudAppSessionViewState } from "./use-cloud-auth";
 
 /** Deduped prototype auth state (mode/token/user/scope/oidc subject). */
 export function useCloudAuthState(): CloudPrototypeAuthState {
-  return useObservableProjection(cloudAuthStore.authState$);
+  const { auth } = useCloudStores();
+  return useObservableProjection(auth.authState$);
 }
 
 /** Full app-session view (status/session/error), reference-stable session. */
 export function useCloudAppSession(): CloudAppSessionViewState {
-  return useObservableProjection(cloudAuthStore.appSessionView$);
+  const { auth } = useCloudStores();
+  return useObservableProjection(auth.appSessionView$);
 }
 
 /** OIDC renewal notice. */
 export function useCloudAuthRenewal(): CloudAuthRenewalState {
-  return useObservableProjection(cloudAuthStore.renewal$);
+  const { auth } = useCloudStores();
+  return useObservableProjection(auth.renewal$);
 }
 
 /** Stable auth object for host-owned browser API and blob fetches. */
 export function useBrowserApiAuthState(): CloudPrototypeAuthState {
-  return useObservableProjection(cloudAuthStore.browserApiAuthState$);
+  const { auth } = useCloudStores();
+  return useObservableProjection(auth.browserApiAuthState$);
 }
 
 /** Stable connection key for the live-room reconnect dependency. */
 export function useCloudSyncAuthConnectionKey(): string {
-  return useObservableProjection(cloudAuthStore.syncAuthConnectionKey$);
+  const { auth } = useCloudStores();
+  return useObservableProjection(auth.syncAuthConnectionKey$);
 }
 
 /** Hosted catalog auth projection for the current auth/app-session state. */
 export function useHostedCatalogAuth(): HostedCatalogAuthProjection {
-  return useObservableProjection(cloudAuthStore.hostedAuth$);
+  const { auth } = useCloudStores();
+  return useObservableProjection(auth.hostedAuth$);
 }

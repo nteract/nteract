@@ -23,11 +23,18 @@ import { CloudHomeView } from "./home-view";
 import { CloudNotebookListView } from "./notebook-list-view";
 import { loadNotebookRouteModule } from "./notebook-route-preload";
 import { OidcCallbackView } from "./oidc-callback-view";
-import { CloudWorkstationsView } from "./workstations-view";
 import "./index.css";
 
 const NotebookRoute = lazy(() =>
   loadNotebookRouteModule().then((module) => ({ default: module.NotebookRoute })),
+);
+
+// Boot-path discipline: only the auth store may ride the entry chunk (its
+// synchronous seed is what instant paint reads). The workstations surface -
+// store, hooks, and the management page UI - belongs to its route's chunk, so
+// notebook and dashboard visitors never download it.
+const CloudWorkstationsView = lazy(() =>
+  import("./workstations-view").then((module) => ({ default: module.CloudWorkstationsView })),
 );
 
 setLoggerHost({
@@ -105,7 +112,11 @@ function App() {
   }
 
   if (isWorkstationsPath()) {
-    return <CloudWorkstationsView authConfig={authConfig} />;
+    return (
+      <Suspense fallback={<ViewerStartupLoading title="Workstations" />}>
+        <CloudWorkstationsView authConfig={authConfig} />
+      </Suspense>
+    );
   }
 
   if (isOidcCallbackPath()) {

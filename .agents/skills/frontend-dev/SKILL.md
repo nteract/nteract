@@ -213,6 +213,15 @@ each async completion is a stale-write risk:
   `useCloudAuthState`/`useHostedCatalogAuth`/`useCloudWorkstationsRegistry`, never
   `store.select(...)` inline in a render body and never
   `observable-binding.ts` directly. One binding, shared desktop and cloud.
+- **Singletons for lifetime, context for consumption.** The store stays a module
+  singleton (boot, drivers, instant-paint snapshot reads), but each domain hook
+  resolves its instance from `useCloudStores()` (`cloud-stores-context.ts`),
+  whose default is the singleton bundle. Production mounts no provider, so it is
+  byte-identical; a test or Elements fixture mounts `CloudStoresProvider` with
+  its own instances and the subtree reads those. The provider overrides
+  consumption, never activation - its owner activates the instances it supplies.
+  A controller that dispatches actions on the same store reads it from the same
+  context too, so an override gets a coherent store.
 - **Capture at issue, drop at apply — for every completion.** Poll ticks AND
   imperative actions capture `{epoch, auth reference, endpoint}` when the
   request starts; after every `await` (success, error, and any follow-up
