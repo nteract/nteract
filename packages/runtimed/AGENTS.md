@@ -1,9 +1,10 @@
 # runtimed TypeScript store primitives
 
 Scope: the DOM-free store mechanism in `packages/runtimed/src`
-(`observable-store.ts`, `poll.ts`, the free `select`, and store subclasses like
-`runtime-state-store.ts`). Mechanism only - no React and no `document`/
-`window`/`Date.now()` in this layer. The React binding is
+(`observable-store.ts`, `poll.ts`, the free `select`, and the stores built on
+them; `runtime-state-store.ts` predates the base and is the pending
+`ObservableStore` retrofit target, frontend-sync-bridge FSB-2). Mechanism
+only - no React and no `document`/`window`/`Date.now()` in this layer. The React binding is
 `src/components/notebook/state/observable-binding.ts`; host-policy stores
 (cloud auth/access-request/catalog/workstations) live in
 `apps/notebook-cloud/viewer/` per the convergence memo's do-not-converge list.

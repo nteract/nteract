@@ -72,22 +72,27 @@ stores, not from using document boundaries as a rerender workaround.
 
 ### Viewer async state
 
-- The four source stores (`cloud-auth-store.ts`,
-  `cloud-access-request-store.ts`, `cloud-catalog-store.ts`,
-  `cloud-workstations-store.ts` in `viewer/`) extend `ObservableStore` and hold
-  cloud host policy per `docs/adr/frontend-sync-bridge.md` Decision 8.
+- The four source stores in `viewer/` hold cloud host policy per
+  `docs/adr/frontend-sync-bridge.md` Decision 8: `cloud-access-request-store.ts`,
+  `cloud-catalog-store.ts`, and `cloud-workstations-store.ts` extend
+  `ObservableStore`; `cloud-auth-store.ts` is deliberately a multi-subject
+  module store (synchronously seeded so instant paint can read it before React
+  mounts).
   Mechanism (`ObservableStore`/`select`/`createPoll`/`fetchLatest`) stays
   DOM-free in `packages/runtimed`; these stores stay viewer-side per the
   convergence memo's do-not-converge list.
 - Components consume named domain hooks (`useCloudAuthState`,
-  `useHostedCatalogAuth`, `useCloudWorkstations`, ...), never
+  `useHostedCatalogAuth`, `useCloudWorkstationsRegistry`, ...), never
   `store.select(...)` in a render body and never a second React binding.
 - The stores are module singletons shared across surfaces, so every async
   completion - poll tick, imperative action, and any follow-up refetch - is
   captured at issue and dropped at apply against an activation epoch plus the
-  auth reference; `dispose`, `reset`, and a closed gate bump the epoch.
-  Comparators are named field-by-field functions with a colocated completeness
-  manifest, never deep-equal or JSON. Full pattern: frontend-dev skill,
+  auth reference; `dispose`, `reset`, and a signed-out closed gate bump the
+  epoch (a transient `loading` gate is a recoverable dip and keeps in-flight
+  work alive). Comparators are named field-by-field functions with a colocated
+  completeness manifest, never deep-equal or JSON; the manifest break surfaces
+  as a tsc error via `pnpm --dir apps/notebook-cloud typecheck` - the node
+  `test` script will not catch it. Full pattern: frontend-dev skill,
   "Module-Singleton Source Stores".
 
 ## Verification
