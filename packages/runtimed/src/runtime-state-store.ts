@@ -21,6 +21,7 @@
 
 import {
   Observable,
+  type SchedulerLike,
   defer,
   distinctUntilChanged,
   map,
@@ -70,7 +71,7 @@ export const BUSY_THROTTLE_MS = 60;
  * production callers omit it.
  */
 export function throttleBusyStatus(
-  scheduler?: Parameters<typeof timer>[1],
+  scheduler?: SchedulerLike,
 ): (source: Observable<RuntimeStatusKey>) => Observable<RuntimeStatusKey> {
   return (source) =>
     source.pipe(

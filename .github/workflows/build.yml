@@ -486,6 +486,14 @@ jobs:
       # Build wasm + renderer plugins (gitignored; tests import them)
       - uses: ./.github/actions/build-runtime-artifacts
 
+      # tsc over packages/runtimed/tests, whose `satisfies Record<keyof T, true>`
+      # equality manifests only trip the build when the tests are type-checked.
+      # vitest transpiles without type-checking and `vp check` is fmt+lint only,
+      # so this is the lane that enforces them. Needs the wasm .d.ts the artifact
+      # build above generates.
+      - name: Type-check runtimed tests
+        run: pnpm --dir packages/runtimed typecheck
+
       - name: Run JS tests
         run: vp test run
 

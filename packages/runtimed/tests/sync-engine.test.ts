@@ -134,6 +134,7 @@ function makeRuntimeState(
     kernel: {
       lifecycle: { lifecycle: "Running", activity: "Idle" },
       error_reason: null,
+      error_details: null,
       name: "python3",
       language: "python",
       env_source: "",
@@ -158,6 +159,10 @@ function makeRuntimeState(
       approved_pixi_pypi_dependencies: [],
       approved_pixi_channels: [],
     },
+    runtime_state_doc_id: null,
+    path: null,
+    project_context: { state: "Pending" },
+    workstation: null,
     last_saved: null,
     executions: executions as RuntimeState["executions"],
     comms: {},
@@ -782,6 +787,7 @@ describe("SyncEngine", () => {
         kernel: {
           lifecycle: { lifecycle: "Running", activity: "Busy" },
           error_reason: null,
+          error_details: null,
           name: "python3",
           language: "python",
           env_source: "",
@@ -806,6 +812,10 @@ describe("SyncEngine", () => {
           approved_pixi_pypi_dependencies: [],
           approved_pixi_channels: [],
         },
+        runtime_state_doc_id: null,
+        path: null,
+        project_context: { state: "Pending" },
+        workstation: null,
         last_saved: null,
         executions: {},
         comms: {},
@@ -869,6 +879,7 @@ describe("SyncEngine", () => {
         kernel: {
           lifecycle: { lifecycle: "Running", activity: "Busy" },
           error_reason: null,
+          error_details: null,
           name: "python3",
           language: "python",
           env_source: "",
@@ -893,6 +904,10 @@ describe("SyncEngine", () => {
           approved_pixi_pypi_dependencies: [],
           approved_pixi_channels: [],
         },
+        runtime_state_doc_id: null,
+        path: null,
+        project_context: { state: "Pending" },
+        workstation: null,
         last_saved: null,
         executions: {
           "exec-1": {
