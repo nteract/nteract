@@ -12,7 +12,7 @@ import {
   useHostedCatalogAuth,
 } from "./use-cloud-auth-store";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
-import { cloudWorkstationsStore } from "./cloud-workstations-store";
+import { useCloudStores } from "./cloud-stores-context";
 import {
   useCloudWorkstationPairing,
   useCloudWorkstationsController,
@@ -31,6 +31,7 @@ const WORKSTATIONS_ENDPOINT = "/api/workstations";
  */
 export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { workstations: workstationsStore } = useCloudStores();
   const authState = useCloudAuthState();
   const authRenewal = useCloudAuthRenewal();
   const hostedAuth = useHostedCatalogAuth();
@@ -69,10 +70,10 @@ export function CloudWorkstationsView({ authConfig }: { authConfig: CloudViewerA
   const defaultWorkstationId = isReady ? registry.defaultWorkstationId : null;
 
   const refreshRegistry = useCallback(() => {
-    void cloudWorkstationsStore.refreshNow();
-  }, []);
-  const startPairing = useCallback(() => cloudWorkstationsStore.startPairing(), []);
-  const cancelPairing = useCallback(() => cloudWorkstationsStore.cancelPairing(), []);
+    void workstationsStore.refreshNow();
+  }, [workstationsStore]);
+  const startPairing = useCallback(() => workstationsStore.startPairing(), [workstationsStore]);
+  const cancelPairing = useCallback(() => workstationsStore.cancelPairing(), [workstationsStore]);
 
   const pageView = useMemo(() => {
     const selection = projectNotebookWorkstationSelection({

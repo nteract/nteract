@@ -167,7 +167,7 @@ import type {
   CloudViewerAuthConfig,
   ViewerRuntime,
 } from "./cloud-viewer-types";
-import { cloudAuthStore } from "./cloud-auth-store";
+import { useCloudStores } from "./cloud-stores-context";
 import {
   useBrowserApiAuthState,
   useCloudAppSession,
@@ -175,13 +175,11 @@ import {
   useCloudAuthState,
   useCloudSyncAuthConnectionKey,
 } from "./use-cloud-auth-store";
-import { cloudAccessRequestStore } from "./cloud-access-request-store";
 import {
   useCloudAccessRequestController,
   useCloudAccessRequestFacts,
   useCloudSelectedMode,
 } from "./use-cloud-access-request-controller";
-import { cloudCatalogStore } from "./cloud-catalog-store";
 import {
   useCloudCatalogAccessFacts,
   useCloudCatalogController,
@@ -244,6 +242,10 @@ export function NotebookViewer({
   authConfig: CloudViewerAuthConfig;
 }) {
   const { config } = runtime;
+  // Store actions and snapshot reads below resolve through this context bundle
+  // (the singletons by default) so a CloudStoresProvider override drives the
+  // same instances this component reads and mutates.
+  const { auth, accessRequest, catalog } = useCloudStores();
   const routeTitle = useMemo(() => cloudNotebookRouteTitle(), []);
   const [notebookTitleSaving, setNotebookTitleSaving] = useState(false);
   const loadingPolicy = useMemo(() => cloudViewerLoadingPolicy(config), [config.headsHash]);
@@ -255,16 +257,19 @@ export function NotebookViewer({
   // writes them through store actions (setSelectedMode, requestEditAccess, reset).
   const selectedInteractionMode = useCloudSelectedMode();
   const accessRequestFacts = useCloudAccessRequestFacts();
-  const handleSelectInteractionMode = useCallback((mode: NotebookInteractionMode) => {
-    cloudAccessRequestStore.setSelectedMode(mode);
-  }, []);
+  const handleSelectInteractionMode = useCallback(
+    (mode: NotebookInteractionMode) => {
+      accessRequest.setSelectedMode(mode);
+    },
+    [accessRequest],
+  );
   const appSessionStatus = useCloudAppSession();
   const hasAppSession = Boolean(appSessionStatus.session);
   const authState = useCloudAuthState();
   const authRenewal = useCloudAuthRenewal();
   const refreshAuthState = useCallback(() => {
-    cloudAuthStore.refreshAuthState();
-  }, []);
+    auth.refreshAuthState();
+  }, [auth]);
   // Cell focus is owned by the shared cell-ui-state store, not host React state.
   // NotebookView already writes and synchronously flushes the interaction target
   // on user focus (publishInteractionTarget, which carries the real
@@ -386,7 +391,7 @@ export function NotebookViewer({
     : null;
   const resolveSyncAuth = useCallback(
     async (sessionId: string) => {
-      const currentAppSessionStatus = cloudAuthStore.appSessionSnapshot;
+      const currentAppSessionStatus = auth.appSessionSnapshot;
       const appSession =
         currentAppSessionStatus.session ??
         (currentAppSessionStatus.status === "loading"
@@ -394,17 +399,17 @@ export function NotebookViewer({
           : null);
       if (appSession) {
         const requestedScope = resolveCloudAppSessionSyncScope(
-          cloudCatalogStore.catalogAccessFactsSnapshot,
-          cloudAccessRequestStore.selectedModeSnapshot,
+          catalog.catalogAccessFactsSnapshot,
+          accessRequest.selectedModeSnapshot,
         );
         return cloudSyncAuthFromAppSessionCookie({
           requestedScope,
           sessionId,
         });
       }
-      return cloudSyncAuthFromPrototypeAuthState(cloudAuthStore.authSnapshot);
+      return cloudSyncAuthFromPrototypeAuthState(auth.authSnapshot);
     },
-    [config.notebookId, syncAuthConnectionKey],
+    [accessRequest, auth, catalog, config.notebookId, syncAuthConnectionKey],
   );
   const {
     connectionActorLabel,
@@ -729,7 +734,7 @@ export function NotebookViewer({
 
       try {
         setNotebookTitleSaving(true);
-        cloudCatalogStore.clearTitleError();
+        catalog.clearTitleError();
         const response = await fetchWithCloudPrototypeAuth(
           config.catalogEndpoint,
           {
@@ -752,7 +757,7 @@ export function NotebookViewer({
         if (body.ok !== true || body.notebook_id !== config.notebookId) {
           throw new Error("Unable to rename notebook: response shape was invalid");
         }
-        cloudCatalogStore.applyTitleSaved(body.title ?? null);
+        catalog.applyTitleSaved(body.title ?? null);
         if (body.viewer_url) {
           const nextHref = cloudNotebookUrlAfterRename(window.location.href, body.viewer_url);
           if (nextHref !== window.location.href) {
@@ -761,9 +766,7 @@ export function NotebookViewer({
         }
         return true;
       } catch (error) {
-        cloudCatalogStore.applyTitleSaveFailure(
-          error instanceof Error ? error.message : String(error),
-        );
+        catalog.applyTitleSaveFailure(error instanceof Error ? error.message : String(error));
         return false;
       } finally {
         setNotebookTitleSaving(false);
@@ -772,6 +775,7 @@ export function NotebookViewer({
     [
       browserApiAuthState,
       canUseAuthenticatedCloudApi,
+      catalog,
       catalogGrantsDocumentEdit,
       config.catalogEndpoint,
       config.notebookId,
@@ -1473,9 +1477,9 @@ export function NotebookViewer({
       console.warn("[notebook-cloud] app session clear failed", error);
     });
     clearCloudPrototypeDevAuth(window.localStorage);
-    cloudAccessRequestStore.reset();
+    accessRequest.reset();
     refreshAuthState();
-  }, [refreshAuthState]);
+  }, [accessRequest, refreshAuthState]);
   const beginNotebookAuth = useCallback(async () => {
     const localDevAuth = authConfig.localDev;
     if (localDevAuth) {
@@ -1498,8 +1502,8 @@ export function NotebookViewer({
     }
   }, [authConfig.localDev, authConfig.oidc, resetPrototypeAuth]);
   const requestCloudEditAccess = useCallback(() => {
-    cloudAccessRequestStore.requestEditAccess();
-  }, []);
+    accessRequest.requestEditAccess();
+  }, [accessRequest]);
   const shouldShowPackageEnvironmentSummary =
     shellCapabilities.canExecute || shellCapabilities.canManagePackages;
   const shouldShowCloudWorkstationsPanel =

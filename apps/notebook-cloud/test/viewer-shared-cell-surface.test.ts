@@ -760,7 +760,7 @@ test("cloud notebook list refresh re-establishes app sessions before listing not
   assert.match(routeSourceText, /import \{ clearCloudAppSession, establishCloudAppSession \}/);
   assert.match(
     routeSourceText,
-    /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*establishCloudAppSession\(authState\)[\s\S]*cloudAuthStore\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
+    /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*establishCloudAppSession\(authState\)[\s\S]*auth\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
     "manual notebook-list refresh should re-run the trusted session exchange so pending invites can resolve",
   );
 });
@@ -812,11 +812,11 @@ test("cloud app-session live sync uses streamed catalog access facts without awa
   assert.match(sourceText, /createCloudNotebookCatalogAccessLoader\(\{/);
   assert.match(sourceText, /loadCatalogAccess: async \(\) => \{/);
   assert.match(sourceText, /config\.catalogEndpoint/);
-  assert.match(sourceText, /cloudCatalogStore\.catalogAccessFactsSnapshot/);
+  assert.match(sourceText, /catalog\.catalogAccessFactsSnapshot/);
   assert.match(sourceText, /cloudNotebookSyncScopeForCatalogAccess\(\{/);
   assert.match(
     sourceText,
-    /const requestedScope = resolveCloudAppSessionSyncScope\([\s\S]*cloudCatalogStore\.catalogAccessFactsSnapshot,[\s\S]*cloudAccessRequestStore\.selectedModeSnapshot,[\s\S]*\)/,
+    /const requestedScope = resolveCloudAppSessionSyncScope\([\s\S]*catalog\.catalogAccessFactsSnapshot,[\s\S]*accessRequest\.selectedModeSnapshot,[\s\S]*\)/,
   );
   assert.doesNotMatch(sourceText, /new URL\("api\/n\?limit=100"/);
   assert.doesNotMatch(sourceText, /\.\.\.\(await loadCatalogAccess\(\)\)/);

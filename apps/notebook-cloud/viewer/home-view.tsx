@@ -14,12 +14,13 @@ import { cloudNotebookSignInLabel } from "./cloud-auth-controls";
 import { clearCloudPrototypeDevAuth, prepareCloudOidcViewerLogin } from "./collaborator-auth";
 import { beginOidcLogin } from "./oidc-auth";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
-import { cloudAuthStore } from "./cloud-auth-store";
+import { useCloudStores } from "./cloud-stores-context";
 import { useCloudAppSession, useCloudAuthRenewal, useCloudAuthState } from "./use-cloud-auth-store";
 import type { CloudViewerAuthConfig } from "./cloud-viewer-types";
 
 export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { auth } = useCloudStores();
   const appSessionStatus = useCloudAppSession();
   const authState = useCloudAuthState();
   const authRenewal = useCloudAuthRenewal();
@@ -64,15 +65,15 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
   };
 
   const resetAuth = () => {
-    cloudAuthStore.clearAppSessionStatus();
+    auth.clearAppSessionStatus();
     void clearCloudAppSession()
       .catch((error: unknown) => {
         console.warn("[notebook-cloud] app session clear failed", error);
       })
-      .finally(() => cloudAuthStore.refreshAppSessionStatus());
+      .finally(() => auth.refreshAppSessionStatus());
     clearCloudPrototypeDevAuth(window.localStorage);
     setFormError(null);
-    cloudAuthStore.refreshAuthState();
+    auth.refreshAuthState();
   };
 
   const hasExplicitAuth = authState.mode === "oidc";
@@ -145,14 +146,14 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
               <button
                 type="button"
                 onClick={() => {
-                  cloudAuthStore.clearAppSessionStatus();
+                  auth.clearAppSessionStatus();
                   void clearCloudAppSession()
                     .catch((error: unknown) => {
                       console.warn("[notebook-cloud] app session clear failed", error);
                     })
-                    .finally(() => cloudAuthStore.refreshAppSessionStatus());
+                    .finally(() => auth.refreshAppSessionStatus());
                   clearCloudPrototypeDevAuth(window.localStorage);
-                  cloudAuthStore.refreshAuthState();
+                  auth.refreshAuthState();
                 }}
               >
                 <LogOut aria-hidden="true" />
