@@ -986,6 +986,91 @@ describe("CloudWorkstationsStore stale-completion guards", () => {
     dispose();
   });
 
+  it("clears the mutation when identity flips during the post-success refetch", async () => {
+    const scheduler = newScheduler();
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const { loadWorkstations, calls } = deferredLoad();
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        scheduler,
+        loadWorkstations,
+        setDefaultWorkstation: async () => "ws-2",
+      }),
+    );
+
+    // Settle the initial gate load under the first identity.
+    await drainMicrotasks();
+    calls[0].resolve(
+      registry({
+        defaultWorkstationId: "ws-1",
+        workstations: [workstation("ws-1", "Lab"), workstation("ws-2", "Hub")],
+      }),
+    );
+    await drainMicrotasks();
+
+    // The PATCH resolves while still current, so the reconciling refetch
+    // (calls[1]) is issued - and hangs while auth flips.
+    void store.setDefault("ws-2");
+    await drainMicrotasks();
+    assert.equal(calls.length, 2);
+    assert.equal(store.snapshot.mutation.kind, "default");
+    inputs$.next(baseInputs({ auth: ROTATED_AUTH }));
+    await drainMicrotasks();
+
+    // The superseded refetch settles: the finally may not write idle over the
+    // new identity, but the "default" indicator this action owns cannot stay
+    // stuck either.
+    calls[1].resolve(registry({ defaultWorkstationId: "ws-2" }));
+    await drainMicrotasks();
+    assert.equal(store.snapshot.mutation.kind, "idle");
+
+    dispose();
+  });
+
+  it("keeps the pairing and mutation through a transient loading gate", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const mintCalls: Array<{ resolve: (value: MintedCloudWorkstationPairing) => void }> = [];
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        loadWorkstations: async () => registry({ workstations: [workstation("ws-1", "Lab")] }),
+        mintPairing: () =>
+          new Promise<MintedCloudWorkstationPairing>((resolve) => {
+            mintCalls.push({ resolve });
+          }),
+        attachWorkstation: () => new Promise<void>(() => {}),
+      }),
+    );
+    await drainMicrotasks();
+
+    void store.startPairing();
+    void store.attach("ws-1");
+    await drainMicrotasks();
+    assert.equal(store.snapshot.mutation.kind, "attach");
+
+    // A recoverable eligibility dip (user still signed in) is not the unmount
+    // analog: the pairing card, the mutation, and in-flight issues survive it.
+    inputs$.next(
+      baseInputs({ canFetch: false, closedGate: { status: "loading", wipeRegistry: false } }),
+    );
+    await drainMicrotasks();
+    assert.equal(store.snapshot.mutation.kind, "attach");
+
+    // The in-flight mint also completes normally across the dip.
+    mintCalls[0].resolve({
+      id: "pair-1",
+      code: "AAAA-BBBB",
+      expiresAt: new Date(600_000).toISOString(),
+    });
+    await drainMicrotasks();
+    assert.equal(store.snapshot.pairing?.status, "pending");
+
+    dispose();
+  });
+
   it("drops a mint completion that resolves after the gate closes", async () => {
     const store = new CloudWorkstationsStore();
     const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());

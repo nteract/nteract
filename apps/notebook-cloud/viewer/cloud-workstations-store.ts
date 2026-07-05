@@ -646,7 +646,6 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
         workstationId,
       });
       if (!this.mutationStillCurrent(issue, this.latestInputs?.defaultEndpoint)) {
-        this.clearMutationIfOwned(mutation);
         return;
       }
       this.updateState((state) => ({
@@ -661,15 +660,16 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     } catch (error) {
       if (this.mutationStillCurrent(issue, this.latestInputs?.defaultEndpoint)) {
         this.setError(errorMessage(error));
-      } else {
-        this.clearMutationIfOwned(mutation);
       }
     } finally {
       // A still-current action clears to idle unconditionally. A superseded one
-      // must not write idle over a mutation the new identity started; it clears
-      // only the object it owns (already done on its drop path above).
+      // must not write idle over a mutation the new identity started, so it
+      // clears only the object it owns - covering the drop paths above AND an
+      // identity flip that lands during the post-success refetch await.
       if (this.mutationStillCurrent(issue, this.latestInputs?.defaultEndpoint)) {
         this.setMutation({ kind: "idle", message: null, workstationId: null });
+      } else {
+        this.clearMutationIfOwned(mutation);
       }
     }
   }
@@ -854,24 +854,32 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
 
   /**
    * Apply the surface's closed-gate outcome: flip status, wipe the registry only
-   * when asked (rail lost-identity), clear the error, and drop the mutation and
-   * pairing. A closed gate is the singleton's stand-in for the manager hook
-   * unmounting, so the pairing card and any in-flight mutation bookkeeping cannot
-   * survive it into the next identity.
+   * when asked (rail lost-identity), and clear the error. A `signed_out` gate is
+   * the singleton's stand-in for the manager hook unmounting, so it also drops
+   * the mutation and pairing and invalidates in-flight issues; a `loading` gate
+   * is a recoverable eligibility dip and keeps them.
    */
   private applyClosedGate(gate: CloudWorkstationsClosedGate): void {
-    // Captured mutation issues die with the gate: a mint/attach/set-default
-    // resolving after the close must stay dropped even when the auth reference
-    // and endpoint are unchanged, so clearing the visible card below is not
-    // enough on its own.
-    this.activationEpoch += 1;
+    // Only a lost identity is the unmount analog. A transient `loading` gate
+    // (eligibility dip with the user still signed in) keeps the pairing card,
+    // the mutation, and in-flight issues alive, matching the per-component
+    // hooks that stayed mounted through it. On `signed_out`, captured mutation
+    // issues die with the gate: a mint/attach/set-default resolving after the
+    // close must stay dropped even when the auth reference and endpoint are
+    // unchanged, so clearing the visible card below is not enough on its own.
+    const identityLost = gate.status === "signed_out";
+    if (identityLost) {
+      this.activationEpoch += 1;
+    }
     this.updateState((state) => ({
       ...state,
       status: gate.status,
       registry: gate.wipeRegistry ? EMPTY_REGISTRY : state.registry,
       error: null,
-      mutation: { kind: "idle", message: null, workstationId: null },
-      pairing: null,
+      mutation: identityLost
+        ? { kind: "idle", message: null, workstationId: null }
+        : state.mutation,
+      pairing: identityLost ? null : state.pairing,
     }));
   }
 
