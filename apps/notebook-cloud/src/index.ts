@@ -165,6 +165,7 @@ import {
   isLoopbackWorkerRequest,
   trustsLoopbackRequestHeaders,
 } from "./loopback.ts";
+import { handleLocalOidcRequest, localOidcEnabled } from "./dev-oidc.ts";
 
 export { NotebookRoom, WorkstationEvents, OwnerComputeIndex };
 
@@ -465,6 +466,13 @@ const worker: ExportedHandler<Env> = {
     const assetResponse = await routeAsset(request, env);
     if (assetResponse) {
       return assetResponse;
+    }
+
+    // Dev-only OIDC issuer. Off unless NOTEBOOK_CLOUD_LOCAL_OIDC is set, in which
+    // case it owns `/dev/oidc/*`; otherwise the request falls through to the 404.
+    const localOidcResponse = await handleLocalOidcRequest(request, env);
+    if (localOidcResponse) {
+      return localOidcResponse;
     }
 
     const routeResponse = await dispatchWorkerRoute(NOTEBOOK_CLOUD_ROUTES, request, env, ctx);
@@ -5766,24 +5774,31 @@ function authConfigForRequest(
   env: Env,
 ): { oidc: Record<string, string> | null; localDev: Record<string, string> | null } {
   const localDev = localDevAuthConfigForRequest(request, env);
+  const oidc = oidcAuthConfigForRequest(request, env);
+  // With the dev issuer mounted, surface both: the viewer runs the real OIDC
+  // flow against the local issuer while the loopback dev-token shortcut stays
+  // available. Off the flag, loopback keeps its dev-token-only config.
+  if (localOidcEnabled(env) && oidc) {
+    return { oidc, localDev };
+  }
   if (localDev) {
     return { oidc: null, localDev };
   }
+  return { oidc, localDev: null };
+}
+
+function oidcAuthConfigForRequest(request: Request, env: Env): Record<string, string> | null {
   const issuer = env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim();
   const clientId = env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim();
   const providerLabel = env.NOTEBOOK_CLOUD_OIDC_PROVIDER_LABEL?.trim();
   if (!issuer || !clientId) {
-    return { oidc: null, localDev: null };
+    return null;
   }
   return {
-    localDev: null,
-    oidc: {
-      issuer,
-      clientId,
-      redirectUri:
-        env.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI?.trim() || new URL("/oidc", request.url).href,
-      ...(providerLabel ? { providerLabel } : {}),
-    },
+    issuer,
+    clientId,
+    redirectUri: env.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI?.trim() || new URL("/oidc", request.url).href,
+    ...(providerLabel ? { providerLabel } : {}),
   };
 }
 

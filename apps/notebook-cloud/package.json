@@ -42,6 +42,7 @@
     "dev:browser": "node scripts/dev-browser.mjs"
   },
   "dependencies": {
+    "@nteract/local-oidc": "workspace:*",
     "@nteract/notebook-host": "workspace:*",
     "lucide-react": "^0.513.0",
     "react": "^19.2.7",

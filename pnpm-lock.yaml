@@ -583,6 +583,9 @@ importers:
 
   apps/notebook-cloud:
     dependencies:
+      '@nteract/local-oidc':
+        specifier: workspace:*
+        version: link:../../packages/local-oidc
       '@nteract/notebook-host':
         specifier: workspace:*
         version: link:../../packages/notebook-host
