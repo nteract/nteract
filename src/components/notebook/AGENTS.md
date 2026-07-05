@@ -12,8 +12,8 @@ a Decision 8 call, not an accident (`docs/adr/frontend-sync-bridge.md`).
   as they are; do not convert them to RxJS.
 - **RxJS-bound** (`runtime-state.ts`, `runtime-store-projection.ts`,
   `view-store-projection.ts`): anything holding time, async, or an
-  `AbortController`. `runtime-state-store.ts` in `packages/runtimed` is the
-  pending `ObservableStore` retrofit target (frontend-sync-bridge FSB-2).
+  `AbortController`. `runtime-state-store.ts` in `packages/runtimed` extends
+  `ObservableStore` (frontend-sync-bridge Decision 8).
 
 ## Binding is plumbing
 

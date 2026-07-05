@@ -288,8 +288,6 @@ machinery.
 
 ### Follow-ups
 
-- FSB-2: retrofit `RuntimeStateStore extends ObservableStore` once the four
-  cloud stores have proven the base; gated by `runtime-state-store.test.ts`.
 - FSB-3: collapse the `useLiveInputs`/render-source straddle when connection
   facts become store-backed, deleting the two-phase
   `set(notify:false)`/`flush()` adapter in `cloud-facts-react.ts`.
