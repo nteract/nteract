@@ -32,12 +32,13 @@ import { emitBroadcast, emitPresence } from "@/components/notebook/state/noteboo
 import { resetPoolState, setPoolState } from "@/components/notebook/state/pool-state";
 import { resetRuntimeState, setRuntimeState } from "@/components/notebook/state/runtime-state";
 import {
+  cloudSyncAuthConnectionKey,
   cloudSyncAuthFromPrototypeAuthState,
   withCloudPrototypeAuthHeaders,
   type CloudPrototypeAuthState,
   type CloudSyncAuth,
 } from "./collaborator-auth";
-import { cloudSyncAuthConnectionKey } from "./session-auth-stability";
+import { cloudAuthStore } from "./cloud-auth-store";
 import { materializeCloudNotebookView } from "./cloud-view-model";
 import { CloudLivePresenceStore } from "./live-presence";
 import {
@@ -325,9 +326,8 @@ export function useCloudViewerSession({
   // The live-room effect must not depend on raw auth/session object identity:
   // browser auth refreshes can rebuild those objects without changing the
   // effective socket credentials. Key the effect by the transport credential
-  // shape, and read the latest auth through refs at connect/diagnostic time.
-  const authStateRef = useRef(authState);
-  authStateRef.current = authState;
+  // shape, and read the latest auth from the auth store snapshot at
+  // connect/diagnostic time.
   const hasAppSessionRef = useRef(hasAppSession);
   hasAppSessionRef.current = hasAppSession;
   const authRenewalKindRef = useRef(authRenewalKind);
@@ -341,7 +341,7 @@ export function useCloudViewerSession({
       diagnose: () =>
         diagnoseCloudConnectionAccess({
           accessRequestsEndpoint: config.accessRequestsEndpoint,
-          authState: authStateRef.current,
+          authState: cloudAuthStore.authSnapshot,
           hasAppSession: hasAppSessionRef.current,
         }),
       onDiagnostic: (diagnostic) => {
@@ -878,7 +878,7 @@ export function useCloudViewerSession({
         ranConnectionDiagnostics = true;
         void diagnoseCloudConnectionAccess({
           accessRequestsEndpoint: config.accessRequestsEndpoint,
-          authState: authStateRef.current,
+          authState: cloudAuthStore.authSnapshot,
           hasAppSession: hasAppSessionRef.current,
         })
           .then((diagnostic) => {
@@ -1083,7 +1083,7 @@ export function useCloudViewerSession({
       // null (no derivable principal) skips the paint. Shared with the
       // storage bindings, which use it to pick the matching principal's
       // chunk sub-range.
-      const instantPaintMatcher = cloudInstantPaintPrincipalMatcher(authStateRef.current, {
+      const instantPaintMatcher = cloudInstantPaintPrincipalMatcher(cloudAuthStore.authSnapshot, {
         hasAppSession: hasAppSessionRef.current,
       });
       await runCloudInstantPaint({
@@ -1200,7 +1200,7 @@ export function useCloudViewerSession({
         resolveAuth: (attemptSessionId) =>
           resolveSyncAuth
             ? resolveSyncAuth(attemptSessionId)
-            : cloudSyncAuthFromPrototypeAuthState(authStateRef.current),
+            : cloudSyncAuthFromPrototypeAuthState(cloudAuthStore.authSnapshot),
       }),
       runtimedWasmModulePath: config.runtimedWasmModulePath,
       runtimedWasmPath: config.runtimedWasmPath,
@@ -1475,7 +1475,7 @@ export function useCloudViewerSession({
         if (cloudConnectionErrorAcceptsAccessDiagnostic(message)) {
           void diagnoseCloudConnectionAccess({
             accessRequestsEndpoint: config.accessRequestsEndpoint,
-            authState: authStateRef.current,
+            authState: cloudAuthStore.authSnapshot,
             hasAppSession: hasAppSessionRef.current,
           })
             .then((diagnostic) => {

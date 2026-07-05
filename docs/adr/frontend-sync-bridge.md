@@ -1,6 +1,6 @@
 # Frontend Sync Bridge and Stable DOM Order
 
-**Status:** Draft, 2026-05-23.
+**Status:** Draft, 2026-05-23. Decision 8 added 2026-07-03.
 
 ## Context
 
@@ -194,6 +194,109 @@ Renderer plugins themselves are out of scope here. See `src/components/isolated/
 The bridge holds a local-actor label so it can filter self-echo attributions. The actor label is sourced from `daemon:ready` payloads and falls back to `desktop:<sessionId>` until the daemon hands one over. Cross-reference Decision 1 of `docs/adr/identity-and-trust.md` for the actor-label format.
 
 This is the one place where editor input bypasses the React render path entirely. CodeMirror's ViewPlugin sees the change before React; the cell-store update happens after, asynchronously, via the bridge's `onSourceChanged` callback. The user sees the keystroke instantly.
+
+## Decision 8: Non-CRDT source state rides the same bridge pattern
+
+The first seven decisions cover Automerge-backed state: WASM peer, engine
+Observables, store bridge, `useSyncExternalStore`. The cloud viewer's other
+async sources - OIDC/app-session auth, access requests, the notebook catalog,
+workstation registry and pairing - grew up separately as per-component
+`useEffect` lifecycles: duplicated renewal timers across four views, three
+hand-rolled chained-`setTimeout` polls, ref mirrors (`authStateRef`,
+`appSessionStatusRef`) reconstructing snapshot reads that a store gives for
+free, and stale-write guards reinvented per effect with uneven coverage.
+
+The same three-layer shape now applies to these sources:
+
+1. **Source driver.** A `createPoll`/`fetchLatest` pipeline
+   (`packages/runtimed/src/poll.ts`), or a hand-wired `exhaustMap` chain where
+   triggers are heterogeneous (OIDC refresh), owns timers, fetches, aborts,
+   and serialization. Drivers live behind an `activate(deps) => dispose` call
+   with injected `scheduler`/`fetch`/`now`, so tests run on virtual time and
+   the browser runs on wall clock.
+2. **Store + deduped projections.** An `ObservableStore<T>` subclass
+   (`packages/runtimed/src/observable-store.ts`) holds one `BehaviorSubject`
+   spine, a `loaded$` gate, synchronous `snapshot`, and
+   `select(project, equals)` projections deduped by named field-by-field
+   comparators.
+3. **React bridge.** Each store exposes named domain hooks
+   (`useCloudAuthState`, `useHostedCatalogAuth`, `useCloudWorkstations`, ...)
+   defined next to its module-level projections. The hooks share one internal
+   tearing-safe binding (`src/components/notebook/state/observable-binding.ts`,
+   extracted from the runtime-state binding) but the binding is plumbing, not
+   API: components import domain vocabulary, never raw observables. This
+   matches the existing read surface (`useCell`, `useCellIds`,
+   `useRuntimeState`) and keeps inline `store.select(...)`-per-render - which
+   would defeat the binding cache - out of component bodies.
+
+The Decision 1 invariant extends verbatim: React owns no async source of
+truth. If React state and the store disagree, the store wins.
+
+### Where each idiom applies
+
+RxJS is the idiom wherever time, async, or cancellation is involved: polls,
+fetch lifecycles, renewal timers, reconnect keys, anything holding an
+`AbortController`. The hand-rolled `Map`/`Set` pub/sub stores in
+`src/components/notebook/state/*` (cells, outputs, execution) stay as they
+are: they fan out synchronous per-entity updates where per-subscriber
+granularity is the point and no cancellation exists. That boundary is a
+decision, not an accident.
+
+### Equality convention
+
+`distinctUntilChanged` uses named field-by-field comparators
+(`hostedCatalogAuthEquals`, `cloudAppSessionsEqual`, ...), never deep-equal or
+JSON. Each comparator carries a colocated
+`satisfies Record<keyof T, true>` manifest so adding a field to the projection
+type breaks the build until the comparator is revisited. The manifest forces
+every key to be listed, not every key to be compared - treat a manifest break
+as a review prompt for the comparator body, not proof of correctness.
+
+### Why auth is a module-level BehaviorSubject
+
+`cloudInstantPaintPrincipalMatcher`
+(`apps/notebook-cloud/viewer/instant-paint.ts`) reads the auth principal
+synchronously before React mounts to decide whether instant paint applies. A
+store seeded from React state or a `useEffect` would return
+`skipped_no_principal` on every first paint. Auth state is therefore a
+module-level `BehaviorSubject` seeded synchronously from
+`cloudPrototypeAuthFromWindow()`, activated once at viewer boot (skipped on
+the OIDC callback route, which consumes no store hooks).
+
+### The convention layer stays a convention layer
+
+The generic surface is deliberately small: `ObservableStore`, `select`,
+`createPoll`/`fetchLatest`, and one internal React binding. Stock RxJS
+composition is the framework; these are conventions over it. Drivers are
+epics in the redux-observable sense (effect streams with injected deps and
+schedulers) without the action bus - stores shard by read pattern instead of
+funneling through one dispatch path, for the same reason Decision 1 rejected
+`useDocument`. If this layer ever wants middleware, a store registry, an
+action bus, or its own devtools protocol, that is the signal to adopt an
+existing system (Effect, NgRx-style tooling) rather than grow a fifth
+primitive here.
+
+### Placement
+
+Mechanism (`ObservableStore`, `select`, `createPoll`, `fetchLatest`) is
+DOM-free and lives in `packages/runtimed`. The React binding imports React and
+lives in shared `src/components/notebook/state/`. The four source stores
+(auth, access-request, catalog, workstations) hold cloud host policy and stay
+in `apps/notebook-cloud/viewer/` per the convergence memo's do-not-converge
+list: shared surfaces consume projected results, never the fetch/mutation
+machinery.
+
+### Follow-ups
+
+- FSB-2: retrofit `RuntimeStateStore extends ObservableStore` once the four
+  cloud stores have proven the base; gated by `runtime-state-store.test.ts`.
+- FSB-3: collapse the `useLiveInputs`/render-source straddle when connection
+  facts become store-backed, deleting the two-phase
+  `set(notify:false)`/`flush()` adapter in `cloud-facts-react.ts`.
+- FSB-4: comments store single-writer (`commentsProjection$` as sole source,
+  optimistic re-pull through a `refreshNow()` action).
+- FSB-5: remove the write-only `setCells` force-update in
+  `cloud-viewer-session.ts` once consumers subscribe to view stores.
 
 ## Worked examples
 

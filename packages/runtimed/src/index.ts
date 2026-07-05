@@ -48,6 +48,18 @@ export {
 // Reactive runtime-state store (framework-agnostic RxJS projections)
 export { BUSY_THROTTLE_MS, RuntimeStateStore, throttleBusyStatus } from "./runtime-state-store";
 
+// Observable store base + free select helper (source stores extend this)
+export { ObservableStore, select } from "./observable-store";
+
+// Polling + fetch-on-input primitives (injected scheduler/fetch, abort-wired)
+export {
+  createPoll,
+  fetchLatest,
+  type AfterSettlePoll,
+  type FixedRatePoll,
+  type PollDefinition,
+} from "./poll";
+
 // Local-first persistence: the NotebookDoc seed record plus the render-only
 // RuntimeStateDoc paint cache (see notebookDocChanged$ and the key-segment
 // docs in notebook-doc-persistence.ts)

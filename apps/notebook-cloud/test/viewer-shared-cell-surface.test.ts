@@ -330,10 +330,12 @@ test("cloud package rail stays package-only and leaves sync/env state to app chr
   assert.doesNotMatch(sourceText, /Live sync connected/);
 });
 
-test("cloud workstation registry state lives in the workstation manager hook", () => {
+test("cloud workstation registry state lives in the workstations store", () => {
   const sourceText = viewerFileContaining("export function NotebookViewer");
   const hookSourcePath = new URL("../viewer/use-cloud-workstations.ts", import.meta.url);
   const hookSourceText = readFileSync(hookSourcePath, "utf8");
+  const storeSourcePath = new URL("../viewer/cloud-workstations-store.ts", import.meta.url);
+  const storeSourceText = readFileSync(storeSourcePath, "utf8");
 
   assert.match(sourceText, /useCloudWorkstationManager/);
   assert.match(sourceText, /cloudBrowserCanUseAuthenticatedApi/);
@@ -352,13 +354,24 @@ test("cloud workstation registry state lives in the workstation manager hook", (
   assert.doesNotMatch(sourceText, /projectNotebookWorkstationSelection/);
   assert.doesNotMatch(sourceText, /projectNotebookWorkstationSurface/);
   assert.doesNotMatch(sourceText, /cloudWorkstationRefreshIntervalMs/);
-  assert.match(hookSourceText, /fetchCloudWorkstations/);
-  assert.match(hookSourceText, /setCloudDefaultWorkstation/);
-  assert.match(hookSourceText, /requestCloudWorkstationAttachment/);
+
+  // The manager hook delegates the registry poll, mutations, and pairing to the
+  // store; it only shapes the presentational workstation surface for the rail.
+  assert.match(hookSourceText, /useCloudWorkstationsController/);
+  assert.match(hookSourceText, /cloudWorkstationsStore/);
   assert.match(hookSourceText, /projectNotebookWorkstationSurface/);
+  assert.doesNotMatch(hookSourceText, /fetchCloudWorkstations/);
+  assert.doesNotMatch(hookSourceText, /setCloudDefaultWorkstation/);
+  assert.doesNotMatch(hookSourceText, /requestCloudWorkstationAttachment/);
   assert.doesNotMatch(hookSourceText, /projectNotebookWorkstationSelection/);
   assert.doesNotMatch(hookSourceText, /projectNotebookWorkstationLaunchReadiness/);
-  assert.match(hookSourceText, /cloudWorkstationRefreshIntervalMs/);
+  assert.doesNotMatch(hookSourceText, /cloudWorkstationRefreshIntervalMs/);
+
+  // The store owns the registry/mutation client calls and the dynamic cadence.
+  assert.match(storeSourceText, /fetchCloudWorkstations/);
+  assert.match(storeSourceText, /setCloudDefaultWorkstation/);
+  assert.match(storeSourceText, /requestCloudWorkstationAttachment/);
+  assert.match(storeSourceText, /cloudWorkstationRefreshIntervalMs/);
 });
 
 test("cloud identity chrome renders through the shared actor projection surface", () => {
@@ -444,7 +457,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(shellHookSourceText, /cloudNotebookShellCapabilities/);
   assert.match(shellHookSourceText, /selectedMode/);
   assert.match(shellHookSourceText, /editAccessRequestPending/);
-  assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
+  assert.match(sourceText, /onModeChange=\{handleSelectInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
   assert.match(sourceText, /reconnecting=\{sustainedReconnecting\}/);
   assert.match(
@@ -486,11 +499,19 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
   assert.doesNotMatch(cssText, /cloud-command-toolbar-placeholder/);
   assert.match(editModeButtonSourceText, /if \(mode === "edit" && !canSwitchToEdit\) \{/);
-  assert.match(sourceText, /projectCloudAccessRequestTransition\(\{/);
-  assert.match(
-    sourceText,
-    /if \(transition\.requestedScope\) \{[\s\S]*storeCloudRequestedScope\(window\.localStorage, transition\.requestedScope\);/,
+  // The loaded-request transition and its scope-persist side effect moved into
+  // the access-request store; the viewer delegates through requestEditAccess.
+  const accessRequestStoreText = readFileSync(
+    new URL("../viewer/cloud-access-request-store.ts", import.meta.url),
+    "utf8",
   );
+  assert.doesNotMatch(sourceText, /projectCloudAccessRequestTransition/);
+  assert.match(accessRequestStoreText, /projectCloudAccessRequestTransition\(\{/);
+  assert.match(
+    accessRequestStoreText,
+    /if \(transition\.requestedScope\) \{[\s\S]*deps\.storeRequestedScope\(transition\.requestedScope\);/,
+  );
+  assert.match(accessRequestStoreText, /storeCloudRequestedScope\(window\.localStorage, scope\);/);
   assert.doesNotMatch(sourceText, /mode === "edit" \? "editor" : NOTEBOOK_CLOUD_DEFAULT_SCOPE/);
   assert.doesNotMatch(sourceText, /className="cloud-scope-toggle-button"/);
   assert.doesNotMatch(cssText, /cloud-scope-toggle-button/);
@@ -706,20 +727,20 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
   assert.match(sourceText, /isRecoverableSocketCloseConsoleMessage/);
 });
 
-test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange", () => {
-  const sourceText = viewerCorpus;
+test("cloud auth store re-establishes and refreshes cookie-backed state after OIDC exchange", () => {
   const routeSourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
   const routeSourceText = readFileSync(routeSourcePath, "utf8");
-  const authSourcePath = new URL("../viewer/use-cloud-auth.ts", import.meta.url);
-  const authSourceText = readFileSync(authSourcePath, "utf8");
+  const storeSourcePath = new URL("../viewer/cloud-auth-store.ts", import.meta.url);
+  const storeSourceText = readFileSync(storeSourcePath, "utf8");
 
+  // The establish-then-refresh handshake lives in the auth store's establish
+  // driver, not a per-view hook: a fresh OIDC token exchanges for an app-session
+  // cookie, then the store re-reads /api/auth/session so the cookie-backed state
+  // is current.
+  assert.match(storeSourceText, /establishCloudAppSession/);
   assert.match(
-    sourceText,
-    /useCloudAppSessionBridge\(\s*authState,\s*appSessionStatus\.session,\s*appSessionStatus\.status === "loading",\s*appSessionStatus\.refreshAppSessionStatus,\s*\)/,
-  );
-  assert.match(
-    authSourceText,
-    /establishCloudAppSession\(authState\)[\s\S]*\.then\(\(\) => \{[\s\S]*onEstablished\?\.\(\)/,
+    storeSourceText,
+    /this\.establishAppSessionOp\(authState\)\s*\.then\(\(\) => \{[\s\S]*this\.refreshAppSessionStatus\(\);/,
   );
   assert.match(
     routeSourceText,
@@ -734,7 +755,7 @@ test("cloud notebook list refresh re-establishes app sessions before listing not
   assert.match(routeSourceText, /import \{ clearCloudAppSession, establishCloudAppSession \}/);
   assert.match(
     routeSourceText,
-    /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*establishCloudAppSession\(authState\)[\s\S]*appSessionStatus\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
+    /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*establishCloudAppSession\(authState\)[\s\S]*cloudAuthStore\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
     "manual notebook-list refresh should re-run the trusted session exchange so pending invites can resolve",
   );
 });
@@ -747,10 +768,7 @@ test("cloud notebook list waits for app-session cookies before catalog fetches",
     sourceText,
     /const \{[\s\S]*canFetchCatalog: canFetchNotebookList,[\s\S]*hasAppSession,[\s\S]*signedIn,[\s\S]*waitingForAppSession,[\s\S]*\} = hostedAuth;/,
   );
-  assert.match(
-    sourceText,
-    /projectHostedCatalogAuthState\(authState,[\s\S]*appSession: appSessionStatus\.session,[\s\S]*appSessionLoading: appSessionStatus\.status === "loading"/,
-  );
+  assert.match(sourceText, /const hostedAuth = useHostedCatalogAuth\(\);/);
   assert.match(
     sourceText,
     /if \(!canFetchNotebookList\) \{[\s\S]*if \(waitingForAppSession\) \{[\s\S]*\{ kind: "loading" \}[\s\S]*return;/,
@@ -789,11 +807,11 @@ test("cloud app-session live sync uses streamed catalog access facts without awa
   assert.match(sourceText, /createCloudNotebookCatalogAccessLoader\(\{/);
   assert.match(sourceText, /loadCatalogAccess: async \(\) => \{/);
   assert.match(sourceText, /config\.catalogEndpoint/);
-  assert.match(sourceText, /catalogAccessFactsRef\.current/);
+  assert.match(sourceText, /cloudCatalogStore\.catalogAccessFactsSnapshot/);
   assert.match(sourceText, /cloudNotebookSyncScopeForCatalogAccess\(\{/);
   assert.match(
     sourceText,
-    /const requestedScope = resolveCloudAppSessionSyncScope\([\s\S]*catalogAccessFactsRef\.current,[\s\S]*selectedInteractionModeRef\.current,[\s\S]*\)/,
+    /const requestedScope = resolveCloudAppSessionSyncScope\([\s\S]*cloudCatalogStore\.catalogAccessFactsSnapshot,[\s\S]*cloudAccessRequestStore\.selectedModeSnapshot,[\s\S]*\)/,
   );
   assert.doesNotMatch(sourceText, /new URL\("api\/n\?limit=100"/);
   assert.doesNotMatch(sourceText, /\.\.\.\(await loadCatalogAccess\(\)\)/);

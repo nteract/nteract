@@ -14,27 +14,15 @@ import { cloudNotebookSignInLabel } from "./cloud-auth-controls";
 import { clearCloudPrototypeDevAuth, prepareCloudOidcViewerLogin } from "./collaborator-auth";
 import { beginOidcLogin } from "./oidc-auth";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
-import {
-  useCloudAppSessionBridge,
-  useCloudAppSessionStatus,
-  useCloudPrototypeAuth,
-} from "./use-cloud-auth";
+import { cloudAuthStore } from "./cloud-auth-store";
+import { useCloudAppSession, useCloudAuthRenewal, useCloudAuthState } from "./use-cloud-auth-store";
 import type { CloudViewerAuthConfig } from "./cloud-viewer-types";
 
 export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const appSessionStatus = useCloudAppSessionStatus(null);
-  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
-    appSessionRefreshFallback: true,
-    appSessionLoading: appSessionStatus.status === "loading",
-    appSession: appSessionStatus.session,
-  });
-  useCloudAppSessionBridge(
-    authState,
-    appSessionStatus.session,
-    appSessionStatus.status === "loading",
-    appSessionStatus.refreshAppSessionStatus,
-  );
+  const appSessionStatus = useCloudAppSession();
+  const authState = useCloudAuthState();
+  const authRenewal = useCloudAuthRenewal();
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [formError, setFormError] = useState<string | null>(null);
   const localDevAuth = authConfig.localDev;
@@ -76,15 +64,15 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
   };
 
   const resetAuth = () => {
-    appSessionStatus.clearAppSessionStatus();
+    cloudAuthStore.clearAppSessionStatus();
     void clearCloudAppSession()
       .catch((error: unknown) => {
         console.warn("[notebook-cloud] app session clear failed", error);
       })
-      .finally(appSessionStatus.refreshAppSessionStatus);
+      .finally(() => cloudAuthStore.refreshAppSessionStatus());
     clearCloudPrototypeDevAuth(window.localStorage);
     setFormError(null);
-    refreshAuthState();
+    cloudAuthStore.refreshAuthState();
   };
 
   const hasExplicitAuth = authState.mode === "oidc";
@@ -157,14 +145,14 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
               <button
                 type="button"
                 onClick={() => {
-                  appSessionStatus.clearAppSessionStatus();
+                  cloudAuthStore.clearAppSessionStatus();
                   void clearCloudAppSession()
                     .catch((error: unknown) => {
                       console.warn("[notebook-cloud] app session clear failed", error);
                     })
-                    .finally(appSessionStatus.refreshAppSessionStatus);
+                    .finally(() => cloudAuthStore.refreshAppSessionStatus());
                   clearCloudPrototypeDevAuth(window.localStorage);
-                  refreshAuthState();
+                  cloudAuthStore.refreshAuthState();
                 }}
               >
                 <LogOut aria-hidden="true" />
