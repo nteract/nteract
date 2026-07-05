@@ -59,6 +59,13 @@ Prefer at most 12 findings.
   equivalent guards.
 - Tests: require focused tests at the changed boundary. Treat deleted tests as
   suspicious unless the behavior was removed and replacement coverage exists.
+- Comment and doc claims: module headers and doc comments state what is true
+  now. Flag past-tense history narration AND speculative future-consumer
+  claims - naming hosts, surfaces, or integrations that do not consume the
+  module. Claims about other subsystems deserve extra suspicion because the
+  diff cannot verify them (example: the MCP surface is Rust by design, so TS
+  store docs must never list it as a consumer). Carried-forward prose in a
+  touched header is in scope, not grandfathered.
 
 ## Finding Contract
 
