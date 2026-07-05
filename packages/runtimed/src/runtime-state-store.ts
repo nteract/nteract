@@ -7,8 +7,11 @@
  * projections and comparators. Hosts (desktop bridge, cloud viewer session)
  * push snapshots with `set()`; consumers subscribe to a projection observable
  * or read the synchronous snapshot. React bindings stay in the apps, so this
- * module has no framework dependency and projections are testable headlessly;
- * any future host (CLI, MCP surface) consumes the same streams.
+ * module has no framework dependency and projections are testable headlessly.
+ * Consumers are the React shells (desktop and cloud viewer, through the shared
+ * observable binding) and runtimed-node; a non-React shell would bind these
+ * same streams directly. The MCP surface is Rust (`runt-mcp`) by design and
+ * does not consume this module.
  *
  * Why projections live here and not in `useMemo` chains: a `useMemo` on the
  * whole `RuntimeState` recomputes (and re-renders its component) on every
