@@ -136,11 +136,15 @@ should not fork cell, output, rail, toolbar, or execution UI.
 
 Use this subsection when editing RxJS or shared-store code such as
 `packages/runtimed/src/sync-engine.ts`,
+`packages/runtimed/src/observable-store.ts`,
+`packages/runtimed/src/poll.ts`,
 `packages/runtimed/src/*store*.ts`,
 `src/components/notebook/state/*`,
 `apps/notebook/src/lib/notebook-sync-store-bridge.ts`,
-`apps/notebook-cloud/viewer/*facts*.ts`, or
-`apps/notebook-cloud/viewer/*store*.ts`.
+`apps/notebook-cloud/viewer/*store*.ts`,
+`apps/notebook-cloud/viewer/*facts*.ts`,
+`apps/notebook-cloud/viewer/use-cloud-*-store.ts`, or
+`apps/notebook-cloud/viewer/browser-signals.ts`.
 
 ### State Boundary
 
@@ -189,7 +193,8 @@ Use this subsection when editing RxJS or shared-store code such as
   ticks and keeps Desktop and Cloud behavior converged.
 - For async materialization or blob/output resolution, preserve ordering with
   `concatMap` or an explicit queue. After every `await`, check that the live
-  handle/session still matches before writing stores.
+  handle/session/auth/endpoint or activation generation still matches before
+  writing stores.
 - Reset paths must invalidate stale async writes, not just clear visible state.
 
 ### Verification

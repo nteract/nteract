@@ -51,6 +51,26 @@ shell. Host-specific auth, ACL, sharing, workstation, routing, and side-effect
 boundaries should not fork common notebook presentation without an explicit
 reason.
 
+## Frontend reactive state and RxJS
+
+For RxJS, shared-store, `useSyncExternalStore`, or WASM-backed projection work,
+start with the `frontend-dev` repo skill and
+`docs/adr/frontend-sync-bridge.md`. This includes
+`packages/runtimed/src/sync-engine.ts`, `packages/runtimed/src/*store*.ts`,
+`packages/runtimed/src/observable-store.ts`, `packages/runtimed/src/poll.ts`,
+`src/components/notebook/state/*`, `apps/notebook/src/lib/notebook-sync-store-bridge.ts`,
+`apps/notebook-cloud/viewer/*store*.ts`,
+`apps/notebook-cloud/viewer/use-cloud-*-store.ts`, and
+`apps/notebook-cloud/viewer/browser-signals.ts`.
+
+Use the durable owner first: Automerge documents, RuntimeStateDoc, CommsDoc,
+CommentsDoc, or host-owned API/session facts. React state is local UI state,
+not a second source of truth. Keep RxJS sources private, expose readonly
+observables or named domain hooks, and test timers/cancellation with virtual
+time. Any async path that writes into a store after `await` must prove the
+current handle/session/auth/endpoint still matches or carry an activation
+generation that invalidates stale completions.
+
 ## MCP servers
 
 Three may be visible. Pick by purpose. Full details in `.claude/rules/mcp-servers.md` (auto-loaded everywhere).
