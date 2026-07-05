@@ -37,6 +37,18 @@ const DEV_USER_STORAGE_KEY = "nteract:notebook-cloud:user";
 const DEV_SCOPE_STORAGE_KEY = "nteract:notebook-cloud:scope";
 const DEV_TOKEN_HEADER = "x-notebook-cloud-dev-token";
 
+// Renewal check. Active only when the dev OIDC issuer is mounted (scripts/dev.mjs
+// default). The issuer path and the storage key mirror src/dev-oidc.ts and
+// viewer/oidc-auth.ts; those files are the source of truth.
+const LOCAL_OIDC_MOUNT_PATH = "/dev/oidc";
+const LOCAL_OIDC_CLIENT_ID = "local-oidc-client";
+const LOCAL_OIDC_SCOPE = "openid email profile offline_access";
+const OIDC_TOKEN_STORAGE_KEY = "nteract:notebook-cloud:oidc-token";
+const RENEWAL_SETTLE_MS = parsePositiveInteger(
+  process.env.NOTEBOOK_CLOUD_PROFILE_RENEWAL_SETTLE_MS,
+  4_000,
+);
+
 const SETTLE_MS = parsePositiveInteger(process.env.NOTEBOOK_CLOUD_PROFILE_SETTLE_MS, 10_000);
 const NOTEBOOK_SETTLE_MS = parsePositiveInteger(
   process.env.NOTEBOOK_CLOUD_PROFILE_NOTEBOOK_SETTLE_MS,
@@ -112,6 +124,8 @@ async function main() {
       ? await profileNotebookReconnect(context, { origin, created })
       : await profileListReconnect(context, { baseUrl });
 
+    const renewal = await profileOidcRenewal(browser, { baseUrl, origin, limitations });
+
     // A ?profile=1 load creates window.__nteractRenderCounts eagerly, so an
     // empty object across every surface means the Profiler mounted but onRender
     // never fired: the standard production react-dom build makes Profiler timing
@@ -135,6 +149,7 @@ async function main() {
       createdNotebookId: created?.notebookId ?? null,
       routes,
       notebook,
+      renewal,
       limitations,
     };
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -435,6 +450,272 @@ function summarizeReconnect({ webSocketsBefore, webSocketsAfter, reloaded }) {
   };
 }
 
+// Renewal-path check for the mounted dev OIDC issuer: prove that rotating the
+// OIDC access token does not churn the live-room WebSocket. Runs in its own
+// browser context so no loopback dev-token is seeded (a dev-token would win over
+// OIDC in the viewer's auth read). It mints a token from the issuer, creates a
+// room owned by the OIDC principal, exchanges the token for an app-session cookie
+// (the credential the live-room socket actually uses), loads the room, then
+// rotates the OIDC token and measures the socket count across the rotation.
+//
+// The rotation is driven here rather than by the viewer's own refresh timer: the
+// notebook route suppresses that timer once an app session is fresh
+// (appSessionRefreshFallback), so this instead calls the real issuer refresh
+// grant and applies the result through a storage event, exercising the real
+// store re-read while keeping the app session that decouples the socket from
+// token rotation.
+async function profileOidcRenewal(browser, { baseUrl, origin, limitations }) {
+  if (!(await localOidcIssuerActive(origin))) {
+    return { active: false, note: "dev OIDC issuer not mounted; renewal check skipped" };
+  }
+
+  let tokenSet;
+  let notebook;
+  try {
+    tokenSet = await mintLocalOidcTokens(origin);
+    notebook = await createOidcNotebook(baseUrl, origin, tokenSet.accessToken);
+  } catch (error) {
+    const note = `local OIDC setup failed (${errorText(error)}); renewal check skipped`;
+    limitations.push(note);
+    return { active: true, ran: false, note };
+  }
+
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  try {
+    const appSession = await establishAppSession(context, baseUrl, origin, tokenSet.accessToken);
+    if (!appSession.ok) {
+      limitations.push(
+        `app-session exchange returned ${appSession.status}; the live-room socket ran without the cookie that keeps it stable across OIDC rotation`,
+      );
+    }
+
+    await context.addInitScript(seedOidcTokenScript, {
+      key: OIDC_TOKEN_STORAGE_KEY,
+      token: oidcTokenState(tokenSet, decodeJwtClaims(tokenSet.accessToken)),
+    });
+
+    const page = await context.newPage();
+    const network = attachNetworkCollectors(page);
+    const viewerUrl = rebaseUrl(notebook.viewerUrl, origin);
+    viewerUrl.searchParams.set("profile", "1");
+    viewerUrl.searchParams.set("mode", "edit");
+
+    const startedAt = Date.now();
+    await page.goto(viewerUrl.href, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+    await page
+      .waitForSelector('[data-testid="notebook-toolbar"], main.nb-app', {
+        timeout: READY_TIMEOUT_MS,
+      })
+      .catch(() => logStderr("renewal: toolbar not seen; collecting anyway"));
+    await page.waitForTimeout(RENEWAL_SETTLE_MS);
+
+    const wsBefore = network.webSockets().length;
+    const storedBefore = await page.evaluate(readStoredOidcAccessToken, OIDC_TOKEN_STORAGE_KEY);
+    const nonce = await page.evaluate(() => {
+      const value = Math.random().toString(36).slice(2);
+      window.__nteractReloadNonce = value;
+      return value;
+    });
+
+    let rotationApplied = false;
+    try {
+      const rotated = await refreshLocalOidcTokens(origin, tokenSet.refreshToken);
+      await page.evaluate(applyRotatedOidcToken, {
+        key: OIDC_TOKEN_STORAGE_KEY,
+        token: oidcTokenState(rotated, decodeJwtClaims(rotated.accessToken)),
+      });
+      rotationApplied = true;
+    } catch (error) {
+      limitations.push(`local OIDC refresh grant failed (${errorText(error)})`);
+    }
+
+    // The store also re-reads auth on focus/visibility; nudge both so a rotation
+    // is observed the way a real tab-return would trigger it.
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("focus"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.waitForTimeout(RENEWAL_SETTLE_MS);
+
+    const wsAfter = network.webSockets().length;
+    const storedAfter = await page.evaluate(readStoredOidcAccessToken, OIDC_TOKEN_STORAGE_KEY);
+    const nonceSurvived = await page.evaluate(
+      (value) => window.__nteractReloadNonce === value,
+      nonce,
+    );
+    await page.close();
+
+    const tokenRotated = rotationApplied && storedAfter !== null && storedAfter !== storedBefore;
+    return {
+      active: true,
+      ran: true,
+      notebookId: notebook.notebookId,
+      appSession: appSession.ok,
+      tokenRotated,
+      wallClockMs: Date.now() - startedAt,
+      webSockets: network.webSockets(),
+      reconnect: summarizeReconnect({
+        webSocketsBefore: wsBefore,
+        webSocketsAfter: wsAfter,
+        reloaded: !nonceSurvived,
+      }),
+    };
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+async function localOidcIssuerActive(origin) {
+  const url = new URL(`${LOCAL_OIDC_MOUNT_PATH}/.well-known/openid-configuration`, origin);
+  try {
+    const response = await fetch(url.href, { signal: AbortSignal.timeout(3_000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function mintLocalOidcTokens(origin) {
+  const authorizeUrl = new URL(`${LOCAL_OIDC_MOUNT_PATH}/authorize`, origin);
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("client_id", LOCAL_OIDC_CLIENT_ID);
+  authorizeUrl.searchParams.set("redirect_uri", new URL("/oidc", origin).href);
+  authorizeUrl.searchParams.set("scope", LOCAL_OIDC_SCOPE);
+  authorizeUrl.searchParams.set("state", Math.random().toString(36).slice(2));
+
+  const authorizeResponse = await fetch(authorizeUrl.href, { redirect: "manual" });
+  const location = authorizeResponse.headers.get("location");
+  if (!location) {
+    throw new Error(`authorize did not redirect (status ${authorizeResponse.status})`);
+  }
+  const code = new URL(location).searchParams.get("code");
+  if (!code) {
+    throw new Error("authorize redirect is missing a code");
+  }
+  return exchangeLocalOidcToken(origin, {
+    grant_type: "authorization_code",
+    code,
+    client_id: LOCAL_OIDC_CLIENT_ID,
+    redirect_uri: new URL("/oidc", origin).href,
+  });
+}
+
+function refreshLocalOidcTokens(origin, refreshToken) {
+  return exchangeLocalOidcToken(origin, {
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: LOCAL_OIDC_CLIENT_ID,
+    scope: LOCAL_OIDC_SCOPE,
+  });
+}
+
+async function exchangeLocalOidcToken(origin, form) {
+  const response = await fetch(new URL(`${LOCAL_OIDC_MOUNT_PATH}/token`, origin).href, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(form).toString(),
+  });
+  if (!response.ok) {
+    throw new Error(`token endpoint returned ${response.status}`);
+  }
+  const body = await response.json();
+  if (!body.access_token || !body.refresh_token) {
+    throw new Error("token response missing access_token or refresh_token");
+  }
+  return {
+    accessToken: body.access_token,
+    refreshToken: body.refresh_token,
+    expiresIn: Number.isFinite(body.expires_in) ? body.expires_in : 3600,
+  };
+}
+
+async function createOidcNotebook(baseUrl, origin, accessToken) {
+  const response = await fetch(new URL("/api/n", baseUrl).href, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "X-Scope": "owner",
+      "Content-Type": "application/json",
+      Origin: origin,
+    },
+    body: JSON.stringify({ title: "profile-local renewal probe" }),
+  });
+  if (response.status !== 201) {
+    throw new Error(`create notebook returned ${response.status}: ${await response.text()}`);
+  }
+  const body = await response.json();
+  if (!body.notebook_id || !body.viewer_url) {
+    throw new Error("create notebook response missing notebook_id or viewer_url");
+  }
+  return { notebookId: body.notebook_id, viewerUrl: body.viewer_url };
+}
+
+async function establishAppSession(context, baseUrl, origin, accessToken) {
+  const response = await context.request.post(new URL("/api/auth/session", baseUrl).href, {
+    headers: { Authorization: `Bearer ${accessToken}`, Origin: origin },
+  });
+  return { ok: response.ok(), status: response.status() };
+}
+
+function oidcTokenState(tokenSet, claims) {
+  return {
+    accessToken: tokenSet.accessToken,
+    refreshToken: tokenSet.refreshToken,
+    expiresAt: Math.floor(Date.now() / 1000) + tokenSet.expiresIn,
+    claims,
+  };
+}
+
+function decodeJwtClaims(jwt) {
+  const payload = jwt.split(".")[1];
+  if (!payload) {
+    throw new Error("access token is not a JWT");
+  }
+  const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  const claims = { sub: parsed.sub };
+  for (const field of ["email", "email_verified", "given_name", "name"]) {
+    if (parsed[field] !== undefined) {
+      claims[field] = parsed[field];
+    }
+  }
+  return claims;
+}
+
+// Runs in the page before the viewer boots, seeding the OIDC session the viewer
+// reads. Self-contained: page functions cannot close over harness scope.
+function seedOidcTokenScript(seed) {
+  try {
+    localStorage.setItem(seed.key, JSON.stringify(seed.token));
+  } catch {
+    // Storage may be unavailable on error pages; the session simply stays unset.
+  }
+}
+
+// Runs in the page. Replaces the stored OIDC session and dispatches the storage
+// event the auth store listens for, so a same-tab rotation is observed the way a
+// cross-tab token write would be.
+function applyRotatedOidcToken(payload) {
+  const oldValue = localStorage.getItem(payload.key);
+  const newValue = JSON.stringify(payload.token);
+  localStorage.setItem(payload.key, newValue);
+  window.dispatchEvent(
+    new StorageEvent("storage", {
+      key: payload.key,
+      oldValue,
+      newValue,
+      storageArea: localStorage,
+    }),
+  );
+}
+
+function readStoredOidcAccessToken(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key) ?? "{}").accessToken ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function runInteractionProbe(page, candidates) {
   for (const candidate of candidates) {
     const locator = page.locator(candidate.selector).first();
@@ -711,6 +992,24 @@ function writeHumanTable(report) {
     if (nb.marks.length) {
       lines.push(
         `  marks: ${nb.marks.map((mark) => `${mark.name}@${mark.startTimeMs}`).join(", ")}`,
+      );
+    }
+  }
+  const renewal = report.renewal;
+  if (renewal) {
+    lines.push("-".repeat(88));
+    if (!renewal.active) {
+      lines.push("renewal: dev OIDC issuer not mounted; skipped");
+    } else if (!renewal.ran) {
+      lines.push(`renewal: skipped (${renewal.note})`);
+    } else {
+      lines.push(
+        `renewal (oidc) appSession=${renewal.appSession} tokenRotated=${renewal.tokenRotated}`,
+      );
+      lines.push(
+        `  ws ${renewal.reconnect.webSocketsBefore} -> ${renewal.reconnect.webSocketsAfter}` +
+          `  newWs=${renewal.reconnect.openedNewWebSocket}  reloaded=${renewal.reconnect.reloaded}` +
+          `  stable=${renewal.reconnect.stable}`,
       );
     }
   }
