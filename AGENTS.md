@@ -69,7 +69,7 @@ not a second source of truth. Keep RxJS sources private, expose readonly
 observables or named domain hooks, and test timers/cancellation with virtual
 time. Any async path that writes into a store after `await` must prove the
 current handle/session/auth/endpoint still matches or carry an activation
-generation that invalidates stale completions.
+epoch that invalidates stale completions.
 
 ## MCP servers
 

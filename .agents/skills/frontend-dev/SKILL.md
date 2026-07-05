@@ -193,7 +193,7 @@ Use this subsection when editing RxJS or shared-store code such as
   ticks and keeps Desktop and Cloud behavior converged.
 - For async materialization or blob/output resolution, preserve ordering with
   `concatMap` or an explicit queue. After every `await`, check that the live
-  handle/session/auth/endpoint or activation generation still matches before
+  handle/session/auth/endpoint or activation epoch still matches before
   writing stores.
 - Reset paths must invalidate stale async writes, not just clear visible state.
 
