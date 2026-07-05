@@ -1,21 +1,24 @@
 // Dev-only mount for the @nteract/local-oidc issuer.
 //
-// The worker serves the issuer under `/dev/oidc/*` only when
-// `NOTEBOOK_CLOUD_LOCAL_OIDC === "true"`. When the flag is off, the handler
-// returns null and the request falls through to the ordinary 404, so production
-// (which never sets the flag) exposes nothing new. Turning the flag on stands up
-// a full OIDC provider that auto-grants a fixed dev user, letting a local cloud
-// shell run the real OIDC verification and renewal paths without a live IdP.
+// The worker serves the issuer under the fixed `/dev/oidc/*` mount only when
+// `NOTEBOOK_CLOUD_LOCAL_OIDC === "true"`. When the flag is off, or when the
+// request path is outside that fixed mount, the handler returns null and the
+// request falls through to the ordinary 404 or real route handler. Turning the
+// flag on stands up a full OIDC provider that auto-grants a fixed dev user,
+// letting a local cloud shell run the real OIDC verification and renewal paths
+// without a live IdP.
 //
 // The issuer is built lazily on first request and cached for the worker's boot,
 // keyed by its resolved issuer URL. That URL is NOTEBOOK_CLOUD_OIDC_ISSUER when
 // set, so the token `iss` claim is exactly what the worker's OIDC verifier and
 // the viewer's auth config point at; it falls back to the request origin plus
-// the mount path when unconfigured. The var is preferred rather than the raw
-// request origin because wrangler dev serves the worker under its configured
-// route host, so the request origin is not the loopback origin the browser and
-// verifier use. Its RS256 key is ephemeral (see packages/local-oidc), so a
-// worker restart rotates the key and invalidates every previously issued token.
+// the mount path when unconfigured. Requests are still accepted only at the
+// fixed mount, then mapped to the configured issuer URL path before they reach
+// the issuer. The var is preferred rather than the raw request origin because
+// wrangler dev serves the worker under its configured route host, so the request
+// origin is not the loopback origin the browser and verifier use. Its RS256 key
+// is ephemeral (see packages/local-oidc), so a worker restart rotates the key
+// and invalidates every previously issued token.
 
 import { createLocalOidcIssuer, type LocalOidcIssuer } from "@nteract/local-oidc";
 import type { Env } from "./cloudflare-types.ts";
@@ -47,13 +50,22 @@ export function handleLocalOidcRequest(request: Request, env: Env): Promise<Resp
   if (!localOidcEnabled(env)) {
     return Promise.resolve(null);
   }
-  return localOidcIssuer(env, request).handle(request);
+  const url = new URL(request.url);
+  if (!isLocalOidcMountPath(url.pathname)) {
+    return Promise.resolve(null);
+  }
+  const issuerUrl = localOidcIssuerUrl(env, request);
+  return localOidcIssuer(env, issuerUrl).handle(requestForIssuerPath(request, url, issuerUrl));
 }
 
-function localOidcIssuer(env: Env, request: Request): LocalOidcIssuer {
-  const issuerUrl =
+function localOidcIssuerUrl(env: Env, request: Request): string {
+  return (
     env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim() ||
-    `${new URL(request.url).origin}${NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH}`;
+    `${new URL(request.url).origin}${NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH}`
+  );
+}
+
+function localOidcIssuer(env: Env, issuerUrl: string): LocalOidcIssuer {
   const cached = issuersByUrl.get(issuerUrl);
   if (cached) {
     return cached;
@@ -66,6 +78,28 @@ function localOidcIssuer(env: Env, request: Request): LocalOidcIssuer {
   });
   issuersByUrl.set(issuerUrl, issuer);
   return issuer;
+}
+
+function isLocalOidcMountPath(pathname: string): boolean {
+  return (
+    pathname === NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH ||
+    pathname.startsWith(`${NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH}/`)
+  );
+}
+
+// The issuer routes by the pathname of its configured issuer URL, but requests
+// are only ever accepted at the fixed mount; translate the mount-relative path
+// onto the issuer's path so both agree. Identity under the default config,
+// where the issuer URL's path IS the mount path.
+function requestForIssuerPath(request: Request, url: URL, issuerUrl: string): Request {
+  const rewritten = new URL(url);
+  const issuerPath = new URL(issuerUrl).pathname.replace(/\/+$/, "");
+  const suffix =
+    url.pathname === NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH
+      ? ""
+      : url.pathname.slice(NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH.length);
+  rewritten.pathname = `${issuerPath}${suffix}` || "/";
+  return new Request(rewritten, request);
 }
 
 function localOidcTtlSeconds(env: Env): number {

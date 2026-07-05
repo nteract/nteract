@@ -12,6 +12,11 @@ production host must route auth to a real IdP.
 The signing key is ephemeral: it is generated per issuer instance (per boot) and
 never persisted, so every restart rotates the keys.
 
+Authorization codes are opaque, one-time, in-memory grants bound to the
+authorize request's `redirect_uri`. When a request includes PKCE, only S256 is
+accepted and verified at token exchange; requests without PKCE remain supported
+for local dev harnesses.
+
 ## Usage
 
 ```ts

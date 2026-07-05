@@ -44,11 +44,17 @@ function tokenRequest(fields: Record<string, string>): Request {
   });
 }
 
-async function authorizeCode(issuer: LocalOidcIssuer): Promise<string> {
+async function authorizeCode(
+  issuer: LocalOidcIssuer,
+  fields: Record<string, string> = {},
+): Promise<string> {
   const url = new URL(`${ISSUER_URL}/authorize`);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", CLIENT_ID);
   url.searchParams.set("redirect_uri", REDIRECT_URI);
+  for (const [key, value] of Object.entries(fields)) {
+    url.searchParams.set(key, value);
+  }
   const response = expectResponse(await issuer.handle(new Request(url)));
   const location = new URL(response.headers.get("location") ?? "");
   const code = location.searchParams.get("code");
@@ -58,19 +64,40 @@ async function authorizeCode(issuer: LocalOidcIssuer): Promise<string> {
   return code;
 }
 
-async function exchange(issuer: LocalOidcIssuer): Promise<Record<string, string>> {
-  const code = await authorizeCode(issuer);
-  const response = expectResponse(
+async function exchangeCode(
+  issuer: LocalOidcIssuer,
+  code: string,
+  fields: Record<string, string> = {},
+): Promise<Response> {
+  return expectResponse(
     await issuer.handle(
       tokenRequest({
         grant_type: "authorization_code",
         code,
         client_id: CLIENT_ID,
         redirect_uri: REDIRECT_URI,
+        ...fields,
       }),
     ),
   );
+}
+
+async function exchange(issuer: LocalOidcIssuer): Promise<Record<string, string>> {
+  const code = await authorizeCode(issuer);
+  const response = await exchangeCode(issuer, code);
   return readJson(response);
+}
+
+async function expectOAuthError(response: Response, error: string): Promise<void> {
+  expect(response.status).toBe(400);
+  const body = await readJson(response);
+  expect(body.error).toBe(error);
+}
+
+async function pkceChallenge(verifier: string): Promise<string> {
+  const bytes = new TextEncoder().encode(verifier);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return jose.base64url.encode(new Uint8Array(digest));
 }
 
 describe("createLocalOidcIssuer", () => {
@@ -88,6 +115,7 @@ describe("createLocalOidcIssuer", () => {
     expect(doc.userinfo_endpoint).toBe(`${ISSUER_URL}/userinfo`);
     expect(doc.response_types_supported).toContain("code");
     expect(doc.id_token_signing_alg_values_supported).toContain("RS256");
+    expect(doc.code_challenge_methods_supported).toEqual(["S256"]);
   });
 
   it("returns null for paths outside the issuer mount", async () => {
@@ -158,6 +186,111 @@ describe("createLocalOidcIssuer", () => {
     expect(payload.sub).toBe("dev@localhost");
     expect(payload.given_name).toBe("Local");
     expect(payload.name).toBe("Local Developer");
+  });
+
+  it("rejects authorization code reuse", async () => {
+    const issuer = makeIssuer();
+    const code = await authorizeCode(issuer);
+    const firstResponse = await exchangeCode(issuer, code);
+    expect(firstResponse.status).toBe(200);
+
+    const reusedResponse = await exchangeCode(issuer, code);
+    await expectOAuthError(reusedResponse, "invalid_grant");
+  });
+
+  it("rejects an unknown authorization code", async () => {
+    const issuer = makeIssuer();
+    const response = await exchangeCode(issuer, "garbage-code");
+    await expectOAuthError(response, "invalid_grant");
+  });
+
+  it("rejects an expired authorization code", async () => {
+    const issuer = makeIssuer({ authorizationCodeTtlSeconds: 0 });
+    const code = await authorizeCode(issuer);
+    const response = await exchangeCode(issuer, code);
+    await expectOAuthError(response, "invalid_grant");
+  });
+
+  it("requires client_id for authorization code exchange", async () => {
+    const issuer = makeIssuer();
+    const code = await authorizeCode(issuer);
+    const response = expectResponse(
+      await issuer.handle(
+        tokenRequest({
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: REDIRECT_URI,
+        }),
+      ),
+    );
+    await expectOAuthError(response, "invalid_client");
+  });
+
+  it("rejects a redirect_uri that differs from the authorize request", async () => {
+    const issuer = makeIssuer();
+    const code = await authorizeCode(issuer);
+    const wrongRedirectResponse = await exchangeCode(issuer, code, {
+      redirect_uri: "http://localhost:5173/other-oidc",
+    });
+    await expectOAuthError(wrongRedirectResponse, "invalid_grant");
+
+    const consumedResponse = await exchangeCode(issuer, code);
+    await expectOAuthError(consumedResponse, "invalid_grant");
+  });
+
+  it("verifies an S256 PKCE authorization code exchange", async () => {
+    const issuer = makeIssuer();
+    const verifier = "correct-horse-battery-staple";
+    const code = await authorizeCode(issuer, {
+      code_challenge: await pkceChallenge(verifier),
+      code_challenge_method: "S256",
+    });
+    const response = await exchangeCode(issuer, code, { code_verifier: verifier });
+    expect(response.status).toBe(200);
+    const tokens = await readJson(response);
+    expect(typeof tokens.access_token).toBe("string");
+  });
+
+  it("rejects an incorrect S256 PKCE verifier", async () => {
+    const issuer = makeIssuer();
+    const code = await authorizeCode(issuer, {
+      code_challenge: await pkceChallenge("expected-verifier"),
+      code_challenge_method: "S256",
+    });
+    const response = await exchangeCode(issuer, code, { code_verifier: "wrong-verifier" });
+    await expectOAuthError(response, "invalid_grant");
+  });
+
+  it("requires a verifier when the authorization code stored a PKCE challenge", async () => {
+    const issuer = makeIssuer();
+    const code = await authorizeCode(issuer, {
+      code_challenge: await pkceChallenge("expected-verifier"),
+      code_challenge_method: "S256",
+    });
+    const response = await exchangeCode(issuer, code);
+    await expectOAuthError(response, "invalid_grant");
+  });
+
+  it("rejects plain PKCE challenges at authorize", async () => {
+    const issuer = makeIssuer();
+    const url = new URL(`${ISSUER_URL}/authorize`);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("client_id", CLIENT_ID);
+    url.searchParams.set("redirect_uri", REDIRECT_URI);
+    url.searchParams.set("code_challenge", "plain-verifier");
+    url.searchParams.set("code_challenge_method", "plain");
+
+    const response = expectResponse(await issuer.handle(new Request(url)));
+    await expectOAuthError(response, "invalid_request");
+  });
+
+  it("keeps the no-PKCE authorization code flow working", async () => {
+    const issuer = makeIssuer();
+    const code = await authorizeCode(issuer);
+    const response = await exchangeCode(issuer, code);
+    expect(response.status).toBe(200);
+    const tokens = await readJson(response);
+    expect(typeof tokens.access_token).toBe("string");
   });
 
   it("returns profile claims from userinfo for a valid access token", async () => {

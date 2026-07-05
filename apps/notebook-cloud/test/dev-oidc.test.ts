@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.ts";
 import { authenticateRequestWithProviders } from "../src/identity.ts";
+import { handleLocalOidcRequest } from "../src/dev-oidc.ts";
 import type { Env, ExecutionContext } from "../src/cloudflare-types.ts";
 import { createLocalOidcIssuer, type LocalOidcIssuer } from "@nteract/local-oidc";
 
@@ -85,6 +86,67 @@ describe("dev OIDC mount gate", () => {
     assert.equal(response.status, 200);
     const doc = (await response.json()) as Record<string, unknown>;
     assert.equal(doc.issuer, "http://127.0.0.1:45999/dev/oidc");
+  });
+
+  it("does not let a configured issuer path shadow real auth routes", async () => {
+    const env = gateEnv({
+      NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
+      NOTEBOOK_CLOUD_OIDC_ISSUER: "http://127.0.0.1:9797/api/auth",
+    });
+
+    const shadowedAuthResponse = await handleLocalOidcRequest(
+      new Request("http://127.0.0.1:9797/api/auth/session"),
+      env,
+    );
+    assert.equal(shadowedAuthResponse, null);
+
+    const discoveryResponse = await handleLocalOidcRequest(
+      new Request("http://127.0.0.1:9797/dev/oidc/.well-known/openid-configuration"),
+      env,
+    );
+    assert.ok(discoveryResponse);
+    assert.equal(discoveryResponse.status, 200);
+    const doc = (await discoveryResponse.json()) as Record<string, unknown>;
+    assert.equal(doc.issuer, "http://127.0.0.1:9797/api/auth");
+  });
+
+  it("completes a code exchange through the fixed mount when the issuer path diverges", async () => {
+    // The remap hands the issuer a rewritten Request built from the original;
+    // this pins that a POST body survives that construction, and that the mount
+    // keeps working when NOTEBOOK_CLOUD_OIDC_ISSUER's path is not /dev/oidc.
+    const origin = "http://127.0.0.1:9798";
+    const env = gateEnv({
+      NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
+      NOTEBOOK_CLOUD_OIDC_ISSUER: `${origin}/custom-issuer`,
+    });
+    const redirectUri = `${origin}/oidc`;
+
+    const authorizeUrl = new URL(`${origin}/dev/oidc/authorize`);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", CLIENT_ID);
+    authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+    const authorizeResponse = await handleLocalOidcRequest(new Request(authorizeUrl), env);
+    assert.ok(authorizeResponse, "authorize should be served at the fixed mount");
+    const code = new URL(authorizeResponse.headers.get("location") ?? "").searchParams.get("code");
+    assert.ok(code, "authorize should return a code");
+
+    const tokenResponse = await handleLocalOidcRequest(
+      new Request(`${origin}/dev/oidc/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          client_id: CLIENT_ID,
+          redirect_uri: redirectUri,
+        }).toString(),
+      }),
+      env,
+    );
+    assert.ok(tokenResponse, "token exchange should be served at the fixed mount");
+    assert.equal(tokenResponse.status, 200);
+    const tokens = (await tokenResponse.json()) as { access_token?: string };
+    assert.ok(tokens.access_token, "token exchange should return an access token");
   });
 });
 

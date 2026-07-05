@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 
 import {
@@ -13,8 +14,8 @@ import {
 // `--no-local-oidc` is ours (Wrangler would reject the unknown flag). `--ip` is
 // removed deliberately: the dev worker binds the derived loopback host and
 // offers no host override, because the mounted dev OIDC issuer mints real
-// tokens and the app-session secret is fixed. Binding off-box would turn a
-// localhost convenience into a reachable auth bypass.
+// tokens and app-session cookies. Binding off-box would turn a localhost
+// convenience into a reachable auth bypass.
 const rawExtraArgs = process.argv.slice(2);
 const localOidcEnabled = !rawExtraArgs.includes("--no-local-oidc");
 const extraArgs = stripDevOnlyArgs(rawExtraArgs);
@@ -54,10 +55,10 @@ if (localOidcEnabled) {
     NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: "user:local",
     NOTEBOOK_CLOUD_OIDC_PROVIDER_LABEL: "Local dev OIDC",
     NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: `${localUrl}/oidc`,
-    // App sessions decouple the live-room WebSocket from OIDC token rotation, so
-    // seed a fixed dev secret to exercise that path. Only the local dev worker
-    // sees it; production supplies its own secret binding.
-    NOTEBOOK_CLOUD_APP_SESSION_SECRET: "notebook-cloud-local-dev-app-session-secret",
+    // App sessions use a per-process random dev secret. A Wrangler restart
+    // invalidates cookies and forces a fresh sign-in, which is acceptable in
+    // local dev because there is no durable session to protect.
+    NOTEBOOK_CLOUD_APP_SESSION_SECRET: randomBytes(32).toString("hex"),
   };
   for (const [name, value] of Object.entries(defaultLocalOidcVars)) {
     if (!hasVar(extraArgs, name)) {

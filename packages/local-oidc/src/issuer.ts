@@ -47,6 +47,11 @@ export interface LocalOidcOptions {
   defaultTokenTtlSeconds?: number;
   /** Refresh token lifetime in seconds. */
   refreshTokenTtlSeconds?: number;
+  /**
+   * Authorization code lifetime in seconds. Codes are one-time, in-memory
+   * grants. Defaults to 60 seconds.
+   */
+  authorizationCodeTtlSeconds?: number;
   /** Dev users the authorize endpoint may grant. The first entry is default. */
   users?: LocalOidcUser | LocalOidcUser[];
   /**
@@ -86,6 +91,7 @@ export interface LocalOidcIssuer {
 const DEFAULT_CLIENT_ID = "local-oidc-client";
 const DEFAULT_ACCESS_TTL_SECONDS = 3600;
 const DEFAULT_REFRESH_TTL_SECONDS = 86_400;
+const DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS = 60;
 const SIGNING_ALG = "RS256";
 const SCOPE = "openid profile email";
 
@@ -102,6 +108,13 @@ interface SigningKey {
   verify: ReturnType<typeof jose.createLocalJWKSet>;
 }
 
+interface AuthorizationCodeEntry {
+  user: LocalOidcUser;
+  redirectUri: string;
+  codeChallenge: string | null;
+  expiresAt: number;
+}
+
 export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssuer {
   const issuer = normalizeIssuerUrl(options.issuerUrl);
   const basePath = new URL(issuer).pathname.replace(/\/+$/, "");
@@ -109,8 +122,14 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
   const audience = options.audience ?? clientId;
   const accessTtl = options.defaultTokenTtlSeconds ?? DEFAULT_ACCESS_TTL_SECONDS;
   const refreshTtl = options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TTL_SECONDS;
+  const authorizationCodeTtl =
+    options.authorizationCodeTtlSeconds ?? DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS;
   const users = resolveUsers(options.users);
   const allowRedirectUri = options.allowRedirectUri ?? isLoopbackRedirectUri;
+
+  // Authorization codes live in per-isolate memory; this is valid for single-
+  // isolate wrangler dev, and this issuer is dev-only and never deployed.
+  const authorizationCodes = new Map<string, AuthorizationCodeEntry>();
 
   // Key generation starts at construction; every method awaits this promise. One
   // issuer instance carries exactly one keypair for its whole lifetime.
@@ -168,11 +187,22 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
     if (!allowRedirectUri(redirectUri)) {
       return errorResponse("invalid_request", "redirect_uri is not allowed", 400);
     }
+    const codeChallenge = params.get("code_challenge");
+    if (codeChallenge !== null) {
+      if (codeChallenge.length === 0) {
+        return errorResponse("invalid_request", "code_challenge is empty", 400);
+      }
+      if (params.get("code_challenge_method") !== "S256") {
+        return errorResponse("invalid_request", "only S256 PKCE is supported", 400);
+      }
+    } else if (params.has("code_challenge_method")) {
+      return errorResponse("invalid_request", "code_challenge_method requires code_challenge", 400);
+    }
 
     // Auto-grant: no login challenge, just hand back a code for the dev user.
     const user = selectUser(users, params.get("login_hint"));
     const location = new URL(redirectUri);
-    location.searchParams.set("code", encodeCode(user));
+    location.searchParams.set("code", issueAuthorizationCode(user, redirectUri, codeChallenge));
     const state = params.get("state");
     if (state !== null) {
       location.searchParams.set("state", state);
@@ -200,21 +230,35 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
     const grantType = stringField(form, "grant_type");
 
     if (grantType === "authorization_code") {
+      if (!requestedClientId) {
+        return errorResponse("invalid_client", "missing client_id", 400);
+      }
       const code = stringField(form, "code");
       if (!code) {
         return errorResponse("invalid_request", "missing code", 400);
       }
       const redirectUri = stringField(form, "redirect_uri");
-      if (redirectUri !== undefined && !allowRedirectUri(redirectUri)) {
-        return errorResponse("invalid_grant", "redirect_uri is not allowed", 400);
-      }
-      let user: LocalOidcUser;
-      try {
-        user = decodeCode(code);
-      } catch {
+      const entry = takeAuthorizationCode(code);
+      if (!entry) {
         return errorResponse("invalid_grant", "authorization code is invalid", 400);
       }
-      return jsonResponse(await issueTokenSet(user, key));
+      if (!redirectUri || redirectUri !== entry.redirectUri) {
+        return errorResponse(
+          "invalid_grant",
+          "redirect_uri does not match authorization code",
+          400,
+        );
+      }
+      if (entry.codeChallenge !== null) {
+        const verifier = stringField(form, "code_verifier");
+        if (!verifier) {
+          return errorResponse("invalid_grant", "missing code_verifier", 400);
+        }
+        if ((await s256CodeChallenge(verifier)) !== entry.codeChallenge) {
+          return errorResponse("invalid_grant", "code_verifier does not match", 400);
+        }
+      }
+      return jsonResponse(await issueTokenSet(entry.user, key));
     }
 
     if (grantType === "refresh_token") {
@@ -279,7 +323,7 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
       subject_types_supported: ["public"],
       id_token_signing_alg_values_supported: [SIGNING_ALG],
       token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
-      code_challenge_methods_supported: ["S256", "plain"],
+      code_challenge_methods_supported: ["S256"],
     };
   }
 
@@ -330,6 +374,46 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
         return handleEndSession(url);
       default:
         return errorResponse("not_found", "unknown issuer endpoint", 404);
+    }
+  }
+
+  function issueAuthorizationCode(
+    user: LocalOidcUser,
+    redirectUri: string,
+    codeChallenge: string | null,
+  ): string {
+    const now = Date.now();
+    pruneExpiredAuthorizationCodes(now);
+    let code: string;
+    do {
+      code = randomAuthorizationCode();
+    } while (authorizationCodes.has(code));
+    authorizationCodes.set(code, {
+      user,
+      redirectUri,
+      codeChallenge,
+      expiresAt: now + authorizationCodeTtl * 1000,
+    });
+    return code;
+  }
+
+  function takeAuthorizationCode(code: string): AuthorizationCodeEntry | undefined {
+    const entry = authorizationCodes.get(code);
+    if (!entry) {
+      return undefined;
+    }
+    authorizationCodes.delete(code);
+    if (Date.now() >= entry.expiresAt) {
+      return undefined;
+    }
+    return entry;
+  }
+
+  function pruneExpiredAuthorizationCodes(now: number): void {
+    for (const [code, entry] of authorizationCodes) {
+      if (now >= entry.expiresAt) {
+        authorizationCodes.delete(code);
+      }
     }
   }
 
@@ -417,31 +501,16 @@ function userFromClaims(payload: JWTPayload): LocalOidcUser {
   });
 }
 
-function encodeCode(user: LocalOidcUser): string {
-  return jose.base64url.encode(
-    JSON.stringify({
-      sub: user.sub,
-      email: user.email,
-      givenName: user.givenName,
-      familyName: user.familyName,
-      name: user.name,
-    }),
-  );
+function randomAuthorizationCode(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return jose.base64url.encode(bytes);
 }
 
-function decodeCode(code: string): LocalOidcUser {
-  const json = new TextDecoder().decode(jose.base64url.decode(code));
-  const parsed = JSON.parse(json) as Partial<LocalOidcUser>;
-  if (!parsed || typeof parsed.email !== "string" || !parsed.email) {
-    throw new Error("authorization code is missing an email");
-  }
-  return normalizeUser({
-    email: parsed.email,
-    sub: typeof parsed.sub === "string" ? parsed.sub : undefined,
-    givenName: typeof parsed.givenName === "string" ? parsed.givenName : undefined,
-    familyName: typeof parsed.familyName === "string" ? parsed.familyName : undefined,
-    name: typeof parsed.name === "string" ? parsed.name : undefined,
-  });
+async function s256CodeChallenge(verifier: string): Promise<string> {
+  const bytes = new TextEncoder().encode(verifier);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return jose.base64url.encode(new Uint8Array(digest));
 }
 
 function stringField(form: FormData, key: string): string | undefined {
