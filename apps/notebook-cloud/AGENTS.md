@@ -72,6 +72,11 @@ stores, not from using document boundaries as a rerender workaround.
 
 ### Viewer async state
 
+Read the `frontend-dev` skill's "Reactive State and WASM Projection Work"
+section and `docs/adr/frontend-sync-bridge.md` Decision 8 before editing
+`viewer/*store*.ts`, `viewer/use-cloud-*-store.ts`,
+`viewer/browser-signals.ts`, or cloud viewer code that touches RxJS.
+
 - The four source stores in `viewer/` hold cloud host policy per
   `docs/adr/frontend-sync-bridge.md` Decision 8: `cloud-access-request-store.ts`,
   `cloud-catalog-store.ts`, and `cloud-workstations-store.ts` extend
