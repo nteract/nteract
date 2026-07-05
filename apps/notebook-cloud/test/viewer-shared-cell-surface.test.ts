@@ -357,8 +357,13 @@ test("cloud workstation registry state lives in the workstations store", () => {
 
   // The manager hook delegates the registry poll, mutations, and pairing to the
   // store; it only shapes the presentational workstation surface for the rail.
+  // The store instance is resolved from context (singleton by default) so an
+  // override consumes a coherent store for both reads and action dispatch.
   assert.match(hookSourceText, /useCloudWorkstationsController/);
-  assert.match(hookSourceText, /cloudWorkstationsStore/);
+  assert.match(hookSourceText, /const \{ workstations \} = useCloudStores\(\)/);
+  assert.match(hookSourceText, /workstations\.attach\(/);
+  assert.match(hookSourceText, /workstations\.setDefault\(/);
+  assert.doesNotMatch(hookSourceText, /cloudWorkstationsStore/);
   assert.match(hookSourceText, /projectNotebookWorkstationSurface/);
   assert.doesNotMatch(hookSourceText, /fetchCloudWorkstations/);
   assert.doesNotMatch(hookSourceText, /setCloudDefaultWorkstation/);

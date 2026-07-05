@@ -263,6 +263,23 @@ module-level `BehaviorSubject` seeded synchronously from
 `cloudPrototypeAuthFromWindow()`, activated once at viewer boot (skipped on
 the OIDC callback route, which consumes no store hooks).
 
+### Singletons for lifetime, context for consumption
+
+The module singletons are the boot and instant-paint reality: the drivers
+activate them once at viewer boot, and `instant-paint.ts` reads `authSnapshot`
+before React mounts. Neither can go through a React provider, so the singletons
+stay. What the hook layer adds is a consumption override, not an activation
+override: `cloud-stores-context.ts` creates a context whose default value is the
+singleton bundle, and every domain hook reads its store from `useCloudStores()`.
+No provider is mounted on any production path, so production resolves to the
+singletons and behavior is byte-identical. A test, an Elements fixture, or a
+future embedded viewer mounts `CloudStoresProvider` with its own instances and
+the subtree's hooks read those instead; that override's owner activates its own
+instances, because the provider swaps which stores are consumed, not which
+stores are driven. Context is a consumption override with a singleton default,
+never a requirement: the default keeps `useCloudStores()` provider-free, and the
+singleton keeps owning boot and instant paint.
+
 ### The convention layer stays a convention layer
 
 The generic surface is deliberately small: `ObservableStore`, `select`,

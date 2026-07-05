@@ -19,10 +19,8 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { BehaviorSubject } from "rxjs";
 import { useObservableProjection } from "@/components/notebook/state/observable-binding";
-import {
-  cloudAccessRequestStore,
-  type CloudAccessRequestInputs,
-} from "./cloud-access-request-store";
+import { useCloudStores } from "./cloud-stores-context";
+import type { CloudAccessRequestInputs } from "./cloud-access-request-store";
 import type { CloudAccessFactsProjection, CloudAccessRequestFacts } from "./cloud-access-facts";
 import type { CloudNotebookCatalogAccessScope } from "./cloud-notebook-catalog-access";
 import type { CloudNotebookUrlMode } from "./cloud-notebook-mode";
@@ -30,12 +28,14 @@ import type { CloudPrototypeAuthState } from "./collaborator-auth";
 
 /** The selected interaction mode, corrected by access. */
 export function useCloudSelectedMode(): CloudNotebookUrlMode {
-  return useObservableProjection(cloudAccessRequestStore.selectedMode$);
+  const { accessRequest } = useCloudStores();
+  return useObservableProjection(accessRequest.selectedMode$);
 }
 
 /** The user's own edit-access request sub-facts, for reprojection. */
 export function useCloudAccessRequestFacts(): CloudAccessRequestFacts {
-  return useObservableProjection(cloudAccessRequestStore.requestFacts$);
+  const { accessRequest } = useCloudStores();
+  return useObservableProjection(accessRequest.requestFacts$);
 }
 
 export interface UseCloudAccessRequestControllerParams {
@@ -95,6 +95,7 @@ export function useCloudAccessRequestController({
   onRetryLiveConnection,
   onRefreshAuth,
 }: UseCloudAccessRequestControllerParams): void {
+  const { accessRequest } = useCloudStores();
   const inputs$ = useLiveInputs<CloudAccessRequestInputs>({
     facts,
     browserAuth,
@@ -110,11 +111,11 @@ export function useCloudAccessRequestController({
 
   useEffect(
     () =>
-      cloudAccessRequestStore.activate(inputs$, {
+      accessRequest.activate(inputs$, {
         notebookId,
         onRetryLiveConnection: () => callbacksRef.current.onRetryLiveConnection(),
         onRefreshAuth: () => callbacksRef.current.onRefreshAuth(),
       }),
-    [inputs$, notebookId],
+    [inputs$, notebookId, accessRequest],
   );
 }

@@ -84,6 +84,11 @@ stores, not from using document boundaries as a rerender workaround.
 - Components consume named domain hooks (`useCloudAuthState`,
   `useHostedCatalogAuth`, `useCloudWorkstationsRegistry`, ...), never
   `store.select(...)` in a render body and never a second React binding.
+- Each domain hook resolves its store from `useCloudStores()`
+  (`cloud-stores-context.ts`), whose default is the singleton bundle: production
+  mounts no provider and stays byte-identical, while a test or fixture mounts
+  `CloudStoresProvider` to override consumption (not activation, which the
+  singletons keep owning for boot and instant paint).
 - The stores are module singletons shared across surfaces, so every async
   completion - poll tick, imperative action, and any follow-up refetch - is
   captured at issue and dropped at apply against an activation epoch plus the
