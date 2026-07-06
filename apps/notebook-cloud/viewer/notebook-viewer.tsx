@@ -189,7 +189,7 @@ import {
 } from "./use-cloud-catalog-store";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
-import { CloudNotebookSignInButton } from "./cloud-auth-controls";
+import { cloudSignInMethodForConfig, CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { CloudNotebookEditModeButton } from "./cloud-edit-mode-button";
 import { CloudNotebookTitle, cloudNotebookRouteTitle } from "./cloud-notebook-title";
 import {
@@ -1481,25 +1481,25 @@ export function NotebookViewer({
     refreshAuthState();
   }, [accessRequest, refreshAuthState]);
   const beginNotebookAuth = useCallback(async () => {
-    const localDevAuth = authConfig.localDev;
-    if (localDevAuth) {
-      window.location.assign(localDevAuth.authUrl);
+    const method = cloudSignInMethodForConfig(authConfig);
+    if (method === "oidc" && authConfig.oidc) {
+      try {
+        prepareCloudOidcViewerLogin(window.localStorage);
+        const url = await beginOidcLogin(authConfig.oidc, {
+          currentUrl: window.location.href,
+          storage: window.localStorage,
+        });
+        window.location.assign(url.href);
+      } catch (error) {
+        console.warn("[notebook-cloud] sign-in start failed", error);
+      }
       return;
     }
-    if (!authConfig.oidc) {
-      resetPrototypeAuth();
+    if (method === "localDev" && authConfig.localDev) {
+      window.location.assign(authConfig.localDev.authUrl);
       return;
     }
-    try {
-      prepareCloudOidcViewerLogin(window.localStorage);
-      const url = await beginOidcLogin(authConfig.oidc, {
-        currentUrl: window.location.href,
-        storage: window.localStorage,
-      });
-      window.location.assign(url.href);
-    } catch (error) {
-      console.warn("[notebook-cloud] sign-in start failed", error);
-    }
+    resetPrototypeAuth();
   }, [authConfig.localDev, authConfig.oidc, resetPrototypeAuth]);
   const requestCloudEditAccess = useCallback(() => {
     accessRequest.requestEditAccess();

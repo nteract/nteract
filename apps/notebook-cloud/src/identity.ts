@@ -6,7 +6,11 @@ import {
   isConnectionScope,
   type ConnectionScope,
 } from "./auth-shared.ts";
-import { isLoopbackWorkerRequest, trustsLoopbackRequestHeaders } from "./loopback.ts";
+import {
+  isLoopbackHostname,
+  isLoopbackWorkerRequest,
+  trustsLoopbackRequestHeaders,
+} from "./loopback.ts";
 
 export {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -154,6 +158,7 @@ interface JwtPayload {
   nbf?: number;
   preferred_username?: string;
   sub?: string;
+  token_use?: string;
   ver?: string;
 }
 
@@ -1000,7 +1005,24 @@ function oidcAudiencesFromEnv(value: string | undefined, clientId: string): stri
 }
 
 function normalizeOidcIssuer(value: string): string {
-  return normalizeHttpsUrl(value, "OIDC issuer");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new AuthError("OIDC issuer must be a valid URL", 503);
+  }
+  // A real IdP is https and never loopback. Loopback issuers are the dev-only
+  // local OIDC issuer (packages/local-oidc, mounted under
+  // NOTEBOOK_CLOUD_LOCAL_OIDC) served over the http wrangler dev origin, so
+  // permit http there. Production config, which points at an https non-loopback
+  // issuer, is unaffected.
+  const loopbackHttp = url.protocol === "http:" && isLoopbackHostname(url.hostname);
+  if (url.protocol !== "https:" && !loopbackHttp) {
+    throw new AuthError("OIDC issuer must use https", 503);
+  }
+  url.hash = "";
+  url.search = "";
+  return url.href.replace(/\/+$/, "");
 }
 
 function normalizeHttpsUrl(value: string, label: string): string {
@@ -1167,6 +1189,14 @@ async function verifyWithAnySigningKey(
 function validateOidcJwtClaims(payload: JwtPayload, config: OidcConfig): void {
   if (payload.iss !== config.issuer) {
     throw new AuthError("OIDC token issuer is invalid", 401);
+  }
+
+  // A refresh token must not stand in for an access token. Providers that stamp
+  // `token_use` (including the local dev issuer) mark refresh tokens explicitly;
+  // a real access token carries "access" or omits the claim, so this only
+  // rejects a token that declares itself a refresh token.
+  if (payload.token_use === "refresh") {
+    throw new AuthError("OIDC token is not an access token", 401);
   }
 
   const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
