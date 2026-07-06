@@ -3,7 +3,8 @@ import { createElement, type ReactNode } from "react";
 import { describe, expect, it } from "vite-plus/test";
 
 import { cloudAccessRequestStore, CloudAccessRequestStore } from "../cloud-access-request-store";
-import { cloudAuthStore } from "../cloud-auth-store";
+import { CloudAuthStoreProvider, useCloudAuthStore } from "../cloud-auth-context";
+import { CloudAuthStore, cloudAuthStore } from "../cloud-auth-store";
 import { cloudCatalogStore } from "../cloud-catalog-store";
 import { CloudStoresProvider, type CloudStores } from "../cloud-stores-context";
 import { cloudWorkstationsStore } from "../cloud-workstations-store";
@@ -20,7 +21,6 @@ describe("CloudStoresProvider", () => {
 
     const fixtureAccessRequest = new CloudAccessRequestStore({ readSelectedMode: () => "edit" });
     const fixtureStores: CloudStores = {
-      auth: cloudAuthStore,
       accessRequest: fixtureAccessRequest,
       catalog: cloudCatalogStore,
       workstations: cloudWorkstationsStore,
@@ -40,5 +40,34 @@ describe("CloudStoresProvider", () => {
 
     expect(result.current).toBe("view");
     expect(result.current).toBe(cloudAccessRequestStore.selectedModeSnapshot);
+  });
+});
+
+describe("CloudAuthStoreProvider", () => {
+  it("routes auth consumers to the provider's store instance", () => {
+    const fixtureAuth = new CloudAuthStore({
+      readAuthState: () => ({
+        mode: "dev",
+        token: "fixture-token",
+        user: "Fixture User",
+        oidcClaims: null,
+        requestedScope: "viewer",
+        problem: null,
+      }),
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(CloudAuthStoreProvider, { store: fixtureAuth, children });
+
+    const { result } = renderHook(() => useCloudAuthStore(), { wrapper });
+
+    expect(result.current).toBe(fixtureAuth);
+    expect(result.current.authSnapshot.user).toBe("Fixture User");
+    expect(result.current).not.toBe(cloudAuthStore);
+  });
+
+  it("falls back to the singleton auth store with no provider", () => {
+    const { result } = renderHook(() => useCloudAuthStore());
+
+    expect(result.current).toBe(cloudAuthStore);
   });
 });

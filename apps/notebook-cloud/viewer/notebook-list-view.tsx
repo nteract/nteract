@@ -38,7 +38,7 @@ import {
   useCloudAuthState,
   useHostedCatalogAuth,
 } from "./use-cloud-auth-store";
-import { useCloudStores } from "./cloud-stores-context";
+import { useCloudAuthStore } from "./cloud-auth-context";
 import { loadCloudNotebookListBootstrap } from "./cloud-viewer-config";
 import type { CloudAppSession } from "./app-session";
 import type {
@@ -66,7 +66,7 @@ import { preloadNotebookRoute } from "./notebook-route-preload";
 
 export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const { auth } = useCloudStores();
+  const auth = useCloudAuthStore();
   const [bootstrap, setBootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
     loadCloudNotebookListBootstrap(),
   );

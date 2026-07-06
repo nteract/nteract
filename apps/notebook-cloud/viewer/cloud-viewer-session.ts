@@ -38,7 +38,7 @@ import {
   type CloudPrototypeAuthState,
   type CloudSyncAuth,
 } from "./collaborator-auth";
-import { useCloudStores } from "./cloud-stores-context";
+import { useCloudAuthStore } from "./cloud-auth-context";
 import { materializeCloudNotebookView } from "./cloud-view-model";
 import { CloudLivePresenceStore } from "./live-presence";
 import {
@@ -229,12 +229,13 @@ export function useCloudViewerSession({
   widgetStore,
 }: UseCloudViewerSessionOptions): CloudViewerSession {
   // Auth snapshot reads below (connection diagnostics, the instant-paint
-  // principal gate, the sync-auth fallback) resolve through this context bundle
-  // so a CloudStoresProvider override drives the same store this hook reads. The
-  // context default is the singleton, a stable reference, so the `auth` entries
-  // added to the effect deps below cannot retrigger a connect in production;
-  // each read still takes the latest snapshot at read time.
-  const { auth } = useCloudStores();
+  // principal gate, the sync-auth fallback) resolve through the auth context so
+  // a CloudAuthStoreProvider override routes this hook to the same store its
+  // owner activates. The context default is the singleton, a stable reference,
+  // so the `auth` entries added to the effect deps below cannot retrigger a
+  // connect in production; each read still takes the latest snapshot at read
+  // time.
+  const auth = useCloudAuthStore();
   const [status, setStatus] = useState<ViewerStatus>({
     kind: "loading",
     message: loadingPolicy.initialStatusMessage,
