@@ -194,11 +194,12 @@ export function TracebackOutput({
   const frames = payload?.frames ?? [];
   const clusters = clusterFrames(frames);
   const language = payload?.language ?? "python";
-  // Inline `ename: evalue` on one line when the evalue fits. Multi-line
-  // evalues (pytest diffs, chained SQL errors) fall through to the
-  // two-line layout. Independent of frame count — a short evalue next
-  // to the ename reads better whether we show frames below or not.
-  const inlineEvalue = Boolean(payload?.evalue && !payload.evalue.includes("\n"));
+  // Inline `ename: evalue` only when the evalue is genuinely short.
+  // Long single-line errors from package loaders, HTTP clients, and model
+  // runtimes need wrapping space more than they need a compact header.
+  const inlineEvalue = Boolean(
+    payload?.evalue && !payload.evalue.includes("\n") && payload.evalue.length <= 96,
+  );
   const currentExecutionId = payload?.execution?.execution_id;
   const defaultSelectedFrame = preferredFrameIndex(clusters);
   const [selectedFrame, setSelectedFrame] = useState(defaultSelectedFrame);
@@ -246,7 +247,11 @@ export function TracebackOutput({
           <div className="space-y-1.5 px-1 pb-1">
             <ol
               aria-label="Traceback frames"
-              className="flex flex-wrap items-center gap-x-1 gap-y-1"
+              data-testid="traceback-frame-list"
+              className={cn(
+                "grid max-h-40 gap-0.5 overflow-y-auto rounded-sm bg-background/35 p-1",
+                "border border-destructive/10",
+              )}
             >
               {clusters.map((cluster, i) => (
                 <FrameStep
@@ -309,23 +314,38 @@ function Header({
   // disagree on edge cases.
   const canInline = inlineEvalue && Boolean(evalue);
   return (
-    <div className="flex items-center gap-2 px-1 py-1.5 font-mono">
-      <X aria-hidden="true" className="size-3.5 shrink-0 text-destructive" strokeWidth={2.5} />
-      <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+    <div className="flex items-start gap-2 px-1 py-1.5 font-mono">
+      <X
+        aria-hidden="true"
+        className="mt-0.5 size-3.5 shrink-0 text-destructive"
+        strokeWidth={2.5}
+      />
+      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
         {canInline ? (
           <>
             <span className="shrink-0 font-semibold text-destructive">{ename}</span>
             <span className="text-destructive/80">: </span>
-            <span className="min-w-0 truncate text-foreground/80">{evalue}</span>
+            <span
+              data-testid="traceback-message"
+              className="min-w-0 whitespace-pre-wrap break-words text-foreground/80"
+            >
+              {evalue}
+            </span>
           </>
         ) : (
           <>
             <div className="shrink-0 font-semibold text-destructive">{ename}</div>
-            {evalue && <div className="min-w-0 truncate text-foreground/80">{evalue}</div>}
+            {evalue && (
+              <div
+                data-testid="traceback-message"
+                className="w-full min-w-0 whitespace-pre-wrap break-words text-foreground/80"
+              >
+                {evalue}
+              </div>
+            )}
           </>
         )}
       </div>
-      <div className="hidden h-px min-w-0 basis-24 shrink grow-0 bg-destructive/10 sm:block" />
       <CopyButton payload={payload} resolveExecutionTarget={resolveExecutionTarget} />
     </div>
   );
@@ -482,30 +502,26 @@ function FrameStep({
   const { frame, count } = cluster;
   const location = sourceLocation(frame, currentExecutionId, resolveExecutionTarget);
   return (
-    <li className="flex min-w-0 items-center gap-1">
-      {index > 0 && (
-        <span aria-hidden="true" className="text-muted-foreground/30">
-          /
+    <li className="min-w-0 font-mono text-xs">
+      <button
+        type="button"
+        onClick={onSelect}
+        className={cn(
+          "grid w-full min-w-0 grid-cols-[2.25rem_minmax(0,1fr)] items-baseline gap-2",
+          "rounded-sm px-1.5 py-1 text-left transition-colors",
+          active
+            ? "bg-destructive/[0.075] text-destructive"
+            : "text-muted-foreground/70 hover:bg-muted/60 hover:text-foreground",
+          frame.library && !active && "opacity-65",
+        )}
+        aria-current={active ? "step" : undefined}
+        aria-label={`Show source frame ${index + 1}`}
+      >
+        <span className="select-none text-right tabular-nums text-muted-foreground/55">
+          {index + 1}
         </span>
-      )}
-      <div className="group/frame flex min-w-0 items-center gap-1 font-mono text-xs">
-        <button
-          type="button"
-          onClick={onSelect}
-          className={cn(
-            "inline-flex min-w-0 items-baseline gap-1 rounded-sm px-1.5 py-0.5",
-            "transition-colors",
-            active
-              ? "text-destructive hover:bg-destructive/[0.035]"
-              : "border-transparent text-muted-foreground/70 hover:bg-muted/60 hover:text-foreground",
-            frame.library && !active && "opacity-65",
-          )}
-          aria-current={active ? "step" : undefined}
-          aria-label={`Show source frame ${index + 1}`}
-        >
-          <FrameLabel location={location} line={frame.lineno} name={frame.name} count={count} />
-        </button>
-      </div>
+        <FrameLabel location={location} line={frame.lineno} name={frame.name} count={count} />
+      </button>
     </li>
   );
 }
@@ -631,7 +647,7 @@ function FrameLabel({
   const displayName = typeof name === "string" && name !== "<module>" ? name : undefined;
   const visibleLocation = notebookFramePathLabel(location, name);
   return (
-    <span className="min-w-0 truncate">
+    <span className="min-w-0 whitespace-normal break-words">
       <span className="font-medium">{visibleLocation}</span>
       <span className="text-muted-foreground/65"> · line {line}</span>
       {location.kind !== "notebook" && displayName && (
