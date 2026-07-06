@@ -1187,6 +1187,13 @@ body {
   font-size: 8px;
 }
 
+.nb-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
 .nb-scope-badge {
   padding: 1px 7px;
   color: var(--muted-foreground);

@@ -68,6 +68,7 @@ export interface AuthenticatedConnectionMetadata {
     | "workstation-credential-header";
   principalNamespace: string;
   displayName?: string;
+  avatarUrl?: string;
   email?: string;
   emailVerified?: boolean;
   workstationCredentialId?: string;
@@ -156,6 +157,7 @@ interface JwtPayload {
   iss?: string;
   name?: string;
   nbf?: number;
+  picture?: string;
   preferred_username?: string;
   sub?: string;
   token_use?: string;
@@ -312,6 +314,7 @@ export async function authenticateOidcRequest(
       transport: credential.transport,
       principalNamespace: config.principalNamespace,
       ...(profile.displayName ? { displayName: profile.displayName } : {}),
+      ...(profile.avatarUrl ? { avatarUrl: profile.avatarUrl } : {}),
       ...(profile.email ? { email: profile.email } : {}),
       ...(profile.email ? { emailVerified: payload.email_verified === true } : {}),
     },
@@ -323,9 +326,11 @@ export async function authenticateOidcRequest(
 
 function profileFromOidcPayload(payload: JwtPayload): {
   displayName?: string;
+  avatarUrl?: string;
   email?: string;
 } {
   const email = payload.email?.trim() || undefined;
+  const avatarUrl = payload.picture?.trim() || undefined;
   const displayName =
     payload.name?.trim() ||
     [payload.given_name, payload.family_name]
@@ -337,6 +342,7 @@ function profileFromOidcPayload(payload: JwtPayload): {
 
   return {
     ...(displayName ? { displayName } : {}),
+    ...(avatarUrl ? { avatarUrl } : {}),
     ...(email ? { email } : {}),
   };
 }

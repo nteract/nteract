@@ -699,6 +699,7 @@ export async function resolveNotebookInvitesForLogin(
     email: login.email,
     emailVerified: login.emailVerified,
     displayName: login.displayName,
+    avatarUrl: login.avatarUrl,
     timestamp: now,
   });
 

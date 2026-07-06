@@ -738,7 +738,10 @@ describe("OIDC identity", () => {
     const { env, token } = await oidcTokenFixture({
       subject: "user/123",
       email: "alice@example.com",
-      extraPayload: { email_verified: true },
+      extraPayload: {
+        email_verified: true,
+        picture: "https://profiles.example/alice.png",
+      },
       name: "Alice Demo",
     });
 
@@ -761,6 +764,7 @@ describe("OIDC identity", () => {
         transport: "oidc-bearer",
         principalNamespace: "user:anaconda",
         displayName: "Alice Demo",
+        avatarUrl: "https://profiles.example/alice.png",
         email: "alice@example.com",
         emailVerified: true,
       },
@@ -791,6 +795,7 @@ describe("OIDC identity", () => {
     assert.equal(identity.operator, "browser:tab%2Fsession");
     assert.equal(identity.actorLabel, "user:anaconda:alice-subject/browser:tab%2Fsession");
     assert.equal(identity.metadata.displayName, "Alice Example");
+    assert.equal(identity.metadata.avatarUrl, undefined);
     assert.equal(identity.metadata.email, "alice@example.com");
     assert.equal(identity.metadata.emailVerified, true);
   });

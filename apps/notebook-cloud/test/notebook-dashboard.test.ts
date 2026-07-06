@@ -759,6 +759,30 @@ describe("cloud notebook dashboard projection", () => {
     assert.notEqual(fallback.continueRow?.ownerLabel, "Mara Osei");
   });
 
+  it("threads unified-profile owner avatars and resolved state through dashboard rows", () => {
+    const shared = notebook({
+      id: "shared-avatar-notebook",
+      title: "Shared Avatar Notebook",
+      scope: "viewer",
+      updatedAt: "2026-06-24T00:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const withAvatar = {
+      ...shared,
+      owner_avatar: "https://profiles.example/mara.png",
+      owner_display: "Mara Osei",
+      owner_resolved: true,
+    };
+
+    assert.equal(isCloudNotebookListItem(withAvatar), true);
+    assert.equal(isCloudNotebookListItem({ ...shared, owner_avatar: 42 }), false);
+    assert.equal(isCloudNotebookListItem({ ...shared, owner_resolved: "yes" }), false);
+
+    const model = projectCloudNotebookDashboard([withAvatar]);
+    assert.equal(model.continueRow?.ownerAvatar, "https://profiles.example/mara.png");
+    assert.equal(model.continueRow?.notebook.owner_resolved, true);
+  });
+
   it("never renders an opaque owner principal as a name", () => {
     const shared = notebook({
       id: "opaque-owner",
