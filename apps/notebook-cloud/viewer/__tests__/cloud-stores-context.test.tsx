@@ -7,6 +7,7 @@ import { CloudAuthStoreProvider, useCloudAuthStore } from "../cloud-auth-context
 import { CloudAuthStore, cloudAuthStore } from "../cloud-auth-store";
 import { cloudCatalogStore } from "../cloud-catalog-store";
 import { CloudStoresProvider, type CloudStores } from "../cloud-stores-context";
+import { cloudUserStore } from "../cloud-user-store";
 import { cloudWorkstationsStore } from "../cloud-workstations-store";
 import { useCloudSelectedMode } from "../use-cloud-access-request-controller";
 
@@ -23,6 +24,7 @@ describe("CloudStoresProvider", () => {
     const fixtureStores: CloudStores = {
       accessRequest: fixtureAccessRequest,
       catalog: cloudCatalogStore,
+      user: cloudUserStore,
       workstations: cloudWorkstationsStore,
     };
     const wrapper = ({ children }: { children: ReactNode }) =>
