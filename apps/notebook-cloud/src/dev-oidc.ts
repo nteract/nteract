@@ -6,7 +6,9 @@
 // request falls through to the ordinary 404 or real route handler. Turning the
 // flag on stands up a full OIDC provider that auto-grants a fixed dev user,
 // letting a local cloud shell run the real OIDC verification and renewal paths
-// without a live IdP.
+// without a live IdP. `NOTEBOOK_CLOUD_LOCAL_OIDC_DELAY_MS` is intentionally
+// dev-gated here so local e2e can simulate a hung issuer without adding any
+// production route surface.
 //
 // The issuer is built lazily on first request and cached for the worker's boot,
 // keyed by its resolved issuer URL. That URL is NOTEBOOK_CLOUD_OIDC_ISSUER when
@@ -46,13 +48,20 @@ export function localOidcEnabled(env: Env): boolean {
  * flag is off or the path is outside the mount so the caller falls through to
  * its normal not-found handling.
  */
-export function handleLocalOidcRequest(request: Request, env: Env): Promise<Response | null> {
+export async function handleLocalOidcRequest(request: Request, env: Env): Promise<Response | null> {
   if (!localOidcEnabled(env)) {
-    return Promise.resolve(null);
+    return null;
   }
   const url = new URL(request.url);
   if (!isLocalOidcMountPath(url.pathname)) {
-    return Promise.resolve(null);
+    return null;
+  }
+  // Delay only the token endpoint: discovery and authorize stay fast so a
+  // sign-in reaches the callback, then the code exchange hangs - the
+  // production shape a slow issuer produces and the one the callback's
+  // timeout recovery exists for.
+  if (url.pathname.endsWith("/token")) {
+    await delayLocalOidcRequest(env);
   }
   const issuerUrl = localOidcIssuerUrl(env, request);
   return localOidcIssuer(env, issuerUrl).handle(requestForIssuerPath(request, url, issuerUrl));
@@ -115,4 +124,26 @@ function localOidcTtlSeconds(env: Env): number {
     return NOTEBOOK_CLOUD_LOCAL_OIDC_DEFAULT_TTL_SECONDS;
   }
   return parsed;
+}
+
+function localOidcDelayMs(env: Env): number {
+  const raw = env.NOTEBOOK_CLOUD_LOCAL_OIDC_DELAY_MS?.trim();
+  if (!raw) {
+    return 0;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+  return parsed;
+}
+
+function delayLocalOidcRequest(env: Env): Promise<void> {
+  const delayMs = localOidcDelayMs(env);
+  if (delayMs <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
 }

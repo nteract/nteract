@@ -120,6 +120,7 @@ test("cloud callback keeps sign-in handoff in the entry surface language", () =>
   assert.match(callbackSource, /aria-label="nteract sign-in callback"/);
   assert.match(callbackSource, /className="cloud-home-panel"/);
   assert.match(callbackSource, /returning to the notebook/);
+  assert.match(callbackSource, /Try again/);
   assert.match(callbackSource, /Back to nteract/);
   assert.match(callbackSource, /data-mode=\{status\.kind\}/);
   assert.match(cssText, /\.cloud-home-status-spinner/);
