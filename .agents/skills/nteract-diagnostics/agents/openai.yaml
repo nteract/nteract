@@ -1,0 +1,4 @@
+interface:
+  display_name: "nteract Diagnostics"
+  short_description: "Fetch and triage submitted nteract diagnostics archives from Cloudflare."
+  default_prompt: "Pull and triage this nteract diagnostics archive: id=... token=..."
