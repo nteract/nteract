@@ -1,4 +1,5 @@
 import { cloudNotebookUrlWithMode, type CloudNotebookUrlMode } from "./cloud-notebook-mode";
+import { cloudPrincipalSubjectIsOpaque } from "./cloud-principal-display";
 import {
   colorForActorIdentity,
   contrastColorForActorIdentity,
@@ -856,19 +857,6 @@ function isNonNegativeFiniteNumber(value: unknown): value is number {
 // Shown when an owner principal has no resolvable human name, in place of the
 // raw identifier.
 const CLOUD_NOTEBOOK_OWNER_FALLBACK = "Notebook owner";
-
-// A principal subject that is only an identifier - a UUID, ULID, or long hex
-// room/subject id - has no human reading, so it must never be rendered as a
-// name. Resolving these to real display names is the cloud user store's job
-// (docs/adr/cloud-user-store.md); this is the never-raw floor for the /n owner
-// column until that lands.
-function cloudPrincipalSubjectIsOpaque(subject: string): boolean {
-  return (
-    /^[0-9a-f]{12,}$/iu.test(subject) ||
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(subject) ||
-    /^[0-9A-HJKMNP-TV-Z]{26}$/iu.test(subject)
-  );
-}
 
 function cloudNotebookOwnerLabel(principal: string): string {
   const trimmed = principal.trim();

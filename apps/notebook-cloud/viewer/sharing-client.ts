@@ -1,4 +1,5 @@
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "runtimed";
+import { cloudPrincipalSubjectIsOpaque } from "./cloud-principal-display";
 
 export type CloudShareScope = "viewer" | "editor" | "runtime_peer" | "owner";
 export type CloudShareInviteScope = "viewer" | "editor";
@@ -122,6 +123,7 @@ const SHARE_ACCESS_PROJECTION_CACHE = new Map<string, CloudShareAccessProjection
 const SHARE_ACCESS_ROW_CACHE_LIMIT = 512;
 const SHARE_ACCESS_ROWS_CACHE_LIMIT = 128;
 const SHARE_ACCESS_PROJECTION_CACHE_LIMIT = 128;
+const CLOUD_SHARE_PRINCIPAL_FALLBACK = "Collaborator";
 const CLOUD_NOTEBOOK_ACL_ROW_FIELDS = {
   notebook_id: true,
   subject_kind: true,
@@ -443,7 +445,7 @@ function detailForAcl(row: CloudNotebookAclRow): string {
       return displayEmail(email);
     }
     if (display.principal !== row.subject) {
-      return display.principal;
+      return titleForPrincipalSubject(display.principal);
     }
   }
   return detailForPrincipalSubject(row.subject);
@@ -457,10 +459,11 @@ function titleForAcl(row: CloudNotebookAclRow): string {
   if (row.display?.kind === "principal") {
     const email = row.display.email?.trim();
     if (email) return email;
-    if (row.display.principal !== row.subject) return row.display.principal;
+    if (row.display.principal !== row.subject)
+      return titleForPrincipalSubject(row.display.principal);
   }
 
-  return row.subject;
+  return titleForPrincipalSubject(row.subject);
 }
 
 function labelForAccessRequest(request: CloudNotebookAccessRequest): string {
@@ -475,9 +478,9 @@ function titleForAccessRequest(request: CloudNotebookAccessRequest): string {
   const email = request.display?.email?.trim();
   if (email) return email;
   if (request.display?.principal && request.display.principal !== request.requester_principal) {
-    return request.display.principal;
+    return titleForPrincipalSubject(request.display.principal);
   }
-  return request.requester_principal;
+  return titleForPrincipalSubject(request.requester_principal);
 }
 
 function displayEmail(value: string): string {
@@ -494,8 +497,7 @@ function displayEmail(value: string): string {
 }
 
 function labelForPrincipalSubject(subject: string): string {
-  const decoded = decodePrincipalTail(subject);
-  return decoded || subject;
+  return principalSubjectDisplay(subject, CLOUD_SHARE_PRINCIPAL_FALLBACK);
 }
 
 function detailForPrincipalSubject(subject: string): string {
@@ -505,7 +507,19 @@ function detailForPrincipalSubject(subject: string): string {
   if (subject.startsWith("user:anaconda:")) {
     return "Anaconda identity";
   }
-  return subject;
+  return principalSubjectDisplay(subject, CLOUD_SHARE_PRINCIPAL_FALLBACK);
+}
+
+function titleForPrincipalSubject(subject: string): string {
+  return principalSubjectDisplay(subject, CLOUD_SHARE_PRINCIPAL_FALLBACK);
+}
+
+function principalSubjectDisplay(subject: string, fallback: string): string {
+  const decoded = decodePrincipalTail(subject);
+  if (!decoded || cloudPrincipalSubjectIsOpaque(decoded)) {
+    return fallback;
+  }
+  return decoded;
 }
 
 function decodePrincipalTail(subject: string): string | null {

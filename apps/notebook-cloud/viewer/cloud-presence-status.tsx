@@ -6,7 +6,9 @@ import {
   AvatarFallback,
   AvatarGroup,
   AvatarGroupCount,
+  AvatarImage,
 } from "@/components/ui/avatar";
+import type { ActorDisplay } from "runtimed";
 import {
   cloudPresenceInitials,
   cloudViewerPresenceDisplay,
@@ -16,9 +18,11 @@ import {
 
 export function CloudPresenceStatus({
   connectionError,
+  resolveActor,
   store,
 }: {
   connectionError: string | null;
+  resolveActor?: (actorLabel: string) => ActorDisplay;
   store: CloudViewerPresenceStore;
 }) {
   const presence = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
@@ -42,7 +46,12 @@ export function CloudPresenceStatus({
     >
       <AvatarGroup className="cloud-presence-avatar-group" aria-hidden="true">
         {presenceDisplay.peers.map((peer) => (
-          <CloudPresenceAvatar key={peer.id} peer={peer} connected={connected} />
+          <CloudPresenceAvatar
+            key={peer.id}
+            peer={peer}
+            connected={connected}
+            resolveActor={resolveActor}
+          />
         ))}
         {presenceDisplay.hiddenCount > 0 ? (
           <AvatarGroupCount className="cloud-presence-avatar-count" data-size="sm">
@@ -76,11 +85,15 @@ function sanitizeCloudConnectionError(error: string): string {
 function CloudPresenceAvatar({
   connected,
   peer,
+  resolveActor,
 }: {
   connected: boolean;
   peer: CloudViewerPresencePeer;
+  resolveActor?: (actorLabel: string) => ActorDisplay;
 }) {
   const status = connected ? peer.status : "offline";
+  const actorLabel = peer.actorLabel ?? peer.participantKey;
+  const imageUrl = resolveActor?.(actorLabel).imageUrl ?? null;
   return (
     <Avatar
       size="sm"
@@ -89,6 +102,7 @@ function CloudPresenceAvatar({
       data-status={status}
       title={peer.label}
     >
+      {imageUrl ? <AvatarImage className="nb-avatar-img" src={imageUrl} alt="" /> : null}
       <AvatarFallback>
         {peer.kind === "anonymous" ? (
           <>

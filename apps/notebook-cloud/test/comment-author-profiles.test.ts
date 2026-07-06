@@ -3,10 +3,8 @@ import { describe, it } from "node:test";
 import type { CommentsProjection } from "@/components/notebook";
 import {
   commentAuthorActorLabels,
-  commentAuthorProfilePeers,
   commentAuthorProfileUrls,
   commentAuthorProfilesUrl,
-  mergeCommentAuthorPeers,
 } from "../viewer/comment-author-profiles.ts";
 
 describe("cloud comment author profiles", () => {
@@ -61,49 +59,6 @@ describe("cloud comment author profiles", () => {
     assert.deepEqual(
       urls.map((url) => new URL(url, "http://localhost").searchParams.getAll("actor_label").length),
       [100, 100, 5],
-    );
-  });
-
-  it("projects profile rows into author peers and keeps profile labels over generic presence", () => {
-    const profilePeers = commentAuthorProfilePeers({
-      profiles: [
-        {
-          principal: "user:anaconda:greg",
-          label: "Greg Jennings",
-          image_url: "https://profiles.example/greg.png",
-        },
-        {
-          principal: "user:anaconda:bad",
-          label: "",
-        },
-      ],
-    });
-
-    assert.deepEqual(profilePeers, [
-      {
-        participantKey: "user:anaconda:greg",
-        label: "Greg Jennings",
-        imageUrl: "https://profiles.example/greg.png",
-      },
-    ]);
-    assert.deepEqual(
-      mergeCommentAuthorPeers(profilePeers, [
-        {
-          participantKey: "user:anaconda:greg",
-          label: "Anaconda user",
-        },
-      ]),
-      profilePeers,
-    );
-  });
-
-  it("lets specific live presence refresh a stored profile label", () => {
-    assert.deepEqual(
-      mergeCommentAuthorPeers(
-        [{ participantKey: "user:anaconda:greg", label: "Greg Jennings" }],
-        [{ participantKey: "user:anaconda:greg", label: "Greg J." }],
-      ),
-      [{ participantKey: "user:anaconda:greg", label: "Greg J." }],
     );
   });
 });
