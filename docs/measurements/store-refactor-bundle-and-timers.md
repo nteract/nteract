@@ -66,12 +66,18 @@ per-icon tree-shaking or chunk hints would not move first-load bytes. An earlier
 draft of this memo called this "the always-loaded icons chunk, the single
 biggest lever left"; that was reading the chunk's name, not its contents.
 
-**Identified follow-up:** the 70 kB gzip always-loaded chunk is real and worth
-attacking, but the lever is what pulls RxJS, the `runtimed` store/projection
-code, and the cloud dashboard stores into the entry's static closure
-(`apps/notebook-cloud/viewer/index.tsx`, `notebook-dashboard.ts`), not icon
-import style. Deferring route-specific store/projection code out of the
-first-load closure is the real `/n` cold-load win.
+**Follow-up, first cut landed (#3918):** the 70 kB gzip always-loaded chunk is
+real, and the lever is what pulls RxJS, the `runtimed` store/projection code, and
+the cloud dashboard stores into the entry's static closure
+(`apps/notebook-cloud/viewer/index.tsx`, `notebook-dashboard.ts`), not icon import
+style. PR #3918 took the first cut: it split the store-consumption seam so the
+three non-auth source stores (access-request, catalog, workstations) load with
+their lazy routes instead of the `/n` cold path. Measured 8.6 kB gzip off the
+shared always-loaded chunk (69.4 -> 60.8 kB); the entry chunk is unchanged. An
+earlier ~13 kB estimate was optimistic - the shared runtime deps stay because the
+always-loaded auth and dashboard code uses them too, so only the store-specific
+code leaves. Deferring more route-specific store/projection code out of the
+first-load closure is the remaining lever.
 
 ## Timer and listener census
 
@@ -127,9 +133,13 @@ cannot truly background a tab, so the reconnect check drives synthetic
 focus/visibility events; instant-paint marks need a notebook with a persisted
 snapshot.
 
-## Not measured here
+## Renewal path
 
 Renewal-path behavior against a real OIDC issuer (token rotation ->
-`authState$` identity -> live-room key stability) still needs either a hosted
-session or a local dev issuer; the loopback-trust auth mode local wrangler
-uses does not exercise the OIDC refresh driver end to end.
+`authState$` identity -> live-room key stability) is now exercised end to end by
+the dev OIDC issuer (`@nteract/local-oidc`, #3914), which the local wrangler
+mounts; the loopback-trust auth mode alone does not drive the OIDC refresh
+driver. The `profile-local.mjs` renewal probe measures it, and holds green only
+when a real app-session was established, a live room socket existed before
+rotation, the token actually rotated, and the post-rotation reconnect stayed
+stable - a vacuous 0-to-0-socket pass no longer counts.
