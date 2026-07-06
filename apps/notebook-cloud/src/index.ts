@@ -3560,14 +3560,12 @@ async function routeNotebookAuthorProfiles(
   );
   return json({
     notebook_id: notebookId,
-    profiles: profileLookups
-      .map((lookup) =>
-        authorProfileResponse(
-          lookup.requestedPrincipal,
-          lookup.profilePrincipals.map((principal) => profilesByPrincipal.get(principal) ?? null),
-        ),
-      )
-      .filter((profile) => profile !== null),
+    profiles: profileLookups.map((lookup) =>
+      authorProfileResponse(
+        lookup.requestedPrincipal,
+        lookup.profilePrincipals.map((principal) => profilesByPrincipal.get(principal) ?? null),
+      ),
+    ),
   });
 }
 
@@ -3599,16 +3597,22 @@ function requestedAuthorProfilePrincipals(params: URLSearchParams): string[] | R
 function authorProfileResponse(
   principal: string,
   rows: readonly (PrincipalProfileRow | null)[],
-): Record<string, unknown> | null {
-  const row = rows.find((candidate) => candidate?.display_name?.trim());
-  const label = row?.display_name?.trim() ?? null;
-  if (!row || !label) {
-    return null;
-  }
+): Record<string, unknown> {
+  const nameRow = rows.find((candidate) => candidate?.display_name?.trim());
+  const label = nameRow?.display_name?.trim() ?? null;
+  const avatarRow = nameRow?.avatar_url?.trim()
+    ? nameRow
+    : rows.find((candidate) => candidate?.avatar_url?.trim());
+  // Every allowed principal returns an entry; `resolved` marks whether the host
+  // has a display name. Unresolved entries (label null) let the user store tell
+  // "no profile yet" from "never looked up", and the comments client's
+  // non-empty-label validator ignores them. The caller's gate omits non-allowed
+  // principals entirely, so this is never a principal-existence oracle.
   return {
     principal,
     label,
-    image_url: row.avatar_url,
+    image_url: avatarRow?.avatar_url?.trim() ?? null,
+    resolved: label !== null,
   };
 }
 

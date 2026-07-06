@@ -4513,6 +4513,7 @@ describe("Worker artifact routes", () => {
         principal: gregTransport,
         label: "Greg Jennings",
         image_url: "https://profiles.example/greg.png",
+        resolved: true,
       },
     ]);
   });
@@ -4552,7 +4553,17 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     const body = (await response.json()) as { profiles: Array<Record<string, unknown>> };
-    assert.deepEqual(body.profiles, []);
+    // Allowed but unprofiled: the entry carries no name and no email - label is
+    // null, never the email fallback - so a public viewer still cannot learn the
+    // author's email.
+    assert.deepEqual(body.profiles, [
+      {
+        principal: "user:dev:alice",
+        label: null,
+        image_url: null,
+        resolved: false,
+      },
+    ]);
   });
 
   it("does not expose ACL principal profiles unless they authored visible comments", async () => {
@@ -4613,6 +4624,7 @@ describe("Worker artifact routes", () => {
         principal: "user:dev:alice",
         label: "Alice Example",
         image_url: null,
+        resolved: true,
       },
     ]);
   });
