@@ -1224,10 +1224,16 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
   ]);
   // Same resolution chain the viewer shell uses: live identity metadata, then
   // the app session's captured display name, then the profile store.
+  const currentUserProfile = principalDisplays.get(principal);
   const currentUserDisplay =
     (!isAnonymousViewer(identity) ? identity.metadata.displayName?.trim() : undefined) ||
     appSession?.displayName?.trim() ||
-    principalDisplays.get(principal);
+    currentUserProfile?.displayName ||
+    undefined;
+  const currentUserAvatar =
+    (!isAnonymousViewer(identity) ? identity.metadata.avatarUrl?.trim() : undefined) ||
+    currentUserProfile?.avatarUrl ||
+    undefined;
   return json({
     ok: true,
     notebooks: notebookListResponseRows(
@@ -1239,6 +1245,7 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
       principalDisplays,
     ),
     ...(currentUserDisplay ? { current_user_display: currentUserDisplay } : {}),
+    ...(currentUserAvatar ? { current_user_avatar: currentUserAvatar } : {}),
   });
 }
 
@@ -1249,18 +1256,17 @@ async function listNotebookPrincipalDisplays(
   env: Env,
   notebooks: readonly ListedNotebookRow[],
   requesterPrincipal: string,
-): Promise<Map<string, string>> {
-  const displays = new Map<string, string>();
+): Promise<Map<string, { displayName: string | null; avatarUrl: string | null }>> {
+  const displays = new Map<string, { displayName: string | null; avatarUrl: string | null }>();
   try {
     const principals = Array.from(
       new Set([...notebooks.map((notebook) => notebook.owner_principal), requesterPrincipal]),
     );
     const profiles = await getPrincipalProfiles(env, principals);
     for (const profile of profiles) {
-      const display = profile.display_name?.trim();
-      if (display) {
-        displays.set(profile.principal, display);
-      }
+      const displayName = profile.display_name?.trim() || null;
+      const avatarUrl = profile.avatar_url?.trim() || null;
+      displays.set(profile.principal, { displayName, avatarUrl });
     }
   } catch (error) {
     cloudLog("warn", "notebook.list.profile_hydration_failed", {
@@ -1436,7 +1442,10 @@ function notebookListResponseRows(
   env?: Env,
   computeSessions: ReadonlyMap<string, NotebookComputeSessionSummary> = new Map(),
   roomPresence: ReadonlyMap<string, NotebookRoomSummaryOccupant[]> = new Map(),
-  principalDisplays: ReadonlyMap<string, string> = new Map(),
+  principalDisplays: ReadonlyMap<
+    string,
+    { displayName: string | null; avatarUrl: string | null }
+  > = new Map(),
 ): Array<Record<string, unknown>> {
   return notebooks.map((notebook) => {
     const notebookPathId = encodeURIComponent(notebook.id);
@@ -1449,6 +1458,8 @@ function notebookListResponseRows(
         : null;
     const cover = notebookCoverResponse(notebook);
     const peers = (roomPresence.get(notebook.id) ?? []).slice(0, MAX_NOTEBOOK_LIST_PEERS_PER_ROW);
+    const ownerProfile = principalDisplays.get(notebook.owner_principal);
+    const ownerResolved = principalDisplays.has(notebook.owner_principal);
     return {
       notebook_id: notebook.id,
       title: notebook.title,
@@ -1457,9 +1468,9 @@ function notebookListResponseRows(
       created_at: notebook.created_at,
       updated_at: notebook.updated_at,
       latest_revision_id: notebook.latest_revision_id,
-      ...(principalDisplays.has(notebook.owner_principal)
-        ? { owner_display: principalDisplays.get(notebook.owner_principal) }
-        : {}),
+      ...(ownerProfile?.displayName ? { owner_display: ownerProfile.displayName } : {}),
+      ...(ownerProfile?.avatarUrl ? { owner_avatar: ownerProfile.avatarUrl } : {}),
+      owner_resolved: ownerResolved,
       ...(composition ? { composition } : {}),
       ...(preview?.length ? { preview } : {}),
       ...(cover ? { cover } : {}),
@@ -3549,14 +3560,12 @@ async function routeNotebookAuthorProfiles(
   );
   return json({
     notebook_id: notebookId,
-    profiles: profileLookups
-      .map((lookup) =>
-        authorProfileResponse(
-          lookup.requestedPrincipal,
-          lookup.profilePrincipals.map((principal) => profilesByPrincipal.get(principal) ?? null),
-        ),
-      )
-      .filter((profile) => profile !== null),
+    profiles: profileLookups.map((lookup) =>
+      authorProfileResponse(
+        lookup.requestedPrincipal,
+        lookup.profilePrincipals.map((principal) => profilesByPrincipal.get(principal) ?? null),
+      ),
+    ),
   });
 }
 
@@ -3588,16 +3597,22 @@ function requestedAuthorProfilePrincipals(params: URLSearchParams): string[] | R
 function authorProfileResponse(
   principal: string,
   rows: readonly (PrincipalProfileRow | null)[],
-): Record<string, unknown> | null {
-  const row = rows.find((candidate) => candidate?.display_name?.trim());
-  const label = row?.display_name?.trim() ?? null;
-  if (!row || !label) {
-    return null;
-  }
+): Record<string, unknown> {
+  const nameRow = rows.find((candidate) => candidate?.display_name?.trim());
+  const label = nameRow?.display_name?.trim() ?? null;
+  const avatarRow = nameRow?.avatar_url?.trim()
+    ? nameRow
+    : rows.find((candidate) => candidate?.avatar_url?.trim());
+  // Every allowed principal returns an entry; `resolved` marks whether the host
+  // has a display name. Unresolved entries (label null) let the user store tell
+  // "no profile yet" from "never looked up", and the comments client's
+  // non-empty-label validator ignores them. The caller's gate omits non-allowed
+  // principals entirely, so this is never a principal-existence oracle.
   return {
     principal,
     label,
-    image_url: row.avatar_url,
+    image_url: avatarRow?.avatar_url?.trim() ?? null,
+    resolved: label !== null,
   };
 }
 
@@ -5037,6 +5052,7 @@ async function syncAuthenticatedProfile(
       provider: identity.metadata.provider,
       email: identity.metadata.email ?? null,
       displayName: identity.metadata.displayName ?? null,
+      avatarUrl: identity.metadata.avatarUrl ?? null,
     };
 
     // Canonical account ACLs are keyed by verified email. OIDC carries an
@@ -5092,6 +5108,7 @@ async function syncStoredAppSessionProfile(env: Env, session: CloudAppSession): 
       email: profile.email_normalized,
       emailVerified: true,
       displayName: session.displayName ?? profile.display_name,
+      avatarUrl: profile.avatar_url,
     });
     logInviteResolutionCompleted({
       principal: session.principal,

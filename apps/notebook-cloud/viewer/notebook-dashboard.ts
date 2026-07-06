@@ -1,4 +1,5 @@
 import { cloudNotebookUrlWithMode, type CloudNotebookUrlMode } from "./cloud-notebook-mode";
+import { cloudPrincipalSubjectIsOpaque } from "./cloud-principal-display";
 import {
   colorForActorIdentity,
   contrastColorForActorIdentity,
@@ -16,6 +17,8 @@ export interface CloudNotebookListItem {
   updated_at: string;
   latest_revision_id: string | null;
   owner_display?: string;
+  owner_avatar?: string;
+  owner_resolved?: boolean;
   compute_session?: NotebookComputeSessionSummary | null;
   composition?: CloudNotebookComposition;
   cover?: CloudNotebookCover;
@@ -119,6 +122,7 @@ export interface CloudNotebookDashboardRow {
   notebook: CloudNotebookListItem;
   ownerColor: string;
   ownerContrast: string;
+  ownerAvatar?: string;
   ownerInitials: string;
   ownerLabel: string;
   runtimeStatus: CloudNotebookDashboardRuntimeStatus;
@@ -328,6 +332,8 @@ export function isCloudNotebookListItem(value: unknown): value is CloudNotebookL
     (candidate.preview === undefined || isCloudNotebookPreviewCells(candidate.preview)) &&
     (candidate.language === undefined || typeof candidate.language === "string") &&
     (candidate.owner_display === undefined || typeof candidate.owner_display === "string") &&
+    (candidate.owner_avatar === undefined || typeof candidate.owner_avatar === "string") &&
+    (candidate.owner_resolved === undefined || typeof candidate.owner_resolved === "boolean") &&
     (candidate.peers === undefined ||
       (Array.isArray(candidate.peers) && candidate.peers.every(isCloudNotebookPresencePeer))) &&
     typeof candidate.viewer_url === "string" &&
@@ -734,6 +740,7 @@ function dashboardRow(notebook: CloudNotebookListItem | null): CloudNotebookDash
     notebook,
     ownerColor: colorForActorIdentity(notebook.owner_principal),
     ownerContrast: contrastColorForActorIdentity(notebook.owner_principal),
+    ...(notebook.owner_avatar?.trim() ? { ownerAvatar: notebook.owner_avatar.trim() } : {}),
     ownerInitials: cloudNotebookOwnerInitials(ownerDisplaySource),
     ownerLabel,
     runtimeStatus: cloudNotebookDashboardRuntimeStatus(notebook),
@@ -847,17 +854,24 @@ function isNonNegativeFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+// Shown when an owner principal has no resolvable human name, in place of the
+// raw identifier.
+const CLOUD_NOTEBOOK_OWNER_FALLBACK = "Notebook owner";
+
 function cloudNotebookOwnerLabel(principal: string): string {
   const trimmed = principal.trim();
   if (!trimmed) {
-    return "Unknown";
+    return CLOUD_NOTEBOOK_OWNER_FALLBACK;
   }
   const emailLocal = trimmed.match(/([^:@\s]+)@[^@\s]+$/u)?.[1];
   if (emailLocal) {
     return emailLocal;
   }
-  const parts = trimmed.split(":").filter(Boolean);
-  return parts.at(-1) ?? trimmed;
+  const subject = trimmed.split(":").filter(Boolean).at(-1) ?? trimmed;
+  if (cloudPrincipalSubjectIsOpaque(subject)) {
+    return CLOUD_NOTEBOOK_OWNER_FALLBACK;
+  }
+  return subject;
 }
 
 function cloudNotebookOwnerInitials(label: string): string {

@@ -1980,6 +1980,72 @@ describe("Worker artifact routes", () => {
     assert.equal(body.notebooks[1]?.endpoints.catalog, "/api/n/editor-shared");
   });
 
+  it("hydrates owner and current-user avatars from principal profiles in notebook lists", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "profiled-shared");
+    seedNotebook(env, "unresolved-shared");
+    env.DB.notebooks.get("profiled-shared")!.owner_principal = "user:dev:bob";
+    env.DB.notebooks.get("unresolved-shared")!.owner_principal = "user:dev:carol";
+    seedAcl(env, { notebookId: "profiled-shared", subject: "user:dev:alice", scope: "editor" });
+    seedAcl(env, { notebookId: "unresolved-shared", subject: "user:dev:alice", scope: "viewer" });
+    env.DB.profiles.set(
+      "user:dev:alice",
+      principalProfileRow({
+        principal: "user:dev:alice",
+        provider_subject: "alice",
+        display_name: "Alice Example",
+        avatar_url: "https://profiles.example/alice.png",
+      }),
+    );
+    env.DB.profiles.set(
+      "user:dev:bob",
+      principalProfileRow({
+        principal: "user:dev:bob",
+        provider_subject: "bob",
+        email_normalized: "bob@example.com",
+        display_name: "Bob Example",
+        avatar_url: "https://profiles.example/bob.png",
+      }),
+    );
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      current_user_avatar?: string;
+      current_user_display?: string;
+      notebooks: Array<{
+        notebook_id: string;
+        owner_avatar?: string;
+        owner_display?: string;
+        owner_resolved?: boolean;
+      }>;
+    };
+    assert.equal(body.current_user_display, "alice");
+    assert.equal(body.current_user_avatar, "https://profiles.example/alice.png");
+    const profiled = body.notebooks.find((notebook) => notebook.notebook_id === "profiled-shared");
+    const unresolved = body.notebooks.find(
+      (notebook) => notebook.notebook_id === "unresolved-shared",
+    );
+    assert.equal(profiled?.owner_display, "Bob Example");
+    assert.equal(profiled?.owner_avatar, "https://profiles.example/bob.png");
+    assert.equal(profiled?.owner_resolved, true);
+    assert.equal(Object.hasOwn(profiled ?? {}, "owner_avatar"), true);
+    assert.equal(unresolved?.owner_resolved, false);
+    assert.equal(Object.hasOwn(unresolved ?? {}, "owner_display"), false);
+    assert.equal(Object.hasOwn(unresolved ?? {}, "owner_avatar"), false);
+  });
+
   it("omits malformed notebook composition and preview cells from list rows without dropping language", async () => {
     const env = fakeEnv();
     seedNotebook(env, "malformed-summary");
@@ -4447,6 +4513,7 @@ describe("Worker artifact routes", () => {
         principal: gregTransport,
         label: "Greg Jennings",
         image_url: "https://profiles.example/greg.png",
+        resolved: true,
       },
     ]);
   });
@@ -4486,7 +4553,17 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     const body = (await response.json()) as { profiles: Array<Record<string, unknown>> };
-    assert.deepEqual(body.profiles, []);
+    // Allowed but unprofiled: the entry carries no name and no email - label is
+    // null, never the email fallback - so a public viewer still cannot learn the
+    // author's email.
+    assert.deepEqual(body.profiles, [
+      {
+        principal: "user:dev:alice",
+        label: null,
+        image_url: null,
+        resolved: false,
+      },
+    ]);
   });
 
   it("does not expose ACL principal profiles unless they authored visible comments", async () => {
@@ -4547,6 +4624,7 @@ describe("Worker artifact routes", () => {
         principal: "user:dev:alice",
         label: "Alice Example",
         image_url: null,
+        resolved: true,
       },
     ]);
   });
@@ -5353,11 +5431,14 @@ describe("Worker artifact routes", () => {
     );
   });
 
-  it("stores OIDC profile labels even when there are no pending invites", async () => {
+  it("stores OIDC profile labels and avatars even when there are no pending invites", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({
       subject: "fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
       email: "kkelley@anaconda.com",
-      extraPayload: { email_verified: true },
+      extraPayload: {
+        email_verified: true,
+        picture: "https://profiles.example/kkelley.png",
+      },
       name: "Kyle Kelley",
     });
     const env = fakeEnv({
@@ -5396,6 +5477,53 @@ describe("Worker artifact routes", () => {
     assert.equal(profile?.email_normalized, "kkelley@anaconda.com");
     assert.equal(profile?.email_verified, 1);
     assert.equal(profile?.display_name, "Kyle Kelley");
+    assert.equal(profile?.avatar_url, "https://profiles.example/kkelley.png");
+  });
+
+  it("stores null avatar URLs when OIDC picture claims are absent", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "no-picture-user",
+      email: "no-picture@example.com",
+      extraPayload: { email_verified: true },
+      name: "No Picture",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => new Response("room ok"),
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "oidc-no-picture-demo");
+    seedAcl(env, {
+      notebookId: "oidc-no-picture-demo",
+      subject: "user:anaconda:no-picture-user",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request(
+        "https://cloud.test/n/oidc-no-picture-demo/sync?operator=browser:tab&scope=viewer",
+        {
+          headers: {
+            Origin: "https://cloud.test",
+            "Sec-WebSocket-Protocol": `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(
+              token,
+            )}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+            Upgrade: "websocket",
+          },
+        },
+      ),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const profile = env.DB.profiles.get("user:anaconda:no-picture-user");
+    assert.equal(profile?.provider, "oidc");
+    assert.equal(profile?.avatar_url, null);
   });
 
   it("resolves pending email invites for OIDC editor WebSocket requests", async () => {
@@ -7140,6 +7268,22 @@ function seedNotebook(env: FakeEnv, notebookId: string): void {
     preview_cells: null,
     language: null,
   });
+}
+
+function principalProfileRow(overrides: Partial<PrincipalProfileRow> = {}): PrincipalProfileRow {
+  return {
+    principal: "user:dev:alice",
+    provider: "dev",
+    provider_subject: "alice",
+    email_normalized: "alice@example.com",
+    email_verified: 1,
+    display_name: "Alice Example",
+    avatar_url: null,
+    first_seen_at: "2026-05-28T00:00:00.000Z",
+    last_seen_at: "2026-05-28T00:00:00.000Z",
+    raw_claims_json: null,
+    ...overrides,
+  };
 }
 
 function seedAcl(

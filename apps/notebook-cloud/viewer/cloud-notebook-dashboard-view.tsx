@@ -485,13 +485,19 @@ function CloudNotebookDashboardRowView({
             <span
               className="nb-avatar nb-avatar-sm"
               style={
-                {
-                  "--nb-avatar-bg": row.ownerColor,
-                  "--nb-avatar-fg": row.ownerContrast,
-                } as CSSProperties
+                row.ownerAvatar
+                  ? undefined
+                  : ({
+                      "--nb-avatar-bg": row.ownerColor,
+                      "--nb-avatar-fg": row.ownerContrast,
+                    } as CSSProperties)
               }
             >
-              {row.ownerInitials}
+              {row.ownerAvatar ? (
+                <img className="nb-avatar-img" src={row.ownerAvatar} alt={row.ownerLabel} />
+              ) : (
+                row.ownerInitials
+              )}
             </span>
             <span className="nb-col-owner-name">{row.ownerLabel}</span>
           </>

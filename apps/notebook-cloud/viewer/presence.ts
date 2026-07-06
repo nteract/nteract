@@ -31,6 +31,7 @@ export interface CloudViewerPresenceDisplay {
 export interface CloudViewerPresencePeer {
   id: string;
   participantKey: string;
+  actorLabel?: string | null;
   label: string;
   connectionScope: ConnectionScope | null;
   kind: "self" | "peer" | "anonymous" | "runtime" | "unknown";
@@ -196,6 +197,7 @@ function cloudPresencePeerFromMessage({
   return {
     id: peerId,
     participantKey: cloudPresenceParticipantKey({ participantKey, actorLabel, peerId }),
+    actorLabel: actorLabel?.trim() || null,
     label,
     connectionScope: normalizedConnectionScope,
     kind: isRuntimePeer ? "runtime" : isAnonymous ? "anonymous" : kind === "self" ? "self" : "peer",

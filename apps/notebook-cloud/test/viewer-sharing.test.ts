@@ -219,7 +219,7 @@ describe("cloud viewer sharing client", () => {
     );
     assert.deepEqual(
       rows.map((row) => row.title),
-      ["user:dev:fixture", "user:anaconda:alice%40example.com"],
+      ["fixture", "alice@example.com"],
     );
   });
 

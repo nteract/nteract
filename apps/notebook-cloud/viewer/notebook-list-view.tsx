@@ -159,6 +159,11 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
         if (typeof body.current_user_display === "string" && body.current_user_display.trim()) {
           setCurrentUserDisplay(body.current_user_display.trim());
         }
+        setCurrentUserAvatar(
+          typeof body.current_user_avatar === "string" && body.current_user_avatar.trim()
+            ? body.current_user_avatar.trim()
+            : null,
+        );
         setListState({ kind: "ready", notebooks: body.notebooks });
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -347,6 +352,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
 
   const headerDetail = cloudNotebookListHeaderDetail(authState, hasAppSession, authConfig);
   const [currentUserDisplay, setCurrentUserDisplay] = useState<string | null>(null);
+  const [currentUserAvatar, setCurrentUserAvatar] = useState<string | null>(null);
   // Prefer the unified user store's display name (delivered with the list
   // response) over auth-claim parsing for the header identity.
   const currentUserInitials = currentUserDisplay
@@ -410,14 +416,24 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
                 <span
                   className="nb-avatar-me"
                   style={
-                    {
-                      "--nb-avatar-bg": colorForActorIdentity(currentUserColorKey),
-                      "--nb-avatar-fg": contrastColorForActorIdentity(currentUserColorKey),
-                    } as CSSProperties
+                    currentUserAvatar
+                      ? undefined
+                      : ({
+                          "--nb-avatar-bg": colorForActorIdentity(currentUserColorKey),
+                          "--nb-avatar-fg": contrastColorForActorIdentity(currentUserColorKey),
+                        } as CSSProperties)
                   }
                   title={currentUserDisplay ?? headerDetail}
                 >
-                  {currentUserInitials}
+                  {currentUserAvatar ? (
+                    <img
+                      className="nb-avatar-img"
+                      src={currentUserAvatar}
+                      alt={currentUserDisplay ?? headerDetail}
+                    />
+                  ) : (
+                    currentUserInitials
+                  )}
                 </span>
               </div>
             </>

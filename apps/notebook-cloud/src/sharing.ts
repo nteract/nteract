@@ -23,6 +23,7 @@ export interface AuthenticatedLoginProfile {
   email: string | null;
   emailVerified: boolean;
   displayName: string | null;
+  avatarUrl?: string | null;
 }
 
 export interface PrincipalProfile {

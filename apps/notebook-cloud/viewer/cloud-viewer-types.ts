@@ -26,6 +26,8 @@ export interface CloudNotebookListResponse {
   notebooks: CloudNotebookListItem[];
   /** Requester's unified-profile display name, when the store has one. */
   current_user_display?: string;
+  /** Requester's unified-profile avatar URL, when the store has one. */
+  current_user_avatar?: string;
 }
 
 export interface CloudNotebookListBootstrap {

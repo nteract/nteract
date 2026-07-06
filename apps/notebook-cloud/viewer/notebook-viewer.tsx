@@ -68,10 +68,9 @@ import {
   colorForActorIdentity,
   contrastColorForActorIdentity,
   NotebookClient,
-  resolveActorDisplay,
   workstationAttachmentCanExecute,
   workstationAttachmentIsConnected,
-  type ActorDisplayPeer,
+  type ActorDisplay,
   type CellChangeset,
   type NotebookOutlineItem,
   type SyncEngineLogger,
@@ -116,13 +115,7 @@ import { beginOidcLogin } from "./oidc-auth";
 import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { cloudPresenceHasRuntimePeer, cloudPresenceRuntimePeerCount } from "./presence";
-import {
-  commentAuthorActorLabels,
-  commentAuthorProfilePeers,
-  commentAuthorProfileUrls,
-  mergeCommentAuthorPeers,
-  type CloudCommentAuthorProfilesResponse,
-} from "./comment-author-profiles";
+import { commentAuthorActorLabels } from "./comment-author-profiles";
 import type { ResolvedCell } from "./render-resolution";
 import {
   CloudNotebookNotices,
@@ -188,6 +181,7 @@ import {
   useCloudNotebookTitle,
   useCloudNotebookTitleError,
 } from "./use-cloud-catalog-store";
+import { useCloudUserProfiles, useCloudUserStoreController } from "./use-cloud-user-store";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { cloudSignInMethodForConfig, CloudNotebookSignInButton } from "./cloud-auth-controls";
@@ -210,6 +204,17 @@ const cloudNotebookClientLogger: SyncEngineLogger = {
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
 const CLOUD_EMPTY_ROOM_GRACE_MS = 900;
+
+function mapToCommentAuthor(display: ActorDisplay): CommentAuthor {
+  return {
+    displayName: display.displayName,
+    color: display.color,
+    imageUrl: display.imageUrl,
+    isAgent: display.isAgent,
+    onBehalfOf: display.onBehalfOf,
+    onBehalfOfColor: display.onBehalfOfColor,
+  };
+}
 
 function decodeHashAnchorId(hash: string): string {
   const raw = hash.startsWith("#") ? hash.slice(1) : hash;
@@ -247,7 +252,7 @@ export function NotebookViewer({
   // contexts (the singletons by default) so provider overrides route this
   // component to the same instances it reads and mutates.
   const auth = useCloudAuthStore();
-  const { accessRequest, catalog } = useCloudStores();
+  const { accessRequest, catalog, user } = useCloudStores();
   const routeTitle = useMemo(() => cloudNotebookRouteTitle(), []);
   const [notebookTitleSaving, setNotebookTitleSaving] = useState(false);
   const loadingPolicy = useMemo(() => cloudViewerLoadingPolicy(config), [config.headsHash]);
@@ -346,6 +351,7 @@ export function NotebookViewer({
     loadCatalogAccess,
     initialCatalogAccess: config.initialCatalogAccess,
   });
+  useCloudUserStoreController(config.authorProfilesEndpoint ?? null);
   const catalogAccessFacts = useCloudCatalogAccessFacts();
   const catalogAccessScope = catalogAccessFacts.scope;
   const catalogAccessResolved = catalogAccessFacts.status === "ready";
@@ -446,6 +452,10 @@ export function NotebookViewer({
     resolveSyncAuth,
     widgetStore,
   });
+  useEffect(
+    () => user.connectPresence(presenceStore, () => auth.authSnapshot),
+    [auth, presenceStore, user],
+  );
   // Mirror the desktop app: expose the local author's comment color and a
   // legible foreground as CSS vars the shared affordance and composer styles
   // read. The cloud viewer previously set neither, so cloud create surfaces fell
@@ -505,81 +515,25 @@ export function NotebookViewer({
     presenceStore.getSnapshot,
     presenceStore.getSnapshot,
   );
-  const liveCommentAuthorPeers = useMemo(
-    () =>
-      presenceSnapshot.peers.map((peer) => ({
-        participantKey: peer.participantKey,
-        label: peer.label,
-      })),
-    [presenceSnapshot.peers],
-  );
   const commentAuthorLabels = useMemo(
     () => commentAuthorActorLabels(commentsProjection),
     [commentsProjection],
   );
   const commentAuthorLabelsKey = commentAuthorLabels.join("\u0000");
-  const [profileCommentAuthorPeers, setProfileCommentAuthorPeers] = useState<ActorDisplayPeer[]>(
-    [],
-  );
+  const profilesSnapshot = useCloudUserProfiles();
   useEffect(() => {
-    const endpoint = config.authorProfilesEndpoint;
-    if (!endpoint || commentAuthorLabelsKey === "") {
-      setProfileCommentAuthorPeers([]);
+    if (commentAuthorLabelsKey === "") {
       return;
     }
-    const actorLabels = commentAuthorLabelsKey.split("\u0000");
-
-    const controller = new AbortController();
-    void (async () => {
-      try {
-        const peers: ActorDisplayPeer[] = [];
-        for (const url of commentAuthorProfileUrls(endpoint, actorLabels)) {
-          const response = await fetchWithCloudPrototypeAuth(
-            url,
-            { headers: { Accept: "application/json" }, signal: controller.signal },
-            browserApiAuthState,
-          );
-          if (controller.signal.aborted) return;
-          if (!response.ok) {
-            setProfileCommentAuthorPeers([]);
-            return;
-          }
-          const body = (await response.json()) as CloudCommentAuthorProfilesResponse;
-          if (controller.signal.aborted) return;
-          peers.push(...commentAuthorProfilePeers(body));
-        }
-        setProfileCommentAuthorPeers(peers);
-      } catch {
-        if (!controller.signal.aborted) {
-          setProfileCommentAuthorPeers([]);
-        }
-      }
-    })();
-
-    return () => controller.abort();
-  }, [browserApiAuthState, commentAuthorLabelsKey, config.authorProfilesEndpoint]);
-  const commentAuthorPeers = useMemo(
-    () => mergeCommentAuthorPeers(profileCommentAuthorPeers, liveCommentAuthorPeers),
-    [liveCommentAuthorPeers, profileCommentAuthorPeers],
-  );
+    user.requestResolve(commentAuthorLabels);
+  }, [commentAuthorLabels, commentAuthorLabelsKey, config.authorProfilesEndpoint, user]);
   const resolveCloudCommentAuthor = useCallback(
-    (actorLabel: string): CommentAuthor => {
-      const display = resolveActorDisplay({
-        actorLabel,
-        peers: commentAuthorPeers,
-        source: "cloud",
-      });
-
-      return {
-        displayName: display.displayName,
-        color: display.color,
-        imageUrl: display.imageUrl,
-        isAgent: display.isAgent,
-        onBehalfOf: display.onBehalfOf,
-        onBehalfOfColor: display.onBehalfOfColor,
-      };
-    },
-    [commentAuthorPeers],
+    (actorLabel: string): CommentAuthor => mapToCommentAuthor(user.resolve(actorLabel)),
+    [profilesSnapshot, user],
+  );
+  const resolveCloudPresenceActor = useCallback(
+    (actorLabel: string): ActorDisplay => user.resolve(actorLabel),
+    [profilesSnapshot, user],
   );
   const runtimeState = useRuntimeState();
   // Deduplicated shared projection — re-renders only when attachment facts
@@ -1643,7 +1597,11 @@ export function NotebookViewer({
       }
       utilityControls={
         notebookHeaderChrome.showPresenceStatus ? (
-          <CloudPresenceStatus connectionError={connectionError} store={presenceStore} />
+          <CloudPresenceStatus
+            connectionError={connectionError}
+            store={presenceStore}
+            resolveActor={resolveCloudPresenceActor}
+          />
         ) : null
       }
       authControls={
