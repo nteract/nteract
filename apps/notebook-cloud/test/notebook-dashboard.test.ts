@@ -759,6 +759,22 @@ describe("cloud notebook dashboard projection", () => {
     assert.notEqual(fallback.continueRow?.ownerLabel, "Mara Osei");
   });
 
+  it("never renders an opaque owner principal as a name", () => {
+    const shared = notebook({
+      id: "opaque-owner",
+      title: "Shared Notebook",
+      scope: "viewer",
+      updatedAt: "2026-06-24T00:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const opaque = { ...shared, owner_principal: "user:oidc:b0204af7084b1c2d3e4f5a6b" };
+
+    const model = projectCloudNotebookDashboard([opaque]);
+    // The owner column shows a generic label, never the raw identifier.
+    assert.equal(model.continueRow?.ownerLabel, "Notebook owner");
+    assert.equal(model.continueRow?.ownerInitials, "NO");
+  });
+
   it("threads room peers through list-item validation and active filtering", () => {
     const withPeers = notebook({
       id: "presence-notebook",

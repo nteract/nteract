@@ -847,17 +847,37 @@ function isNonNegativeFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+// Shown when an owner principal has no resolvable human name, in place of the
+// raw identifier.
+const CLOUD_NOTEBOOK_OWNER_FALLBACK = "Notebook owner";
+
+// A principal subject that is only an identifier - a UUID, ULID, or long hex
+// room/subject id - has no human reading, so it must never be rendered as a
+// name. Resolving these to real display names is the cloud user store's job
+// (docs/adr/cloud-user-store.md); this is the never-raw floor for the /n owner
+// column until that lands.
+function cloudPrincipalSubjectIsOpaque(subject: string): boolean {
+  return (
+    /^[0-9a-f]{12,}$/iu.test(subject) ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(subject) ||
+    /^[0-9A-HJKMNP-TV-Z]{26}$/iu.test(subject)
+  );
+}
+
 function cloudNotebookOwnerLabel(principal: string): string {
   const trimmed = principal.trim();
   if (!trimmed) {
-    return "Unknown";
+    return CLOUD_NOTEBOOK_OWNER_FALLBACK;
   }
   const emailLocal = trimmed.match(/([^:@\s]+)@[^@\s]+$/u)?.[1];
   if (emailLocal) {
     return emailLocal;
   }
-  const parts = trimmed.split(":").filter(Boolean);
-  return parts.at(-1) ?? trimmed;
+  const subject = trimmed.split(":").filter(Boolean).at(-1) ?? trimmed;
+  if (cloudPrincipalSubjectIsOpaque(subject)) {
+    return CLOUD_NOTEBOOK_OWNER_FALLBACK;
+  }
+  return subject;
 }
 
 function cloudNotebookOwnerInitials(label: string): string {
