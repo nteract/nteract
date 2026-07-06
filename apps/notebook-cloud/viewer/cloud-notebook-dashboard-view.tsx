@@ -482,7 +482,17 @@ function CloudNotebookDashboardRowView({
       <span className="nb-col nb-col-owner">
         {notebook.scope === "owner" ? null : (
           <>
-            <span className="nb-avatar nb-avatar-sm">{row.ownerInitials}</span>
+            <span
+              className="nb-avatar nb-avatar-sm"
+              style={
+                {
+                  "--nb-avatar-bg": row.ownerColor,
+                  "--nb-avatar-fg": row.ownerContrast,
+                } as CSSProperties
+              }
+            >
+              {row.ownerInitials}
+            </span>
             <span className="nb-col-owner-name">{row.ownerLabel}</span>
           </>
         )}

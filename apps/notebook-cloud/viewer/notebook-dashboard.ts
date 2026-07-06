@@ -1,5 +1,7 @@
 import { cloudNotebookUrlWithMode, type CloudNotebookUrlMode } from "./cloud-notebook-mode";
 import {
+  colorForActorIdentity,
+  contrastColorForActorIdentity,
   isNotebookComputeSessionSummary,
   projectNotebookComputeSessionFact,
   type NotebookComputeSessionSummary,
@@ -115,6 +117,8 @@ export interface CloudNotebookDashboardRow {
   facts: readonly CloudNotebookDashboardRowFact[];
   identityLabel: string | null;
   notebook: CloudNotebookListItem;
+  ownerColor: string;
+  ownerContrast: string;
   ownerInitials: string;
   ownerLabel: string;
   runtimeStatus: CloudNotebookDashboardRuntimeStatus;
@@ -728,6 +732,8 @@ function dashboardRow(notebook: CloudNotebookListItem | null): CloudNotebookDash
       ? null
       : cloudNotebookShortId(notebook.notebook_id),
     notebook,
+    ownerColor: colorForActorIdentity(notebook.owner_principal),
+    ownerContrast: contrastColorForActorIdentity(notebook.owner_principal),
     ownerInitials: cloudNotebookOwnerInitials(ownerDisplaySource),
     ownerLabel,
     runtimeStatus: cloudNotebookDashboardRuntimeStatus(notebook),

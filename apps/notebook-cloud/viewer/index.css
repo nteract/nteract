@@ -873,8 +873,8 @@ body {
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
-  background: var(--uv);
-  color: #fff;
+  background: var(--nb-avatar-bg, var(--uv));
+  color: var(--nb-avatar-fg, #fff);
   font-size: 12px;
   font-weight: 700;
 }
@@ -1176,8 +1176,8 @@ body {
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--foreground) 72%, var(--background));
-  color: var(--background);
+  background: var(--nb-avatar-bg, color-mix(in srgb, var(--foreground) 72%, var(--background)));
+  color: var(--nb-avatar-fg, var(--background));
   font-weight: 700;
 }
 
