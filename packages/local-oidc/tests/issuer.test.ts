@@ -318,7 +318,11 @@ describe("createLocalOidcIssuer", () => {
   });
 
   it("mints short-lived tokens that a verifier rejects once they lapse", async () => {
-    const issuer = makeIssuer({ defaultTokenTtlSeconds: 1 });
+    // TTL is generous enough that "valid now" cannot race a slow CI machine
+    // between mint and verify; expiry is asserted deterministically by advancing
+    // the verifier's clock past the lifetime rather than by real elapsed time.
+    const ttlSeconds = 60;
+    const issuer = makeIssuer({ defaultTokenTtlSeconds: ttlSeconds });
     const token = await issuer.mintToken({ sub: "dev@localhost", email: "dev@localhost" });
     const verify = await verifierFor(issuer);
 
@@ -330,7 +334,7 @@ describe("createLocalOidcIssuer", () => {
       jose.jwtVerify(token, verify, {
         issuer: ISSUER_URL,
         audience: CLIENT_ID,
-        currentDate: new Date(Date.now() + 5000),
+        currentDate: new Date(Date.now() + (ttlSeconds + 60) * 1000),
       }),
     ).rejects.toMatchObject({ code: "ERR_JWT_EXPIRED" });
   });
