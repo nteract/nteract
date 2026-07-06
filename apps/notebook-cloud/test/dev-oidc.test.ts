@@ -206,3 +206,49 @@ describe("dev OIDC issuer verification", () => {
     );
   });
 });
+
+describe("dev OIDC token delay", () => {
+  const delayEnv = gateEnv({
+    NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
+    NOTEBOOK_CLOUD_OIDC_ISSUER: ISSUER_URL,
+    NOTEBOOK_CLOUD_OIDC_CLIENT_ID: CLIENT_ID,
+    NOTEBOOK_CLOUD_LOCAL_OIDC_DELAY_MS: "80",
+  });
+
+  it("delays only the token endpoint so a sign-in reaches the callback before hanging", async () => {
+    const discoveryStart = performance.now();
+    const discovery = await handleLocalOidcRequest(
+      new Request(`${MOUNT_ORIGIN}${DISCOVERY_PATH}`),
+      delayEnv,
+    );
+    const discoveryElapsed = performance.now() - discoveryStart;
+    assert.equal(discovery?.status, 200);
+    assert.ok(discoveryElapsed < 80, `discovery must not be delayed (took ${discoveryElapsed}ms)`);
+
+    const tokenStart = performance.now();
+    const token = await handleLocalOidcRequest(
+      new Request(`${ISSUER_URL}/token`, { method: "POST" }),
+      delayEnv,
+    );
+    const tokenElapsed = performance.now() - tokenStart;
+    assert.ok(token, "token path is handled by the issuer");
+    assert.ok(tokenElapsed >= 80, `token endpoint honors the delay (took ${tokenElapsed}ms)`);
+  });
+
+  it("ignores non-numeric and non-positive delay values", async () => {
+    for (const raw of ["", "abc", "0", "-5"]) {
+      const start = performance.now();
+      const response = await handleLocalOidcRequest(
+        new Request(`${ISSUER_URL}/token`, { method: "POST" }),
+        gateEnv({
+          NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
+          NOTEBOOK_CLOUD_OIDC_ISSUER: ISSUER_URL,
+          NOTEBOOK_CLOUD_OIDC_CLIENT_ID: CLIENT_ID,
+          NOTEBOOK_CLOUD_LOCAL_OIDC_DELAY_MS: raw,
+        }),
+      );
+      assert.ok(response, `token path handled for delay value ${JSON.stringify(raw)}`);
+      assert.ok(performance.now() - start < 50, `no delay for ${JSON.stringify(raw)}`);
+    }
+  });
+});

@@ -1,3 +1,10 @@
+// Browser client for the first-party app-session cookie.
+//
+// OIDC tokens remain the durable browser credential, but the cloud shell uses a
+// same-origin session cookie to let the Worker bootstrap authenticated pages. The
+// callback path gets one bounded retry so a temporary POST failure does not send
+// the user to `/n` before the cookie has had a second chance to establish.
+
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import type { CloudOidcTokenState } from "./oidc-auth";
 
@@ -16,6 +23,20 @@ export interface CloudAppSessionStatus {
 
 const CLOUD_APP_SESSION_EXPIRY_SKEW_SECONDS = 60;
 const CLOUD_APP_SESSION_RENEWAL_SKEW_SECONDS = 30 * 60;
+const CLOUD_APP_SESSION_POST_RETRY_DELAY_MS = 250;
+const CLOUD_APP_SESSION_POST_TIMEOUT_MS = 10_000;
+
+export interface CloudAppSessionRequestOptions {
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}
+
+export interface CloudAppSessionRetryDeps extends CloudAppSessionRequestOptions {
+  retryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  timeoutMs?: number;
+  timeoutSignal?: (timeoutMs: number) => AbortSignal;
+}
 
 export async function establishCloudAppSession(authState: CloudPrototypeAuthState): Promise<void> {
   if (authState.mode !== "oidc" || !authState.token) {
@@ -24,14 +45,18 @@ export async function establishCloudAppSession(authState: CloudPrototypeAuthStat
   await establishCloudAppSessionWithToken(authState.token);
 }
 
-export async function establishCloudAppSessionWithToken(token: string): Promise<void> {
-  const response = await fetch(CLOUD_APP_SESSION_ENDPOINT, {
+export async function establishCloudAppSessionWithToken(
+  token: string,
+  opts: CloudAppSessionRequestOptions = {},
+): Promise<void> {
+  const response = await (opts.fetchImpl ?? fetch)(CLOUD_APP_SESSION_ENDPOINT, {
     credentials: "same-origin",
     method: "POST",
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${token}`,
     },
+    signal: opts.signal,
   });
   if (!response.ok) {
     throw new Error(`Unable to establish app session: ${response.status}`);
@@ -42,6 +67,26 @@ export async function establishCloudAppSessionFromOidcToken(
   token: CloudOidcTokenState,
 ): Promise<void> {
   await establishCloudAppSessionWithToken(token.accessToken);
+}
+
+export async function establishCloudAppSessionFromOidcTokenWithRetry(
+  token: CloudOidcTokenState,
+  deps: CloudAppSessionRetryDeps = {},
+): Promise<void> {
+  try {
+    await establishCloudAppSessionWithToken(token.accessToken, {
+      fetchImpl: deps.fetchImpl,
+      signal: appSessionPostAttemptSignal(deps),
+    });
+    return;
+  } catch {
+    const sleep = deps.sleep ?? defaultSleep;
+    await sleep(deps.retryDelayMs ?? CLOUD_APP_SESSION_POST_RETRY_DELAY_MS);
+  }
+  await establishCloudAppSessionWithToken(token.accessToken, {
+    fetchImpl: deps.fetchImpl,
+    signal: appSessionPostAttemptSignal(deps),
+  });
 }
 
 export async function clearCloudAppSession(): Promise<void> {
@@ -119,4 +164,23 @@ export function cloudAppSessionNeedsRenewal(
 
 function currentEpochSeconds(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+function appSessionPostAttemptSignal(deps: CloudAppSessionRetryDeps): AbortSignal {
+  const timeoutSignal = deps.timeoutSignal ?? defaultAppSessionTimeoutSignal;
+  const signal = timeoutSignal(deps.timeoutMs ?? CLOUD_APP_SESSION_POST_TIMEOUT_MS);
+  if (!deps.signal) {
+    return signal;
+  }
+  return AbortSignal.any([deps.signal, signal]);
+}
+
+function defaultAppSessionTimeoutSignal(timeoutMs: number): AbortSignal {
+  return AbortSignal.timeout(timeoutMs);
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

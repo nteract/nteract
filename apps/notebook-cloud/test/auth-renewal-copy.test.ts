@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { cloudOidcRenewalFailureMessage } from "../viewer/auth-renewal-copy.ts";
+import { OidcTimeoutError } from "../viewer/oidc-auth.ts";
 
 describe("cloud auth renewal copy", () => {
   it("asks the user to sign in again for expired provider refreshes", () => {
@@ -14,6 +15,13 @@ describe("cloud auth renewal copy", () => {
     assert.equal(
       cloudOidcRenewalFailureMessage(new Error("OIDC discovery failed: 503")),
       "Unable to refresh sign-in: OIDC discovery failed: 503",
+    );
+  });
+
+  it("keeps OIDC timeouts on the transient branch", () => {
+    assert.equal(
+      cloudOidcRenewalFailureMessage(new OidcTimeoutError("token-exchange")),
+      "Unable to refresh sign-in: OIDC token endpoint did not respond before the sign-in timeout.",
     );
   });
 });

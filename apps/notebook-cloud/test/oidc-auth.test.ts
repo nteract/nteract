@@ -3,10 +3,13 @@ import assert from "node:assert/strict";
 import {
   NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY,
   NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+  OidcTimeoutError,
+  beginOidcLogin,
   buildOidcAuthorizationUrl,
   completeOidcRedirect,
   normalizeOidcAuthConfig,
   oidcDiscoveryUrl,
+  peekOidcReturnUrl,
   readStoredOidcToken,
   refreshStoredOidcToken,
   storedOidcTokenNeedsRefresh,
@@ -373,6 +376,129 @@ describe("cloud OIDC browser auth", () => {
     );
     assert.equal(storage.getItem(NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY), null);
   });
+
+  it("times out stalled discovery without storing token material", async () => {
+    const storage = storageWithRequestState();
+    const seenSignals: AbortSignal[] = [];
+
+    await assert.rejects(
+      () =>
+        completeOidcRedirect(authConfig, {
+          callbackUrl: "https://preview.runt.run/oidc?code=code-123&state=state-123",
+          storage,
+          fetchImpl: stalledFetch(seenSignals),
+          timeoutSignal: microtaskTimeoutSignal,
+        }),
+      (error) => {
+        assert.ok(error instanceof OidcTimeoutError);
+        assert.equal(error.phase, "discovery");
+        return true;
+      },
+    );
+
+    assert.equal(storage.getItem(NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY), null);
+    assert.equal(seenSignals.length, 1);
+  });
+
+  it("times out stalled token exchanges while keeping the request state retryable", async () => {
+    const storage = storageWithRequestState();
+    const seenSignals: AbortSignal[] = [];
+
+    await assert.rejects(
+      () =>
+        completeOidcRedirect(authConfig, {
+          callbackUrl: "https://preview.runt.run/oidc?code=code-123&state=state-123",
+          storage,
+          fetchImpl: async (input, init) => {
+            seenSignals.push(init?.signal as AbortSignal);
+            const url = String(input);
+            if (url.endsWith("/.well-known/openid-configuration")) {
+              return discoveryResponse();
+            }
+            return waitForAbort(init?.signal);
+          },
+          timeoutSignal: microtaskTimeoutSignal,
+        }),
+      (error) => {
+        assert.ok(error instanceof OidcTimeoutError);
+        assert.equal(error.phase, "token-exchange");
+        return true;
+      },
+    );
+
+    assert.equal(storage.getItem(NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY), null);
+    assert.notEqual(storage.getItem(NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY), null);
+    assert.equal(seenSignals.length, 2);
+  });
+
+  it("passes timeout signals to both discovery and token fetches", async () => {
+    const storage = storageWithRequestState();
+    const accessToken = jwt({ sub: "anaconda-user-123", name: "Alice" });
+    const seenSignals: unknown[] = [];
+
+    await completeOidcRedirect(authConfig, {
+      callbackUrl: "https://preview.runt.run/oidc?code=code-123&state=state-123",
+      storage,
+      fetchImpl: async (input, init) => {
+        seenSignals.push(init?.signal);
+        const url = String(input);
+        if (url.endsWith("/.well-known/openid-configuration")) {
+          return discoveryResponse();
+        }
+        return Response.json({
+          access_token: accessToken,
+          expires_in: 3600,
+        });
+      },
+      timeoutSignal: stableTimeoutSignal,
+    });
+
+    assert.equal(seenSignals.length, 2);
+    assert.ok(seenSignals.every((signal) => signal instanceof AbortSignal));
+  });
+
+  it("times out login-start discovery before storing a PKCE request", async () => {
+    const storage = new MemoryStorage();
+    const seenSignals: AbortSignal[] = [];
+
+    await assert.rejects(
+      () =>
+        beginOidcLogin(authConfig, {
+          currentUrl: "https://preview.runt.run/n/private-demo",
+          storage,
+          fetchImpl: stalledFetch(seenSignals),
+          timeoutSignal: microtaskTimeoutSignal,
+        }),
+      (error) => {
+        assert.ok(error instanceof OidcTimeoutError);
+        assert.equal(error.phase, "discovery");
+        return true;
+      },
+    );
+
+    assert.equal(storage.getItem(NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY), null);
+    assert.equal(seenSignals.length, 1);
+  });
+
+  it("peeks the stored OIDC return URL only from a valid request state", () => {
+    const storage = new MemoryStorage();
+
+    assert.equal(peekOidcReturnUrl(storage), null);
+
+    storage.setItem(NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY, "{not json");
+    assert.equal(peekOidcReturnUrl(storage), null);
+
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY,
+      JSON.stringify({
+        challenge: "challenge",
+        verifier: "verifier",
+        state: "state-123",
+        returnUrl: "https://preview.runt.run/n/private-demo",
+      } satisfies CloudOidcRequestState),
+    );
+    assert.equal(peekOidcReturnUrl(storage), "https://preview.runt.run/n/private-demo");
+  });
 });
 
 class MemoryStorage implements CloudOidcStorage {
@@ -397,4 +523,54 @@ function jwt(payload: Record<string, unknown>): string {
 
 function base64UrlJson(value: Record<string, unknown>): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function storageWithRequestState(): MemoryStorage {
+  const storage = new MemoryStorage();
+  storage.setItem(
+    NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY,
+    JSON.stringify({
+      challenge: "challenge",
+      verifier: "verifier",
+      state: "state-123",
+      returnUrl: "https://preview.runt.run/n/private-demo",
+    } satisfies CloudOidcRequestState),
+  );
+  return storage;
+}
+
+function discoveryResponse(): Response {
+  return Response.json({
+    authorization_endpoint: "https://auth.stage.anaconda.com/api/auth/authorize",
+    token_endpoint: "https://auth.stage.anaconda.com/api/auth/token",
+  });
+}
+
+function stalledFetch(seenSignals: AbortSignal[]): typeof fetch {
+  return async (_input, init) => {
+    seenSignals.push(init?.signal as AbortSignal);
+    return waitForAbort(init?.signal);
+  };
+}
+
+function waitForAbort(signal: AbortSignal | null | undefined): Promise<Response> {
+  assert.ok(signal);
+  return new Promise<Response>((_resolve, reject) => {
+    const rejectTimeout = () => reject(new DOMException("The request timed out.", "TimeoutError"));
+    if (signal.aborted) {
+      rejectTimeout();
+      return;
+    }
+    signal.addEventListener("abort", rejectTimeout, { once: true });
+  });
+}
+
+function microtaskTimeoutSignal(): AbortSignal {
+  const controller = new AbortController();
+  queueMicrotask(() => controller.abort(new DOMException("Timed out.", "TimeoutError")));
+  return controller.signal;
+}
+
+function stableTimeoutSignal(): AbortSignal {
+  return new AbortController().signal;
 }
