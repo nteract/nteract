@@ -593,6 +593,117 @@ describe("CloudWorkstationsStore pairing", () => {
     dispose();
   });
 
+  it("drops a concurrent startPairing so a double-click mints one code", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    let mintCalls = 0;
+    let resolveMint: (value: { id: string; code: string; expiresAt: string }) => void = () => {};
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        mintPairing: () => {
+          mintCalls += 1;
+          return new Promise((resolve) => {
+            resolveMint = resolve;
+          });
+        },
+      }),
+    );
+    await drainMicrotasks();
+
+    // Two rapid clicks before the first mint resolves: the second is dropped.
+    const first = store.startPairing();
+    const second = store.startPairing();
+    assert.equal(mintCalls, 1);
+
+    resolveMint({ id: "pair-1", code: "ABCD-EFGH", expiresAt: new Date(600_000).toISOString() });
+    await Promise.all([first, second]);
+    await drainMicrotasks();
+    assert.equal(mintCalls, 1);
+    assert.equal(store.snapshot.pairing?.code, "ABCD-EFGH");
+
+    // The guard clears on settle: a later click mints again.
+    const third = store.startPairing();
+    assert.equal(mintCalls, 2);
+    resolveMint({ id: "pair-2", code: "WXYZ-1234", expiresAt: new Date(600_000).toISOString() });
+    await third;
+    await drainMicrotasks();
+    assert.equal(store.snapshot.pairing?.code, "WXYZ-1234");
+
+    dispose();
+  });
+
+  it("clears the pairing guard on a mint rejection so the next click mints", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    let mintCalls = 0;
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        mintPairing: async () => {
+          mintCalls += 1;
+          if (mintCalls === 1) {
+            throw new Error("mint rejected");
+          }
+          return { id: "pair-2", code: "WXYZ-1234", expiresAt: new Date(600_000).toISOString() };
+        },
+      }),
+    );
+    await drainMicrotasks();
+
+    await store.startPairing();
+    assert.equal(store.snapshot.pairing?.status, "expired");
+
+    // The catch path must clear the guard, so a retry mints again.
+    await store.startPairing();
+    assert.equal(mintCalls, 2);
+    assert.equal(store.snapshot.pairing?.code, "WXYZ-1234");
+
+    dispose();
+  });
+
+  it("does not let a mint in flight across dispose/re-activate block a fresh mint", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const mintCalls: Array<{ resolve: (value: MintedCloudWorkstationPairing) => void }> = [];
+    const deps = baseDeps({
+      mintPairing: () =>
+        new Promise<MintedCloudWorkstationPairing>((resolve) => {
+          mintCalls.push({ resolve });
+        }),
+    });
+    const dispose = store.activate(inputs$, deps);
+    await drainMicrotasks();
+
+    // A mint is in flight (its latch holds the first activation's epoch)...
+    void store.startPairing();
+    await drainMicrotasks();
+    assert.equal(mintCalls.length, 1);
+    dispose();
+
+    // ...the route re-activates while that mint is still pending. The stale latch
+    // must not block the new mount's first pairing.
+    const reDispose = store.activate(inputs$, deps);
+    await drainMicrotasks();
+    void store.startPairing();
+    await drainMicrotasks();
+    assert.equal(mintCalls.length, 2);
+
+    // The old mint completing must not clear the new mint's latch: a concurrent
+    // click under the new mount is still dropped.
+    mintCalls[0].resolve({
+      id: "old",
+      code: "OLD-CODE",
+      expiresAt: new Date(600_000).toISOString(),
+    });
+    await drainMicrotasks();
+    void store.startPairing();
+    await drainMicrotasks();
+    assert.equal(mintCalls.length, 2);
+
+    reDispose();
+  });
+
   it("shows a mint failure as an expired pairing that never polls", async () => {
     const scheduler = newScheduler();
     const store = new CloudWorkstationsStore();

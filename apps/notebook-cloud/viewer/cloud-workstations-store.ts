@@ -372,6 +372,19 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
    * paths' `RegistryTick`/`PairingStatusTick` auth tag.
    */
   private activationEpoch = 0;
+  /**
+   * Activation epoch of the in-flight pairing mint, or null when none is pending.
+   * Unlike `attach`/`setDefault`, which set a mutation state synchronously (so the
+   * UI disables their control during the request), `startPairing` writes no state
+   * until the mint resolves, so nothing stops a second click from minting a
+   * second, orphaned pairing code. Latching the epoch gives the action
+   * `exhaustMap` semantics for concurrent calls under one mount, while staying
+   * lifecycle-owned: dispose / re-activate / the signed-out gate all bump the
+   * epoch (like the `captureMutationIssue` guard), so a mint left in flight across
+   * that boundary neither blocks a fresh mint nor lets its late completion clear a
+   * newer mint's latch.
+   */
+  private pairingMintEpoch: number | null = null;
   /** Ordered refetch action stream; each carries a settle callback. */
   private readonly refetchRequests$ = new Subject<() => void>();
 
@@ -574,6 +587,11 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     if (!inputs || !deps || !inputs.workstationsEndpoint) {
       return;
     }
+    if (this.pairingMintEpoch === this.activationEpoch) {
+      return;
+    }
+    const mintEpoch = this.activationEpoch;
+    this.pairingMintEpoch = mintEpoch;
     const endpoint = inputs.workstationsEndpoint;
     const issue = this.captureMutationIssue(inputs.auth, endpoint);
     try {
@@ -613,6 +631,12 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
           error: errorMessage(error),
         },
       }));
+    } finally {
+      // Clear only if this call still owns the latch. A mint whose epoch was
+      // superseded by a dispose/re-activate must not clear a newer mint's latch.
+      if (this.pairingMintEpoch === mintEpoch) {
+        this.pairingMintEpoch = null;
+      }
     }
   }
 
