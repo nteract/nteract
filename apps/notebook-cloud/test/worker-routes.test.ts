@@ -5441,6 +5441,7 @@ describe("Worker artifact routes", () => {
       },
       name: "Kyle Kelley",
     });
+    const waitUntilPromises: Promise<unknown>[] = [];
     const env = fakeEnv({
       ...oidcEnv,
       NOTEBOOK_ROOMS: {
@@ -5468,10 +5469,12 @@ describe("Worker artifact routes", () => {
         },
       }),
       env,
-      fakeContext(),
+      fakeContextWithWaitUntil(waitUntilPromises),
     );
 
     assert.equal(response.status, 200);
+    assert.equal(waitUntilPromises.length, 1);
+    await Promise.all(waitUntilPromises);
     const profile = env.DB.profiles.get("user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375");
     assert.equal(profile?.provider, "oidc");
     assert.equal(profile?.email_normalized, "kkelley@anaconda.com");
@@ -5487,6 +5490,7 @@ describe("Worker artifact routes", () => {
       extraPayload: { email_verified: true },
       name: "No Picture",
     });
+    const waitUntilPromises: Promise<unknown>[] = [];
     const env = fakeEnv({
       ...oidcEnv,
       NOTEBOOK_ROOMS: {
@@ -5517,13 +5521,81 @@ describe("Worker artifact routes", () => {
         },
       ),
       env,
-      fakeContext(),
+      fakeContextWithWaitUntil(waitUntilPromises),
     );
 
     assert.equal(response.status, 200);
+    assert.equal(waitUntilPromises.length, 1);
+    await Promise.all(waitUntilPromises);
     const profile = env.DB.profiles.get("user:anaconda:no-picture-user");
     assert.equal(profile?.provider, "oidc");
     assert.equal(profile?.avatar_url, null);
+  });
+
+  it("does not store room connection profiles for dev or anonymous viewers", async () => {
+    const devWaitUntilPromises: Promise<unknown>[] = [];
+    const devEnv = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => new Response("room ok"),
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(devEnv, "dev-profile-demo");
+    seedAcl(devEnv, {
+      notebookId: "dev-profile-demo",
+      subject: "user:dev:alice",
+      scope: "viewer",
+    });
+
+    const devResponse = await worker.fetch(
+      new Request(
+        "http://localhost/n/dev-profile-demo/sync?user=alice&operator=desktop:a&scope=viewer",
+        {
+          headers: {
+            Upgrade: "websocket",
+          },
+        },
+      ),
+      devEnv,
+      fakeContextWithWaitUntil(devWaitUntilPromises),
+    );
+
+    assert.equal(devResponse.status, 200);
+    await Promise.all(devWaitUntilPromises);
+    assert.equal(devEnv.DB.profiles.size, 0);
+
+    const anonymousWaitUntilPromises: Promise<unknown>[] = [];
+    const anonymousEnv = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => new Response("room ok"),
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(anonymousEnv, "anonymous-profile-demo");
+    seedAcl(anonymousEnv, {
+      notebookId: "anonymous-profile-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+
+    const anonymousResponse = await worker.fetch(
+      new Request("http://localhost/n/anonymous-profile-demo/sync?viewer_session=anon", {
+        headers: {
+          Upgrade: "websocket",
+        },
+      }),
+      anonymousEnv,
+      fakeContextWithWaitUntil(anonymousWaitUntilPromises),
+    );
+
+    assert.equal(anonymousResponse.status, 200);
+    await Promise.all(anonymousWaitUntilPromises);
+    assert.equal(anonymousEnv.DB.profiles.size, 0);
   });
 
   it("resolves pending email invites for OIDC editor WebSocket requests", async () => {
