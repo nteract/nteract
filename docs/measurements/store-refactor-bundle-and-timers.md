@@ -48,19 +48,30 @@ visitors, and the code that moved is now 14.35 kB gzip instead of riding
 inside a 70 kB chunk on every route.
 
 The byte-level win on `/n` is small (-1.95 kB gzip) because vite's rechunking
-simultaneously hoisted a lucide-icons vendor chunk (`icons-*.js`, 273.28 kB
-raw / 70.35 kB gzip) into the entry's static closure - before, that weight
-lived inside the workstations chunk that every route loaded anyway, so the
-swap nets out. Cold `/workstations` is +13.16 kB gzip versus the old
-monolith: it now pays entry + icons + its two route chunks + several small
-split chunks.
+simultaneously hoisted a large shared chunk (`icons-*.js`, 273.28 kB raw /
+70.35 kB gzip) into the entry's static closure - before, that weight lived
+inside the workstations chunk that every route loaded anyway, so the swap nets
+out. Cold `/workstations` is +13.16 kB gzip versus the old monolith: it now
+pays entry + that shared chunk + its two route chunks + several small split
+chunks.
 
-**Identified follow-up:** the always-loaded icons chunk is the single biggest
-lever left. The entry-graph views use a handful of icons; if the 70 kB gzip
-chunk is mostly workstations/notebook iconography that per-icon tree-shaking
-or chunk hints could keep out of the entry closure, `/n` cold load drops by
-tens of kB gzip. Needs its own investigation (why rollup groups these icons
-into one shared chunk) before any config change.
+**The `icons-*.js` name is a bundler artifact, not a description** (re-measured
+at `7a5ce4d14`). rolldown names an auto-generated chunk after one of the ~130
+source regions it bundles together, and here it picked a lucide module - but the
+chunk's weight is shared viewer/runtime infrastructure: RxJS, `packages/runtimed`
+store and projection modules, cloud auth/session code, and the dashboard stores.
+Only 6 lucide icon definitions live in it. Tree-shaking is working bundle-wide
+(73 lucide icon factories total, 23 in the entry's first-load closure), so
+per-icon tree-shaking or chunk hints would not move first-load bytes. An earlier
+draft of this memo called this "the always-loaded icons chunk, the single
+biggest lever left"; that was reading the chunk's name, not its contents.
+
+**Identified follow-up:** the 70 kB gzip always-loaded chunk is real and worth
+attacking, but the lever is what pulls RxJS, the `runtimed` store/projection
+code, and the cloud dashboard stores into the entry's static closure
+(`apps/notebook-cloud/viewer/index.tsx`, `notebook-dashboard.ts`), not icon
+import style. Deferring route-specific store/projection code out of the
+first-load closure is the real `/n` cold-load win.
 
 ## Timer and listener census
 
