@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { classicTracebackToPayload, TracebackOutput } from "../traceback-output";
 
@@ -71,6 +71,41 @@ describe("TracebackOutput", () => {
     expect(container.textContent).toContain("g · line 5");
     expect(container.textContent).not.toContain("In[");
     expect(container.textContent).not.toContain("/var/folders/x/T/ipykernel_39879");
+  });
+
+  it("wraps long single-line exception values instead of truncating them", () => {
+    const longEvalue =
+      "FlashAttention2 has been toggled on, but it cannot be used due to the following error: the package flash_attn seems to be not installed. Please refer to the documentation to install Flash Attention 2.";
+
+    render(
+      <TracebackOutput
+        data={{
+          ...payload,
+          ename: "ImportError",
+          evalue: longEvalue,
+        }}
+        resolveExecutionTarget={resolveExecutionTarget}
+      />,
+    );
+
+    const message = screen.getByTestId("traceback-message");
+    expect(message).toHaveTextContent(longEvalue);
+    expect(message).toHaveClass("whitespace-pre-wrap");
+    expect(message).toHaveClass("break-words");
+    expect(message).not.toHaveClass("truncate");
+  });
+
+  it("renders traceback frames as a readable list instead of slash breadcrumbs", () => {
+    render(<TracebackOutput data={payload} resolveExecutionTarget={resolveExecutionTarget} />);
+
+    const frameList = screen.getByTestId("traceback-frame-list");
+    expect(frameList).toHaveClass("grid");
+    expect(frameList).not.toHaveClass("flex");
+
+    const frameButtons = within(frameList).getAllByRole("button");
+    expect(frameButtons).toHaveLength(2);
+    expect(frameButtons[0]).toHaveTextContent("1current cell · line 1");
+    expect(frameButtons[1]).toHaveTextContent("2g · line 5");
   });
 
   it("shortens displayed Python package paths", () => {
