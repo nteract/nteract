@@ -1,20 +1,19 @@
 /**
- * Consumption seam for the four cloud viewer source stores (auth,
- * access-request, catalog, workstations).
+ * Lazy consumption seam for the three non-auth cloud viewer source stores
+ * (access-request, catalog, workstations).
  *
- * The stores stay module singletons - that is the boot and instant-paint
- * reality, not something this seam changes. `cloud-auth-store.ts` MUST live at
- * module scope because `instant-paint.ts` reads `authSnapshot` synchronously
- * before React mounts, and every store's drivers activate once at viewer boot,
- * outside any React subtree. Decision 8 (`docs/adr/frontend-sync-bridge.md`)
- * records why.
+ * These stores stay module singletons; their route-level controllers activate
+ * the instances they consume, not this seam. Auth has its own always-loaded
+ * context because `instant-paint.ts` reads `authSnapshot` synchronously before
+ * React mounts and the auth driver activates once at viewer boot. Decision 8
+ * (`docs/adr/frontend-sync-bridge.md`) records why.
  *
- * What this adds is an override of CONSUMPTION, never of activation. The context
- * defaults to the singleton bundle, so a viewer with no provider resolves every
- * domain hook to the same singletons the drivers booted - no provider is mounted
- * on any production path and behavior stays byte-identical. A test, an Elements
- * fixture, or a future embedded viewer can mount `CloudStoresProvider` with its
- * own store instances and every domain hook downstream reads them instead. The
+ * This context overrides CONSUMPTION, never activation. The context defaults to
+ * the singleton bundle, so a viewer with no provider resolves every non-auth
+ * domain hook to the same singletons the route controllers activate - no
+ * provider is mounted on any production path. A test, an Elements fixture, or a
+ * future embedded viewer can mount `CloudStoresProvider` with its own store
+ * instances and every non-auth domain hook downstream reads them instead. The
  * override's owner activates its own instances (calls `activate`/`seedFromSsr`);
  * the provider swaps which stores are read, not which stores are driven.
  */
@@ -24,13 +23,11 @@ import {
   cloudAccessRequestStore,
   type CloudAccessRequestStore,
 } from "./cloud-access-request-store";
-import { cloudAuthStore, type CloudAuthStore } from "./cloud-auth-store";
 import { cloudCatalogStore, type CloudCatalogStore } from "./cloud-catalog-store";
 import { cloudWorkstationsStore, type CloudWorkstationsStore } from "./cloud-workstations-store";
 
-/** The four cloud viewer source stores a subtree consumes. */
+/** The three non-auth cloud viewer source stores a subtree consumes. */
 export interface CloudStores {
-  auth: CloudAuthStore;
   accessRequest: CloudAccessRequestStore;
   catalog: CloudCatalogStore;
   workstations: CloudWorkstationsStore;
@@ -38,10 +35,9 @@ export interface CloudStores {
 
 /**
  * The module singletons, bundled. This is the context default, so a subtree with
- * no provider consumes exactly the instances the boot drivers activate.
+ * no provider consumes exactly the instances the route controllers activate.
  */
 const singletonCloudStores: CloudStores = {
-  auth: cloudAuthStore,
   accessRequest: cloudAccessRequestStore,
   catalog: cloudCatalogStore,
   workstations: cloudWorkstationsStore,

@@ -167,6 +167,7 @@ import type {
   CloudViewerAuthConfig,
   ViewerRuntime,
 } from "./cloud-viewer-types";
+import { useCloudAuthStore } from "./cloud-auth-context";
 import { useCloudStores } from "./cloud-stores-context";
 import {
   useBrowserApiAuthState,
@@ -242,10 +243,11 @@ export function NotebookViewer({
   authConfig: CloudViewerAuthConfig;
 }) {
   const { config } = runtime;
-  // Store actions and snapshot reads below resolve through this context bundle
-  // (the singletons by default) so a CloudStoresProvider override drives the
-  // same instances this component reads and mutates.
-  const { auth, accessRequest, catalog } = useCloudStores();
+  // Store actions and snapshot reads below resolve through their consumption
+  // contexts (the singletons by default) so provider overrides route this
+  // component to the same instances it reads and mutates.
+  const auth = useCloudAuthStore();
+  const { accessRequest, catalog } = useCloudStores();
   const routeTitle = useMemo(() => cloudNotebookRouteTitle(), []);
   const [notebookTitleSaving, setNotebookTitleSaving] = useState(false);
   const loadingPolicy = useMemo(() => cloudViewerLoadingPolicy(config), [config.headsHash]);

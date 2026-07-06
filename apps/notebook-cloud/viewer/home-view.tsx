@@ -14,13 +14,13 @@ import { cloudNotebookSignInLabel, resolveCloudSignInMethod } from "./cloud-auth
 import { clearCloudPrototypeDevAuth, prepareCloudOidcViewerLogin } from "./collaborator-auth";
 import { beginOidcLogin } from "./oidc-auth";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
-import { useCloudStores } from "./cloud-stores-context";
+import { useCloudAuthStore } from "./cloud-auth-context";
 import { useCloudAppSession, useCloudAuthRenewal, useCloudAuthState } from "./use-cloud-auth-store";
 import type { CloudViewerAuthConfig } from "./cloud-viewer-types";
 
 export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const { auth } = useCloudStores();
+  const auth = useCloudAuthStore();
   const appSessionStatus = useCloudAppSession();
   const authState = useCloudAuthState();
   const authRenewal = useCloudAuthRenewal();
