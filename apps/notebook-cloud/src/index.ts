@@ -5775,9 +5775,11 @@ function authConfigForRequest(
 ): { oidc: Record<string, string> | null; localDev: Record<string, string> | null } {
   const localDev = localDevAuthConfigForRequest(request, env);
   const oidc = oidcAuthConfigForRequest(request, env);
-  // With the dev issuer mounted, surface both: the viewer runs the real OIDC
-  // flow against the local issuer while the loopback dev-token shortcut stays
-  // available. Off the flag, loopback keeps its dev-token-only config.
+  // With the dev issuer mounted, surface both configs. The viewer makes OIDC the
+  // primary sign-in (resolveCloudSignInMethod), so a real browser sign-in drives
+  // the local issuer's authorization_code + PKCE flow; the loopback dev-token
+  // path stays reachable at /local-auth as a fallback. Off the flag, loopback
+  // keeps its dev-token-only config.
   if (localOidcEnabled(env) && oidc) {
     return { oidc, localDev };
   }

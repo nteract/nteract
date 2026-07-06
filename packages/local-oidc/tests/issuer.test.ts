@@ -385,6 +385,50 @@ describe("createLocalOidcIssuer", () => {
     expect(payload.email).toBe("dev@localhost");
   });
 
+  it("stamps token_use so access and refresh tokens are distinguishable", async () => {
+    const issuer = makeIssuer();
+    const tokens = await exchange(issuer);
+    const verify = await verifierFor(issuer);
+    const { payload: access } = await jose.jwtVerify(tokens.access_token, verify, {
+      issuer: ISSUER_URL,
+      audience: CLIENT_ID,
+    });
+    const { payload: refresh } = await jose.jwtVerify(tokens.refresh_token, verify, {
+      issuer: ISSUER_URL,
+      audience: CLIENT_ID,
+    });
+    expect(access.token_use).toBe("access");
+    expect(refresh.token_use).toBe("refresh");
+  });
+
+  it("rejects an access token presented at the refresh_token grant", async () => {
+    const issuer = makeIssuer();
+    const tokens = await exchange(issuer);
+    const response = expectResponse(
+      await issuer.handle(
+        tokenRequest({
+          grant_type: "refresh_token",
+          refresh_token: tokens.access_token,
+          client_id: CLIENT_ID,
+        }),
+      ),
+    );
+    await expectOAuthError(response, "invalid_grant");
+  });
+
+  it("rejects a refresh token presented to userinfo", async () => {
+    const issuer = makeIssuer();
+    const tokens = await exchange(issuer);
+    const response = expectResponse(
+      await issuer.handle(
+        new Request(`${ISSUER_URL}/userinfo`, {
+          headers: { authorization: `Bearer ${tokens.refresh_token}` },
+        }),
+      ),
+    );
+    expect(response.status).toBe(401);
+  });
+
   it("generates a fresh signing key per issuer instance", async () => {
     const first = await makeIssuer().jwks();
     const second = await makeIssuer().jwks();

@@ -96,7 +96,7 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
     homeSource,
     /const signInConfigured = Boolean\(localDevAuth \|\| authConfig\.oidc\)/,
   );
-  assert.match(homeSource, /window\.location\.assign\(localDevAuth\.authUrl\)/);
+  assert.match(homeSource, /window\.location\.assign\(authConfig\.localDev!\.authUrl\)/);
   assert.match(homeSource, /const hasLocalDevAuth = authState\.mode === "dev"/);
   assert.doesNotMatch(homeSource, /showPrototypeDevControls/);
   assert.doesNotMatch(homeSource, /className="cloud-home-scope"/);
@@ -225,7 +225,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
   assert.match(sourceText, /const beginNotebookAuth = useCallback/);
-  assert.match(sourceText, /window\.location\.assign\(localDevAuth\.authUrl\)/);
+  assert.match(sourceText, /window\.location\.assign\(authConfig\.localDev\.authUrl\)/);
   assert.match(
     sourceText,
     /onSignInAgain=\{authConfig\.localDev \|\| authConfig\.oidc \? beginNotebookAuth : undefined\}/,

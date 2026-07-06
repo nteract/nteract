@@ -439,11 +439,20 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   );
   assert.match(editModeButtonSourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
   assert.match(authControlsSourceText, /authConfig\.localDev\?\.label\?\.trim\(\)/);
-  assert.match(authControlsSourceText, /return "Use local auth"/);
-  assert.match(authControlsSourceText, /window\.location\.assign\(localDevAuth\.authUrl\)/);
+  assert.match(authControlsSourceText, /localDevLabel \|\| "Use local auth"/);
+  assert.match(
+    authControlsSourceText,
+    /window\.location\.assign\(authConfig\.localDev!\.authUrl\)/,
+  );
   assert.match(
     authControlsSourceText,
     /const providerLabel = authConfig\.oidc\?\.providerLabel\?\.trim\(\)/,
+  );
+  // OIDC is the primary sign-in when configured: cloudSignInMethodForConfig
+  // returns "oidc" before it ever falls back to "localDev".
+  assert.match(
+    authControlsSourceText,
+    /if \(authConfig\.oidc\)\s*\{\s*return "oidc";[\s\S]*if \(authConfig\.localDev\)\s*\{\s*return "localDev";/,
   );
   assert.match(
     editModeButtonSourceText,

@@ -158,6 +158,7 @@ interface JwtPayload {
   nbf?: number;
   preferred_username?: string;
   sub?: string;
+  token_use?: string;
   ver?: string;
 }
 
@@ -1188,6 +1189,14 @@ async function verifyWithAnySigningKey(
 function validateOidcJwtClaims(payload: JwtPayload, config: OidcConfig): void {
   if (payload.iss !== config.issuer) {
     throw new AuthError("OIDC token issuer is invalid", 401);
+  }
+
+  // A refresh token must not stand in for an access token. Providers that stamp
+  // `token_use` (including the local dev issuer) mark refresh tokens explicitly;
+  // a real access token carries "access" or omits the claim, so this only
+  // rejects a token that declares itself a refresh token.
+  if (payload.token_use === "refresh") {
+    throw new AuthError("OIDC token is not an access token", 401);
   }
 
   const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];

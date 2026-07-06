@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import { clearCloudAppSession } from "./app-session";
-import { cloudNotebookSignInLabel } from "./cloud-auth-controls";
+import { cloudNotebookSignInLabel, resolveCloudSignInMethod } from "./cloud-auth-controls";
 import { clearCloudPrototypeDevAuth, prepareCloudOidcViewerLogin } from "./collaborator-auth";
 import { beginOidcLogin } from "./oidc-auth";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
@@ -34,30 +34,24 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
   }, [resolvedTheme]);
 
   const beginAuth = async () => {
-    if (localDevAuth) {
-      try {
-        setAuthAction("starting");
-        setFormError(null);
-        window.location.assign(localDevAuth.authUrl);
-      } catch (error) {
-        setAuthAction("idle");
-        setFormError(error instanceof Error ? error.message : String(error));
-      }
-      return;
-    }
-    if (!authConfig.oidc) {
+    const method = resolveCloudSignInMethod(authConfig, authState);
+    if (!method) {
       setFormError("Sign-in is not configured for this host.");
       return;
     }
     try {
       setAuthAction("starting");
       setFormError(null);
-      prepareCloudOidcViewerLogin(window.localStorage);
-      const url = await beginOidcLogin(authConfig.oidc, {
-        currentUrl: window.location.href,
-        storage: window.localStorage,
-      });
-      window.location.assign(url.href);
+      if (method === "oidc") {
+        prepareCloudOidcViewerLogin(window.localStorage);
+        const url = await beginOidcLogin(authConfig.oidc!, {
+          currentUrl: window.location.href,
+          storage: window.localStorage,
+        });
+        window.location.assign(url.href);
+        return;
+      }
+      window.location.assign(authConfig.localDev!.authUrl);
     } catch (error) {
       setAuthAction("idle");
       setFormError(error instanceof Error ? error.message : String(error));

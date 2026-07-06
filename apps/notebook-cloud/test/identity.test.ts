@@ -916,6 +916,29 @@ describe("OIDC identity", () => {
     );
   });
 
+  it("rejects a refresh token presented as an access bearer credential", async () => {
+    const { env, token } = await oidcTokenFixture({
+      subject: "alice",
+      extraPayload: { token_use: "refresh" },
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 401 &&
+        /not an access token/.test(error.message),
+    );
+  });
+
   it("accepts OIDC tokens with a configured resource audience", async () => {
     const { env, token } = await oidcTokenFixture({
       audience: "anaconda",

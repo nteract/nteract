@@ -142,7 +142,14 @@ async function main() {
 
     const reconnect = notebook.reconnect;
     const renewalRan = Boolean(renewal?.active && renewal?.ran);
-    const renewalHolds = !renewalRan || (renewal.tokenRotated && renewal.reconnect.stable);
+    // The stability property is only meaningful if a live-room socket actually
+    // opened and rode the app-session cookie. Without those preconditions,
+    // reconnect.stable is trivially true (0 -> 0 sockets, no reload) and would
+    // report a pass while proving nothing. Require both before the check counts.
+    const renewalMeasured =
+      renewalRan && renewal.appSession === true && renewal.reconnect.webSocketsBefore >= 1;
+    const renewalHolds =
+      !renewalRan || (renewalMeasured && renewal.tokenRotated && renewal.reconnect.stable);
     const report = {
       ok: reconnect.stable && renewalHolds,
       baseUrl,
@@ -178,10 +185,18 @@ async function main() {
     // already named in limitations.
     if (renewalRan && !renewalHolds) {
       const failed = [];
-      if (!renewal.tokenRotated) {
+      if (!renewalMeasured) {
+        if (renewal.appSession !== true) {
+          failed.push("appSession (the token never exchanged for an app-session cookie)");
+        }
+        if (renewal.reconnect.webSocketsBefore < 1) {
+          failed.push("noLiveSocket (no live-room WebSocket opened; nothing to measure)");
+        }
+      }
+      if (renewalMeasured && !renewal.tokenRotated) {
         failed.push("tokenRotated (the refreshed token never landed in storage)");
       }
-      if (!renewal.reconnect.stable) {
+      if (renewalMeasured && !renewal.reconnect.stable) {
         failed.push(
           `renewalReconnect (ws ${renewal.reconnect.webSocketsBefore} -> ` +
             `${renewal.reconnect.webSocketsAfter}, reloaded=${renewal.reconnect.reloaded})`,
