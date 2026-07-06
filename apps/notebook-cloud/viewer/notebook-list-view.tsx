@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from "react";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -10,6 +17,7 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
+import { colorForActorIdentity, contrastColorForActorIdentity } from "runtimed";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -344,6 +352,12 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   const currentUserInitials = currentUserDisplay
     ? cloudNotebookInitialsFromLabel(currentUserDisplay)
     : cloudNotebookListCurrentUserInitials(authState);
+  // Deterministic per-identity avatar color via the same palette/contrast
+  // helpers as presence and cursors, but keyed on a best-effort self identity
+  // (auth claims, not the room actor label), so it replaces the fixed brand fill
+  // now; an exact cross-surface match waits on the user store's canonical
+  // self principal.
+  const currentUserColorKey = cloudNotebookListCurrentUserColorKey(authState);
 
   return (
     <main className="cloud-notebook-list-page nb-app">
@@ -393,7 +407,16 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
                   <LogOut aria-hidden="true" />
                   <span className="nb-btn-label">Sign out</span>
                 </Button>
-                <span className="nb-avatar-me" title={currentUserDisplay ?? headerDetail}>
+                <span
+                  className="nb-avatar-me"
+                  style={
+                    {
+                      "--nb-avatar-bg": colorForActorIdentity(currentUserColorKey),
+                      "--nb-avatar-fg": contrastColorForActorIdentity(currentUserColorKey),
+                    } as CSSProperties
+                  }
+                  title={currentUserDisplay ?? headerDetail}
+                >
                   {currentUserInitials}
                 </span>
               </div>
@@ -635,6 +658,15 @@ function cloudNotebookListCurrentUserInitials(authState: CloudPrototypeAuthState
     (authState.mode === "dev" ? authState.user?.trim() : "") ||
     "You";
   return cloudNotebookInitialsFromLabel(label);
+}
+
+function cloudNotebookListCurrentUserColorKey(authState: CloudPrototypeAuthState): string {
+  return (
+    authState.oidcClaims?.sub?.trim() ||
+    (authState.mode === "dev" ? authState.user?.trim() : "") ||
+    authState.oidcClaims?.email?.trim() ||
+    "you"
+  );
 }
 
 function cloudNotebookInitialsFromLabel(label: string): string {

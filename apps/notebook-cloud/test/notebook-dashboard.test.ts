@@ -45,6 +45,10 @@ describe("cloud notebook dashboard projection", () => {
       facts: [],
       identityLabel: null,
       notebook: newOwner,
+      // Deterministic per-identity color from the owner principal; owner-scope
+      // rows compute it even though the avatar renders only for shared rows.
+      ownerColor: "#7c3aed",
+      ownerContrast: "#ffffff",
       ownerInitials: "AL",
       // Owner-scope rows read "You" (the requester owns them); initials stay
       // derived from the real identity so the avatar keeps meaning.
