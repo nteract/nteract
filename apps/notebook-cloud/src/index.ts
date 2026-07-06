@@ -282,7 +282,7 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   },
   {
     match: routePath("/n/:notebookId/sync", { trailingSlash: "optional" }),
-    handler: (_match, request, env) => routeRoomSync(request, env),
+    handler: (_match, request, env, ctx) => routeRoomSync(request, env, ctx),
   },
   {
     match: routePath("/n/:notebookId/debug", { trailingSlash: "optional" }),
@@ -715,7 +715,7 @@ function assetKind(pathname: string): string {
   return "viewer_asset";
 }
 
-async function routeRoomSync(request: Request, env: Env): Promise<Response> {
+async function routeRoomSync(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
     return json({ error: "expected WebSocket upgrade" }, 426);
   }
@@ -733,22 +733,42 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
   const appSessionIdentity = await appSessionIdentityFromWebSocketRequest(request, env);
   const identity =
     appSessionIdentity ??
-    (await authenticateRequestOrResponse(request, env, { allowWorkstationCredential: true }));
+    (await authenticateRequestOrResponse(request, env, {
+      allowWorkstationCredential: true,
+      syncProfile: false,
+    }));
   if (identity instanceof Response) {
     return identity;
   }
-  const authorizedIdentity = await authorizeIdentityOrResponse(
+  const roomAuthorizationOptions = {
+    allowViewerDowngrade: true,
+    allowLiveScopeDowngrade: true,
+  } satisfies AuthorizeNotebookAccessOptions;
+  let profileSyncedBeforeAuthorization = false;
+  let authorizedIdentity = await authorizeIdentityOrResponse(
     env,
     notebookId,
     identity,
     identity.scope,
-    {
-      allowViewerDowngrade: true,
-      allowLiveScopeDowngrade: true,
-    },
+    roomAuthorizationOptions,
   );
+  if (authorizedIdentity instanceof Response && authorizedIdentity.status === 403) {
+    await syncAuthenticatedProfile(env, identity);
+    profileSyncedBeforeAuthorization = true;
+    authorizedIdentity = await authorizeIdentityOrResponse(
+      env,
+      notebookId,
+      identity,
+      identity.scope,
+      roomAuthorizationOptions,
+    );
+  }
   if (authorizedIdentity instanceof Response) {
     return authorizedIdentity;
+  }
+
+  if (!profileSyncedBeforeAuthorization) {
+    ctx.waitUntil(syncAuthenticatedProfile(env, authorizedIdentity));
   }
 
   const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
@@ -4997,7 +5017,7 @@ async function safeEnsureCatalogSchema(env: Env, ctx: ExecutionContext): Promise
 async function authenticateRequestOrResponse(
   request: Request,
   env: Env,
-  options?: { allowWorkstationCredential?: boolean },
+  options?: { allowWorkstationCredential?: boolean; syncProfile?: boolean },
 ): Promise<AuthenticatedConnection | Response> {
   try {
     // Workstation credentials are least-privilege by allowlist: only the
@@ -5012,7 +5032,9 @@ async function authenticateRequestOrResponse(
       return await authenticateWorkstationCredentialRequest(env, request, workstationToken);
     }
     const identity = await authenticateRequestWithProviders(request, env);
-    await syncAuthenticatedProfile(env, identity);
+    if (options?.syncProfile !== false) {
+      await syncAuthenticatedProfile(env, identity);
+    }
     return identity;
   } catch (error) {
     if (error instanceof AuthError) {
