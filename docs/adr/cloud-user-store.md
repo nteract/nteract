@@ -283,12 +283,13 @@ yet" formatter.
 
 ## Rollout
 
-Staged so each stage ships and is verifiable on its own. Cross-model review each
-stage (implementer and reviewer from different model families); the Decision 3
-auth gate is summoned for human review, not self-merged.
+Delivered as one implementation PR after this ADR merges, staged internally as
+ordered commits so review can follow the progression. Cross-model review
+(implementer and reviewer from different model families); the Decision 3 auth gate
+gets a human security review before merge, not self-merge.
 
-- **Stage 0 — stop the leak (independent, shippable now).** No visible
-  raw-principal fallback *anywhere*: the dashboard owner fallback
+- **Stage 0 — stop the leak.** First commit, so the visible symptom dies early.
+  No visible raw-principal fallback *anywhere*: the dashboard owner fallback
   (`notebook-dashboard.ts`) and the sharing ACL / access-request fallback labels
   (`sharing-client.ts`) adopt the never-raw policy — an unresolved principal shows
   a generic kind label, never the raw id. No store, no endpoint. Contained fix for
