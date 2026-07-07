@@ -118,6 +118,7 @@ describe("cloud workstations client", () => {
       return jsonResponse({
         job: {
           job_id: "job-1",
+          workstation_id: "ws-lab2",
           status: "pending",
         },
       });
@@ -129,7 +130,7 @@ describe("cloud workstations client", () => {
         devAuth,
         "ws-lab2",
       ),
-      { jobId: "job-1", status: "pending" },
+      { jobId: "job-1", status: "pending", workstationId: "ws-lab2" },
     );
   });
 
@@ -145,6 +146,7 @@ describe("cloud workstations client", () => {
       return jsonResponse({
         job: {
           job_id: "job-restart",
+          workstation_id: "ws-lab2",
           status: "pending",
         },
       });
@@ -157,7 +159,7 @@ describe("cloud workstations client", () => {
         "ws-lab2",
         { replaceExisting: true },
       ),
-      { jobId: "job-restart", status: "pending" },
+      { jobId: "job-restart", status: "pending", workstationId: "ws-lab2" },
     );
   });
 

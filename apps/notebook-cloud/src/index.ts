@@ -2049,35 +2049,31 @@ async function routeNotebookWorkstationAttachment(
     return identity;
   }
 
-  const payload = await readOptionalJsonObject(request, "workstation attachment body");
+  const payload = await readRequiredJsonObject(request, "workstation attachment body");
   if (payload instanceof Response) {
     return payload;
   }
 
   const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
-  const explicitWorkstationId = optionalBoundedStringField(
-    payload?.workstation_id ?? payload?.workstationId,
+  const workstationId = boundedStringField(
+    payload.workstation_id ?? payload.workstationId,
     "workstation_id",
     128,
   );
-  if (explicitWorkstationId instanceof Response) {
-    return explicitWorkstationId;
-  }
-  const workstationId =
-    explicitWorkstationId ?? (await getDefaultWorkstationId(env, ownerPrincipal));
-  if (!workstationId) {
-    return json({ error: "choose a default workstation before attaching compute" }, 409);
+  if (workstationId instanceof Response) {
+    return workstationId;
   }
   const replaceExisting =
-    payload?.replace_existing === true ||
-    payload?.replaceExisting === true ||
-    payload?.intent === "restart";
+    payload.replace_existing === true ||
+    payload.replaceExisting === true ||
+    payload.intent === "restart";
 
   const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
   if (!workstation) {
     return json({ error: "workstation not found" }, 404);
   }
 
+  const defaultWorkstationId = await getDefaultWorkstationId(env, ownerPrincipal);
   const eventPresence = await workstationEventPresence(env, ownerPrincipal, workstationId);
   const projectedStatus = workstationStatusForResponse(workstation, Date.now(), eventPresence);
   if (projectedStatus !== "online") {
@@ -2089,7 +2085,7 @@ async function routeNotebookWorkstationAttachment(
       {
         error: "workstation is not online",
         workstation: workstationResponseRow(workstation, {
-          defaultWorkstationId: workstationId,
+          defaultWorkstationId,
           now: Date.now(),
           eventPresence,
         }),
@@ -2135,7 +2131,7 @@ async function routeNotebookWorkstationAttachment(
       ok: true,
       job: workstationAttachJobResponseRow(request, job),
       workstation: workstationResponseRow(workstation, {
-        defaultWorkstationId: workstationId,
+        defaultWorkstationId,
         now: Date.now(),
         eventPresence,
       }),

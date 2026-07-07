@@ -98,6 +98,10 @@ function registry(overrides: Partial<CloudWorkstationsRegistry> = {}): CloudWork
   return { defaultWorkstationId: null, workstations: [], ...overrides };
 }
 
+function attachResult(workstationId: string | null = null) {
+  return { jobId: "job-1", status: "pending", workstationId };
+}
+
 function baseInputs(overrides: Partial<CloudWorkstationsInputs> = {}): CloudWorkstationsInputs {
   return {
     auth: STABLE_AUTH,
@@ -119,7 +123,7 @@ function baseDeps(overrides: Partial<CloudWorkstationsStoreDeps> = {}): CloudWor
     origin: "https://viewer.test",
     loadWorkstations: async () => registry(),
     setDefaultWorkstation: async () => null,
-    attachWorkstation: async () => undefined,
+    attachWorkstation: async () => attachResult(),
     mintPairing: async () => ({
       id: "pair-1",
       code: "AAAA-BBBB",
@@ -356,7 +360,7 @@ describe("CloudWorkstationsStore registry cadence", () => {
           return registry({ workstations: [workstation("ws-1", "Lab")] });
         },
         // Hangs so the attach mutation stays in flight and never refetches.
-        attachWorkstation: () => new Promise<void>(() => {}),
+        attachWorkstation: () => new Promise<never>(() => {}),
       }),
     );
     await drainMicrotasks();
@@ -487,7 +491,7 @@ describe("CloudWorkstationsStore mutations", () => {
       baseDeps({
         workstation$,
         loadWorkstations: async () => registry({ workstations: [workstation("ws-1", "Lab")] }),
-        attachWorkstation: async () => undefined,
+        attachWorkstation: async () => attachResult("ws-1"),
       }),
     );
     await drainMicrotasks();
@@ -500,6 +504,62 @@ describe("CloudWorkstationsStore mutations", () => {
 
     workstation$.next(attachment("ws-1"));
     assert.equal(store.snapshot.mutation.kind, "idle");
+
+    dispose();
+  });
+
+  it("passes the requested workstation id through the attach mutation", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const requested: string[] = [];
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        loadWorkstations: async () =>
+          registry({
+            defaultWorkstationId: "ws-default",
+            workstations: [workstation("ws-lab1", "Lab1"), workstation("ws-default", "Default")],
+          }),
+        attachWorkstation: async ({ workstationId }) => {
+          requested.push(workstationId);
+          return attachResult(workstationId);
+        },
+      }),
+    );
+    await drainMicrotasks();
+
+    const started = await store.attach("ws-lab1");
+    await drainMicrotasks();
+
+    assert.equal(started, true);
+    assert.deepEqual(requested, ["ws-lab1"]);
+    assert.equal(store.snapshot.mutation.workstationId, "ws-lab1");
+
+    dispose();
+  });
+
+  it("moves optimistic attach attribution to the workstation acknowledged by the server", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        loadWorkstations: async () =>
+          registry({
+            defaultWorkstationId: "ws-default",
+            workstations: [workstation("ws-lab1", "Lab1"), workstation("ws-default", "Default")],
+          }),
+        attachWorkstation: async () => attachResult("ws-default"),
+      }),
+    );
+    await drainMicrotasks();
+
+    const started = await store.attach("ws-lab1");
+    await drainMicrotasks();
+
+    assert.equal(started, true);
+    assert.equal(store.snapshot.mutation.kind, "attach");
+    assert.equal(store.snapshot.mutation.workstationId, "ws-default");
 
     dispose();
   });
@@ -935,8 +995,8 @@ describe("CloudWorkstationsStore stale-completion guards", () => {
         scheduler,
         loadWorkstations,
         attachWorkstation: () =>
-          new Promise<void>((resolve) => {
-            attachCalls.push({ resolve: () => resolve() });
+          new Promise<ReturnType<typeof attachResult>>((resolve) => {
+            attachCalls.push({ resolve: () => resolve(attachResult("ws-1")) });
           }),
       }),
     );
@@ -985,8 +1045,8 @@ describe("CloudWorkstationsStore stale-completion guards", () => {
         scheduler,
         loadWorkstations,
         attachWorkstation: () =>
-          new Promise<void>((resolve) => {
-            attachCalls.push({ resolve: () => resolve() });
+          new Promise<ReturnType<typeof attachResult>>((resolve) => {
+            attachCalls.push({ resolve: () => resolve(attachResult("ws-1")) });
           }),
       }),
     );
@@ -1152,7 +1212,7 @@ describe("CloudWorkstationsStore stale-completion guards", () => {
           new Promise<MintedCloudWorkstationPairing>((resolve) => {
             mintCalls.push({ resolve });
           }),
-        attachWorkstation: () => new Promise<void>(() => {}),
+        attachWorkstation: () => new Promise<never>(() => {}),
       }),
     );
     await drainMicrotasks();
@@ -1268,7 +1328,7 @@ describe("CloudWorkstationsStore stale-completion guards", () => {
           expiresAt: new Date(600_000).toISOString(),
         }),
         // Hangs so the attach mutation stays in flight across the gate close.
-        attachWorkstation: () => new Promise<void>(() => {}),
+        attachWorkstation: () => new Promise<never>(() => {}),
       }),
     );
     await drainMicrotasks();
