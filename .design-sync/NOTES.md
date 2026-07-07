@@ -222,3 +222,12 @@ passthroughs. Curated list in `synthpkg/build.mjs` (`groups[].dir === 'outputs'`
   and `@/lib/utils` (the `cn` helper) — `@/*` → `./src/*` via `tsconfig.json` paths.
 - No brand webfonts: notebook-tokens.css uses `system-ui`/`ui-monospace` stacks, so no
   `[FONT_MISSING]` expected.
+
+## Stale-file trap (fixed 2026-07-07)
+
+- The REAL cssEntry is `.design-sync/synthpkg/compiled.css` (build.mjs writes it
+  there; cfg.cssEntry resolves relative to synthpkg). A stale
+  `.design-sync/compiled.css` from an earlier layout survived until 2026-07-07
+  and nearly failed a conventions validation (documented utilities appeared
+  missing). It's removed; if one reappears, it's dead - validate against
+  synthpkg/compiled.css.
