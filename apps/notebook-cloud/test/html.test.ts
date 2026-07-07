@@ -487,7 +487,10 @@ describe("HTML script serialization", () => {
     assert.match(html, /nteract cloud notebook sign-in/);
     assert.match(html, /id="nteract-cloud-auth-config"/);
     assert.doesNotMatch(html, /id="nteract-cloud-viewer-config"/);
-    assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
+    assert.match(html, /src="\/assets\/notebook-cloud-oidc\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-cloud-oidc\.js"/);
+    assert.doesNotMatch(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
+    assert.doesNotMatch(html, /href="\/assets\/notebook-cloud-viewer\.css"/);
   });
 
   it("allows the host to place renderer assets on a separate origin", async () => {

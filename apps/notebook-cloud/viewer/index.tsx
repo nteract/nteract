@@ -8,7 +8,6 @@ import { installDocumentThemeSync } from "./theme";
 import {
   isHomePath,
   isNotebookListPath,
-  isOidcCallbackPath,
   isWorkstationsPath,
   loadAuthConfig,
   loadCloudNotebookListBootstrap,
@@ -22,7 +21,6 @@ import { cloudNotebookRouteTitleFromPathname } from "./cloud-notebook-title-stat
 import { CloudHomeView } from "./home-view";
 import { CloudNotebookListView } from "./notebook-list-view";
 import { loadNotebookRouteModule } from "./notebook-route-preload";
-import { OidcCallbackView } from "./oidc-callback-view";
 import "./index.css";
 
 const NotebookRoute = lazy(() =>
@@ -62,11 +60,6 @@ installDocumentThemeSync();
  * ORs in a live app session), while the other routes always keep sign-in fresh.
  */
 function bootCloudAuthStore(): void {
-  if (isOidcCallbackPath()) {
-    // The callback route consumes no store hooks and redirects away; leave the
-    // drivers dormant so nothing kicks off a session fetch mid-exchange.
-    return;
-  }
   const authConfig = loadAuthConfig();
   if (isHomePath() || isWorkstationsPath()) {
     cloudAuthStore.activate({ authConfig, initialSession: null, appSessionRefreshFallback: true });
@@ -95,9 +88,7 @@ bootCloudAuthStore();
 function App() {
   const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());
   const [runtimeState] = useState<ViewerRuntimeState | null>(() =>
-    isOidcCallbackPath() || isHomePath() || isNotebookListPath() || isWorkstationsPath()
-      ? null
-      : loadViewerRuntime(),
+    isHomePath() || isNotebookListPath() || isWorkstationsPath() ? null : loadViewerRuntime(),
   );
 
   if (isHomePath()) {
@@ -117,10 +108,6 @@ function App() {
         <CloudWorkstationsView authConfig={authConfig} />
       </Suspense>
     );
-  }
-
-  if (isOidcCallbackPath()) {
-    return <OidcCallbackView authConfig={authConfig} />;
   }
 
   if (!runtimeState) {

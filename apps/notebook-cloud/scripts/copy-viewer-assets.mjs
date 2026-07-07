@@ -25,12 +25,14 @@ const outputDocumentFrameUrl = new URL(
   import.meta.url,
 );
 const outputDocumentOutputUrl = new URL("../dist-output-document/index.html", import.meta.url);
+const oidcCallbackAssetUrl = new URL("../dist/assets/notebook-cloud-oidc.js", import.meta.url);
 
 await assertExists(siftWasmUrl);
 await assertRuntimedWasmBuildExists();
 await assertExists(isolatedRendererModuleUrl);
 await assertExists(isolatedRendererCssUrl);
 await assertExists(outputDocumentFrameUrl);
+await assertExists(oidcCallbackAssetUrl);
 await mkdir(new URL("../dist/plugins/", import.meta.url), { recursive: true });
 await mkdir(new URL("../dist/assets/", import.meta.url), { recursive: true });
 await mkdir(new URL("../dist-output-document/", import.meta.url), { recursive: true });

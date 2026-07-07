@@ -21,7 +21,7 @@ const VIEWER_MODULE_FILES = [
   "notebook-viewer.tsx",
   "home-view.tsx",
   "notebook-list-view.tsx",
-  "oidc-callback-view.tsx",
+  "oidc-callback-standalone.ts",
   "cloud-notebook-dashboard-view.tsx",
   "cloud-presence-status.tsx",
   "cloud-notebook-title.tsx",

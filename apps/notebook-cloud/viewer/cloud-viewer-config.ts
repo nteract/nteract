@@ -188,10 +188,6 @@ export function loadCloudNotebookListBootstrap(): CloudNotebookListBootstrap | n
   return null;
 }
 
-export function isOidcCallbackPath(): boolean {
-  return window.location.pathname.replace(/\/+$/, "") === "/oidc";
-}
-
 export function isHomePath(): boolean {
   const pathname = window.location.pathname.replace(/\/+$/, "");
   return pathname === "" || pathname === "/index.html";

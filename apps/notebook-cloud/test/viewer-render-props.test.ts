@@ -111,21 +111,22 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
 });
 
 test("cloud callback keeps sign-in handoff in the entry surface language", () => {
-  const cssPath = new URL("../viewer/index.css", import.meta.url);
-  const cssText = readFileSync(cssPath, "utf8");
-  const callbackSource = viewerFunctionSource("OidcCallbackView");
+  const callbackSource = readFileSync(
+    new URL("../viewer/oidc-callback-standalone.ts", import.meta.url),
+    "utf8",
+  );
 
-  assert.match(callbackSource, /className="cloud-home"/);
-  assert.match(callbackSource, /className="cloud-home-layout"/);
-  assert.match(callbackSource, /aria-label="nteract sign-in callback"/);
-  assert.match(callbackSource, /className="cloud-home-panel"/);
+  assert.match(callbackSource, /cloud-oidc-shell/);
+  assert.match(callbackSource, /cloud-oidc-layout/);
+  assert.match(callbackSource, /setAttribute\("aria-label", "nteract sign-in callback"\)/);
+  assert.match(callbackSource, /cloud-oidc-panel/);
   assert.match(callbackSource, /returning to the notebook/);
   assert.match(callbackSource, /Try again/);
   assert.match(callbackSource, /Back to nteract/);
-  assert.match(callbackSource, /data-mode=\{status\.kind\}/);
-  assert.match(cssText, /\.cloud-home-status-spinner/);
+  assert.match(callbackSource, /status\.kind/);
+  assert.match(callbackSource, /cloud-oidc-spin/);
   assert.doesNotMatch(callbackSource, /cloud-report-toolbar/);
-  assert.doesNotMatch(callbackSource, /className="flex min-h-screen/);
+  assert.doesNotMatch(callbackSource, /flex min-h-screen/);
 });
 
 test("cloud notebook startup loading uses route-shaped shell chrome", () => {
