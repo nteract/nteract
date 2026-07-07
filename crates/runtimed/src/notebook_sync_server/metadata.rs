@@ -2425,6 +2425,13 @@ pub(crate) fn publish_environment_launch_error(
         sd.set_lifecycle_with_error_details(&RuntimeLifecycle::Error, reason, Some(details))?;
         sd.set_kernel_info("python", "python", env_source)?;
         sd.clear_env_progress()?;
+        // This is the coordinator's terminal launch-error publish on the
+        // authoritative room doc. Resolve any cells still queued against the
+        // launch that just failed: with no kernel they can never run, so
+        // "queued" → "cancelled" (and any stray "running" → "error"). Catches
+        // executions the runtime agent's own abort missed because they were
+        // queued room-side during the launch and never synced to the agent.
+        sd.abort_inflight_executions()?;
         Ok(())
     }) {
         error!(

@@ -351,6 +351,15 @@ fn record_kernel_launching_state(
     })
 }
 
+/// Record a terminal kernel-launch failure into the RuntimeStateDoc.
+///
+/// A launch that fails terminally (see [`kernel_launch_failure::uses_fresh_port_retry`])
+/// leaves the doc's queued executions with no kernel that will ever run them. So
+/// alongside the errored kernel lifecycle, resolve those inflight executions in
+/// the same change: "queued" → "cancelled", any stray "running" → "error". This
+/// mirrors the defensive sweep on restart and is what stops the cells spinning
+/// on "queued" while the kernel banner reports the failure. Without it the launch
+/// error is invisible to the UI and the notebook looks stuck.
 fn record_kernel_launch_failed_state(
     ctx: &RuntimeAgentContext,
     kernel_type: &str,
@@ -361,6 +370,7 @@ fn record_kernel_launch_failed_state(
         sd.set_lifecycle_with_error_details(&RuntimeLifecycle::Error, None, Some(details))?;
         sd.set_kernel_info(kernel_type, kernel_type, env_source)?;
         sd.set_runtime_agent_id(&ctx.runtime_agent_id)?;
+        sd.abort_inflight_executions()?;
         Ok(())
     })
 }
@@ -3392,6 +3402,53 @@ mod tests {
         assert_eq!(runtime_state.kernel.name, "python");
         assert_eq!(runtime_state.kernel.env_source, "uv:current_python");
         assert_eq!(runtime_state.kernel.runtime_agent_id, "test-runtime-agent");
+    }
+
+    #[test]
+    fn launch_failure_resolves_queued_executions_so_cells_stop_spinning() {
+        let (ctx, _state, handle) = test_fixtures();
+
+        // Cells were queued against the runtime before the launch was attempted.
+        // This is the launch-on-attach case: executions arrive via CRDT sync
+        // while the kernel is still starting, then the launch fails.
+        handle
+            .with_doc(|sd| {
+                sd.create_execution("exec-queued-1")?;
+                sd.create_execution("exec-queued-2")?;
+                Ok(())
+            })
+            .expect("seed queued executions");
+
+        record_kernel_launching_state(&ctx, "python", "uv:current_python")
+            .expect("record kernel launching");
+        record_kernel_launch_failed_state(
+            &ctx,
+            "python",
+            "uv:current_python",
+            "Failed to launch kernel: missing ipykernel",
+        )
+        .expect("record kernel launch failure");
+
+        let runtime_state = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(runtime_state.kernel.lifecycle, RuntimeLifecycle::Error);
+
+        // The queued cells can never run now, so none may remain "queued":
+        // they must reach a terminal status instead of hanging on the spinner.
+        let still_queued = handle.read(|sd| sd.get_queued_executions()).unwrap();
+        assert!(
+            still_queued.is_empty(),
+            "no executions should remain queued after a terminal launch failure"
+        );
+        let e1 = handle
+            .read(|sd| sd.get_execution("exec-queued-1"))
+            .unwrap()
+            .expect("exec-queued-1 exists");
+        let e2 = handle
+            .read(|sd| sd.get_execution("exec-queued-2"))
+            .unwrap()
+            .expect("exec-queued-2 exists");
+        assert_eq!(e1.status, "cancelled");
+        assert_eq!(e2.status, "cancelled");
     }
 
     #[test]

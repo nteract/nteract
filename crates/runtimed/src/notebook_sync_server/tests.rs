@@ -9503,7 +9503,9 @@ async fn publish_environment_launch_error_writes_kernel_error_and_clears_env_pro
             sd.set_env_progress(
                 "conda",
                 &serde_json::json!({ "phase": "solving", "spec_count": 5 }),
-            )
+            )?;
+            // A cell was queued against the launch that is about to fail.
+            sd.create_execution("exec-queued-1")
         })
         .unwrap();
 
@@ -9528,6 +9530,22 @@ async fn publish_environment_launch_error_writes_kernel_error_and_clears_env_pro
     assert_eq!(state.kernel.language, "python");
     assert_eq!(state.kernel.env_source, "conda:inline");
     assert_eq!(state.env.progress, None);
+
+    // The queued cell can never run now, so it must resolve instead of
+    // spinning on "queued" forever (#3947).
+    assert!(
+        room.state
+            .read(|sd| sd.get_queued_executions())
+            .unwrap()
+            .is_empty(),
+        "no executions should remain queued after a terminal launch error"
+    );
+    let queued_cell = room
+        .state
+        .read(|sd| sd.get_execution("exec-queued-1"))
+        .unwrap()
+        .expect("exec-queued-1 exists");
+    assert_eq!(queued_cell.status, "cancelled");
 }
 
 #[test]
