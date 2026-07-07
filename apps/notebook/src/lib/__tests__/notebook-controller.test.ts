@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import type { EditorView } from "@codemirror/view";
 import type { NotebookCell } from "../../types";
 import { createNotebookController, type NotebookControllerHandle } from "../notebook-controller";
 import { getCellById, resetNotebookCells, replaceNotebookCells } from "../notebook-cells";
+import {
+  clearPendingCellFocus,
+  getAllCellEditors,
+  registerCellEditor,
+  requestCellEditorFocus,
+} from "../editor-registry";
 
 function codeCell(id: string, source = ""): NotebookCell {
   return {
@@ -73,7 +80,23 @@ function createHandle(): NotebookControllerHandle & {
 
 afterEach(() => {
   resetNotebookCells();
+  clearPendingCellFocus();
+  getAllCellEditors().clear();
 });
+
+function createEditorView(): EditorView {
+  return {
+    state: {
+      doc: {
+        length: 0,
+        lines: 1,
+        line: vi.fn(() => ({ from: 0 })),
+      },
+    },
+    dispatch: vi.fn(),
+    focus: vi.fn(),
+  } as unknown as EditorView;
+}
 
 describe("createNotebookController", () => {
   it("updates source through the handle and mirrors the shared cell store", () => {
@@ -203,6 +226,31 @@ describe("createNotebookController", () => {
     expect(applyMutationEvent).toHaveBeenCalledWith(event);
     expect(afterMutation).toHaveBeenCalledWith(handle, "structure");
     expect(engine.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears pending focus when deleting a cell before its editor registers", () => {
+    const handle = createHandle();
+    handle.cells.push("cell-b");
+    handle.cellTypes.set("cell-b", "code");
+    const engine = { flush: vi.fn(), scheduleFlush: vi.fn() };
+    const afterMutation = vi.fn();
+    const controller = createNotebookController({
+      getHandle: () => handle,
+      getEngine: () => engine,
+      canWriteCellSource: () => true,
+      canEditStructure: () => true,
+      afterMutation,
+    });
+    const view = createEditorView();
+
+    requestCellEditorFocus("cell-b");
+    controller.deleteCell("cell-b");
+    registerCellEditor("cell-b", view);
+
+    expect(handle.cells).toEqual(["cell-a"]);
+    expect(afterMutation).toHaveBeenCalledWith(handle, "structure");
+    expect(engine.flush).toHaveBeenCalledTimes(1);
+    expect(view.focus).not.toHaveBeenCalled();
   });
 
   it("keeps legacy afterMutation behavior when wrappers are absent", () => {
