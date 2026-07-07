@@ -80,7 +80,7 @@ export function CloudNotebookDashboard({
     [filterId, model, activeQuery],
   );
   const continued = view.filterId === "all" && view.query.length === 0 ? model.continueRow : null;
-  const totalCount = model.notebooks.length;
+  const totalCount = model.totalCount;
   const activeCount = model.filters.find((filter) => filter.id === "compute")?.count ?? 0;
   const hasNoMatches = !continued && view.sections.length === 0;
 
@@ -95,7 +95,8 @@ export function CloudNotebookDashboard({
         <div>
           <h1>Notebooks</h1>
           <p>
-            {totalCount} notebook{totalCount === 1 ? "" : "s"} · {activeCount} active now
+            {cloudNotebookDashboardCountSummary(totalCount, model.loadedCount)} · {activeCount}{" "}
+            active now
           </p>
         </div>
         {view.showResultCount ? (
@@ -138,6 +139,11 @@ export function CloudNotebookDashboard({
       )}
     </div>
   );
+}
+
+function cloudNotebookDashboardCountSummary(totalCount: number, loadedCount: number): string {
+  const total = `${totalCount} notebook${totalCount === 1 ? "" : "s"}`;
+  return totalCount > loadedCount ? `${total} · showing ${loadedCount}` : total;
 }
 
 export function CloudNotebookDashboardSearchInput({

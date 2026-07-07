@@ -62,6 +62,11 @@ export interface ListedNotebookRow extends NotebookRow {
   scope: NotebookAclRow["scope"];
 }
 
+export interface ListedNotebookPage {
+  notebooks: ListedNotebookRow[];
+  totalCount: number;
+}
+
 export interface NotebookRoomSummaryOccupant {
   participant_key: string;
   actor_label: string;
@@ -744,12 +749,13 @@ export async function listNotebooksForPrincipal(
   env: Env,
   principal: string,
   limit: number,
-): Promise<ListedNotebookRow[]> {
+): Promise<ListedNotebookPage> {
   if (!env.DB) {
-    return [];
+    return { notebooks: [], totalCount: 0 };
   }
 
   await ensureCatalogSchema(env);
+  const visibility = notebookPrincipalVisibilityPredicate(principal);
   const rows = await env.DB.prepare(
     `SELECT n.id,
             n.owner_principal,
@@ -781,15 +787,7 @@ export async function listNotebooksForPrincipal(
          ON a.notebook_id = n.id
        LEFT JOIN notebook_revisions r
          ON r.id = n.latest_revision_id
-      WHERE a.subject_kind = 'principal'
-        AND (
-          a.subject = ?
-          OR a.subject IN (
-            SELECT canonical_principal
-              FROM principal_account_links
-             WHERE transport_principal = ?
-          )
-        )
+      WHERE ${visibility.sql}
       GROUP BY n.id,
                n.owner_principal,
                n.title,
@@ -804,9 +802,44 @@ export async function listNotebooksForPrincipal(
       ORDER BY n.updated_at DESC, n.created_at DESC, n.id DESC
       LIMIT ?`,
   )
-    .bind(principal, principal, limit)
+    .bind(...visibility.bindings, limit)
     .all<ListedNotebookRow>();
-  return rows.results ?? [];
+  const count = await env.DB.prepare(
+    `SELECT COUNT(*) AS total_count
+       FROM (
+         SELECT n.id
+           FROM notebooks n
+           JOIN notebook_acl a
+             ON a.notebook_id = n.id
+          WHERE ${visibility.sql}
+          GROUP BY n.id
+       ) visible_notebooks`,
+  )
+    .bind(...visibility.bindings)
+    .first<{ total_count: number }>();
+  const totalCount = Number(count?.total_count ?? rows.results?.length ?? 0);
+  return {
+    notebooks: rows.results ?? [],
+    totalCount: Number.isFinite(totalCount) ? totalCount : (rows.results ?? []).length,
+  };
+}
+
+function notebookPrincipalVisibilityPredicate(principal: string): {
+  bindings: [string, string];
+  sql: string;
+} {
+  return {
+    bindings: [principal, principal],
+    sql: `a.subject_kind = 'principal'
+        AND (
+          a.subject = ?
+          OR a.subject IN (
+            SELECT canonical_principal
+              FROM principal_account_links
+             WHERE transport_principal = ?
+          )
+        )`,
+  };
 }
 
 export async function getPublicNotebookAclRows(

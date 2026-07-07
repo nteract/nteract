@@ -53,6 +53,7 @@ import type {
   CloudNotebookCreateResponse,
   CloudNotebookListBootstrap,
   CloudNotebookListResponse,
+  CloudNotebookListSnapshot,
   CloudNotebookListState,
   CloudNotebookRenameState,
   CloudNotebookUpdateResponse,
@@ -60,6 +61,9 @@ import type {
 } from "./cloud-viewer-types";
 import {
   cloudNotebookOpenUrlWithMode,
+  isCloudNotebookListItem,
+  isOptionalCloudNotebookListTotalCount,
+  normalizeCloudNotebookListTotalCount,
   projectCloudNotebookDashboard,
   type CloudNotebookListItem,
 } from "./notebook-dashboard";
@@ -118,7 +122,10 @@ export function CloudNotebookListView({
   const appSessionWaitDeadline =
     appSessionWaitDeadlineMs ?? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;
   const dashboardModel = useMemo(
-    () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
+    () =>
+      listState.kind === "ready"
+        ? projectCloudNotebookDashboard(listState.notebooks, { totalCount: listState.totalCount })
+        : null,
     [listState],
   );
 
@@ -127,13 +134,13 @@ export function CloudNotebookListView({
   }, [resolvedTheme]);
 
   useEffect(() => {
-    const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache(
+    const seed = cloudNotebookListSeedFromBootstrapOrCache(
       authState,
       appSessionStatus.session,
       bootstrap,
     );
-    const initialState = seededNotebooks
-      ? { kind: "ready" as const, notebooks: seededNotebooks }
+    const initialState = seed
+      ? { kind: "ready" as const, notebooks: seed.notebooks, totalCount: seed.totalCount }
       : { kind: "loading" as const };
     const loadNotebookList = async (controller: AbortController, warningLabel: string) => {
       try {
@@ -155,12 +162,12 @@ export function CloudNotebookListView({
         if (!isCloudNotebookListResponse(body)) {
           throw new Error("Unable to list notebooks: response shape was invalid");
         }
-        writeCachedCloudNotebookListToLocalStorage(
-          authState,
-          appSessionStatus.session,
-          body.notebooks,
-          body.current_user_principal,
-        );
+        const totalCount = normalizeCloudNotebookListTotalCount(body.notebooks, body.total_count);
+        writeCachedCloudNotebookListToLocalStorage(authState, appSessionStatus.session, {
+          notebooks: body.notebooks,
+          principal: body.current_user_principal,
+          totalCount,
+        });
         if (typeof body.current_user_display === "string" && body.current_user_display.trim()) {
           setCurrentUserDisplay(body.current_user_display.trim());
         }
@@ -169,10 +176,10 @@ export function CloudNotebookListView({
             ? body.current_user_avatar.trim()
             : null,
         );
-        setListState({ kind: "ready", notebooks: body.notebooks });
+        setListState({ kind: "ready", notebooks: body.notebooks, totalCount });
       } catch (error) {
         if (controller.signal.aborted) return;
-        if (seededNotebooks) {
+        if (seed) {
           console.warn(
             `[notebook-cloud] notebook list refresh failed${warningLabel}; keeping cached list`,
             error,
@@ -206,12 +213,15 @@ export function CloudNotebookListView({
     }
 
     if (refreshIndex === 0 && bootstrap) {
-      writeCachedCloudNotebookListToLocalStorage(
-        authState,
-        appSessionStatus.session,
+      const totalCount = normalizeCloudNotebookListTotalCount(
         bootstrap.notebooks,
+        bootstrap.total_count,
       );
-      setListState({ kind: "ready", notebooks: bootstrap.notebooks });
+      writeCachedCloudNotebookListToLocalStorage(authState, appSessionStatus.session, {
+        notebooks: bootstrap.notebooks,
+        totalCount,
+      });
+      setListState({ kind: "ready", notebooks: bootstrap.notebooks, totalCount });
       return;
     }
 
@@ -364,10 +374,14 @@ export function CloudNotebookListView({
               }
             : notebook,
         );
-        writeCachedCloudNotebookListToLocalStorage(authState, appSessionStatus.session, notebooks);
+        writeCachedCloudNotebookListToLocalStorage(authState, appSessionStatus.session, {
+          notebooks,
+          totalCount: current.totalCount,
+        });
         return {
           kind: "ready",
           notebooks,
+          totalCount: current.totalCount,
         };
       });
       setRenameState(null);
@@ -795,7 +809,13 @@ function initialCloudNotebookListState(
     bootstrap?.session ?? null,
     bootstrap,
   );
-  return seededNotebooks ? { kind: "ready", notebooks: seededNotebooks } : { kind: "loading" };
+  return seededNotebooks
+    ? {
+        kind: "ready",
+        notebooks: seededNotebooks.notebooks,
+        totalCount: seededNotebooks.totalCount,
+      }
+    : { kind: "loading" };
 }
 
 function fetchCloudNotebookList(
@@ -828,14 +848,22 @@ function cloudNotebookListSeedFromBootstrapOrCache(
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
   bootstrap: CloudNotebookListBootstrap | null,
-): CloudNotebookListItem[] | null {
-  return bootstrap?.notebooks ?? readCachedCloudNotebookListFromLocalStorage(authState, appSession);
+): CloudNotebookListSnapshot | null {
+  return bootstrap
+    ? {
+        notebooks: bootstrap.notebooks,
+        totalCount: normalizeCloudNotebookListTotalCount(
+          bootstrap.notebooks,
+          bootstrap.total_count,
+        ),
+      }
+    : readCachedCloudNotebookListFromLocalStorage(authState, appSession);
 }
 
 function readCachedCloudNotebookListFromLocalStorage(
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
-): CloudNotebookListItem[] | null {
+): CloudNotebookListSnapshot | null {
   const storage = cloudNotebookListCacheStorage();
   return storage ? readCachedCloudNotebookList(storage, authState, appSession) : null;
 }
@@ -843,14 +871,20 @@ function readCachedCloudNotebookListFromLocalStorage(
 function writeCachedCloudNotebookListToLocalStorage(
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
-  notebooks: CloudNotebookListItem[],
-  principal?: string | null,
+  input: {
+    notebooks: CloudNotebookListItem[];
+    principal?: string | null;
+    totalCount: number;
+  },
 ): void {
   const storage = cloudNotebookListCacheStorage();
   if (!storage) {
     return;
   }
-  writeCachedCloudNotebookList(storage, authState, appSession, notebooks, { principal });
+  writeCachedCloudNotebookList(storage, authState, appSession, input.notebooks, {
+    principal: input.principal,
+    totalCount: input.totalCount,
+  });
 }
 
 function clearCachedCloudNotebookListFromLocalStorage(): void {
@@ -887,5 +921,10 @@ function isCloudNotebookListResponse(value: unknown): value is CloudNotebookList
     return false;
   }
   const candidate = value as Record<string, unknown>;
-  return candidate.ok === true && Array.isArray(candidate.notebooks);
+  return (
+    candidate.ok === true &&
+    Array.isArray(candidate.notebooks) &&
+    candidate.notebooks.every(isCloudNotebookListItem) &&
+    isOptionalCloudNotebookListTotalCount(candidate.total_count, candidate.notebooks.length)
+  );
 }

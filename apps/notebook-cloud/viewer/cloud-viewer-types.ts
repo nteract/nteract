@@ -24,6 +24,7 @@ export type ViewerRuntimeState =
 export interface CloudNotebookListResponse {
   ok: boolean;
   notebooks: CloudNotebookListItem[];
+  total_count?: number;
   /** Requester's worker principal, used only to key local-first shell cache. */
   current_user_principal?: string;
   /** Requester's unified-profile display name, when the store has one. */
@@ -37,6 +38,12 @@ export interface CloudNotebookListBootstrap {
   notebooks: CloudNotebookListItem[];
   saved_at: string;
   session?: CloudAppSession | null;
+  total_count?: number;
+}
+
+export interface CloudNotebookListSnapshot {
+  notebooks: CloudNotebookListItem[];
+  totalCount: number;
 }
 
 export interface CloudNotebookCreateResponse {
@@ -55,7 +62,7 @@ export interface CloudNotebookUpdateResponse {
 
 export type CloudNotebookListState =
   | { kind: "loading" }
-  | { kind: "ready"; notebooks: CloudNotebookListItem[] }
+  | { kind: "ready"; notebooks: CloudNotebookListItem[]; totalCount: number }
   | { kind: "signed_out" }
   | { kind: "error"; message: string };
 
