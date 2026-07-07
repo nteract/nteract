@@ -99,7 +99,7 @@ export const RUNTIME_STATUS_LABELS: Record<RuntimeStatusKey, string> = {
   [RUNTIME_STATUS.CONNECTING]: "connecting to kernel",
   [RUNTIME_STATUS.RUNNING_IDLE]: "idle",
   [RUNTIME_STATUS.RUNNING_BUSY]: "busy",
-  [RUNTIME_STATUS.RUNNING_UNKNOWN]: "running",
+  [RUNTIME_STATUS.RUNNING_UNKNOWN]: "available",
   [RUNTIME_STATUS.ERROR]: "error",
   [RUNTIME_STATUS.SHUTDOWN]: "shutdown",
 };

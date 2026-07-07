@@ -30,7 +30,9 @@ import {
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
   NotebookWorkstationsPanel,
+  KernelLaunchErrorBanner,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
+  shouldShowKernelLaunchErrorBanner,
   shouldShowNotebookDocumentCommandToolbar,
   useActiveOutlineItemId,
   useOutlineSelection,
@@ -309,6 +311,7 @@ export function NotebookViewer({
   const [commentFocus, setCommentFocus] = useState<{ threadId: string; nonce: number } | null>(
     null,
   );
+  const [dismissedLaunchError, setDismissedLaunchError] = useState<string | null>(null);
   const handledHeadingHashRef = useRef<string | null>(null);
   const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
   const browserApiAuthState = useBrowserApiAuthState();
@@ -555,6 +558,17 @@ export function NotebookViewer({
     [profilesSnapshot, user],
   );
   const runtimeState = useRuntimeState();
+  const cloudKernelLifecycle = runtimeState.kernel.lifecycle;
+  const cloudKernelErrorDetails =
+    runtimeState.kernel.error_details && runtimeState.kernel.error_details.length > 0
+      ? runtimeState.kernel.error_details
+      : null;
+  const cloudKernelErrorReason = runtimeState.kernel.error_reason;
+  useEffect(() => {
+    if (cloudKernelLifecycle.lifecycle !== "Error") {
+      setDismissedLaunchError(null);
+    }
+  }, [cloudKernelLifecycle.lifecycle]);
   // Deduplicated shared projection — re-renders only when attachment facts
   // change, not on every runtime tick (was per-host shadow state).
   const workstationAttachment = useWorkstationAttachment();
@@ -1742,11 +1756,40 @@ export function NotebookViewer({
   const rendererAssetError = hasIsolatedOutputs
     ? (isolatedRenderer.error ?? isolatedRenderer.lastError)
     : null;
+  const cloudKernelRuntime =
+    runtimeState.kernel.language === "deno" || notebookLanguageRef.current === "deno"
+      ? "deno"
+      : "python";
+  const shouldRenderKernelLaunchError =
+    shouldShowKernelLaunchErrorBanner({
+      lifecycle: cloudKernelLifecycle,
+      errorDetails: cloudKernelErrorDetails,
+      errorReason: cloudKernelErrorReason,
+      runtime: cloudKernelRuntime,
+    }) && dismissedLaunchError !== cloudKernelErrorDetails;
+  const kernelLaunchNotice =
+    shouldRenderKernelLaunchError && cloudKernelErrorDetails ? (
+      <KernelLaunchErrorBanner
+        errorDetails={cloudKernelErrorDetails}
+        onRetry={() => {
+          setDismissedLaunchError(null);
+          handleCloudRestartRuntime();
+        }}
+        onDismiss={() => setDismissedLaunchError(cloudKernelErrorDetails)}
+      />
+    ) : null;
+  const diagnostics =
+    kernelLaunchNotice || accessRequestNotice ? (
+      <>
+        {kernelLaunchNotice}
+        {accessRequestNotice}
+      </>
+    ) : null;
   const hasNotices = cloudNotebookHasNotices({
     authState,
     authRenewal,
     connectionError,
-    diagnostics: accessRequestNotice,
+    diagnostics,
     hasAppSession,
     isPublicViewer,
     hasReadableSnapshot: notebookHasReadableSnapshot,
@@ -1762,7 +1805,7 @@ export function NotebookViewer({
       authState={authState}
       authRenewal={authRenewal}
       connectionError={connectionError}
-      diagnostics={accessRequestNotice}
+      diagnostics={diagnostics}
       hasAppSession={hasAppSession}
       isPublicViewer={isPublicViewer}
       hasReadableSnapshot={notebookHasReadableSnapshot}
