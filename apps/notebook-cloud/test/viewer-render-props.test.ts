@@ -81,8 +81,13 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
   assert.match(homeSource, /aria-label="Notebook sign-in"/);
   assert.match(homeSource, /className="cloud-home-copy"/);
   assert.match(homeSource, /className="cloud-home-kicker"/);
-  assert.match(homeSource, /NTERACT/);
-  assert.match(homeSource, /<h1>Bring computation to life\.<\/h1>/);
+  assert.match(homeSource, /const localMode = Boolean\(localDevAuth\)/);
+  assert.match(homeSource, /localMode \? "LOCAL MODE" : "NTERACT"/);
+  assert.match(homeSource, /localMode \? "Open local notebooks\." : "Bring computation to life\."/);
+  assert.match(
+    homeSource,
+    /Use local auth to create notebooks and test the live room on this machine\./,
+  );
   assert.match(
     homeSource,
     /Sign in to create live notebooks, share work with colleagues, and attach compute\./,
@@ -240,6 +245,9 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     sourceText,
     /const requestCloudEditAccess = useCallback\(\(\) => \{[\s\S]*accessRequest\.requestEditAccess\(\);/,
   );
+  assert.match(sourceText, /projection\.kind === "dismissed"/);
+  assert.match(sourceText, /icon=\{<Info className="h-4 w-4" \/>\}/);
+  assert.doesNotMatch(sourceText, /projection\.kind === "dismissed"[\s\S]{0,240}AlertCircle/);
   // The connection/identity slot is filled by the shared quiet component:
   // avatar + connectivity dot, driven by the stable status bridge. It must
   // never regress into a text pill or a second status label surface. The
@@ -459,7 +467,12 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   assert.match(noticesText, /function cloudConnectionNoticeDisplay/);
   assert.match(noticesText, /hasReadableSnapshot: boolean/);
   assert.match(noticesText, /Sign in required\./);
+  assert.match(noticesText, /Sign in to open the live notebook room\./);
   assert.match(noticesText, /Notebook access needed\./);
+  assert.match(noticesText, /message: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC/);
+  assert.match(noticesText, /Notebook not found\./);
+  assert.match(noticesText, /CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC/);
+  assert.match(noticesText, /tone: "success"/);
   assert.match(noticesText, /Live room unavailable\./);
   assert.match(noticesText, /The notebook will load once the account or connection is refreshed\./);
   assert.match(noticesText, /tone=\{connectionNotice\.tone\}/);

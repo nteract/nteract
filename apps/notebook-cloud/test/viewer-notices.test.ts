@@ -4,8 +4,10 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 import {
+  CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC,
   CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
   CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+  CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC,
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
   cloudConnectionErrorAcceptsAccessDiagnostic,
 } from "../viewer/connection-diagnostics";
@@ -186,8 +188,29 @@ test("cloud notebook notices distinguish sign-in and access diagnostics from soc
   );
 
   assert.match(noAccessHtml, /Notebook access needed/);
-  assert.match(noAccessHtml, /does not have access to this notebook yet/);
+  assert.match(
+    noAccessHtml,
+    /This account does not have access to this notebook\. Ask the owner to share it, or refresh sign-in if an invite was just accepted\./,
+  );
+  assert.doesNotMatch(noAccessHtml, /does not have access to this notebook yet/);
   assert.doesNotMatch(noAccessHtml, /Live room unavailable/);
+
+  const notFoundHtml = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+      onRetryConnection: () => {},
+    }),
+  );
+
+  assert.match(notFoundHtml, /Notebook not found/);
+  assert.match(notFoundHtml, /This notebook doesn&#x27;t exist, or the link may be wrong/);
+  assert.doesNotMatch(notFoundHtml, /Retry/);
+  assert.doesNotMatch(notFoundHtml, /Ask the owner to share it/);
+  assert.doesNotMatch(notFoundHtml, /Live room unavailable/);
 });
 
 test("cloud notebook notices replace signed-out local room retries with sign-in required", () => {
@@ -215,11 +238,27 @@ test("cloud notebook notices replace signed-out local room retries with sign-in 
   );
 
   assert.match(html, /Sign in required/);
-  assert.match(html, /Sign in again to open the live notebook room/);
-  assert.match(html, /Sign in again/);
+  assert.match(html, /Sign in to open the live notebook room\./);
+  assert.match(html, /Sign in/);
+  assert.doesNotMatch(html, /Sign in again/);
   assert.doesNotMatch(html, /Loading notebook/);
   assert.doesNotMatch(html, /Connecting to live notebook room/);
   assert.doesNotMatch(html, /cloud sync socket failed/);
+});
+
+test("cloud notebook notices render approved edit access as success", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /data-tone="success"/);
+  assert.match(html, /Edit access approved/);
 });
 
 test("cloud notebook notices let access diagnostics own private-route loading", () => {

@@ -10,6 +10,7 @@ import {
   CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC,
   CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
   CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+  CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC,
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
   isCloudConnectionAccessDiagnostic,
 } from "./connection-diagnostics";
@@ -267,11 +268,11 @@ export function CloudNotebookNotices({
           title="Sign in required."
           actions={
             onSignInAgain ? (
-              <SignInNoticeAction onSignInAgain={onSignInAgain}>Sign in again</SignInNoticeAction>
+              <SignInNoticeAction onSignInAgain={onSignInAgain}>Sign in</SignInNoticeAction>
             ) : null
           }
         >
-          Sign in again to open the live notebook room.
+          Sign in to open the live notebook room.
         </NotebookNotice>
       ) : null}
 
@@ -469,6 +470,10 @@ function ConnectionNoticeAction({
     return <SignInNoticeAction onSignInAgain={onSignInAgain}>Sign in again</SignInNoticeAction>;
   }
 
+  if (connectionError === CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC) {
+    return null;
+  }
+
   if (onRetryConnection) {
     return (
       <NotebookNoticeAction onClick={onRetryConnection} icon={<RotateCcw className="h-3 w-3" />}>
@@ -532,7 +537,7 @@ function cloudConnectionNoticeDisplay(
 ): {
   title: string;
   message: string;
-  tone: "warning";
+  tone: "warning" | "success";
 } | null {
   if (isTransportReconnectError(error)) {
     // The transport retries forever on its own; the debounced sustained-
@@ -552,8 +557,15 @@ function cloudConnectionNoticeDisplay(
   if (error === CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC) {
     return {
       title: "Notebook access needed.",
-      message:
-        "This account does not have access to this notebook yet. Ask the owner to share it, or refresh sign-in if an invite was just accepted.",
+      message: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+      tone: "warning",
+    };
+  }
+
+  if (error === CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC) {
+    return {
+      title: "Notebook not found.",
+      message: CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC,
       tone: "warning",
     };
   }
@@ -570,7 +582,7 @@ function cloudConnectionNoticeDisplay(
     return {
       title: "Edit access approved.",
       message: "Refresh or reconnect to open the live notebook room with editor access.",
-      tone: "warning",
+      tone: "success",
     };
   }
 
