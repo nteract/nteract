@@ -70,6 +70,11 @@ import {
   loadCloudPersistedNotebookSeed,
   type CloudNotebookPersistenceController,
 } from "./notebook-persistence";
+import {
+  clearPendingLocalEditMarker,
+  readPendingLocalEditMarker,
+  writePendingLocalEditMarker,
+} from "./pending-local-edit-marker";
 import { NOTEBOOK_DOC_HEAL_KEY, SyncHealScheduler } from "./sync-heal";
 import { createCloudNotebookTabBridge } from "./tab-bridge";
 import {
@@ -311,17 +316,37 @@ export function useCloudViewerSession({
   const clearOfflineMergeNotice = useCallback(() => {
     setOfflineMergeNotice(null);
   }, []);
+  const markPendingLocalEditForCurrentRuntime = useCallback(() => {
+    if (connectionStatusBridge.getCurrent() !== "reconnecting") return;
+    const liveRuntime = liveRuntimeRef.current;
+    if (!liveRuntime) return;
+    const principal = cloudPrincipalFromActorLabel(liveRuntime.actorLabel);
+    if (isAnonymousCloudPrincipal(principal)) return;
+    const storage = cloudPendingLocalEditMarkerStorage();
+    if (!storage) return;
+    try {
+      writePendingLocalEditMarker(storage, {
+        headsHex: liveRuntime.handle.get_heads_hex(),
+        notebookId: config.notebookId,
+        principal,
+      });
+    } catch (error) {
+      console.warn("[notebook-cloud] failed to mark pending local edit", error);
+    }
+  }, [config.notebookId, connectionStatusBridge]);
   const noteLocalCellEdit = useCallback(
     (cellId: string, options?: OfflineMergeLocalCellEditOptions) => {
       offlineMergeTracker.noteLocalCellEdit(cellId, options);
+      markPendingLocalEditForCurrentRuntime();
     },
-    [offlineMergeTracker],
+    [markPendingLocalEditForCurrentRuntime, offlineMergeTracker],
   );
   const noteLocalCellDelete = useCallback(
     (cellId: string, options?: OfflineMergeLocalCellEditOptions) => {
       offlineMergeTracker.noteLocalCellDelete(cellId, options);
+      markPendingLocalEditForCurrentRuntime();
     },
-    [offlineMergeTracker],
+    [markPendingLocalEditForCurrentRuntime, offlineMergeTracker],
   );
   // Terminal heal-exhaustion surface (one quiet line; see sync-heal.ts).
   const [syncHealStalled, setSyncHealStalled] = useState(false);
@@ -729,6 +754,39 @@ export function useCloudViewerSession({
           clear: () => clearPersistedNotebookDoc(persistenceAdapter, config.notebookId),
         }
       : undefined;
+    const clearPendingLocalEditMarkerForRuntime = (liveRuntime: CloudSyncRuntime) => {
+      const principal = cloudPrincipalFromActorLabel(liveRuntime.actorLabel);
+      if (isAnonymousCloudPrincipal(principal)) return;
+      const storage = cloudPendingLocalEditMarkerStorage();
+      if (!storage) return;
+      try {
+        clearPendingLocalEditMarker(storage, { notebookId: config.notebookId, principal });
+      } catch (error) {
+        console.warn("[notebook-cloud] failed to clear pending local edit marker", error);
+      }
+    };
+    const armRestoredPendingLocalEditMarker = (
+      liveRuntime: CloudSyncRuntime,
+      principal: string,
+    ) => {
+      const storage = cloudPendingLocalEditMarkerStorage();
+      if (!storage) return;
+      let hasPendingMarker = false;
+      try {
+        hasPendingMarker = readPendingLocalEditMarker(storage, {
+          notebookId: config.notebookId,
+          principal,
+          seedMeta: liveRuntime.persistenceSeedMeta,
+        });
+      } catch (error) {
+        console.warn("[notebook-cloud] failed to read pending local edit marker", error);
+      }
+      if (!hasPendingMarker) return;
+      offlineMergeTracker.notePersistedPendingLocalWork();
+      // The transport may already have reached "online" before the runtime
+      // promise resolved; replay the snapshot so the restored marker settles.
+      offlineMergeTracker.noteConnectionStatus(connectionStatusBridge.getCurrent());
+    };
     // Consume the poison-pill marker: after a seeded session's changes were
     // rejected by the room, the next attempt bootstraps even though the
     // adapter is healthy (the record was cleared, but don't race the clear).
@@ -1322,6 +1380,11 @@ export function useCloudViewerSession({
         }
         liveRuntimeRef.current = liveRuntime;
         installCloudWidgetCommWriter(liveRuntime);
+        const runtimePrincipal = cloudPrincipalFromActorLabel(liveRuntime.actorLabel);
+        const offlineMergeEligible = !isAnonymousCloudPrincipal(runtimePrincipal);
+        // Anonymous sessions are out of scope for offline-merge surfacing
+        // (per-connection principals; persistence never arms for them).
+        offlineMergeTracker.noteSessionEligibility(offlineMergeEligible);
         armPersistence(liveRuntime);
         armTabBridge(liveRuntime);
         // Arm convergence verification for the INITIAL bootstrap exchange.
@@ -1332,11 +1395,6 @@ export function useCloudViewerSession({
         // or surface — and the cold load is the most common connection
         // event.
         syncHeal.noteResyncKicked(NOTEBOOK_DOC_HEAL_KEY);
-        // Anonymous sessions are out of scope for offline-merge surfacing
-        // (per-connection principals; persistence never arms for them).
-        offlineMergeTracker.noteSessionEligibility(
-          !isAnonymousCloudPrincipal(cloudPrincipalFromActorLabel(liveRuntime.actorLabel)),
-        );
         const stopWidgetLiveRuntimeDiagnostics =
           installCloudWidgetLiveRuntimeDiagnostics(liveRuntime);
         setConnectionScope(liveRuntime.connectionScope);
@@ -1453,12 +1511,18 @@ export function useCloudViewerSession({
           liveRuntime.engine.notebookDocChanged$.subscribe(() => {
             offlineMergeTracker.noteLocalDocActivity();
           }),
+          liveRuntime.engine.notebookDocFlushDelivered$.subscribe(() => {
+            clearPendingLocalEditMarkerForRuntime(liveRuntime);
+          }),
           liveRuntime.engine.cellChanges$.subscribe((changeset) => {
             offlineMergeTracker.noteRemoteCellChanges(changeset);
           }),
           { unsubscribe: () => stopCursorDispatch() },
           { unsubscribe: stopWidgetLiveRuntimeDiagnostics },
         ];
+        if (offlineMergeEligible) {
+          armRestoredPendingLocalEditMarker(liveRuntime, runtimePrincipal);
+        }
         liveRuntime.engine.reProjectComms();
         materializeLiveCellsSafely(liveRuntime);
       })
@@ -1782,6 +1846,14 @@ function summarizeWidgetStateDiagnostic(state: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function cloudPendingLocalEditMarkerStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
 }
 
 function isConfiguredBlobUrl(value: string, blobBasePath: string): boolean {

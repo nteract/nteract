@@ -37,6 +37,32 @@ describe("offline merge tracker", () => {
     tracker.dispose();
   });
 
+  it("fires after a restored pending-local-edit marker reaches online", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { notices, tracker } = tracked();
+
+    tracker.notePersistedPendingLocalWork();
+    tracker.noteConnectionStatus("online");
+
+    t.mock.timers.tick(SETTLE_MS);
+    assert.equal(notices.length, 1);
+    assert.deepEqual(notices[0], { mergedRemoteCellCount: 0, removedEditedCellCount: 0 });
+    tracker.dispose();
+  });
+
+  it("ignores a restored pending marker while the session is ineligible", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { notices, tracker } = tracked();
+
+    tracker.noteSessionEligibility(false);
+    tracker.notePersistedPendingLocalWork();
+    tracker.noteConnectionStatus("online");
+
+    t.mock.timers.tick(60_000);
+    assert.deepEqual(notices, []);
+    tracker.dispose();
+  });
+
   it("stays silent on a clean reconnect with nothing pending", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const { notices, tracker } = tracked();
