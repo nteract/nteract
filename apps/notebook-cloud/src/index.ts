@@ -90,7 +90,13 @@ import {
   workstationEventsObjectName,
   type WorkstationAttachJobNotification,
 } from "./workstation-events.ts";
-import { OwnerComputeIndex, listOwnerComputeSessions } from "./compute-session-index.ts";
+import {
+  OwnerComputeIndex,
+  listOwnerComputeSessions,
+  listWorkstationLeases,
+  upsertWorkstationLease,
+  type WorkstationLeaseRecord,
+} from "./compute-session-index.ts";
 import {
   SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH,
   materializeSnapshotPairRenderWithSummary,
@@ -1675,6 +1681,11 @@ function parseNotebookListLimit(request: Request): number | Response {
 }
 
 const WORKSTATION_HEARTBEAT_STALE_MS = 3 * 60_000;
+// The lease a heartbeat renews in the registry DO expires after the same
+// window the lazy read-time check uses, so alarm-swept offline and read-time
+// offline agree. The DO's alarm makes the transition proactive instead of
+// only-on-read.
+const WORKSTATION_LEASE_TTL_MS = WORKSTATION_HEARTBEAT_STALE_MS;
 const MAX_WORKSTATION_ATTACH_JOBS_LIMIT = 25;
 const MISSING_WORKSTATION_RETRY_AFTER_SECONDS = 15 * 60;
 
@@ -1711,9 +1722,10 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
   const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
 
   if (request.method === "GET") {
-    const [workstations, defaultWorkstationId] = await Promise.all([
+    const [workstations, defaultWorkstationId, leases] = await Promise.all([
       listWorkstationsForPrincipal(env, ownerPrincipal),
       getDefaultWorkstationId(env, ownerPrincipal),
+      listWorkstationLeases(env, ownerPrincipal),
     ]);
     const now = Date.now();
     const presenceByWorkstationId = await workstationEventPresenceById(
@@ -1730,6 +1742,7 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
           defaultWorkstationId,
           now,
           eventPresence: presenceByWorkstationId.get(workstation.workstation_id) ?? null,
+          lease: leases.get(workstation.workstation_id) ?? null,
         }),
       ),
     });
@@ -1752,6 +1765,15 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
   if (!workstation) {
     return json({ error: "workstation was not registered" }, 500);
   }
+  // Renew the registry-DO liveness lease alongside the D1 row. Best-effort:
+  // registration already succeeded, and the lazy read-time staleness check
+  // still stands if this write is dropped.
+  await upsertWorkstationLease(
+    env,
+    ownerPrincipal,
+    workstation.workstation_id,
+    WORKSTATION_LEASE_TTL_MS,
+  );
   if (identity.metadata.workstationPairingCodeId) {
     await linkWorkstationToPairing(
       env,
@@ -2743,9 +2765,15 @@ function workstationResponseRow(
     defaultWorkstationId: string | null;
     now: number;
     eventPresence?: WorkstationEventPresence | null;
+    lease?: WorkstationLeaseRecord | null;
   },
 ): Record<string, unknown> {
-  const status = workstationStatusForResponse(workstation, options.now, options.eventPresence);
+  const status = workstationStatusForResponse(
+    workstation,
+    options.now,
+    options.eventPresence,
+    options.lease,
+  );
   return {
     workstation_id: workstation.workstation_id,
     display_name: workstation.display_name,
@@ -2773,16 +2801,34 @@ function workstationResponseRow(
   };
 }
 
-function workstationStatusForResponse(
+export function workstationStatusForResponse(
   workstation: WorkstationRow,
   now: number,
   eventPresence: WorkstationEventPresence | null | undefined = null,
+  lease: WorkstationLeaseRecord | null | undefined = null,
 ): WorkstationStatus {
   if (
     eventPresence?.connected === true &&
     (workstation.status === "online" || workstation.status === "offline")
   ) {
     return "online";
+  }
+  // The registry-DO lease is the proactive liveness signal: its alarm sweeps a
+  // workstation offline at expiry instead of waiting for a read to notice.
+  // Still check the expiry timestamp directly so a late alarm can't report a
+  // lapsed lease as live. Only trust the lease when it is at least as fresh as
+  // the D1 row: a heartbeat writes D1 first and the paired lease write is
+  // best-effort, so if that write lagged or failed, D1 is the newer signal and
+  // a stale offline lease must not override it. Falls back to the lazy D1
+  // staleness check when no (or a stale) lease exists.
+  if (lease && (workstation.status === "online" || workstation.status === "offline")) {
+    const rowSeen = workstation.last_seen_at ? Date.parse(workstation.last_seen_at) : NaN;
+    const leaseSeen = Date.parse(lease.last_seen_at);
+    const leaseIsFreshEnough =
+      !Number.isFinite(rowSeen) || (Number.isFinite(leaseSeen) && leaseSeen >= rowSeen);
+    if (leaseIsFreshEnough) {
+      return lease.online && lease.lease_expires_at > now ? "online" : "offline";
+    }
   }
   if (workstation.status === "online" && workstation.last_seen_at) {
     const lastSeen = Date.parse(workstation.last_seen_at);
