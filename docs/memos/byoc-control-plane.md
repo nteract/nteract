@@ -184,6 +184,46 @@ originates only from an authorized room request and reaches the peer via CRDT
 convergence, never direct RPC. Any redesign that shortcuts `execute_cell` straight
 to the peer socket reintroduces exactly the coupling this architecture avoids.
 
+## Hibernation and the connection boundary
+
+The failure mode to design against: an open WebSocket keeps a Durable Object
+resident in memory and duration-billed (GB-s) for as long as the connection
+lives. Get this wrong and a fleet of always-connected workstations turns a
+"cheap serverless registry" into a bank of permanently-awake, permanently-billed
+objects. The fix is not to avoid connections, it is to keep the connection-holding
+and the state-holding in separate objects.
+
+The two-DO split is exactly that boundary, and it is load-bearing, not incidental:
+
+- **FleetRegistry DO holds no connections.** It holds lease rows
+  (`last_seen_at`, `lease_expires_at`) in SQLite plus a self-scheduling
+  `alarm()`. It is written by HTTP heartbeat POSTs and read by dashboard/rail
+  queries, both of which wake it, do their work, and let it evict. Nothing keeps
+  it resident between a heartbeat write and the next lease-expiry sweep, so it
+  hibernates by default and its duration bill is near zero.
+
+- **WorkstationEvents DO holds the connections, and already hibernates them
+  correctly.** It uses the Hibernatable WebSockets API: `state.acceptWebSocket`
+  with tags, and `setWebSocketAutoResponse` answers client ping/pong without
+  waking the DO at all. Cloudflare evicts it from memory while the sockets stay
+  connected, with no GB-s charged during hibernation; it wakes only to fan out an
+  actual `attach_jobs`/`went_offline` message. This is why Option C leaves it
+  untouched. The connection-holding concern is already solved where the
+  connections actually are.
+
+So the rule the redesign must not break: never fold the workstation's live socket
+into the lease-holding registry DO. A resident socket there would pin the
+registry awake and duration-billed, reintroducing precisely this problem. Keep
+FleetRegistry as state + alarm (no sockets) and WorkstationEvents as hibernatable
+sockets (no lease authority); the registry's alarm reaches the sockets by an HTTP
+`fetch()` to the events stub, not by holding them.
+
+One more discipline on the alarm itself: arm/disarm it single-earliest-wins (the
+`notebook-room.ts:2258-2314` pattern), armed only when a lease is actually
+approaching expiry and disarmed when the fleet is empty, and return immediately
+after each sweep. That keeps the registry off a fixed always-on tick, so it wakes
+on the order of once per lease-expiry rather than on a constant heartbeat.
+
 ## Concrete next step
 
 Sized as a same-codebase refactor, not a platform migration:
