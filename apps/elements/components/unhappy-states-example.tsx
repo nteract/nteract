@@ -401,7 +401,7 @@ function EmptyState({
           ) : null}
           {note ? (
             noteInitials ? (
-              <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
+              <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="grid size-[18px] place-items-center rounded-full bg-background text-[10px] font-semibold text-foreground">
                   {noteInitials}
                 </span>
