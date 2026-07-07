@@ -713,6 +713,55 @@ test("cloud shell capabilities prefer OIDC display names and pictures over raw e
   assert.equal(capabilities.access.actor?.principal.imageUrl, "https://profiles.example/alice.png");
 });
 
+test("cloud shell capabilities prefer store-resolved self display over auth claims", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner", {
+      sub: "anaconda-user-123",
+      email: "alice@example.com",
+      email_verified: true,
+      name: "Alice Claims",
+      picture: "https://profiles.example/claims.png",
+    }),
+    selfDisplay: {
+      label: "Alice Profile",
+      imageUrl: "https://profiles.example/profile.png",
+    },
+    connectionScope: "owner",
+    connectionActorLabel: "user:anaconda:alice/browser:tab",
+    hasCodeCells: false,
+  });
+
+  assert.equal(capabilities.access.identityLabel, "Alice Profile");
+  assert.equal(capabilities.access.actor?.principal.label, "Alice Profile");
+  assert.equal(
+    capabilities.access.actor?.principal.imageUrl,
+    "https://profiles.example/profile.png",
+  );
+});
+
+test("cloud shell capabilities fall back to auth display when self display is absent", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "editor", {
+      sub: "anaconda-user-123",
+      email: "alice@example.com",
+      email_verified: true,
+      name: "Alice Claims",
+      picture: "https://profiles.example/claims.png",
+    }),
+    connectionScope: "editor",
+    connectionActorLabel: "user:anaconda:alice/browser:tab",
+    hasCodeCells: false,
+    selectedMode: "edit",
+  });
+
+  assert.equal(capabilities.access.identityLabel, "Alice Claims");
+  assert.equal(capabilities.access.actor?.principal.label, "Alice Claims");
+  assert.equal(
+    capabilities.access.actor?.principal.imageUrl,
+    "https://profiles.example/claims.png",
+  );
+});
+
 test("cloud shell capabilities return stable frozen objects for equivalent inputs", () => {
   const oidcClaims = {
     sub: "anaconda-user-123",
@@ -723,6 +772,10 @@ test("cloud shell capabilities return stable frozen objects for equivalent input
   };
   const first = cloudNotebookShellCapabilities({
     authState: authState("oidc", "owner", oidcClaims),
+    selfDisplay: {
+      label: "Alice Profile",
+      imageUrl: "https://profiles.example/profile.png",
+    },
     connectionScope: "owner",
     connectionActorLabel: "user:anaconda:alice/browser:tab",
     hasCodeCells: true,
@@ -732,6 +785,10 @@ test("cloud shell capabilities return stable frozen objects for equivalent input
   });
   const second = cloudNotebookShellCapabilities({
     authState: authState("oidc", "owner", { ...oidcClaims }),
+    selfDisplay: {
+      label: "Alice Profile",
+      imageUrl: "https://profiles.example/profile.png",
+    },
     connectionScope: "owner",
     connectionActorLabel: "user:anaconda:alice/browser:tab",
     hasCodeCells: true,

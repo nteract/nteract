@@ -32,8 +32,8 @@ function useLiveInputs<T>(value: T): BehaviorSubject<T> {
   return subject;
 }
 
-function principalFromActorLabel(actorLabel: string): string {
-  const trimmed = actorLabel.trim();
+function principalFromActorLabel(actorLabel: string | null | undefined): string {
+  const trimmed = actorLabel?.trim();
   if (!trimmed) {
     return "";
   }
@@ -47,12 +47,20 @@ function principalFromActorLabel(actorLabel: string): string {
   }
 }
 
-/** Resolve one actor label through the cloud user directory. */
-export function useResolvedActor(actorLabel: string): ActorDisplay {
+/** Subscribe to one actor label's resolved profile entry. */
+export function useResolvedActorProfile(
+  actorLabel: string | null | undefined,
+): CloudResolvedProfile | undefined {
   const { user } = useCloudStores();
   const principal = principalFromActorLabel(actorLabel);
   const profile$ = useMemo(() => user.profileFor$(principal), [principal, user]);
-  void useObservableProjection(profile$);
+  return useObservableProjection(profile$);
+}
+
+/** Resolve one actor label through the cloud user directory. */
+export function useResolvedActor(actorLabel: string): ActorDisplay {
+  const { user } = useCloudStores();
+  void useResolvedActorProfile(actorLabel);
   return user.resolve(actorLabel);
 }
 

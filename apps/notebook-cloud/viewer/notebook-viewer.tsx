@@ -181,7 +181,11 @@ import {
   useCloudNotebookTitle,
   useCloudNotebookTitleError,
 } from "./use-cloud-catalog-store";
-import { useCloudUserProfiles, useCloudUserStoreController } from "./use-cloud-user-store";
+import {
+  useCloudUserProfiles,
+  useCloudUserStoreController,
+  useResolvedActorProfile,
+} from "./use-cloud-user-store";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { cloudSignInMethodForConfig, CloudNotebookSignInButton } from "./cloud-auth-controls";
@@ -456,6 +460,21 @@ export function NotebookViewer({
     () => user.connectPresence(presenceStore, () => auth.authSnapshot),
     [auth, presenceStore, user],
   );
+  const selfProfile = useResolvedActorProfile(connectionActorLabel);
+  useEffect(() => {
+    if (!connectionActorLabel || !config.authorProfilesEndpoint) {
+      return;
+    }
+    user.requestResolve([connectionActorLabel]);
+  }, [config.authorProfilesEndpoint, connectionActorLabel, user]);
+  const selfDisplay = useMemo(() => {
+    const label = selfProfile?.displayName?.trim() || null;
+    const imageUrl = selfProfile?.avatarUrl?.trim() || null;
+    if (!label && !imageUrl) {
+      return undefined;
+    }
+    return { label, imageUrl };
+  }, [connectionActorLabel, selfProfile?.avatarUrl, selfProfile?.displayName]);
   // Mirror the desktop app: expose the local author's comment color and a
   // legible foreground as CSS vars the shared affordance and composer styles
   // read. The cloud viewer previously set neither, so cloud create surfaces fell
@@ -762,6 +781,7 @@ export function NotebookViewer({
       accessConnectionScope,
       authState,
       codeCellCount,
+      selfDisplay,
       connectionActorLabel,
       connectionError,
       connectionPeerId,
