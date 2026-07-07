@@ -221,6 +221,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /buildCloudShareAccessRows\(\{ acl, invites, accessRequests \}\)/,
   );
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
+  assert.match(sourceText, /editControls=\{[\s\S]*notebookHeaderChrome\.showEditModeControl \? \(/);
   assert.match(
     sourceText,
     /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState, \{[\s\S]*hasAppSession,[\s\S]*\}\) \? \(/,

@@ -25,6 +25,7 @@ export interface CloudNotebookHeaderChromeProjectionInput {
 
 export interface CloudNotebookHeaderChromeProjection {
   showConnectionIdentity: boolean;
+  showEditModeControl: boolean;
   showPresenceStatus: boolean;
 }
 
@@ -64,6 +65,7 @@ export function projectCloudNotebookHeaderChrome({
   const showCollaborationChrome = !bodyAccessBlocked && !liveRoomAccessPending;
   return {
     showConnectionIdentity: showCollaborationChrome,
+    showEditModeControl: showCollaborationChrome,
     showPresenceStatus: showCollaborationChrome,
   };
 }

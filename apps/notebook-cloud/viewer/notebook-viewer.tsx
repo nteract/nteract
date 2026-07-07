@@ -1644,19 +1644,21 @@ export function NotebookViewer({
         />
       }
       editControls={
-        <CloudNotebookEditModeButton
-          authState={authState}
-          hasAppSession={hasAppSession}
-          interaction={shellCapabilities.interaction ?? null}
-          accessLevel={shellCapabilities.access.level}
-          accessPending={editAccessPending}
-          hasSentEditRequest={
-            accessRequestFacts.requestedByUser || Boolean(cloudAccessFacts.effectiveAccessRequest)
-          }
-          reconnecting={sustainedReconnecting}
-          onModeChange={handleSelectInteractionMode}
-          onRequestEditAccess={requestCloudEditAccess}
-        />
+        notebookHeaderChrome.showEditModeControl ? (
+          <CloudNotebookEditModeButton
+            authState={authState}
+            hasAppSession={hasAppSession}
+            interaction={shellCapabilities.interaction ?? null}
+            accessLevel={shellCapabilities.access.level}
+            accessPending={editAccessPending}
+            hasSentEditRequest={
+              accessRequestFacts.requestedByUser || Boolean(cloudAccessFacts.effectiveAccessRequest)
+            }
+            reconnecting={sustainedReconnecting}
+            onModeChange={handleSelectInteractionMode}
+            onRequestEditAccess={requestCloudEditAccess}
+          />
+        ) : null
       }
       identityControls={
         // Connection/identity slot: self-identity avatar + connectivity dot
