@@ -11,6 +11,7 @@ export function CloudNotebookEditModeButton({
   hasAppSession,
   accessLevel,
   accessPending,
+  hasSentEditRequest,
   interaction,
   reconnecting = false,
   onModeChange,
@@ -20,6 +21,7 @@ export function CloudNotebookEditModeButton({
   hasAppSession: boolean;
   accessLevel: NotebookShellCapabilities["access"]["level"];
   accessPending: boolean;
+  hasSentEditRequest: boolean;
   interaction: NotebookInteractionModeProjection | null;
   reconnecting?: boolean;
   onModeChange: (mode: NotebookInteractionMode) => void;
@@ -46,7 +48,11 @@ export function CloudNotebookEditModeButton({
         reconnecting ? "Offline while the room reconnects" : "Edit access requested"
       }
       mode={accessPending ? "view" : interaction.selectedMode}
-      state={accessPending ? "viewing" : interaction.state}
+      state={
+        accessPending || (!hasSentEditRequest && interaction.state === "requested")
+          ? "viewing"
+          : interaction.state
+      }
       variant="segmented"
       disabled={accessPending}
       onModeChange={(mode) => {

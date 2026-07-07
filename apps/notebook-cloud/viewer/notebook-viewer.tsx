@@ -1650,6 +1650,9 @@ export function NotebookViewer({
           interaction={shellCapabilities.interaction ?? null}
           accessLevel={shellCapabilities.access.level}
           accessPending={editAccessPending}
+          hasSentEditRequest={
+            accessRequestFacts.requestedByUser || Boolean(cloudAccessFacts.effectiveAccessRequest)
+          }
           reconnecting={sustainedReconnecting}
           onModeChange={handleSelectInteractionMode}
           onRequestEditAccess={requestCloudEditAccess}
