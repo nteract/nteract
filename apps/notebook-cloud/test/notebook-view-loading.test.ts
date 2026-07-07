@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
   CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+  CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC,
 } from "../viewer/connection-diagnostics.ts";
 import {
   projectCloudNotebookHeaderChrome,
@@ -78,24 +79,29 @@ describe("cloud notebook body loading projection", () => {
   });
 
   it("does not render the notebook view when content access is blocked", () => {
-    assert.deepEqual(
-      projectCloudNotebookViewSurface({
-        bodyAccessBlocked: true,
-        cellCount: 0,
-        canEditStructure: false,
-        connectionError: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
-        editAccessPending: false,
-        emptyRoomGraceElapsed: true,
-        hasAccessDiagnostic: true,
-        hasReadableSnapshot: false,
-        liveMaterialized: false,
-        status: { kind: "error", message: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC },
-      }),
-      {
-        isLoading: false,
-        shouldRenderNotebookView: false,
-      },
-    );
+    for (const connectionError of [
+      CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+      CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC,
+    ]) {
+      assert.deepEqual(
+        projectCloudNotebookViewSurface({
+          bodyAccessBlocked: true,
+          cellCount: 0,
+          canEditStructure: false,
+          connectionError,
+          editAccessPending: false,
+          emptyRoomGraceElapsed: true,
+          hasAccessDiagnostic: true,
+          hasReadableSnapshot: false,
+          liveMaterialized: false,
+          status: { kind: "error", message: connectionError },
+        }),
+        {
+          isLoading: false,
+          shouldRenderNotebookView: false,
+        },
+      );
+    }
   });
 
   it("keeps non-blocking access diagnostics on the normal notebook surface", () => {

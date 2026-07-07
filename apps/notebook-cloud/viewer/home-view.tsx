@@ -27,6 +27,7 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [formError, setFormError] = useState<string | null>(null);
   const localDevAuth = authConfig.localDev;
+  const localMode = Boolean(localDevAuth);
   const signInConfigured = Boolean(localDevAuth || authConfig.oidc);
 
   useEffect(() => {
@@ -96,10 +97,14 @@ export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfi
         <div className="cloud-home-copy">
           <div className="cloud-home-kicker">
             <Sparkles aria-hidden="true" />
-            NTERACT
+            {localMode ? "LOCAL MODE" : "NTERACT"}
           </div>
-          <h1>Bring computation to life.</h1>
-          <p>Sign in to create live notebooks, share work with colleagues, and attach compute.</p>
+          <h1>{localMode ? "Open local notebooks." : "Bring computation to life."}</h1>
+          <p>
+            {localMode
+              ? "Use local auth to create notebooks and test the live room on this machine."
+              : "Sign in to create live notebooks, share work with colleagues, and attach compute."}
+          </p>
         </div>
 
         <section

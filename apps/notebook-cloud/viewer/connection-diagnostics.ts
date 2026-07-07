@@ -5,6 +5,8 @@ import type { CloudNotebookAccessRequest } from "./sharing-client";
 export const CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC = "Sign in again to open this notebook.";
 export const CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC =
   "This account does not have access to this notebook. Ask the owner to share it, or refresh sign-in if an invite was just accepted.";
+export const CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC =
+  "This notebook doesn't exist, or the link may be wrong.";
 export const CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC =
   "Edit access is waiting for owner approval.";
 export const CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC =
@@ -13,6 +15,7 @@ export const CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC =
 const ACCESS_DIAGNOSTICS = new Set<string>([
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
   CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+  CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC,
   CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
   CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC,
 ]);
@@ -24,7 +27,8 @@ export function isCloudConnectionAccessDiagnostic(message: string | null): boole
 export function cloudConnectionDiagnosticBlocksNotebookBody(message: string | null): boolean {
   return (
     message === CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC ||
-    message === CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC
+    message === CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC ||
+    message === CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC
   );
 }
 
@@ -96,8 +100,11 @@ export async function diagnoseCloudConnectionAccess({
     if (response.status === 401) {
       return CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC;
     }
-    if (response.status === 403 || response.status === 404) {
+    if (response.status === 403) {
       return CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC;
+    }
+    if (response.status === 404) {
+      return CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC;
     }
   } catch {
     return null;

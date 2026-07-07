@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { NotebookHostProvider } from "@nteract/notebook-host";
-import { AlertCircle, Check, Loader2, PanelLeftOpen, X } from "lucide-react";
+import { AlertCircle, Check, Info, Loader2, PanelLeftOpen, X } from "lucide-react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import {
   useHasIsolatedOutputs,
@@ -1947,6 +1947,18 @@ function cloudAccessRequestNotice(
       <NotebookNotice
         tone={projection.tone}
         icon={<X className="h-4 w-4" />}
+        title={projection.title}
+      >
+        {projection.message}
+      </NotebookNotice>
+    );
+  }
+
+  if (projection.kind === "dismissed") {
+    return (
+      <NotebookNotice
+        tone={projection.tone}
+        icon={<Info className="h-4 w-4" />}
         title={projection.title}
       >
         {projection.message}
