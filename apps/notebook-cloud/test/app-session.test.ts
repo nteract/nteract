@@ -4,6 +4,7 @@ import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
   NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH,
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
+  appSessionRenewalCookie,
   clearCloudAppSessionCookie,
   createCloudAppSessionCookie,
   readCloudAppSession,
@@ -102,6 +103,81 @@ describe("cloud app session cookies", () => {
       headers: { Cookie: tampered },
     });
     assert.equal(await readCloudAppSession(env, tamperedRequest, 3_100), null);
+  });
+
+  it("renews a valid session past half its max age", async () => {
+    const env = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET };
+    const issuedAt = 4_000;
+    const renewalAt = issuedAt + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS / 2 + 1;
+    const cookie = await createCloudAppSessionCookie(env, oidcIdentity(), issuedAt);
+    const request = new Request("https://cloud.test/n", {
+      headers: { Cookie: cookie },
+    });
+    const session = await readCloudAppSession(env, request, renewalAt);
+
+    const renewedCookie = await appSessionRenewalCookie(env, session, renewalAt);
+
+    assert.match(renewedCookie ?? "", new RegExp(`^${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=`));
+    assert.match(
+      renewedCookie ?? "",
+      new RegExp(`Max-Age=${NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS}`),
+    );
+    const renewed = await readCloudAppSession(
+      env,
+      new Request("https://cloud.test/n", {
+        headers: { Cookie: renewedCookie ?? "" },
+      }),
+      renewalAt,
+    );
+    assert.equal(renewed?.principal, session?.principal);
+    assert.equal(renewed?.principalNamespace, session?.principalNamespace);
+    assert.equal(renewed?.displayName, session?.displayName);
+    assert.equal(renewed?.issuedAt, renewalAt);
+    assert.equal(renewed?.expiresAt, renewalAt + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS);
+  });
+
+  it("does not renew before half its max age", async () => {
+    const env = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET };
+    const issuedAt = 5_000;
+    const beforeHalfLife = issuedAt + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS / 2;
+    const cookie = await createCloudAppSessionCookie(env, oidcIdentity(), issuedAt);
+    const request = new Request("https://cloud.test/n", {
+      headers: { Cookie: cookie },
+    });
+    const session = await readCloudAppSession(env, request, beforeHalfLife);
+
+    assert.equal(await appSessionRenewalCookie(env, session, beforeHalfLife), null);
+  });
+
+  it("does not renew expired or invalid sessions", async () => {
+    const env = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET };
+    const issuedAt = 6_000;
+    const cookie = await createCloudAppSessionCookie(env, oidcIdentity(), issuedAt);
+    const expiredAt = issuedAt + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS + 1;
+    const expiredSession = await readCloudAppSession(
+      env,
+      new Request("https://cloud.test/n", {
+        headers: { Cookie: cookie },
+      }),
+      expiredAt,
+    );
+
+    const tampered = cookie.replace(
+      `${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=`,
+      `${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=x`,
+    );
+    const invalidSession = await readCloudAppSession(
+      env,
+      new Request("https://cloud.test/n", {
+        headers: { Cookie: tampered },
+      }),
+      issuedAt + 1,
+    );
+
+    assert.equal(expiredSession, null);
+    assert.equal(invalidSession, null);
+    assert.equal(await appSessionRenewalCookie(env, expiredSession, expiredAt), null);
+    assert.equal(await appSessionRenewalCookie(env, invalidSession, issuedAt + 1), null);
   });
 
   it("requires a configured signing secret and OIDC identity", async () => {

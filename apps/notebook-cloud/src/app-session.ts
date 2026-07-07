@@ -59,6 +59,33 @@ export async function createCloudAppSessionCookie(
   return `${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=${value}; Path=/; Max-Age=${NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS}; HttpOnly; Secure; SameSite=Lax`;
 }
 
+export async function appSessionRenewalCookie(
+  env: AppSessionEnvironment,
+  session: CloudAppSession | null | undefined,
+  nowSeconds = currentEpochSeconds(),
+): Promise<string | null> {
+  if (!session || session.expiresAt <= nowSeconds) {
+    return null;
+  }
+  const remainingSeconds = session.expiresAt - nowSeconds;
+  if (remainingSeconds >= NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS / 2) {
+    return null;
+  }
+
+  const payload: CloudAppSessionPayload = {
+    v: 1,
+    provider: "oidc",
+    principal: session.principal,
+    ns: session.principalNamespace,
+    iat: nowSeconds,
+    exp: nowSeconds + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
+    sid: crypto.randomUUID(),
+    ...(session.displayName ? { display_name: session.displayName } : {}),
+  };
+  const value = await signCloudAppSession(env, payload);
+  return `${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=${value}; Path=/; Max-Age=${NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS}; HttpOnly; Secure; SameSite=Lax`;
+}
+
 export function clearCloudAppSessionCookie(): string {
   return `${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 }
