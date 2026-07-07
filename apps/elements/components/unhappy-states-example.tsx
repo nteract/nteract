@@ -1,10 +1,9 @@
 import {
-  AlertCircle,
   BookOpen,
   Check,
   CloudOff,
+  CircleAlert,
   FileQuestion,
-  Info,
   KeyRound,
   ListTree,
   Loader2,
@@ -15,12 +14,13 @@ import {
   TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
+import type { CSSProperties } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 type EmptyStateTone = "neutral" | "attention" | "destructive";
 type NoticeTone = "info" | "warning" | "error" | "success";
-type RailTone = "neutral" | "attention" | "destructive";
+type RailTone = "attention" | "destructive";
 
 interface EmptyStateFixture {
   icon: LucideIcon;
@@ -31,6 +31,10 @@ interface EmptyStateFixture {
   secondaryHref?: string;
   tone?: EmptyStateTone;
   note?: string;
+  noteInitials?: string;
+  iconBadgeClassName?: string;
+  iconBadgeStyle?: CSSProperties;
+  iconStyle?: CSSProperties;
 }
 
 const emptyStateToneClasses = {
@@ -79,47 +83,75 @@ const accessGateStates = [
   {
     icon: FileQuestion,
     title: "Notebook not found",
-    detail: "This notebook doesn't exist, or the link may be wrong.",
-    secondary: "View your notebooks",
+    detail:
+      "There is nothing at this address. It may have been deleted, or the link came through slightly wrong.",
+    secondary: "Back to your notebooks",
     secondaryHref: "/docs/cloud-dashboard",
     tone: "neutral",
   },
   {
     icon: Lock,
-    title: "Notebook access needed",
-    detail:
-      "This account does not have access to this notebook. Ask the owner to share it, or request access below.",
+    title: "This notebook is private",
+    detail: "Your account doesn't have access yet. Ask, and the owner gets a note right away.",
     action: "Request access",
     tone: "attention",
+    iconBadgeClassName: "rounded-full",
+    iconBadgeStyle: {
+      background: "color-mix(in oklab, var(--k-exec) 10%, transparent)",
+    },
+    iconStyle: {
+      color: "var(--k-exec)",
+    },
     note: "Signed in as alice@localhost",
+    noteInitials: "AE",
   },
   {
     icon: KeyRound,
-    title: "Sign in to view this notebook",
-    detail: "This notebook may be private. Sign in to check your access.",
+    title: "Sign in to open this notebook",
+    detail: "It may be private. Sign in and we'll bring you straight back here.",
     action: "Sign in",
     tone: "neutral",
   },
 ] satisfies readonly EmptyStateFixture[];
 
-const noticeToneClasses = {
+const noticeToneStyles = {
   info: {
-    shell: "bg-background",
-    icon: "text-muted-foreground",
+    shell: {
+      border: "1px solid color-mix(in oklab, var(--k-start) 22%, var(--border))",
+      background: "color-mix(in oklab, var(--k-start) 6%, var(--background))",
+    },
+    icon: {
+      color: "var(--k-start)",
+    },
   },
   warning: {
-    shell: "bg-amber-500/5",
-    icon: "text-amber-600 dark:text-amber-400",
+    shell: {
+      border: "1px solid color-mix(in oklab, var(--k-exec) 25%, var(--border))",
+      background: "color-mix(in oklab, var(--k-exec) 6%, var(--background))",
+    },
+    icon: {
+      color: "var(--k-exec)",
+    },
   },
   error: {
-    shell: "bg-destructive/5",
-    icon: "text-destructive",
+    shell: {
+      border: "1px solid color-mix(in oklab, var(--destructive) 22%, var(--border))",
+      background: "color-mix(in oklab, var(--destructive) 5%, var(--background))",
+    },
+    icon: {
+      color: "var(--destructive)",
+    },
   },
   success: {
-    shell: "bg-emerald-500/5",
-    icon: "text-emerald-600 dark:text-emerald-400",
+    shell: {
+      border: "1px solid color-mix(in oklab, var(--live-ink) 22%, var(--border))",
+      background: "color-mix(in oklab, var(--live-ink) 6%, var(--background))",
+    },
+    icon: {
+      color: "var(--live-ink)",
+    },
   },
-} satisfies Record<NoticeTone, { shell: string; icon: string }>;
+} satisfies Record<NoticeTone, { shell: CSSProperties; icon: CSSProperties }>;
 
 const noticeBanners = [
   {
@@ -129,19 +161,19 @@ const noticeBanners = [
     spin: true,
   },
   {
-    icon: Info,
-    message: "Reconnecting. Your edits are kept locally...",
-    tone: "info",
+    icon: CloudOff,
+    message: "Reconnecting. Your edits are kept locally and will sync the moment we're back.",
+    tone: "warning",
   },
   {
-    icon: CloudOff,
+    icon: CircleAlert,
     message: "Couldn't refresh the notebook list. Showing your last synced copy.",
-    tone: "warning",
+    tone: "error",
     action: "Retry",
   },
   {
     icon: Check,
-    message: "Edit access approved. Reconnecting with editor access.",
+    message: "Edit access approved. This notebook is yours to edit now.",
     tone: "success",
   },
 ] satisfies readonly {
@@ -152,27 +184,36 @@ const noticeBanners = [
   spin?: boolean;
 }[];
 
-const railToneClasses = {
-  neutral: "text-muted-foreground",
-  attention: "text-amber-600 dark:text-amber-400",
-  destructive: "text-destructive",
-} satisfies Record<RailTone, string>;
+const railToneStyles = {
+  attention: {
+    shell: {
+      border: "1px solid color-mix(in oklab, var(--k-exec) 25%, var(--border))",
+      background: "color-mix(in oklab, var(--k-exec) 5%, var(--background))",
+    },
+    icon: {
+      color: "var(--k-exec)",
+    },
+  },
+  destructive: {
+    shell: {
+      border: "1px solid color-mix(in oklab, var(--destructive) 22%, var(--border))",
+      background: "color-mix(in oklab, var(--destructive) 5%, var(--background))",
+    },
+    icon: {
+      color: "var(--destructive)",
+    },
+  },
+} satisfies Record<RailTone, { shell: CSSProperties; icon: CSSProperties }>;
 
 const railRows = [
   {
-    icon: Loader2,
-    text: "Preparing workstation access...",
-    tone: "neutral",
-    spin: true,
-  },
-  {
     icon: TriangleAlert,
-    text: "This workstation does not have a working directory configured.",
+    text: "Working directory not set for oslo-gpu-01",
     tone: "attention",
   },
   {
-    icon: AlertCircle,
-    text: "Unable to load workstations.",
+    icon: CircleAlert,
+    text: "Workstations couldn't load",
     tone: "destructive",
     action: "Retry",
   },
@@ -181,8 +222,22 @@ const railRows = [
   text: string;
   tone: RailTone;
   action?: string;
-  spin?: boolean;
 }[];
+
+const cachedNotebookRows = [
+  {
+    title: "Oslo GPU forecast",
+    meta: "Edited yesterday",
+  },
+  {
+    title: "Access request triage",
+    meta: "Edited Monday",
+  },
+  {
+    title: "Runtime startup notes",
+    meta: "Edited last week",
+  },
+] satisfies readonly { title: string; meta: string }[];
 
 export function ElementsEmptyStateExample() {
   return (
@@ -224,10 +279,72 @@ export function ElementsNoticeBannerExample() {
 export function ElementsRailStatusExample() {
   return (
     <div className="not-prose rounded-lg border border-border bg-background p-2 sm:w-[300px]">
+      <style>{`
+        @keyframes unhappy-state-shimmer {
+          0% {
+            background-position: 200% 0;
+          }
+          100% {
+            background-position: -200% 0;
+          }
+        }
+
+        .unhappy-state-shimmer {
+          background: linear-gradient(90deg, var(--muted) 25%, color-mix(in oklab, var(--muted-foreground) 14%, var(--muted)) 37%, var(--muted) 63%);
+          background-size: 200% 100%;
+          animation: unhappy-state-shimmer 1.6s infinite;
+        }
+      `}</style>
       <div className="grid gap-1">
+        <RailStatusSkeletonRow />
         {railRows.map((row) => (
           <RailStatusRow key={row.text} {...row} />
         ))}
+      </div>
+    </div>
+  );
+}
+
+export function ElementsSessionExpiredReturnExample() {
+  return (
+    <div
+      className="not-prose"
+      data-elements-slot="unhappy-session-expired-return"
+      data-screen-label="Session-expired return"
+      data-testid="unhappy-session-expired-return"
+    >
+      <div className="mx-auto w-full max-w-[860px] overflow-hidden rounded-lg border border-border bg-background shadow-sm">
+        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="text-sm font-semibold text-foreground">nteract</div>
+          <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 px-3">
+            Sign in
+          </Button>
+        </div>
+        <div className="space-y-4 p-4 sm:p-5">
+          <NoticeBanner
+            icon={Loader2}
+            message="Restoring your sign-in. Your notebooks are safe, this usually takes a moment."
+            tone="info"
+            spin
+          />
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <h3 className="text-sm font-medium text-foreground">Your notebooks</h3>
+            <p className="text-xs text-muted-foreground">Last synced 2 minutes ago</p>
+          </div>
+          <div data-testid="session-expired-cached-notebooks">
+            {cachedNotebookRows.map((row) => (
+              <div
+                key={row.title}
+                className="border-t border-border px-1 py-3 last:border-b"
+                style={{ opacity: 0.55 }}
+                data-testid="session-expired-notebook-row"
+              >
+                <div className="text-sm font-medium text-foreground">{row.title}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{row.meta}</div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -242,6 +359,10 @@ function EmptyState({
   secondaryHref = "#",
   tone = "neutral",
   note,
+  noteInitials,
+  iconBadgeClassName,
+  iconBadgeStyle,
+  iconStyle,
   className,
 }: EmptyStateFixture & { className?: string }) {
   return (
@@ -249,10 +370,15 @@ function EmptyState({
       className={cn("flex flex-col items-center justify-center px-5 py-8 text-center", className)}
     >
       <span
-        className={cn("grid size-10 place-items-center rounded-xl", emptyStateToneClasses[tone])}
+        className={cn(
+          "grid size-10 place-items-center",
+          iconBadgeClassName ?? "rounded-xl",
+          emptyStateToneClasses[tone],
+        )}
+        style={iconBadgeStyle}
         aria-hidden="true"
       >
-        <Icon className="size-5" />
+        <Icon className="size-5" style={iconStyle} />
       </span>
       <h3 className="mt-3 text-sm font-medium text-foreground">{title}</h3>
       {detail ? (
@@ -273,7 +399,18 @@ function EmptyState({
               {secondary}
             </a>
           ) : null}
-          {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
+          {note ? (
+            noteInitials ? (
+              <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
+                <span className="grid size-[18px] place-items-center rounded-full bg-background text-[10px] font-semibold text-foreground">
+                  {noteInitials}
+                </span>
+                <span>{note}</span>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">{note}</p>
+            )
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -293,18 +430,17 @@ function NoticeBanner({
   action?: string;
   spin?: boolean;
 }) {
-  const toneClasses = noticeToneClasses[tone];
+  const toneStyles = noticeToneStyles[tone];
 
   return (
     <div
-      className={cn(
-        "flex items-center gap-3 rounded-md border border-border px-3 py-2.5 text-sm text-foreground sm:min-h-11",
-        toneClasses.shell,
-      )}
+      className="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-foreground sm:min-h-11"
+      style={toneStyles.shell}
       role={tone === "error" ? "alert" : "status"}
     >
       <Icon
-        className={cn("size-4 shrink-0", toneClasses.icon, spin ? "animate-spin" : null)}
+        className={cn("size-4 shrink-0", spin ? "animate-spin" : null)}
+        style={toneStyles.icon}
         aria-hidden="true"
       />
       <p className="min-w-0 flex-1 leading-5">{message}</p>
@@ -322,29 +458,43 @@ function RailStatusRow({
   text,
   tone,
   action,
-  spin = false,
 }: {
   icon: LucideIcon;
   text: string;
   tone: RailTone;
   action?: string;
-  spin?: boolean;
 }) {
+  const toneStyles = railToneStyles[tone];
+
   return (
-    <div className="flex min-h-8 items-center gap-2 rounded-md px-2 py-1.5 text-xs">
-      <Icon
-        className={cn("size-3.5 shrink-0", railToneClasses[tone], spin ? "animate-spin" : null)}
-        aria-hidden="true"
-      />
+    <div
+      className="flex min-h-8 items-center gap-2 rounded-md px-2 py-1.5 text-xs"
+      style={toneStyles.shell}
+    >
+      <Icon className="size-3.5 shrink-0" style={toneStyles.icon} aria-hidden="true" />
       <span className="min-w-0 flex-1 leading-5 text-muted-foreground">{text}</span>
       {action ? (
-        <button
-          type="button"
+        <a
+          href="#retry-workstations"
           className="shrink-0 text-xs font-medium text-foreground underline-offset-4 hover:underline"
         >
           {action}
-        </button>
+        </a>
       ) : null}
+    </div>
+  );
+}
+
+function RailStatusSkeletonRow() {
+  return (
+    <div
+      className="flex min-h-8 flex-col justify-center gap-1.5 rounded-md px-2 py-1.5"
+      role="status"
+      aria-label="Loading workstation status"
+      data-testid="unhappy-rail-loading-skeleton"
+    >
+      <span className="unhappy-state-shimmer h-2.5 w-[62%] rounded-full" aria-hidden="true" />
+      <span className="unhappy-state-shimmer h-2.5 w-[40%] rounded-full" aria-hidden="true" />
     </div>
   );
 }
