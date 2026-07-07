@@ -252,3 +252,48 @@ describe("dev OIDC token delay", () => {
     }
   });
 });
+
+describe("dev OIDC multi-user selection", () => {
+  const env = gateEnv({ NOTEBOOK_CLOUD_LOCAL_OIDC: "true" });
+
+  async function signInEmail(loginHint?: string): Promise<string> {
+    const authorizeUrl = new URL(`${ISSUER_URL}/authorize`);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", CLIENT_ID);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    if (loginHint) {
+      authorizeUrl.searchParams.set("login_hint", loginHint);
+    }
+    const authorizeResponse = await handleLocalOidcRequest(new Request(authorizeUrl), env);
+    assert.ok(authorizeResponse, "authorize handled by the mount");
+    const code = new URL(authorizeResponse.headers.get("location") ?? "").searchParams.get("code");
+    assert.ok(code, "authorize returns a code");
+
+    const tokenResponse = await handleLocalOidcRequest(
+      new Request(`${ISSUER_URL}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          client_id: CLIENT_ID,
+          redirect_uri: REDIRECT_URI,
+        }).toString(),
+      }),
+      env,
+    );
+    assert.ok(tokenResponse, "token handled by the mount");
+    const { id_token } = JSON.parse(await tokenResponse.text()) as { id_token: string };
+    const claims = JSON.parse(Buffer.from(id_token.split(".")[1] ?? "", "base64url").toString());
+    return claims.email as string;
+  }
+
+  it("defaults to the first dev user when no login_hint is sent", async () => {
+    assert.equal(await signInEmail(), "dev@localhost");
+  });
+
+  it("selects the additional dev users by login_hint", async () => {
+    assert.equal(await signInEmail("alice@localhost"), "alice@localhost");
+    assert.equal(await signInEmail("bob@localhost"), "bob@localhost");
+  });
+});

@@ -285,7 +285,30 @@ export async function beginOidcLogin(
   const requestState = await createOidcRequestState(input.currentUrl);
   const endpoints = await discoverOidcEndpoints(config, input.fetchImpl, input);
   input.storage.setItem(NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY, JSON.stringify(requestState));
-  return buildOidcAuthorizationUrl(config, endpoints, requestState);
+  return buildOidcAuthorizationUrl(
+    config,
+    endpoints,
+    requestState,
+    devLoginHint(config, input.currentUrl),
+  );
+}
+
+// The dev issuer is mounted at `/dev/oidc` and can grant more than one identity.
+// Forward a `login_hint` query param to the authorize request so local
+// multi-user flows can select a non-default user - but only for that local
+// issuer, so production sign-in behavior is unchanged.
+const LOCAL_DEV_OIDC_ISSUER_MARKER = "/dev/oidc";
+
+function devLoginHint(config: CloudOidcAuthConfig, currentUrl: string): string | undefined {
+  if (!config.issuer.includes(LOCAL_DEV_OIDC_ISSUER_MARKER)) {
+    return undefined;
+  }
+  try {
+    const hint = new URL(currentUrl).searchParams.get("login_hint")?.trim();
+    return hint ? hint : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function completeOidcRedirect(
@@ -337,6 +360,7 @@ export function buildOidcAuthorizationUrl(
   config: CloudOidcAuthConfig,
   endpoints: CloudOidcEndpoints,
   requestState: CloudOidcRequestState,
+  loginHint?: string,
 ): URL {
   const url = new URL(endpoints.authorizationEndpoint);
   url.searchParams.set("client_id", config.clientId);
@@ -346,6 +370,9 @@ export function buildOidcAuthorizationUrl(
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", config.scope ?? DEFAULT_OIDC_SCOPE);
   url.searchParams.set("state", requestState.state);
+  if (loginHint) {
+    url.searchParams.set("login_hint", loginHint);
+  }
   return url;
 }
 

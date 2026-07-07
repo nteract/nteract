@@ -29,11 +29,16 @@ export const NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH = "/dev/oidc";
 export const NOTEBOOK_CLOUD_LOCAL_OIDC_CLIENT_ID = "local-oidc-client";
 export const NOTEBOOK_CLOUD_LOCAL_OIDC_DEFAULT_TTL_SECONDS = 300;
 
-const DEV_USER = {
-  email: "dev@localhost",
-  givenName: "Local",
-  familyName: "Developer",
-} as const;
+// Multiple dev identities so local multi-user flows (sharing, presence,
+// cross-user gating) are drivable against one issuer. The first is the default
+// when the authorize request carries no login_hint; reach the others with
+// `?login_hint=<email>` on the sign-in URL (the viewer forwards it only for this
+// local issuer).
+const DEV_USERS = [
+  { email: "dev@localhost", givenName: "Local", familyName: "Developer" },
+  { email: "alice@localhost", givenName: "Alice", familyName: "Example" },
+  { email: "bob@localhost", givenName: "Bob", familyName: "Example" },
+] as const;
 
 // One issuer instance per resolved issuer URL, held for the worker's boot. Every
 // restart starts with an empty cache and a fresh signing key.
@@ -83,7 +88,7 @@ function localOidcIssuer(env: Env, issuerUrl: string): LocalOidcIssuer {
     issuerUrl,
     clientId: env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim() || NOTEBOOK_CLOUD_LOCAL_OIDC_CLIENT_ID,
     defaultTokenTtlSeconds: localOidcTtlSeconds(env),
-    users: [DEV_USER],
+    users: [...DEV_USERS],
   });
   issuersByUrl.set(issuerUrl, issuer);
   return issuer;

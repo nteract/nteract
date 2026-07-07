@@ -76,6 +76,75 @@ describe("cloud OIDC browser auth", () => {
     assert.equal(url.searchParams.get("response_type"), "code");
     assert.equal(url.searchParams.get("state"), "state-123");
     assert.equal(url.searchParams.get("scope"), "openid email profile offline_access");
+    assert.equal(url.searchParams.get("login_hint"), null);
+  });
+
+  it("adds login_hint to the authorize URL only when one is provided", () => {
+    const requestState: CloudOidcRequestState = {
+      challenge: "challenge",
+      verifier: "verifier",
+      state: "state-123",
+      returnUrl: "https://preview.runt.run/n/demo",
+    };
+    const endpoints = {
+      authorizationEndpoint: "https://auth.stage.anaconda.com/api/auth/authorize",
+      tokenEndpoint: "https://auth.stage.anaconda.com/api/auth/token",
+    };
+    assert.equal(
+      buildOidcAuthorizationUrl(
+        authConfig,
+        endpoints,
+        requestState,
+        "bob@localhost",
+      ).searchParams.get("login_hint"),
+      "bob@localhost",
+    );
+    assert.equal(
+      buildOidcAuthorizationUrl(authConfig, endpoints, requestState).searchParams.get("login_hint"),
+      null,
+    );
+  });
+
+  it("forwards a URL login_hint to authorize only for the local dev issuer", async () => {
+    const discovery = (issuerOrigin: string): typeof fetch =>
+      (async (input) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/.well-known/openid-configuration")) {
+          return new Response(
+            JSON.stringify({
+              authorization_endpoint: `${issuerOrigin}/authorize`,
+              token_endpoint: `${issuerOrigin}/token`,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      }) as typeof fetch;
+
+    // Local dev issuer (mounted at /dev/oidc): the hint is forwarded so a
+    // non-default dev identity can be selected.
+    const devUrl = await beginOidcLogin(
+      {
+        issuer: "http://127.0.0.1:45626/dev/oidc",
+        clientId: "local-oidc-client",
+        redirectUri: "http://127.0.0.1:45626/oidc",
+        scope: "openid profile email",
+      },
+      {
+        currentUrl: "http://127.0.0.1:45626/n?login_hint=alice@localhost",
+        storage: new MemoryStorage(),
+        fetchImpl: discovery("http://127.0.0.1:45626/dev/oidc"),
+      },
+    );
+    assert.equal(devUrl.searchParams.get("login_hint"), "alice@localhost");
+
+    // Production issuer: the same URL param must NOT reach the real IdP.
+    const prodUrl = await beginOidcLogin(authConfig, {
+      currentUrl: "https://preview.runt.run/n?login_hint=alice@localhost",
+      storage: new MemoryStorage(),
+      fetchImpl: discovery("https://auth.stage.anaconda.com/api/auth"),
+    });
+    assert.equal(prodUrl.searchParams.get("login_hint"), null);
   });
 
   it("exchanges a valid callback for stored tokens and a same-origin return URL", async () => {
