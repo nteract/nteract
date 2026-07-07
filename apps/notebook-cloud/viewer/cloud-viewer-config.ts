@@ -1,6 +1,9 @@
 import { isCloudAppSession } from "./app-session";
 import type { CloudRendererAssetNames, CloudViewerConfig } from "./cloud-viewer-session";
-import { isCloudNotebookListItem } from "./notebook-dashboard";
+import {
+  isCloudNotebookListItem,
+  isOptionalCloudNotebookListTotalCount,
+} from "./notebook-dashboard";
 import { normalizeOidcAuthConfig, type CloudOidcAuthConfig } from "./oidc-auth";
 import type {
   CloudNotebookListBootstrap,
@@ -212,6 +215,7 @@ function isCloudNotebookListBootstrap(value: unknown): value is CloudNotebookLis
     typeof candidate.saved_at === "string" &&
     Array.isArray(candidate.notebooks) &&
     candidate.notebooks.every(isCloudNotebookListItem) &&
+    isOptionalCloudNotebookListTotalCount(candidate.total_count, candidate.notebooks.length) &&
     (candidate.session === undefined ||
       candidate.session === null ||
       isCloudAppSession(candidate.session))

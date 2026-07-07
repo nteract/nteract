@@ -799,7 +799,7 @@ test("cloud notebook list bounds app-session waits before catalog fetches", () =
   );
   assert.match(
     sourceText,
-    /if \(seededNotebooks\) \{[\s\S]*console\.warn\([\s\S]*keeping cached list/,
+    /if \(seed\) \{[\s\S]*console\.warn\([\s\S]*keeping cached list/,
     "stale local-first content should stay visible when a refresh fails",
   );
   assert.match(
@@ -815,16 +815,16 @@ test("cloud notebook list trusts server bootstrap on initial app-session paint",
 
   assert.match(
     sourceText,
-    /const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*bootstrap,[\s\S]*\);/,
+    /const seed = cloudNotebookListSeedFromBootstrapOrCache\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*bootstrap,[\s\S]*\);/,
   );
   assert.match(
     sourceText,
-    /if \(refreshIndex === 0 && bootstrap\) \{[\s\S]*writeCachedCloudNotebookListToLocalStorage\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*bootstrap\.notebooks,[\s\S]*\);[\s\S]*setListState\(\{ kind: "ready", notebooks: bootstrap\.notebooks \}\);[\s\S]*return;/,
+    /if \(refreshIndex === 0 && bootstrap\) \{[\s\S]*const totalCount = normalizeCloudNotebookListTotalCount\([\s\S]*bootstrap\.notebooks,[\s\S]*bootstrap\.total_count,[\s\S]*\);[\s\S]*writeCachedCloudNotebookListToLocalStorage\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*notebooks: bootstrap\.notebooks,[\s\S]*totalCount,[\s\S]*\);[\s\S]*setListState\(\{ kind: "ready", notebooks: bootstrap\.notebooks, totalCount \}\);[\s\S]*return;/,
     "fresh notebook-home bootstrap should satisfy the initial render without an immediate duplicate /api/n fetch",
   );
   assert.match(
     sourceText,
-    /return bootstrap\?\.notebooks \?\? readCachedCloudNotebookListFromLocalStorage\(authState, appSession\);/,
+    /return bootstrap[\s\S]*\? \{[\s\S]*notebooks: bootstrap\.notebooks,[\s\S]*totalCount: normalizeCloudNotebookListTotalCount\([\s\S]*bootstrap\.notebooks,[\s\S]*bootstrap\.total_count,[\s\S]*\),[\s\S]*\}[\s\S]*: readCachedCloudNotebookListFromLocalStorage\(authState, appSession\);/,
     "server bootstrap should beat stale localStorage cache when both are present",
   );
 });

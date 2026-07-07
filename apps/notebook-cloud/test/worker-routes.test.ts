@@ -1967,9 +1967,12 @@ describe("Worker artifact routes", () => {
         viewer_url: string;
       }>;
       ok: boolean;
+      total_count: number;
     };
     assert.equal(body.ok, true);
     assert.equal(body.current_user_principal, "user:dev:alice");
+    assert.equal(body.total_count, 3);
+    assert.equal(body.notebooks.length, 2);
     assert.deepEqual(
       body.notebooks.map((notebook) => [notebook.notebook_id, notebook.scope]),
       [
@@ -8964,6 +8967,25 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async first<T = unknown>(): Promise<T | null> {
+    if (
+      this.query.includes("COUNT(*) AS total_count") &&
+      this.query.includes("FROM notebooks n") &&
+      this.query.includes("JOIN notebook_acl a")
+    ) {
+      const [principal, linkedPrincipal] = this.values as [string, string];
+      const linked = this.db.accountLinks.get(linkedPrincipal)?.canonical_principal;
+      const subjects = new Set([principal, ...(linked ? [linked] : [])]);
+      const notebookIds = new Set<string>();
+      for (const row of this.db.acl) {
+        if (row.subject_kind !== "principal" || !subjects.has(row.subject)) {
+          continue;
+        }
+        if (this.db.notebooks.has(row.notebook_id)) {
+          notebookIds.add(row.notebook_id);
+        }
+      }
+      return { total_count: notebookIds.size } as T;
+    }
     if (this.query.includes("FROM notebook_access_requests")) {
       if (this.query.includes("requester_principal = ?")) {
         const [notebookId, requesterPrincipal] = this.values as [string, string];

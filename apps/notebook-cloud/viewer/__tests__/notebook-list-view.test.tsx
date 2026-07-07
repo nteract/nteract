@@ -100,6 +100,34 @@ describe("CloudNotebookListView", () => {
     expect(screen.getByText("No notebooks yet")).toBeTruthy();
   });
 
+  it("renders the true total count and visible cap in the dashboard header", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          notebooks: [notebook("nb-a", "Notebook A"), notebook("nb-b", "Notebook B")],
+          total_count: 342,
+          current_user_principal: "user:anaconda:alice%40example.test",
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderNotebookList(oidcAuth("alice@example.test"), { appSessionWaitDeadlineMs: 5_000 });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("342 notebooks · showing 2 · 0 active now")).toBeTruthy();
+  });
+
   it("keeps cached notebooks visible when revalidation fails", async () => {
     const auth = oidcAuth("alice@example.test");
     const cachedNotebooks = [notebook("nb-cached", "Cached Notebook")];

@@ -11,7 +11,7 @@ import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 import type { CloudNotebookListItem } from "../viewer/notebook-dashboard";
 
 describe("cloud notebook list cache", () => {
-  it("seeds notebooks for a matching OIDC principal", () => {
+  it("seeds notebooks and total count for a matching OIDC principal", () => {
     const storage = new MemoryStorage();
     const auth = oidcAuth("alice@example.test");
     const notebooks = [notebook("nb-a")];
@@ -19,9 +19,13 @@ describe("cloud notebook list cache", () => {
     writeCachedCloudNotebookList(storage, auth, null, notebooks, {
       now: 1_000,
       principal: "user:anaconda:alice%40example.test",
+      totalCount: 342,
     });
 
-    assert.deepEqual(readCachedCloudNotebookList(storage, auth, null), notebooks);
+    assert.deepEqual(readCachedCloudNotebookList(storage, auth, null), {
+      notebooks,
+      totalCount: 342,
+    });
   });
 
   it("refuses cached rows from a mismatched principal", () => {
@@ -50,7 +54,10 @@ describe("cloud notebook list cache", () => {
       principal: "user:anaconda:alice%40example.test",
     });
 
-    assert.deepEqual(readCachedCloudNotebookList(storage, auth, appSession()), notebooks);
+    assert.deepEqual(readCachedCloudNotebookList(storage, auth, appSession()), {
+      notebooks,
+      totalCount: notebooks.length,
+    });
     assert.equal(readCachedCloudNotebookList(storage, auth, null), null);
   });
 
@@ -88,7 +95,7 @@ describe("cloud notebook list cache", () => {
             savedAt: 1_000,
           },
         ],
-        v: 1,
+        v: 2,
       }),
     );
 

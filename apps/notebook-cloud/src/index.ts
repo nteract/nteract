@@ -1235,7 +1235,8 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
     await syncStoredAppSessionProfile(env, appSession);
   }
 
-  const notebooks = await listNotebooksForPrincipal(env, principal, limit);
+  const notebookList = await listNotebooksForPrincipal(env, principal, limit);
+  const { notebooks, totalCount } = notebookList;
   // The hydrations are independent fan-outs (owner-bucketed DO calls, bounded
   // R2 GETs, one batched D1 profile lookup) - overlap them instead of paying
   // the latencies in series.
@@ -1270,6 +1271,7 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
         roomPresence,
         principalDisplays,
       ),
+      total_count: totalCount,
       current_user_principal: principal,
       ...(currentUserDisplay ? { current_user_display: currentUserDisplay } : {}),
       ...(currentUserAvatar ? { current_user_avatar: currentUserAvatar } : {}),
@@ -5733,11 +5735,12 @@ async function notebookListBootstrap(
     return { bootstrap: null, session: null };
   }
   await syncStoredAppSessionProfile(env, session);
-  const notebooks = await listNotebooksForPrincipal(
+  const notebookList = await listNotebooksForPrincipal(
     env,
     session.principal,
     DEFAULT_NOTEBOOK_LIST_LIMIT,
   );
+  const { notebooks, totalCount } = notebookList;
   // The SSR bootstrap is embedded in served HTML, which is PII-free by
   // invariant (see the "bootstraps the notebook home" leak-guard test): no
   // profile display names and no presence occupant identities here. The
@@ -5749,6 +5752,7 @@ async function notebookListBootstrap(
       kind: "notebook-list",
       session: appSessionResponse(session),
       notebooks: notebookListResponseRows(request, notebooks, env, computeSessions),
+      total_count: totalCount,
       saved_at: new Date().toISOString(),
     },
   };

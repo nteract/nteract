@@ -99,7 +99,9 @@ export interface CloudNotebookDashboardModel {
   continueRow: CloudNotebookDashboardRow | null;
   filterGroups: readonly CloudNotebookDashboardFilterGroup[];
   filters: readonly CloudNotebookDashboardFilter[];
+  loadedCount: number;
   notebooks: readonly CloudNotebookListItem[];
+  totalCount: number;
 }
 
 export interface CloudNotebookDashboardSection {
@@ -161,6 +163,9 @@ export interface CloudNotebookDashboardView {
 
 export function projectCloudNotebookDashboard(
   notebooks: readonly CloudNotebookListItem[],
+  input?: {
+    totalCount?: number | null;
+  },
 ): CloudNotebookDashboardModel {
   const sorted = [...notebooks].sort((left, right) => {
     const leftTime = Date.parse(left.updated_at);
@@ -176,13 +181,16 @@ export function projectCloudNotebookDashboard(
   const titled = sorted.filter(cloudNotebookHasTitle);
   const namedWork = titled.filter((notebook) => !cloudNotebookIsGeneratedRun(notebook));
   const filters = cloudNotebookDashboardFilters(notebooks);
+  const loadedCount = sorted.length;
 
   return {
     continueNotebook: namedWork[0] ?? titled[0] ?? sorted[0] ?? null,
     continueRow: dashboardRow(namedWork[0] ?? titled[0] ?? sorted[0] ?? null),
     filterGroups: cloudNotebookDashboardFilterGroups(filters),
     filters,
+    loadedCount,
     notebooks: sorted,
+    totalCount: normalizeCloudNotebookListTotalCount(notebooks, input?.totalCount),
   };
 }
 
@@ -342,6 +350,26 @@ export function isCloudNotebookListItem(value: unknown): value is CloudNotebookL
     typeof candidate.endpoints?.acl === "string" &&
     typeof candidate.endpoints?.access_requests === "string"
   );
+}
+
+export function isOptionalCloudNotebookListTotalCount(
+  value: unknown,
+  loadedCount: number,
+): value is number | undefined {
+  return (
+    value === undefined ||
+    (typeof value === "number" && Number.isSafeInteger(value) && value >= loadedCount)
+  );
+}
+
+export function normalizeCloudNotebookListTotalCount(
+  notebooks: readonly CloudNotebookListItem[],
+  totalCount: unknown,
+): number {
+  return isOptionalCloudNotebookListTotalCount(totalCount, notebooks.length) &&
+    totalCount !== undefined
+    ? totalCount
+    : notebooks.length;
 }
 
 function isCloudNotebookPresencePeer(value: unknown): value is CloudNotebookPresencePeer {

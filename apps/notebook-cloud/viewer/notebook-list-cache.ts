@@ -1,10 +1,16 @@
 import type { CloudAppSession } from "./app-session";
 import { devPrincipalLabel, type CloudPrototypeAuthState } from "./collaborator-auth";
 import { cloudInstantPaintPrincipalMatcher } from "./cloud-principal";
-import { isCloudNotebookListItem, type CloudNotebookListItem } from "./notebook-dashboard";
+import type { CloudNotebookListSnapshot } from "./cloud-viewer-types";
+import {
+  isCloudNotebookListItem,
+  isOptionalCloudNotebookListTotalCount,
+  normalizeCloudNotebookListTotalCount,
+  type CloudNotebookListItem,
+} from "./notebook-dashboard";
 
 export const CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY =
-  "nteract:notebook-cloud:notebook-list-cache:v1";
+  "nteract:notebook-cloud:notebook-list-cache:v2";
 
 export interface CloudNotebookListCacheStorage {
   getItem(key: string): string | null;
@@ -16,18 +22,19 @@ interface CachedCloudNotebookList {
   notebooks: CloudNotebookListItem[];
   principal: string;
   savedAt: number;
+  totalCount: number;
 }
 
 interface CachedCloudNotebookListRoot {
   entries: CachedCloudNotebookList[];
-  v: 1;
+  v: 2;
 }
 
 export function readCachedCloudNotebookList(
   storage: Pick<CloudNotebookListCacheStorage, "getItem" | "removeItem">,
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
-): CloudNotebookListItem[] | null {
+): CloudNotebookListSnapshot | null {
   const matchesPrincipal = cloudInstantPaintPrincipalMatcher(authState, {
     hasAppSession: Boolean(appSession),
   });
@@ -40,7 +47,8 @@ export function readCachedCloudNotebookList(
     return null;
   }
 
-  return root.entries.find((entry) => matchesPrincipal(entry.principal))?.notebooks ?? null;
+  const entry = root.entries.find((candidate) => matchesPrincipal(candidate.principal));
+  return entry ? { notebooks: entry.notebooks, totalCount: entry.totalCount } : null;
 }
 
 export function writeCachedCloudNotebookList(
@@ -48,7 +56,7 @@ export function writeCachedCloudNotebookList(
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
   notebooks: CloudNotebookListItem[],
-  input: { now?: number; principal?: string | null } = {},
+  input: { now?: number; principal?: string | null; totalCount?: number | null } = {},
 ): void {
   if (!notebooks.every(isCloudNotebookListItem)) {
     return;
@@ -66,11 +74,12 @@ export function writeCachedCloudNotebookList(
     return;
   }
 
-  const root = readCloudNotebookListCacheRoot(storage) ?? { v: 1, entries: [] };
+  const root = readCloudNotebookListCacheRoot(storage) ?? { v: 2, entries: [] };
   const entry = {
     notebooks,
     principal,
     savedAt: input.now ?? Date.now(),
+    totalCount: normalizeCloudNotebookListTotalCount(notebooks, input.totalCount),
   } satisfies CachedCloudNotebookList;
   const entries = [
     entry,
@@ -80,7 +89,7 @@ export function writeCachedCloudNotebookList(
     CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY,
     JSON.stringify({
       entries,
-      v: 1,
+      v: 2,
     } satisfies CachedCloudNotebookListRoot),
   );
 }
@@ -117,7 +126,7 @@ function isCachedCloudNotebookListRoot(value: unknown): value is CachedCloudNote
     return false;
   }
   const candidate = value as Partial<CachedCloudNotebookListRoot>;
-  return candidate.v === 1 && Array.isArray(candidate.entries) && candidate.entries.every(isEntry);
+  return candidate.v === 2 && Array.isArray(candidate.entries) && candidate.entries.every(isEntry);
 }
 
 function isEntry(value: unknown): value is CachedCloudNotebookList {
@@ -129,7 +138,9 @@ function isEntry(value: unknown): value is CachedCloudNotebookList {
     typeof candidate.principal === "string" &&
     Number.isFinite(candidate.savedAt) &&
     Array.isArray(candidate.notebooks) &&
-    candidate.notebooks.every(isCloudNotebookListItem)
+    candidate.notebooks.every(isCloudNotebookListItem) &&
+    isOptionalCloudNotebookListTotalCount(candidate.totalCount, candidate.notebooks.length) &&
+    candidate.totalCount !== undefined
   );
 }
 
