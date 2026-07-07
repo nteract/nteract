@@ -34,6 +34,11 @@ export interface CloudOidcAuthConfig {
   redirectUri: string;
   providerLabel?: string;
   scope?: string;
+  /**
+   * Set by the worker only under the NOTEBOOK_CLOUD_LOCAL_OIDC dev gate. Gates
+   * login_hint forwarding so production sign-in can never forward a URL hint.
+   */
+  localOidc?: boolean;
 }
 
 export interface CloudOidcRequestState {
@@ -90,11 +95,15 @@ export function normalizeOidcAuthConfig(
   if (!issuer || !clientId || !redirectUri) {
     return null;
   }
+  // The worker serializes this flag as a string; accept either shape.
+  const rawLocalOidc = (input as { localOidc?: unknown } | null | undefined)?.localOidc;
+  const localOidc = rawLocalOidc === true || rawLocalOidc === "true";
   return {
     issuer,
     clientId,
     redirectUri,
     ...(providerLabel ? { providerLabel } : {}),
+    ...(localOidc ? { localOidc: true } : {}),
     scope: input?.scope?.trim() || DEFAULT_OIDC_SCOPE,
   };
 }
@@ -285,7 +294,29 @@ export async function beginOidcLogin(
   const requestState = await createOidcRequestState(input.currentUrl);
   const endpoints = await discoverOidcEndpoints(config, input.fetchImpl, input);
   input.storage.setItem(NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY, JSON.stringify(requestState));
-  return buildOidcAuthorizationUrl(config, endpoints, requestState);
+  return buildOidcAuthorizationUrl(
+    config,
+    endpoints,
+    requestState,
+    devLoginHint(config, input.currentUrl),
+  );
+}
+
+// The local dev issuer can grant more than one identity. Forward a `login_hint`
+// query param to the authorize request so local multi-user flows can select a
+// non-default user - but only when the worker marked this as the dev issuer
+// (`localOidc`), never by inferring dev-ness from the issuer URL, so production
+// sign-in can never forward an attacker-supplied URL hint.
+function devLoginHint(config: CloudOidcAuthConfig, currentUrl: string): string | undefined {
+  if (config.localOidc !== true) {
+    return undefined;
+  }
+  try {
+    const hint = new URL(currentUrl).searchParams.get("login_hint")?.trim();
+    return hint ? hint : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function completeOidcRedirect(
@@ -337,6 +368,7 @@ export function buildOidcAuthorizationUrl(
   config: CloudOidcAuthConfig,
   endpoints: CloudOidcEndpoints,
   requestState: CloudOidcRequestState,
+  loginHint?: string,
 ): URL {
   const url = new URL(endpoints.authorizationEndpoint);
   url.searchParams.set("client_id", config.clientId);
@@ -346,6 +378,9 @@ export function buildOidcAuthorizationUrl(
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", config.scope ?? DEFAULT_OIDC_SCOPE);
   url.searchParams.set("state", requestState.state);
+  if (loginHint) {
+    url.searchParams.set("login_hint", loginHint);
+  }
   return url;
 }
 
