@@ -194,6 +194,18 @@ const SNAPSHOT_BLOB_HEAD_CONCURRENCY = 16;
 // operations. Sized ~10x the largest blob_ref_count observed in
 // snapshot_pair.validation.completed logs; raise it if legitimate notebooks hit it.
 const MAX_SNAPSHOT_BLOB_REFS = 2000;
+const DEFAULT_BLOB_UPLOAD_CONTENT_TYPE = "application/octet-stream";
+const ALLOWED_EXACT_BLOB_UPLOAD_CONTENT_TYPES = new Set([
+  DEFAULT_BLOB_UPLOAD_CONTENT_TYPE,
+  "application/ecmascript",
+  "application/javascript",
+  "application/json",
+  "application/pdf",
+  "application/vnd.apache.arrow.stream",
+  "application/vnd.apache.parquet",
+  "application/wasm",
+]);
+const ALLOWED_PREFIXED_BLOB_UPLOAD_CONTENT_TYPES = ["audio/", "image/", "text/", "video/"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CREATE_NOTEBOOK_ID_ATTEMPTS = 8;
 
@@ -1537,6 +1549,26 @@ function isNotebookCoverMime(
 
 function isRasterCoverMime(value: unknown): value is "image/png" | "image/jpeg" {
   return value === "image/png" || value === "image/jpeg";
+}
+
+function normalizedBlobUploadContentType(contentType: string | null): string | null {
+  const mediaType =
+    contentType == null
+      ? DEFAULT_BLOB_UPLOAD_CONTENT_TYPE
+      : (contentType.split(";")[0]?.trim().toLowerCase() ?? "");
+  if (mediaType.length === 0) {
+    return null;
+  }
+  if (ALLOWED_EXACT_BLOB_UPLOAD_CONTENT_TYPES.has(mediaType)) {
+    return mediaType;
+  }
+  if (ALLOWED_PREFIXED_BLOB_UPLOAD_CONTENT_TYPES.some((prefix) => mediaType.startsWith(prefix))) {
+    return mediaType;
+  }
+  if (mediaType.startsWith("application/") && mediaType.endsWith("+json")) {
+    return mediaType;
+  }
+  return null;
 }
 
 function parseNotebookCellComposition(
@@ -4739,6 +4771,19 @@ async function routeBlob(
     return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
   }
 
+  const contentType = normalizedBlobUploadContentType(request.headers.get("content-type"));
+  if (contentType == null) {
+    cloudLog("warn", "blob.upload.rejected", {
+      notebook_id: notebookId,
+      hash,
+      reason: "unsupported_content_type",
+      content_type: request.headers.get("content-type"),
+      counter: "blob_upload_rejections",
+      counter_delta: 1,
+    });
+    return json({ error: "unsupported blob content type" }, 415);
+  }
+
   const body = await request.arrayBuffer();
   const digest = await sha256Hex(body);
   if (hash !== digest) {
@@ -4768,7 +4813,6 @@ async function routeBlob(
     return authorizedIdentity;
   }
 
-  const contentType = request.headers.get("content-type");
   // Content-addressed first-writer-wins: an existing object already holds
   // these exact bytes (the hash was verified above), and its stored metadata
   // (Content-Type) must not be rewritable by later writers. Skip the R2 write;
@@ -4796,7 +4840,7 @@ async function routeBlob(
 
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
-      contentType: contentType ?? "application/octet-stream",
+      contentType,
       cacheControl: "public, max-age=31536000, immutable",
     },
     customMetadata: {

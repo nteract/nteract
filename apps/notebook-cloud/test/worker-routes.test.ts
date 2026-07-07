@@ -3838,6 +3838,78 @@ describe("Worker artifact routes", () => {
     });
   });
 
+  it("allows blob upload content types used by current runtime and publish producers", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "runtime-demo");
+    seedAcl(env, {
+      notebookId: "runtime-demo",
+      subject: "user:dev:runtime-service",
+      scope: "runtime_peer",
+    });
+    const cases = [
+      "application/octet-stream",
+      "application/vnd.apache.arrow.stream",
+      "application/vnd.nteract.arrow-stream-manifest+json",
+      "application/vnd.apache.parquet",
+      "application/json",
+      "application/vnd.plotly.v1+json",
+      "application/javascript",
+      "text/javascript",
+      "text/css",
+      "text/html",
+      "text/markdown",
+      "text/plain",
+      "image/png",
+      "image/svg+xml",
+      "application/pdf",
+      "audio/wav",
+      "video/mp4",
+    ];
+
+    for (const contentType of cases) {
+      const body = new TextEncoder().encode(`blob ${contentType}`);
+      const hash = await sha256Hex(body);
+      const response = await scopedPut(env, `/api/n/runtime-demo/blobs/${hash}`, body, {
+        "Content-Type": `${contentType}; charset=utf-8`,
+        "X-Scope": "runtime_peer",
+        "X-User": "runtime-service",
+        "X-Operator": "runtime:py-3.12",
+      });
+
+      assert.equal(response.status, 201, contentType);
+      assert.equal(
+        env.NOTEBOOK_SNAPSHOTS.objects.get(blobKey("runtime-demo", hash))?.httpMetadata
+          ?.contentType,
+        contentType,
+      );
+      assert.equal(env.DB.blobs.get(`runtime-demo:${hash}`)?.content_type, contentType);
+    }
+  });
+
+  it("rejects unsupported blob upload content types without writing bytes or catalog rows", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "runtime-demo");
+    seedAcl(env, {
+      notebookId: "runtime-demo",
+      subject: "user:dev:runtime-service",
+      scope: "runtime_peer",
+    });
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const hash = await sha256Hex(body);
+
+    const response = await scopedPut(env, `/api/n/runtime-demo/blobs/${hash}`, body, {
+      "Content-Type": "application/xhtml+xml",
+      "X-Scope": "runtime_peer",
+      "X-User": "runtime-service",
+      "X-Operator": "runtime:py-3.12",
+    });
+
+    assert.equal(response.status, 415);
+    assert.deepEqual(await response.json(), { error: "unsupported blob content type" });
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.has(blobKey("runtime-demo", hash)), false);
+    assert.equal(env.DB.blobs.size, 0);
+  });
+
   it("keeps blob metadata first-writer-wins on duplicate put", async () => {
     const env = fakeEnv();
     seedNotebook(env, "runtime-demo");
