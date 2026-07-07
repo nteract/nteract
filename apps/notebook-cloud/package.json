@@ -5,7 +5,7 @@
   "scripts": {
     "wasm": "cargo xtask wasm runtimed --skip-renderer-plugins",
     "renderer-plugins": "cargo xtask renderer-plugins",
-    "build:viewer": "vp build -c vite.config.ts && node scripts/copy-viewer-assets.mjs",
+    "build:viewer": "vp build -c vite.config.ts && vp build -c vite.oidc.config.ts && node scripts/copy-viewer-assets.mjs",
     "build:artifacts": "cargo xtask artifacts ensure runtime,sift,renderer",
     "build": "pnpm run build:artifacts && pnpm run build:viewer",
     "deploy": "pnpm run build && pnpm run deploy:renderer-assets && pnpm run deploy:main",

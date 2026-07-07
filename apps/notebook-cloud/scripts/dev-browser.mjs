@@ -75,6 +75,7 @@ async function ensureViewerAssets({ rebuild, skipBuild }) {
 async function viewerAssetsExist() {
   try {
     await access(path.join(appDir, "dist/assets/notebook-cloud-viewer.js"));
+    await access(path.join(appDir, "dist/assets/notebook-cloud-oidc.js"));
     await access(path.join(appDir, "dist/assets/notebook-cloud-viewer.css"));
     return true;
   } catch {

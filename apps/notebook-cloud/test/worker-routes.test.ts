@@ -190,24 +190,33 @@ describe("Worker artifact routes", () => {
   });
 
   it("serves viewer bundle assets through the Worker assets binding", async () => {
+    const seenPaths: string[] = [];
     const env = fakeEnv({
       ASSETS: {
-        fetch: async () =>
-          new Response("console.log('viewer')", {
+        fetch: async (request) => {
+          seenPaths.push(new URL(request.url).pathname);
+          return new Response("console.log('viewer')", {
             headers: { "Content-Type": "application/javascript" },
-          }),
+          });
+        },
       },
     });
 
-    const response = await worker.fetch(
-      new Request("http://localhost/assets/notebook-cloud-viewer.js"),
-      env,
-      fakeContext(),
-    );
+    for (const asset of ["notebook-cloud-viewer.js", "notebook-cloud-oidc.js"]) {
+      const response = await worker.fetch(
+        new Request(`http://localhost/assets/${asset}`),
+        env,
+        fakeContext(),
+      );
 
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
-    assert.equal(await response.text(), "console.log('viewer')");
+      assert.equal(response.status, 200, asset);
+      assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*", asset);
+      assert.equal(await response.text(), "console.log('viewer')", asset);
+    }
+    assert.deepEqual(seenPaths, [
+      "/assets/notebook-cloud-viewer.js",
+      "/assets/notebook-cloud-oidc.js",
+    ]);
   });
 
   it("serves vanity viewer paths against the notebook id", async () => {

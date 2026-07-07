@@ -5555,6 +5555,12 @@ function oidcCallbackViewer(request: Request, env: Env): Response {
       env,
       authConfigForRequest(request, env),
       null,
+      null,
+      null,
+      {
+        entryAssetPath: "/assets/notebook-cloud-oidc.js",
+        includeViewerStylesheet: false,
+      },
     ),
   );
 }
@@ -5587,6 +5593,11 @@ interface ViewerShellMetadata {
     type: "image/png" | "image/jpeg";
     url: string;
   };
+}
+
+interface ViewerShellOptions {
+  entryAssetPath?: string;
+  includeViewerStylesheet?: boolean;
 }
 
 async function publicViewerShellMetadata(
@@ -5659,11 +5670,14 @@ function viewerShell(
   config: ViewerShellConfig | null,
   bootstrap: unknown | null = null,
   resourceHints: ViewerShellResourceHints | null = config,
+  options: ViewerShellOptions = {},
 ): Response {
   const title = escapeHtml(metadata.title);
   const description = escapeHtml(metadata.description);
   const ogImage = metadata.ogImage;
   const twitterCard = ogImage ? "summary_large_image" : "summary";
+  const entryAssetPath = options.entryAssetPath ?? "/assets/notebook-cloud-viewer.js";
+  const includeViewerStylesheet = options.includeViewerStylesheet ?? true;
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -5684,8 +5698,8 @@ function viewerShell(
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style id="nteract-cloud-viewer-theme-surface">${viewerThemeFirstPaintStyle()}</style>
   <script>${viewerThemeBootstrapScript()}</script>
-  ${viewerResourceHints(resourceHints)}
-  <link rel="stylesheet" href="/assets/notebook-cloud-viewer.css" />
+  ${viewerResourceHints(resourceHints, entryAssetPath)}
+  ${includeViewerStylesheet ? `<link rel="stylesheet" href="/assets/notebook-cloud-viewer.css" />` : ""}
 </head>
 <body>
   <div id="root"></div>
@@ -5704,7 +5718,7 @@ function viewerShell(
         )}</script>`
       : ""
   }
-  <script type="module" src="/assets/notebook-cloud-viewer.js"></script>
+  <script type="module" src="${escapeHtml(entryAssetPath)}"></script>
 </body>
 </html>`;
 
@@ -5766,8 +5780,11 @@ async function withAppSessionRenewalCookie(
   return response;
 }
 
-function viewerResourceHints(config: ViewerShellResourceHints | null): string {
-  const viewerEntryHint = `<link rel="modulepreload" href="/assets/notebook-cloud-viewer.js" />`;
+function viewerResourceHints(
+  config: ViewerShellResourceHints | null,
+  entryAssetPath = "/assets/notebook-cloud-viewer.js",
+): string {
+  const viewerEntryHint = `<link rel="modulepreload" href="${escapeHtml(entryAssetPath)}" />`;
   if (!config) {
     return viewerEntryHint;
   }
