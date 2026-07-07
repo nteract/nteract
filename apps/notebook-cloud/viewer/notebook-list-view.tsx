@@ -71,6 +71,7 @@ import {
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { preloadNotebookRoute } from "./notebook-route-preload";
+import type { CloudAppSessionViewState } from "./use-cloud-auth";
 
 const CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS = 8_000;
 const CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS = 20_000;
@@ -106,11 +107,14 @@ export function CloudNotebookListView({
   const [renameError, setRenameError] = useState<string | null>(null);
   const hostedAuth = useHostedCatalogAuth();
   const {
-    canFetchCatalog: canFetchNotebookList,
+    canFetchCatalog: cookieCanFetchNotebookList,
     hasAppSession,
     signedIn,
     waitingForAppSession,
   } = hostedAuth;
+  const canFetchNotebookList =
+    cookieCanFetchNotebookList ||
+    cloudNotebookListCanUseExistingCredentials(authState, appSessionStatus.status);
   const appSessionWaitDeadline =
     appSessionWaitDeadlineMs ?? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;
   const dashboardModel = useMemo(
@@ -220,6 +224,7 @@ export function CloudNotebookListView({
     };
   }, [
     appSessionStatus.session,
+    appSessionStatus.status,
     appSessionWaitDeadline,
     authState,
     bootstrap,
@@ -766,6 +771,19 @@ function cloudAuthWithScope(
         ...authState,
         requestedScope,
       };
+}
+
+function cloudNotebookListCanUseExistingCredentials(
+  authState: CloudPrototypeAuthState,
+  appSessionStatus: CloudAppSessionViewState["status"],
+): boolean {
+  if (authState.mode === "oidc" && authState.token) {
+    return true;
+  }
+  // The notebook list endpoint can also succeed with a same-origin app-session
+  // cookie before the status probe confirms it. Once that probe settles without
+  // a session, an expired OIDC token is not a durable fetch credential.
+  return authState.mode === "oidc_expired" && appSessionStatus === "loading";
 }
 
 function initialCloudNotebookListState(

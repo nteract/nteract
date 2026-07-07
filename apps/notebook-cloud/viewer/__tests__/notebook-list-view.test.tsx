@@ -57,7 +57,9 @@ describe("CloudNotebookListView", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderNotebookList(oidcAuth("alice@example.test"), { appSessionWaitDeadlineMs: 5 });
+    renderNotebookList(oidcAuth("alice@example.test", { token: null }), {
+      appSessionWaitDeadlineMs: 5,
+    });
 
     expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
 
@@ -71,7 +73,34 @@ describe("CloudNotebookListView", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
-  it("keeps cached notebooks visible when deadline revalidation fails", async () => {
+  it("starts the list fetch with OIDC credentials before app-session establishment settles", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          notebooks: [],
+          current_user_principal: "user:anaconda:alice%40example.test",
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderNotebookList(oidcAuth("alice@example.test"), { appSessionWaitDeadlineMs: 5_000 });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("No notebooks yet")).toBeTruthy();
+  });
+
+  it("keeps cached notebooks visible when revalidation fails", async () => {
     const auth = oidcAuth("alice@example.test");
     const cachedNotebooks = [notebook("nb-cached", "Cached Notebook")];
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -96,7 +125,7 @@ describe("CloudNotebookListView", () => {
     expect(screen.getByText("Cached Notebook")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("notebook list refresh failed after app-session wait deadline"),
+      expect.stringContaining("notebook list refresh failed"),
       expect.any(Error),
     );
   });
@@ -118,10 +147,13 @@ function renderNotebookList(
   return store;
 }
 
-function oidcAuth(subject: string): CloudPrototypeAuthState {
+function oidcAuth(
+  subject: string,
+  overrides: Partial<Pick<CloudPrototypeAuthState, "token">> = {},
+): CloudPrototypeAuthState {
   return {
     mode: "oidc",
-    token: "token",
+    token: overrides.token === undefined ? "token" : overrides.token,
     user: subject,
     oidcClaims: {
       sub: subject,

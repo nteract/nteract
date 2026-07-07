@@ -780,16 +780,21 @@ test("cloud notebook list bounds app-session waits before catalog fetches", () =
 
   assert.match(
     sourceText,
-    /const \{[\s\S]*canFetchCatalog: canFetchNotebookList,[\s\S]*hasAppSession,[\s\S]*signedIn,[\s\S]*waitingForAppSession,[\s\S]*\} = hostedAuth;/,
+    /const \{[\s\S]*canFetchCatalog: cookieCanFetchNotebookList,[\s\S]*hasAppSession,[\s\S]*signedIn,[\s\S]*waitingForAppSession,[\s\S]*\} = hostedAuth;/,
   );
   assert.match(sourceText, /const hostedAuth = useHostedCatalogAuth\(\);/);
+  assert.match(
+    sourceText,
+    /const canFetchNotebookList =[\s\S]*cookieCanFetchNotebookList \|\|[\s\S]*cloudNotebookListCanUseExistingCredentials\(authState, appSessionStatus\.status\);/,
+    "bearer OIDC and still-loading app-session cookies should race the list fetch before the cookie exchange settles",
+  );
   assert.match(
     sourceText,
     /const appSessionWaitDeadline =[\s\S]*appSessionWaitDeadlineMs \?\? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;/,
   );
   assert.match(
     sourceText,
-    /if \(!canFetchNotebookList\) \{[\s\S]*if \(waitingForAppSession\) \{[\s\S]*window\.setTimeout\(\(\) => \{[\s\S]*loadNotebookList\(controller, " after app-session wait deadline"\);/,
+    /if \(!canFetchNotebookList\) \{[\s\S]*if \(waitingForAppSession\) \{[\s\S]*window\.setTimeout\([\s\S]*\(\) => \{[\s\S]*loadNotebookList\(controller, " after app-session wait deadline"\);/,
     "waiting for the trusted cookie must have a deadline fallback instead of an eternal skeleton",
   );
   assert.match(
