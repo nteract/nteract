@@ -1,0 +1,44 @@
+---
+title: Unhappy states
+description: Cloud viewer empty, blocked, notice, and rail status fixtures.
+---
+
+import {
+  ElementsAccessGateExample,
+  ElementsEmptyStateExample,
+  ElementsNoticeBannerExample,
+  ElementsRailStatusExample,
+} from "@/components/unhappy-states-example";
+
+Cloud viewer unhappy paths use one visual family: centered copy, a quiet icon
+badge, one sentence of detail, and at most one action. Severity changes the icon
+and subtle badge or border tone, not the whole surface. These fixtures keep the
+states calm across empty, blocked, stale, loading, and signed-out paths. Titles are short labels without trailing periods; details are single sentences.
+
+## Empty state family
+
+Reusable centered states for empty notebook lists, comments, packages, outlines,
+read-only notebooks, and workstation setup.
+
+<ElementsEmptyStateExample />
+
+## Access gate
+
+Full-stage blocked-room states for missing notebooks, missing access, and
+signed-out private notebook links.
+
+<ElementsAccessGateExample />
+
+## Notice banner
+
+Thin inline notices for auth refresh, reconnecting, stale cached lists, and
+approved access transitions.
+
+<ElementsNoticeBannerExample />
+
+## Rail status row
+
+Compact notebook rail rows for workstation loading, configuration attention, and
+recoverable load failures.
+
+<ElementsRailStatusExample />

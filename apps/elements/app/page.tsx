@@ -22,6 +22,7 @@ import {
   SquareCode,
   TextCursorInput,
   ToggleLeft,
+  TriangleAlert,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -65,6 +66,12 @@ const catalogGroups = [
         description: "Notebook home, continuation, workstation context, and sharing previews.",
         href: "/docs/cloud-dashboard",
         icon: LayoutDashboard,
+      },
+      {
+        title: "Unhappy states",
+        description: "Empty, blocked, notice, and rail status states for cloud viewer paths.",
+        href: "/docs/unhappy-states",
+        icon: TriangleAlert,
       },
       {
         title: "Compute placement",
