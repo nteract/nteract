@@ -664,10 +664,18 @@ Environment={path_env}
 WantedBy=default.target
 "#,
         exec_start = exec_start,
-        working_directory = systemd_quote_unit_value(&config.working_directory.to_string_lossy()),
+        working_directory = systemd_path_value(&config.working_directory.to_string_lossy()),
         home_env = systemd_quote_unit_value(&format!("HOME={home}")),
         path_env = systemd_quote_unit_value(&format!("PATH={path}")),
     )
+}
+
+/// `WorkingDirectory=` takes a raw path, not a quoted string: systemd rejects a
+/// quoted value as "path is not absolute" and marks the unit bad-setting, so the
+/// service never starts. Only `%` needs escaping (specifier expansion).
+#[cfg(any(target_os = "linux", test))]
+fn systemd_path_value(value: &str) -> String {
+    value.replace('%', "%%")
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -1385,7 +1393,9 @@ mod tests {
         assert!(unit.contains(
             "ExecStart=\"/home/ubuntu/.local/bin/runt\" \"workstation\" \"run\" \"--python-path\" \"/home/ubuntu/project/.venv/bin/python\" \"--working-directory\" \"/home/ubuntu/project\""
         ));
-        assert!(unit.contains("WorkingDirectory=\"/home/ubuntu/project\""));
+        // Raw path, never quoted: systemd rejects a quoted WorkingDirectory as
+        // non-absolute and the unit lands in bad-setting.
+        assert!(unit.contains("WorkingDirectory=/home/ubuntu/project\n"));
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("Environment=\"HOME=/home/ubuntu\""));
         assert!(unit
@@ -1408,7 +1418,7 @@ mod tests {
         assert!(unit.contains(
             "ExecStart=\"/home/u/bin/runt\" \"workstation\" \"run\" \"--working-directory\" \"/home/u/project %%demo/$$run/\\\"quoted\\\"\""
         ));
-        assert!(unit.contains("WorkingDirectory=\"/home/u/project %%demo/$run/\\\"quoted\\\"\""));
+        assert!(unit.contains("WorkingDirectory=/home/u/project %%demo/$run/\"quoted\"\n"));
         assert!(unit.contains("Environment=\"HOME=/home/u/$account\""));
         assert!(unit.contains(
             "Environment=\"PATH=/home/u/$account/.local/bin:/usr/local/bin:/usr/bin:/bin\""
