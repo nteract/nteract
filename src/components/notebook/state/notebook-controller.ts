@@ -5,6 +5,7 @@ import {
   updateCellSourceById,
   type NotebookStoreCell,
 } from "./cell-store";
+import { clearPendingCellFocus } from "./editor-registry";
 import { createNotebookCellId } from "./notebook-cell-id";
 
 type NotebookCell = NotebookStoreCell;
@@ -232,13 +233,16 @@ export function createNotebookController<THandle extends NotebookControllerHandl
     },
 
     deleteCell(cellId) {
-      commit("structure", canEditStructure, (handle) => {
+      const deleted = commit("structure", canEditStructure, (handle) => {
         if (handle.cell_count() <= 1) return { changed: false, eventApplied: false };
         if (handle.delete_cell_with_changeset && applyMutationEvent) {
           return localMutationOutcome(handle.delete_cell_with_changeset(cellId), Boolean);
         }
         return { changed: !!handle.delete_cell(cellId), eventApplied: false };
       });
+      if (deleted) {
+        clearPendingCellFocus(cellId);
+      }
     },
 
     clearOutputs(cellIds) {

@@ -1,13 +1,14 @@
 import { EditorView } from "@codemirror/view";
 import { scrollElementIntoView } from "@/components/notebook";
 import { createContext, type ReactNode, useCallback, useContext } from "react";
+import {
+  clearPendingCellFocus,
+  focusEditorView,
+  requestCellEditorFocus,
+  type CellCursorPosition,
+  type CellFocusTarget,
+} from "../lib/editor-registry";
 import { logger } from "../lib/logger";
-
-type CellCursorPosition = "start" | "end";
-export interface CellFocusTarget {
-  cursorPosition?: CellCursorPosition;
-  line?: number;
-}
 
 interface EditorRegistryContextType {
   focusCell: (cellId: string, target?: CellCursorPosition | CellFocusTarget) => void;
@@ -16,23 +17,20 @@ interface EditorRegistryContextType {
 const EditorRegistryContext = createContext<EditorRegistryContextType | null>(null);
 
 export function EditorRegistryProvider({ children }: { children: ReactNode }) {
-  // Focus a cell's editor using DOM lookup - bypasses registration timing issues
   const focusCell = useCallback(
     (cellId: string, target: CellCursorPosition | CellFocusTarget = "start") => {
-      const focusTarget =
-        typeof target === "string"
-          ? { cursorPosition: target }
-          : { cursorPosition: "start" as const, ...target };
+      const focusedRegisteredEditor = requestCellEditorFocus(cellId, target);
 
-      // Find the cell element by data attribute
       const cellElement = document.querySelector(`[data-cell-id="${CSS.escape(cellId)}"]`);
+      if (cellElement) {
+        scrollElementIntoView(cellElement, { block: "nearest", behavior: "auto" });
+      }
+      if (focusedRegisteredEditor) return;
+
       if (!cellElement) {
         logger.warn(`[cell-nav] Cell element not found: ${cellId.slice(0, 8)}`);
         return;
       }
-
-      // Scroll the cell container into the notebook viewport
-      scrollElementIntoView(cellElement, { block: "nearest", behavior: "auto" });
 
       // Find CodeMirror's content element inside the cell
       const cmContent = cellElement.querySelector(".cm-content");
@@ -41,6 +39,7 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
           "[data-cell-focus-target]",
         );
         if (fallbackFocusElement) {
+          clearPendingCellFocus(cellId);
           fallbackFocusElement.focus({ preventScroll: true });
           return;
         }
@@ -57,20 +56,8 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Set cursor position and focus
-      const doc = view.state.doc;
-      const line = typeof focusTarget.line === "number" ? focusTarget.line : null;
-      const pos =
-        line !== null && Number.isFinite(line) && line > 0
-          ? doc.line(Math.max(1, Math.min(Math.floor(line), doc.lines))).from
-          : focusTarget.cursorPosition === "end"
-            ? doc.length
-            : 0;
-      view.dispatch({
-        selection: { anchor: pos, head: pos },
-        scrollIntoView: true,
-      });
-      view.focus();
+      clearPendingCellFocus(cellId);
+      focusEditorView(view, target);
     },
     [],
   );
