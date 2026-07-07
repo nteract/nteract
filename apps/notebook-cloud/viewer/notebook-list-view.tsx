@@ -71,8 +71,20 @@ import {
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { preloadNotebookRoute } from "./notebook-route-preload";
+import type { CloudAppSessionViewState } from "./use-cloud-auth";
 
-export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
+const CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS = 8_000;
+const CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS = 20_000;
+
+export interface CloudNotebookListViewProps {
+  authConfig: CloudViewerAuthConfig;
+  appSessionWaitDeadlineMs?: number;
+}
+
+export function CloudNotebookListView({
+  appSessionWaitDeadlineMs,
+  authConfig,
+}: CloudNotebookListViewProps) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const auth = useCloudAuthStore();
   const [bootstrap, setBootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
@@ -95,11 +107,16 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
   const [renameError, setRenameError] = useState<string | null>(null);
   const hostedAuth = useHostedCatalogAuth();
   const {
-    canFetchCatalog: canFetchNotebookList,
+    canFetchCatalog: cookieCanFetchNotebookList,
     hasAppSession,
     signedIn,
     waitingForAppSession,
   } = hostedAuth;
+  const canFetchNotebookList =
+    cookieCanFetchNotebookList ||
+    cloudNotebookListCanUseExistingCredentials(authState, appSessionStatus.status);
+  const appSessionWaitDeadline =
+    appSessionWaitDeadlineMs ?? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;
   const dashboardModel = useMemo(
     () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
     [listState],
@@ -115,47 +132,35 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
       appSessionStatus.session,
       bootstrap,
     );
-    if (!canFetchNotebookList) {
-      if (waitingForAppSession) {
-        setListState(
-          seededNotebooks ? { kind: "ready", notebooks: seededNotebooks } : { kind: "loading" },
-        );
-        return;
-      }
-      clearCachedCloudNotebookListFromWindow();
-      setListState({ kind: "signed_out" });
-      return;
-    }
-
-    if (refreshIndex === 0 && bootstrap) {
-      writeCachedCloudNotebookListToWindow(
-        authState,
-        appSessionStatus.session,
-        bootstrap.notebooks,
-      );
-      setListState({ kind: "ready", notebooks: bootstrap.notebooks });
-      return;
-    }
-
-    const controller = new AbortController();
-    setListState(
-      seededNotebooks ? { kind: "ready", notebooks: seededNotebooks } : { kind: "loading" },
-    );
-    void (async () => {
+    const initialState = seededNotebooks
+      ? { kind: "ready" as const, notebooks: seededNotebooks }
+      : { kind: "loading" as const };
+    const loadNotebookList = async (controller: AbortController, warningLabel: string) => {
       try {
         const response = await fetchCloudNotebookList(
           authState,
-          AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]),
+          AbortSignal.any([
+            controller.signal,
+            AbortSignal.timeout(CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS),
+          ]),
         );
         if (controller.signal.aborted) return;
         if (!response.ok) {
-          throw await cloudResponseError(response, "Unable to list notebooks");
+          const responseError = await cloudResponseError(response, "Unable to list notebooks");
+          if (controller.signal.aborted) return;
+          throw responseError;
         }
         const body = (await response.json()) as unknown;
+        if (controller.signal.aborted) return;
         if (!isCloudNotebookListResponse(body)) {
           throw new Error("Unable to list notebooks: response shape was invalid");
         }
-        writeCachedCloudNotebookListToWindow(authState, appSessionStatus.session, body.notebooks);
+        writeCachedCloudNotebookListToLocalStorage(
+          authState,
+          appSessionStatus.session,
+          body.notebooks,
+          body.current_user_principal,
+        );
         if (typeof body.current_user_display === "string" && body.current_user_display.trim()) {
           setCurrentUserDisplay(body.current_user_display.trim());
         }
@@ -167,23 +172,60 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
         setListState({ kind: "ready", notebooks: body.notebooks });
       } catch (error) {
         if (controller.signal.aborted) return;
-        const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+        if (seededNotebooks) {
+          console.warn(
+            `[notebook-cloud] notebook list refresh failed${warningLabel}; keeping cached list`,
+            error,
+          );
+          return;
+        }
         setListState({
           kind: "error",
-          message: timedOut
-            ? "Loading notebooks timed out - the service may be mid-deploy. Retry, or hard-refresh if this persists."
-            : error instanceof Error
-              ? error.message
-              : String(error),
+          message: notebookListFetchErrorMessage(error),
         });
       }
-    })();
+    };
+    if (!canFetchNotebookList) {
+      if (waitingForAppSession) {
+        const controller = new AbortController();
+        setListState(initialState);
+        const deadline = window.setTimeout(
+          () => {
+            void loadNotebookList(controller, " after app-session wait deadline");
+          },
+          Math.max(0, appSessionWaitDeadline),
+        );
+        return () => {
+          window.clearTimeout(deadline);
+          controller.abort();
+        };
+      }
+      clearCachedCloudNotebookListFromLocalStorage();
+      setListState({ kind: "signed_out" });
+      return;
+    }
+
+    if (refreshIndex === 0 && bootstrap) {
+      writeCachedCloudNotebookListToLocalStorage(
+        authState,
+        appSessionStatus.session,
+        bootstrap.notebooks,
+      );
+      setListState({ kind: "ready", notebooks: bootstrap.notebooks });
+      return;
+    }
+
+    const controller = new AbortController();
+    setListState(initialState);
+    void loadNotebookList(controller, "");
 
     return () => {
       controller.abort();
     };
   }, [
     appSessionStatus.session,
+    appSessionStatus.status,
+    appSessionWaitDeadline,
     authState,
     bootstrap,
     canFetchNotebookList,
@@ -322,7 +364,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
               }
             : notebook,
         );
-        writeCachedCloudNotebookListToWindow(authState, appSessionStatus.session, notebooks);
+        writeCachedCloudNotebookListToLocalStorage(authState, appSessionStatus.session, notebooks);
         return {
           kind: "ready",
           notebooks,
@@ -340,7 +382,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
     setBootstrap(null);
     setDashboardQuery("");
     auth.clearAppSessionStatus();
-    clearCachedCloudNotebookListFromWindow();
+    clearCachedCloudNotebookListFromLocalStorage();
     void clearCloudAppSession()
       .catch((error: unknown) => {
         console.warn("[notebook-cloud] app session clear failed", error);
@@ -731,6 +773,19 @@ function cloudAuthWithScope(
       };
 }
 
+function cloudNotebookListCanUseExistingCredentials(
+  authState: CloudPrototypeAuthState,
+  appSessionStatus: CloudAppSessionViewState["status"],
+): boolean {
+  if (authState.mode === "oidc" && authState.token) {
+    return true;
+  }
+  // The notebook list endpoint can also succeed with a same-origin app-session
+  // cookie before the status probe confirms it. Once that probe settles without
+  // a session, an expired OIDC token is not a durable fetch credential.
+  return authState.mode === "oidc_expired" && appSessionStatus === "loading";
+}
+
 function initialCloudNotebookListState(
   authState: CloudPrototypeAuthState,
   bootstrap: CloudNotebookListBootstrap | null,
@@ -761,15 +816,23 @@ function fetchCloudNotebookList(
   });
 }
 
+function notebookListFetchErrorMessage(error: unknown): string {
+  const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+  if (timedOut) {
+    return "Loading notebooks timed out - the service may be mid-deploy. Retry, or hard-refresh if this persists.";
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 function cloudNotebookListSeedFromBootstrapOrCache(
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
   bootstrap: CloudNotebookListBootstrap | null,
 ): CloudNotebookListItem[] | null {
-  return bootstrap?.notebooks ?? readCachedCloudNotebookListFromWindow(authState, appSession);
+  return bootstrap?.notebooks ?? readCachedCloudNotebookListFromLocalStorage(authState, appSession);
 }
 
-function readCachedCloudNotebookListFromWindow(
+function readCachedCloudNotebookListFromLocalStorage(
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
 ): CloudNotebookListItem[] | null {
@@ -777,19 +840,20 @@ function readCachedCloudNotebookListFromWindow(
   return storage ? readCachedCloudNotebookList(storage, authState, appSession) : null;
 }
 
-function writeCachedCloudNotebookListToWindow(
+function writeCachedCloudNotebookListToLocalStorage(
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
   notebooks: CloudNotebookListItem[],
+  principal?: string | null,
 ): void {
   const storage = cloudNotebookListCacheStorage();
   if (!storage) {
     return;
   }
-  writeCachedCloudNotebookList(storage, authState, appSession, notebooks);
+  writeCachedCloudNotebookList(storage, authState, appSession, notebooks, { principal });
 }
 
-function clearCachedCloudNotebookListFromWindow(): void {
+function clearCachedCloudNotebookListFromLocalStorage(): void {
   const storage = cloudNotebookListCacheStorage();
   if (!storage) {
     return;
@@ -799,7 +863,7 @@ function clearCachedCloudNotebookListFromWindow(): void {
 
 function cloudNotebookListCacheStorage(): Storage | null {
   try {
-    return window.sessionStorage;
+    return window.localStorage;
   } catch {
     return null;
   }

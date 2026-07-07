@@ -2,68 +2,78 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY,
-  CLOUD_NOTEBOOK_LIST_CACHE_TTL_MS,
   clearCachedCloudNotebookList,
   readCachedCloudNotebookList,
   writeCachedCloudNotebookList,
 } from "../viewer/notebook-list-cache";
+import type { CloudAppSession } from "../viewer/app-session";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 import type { CloudNotebookListItem } from "../viewer/notebook-dashboard";
 
 describe("cloud notebook list cache", () => {
-  it("round-trips notebooks for the same browser identity", () => {
+  it("seeds notebooks for a matching OIDC principal", () => {
     const storage = new MemoryStorage();
-    const auth = oidcAuth("user-a");
+    const auth = oidcAuth("alice@example.test");
     const notebooks = [notebook("nb-a")];
 
-    writeCachedCloudNotebookList(storage, auth, null, notebooks, 1_000);
+    writeCachedCloudNotebookList(storage, auth, null, notebooks, {
+      now: 1_000,
+      principal: "user:anaconda:alice%40example.test",
+    });
 
-    assert.deepEqual(readCachedCloudNotebookList(storage, auth, null, 2_000), notebooks);
+    assert.deepEqual(readCachedCloudNotebookList(storage, auth, null), notebooks);
   });
 
-  it("does not reuse cached catalog rows for another identity", () => {
+  it("refuses cached rows from a mismatched principal", () => {
     const storage = new MemoryStorage();
-    writeCachedCloudNotebookList(storage, oidcAuth("user-a"), null, [notebook("nb-a")], 1_000);
-
-    assert.equal(readCachedCloudNotebookList(storage, oidcAuth("user-b"), null, 2_000), null);
-  });
-
-  it("prefers the app session cache key over local OIDC claims", () => {
-    const storage = new MemoryStorage();
-    const notebooks = [notebook("nb-a")];
-
     writeCachedCloudNotebookList(
       storage,
-      oidcAuth("user-a"),
-      appSession("session-a"),
-      notebooks,
-      1_000,
+      oidcAuth("alice@example.test"),
+      null,
+      [notebook("nb-a")],
+      {
+        now: 1_000,
+        principal: "user:anaconda:alice%40example.test",
+      },
     );
 
-    assert.deepEqual(
-      readCachedCloudNotebookList(storage, oidcAuth("user-b"), appSession("session-a"), 2_000),
-      notebooks,
-    );
-    assert.equal(
-      readCachedCloudNotebookList(storage, oidcAuth("user-a"), appSession("session-b"), 2_000),
-      null,
-    );
+    assert.equal(readCachedCloudNotebookList(storage, oidcAuth("bob@example.test"), null), null);
   });
 
-  it("expires retained catalog rows", () => {
+  it("lets an expired OIDC token seed only when an app session backs the subject", () => {
     const storage = new MemoryStorage();
-    const auth = oidcAuth("user-a");
-    writeCachedCloudNotebookList(storage, auth, null, [notebook("nb-a")], 1_000);
+    const auth = oidcExpiredAuth("alice@example.test");
+    const notebooks = [notebook("nb-a")];
 
-    assert.equal(
-      readCachedCloudNotebookList(
-        storage,
-        auth,
-        null,
-        1_000 + CLOUD_NOTEBOOK_LIST_CACHE_TTL_MS + 1,
-      ),
-      null,
-    );
+    writeCachedCloudNotebookList(storage, auth, appSession(), notebooks, {
+      now: 1_000,
+      principal: "user:anaconda:alice%40example.test",
+    });
+
+    assert.deepEqual(readCachedCloudNotebookList(storage, auth, appSession()), notebooks);
+    assert.equal(readCachedCloudNotebookList(storage, auth, null), null);
+  });
+
+  it("clears retained rows on sign-out", () => {
+    const storage = new MemoryStorage();
+    const auth = oidcAuth("alice@example.test");
+    writeCachedCloudNotebookList(storage, auth, null, [notebook("nb-a")], {
+      now: 1_000,
+      principal: "user:anaconda:alice%40example.test",
+    });
+
+    clearCachedCloudNotebookList(storage);
+
+    assert.equal(readCachedCloudNotebookList(storage, auth, null), null);
+    assert.equal(storage.getItem(CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY), null);
+  });
+
+  it("drops malformed JSON without throwing", () => {
+    const storage = new MemoryStorage();
+    storage.setItem(CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY, "{");
+
+    assert.equal(readCachedCloudNotebookList(storage, oidcAuth("alice@example.test"), null), null);
+    assert.equal(storage.getItem(CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY), null);
   });
 
   it("rejects malformed cached rows", () => {
@@ -71,23 +81,18 @@ describe("cloud notebook list cache", () => {
     storage.setItem(
       CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY,
       JSON.stringify({
-        authKey: "oidc:user-a",
-        savedAt: 1_000,
-        notebooks: [{ notebook_id: "nb-a" }],
+        entries: [
+          {
+            notebooks: [{ notebook_id: "nb-a" }],
+            principal: "user:anaconda:alice%40example.test",
+            savedAt: 1_000,
+          },
+        ],
+        v: 1,
       }),
     );
 
-    assert.equal(readCachedCloudNotebookList(storage, oidcAuth("user-a"), null, 2_000), null);
-  });
-
-  it("clears retained catalog rows", () => {
-    const storage = new MemoryStorage();
-    const auth = oidcAuth("user-a");
-    writeCachedCloudNotebookList(storage, auth, null, [notebook("nb-a")], 1_000);
-
-    clearCachedCloudNotebookList(storage);
-
-    assert.equal(readCachedCloudNotebookList(storage, auth, null, 2_000), null);
+    assert.equal(readCachedCloudNotebookList(storage, oidcAuth("alice@example.test"), null), null);
   });
 });
 
@@ -101,6 +106,13 @@ function oidcAuth(subject: string): CloudPrototypeAuthState {
     },
     requestedScope: "viewer",
     problem: null,
+  };
+}
+
+function oidcExpiredAuth(subject: string): CloudPrototypeAuthState {
+  return {
+    ...oidcAuth(subject),
+    mode: "oidc_expired",
   };
 }
 
@@ -122,11 +134,11 @@ function notebook(id: string): CloudNotebookListItem {
   };
 }
 
-function appSession(cacheKey: string) {
+function appSession(): CloudAppSession {
   return {
-    provider: "oidc" as const,
+    provider: "oidc",
     expires_at: 1_750_000_000,
-    cache_key: cacheKey,
+    cache_key: "cache-a",
   };
 }
 

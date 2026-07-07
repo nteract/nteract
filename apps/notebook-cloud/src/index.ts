@@ -150,6 +150,7 @@ import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
   appSessionConfigured,
+  appSessionRenewalCookie,
   clearCloudAppSessionCookie,
   createCloudAppSessionCookie,
   readCloudAppSession,
@@ -1004,7 +1005,11 @@ function appSessionHealth(env: Env): { status: "configured" | "disabled" } {
 async function routeAppSession(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET") {
     const session = appSessionConfigured(env) ? await readCloudAppSession(env, request) : null;
-    return json({ ok: true, session: session ? appSessionResponse(session) : null });
+    return withAppSessionRenewalCookie(
+      json({ ok: true, session: session ? appSessionResponse(session) : null }),
+      env,
+      session,
+    );
   }
 
   const originRejection = rejectUntrustedMutationOrigin(request, env);
@@ -1254,19 +1259,24 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
     (!isAnonymousViewer(identity) ? identity.metadata.avatarUrl?.trim() : undefined) ||
     currentUserProfile?.avatarUrl ||
     undefined;
-  return json({
-    ok: true,
-    notebooks: notebookListResponseRows(
-      request,
-      notebooks,
-      env,
-      computeSessions,
-      roomPresence,
-      principalDisplays,
-    ),
-    ...(currentUserDisplay ? { current_user_display: currentUserDisplay } : {}),
-    ...(currentUserAvatar ? { current_user_avatar: currentUserAvatar } : {}),
-  });
+  return withAppSessionRenewalCookie(
+    json({
+      ok: true,
+      notebooks: notebookListResponseRows(
+        request,
+        notebooks,
+        env,
+        computeSessions,
+        roomPresence,
+        principalDisplays,
+      ),
+      current_user_principal: principal,
+      ...(currentUserDisplay ? { current_user_display: currentUserDisplay } : {}),
+      ...(currentUserAvatar ? { current_user_avatar: currentUserAvatar } : {}),
+    }),
+    env,
+    appSession,
+  );
 }
 
 // Owner name cards resolve through the unified user store (principal_profiles),
@@ -5415,9 +5425,13 @@ async function viewer(
     runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),
     runtimedWasmPath: runtimedWasmAssetPath(env, runtimeWasmAssets.wasm),
   };
-  return responseForRequestMethod(
-    request,
-    viewerShell(shellMetadata, env, authConfigForRequest(request, env), config),
+  return withAppSessionRenewalCookie(
+    responseForRequestMethod(
+      request,
+      viewerShell(shellMetadata, env, authConfigForRequest(request, env), config),
+    ),
+    env,
+    session,
   );
 }
 
@@ -5486,20 +5500,24 @@ async function notebookListViewer(request: Request, env: Env): Promise<Response>
     return viewerShellHead(env);
   }
 
-  const bootstrap = await notebookListBootstrap(request, env);
-  return responseForRequestMethod(
-    request,
-    viewerShell(
-      {
-        title: "nteract cloud notebooks",
-        description: "Open, create, and manage hosted nteract notebooks.",
-      },
-      env,
-      authConfigForRequest(request, env),
-      null,
-      bootstrap,
-      null,
+  const { bootstrap, session } = await notebookListBootstrap(request, env);
+  return withAppSessionRenewalCookie(
+    responseForRequestMethod(
+      request,
+      viewerShell(
+        {
+          title: "nteract cloud notebooks",
+          description: "Open, create, and manage hosted nteract notebooks.",
+        },
+        env,
+        authConfigForRequest(request, env),
+        null,
+        bootstrap,
+        null,
+      ),
     ),
+    env,
+    session,
   );
 }
 
@@ -5706,13 +5724,13 @@ function viewerShell(
 async function notebookListBootstrap(
   request: Request,
   env: Env,
-): Promise<Record<string, unknown> | null> {
+): Promise<{ bootstrap: Record<string, unknown> | null; session: CloudAppSession | null }> {
   if (!env.DB) {
-    return null;
+    return { bootstrap: null, session: null };
   }
   const session = await readCloudAppSession(env, request);
   if (!session) {
-    return null;
+    return { bootstrap: null, session: null };
   }
   await syncStoredAppSessionProfile(env, session);
   const notebooks = await listNotebooksForPrincipal(
@@ -5726,11 +5744,26 @@ async function notebookListBootstrap(
   // authenticated /api/n fetch that follows carries both.
   const computeSessions = await listNotebookComputeSessionsForOwnedRows(env, notebooks);
   return {
-    kind: "notebook-list",
-    session: appSessionResponse(session),
-    notebooks: notebookListResponseRows(request, notebooks, env, computeSessions),
-    saved_at: new Date().toISOString(),
+    session,
+    bootstrap: {
+      kind: "notebook-list",
+      session: appSessionResponse(session),
+      notebooks: notebookListResponseRows(request, notebooks, env, computeSessions),
+      saved_at: new Date().toISOString(),
+    },
   };
+}
+
+async function withAppSessionRenewalCookie(
+  response: Response,
+  env: Env,
+  session: CloudAppSession | null | undefined,
+): Promise<Response> {
+  const renewalCookie = await appSessionRenewalCookie(env, session);
+  if (renewalCookie) {
+    response.headers.append("Set-Cookie", renewalCookie);
+  }
+  return response;
 }
 
 function viewerResourceHints(config: ViewerShellResourceHints | null): string {
