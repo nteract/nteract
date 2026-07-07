@@ -90,7 +90,11 @@ import {
   workstationEventsObjectName,
   type WorkstationAttachJobNotification,
 } from "./workstation-events.ts";
-import { OwnerComputeIndex, listOwnerComputeSessions } from "./compute-session-index.ts";
+import {
+  OwnerComputeIndex,
+  listOwnerComputeSessions,
+  upsertWorkstationLease,
+} from "./compute-session-index.ts";
 import {
   SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH,
   materializeSnapshotPairRenderWithSummary,
@@ -1675,6 +1679,11 @@ function parseNotebookListLimit(request: Request): number | Response {
 }
 
 const WORKSTATION_HEARTBEAT_STALE_MS = 3 * 60_000;
+// The lease a heartbeat renews in the registry DO expires after the same
+// window the lazy read-time check uses, so alarm-swept offline and read-time
+// offline agree. The DO's alarm makes the transition proactive instead of
+// only-on-read.
+const WORKSTATION_LEASE_TTL_MS = WORKSTATION_HEARTBEAT_STALE_MS;
 const MAX_WORKSTATION_ATTACH_JOBS_LIMIT = 25;
 const MISSING_WORKSTATION_RETRY_AFTER_SECONDS = 15 * 60;
 
@@ -1752,6 +1761,15 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
   if (!workstation) {
     return json({ error: "workstation was not registered" }, 500);
   }
+  // Renew the registry-DO liveness lease alongside the D1 row. Best-effort:
+  // registration already succeeded, and the lazy read-time staleness check
+  // still stands if this write is dropped.
+  await upsertWorkstationLease(
+    env,
+    ownerPrincipal,
+    workstation.workstation_id,
+    WORKSTATION_LEASE_TTL_MS,
+  );
   if (identity.metadata.workstationPairingCodeId) {
     await linkWorkstationToPairing(
       env,
