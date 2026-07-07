@@ -65,10 +65,15 @@ reach JavaScript.
 
 ## What stays as-is (existing doctrine)
 
-- **Room WebSocket credentials stay explicit/ticketed** - the cookie
-  authenticates the ticket-minting API, not the socket itself. (SameSite=Lax
-  cookies do ride same-origin WS upgrades, but the ticket boundary keeps room
-  auth auditable and keeps the socket credential short-lived.)
+- **Room WebSocket auth is already cookie-first.** Per
+  `hosted-credential-transport.md`, the browser live-room WS authenticates
+  with the app-session cookie when available, under strict Origin checks and
+  mixed-credential rejection (`src/index.ts:752+`); explicit bearer/dev
+  subprotocols are the no-session fallback, and tickets are explicitly not
+  the current path. Cookie-first just makes the cookie path the only browser
+  path. (The frontend-dev skill text still says "explicit/ticketed" - align
+  it with the ADR during the revision; `instant-paint-validity-ssr.md`
+  repeats the same stale phrasing.)
 - **The isolated output-frame origin stays cookie-less.** Frames get blob
   URLs/tickets, never ambient credentials.
 - **Desktop/daemon auth is untouched** - different transport, different
@@ -78,10 +83,12 @@ reach JavaScript.
 
 ## Decisions required (the ADR-revision surface)
 
-1. `docs/adr/hosted-credential-transport.md` Decision 2 currently mandates the
-   client-side code exchange *because* the verifier lives in localStorage.
-   Moving the verifier to a flow cookie dissolves the premise; the decision
-   needs a revision, not a violation.
+1. `docs/adr/hosted-credential-transport.md` Decision 2 describes the browser
+   running the Authorization Code + PKCE exchange and bridging the validated
+   bearer into the app-session cookie. The localStorage-verifier custody is
+   implementation detail (the `oidc-auth.ts` module comment), not ADR-stated
+   rationale - but the decision text still specifies a client-side exchange,
+   so moving it server-side is an ADR revision.
 2. Refresh-token storage shape: encrypted blob inside the session cookie
    (stateless, size-bounded) vs server-side record in D1/DO (revocable,
    list-able, enables "sign out everywhere"). Recommendation: server-side
@@ -97,13 +104,20 @@ Each stage ships independently; the system works at every point.
 
 - **Stage 0 (done, incidentally):** app-session cookie exists; server bootstrap
   injects `initialSession`; most API routes already accept the cookie.
-- **Stage 1: server-side callback.** Worker-side `/oidc` exchange + flow-cookie
-  PKCE. localStorage token still written afterward for compatibility (the one
-  transitional dual-write), client renewal still active. ADR revision lands
-  here.
-- **Stage 2: server refresh custody.** Refresh token moves into the session
-  record; client renewal driver deleted; localStorage token write dropped -
-  claims arrive via the boot-payload identity hint instead. The big client
+- **Stage 1: server-side callback, behind a flag.** Worker-side `/oidc`
+  exchange + flow-cookie PKCE. Sessions minted this way never materialize a
+  localStorage token - the Worker must not re-expose tokens to JS, so there
+  is deliberately NO transitional dual-write. The client already tolerates
+  session-without-token (everything rides the cookie; the renewal driver
+  no-ops without a stored token - verified in the 2026-07-07 renewal
+  investigation), but the minimal identity hint (principal + display_name,
+  already in the session record) must join the boot payload in this stage so
+  instant-paint and the avatar work for flag-on sessions. The client-side
+  flow stays intact as code for rollback. ADR revision lands here.
+- **Stage 2: server refresh custody.** Refresh token moves into the new
+  server-side session record; client renewal driver deleted; the flag
+  defaults on; full display claims (`email`, `picture`) join the identity
+  hint via session-mint enrichment or `principal_profiles`. The big client
   deletion.
 - **Stage 3: SSR.** Server-render `/n` and `/workstations` authenticated;
   room shell SSR as a follow-on. This is where the #3928 arc closes for real.
@@ -151,8 +165,12 @@ Plus one auth-*keyed* non-credential: the notebook list cache
 (`app-session.ts:17-31`): `principal`, `ns`, `display_name`, `provider`,
 `iat`, `exp`, `sid`. TTL 6h, sliding renewal under half-life; secret
 `NOTEBOOK_CLOUD_APP_SESSION_SECRET` (min 32 chars). The public session
-response exposes only provider/expiry/cache_key - the claims the client needs
-are already IN the cookie, just not surfaced. WS upgrade has a first-class
+response exposes only provider/expiry/cache_key. Of the claims the client
+needs, `principal` (from which the OIDC `sub` is derivable - the principal
+suffix IS the encoded sub, which is exactly what `cloud-principal.ts:46+`
+matches on) and `display_name` are already in the cookie; `email` and
+`picture` are NOT and must be added at session mint or served from the
+`principal_profiles` table. WS upgrade has a first-class
 cookie path that rejects mixed credentials (`index.ts:737-872`). Boot already
 injects `#nteract-cloud-auth-config` + `#nteract-cloud-bootstrap` with
 `initialSession`. Cookie-compatible coverage is already broad: list, catalog,
@@ -161,11 +179,13 @@ workstation management, live-sync WS.
 
 **Gaps the census surfaced (now stage work-items):**
 1. No server-side session/refresh record exists (cookie is stateless) - Stage
-   2 needs the new table/DO for refresh custody. D1 has principal-profile and
-   workstation-credential tables to pattern after (`storage.ts:229-253`).
-2. The identity hint = expose principal + display claims from the session into
-   the boot payload (extend `appSessionResponse`/bootstrap injection) - the
-   data already exists server-side.
+   2 needs the new table/DO for refresh custody. D1 has tables to pattern
+   after: principal profiles/account links (`storage.ts:229-253`) and
+   workstation credential token hashes (`storage.ts:360-371`).
+2. The identity hint = expose principal + display_name from the session into
+   the boot payload (extend `appSessionResponse`/bootstrap injection); add
+   `email`/`picture` at session mint or from `principal_profiles` (they are
+   not in the cookie today).
 3. Cross-tab propagation: `storage$` events (`browser-signals.ts:79-94`) die
    with the keys; replace with a BroadcastChannel ping on session change.
 4. CSRF: `SameSite=Lax` + `rejectUntrustedMutationOrigin`
