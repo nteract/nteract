@@ -1593,7 +1593,13 @@ pub(crate) async fn handle(
                         launched_config,
                     };
                 }
-                Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
+                Ok(
+                    notebook_protocol::protocol::RuntimeAgentResponse::Error { error }
+                    | notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunchFailed {
+                        error,
+                        ..
+                    },
+                ) => {
                     reset_starting_state(room, None).await;
                     return NotebookResponse::Error {
                         error: format!("Agent restart failed: {}", error),
@@ -1763,7 +1769,13 @@ pub(crate) async fn handle(
                             launched_config,
                         }
                     }
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
+                    Ok(
+                        notebook_protocol::protocol::RuntimeAgentResponse::Error { error }
+                        | notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunchFailed {
+                            error,
+                            ..
+                        },
+                    ) => {
                         // Mirror the response into CRDT so UIs that
                         // watch RuntimeStateDoc (not the RPC reply)
                         // also see the failure.

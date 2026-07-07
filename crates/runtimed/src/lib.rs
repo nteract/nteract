@@ -38,6 +38,7 @@ pub(crate) mod ipykernel_error;
 pub mod jupyter_kernel;
 pub mod kernel_connection;
 pub mod kernel_dispatch;
+pub(crate) mod kernel_launch_failure;
 pub(crate) mod kernel_ports;
 pub mod kernel_state;
 pub mod launcher_cache;

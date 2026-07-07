@@ -1,5 +1,9 @@
 use super::*;
 
+const KERNEL_LAUNCH_RETRY_BACKOFF_INITIAL: std::time::Duration =
+    std::time::Duration::from_millis(100);
+const KERNEL_LAUNCH_RETRY_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub(crate) async fn send_runtime_agent_command(
     room: &NotebookRoom,
     request: notebook_protocol::protocol::RuntimeAgentRequest,
@@ -73,7 +77,8 @@ pub(crate) async fn send_runtime_agent_request(
 }
 
 /// Reserve daemon-owned kernel ports, send a launch/restart request, and retry
-/// with a fresh reservation if the runtime agent loses a port bind race.
+/// with a fresh reservation if the runtime agent reports a retryable launch
+/// failure.
 pub(crate) async fn send_runtime_agent_request_with_kernel_ports<F>(
     room: &NotebookRoom,
     mut build_request: F,
@@ -88,29 +93,74 @@ where
         let response =
             send_runtime_agent_request(room, build_request(port_reservation.ports())).await?;
 
-        match &response {
-            notebook_protocol::protocol::RuntimeAgentResponse::Error { error }
-                if crate::kernel_ports::is_kernel_port_bind_error(error)
-                    && attempt < crate::kernel_ports::MAX_KERNEL_PORT_LAUNCH_ATTEMPTS =>
-            {
-                warn!(
-                    "[notebook-sync] Runtime agent hit kernel port bind race on attempt {}/{}; retrying with fresh ports: {}",
-                    attempt,
-                    crate::kernel_ports::MAX_KERNEL_PORT_LAUNCH_ATTEMPTS,
-                    error
-                );
-                continue;
-            }
-            _ => return Ok(response),
+        if let Some(delay) = kernel_launch_retry_delay(
+            &response,
+            attempt,
+            crate::kernel_ports::MAX_KERNEL_PORT_LAUNCH_ATTEMPTS,
+        ) {
+            warn!(
+                "[notebook-sync] Runtime agent reported retryable kernel launch failure on attempt {}/{}; retrying with fresh ports after {:?}: {}",
+                attempt,
+                crate::kernel_ports::MAX_KERNEL_PORT_LAUNCH_ATTEMPTS,
+                delay,
+                kernel_launch_failure_error(&response).unwrap_or("unknown launch failure")
+            );
+            tokio::time::sleep(delay).await;
+            continue;
         }
+
+        return Ok(response);
     }
 
     unreachable!("kernel port launch retry loop must return from the final attempt")
 }
 
+fn kernel_launch_retry_delay(
+    response: &notebook_protocol::protocol::RuntimeAgentResponse,
+    attempt: usize,
+    max_attempts: usize,
+) -> Option<std::time::Duration> {
+    use notebook_protocol::protocol::RuntimeAgentResponse;
+
+    let RuntimeAgentResponse::KernelLaunchFailed { kind, .. } = response else {
+        return None;
+    };
+
+    if attempt >= max_attempts {
+        return None;
+    }
+
+    if crate::kernel_launch_failure::uses_fresh_port_retry(*kind) {
+        Some(kernel_launch_backoff(attempt))
+    } else {
+        None
+    }
+}
+
+fn kernel_launch_backoff(attempt: usize) -> std::time::Duration {
+    let multiplier = 1_u32
+        .checked_shl(attempt.saturating_sub(1) as u32)
+        .unwrap_or(u32::MAX);
+    KERNEL_LAUNCH_RETRY_BACKOFF_INITIAL
+        .saturating_mul(multiplier)
+        .min(KERNEL_LAUNCH_RETRY_BACKOFF_MAX)
+}
+
+fn kernel_launch_failure_error(
+    response: &notebook_protocol::protocol::RuntimeAgentResponse,
+) -> Option<&str> {
+    match response {
+        notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunchFailed { error, .. } => {
+            Some(error.as_str())
+        }
+        notebook_protocol::protocol::RuntimeAgentResponse::Error { error } => Some(error.as_str()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use notebook_protocol::protocol::RuntimeAgentResponse;
+    use notebook_protocol::protocol::{KernelLaunchFailureKind, RuntimeAgentResponse};
 
     use super::*;
 
@@ -148,5 +198,55 @@ mod tests {
             .expect_err("timeout should fail");
 
         assert_eq!(error.to_string(), "Runtime agent query timed out");
+    }
+
+    #[test]
+    fn kernel_launch_retry_delay_retries_startup_transport_before_final_attempt() {
+        let response = RuntimeAgentResponse::KernelLaunchFailed {
+            kind: KernelLaunchFailureKind::RetryableStartupTransport,
+            error: "Failed to launch kernel: Connection reset by peer".to_string(),
+        };
+
+        assert_eq!(
+            kernel_launch_retry_delay(&response, 1, 4),
+            Some(std::time::Duration::from_millis(100))
+        );
+        assert_eq!(
+            kernel_launch_retry_delay(&response, 3, 4),
+            Some(std::time::Duration::from_millis(400))
+        );
+    }
+
+    #[test]
+    fn kernel_launch_retry_delay_retries_port_bind_before_final_attempt() {
+        let response = RuntimeAgentResponse::KernelLaunchFailed {
+            kind: KernelLaunchFailureKind::PortBind,
+            error: "Failed to launch kernel: Address already in use".to_string(),
+        };
+
+        assert_eq!(
+            kernel_launch_retry_delay(&response, 2, 4),
+            Some(std::time::Duration::from_millis(200))
+        );
+    }
+
+    #[test]
+    fn kernel_launch_retry_delay_stops_on_final_attempt() {
+        let response = RuntimeAgentResponse::KernelLaunchFailed {
+            kind: KernelLaunchFailureKind::RetryableStartupTransport,
+            error: "Failed to launch kernel: Connection reset by peer".to_string(),
+        };
+
+        assert_eq!(kernel_launch_retry_delay(&response, 4, 4), None);
+    }
+
+    #[test]
+    fn kernel_launch_retry_delay_does_not_retry_process_exit() {
+        let response = RuntimeAgentResponse::KernelLaunchFailed {
+            kind: KernelLaunchFailureKind::ProcessExited,
+            error: "Failed to launch kernel: Kernel process exited: exit status: 1".to_string(),
+        };
+
+        assert_eq!(kernel_launch_retry_delay(&response, 1, 4), None);
     }
 }

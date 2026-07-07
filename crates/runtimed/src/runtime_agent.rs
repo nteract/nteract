@@ -55,6 +55,14 @@ use crate::protocol::QueueEntry;
 mod echo_suppression;
 use echo_suppression::EchoSuppressor;
 
+fn runtime_agent_response_error(response: &RuntimeAgentResponse) -> Option<&str> {
+    match response {
+        RuntimeAgentResponse::Error { error }
+        | RuntimeAgentResponse::KernelLaunchFailed { error, .. } => Some(error.as_str()),
+        _ => None,
+    }
+}
+
 /// Minimum interval between reconnect cycles on a recoverable transport,
 /// covering *both* recoverable-failure arms: a clean EOF and a stream framing
 /// error. `reconnect_with_backoff` only delays between *failed* connects, so a
@@ -813,7 +821,8 @@ where
                                             interrupt_handle = kernel
                                                 .as_ref()
                                                 .and_then(|k| k.interrupt_handle());
-                                            if let RuntimeAgentResponse::Error { error } = response
+                                            if let Some(error) =
+                                                runtime_agent_response_error(&response)
                                             {
                                                 warn!(
                                                     "[runtime-agent] Launch-on-attach failed: {}",
@@ -1764,23 +1773,30 @@ async fn handle_runtime_agent_request(
                     )
                 }
                 Err(e) => {
+                    let kind = crate::kernel_launch_failure::classify(&e);
                     warn!(
-                        "[runtime-agent] LaunchKernel failed: type={} source={} elapsed_ms={} error={}",
+                        "[runtime-agent] LaunchKernel failed: type={} source={} elapsed_ms={} kind={:?} error={}",
                         launch_kernel_type,
                         launch_env_source,
                         launch_started.elapsed().as_millis(),
+                        kind,
                         e
                     );
                     let error = format!("Failed to launch kernel: {e}");
-                    if let Err(write_error) = record_kernel_launch_failed_state(
-                        ctx,
-                        &launch_kernel_type,
-                        &launch_env_source,
-                        &error,
-                    ) {
-                        warn!("[runtime-state] {}", write_error);
+                    if !crate::kernel_launch_failure::uses_fresh_port_retry(kind) {
+                        if let Err(write_error) = record_kernel_launch_failed_state(
+                            ctx,
+                            &launch_kernel_type,
+                            &launch_env_source,
+                            &error,
+                        ) {
+                            warn!("[runtime-state] {}", write_error);
+                        }
                     }
-                    (RuntimeAgentResponse::Error { error }, None)
+                    (
+                        RuntimeAgentResponse::KernelLaunchFailed { kind, error },
+                        None,
+                    )
                 }
             }
         }
@@ -1924,23 +1940,30 @@ async fn handle_runtime_agent_request(
                     )
                 }
                 Err(e) => {
+                    let kind = crate::kernel_launch_failure::classify(&e);
                     warn!(
-                        "[runtime-agent] RestartKernel failed: type={} source={} elapsed_ms={} error={}",
+                        "[runtime-agent] RestartKernel failed: type={} source={} elapsed_ms={} kind={:?} error={}",
                         launch_kernel_type,
                         launch_env_source,
                         launch_started.elapsed().as_millis(),
+                        kind,
                         e
                     );
                     let error = format!("Failed to restart kernel: {e}");
-                    if let Err(write_error) = record_kernel_launch_failed_state(
-                        ctx,
-                        &launch_kernel_type,
-                        &launch_env_source,
-                        &error,
-                    ) {
-                        warn!("[runtime-state] {}", write_error);
+                    if !crate::kernel_launch_failure::uses_fresh_port_retry(kind) {
+                        if let Err(write_error) = record_kernel_launch_failed_state(
+                            ctx,
+                            &launch_kernel_type,
+                            &launch_env_source,
+                            &error,
+                        ) {
+                            warn!("[runtime-state] {}", write_error);
+                        }
                     }
-                    (RuntimeAgentResponse::Error { error }, None)
+                    (
+                        RuntimeAgentResponse::KernelLaunchFailed { kind, error },
+                        None,
+                    )
                 }
             }
         }

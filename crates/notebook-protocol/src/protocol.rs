@@ -894,6 +894,12 @@ pub enum RuntimeAgentResponse {
     /// Kernel restarted successfully (same runtime agent, new kernel).
     KernelRestarted { env_source: EnvSource },
 
+    /// Kernel launch failed with a typed classification for coordinator policy.
+    KernelLaunchFailed {
+        kind: KernelLaunchFailureKind,
+        error: String,
+    },
+
     /// Code completion result.
     CompletionResult {
         items: Vec<CompletionItem>,
@@ -915,6 +921,19 @@ pub enum RuntimeAgentResponse {
 
     /// Error response.
     Error { error: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelLaunchFailureKind {
+    RetryableStartupTransport,
+    PortBind,
+    ProcessExited,
+    StartupTimeout,
+    ToolBootstrap,
+    Misconfiguration,
+    Unsupported,
+    Other,
 }
 
 /// Envelope around a `RuntimeAgentRequest` carrying a correlation ID.
@@ -1583,6 +1602,31 @@ mod tests {
 
         let parsed: RuntimeAgentResponseEnvelope = serde_json::from_value(json).unwrap();
         assert_eq!(parsed.id, "req-42");
+    }
+
+    #[test]
+    fn runtime_agent_launch_failed_response_round_trip_preserves_kind() {
+        let envelope = RuntimeAgentResponseEnvelope {
+            id: "req-42".to_string(),
+            response: RuntimeAgentResponse::KernelLaunchFailed {
+                kind: KernelLaunchFailureKind::RetryableStartupTransport,
+                error: "Failed to launch kernel: Connection reset by peer".to_string(),
+            },
+        };
+        let json = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(json["id"], "req-42");
+        assert_eq!(json["result"], "kernel_launch_failed");
+        assert_eq!(json["kind"], "retryable_startup_transport");
+
+        let parsed: RuntimeAgentResponseEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.id, "req-42");
+        assert!(matches!(
+            parsed.response,
+            RuntimeAgentResponse::KernelLaunchFailed {
+                kind: KernelLaunchFailureKind::RetryableStartupTransport,
+                ..
+            }
+        ));
     }
 
     #[test]
