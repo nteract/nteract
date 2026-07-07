@@ -17,6 +17,7 @@ export type NotebookWorkstationFactKind =
   | "cpu"
   | "memory"
   | "resource"
+  | "room_link"
   | "runtime_peers"
   | "working_directory"
   | "execution_state"
@@ -74,6 +75,9 @@ export function projectNotebookWorkstationPanel(
     target.memoryBytes ?? null,
     target.resourceLabel ?? null,
     target.runtimePeerCount ?? null,
+    target.roomLink?.status ?? null,
+    target.roomLink?.statusLabel ?? null,
+    target.roomLink?.lastSeenAt ?? null,
     target.workingDirectoryLabel ?? null,
     target.runtimeSessionId ?? null,
   ]);
@@ -105,6 +109,9 @@ export function projectNotebookWorkstationPanel(
   }
   if (!hasCpuCount && !memoryLabel && target.resourceLabel) {
     facts.push(workstationFact("resource", "Resources", target.resourceLabel));
+  }
+  if (target.roomLink) {
+    facts.push(roomLinkFact(target.roomLink));
   }
   if (typeof target.runtimePeerCount === "number" && target.runtimePeerCount > 0) {
     facts.push(workstationFact("runtime_peers", "Compute sessions", `${target.runtimePeerCount}`));
@@ -241,7 +248,21 @@ function isRuntimePeerDisconnectDetail(detail: string): boolean {
   const normalized = detail.trim().toLowerCase();
   return (
     normalized.startsWith("runtime peer disconnected") ||
-    normalized.includes("runtime peer left the room")
+    normalized.includes("runtime peer left the room") ||
+    normalized.startsWith("room link lost")
+  );
+}
+
+function roomLinkFact(
+  roomLink: NonNullable<ReturnType<typeof resolveNotebookShellRuntimeTarget>["roomLink"]>,
+): NotebookWorkstationFactProjection {
+  const suffix = roomLink.lastSeenAt ? ` - last seen ${roomLink.lastSeenAt}` : "";
+  return workstationFact(
+    "room_link",
+    "Room link",
+    `${roomLink.statusLabel}${suffix}`,
+    false,
+    roomLink.status === "connected" ? "positive" : "attention",
   );
 }
 

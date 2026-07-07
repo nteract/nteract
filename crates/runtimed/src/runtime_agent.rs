@@ -42,6 +42,7 @@ use notebook_protocol::protocol::{NotebookBroadcast, RuntimeAgentRequest, Runtim
 use runtime_doc::{CommsDoc, CommsDocHandle, ExecutionState, RuntimeLifecycle, RuntimeStateDoc};
 use runtime_doc::{KernelActivity, RuntimeStateHandle};
 use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, warn};
 
 use crate::blob_store::BlobStore;
@@ -75,6 +76,11 @@ fn runtime_agent_response_error(response: &RuntimeAgentResponse) -> Option<&str>
 /// is gated out of the floor by `clean_eof_is_recoverable() == false`).
 const RECOVERABLE_RECONNECT_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Cloud runtime peers stamp their room-link heartbeat into RuntimeStateDoc.
+/// The UDS path is local daemon transport and stays out of this hosted-room
+/// signal.
+const RUNTIME_ROOM_LINK_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Runtime-agent-local buffer for live kernel broadcasts. These carry
 /// ephemeral custom widget events such as ipympl PNG frames. Match the
 /// coordinator room broadcast capacity so the runtime-agent bridge can absorb
@@ -99,6 +105,13 @@ fn reconnect_floor_delay(
     match since_last_reconnect {
         Some(since) if since < floor => Some(floor - since),
         _ => None,
+    }
+}
+
+fn record_runtime_room_link_seen(state: &RuntimeStateHandle) {
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    if let Err(error) = state.with_doc(|sd| sd.set_last_seen(Some(&timestamp))) {
+        warn!("[runtime-agent] Failed to stamp runtime room link heartbeat: {error}");
     }
 }
 
@@ -522,6 +535,15 @@ where
     let mut orphan_comm_candidates: HashSet<String> = HashSet::new();
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<&'static str>();
     install_runtime_agent_shutdown_signal_handlers(shutdown_tx);
+    let runtime_room_link_heartbeat_enabled = transport.clean_eof_is_recoverable();
+    let mut runtime_room_link_heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + RUNTIME_ROOM_LINK_HEARTBEAT,
+        RUNTIME_ROOM_LINK_HEARTBEAT,
+    );
+    runtime_room_link_heartbeat.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    if runtime_room_link_heartbeat_enabled {
+        record_runtime_room_link_seen(&state);
+    }
 
     // -- 3b. Launch-on-attach gate (cloud only) -----------------------------
     //
@@ -1220,6 +1242,10 @@ where
                         }
                     }
                 }
+            }
+
+            _ = runtime_room_link_heartbeat.tick(), if runtime_room_link_heartbeat_enabled => {
+                record_runtime_room_link_seen(&ctx.state);
             }
 
             // Process-level shutdown from the workstation agent or host. This

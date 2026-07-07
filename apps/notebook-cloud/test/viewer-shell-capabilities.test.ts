@@ -228,6 +228,7 @@ test("cloud shell capabilities require live runtime peer presence for executable
     selectedMode: "edit",
     runtimeAvailable: false,
     runtimePeerCount: 0,
+    runtimeLastSeenAt: "2026-06-07T21:02:00Z",
     workstationAttachment: {
       workstation_id: "ws-lab2",
       display_name: "Lab 2",
@@ -251,9 +252,14 @@ test("cloud shell capabilities require live runtime peer presence for executable
   assert.equal(capabilities.runtime.target?.statusLabel, "Needs attention");
   assert.equal(
     capabilities.runtime.target?.detail,
-    "Runtime peer disconnected: no compute session is currently attached to the room.",
+    "Room link lost: no compute session is currently attached to the room.",
   );
   assert.equal(capabilities.runtime.target?.runtimePeerCount, null);
+  assert.deepEqual(capabilities.runtime.target?.roomLink, {
+    status: "lost",
+    statusLabel: "Lost",
+    lastSeenAt: "2026-06-07T21:02:00Z",
+  });
   assert.equal(capabilities.canExecute, false);
 });
 

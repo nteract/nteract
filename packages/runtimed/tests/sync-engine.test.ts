@@ -138,6 +138,7 @@ function makeRuntimeState(
       name: "python3",
       language: "python",
       env_source: "",
+      last_seen: null,
     },
     queue: { executing: null, queued: [] },
     env: {
@@ -791,6 +792,7 @@ describe("SyncEngine", () => {
           name: "python3",
           language: "python",
           env_source: "",
+          last_seen: null,
         },
         queue: { executing: null, queued: [] },
         env: {
@@ -883,6 +885,7 @@ describe("SyncEngine", () => {
           name: "python3",
           language: "python",
           env_source: "",
+          last_seen: null,
         },
         queue: { executing: null, queued: [] },
         env: {

@@ -499,8 +499,30 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
       id: "ws-lab2",
       status: "attention",
       statusLabel: "Needs attention",
-      detail: "Runtime peer disconnected: no compute session is currently attached to the room.",
+      detail: "Room link lost: no compute session is currently attached to the room.",
       runtimePeerCount: null,
+      roomLink: {
+        status: "lost",
+        statusLabel: "Lost",
+        lastSeenAt: null,
+      },
+    });
+  });
+
+  it("carries room-link last-seen state for stale hosted attachments", () => {
+    const target = projectNotebookRuntimeTargetFromWorkstationAttachment(attachment(), {
+      requireRuntimePeer: true,
+      runtimePeerCount: 0,
+      runtimeLastSeenAt: "2026-06-07T21:02:00Z",
+    });
+
+    expect(target).toMatchObject({
+      status: "attention",
+      roomLink: {
+        status: "lost",
+        statusLabel: "Lost",
+        lastSeenAt: "2026-06-07T21:02:00Z",
+      },
     });
   });
 });

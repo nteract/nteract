@@ -70,6 +70,10 @@ export interface CloudNotebookShellCapabilityInput {
    */
   kernelStatusLabel?: string | null;
   /**
+   * RuntimeStateDoc-derived room-link heartbeat from the runtime peer.
+   */
+  runtimeLastSeenAt?: string | null;
+  /**
    * Room-host-owned RuntimeStateDoc workstation attachment snapshot. When
    * present this is the durable notebook-visible source for the selected
    * compute target; live presence remains the fallback while older rooms have
@@ -100,6 +104,7 @@ export function cloudNotebookShellCapabilities({
   runtimeAvailable = false,
   runtimePeerCount = runtimeAvailable ? 1 : 0,
   kernelStatusLabel = null,
+  runtimeLastSeenAt = null,
   workstationAttachment = null,
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
@@ -159,6 +164,7 @@ export function cloudNotebookShellCapabilities({
       runtimeAvailable: effectiveRuntimeAvailable,
       runtimePeerCount,
       kernelStatusLabel,
+      runtimeLastSeenAt,
       workstationAttachment,
       canChooseHostedWorkstation,
     }),
@@ -209,6 +215,7 @@ function cloudRuntimeTarget({
   runtimeAvailable,
   runtimePeerCount,
   kernelStatusLabel,
+  runtimeLastSeenAt,
   workstationAttachment,
   canChooseHostedWorkstation,
 }: {
@@ -216,6 +223,7 @@ function cloudRuntimeTarget({
   runtimeAvailable: boolean;
   runtimePeerCount: number;
   kernelStatusLabel: string | null;
+  runtimeLastSeenAt: string | null;
   workstationAttachment: WorkstationAttachmentState | null;
   canChooseHostedWorkstation: boolean;
 }): NotebookShellRuntimeTargetProjection {
@@ -232,11 +240,21 @@ function cloudRuntimeTarget({
       defaultEnvironmentLabel: "Runtime peer",
       environmentLabel: "Runtime peer",
       runtimePeerCount: visibleRuntimePeerCount || 1,
+      roomLink: {
+        status: "connected",
+        statusLabel: "Connected",
+        lastSeenAt: runtimeLastSeenAt,
+      },
     };
   }
   const attachmentTarget = projectNotebookRuntimeTargetFromWorkstationAttachment(
     workstationAttachment,
-    { runtimePeerCount: visibleRuntimePeerCount, kernelStatusLabel, requireRuntimePeer: true },
+    {
+      runtimePeerCount: visibleRuntimePeerCount,
+      kernelStatusLabel,
+      requireRuntimePeer: true,
+      runtimeLastSeenAt,
+    },
   );
   if (attachmentTarget) {
     return attachmentTarget;
@@ -254,6 +272,11 @@ function cloudRuntimeTarget({
       environmentLabel: "Current Python",
       kernelStatusLabel,
       runtimePeerCount: visibleRuntimePeerCount || 1,
+      roomLink: {
+        status: "connected",
+        statusLabel: "Connected",
+        lastSeenAt: runtimeLastSeenAt,
+      },
     };
   }
   return {

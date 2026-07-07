@@ -790,6 +790,7 @@ export function NotebookViewer({
       hasAppSession,
       hostCapabilities: config.hostCapabilities,
       kernelStatusLabel: cloudKernelStatusLabel,
+      runtimeLastSeenAt: runtimeState.kernel.last_seen,
       runtimePeerAvailable,
       runtimePeerCount,
       selectedMode: selectedInteractionModeForAccess,

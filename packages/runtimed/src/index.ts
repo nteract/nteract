@@ -344,6 +344,8 @@ export {
   type NotebookShellControlPolicy,
   type NotebookShellExecutionPolicy,
   type NotebookShellPackagePolicy,
+  type NotebookShellRoomLinkProjection,
+  type NotebookShellRoomLinkStatus,
   type NotebookShellRuntimeCapabilities,
   type NotebookShellRuntimeTargetKind,
   type NotebookShellRuntimeTargetProjection,
