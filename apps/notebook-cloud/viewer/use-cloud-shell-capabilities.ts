@@ -18,6 +18,10 @@ import { cloudNotebookShellCapabilities } from "./shell-capabilities";
 interface UseCloudShellCapabilitiesInput {
   accessConnectionScope?: string | null;
   authState: CloudPrototypeAuthState;
+  selfDisplay?: {
+    label?: string | null;
+    imageUrl?: string | null;
+  };
   connectionScope: string | null;
   connectionActorLabel: string | null;
   connectionPeerId: string | null;
@@ -50,6 +54,7 @@ export interface CloudShellCapabilities {
 export function useCloudShellCapabilities({
   accessConnectionScope = null,
   authState,
+  selfDisplay,
   connectionScope,
   connectionActorLabel,
   connectionPeerId,
@@ -109,6 +114,7 @@ export function useCloudShellCapabilities({
       cloudNotebookShellCapabilities({
         accessConnectionScope: documentAccessScope,
         authState,
+        selfDisplay,
         connectionScope,
         connectionActorLabel,
         connectionPeerLabel,
@@ -125,6 +131,8 @@ export function useCloudShellCapabilities({
       }),
     [
       authState,
+      selfDisplay?.imageUrl,
+      selfDisplay?.label,
       hasAppSession,
       documentAccessScope,
       codeCellCount,
