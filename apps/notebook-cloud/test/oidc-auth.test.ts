@@ -121,7 +121,7 @@ describe("cloud OIDC browser auth", () => {
         throw new Error(`unexpected fetch ${url}`);
       }) as typeof fetch;
 
-    // Local dev issuer (mounted at /dev/oidc): the hint is forwarded so a
+    // Local dev issuer: the worker set localOidc, so the hint is forwarded and a
     // non-default dev identity can be selected.
     const devUrl = await beginOidcLogin(
       {
@@ -129,6 +129,7 @@ describe("cloud OIDC browser auth", () => {
         clientId: "local-oidc-client",
         redirectUri: "http://127.0.0.1:45626/oidc",
         scope: "openid profile email",
+        localOidc: true,
       },
       {
         currentUrl: "http://127.0.0.1:45626/n?login_hint=alice@localhost",
@@ -138,13 +139,46 @@ describe("cloud OIDC browser auth", () => {
     );
     assert.equal(devUrl.searchParams.get("login_hint"), "alice@localhost");
 
-    // Production issuer: the same URL param must NOT reach the real IdP.
+    // Production issuer (no localOidc marker): the URL param must NOT reach the
+    // real IdP.
     const prodUrl = await beginOidcLogin(authConfig, {
       currentUrl: "https://preview.runt.run/n?login_hint=alice@localhost",
       storage: new MemoryStorage(),
       fetchImpl: discovery("https://auth.stage.anaconda.com/api/auth"),
     });
     assert.equal(prodUrl.searchParams.get("login_hint"), null);
+
+    // A production issuer whose URL merely CONTAINS "/dev/oidc" as a path
+    // substring must still not forward: forwarding keys on the server-set
+    // localOidc flag, not on parsing the issuer string.
+    const lookalikeUrl = await beginOidcLogin(
+      {
+        issuer: "https://auth.anaconda.com/tenants/dev/oidc/api/auth",
+        clientId: "client-id",
+        redirectUri: "https://preview.runt.run/oidc",
+        scope: "openid profile email",
+      },
+      {
+        currentUrl: "https://preview.runt.run/n?login_hint=alice@localhost",
+        storage: new MemoryStorage(),
+        fetchImpl: discovery("https://auth.anaconda.com/tenants/dev/oidc/api/auth"),
+      },
+    );
+    assert.equal(lookalikeUrl.searchParams.get("login_hint"), null);
+  });
+
+  it("carries the server-set localOidc dev flag through normalization", () => {
+    const base = {
+      issuer: authConfig.issuer,
+      clientId: "client-id",
+      redirectUri: "https://x/oidc",
+    };
+    assert.equal(
+      normalizeOidcAuthConfig({ ...base, localOidc: "true" } as unknown as CloudOidcAuthConfig)
+        ?.localOidc,
+      true,
+    );
+    assert.equal(normalizeOidcAuthConfig(base)?.localOidc, undefined);
   });
 
   it("exchanges a valid callback for stored tokens and a same-origin return URL", async () => {

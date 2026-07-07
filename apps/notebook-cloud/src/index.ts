@@ -5934,6 +5934,10 @@ function oidcAuthConfigForRequest(request: Request, env: Env): Record<string, st
     clientId,
     redirectUri: env.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI?.trim() || new URL("/oidc", request.url).href,
     ...(providerLabel ? { providerLabel } : {}),
+    // Server-derived: only the dev issuer mount sets this, and the viewer keys
+    // its login_hint forwarding on it. Deriving it here (not from the issuer
+    // string) keeps production sign-in unable to forward a URL login_hint.
+    ...(localOidcEnabled(env) ? { localOidc: "true" } : {}),
   };
 }
 

@@ -34,6 +34,11 @@ export interface CloudOidcAuthConfig {
   redirectUri: string;
   providerLabel?: string;
   scope?: string;
+  /**
+   * Set by the worker only under the NOTEBOOK_CLOUD_LOCAL_OIDC dev gate. Gates
+   * login_hint forwarding so production sign-in can never forward a URL hint.
+   */
+  localOidc?: boolean;
 }
 
 export interface CloudOidcRequestState {
@@ -90,11 +95,15 @@ export function normalizeOidcAuthConfig(
   if (!issuer || !clientId || !redirectUri) {
     return null;
   }
+  // The worker serializes this flag as a string; accept either shape.
+  const rawLocalOidc = (input as { localOidc?: unknown } | null | undefined)?.localOidc;
+  const localOidc = rawLocalOidc === true || rawLocalOidc === "true";
   return {
     issuer,
     clientId,
     redirectUri,
     ...(providerLabel ? { providerLabel } : {}),
+    ...(localOidc ? { localOidc: true } : {}),
     scope: input?.scope?.trim() || DEFAULT_OIDC_SCOPE,
   };
 }
@@ -293,14 +302,13 @@ export async function beginOidcLogin(
   );
 }
 
-// The dev issuer is mounted at `/dev/oidc` and can grant more than one identity.
-// Forward a `login_hint` query param to the authorize request so local
-// multi-user flows can select a non-default user - but only for that local
-// issuer, so production sign-in behavior is unchanged.
-const LOCAL_DEV_OIDC_ISSUER_MARKER = "/dev/oidc";
-
+// The local dev issuer can grant more than one identity. Forward a `login_hint`
+// query param to the authorize request so local multi-user flows can select a
+// non-default user - but only when the worker marked this as the dev issuer
+// (`localOidc`), never by inferring dev-ness from the issuer URL, so production
+// sign-in can never forward an attacker-supplied URL hint.
 function devLoginHint(config: CloudOidcAuthConfig, currentUrl: string): string | undefined {
-  if (!config.issuer.includes(LOCAL_DEV_OIDC_ISSUER_MARKER)) {
+  if (config.localOidc !== true) {
     return undefined;
   }
   try {
