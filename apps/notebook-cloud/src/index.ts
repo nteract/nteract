@@ -2816,11 +2816,19 @@ export function workstationStatusForResponse(
   // The registry-DO lease is the proactive liveness signal: its alarm sweeps a
   // workstation offline at expiry instead of waiting for a read to notice.
   // Still check the expiry timestamp directly so a late alarm can't report a
-  // lapsed lease as live. Falls back to the lazy D1 staleness check when no
-  // lease exists (a workstation registered before this shipped, or a dropped
-  // lease write).
+  // lapsed lease as live. Only trust the lease when it is at least as fresh as
+  // the D1 row: a heartbeat writes D1 first and the paired lease write is
+  // best-effort, so if that write lagged or failed, D1 is the newer signal and
+  // a stale offline lease must not override it. Falls back to the lazy D1
+  // staleness check when no (or a stale) lease exists.
   if (lease && (workstation.status === "online" || workstation.status === "offline")) {
-    return lease.online && lease.lease_expires_at > now ? "online" : "offline";
+    const rowSeen = workstation.last_seen_at ? Date.parse(workstation.last_seen_at) : NaN;
+    const leaseSeen = Date.parse(lease.last_seen_at);
+    const leaseIsFreshEnough =
+      !Number.isFinite(rowSeen) || (Number.isFinite(leaseSeen) && leaseSeen >= rowSeen);
+    if (leaseIsFreshEnough) {
+      return lease.online && lease.lease_expires_at > now ? "online" : "offline";
+    }
   }
   if (workstation.status === "online" && workstation.last_seen_at) {
     const lastSeen = Date.parse(workstation.last_seen_at);

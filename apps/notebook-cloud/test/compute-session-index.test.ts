@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { DurableObjectState, Env } from "../src/cloudflare-types.ts";
-import { OwnerComputeIndex, ownerComputeIndexObjectName } from "../src/compute-session-index.ts";
+import {
+  OwnerComputeIndex,
+  ownerComputeIndexObjectName,
+  WORKSTATION_LEASE_GC_MS,
+} from "../src/compute-session-index.ts";
 import type { NotebookComputeSessionSummary } from "runtimed";
 
 describe("OwnerComputeIndex", () => {
@@ -109,28 +113,31 @@ describe("OwnerComputeIndex workstation leases", () => {
     assert.equal(scheduledAlarm(), sooner.lease_expires_at);
   });
 
-  it("sweeps an expired lease to offline and clears the alarm when none remain", async () => {
-    const { state, values, scheduledAlarm } = fakeStateWithAlarm();
+  it("sweeps an expired lease to offline and arms the GC deadline for the dead row", async () => {
+    const { state, values, scheduledAlarm, deliverAlarm } = fakeStateWithAlarm();
     const object = new OwnerComputeIndex(state, {} as Env);
 
     await object.fetch(leaseUpsert("ws-a", "user:dev:alice", 60_000));
     // Force the stored lease past its window, then fire the alarm the runtime
     // would have scheduled.
     const stored = values.get("lease:ws-a") as Record<string, unknown>;
-    values.set("lease:ws-a", { ...stored, lease_expires_at: Date.now() - 1 });
+    const expiredAt = Date.now() - 1;
+    values.set("lease:ws-a", { ...stored, lease_expires_at: expiredAt });
 
+    deliverAlarm();
     await object.alarm();
 
     const leases = await listLeases(object);
     assert.equal(leases.length, 1);
     assert.equal(leases[0].online, false);
     assert.match(leases[0].offline_reason ?? "", /lease expired/);
-    // No live lease left, so the DO disarms and hibernates.
-    assert.equal(scheduledAlarm(), null);
+    // The row is offline now, so the alarm is armed for its GC deadline, not
+    // cleared - otherwise the dead row would never be collected.
+    assert.equal(scheduledAlarm(), expiredAt + WORKSTATION_LEASE_GC_MS);
   });
 
   it("leaves live leases untouched while sweeping expired ones", async () => {
-    const { state, values } = fakeStateWithAlarm();
+    const { state, values, deliverAlarm } = fakeStateWithAlarm();
     const object = new OwnerComputeIndex(state, {} as Env);
 
     await object.fetch(leaseUpsert("ws-dead", "user:dev:alice", 60_000));
@@ -138,6 +145,7 @@ describe("OwnerComputeIndex workstation leases", () => {
     const dead = values.get("lease:ws-dead") as Record<string, unknown>;
     values.set("lease:ws-dead", { ...dead, lease_expires_at: Date.now() - 1 });
 
+    deliverAlarm();
     await object.alarm();
 
     const byId = new Map(
@@ -150,7 +158,7 @@ describe("OwnerComputeIndex workstation leases", () => {
 
 describe("OwnerComputeIndex lease notifications and GC", () => {
   it("pushes went_offline to WorkstationEvents when a lease lapses", async () => {
-    const { state, values } = fakeStateWithAlarm();
+    const { state, values, settle, deliverAlarm } = fakeStateWithAlarm();
     const events = fakeWorkstationEvents();
     const object = new OwnerComputeIndex(state, events.env);
 
@@ -158,7 +166,10 @@ describe("OwnerComputeIndex lease notifications and GC", () => {
     const stored = values.get("lease:ws-a") as Record<string, unknown>;
     values.set("lease:ws-a", { ...stored, lease_expires_at: Date.now() - 1 });
 
+    deliverAlarm();
     await object.alarm();
+    // Delivery is dispatched off the handler via waitUntil; drain it.
+    await settle();
 
     assert.equal(events.notifications.length, 1);
     assert.equal(events.notifications[0].objectName, "user:dev:alice\nws-a");
@@ -168,7 +179,7 @@ describe("OwnerComputeIndex lease notifications and GC", () => {
   });
 
   it("does not push for a lease that is already offline", async () => {
-    const { state, values } = fakeStateWithAlarm();
+    const { state, values, settle, deliverAlarm } = fakeStateWithAlarm();
     const events = fakeWorkstationEvents();
     const object = new OwnerComputeIndex(state, events.env);
 
@@ -176,13 +187,15 @@ describe("OwnerComputeIndex lease notifications and GC", () => {
     const stored = values.get("lease:ws-a") as Record<string, unknown>;
     values.set("lease:ws-a", { ...stored, online: false, lease_expires_at: Date.now() - 1 });
 
+    deliverAlarm();
     await object.alarm();
+    await settle();
 
     assert.equal(events.notifications.length, 0);
   });
 
-  it("garbage-collects leases offline past the GC window", async () => {
-    const { state, values } = fakeStateWithAlarm();
+  it("garbage-collects leases offline past the GC window and disarms", async () => {
+    const { state, values, scheduledAlarm, deliverAlarm } = fakeStateWithAlarm();
     const object = new OwnerComputeIndex(state, {} as Env);
 
     await object.fetch(leaseUpsert("ws-old", "user:dev:alice", 60_000));
@@ -194,10 +207,13 @@ describe("OwnerComputeIndex lease notifications and GC", () => {
       lease_expires_at: Date.now() - 25 * 60 * 60_000,
     });
 
+    deliverAlarm();
     await object.alarm();
 
     assert.equal((await listLeases(object)).length, 0);
     assert.equal(values.has("lease:ws-old"), false);
+    // Nothing left to sweep, so the alarm is cleared and the DO hibernates.
+    assert.equal(scheduledAlarm(), null);
   });
 });
 
@@ -256,9 +272,15 @@ function fakeStateWithAlarm(): {
   state: DurableObjectState;
   values: Map<string, unknown>;
   scheduledAlarm: () => number | null;
+  settle: () => Promise<unknown>;
+  deliverAlarm: () => void;
 } {
   const values = new Map<string, unknown>();
   let alarm: number | null = null;
+  // The alarm dispatches went_offline via waitUntil so the handler returns
+  // without awaiting delivery. Capture those promises so a test can await the
+  // background work it wants to observe.
+  const pending: Promise<unknown>[] = [];
   const state: DurableObjectState = {
     id: { toString: () => "owner-compute" },
     storage: {
@@ -276,9 +298,22 @@ function fakeStateWithAlarm(): {
         alarm = null;
       },
     },
-    waitUntil: () => undefined,
+    waitUntil: (promise: Promise<unknown>) => {
+      pending.push(Promise.resolve(promise));
+    },
   };
-  return { state, values, scheduledAlarm: () => alarm };
+  return {
+    state,
+    values,
+    scheduledAlarm: () => alarm,
+    settle: () => Promise.allSettled(pending),
+    // Model Cloudflare delivering the alarm: the pending alarm is consumed
+    // before the handler runs, so getAlarm() reads null inside alarm() unless
+    // the handler re-arms. Call this right before object.alarm().
+    deliverAlarm: () => {
+      alarm = null;
+    },
+  };
 }
 
 function computeSummary(notebookId: string): NotebookComputeSessionSummary {

@@ -12,7 +12,10 @@ const MAX_NOTEBOOK_IDS_PER_LIST = 500;
 // alarm drops it so DO storage does not accumulate stale records; D1 remains the
 // registry of record, so the workstation still lists (offline) until it is
 // deregistered.
-const WORKSTATION_LEASE_GC_MS = 24 * 60 * 60_000;
+export const WORKSTATION_LEASE_GC_MS = 24 * 60 * 60_000;
+// Hard ceiling on a single went_offline delivery so a slow or dead events DO
+// cannot keep the background notify (and thus the registry DO) alive.
+const WORKSTATION_WENT_OFFLINE_NOTIFY_TIMEOUT_MS = 5_000;
 
 /**
  * A workstation liveness lease held in the owner-scoped registry DO. The
@@ -116,8 +119,11 @@ export class OwnerComputeIndex {
   }
 
   /**
-   * Single-earliest-wins: schedule the alarm for the soonest online lease
-   * expiry, or clear it when no lease is live. Cheap to call on every upsert -
+   * Single-earliest-wins: schedule the alarm for the soonest deadline that
+   * needs the sweep - an online lease's expiry, or an offline lease's GC
+   * deadline - or clear it when nothing is pending. Arming the GC deadline
+   * matters: without it, an all-offline fleet disarms the alarm and its dead
+   * lease rows would never be collected. Cheap to call on every upsert:
    * `setAlarm` is one row write, and we only rewrite when the target moves.
    */
   private async armLeaseAlarm(): Promise<void> {
@@ -127,8 +133,11 @@ export class OwnerComputeIndex {
     const leases = await this.readLeases();
     let earliest: number | null = null;
     for (const lease of leases.values()) {
-      if (lease.online && (earliest === null || lease.lease_expires_at < earliest)) {
-        earliest = lease.lease_expires_at;
+      const deadline = lease.online
+        ? lease.lease_expires_at
+        : lease.lease_expires_at + WORKSTATION_LEASE_GC_MS;
+      if (earliest === null || deadline < earliest) {
+        earliest = deadline;
       }
     }
     const current = (await this.state.storage.getAlarm?.()) ?? null;
@@ -173,8 +182,16 @@ export class OwnerComputeIndex {
     // Push the offline transition to any listeners, so the rail/toolbar learn
     // it went offline instead of inferring absence from a missed poll. The
     // registry reaches the socket-holding DO by fetch, never by holding a
-    // socket itself.
-    await this.notifyWentOffline(wentOffline);
+    // socket itself. Dispatch off the alarm's critical path: a slow or dead
+    // events DO must not keep the handler running, which would pin this DO
+    // resident and break hibernation. waitUntil lets the handler return now
+    // while the bounded-timeout delivery drains in the background.
+    const notify = this.notifyWentOffline(wentOffline);
+    if (this.state.waitUntil) {
+      this.state.waitUntil(notify);
+    } else {
+      void notify;
+    }
     return wentOffline.length;
   }
 
@@ -198,6 +215,7 @@ export class OwnerComputeIndex {
                 workstation_id: lease.workstation_id,
                 reason: lease.offline_reason ?? "went offline",
               }),
+              signal: AbortSignal.timeout(WORKSTATION_WENT_OFFLINE_NOTIFY_TIMEOUT_MS),
             }),
           );
         } catch (error) {

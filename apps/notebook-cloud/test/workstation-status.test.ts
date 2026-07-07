@@ -58,4 +58,16 @@ describe("workstationStatusForResponse", () => {
       "online",
     );
   });
+
+  it("ignores a stale offline lease when the D1 row is fresher", () => {
+    // Heartbeat landed in D1 but the paired lease write lagged or failed, so the
+    // lease still reads the pre-heartbeat swept-offline verdict. D1 is the newer
+    // signal; a fresh row must not be regressed to offline.
+    const freshRow = row({ last_seen_at: new Date(NOW).toISOString() });
+    const staleSwept = lease({
+      online: false,
+      last_seen_at: new Date(NOW - 5 * 60_000).toISOString(),
+    });
+    assert.equal(workstationStatusForResponse(freshRow, NOW, null, staleSwept), "online");
+  });
 });
