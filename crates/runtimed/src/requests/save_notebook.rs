@@ -8,7 +8,8 @@ use tracing::warn;
 use crate::daemon::Daemon;
 use crate::notebook_sync_server::{
     canonical_target_path, finalize_untitled_promotion, format_notebook_cells,
-    persist_notebook_bytes, save_notebook_to_disk, NotebookFileBinding, NotebookRoom, SaveError,
+    persist_notebook_bytes, release_autosave_owner_marker_for_path, save_notebook_to_disk,
+    NotebookFileBinding, NotebookRoom, SaveError,
 };
 use crate::protocol::NotebookResponse;
 
@@ -150,6 +151,7 @@ pub(crate) async fn handle(
             // Move the persistent binding with the room: the old path is now a
             // different (or absent) file and must not resolve to this id.
             daemon.notebook_registry.forget(old);
+            release_autosave_owner_marker_for_path(old).await;
             daemon
                 .notebook_registry
                 .record(&canonical, room.id, &registry_now);
