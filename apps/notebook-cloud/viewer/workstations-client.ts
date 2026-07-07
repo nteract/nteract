@@ -39,12 +39,22 @@ interface CloudWorkstationsResponse {
 interface CloudWorkstationAttachmentResponse {
   job?: {
     job_id?: unknown;
+    workstation_id?: unknown;
     status?: unknown;
+  };
+  workstation?: {
+    workstation_id?: unknown;
   };
 }
 
 export interface RequestCloudWorkstationAttachmentOptions {
   replaceExisting?: boolean;
+}
+
+export interface CloudWorkstationAttachmentRequestResult {
+  jobId: string | null;
+  status: string | null;
+  workstationId: string | null;
 }
 
 export async function fetchCloudWorkstations(
@@ -102,7 +112,7 @@ export async function requestCloudWorkstationAttachment(
   authState: CloudPrototypeAuthState,
   workstationId: string,
   options: RequestCloudWorkstationAttachmentOptions = {},
-): Promise<{ jobId: string | null; status: string | null }> {
+): Promise<CloudWorkstationAttachmentRequestResult> {
   const response = await fetchWithCloudPrototypeAuth(
     endpoint,
     {
@@ -125,6 +135,9 @@ export async function requestCloudWorkstationAttachment(
   return {
     jobId: scalarString(payload.job?.job_id),
     status: scalarString(payload.job?.status),
+    workstationId:
+      scalarString(payload.job?.workstation_id) ??
+      scalarString(payload.workstation?.workstation_id),
   };
 }
 

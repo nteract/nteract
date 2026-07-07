@@ -59,6 +59,7 @@ import {
   mintCloudWorkstationPairingCode,
   requestCloudWorkstationAttachment,
   setCloudDefaultWorkstation,
+  type CloudWorkstationAttachmentRequestResult,
   type CloudWorkstationPairingCommand,
   type CloudWorkstationPairingStatus,
   type CloudWorkstationPairingStatusState,
@@ -185,7 +186,7 @@ export interface CloudWorkstationsStoreDeps {
     auth: CloudPrototypeAuthState;
     workstationId: string;
     replaceExisting: boolean;
-  }) => Promise<unknown>;
+  }) => Promise<CloudWorkstationAttachmentRequestResult>;
   mintPairing?: (params: {
     endpoint: string;
     auth: CloudPrototypeAuthState;
@@ -721,7 +722,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     };
     this.setMutation(mutation);
     try {
-      await deps.attachWorkstation({
+      const attached = await deps.attachWorkstation({
         endpoint: inputs.attachEndpoint,
         auth: inputs.auth,
         workstationId,
@@ -730,6 +731,10 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       if (!this.mutationStillCurrent(issue, this.latestInputs?.attachEndpoint)) {
         this.clearMutationIfOwned(mutation);
         return false;
+      }
+      const acknowledgedWorkstationId = trimToNull(attached.workstationId) ?? workstationId;
+      if (acknowledgedWorkstationId !== mutation.workstationId) {
+        this.setMutation({ ...mutation, workstationId: acknowledgedWorkstationId });
       }
       this.clearError();
       await this.refreshNow();
@@ -1057,6 +1062,12 @@ interface PairingStatusTick {
   pairingId: string;
   auth: CloudPrototypeAuthState;
   status: CloudWorkstationPairingStatusState;
+}
+
+function trimToNull(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**

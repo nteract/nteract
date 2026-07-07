@@ -2699,12 +2699,12 @@ describe("Worker artifact routes", () => {
     assert.equal(env.DB.workstationDefaults.get("user:dev:alice"), undefined);
   });
 
-  it("creates workstation attach jobs through notebook owner authority", async () => {
+  it("requires an explicit workstation id for notebook attach requests", async () => {
     const env = fakeEnv();
     seedNotebook(env, "attach-demo");
     seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
-    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
-    env.DB.workstationDefaults.set("user:dev:alice", "ws-lab2");
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-default" });
+    env.DB.workstationDefaults.set("user:dev:alice", "ws-default");
 
     const attach = await worker.fetch(
       new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
@@ -2721,13 +2721,55 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
 
+    assert.equal(attach.status, 400);
+    assert.deepEqual(await attach.json(), { error: "workstation_id must be a non-empty string" });
+    assert.equal(env.DB.workstationAttachJobs.size, 0);
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "attach-demo" &&
+          row.subject === "user:dev:alice" &&
+          row.scope === "runtime_peer",
+      ),
+      false,
+    );
+  });
+
+  it("creates workstation attach jobs for the requested workstation, not the default", async () => {
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab1");
+    const events = new FakeWorkstationEventsNamespace();
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-default" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab1" });
+    env.DB.workstationDefaults.set("user:dev:alice", "ws-default");
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab1" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
     assert.equal(attach.status, 202);
     const body = (await attach.json()) as {
       job: { job_id: string; notebook_id: string; status: string };
+      workstation: { is_default?: boolean; workstation_id?: string };
     };
     assert.equal(body.job.notebook_id, "attach-demo");
     assert.equal(body.job.status, "pending");
-    assert.equal(env.DB.workstationAttachJobs.get(body.job.job_id)?.workstation_id, "ws-lab2");
+    assert.equal(body.workstation.workstation_id, "ws-lab1");
+    assert.equal(body.workstation.is_default, false);
+    assert.equal(env.DB.workstationAttachJobs.get(body.job.job_id)?.workstation_id, "ws-lab1");
     assert.equal(
       env.DB.acl.some(
         (row) =>
@@ -2737,11 +2779,19 @@ describe("Worker artifact routes", () => {
       ),
       true,
     );
+    const notifyRequest = events.requests.find(
+      (entry) => new URL(entry.url).pathname === "/notify",
+    );
+    assert.equal(notifyRequest?.objectName, objectName);
+    assert.equal(
+      (notifyRequest?.body as { workstation_id?: string } | null)?.workstation_id,
+      "ws-lab1",
+    );
 
     const poll = await worker.fetch(
-      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+      new Request("http://localhost/api/workstations/ws-lab1/attach-jobs", {
         headers: {
-          "X-Operator": "workstation:lab2",
+          "X-Operator": "workstation:lab1",
           "X-Scope": "owner",
           "X-User": "alice",
         },
@@ -2755,6 +2805,63 @@ describe("Worker artifact routes", () => {
       polled.jobs.map((job) => job.job_id),
       [body.job.job_id],
     );
+  });
+
+  it("does not fall back to the default when the requested workstation has no connected agent", async () => {
+    const requestedObjectName = workstationEventsObjectName("user:dev:alice", "ws-lab1");
+    const defaultObjectName = workstationEventsObjectName("user:dev:alice", "ws-default");
+    const events = new FakeWorkstationEventsNamespace({
+      connectedObjectNames: [defaultObjectName],
+    });
+    const env = fakeEnv({ WORKSTATION_EVENTS: events });
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-default" });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab1",
+      lastSeenAt: "2026-05-22T00:00:00.000Z",
+    });
+    env.DB.workstationDefaults.set("user:dev:alice", "ws-default");
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab1" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 409);
+    const body = (await attach.json()) as {
+      error?: string;
+      workstation?: { workstation_id?: string; status?: string };
+    };
+    assert.equal(body.error, "workstation is not online");
+    assert.equal(body.workstation?.workstation_id, "ws-lab1");
+    assert.equal(body.workstation?.status, "offline");
+    assert.equal(env.DB.workstationAttachJobs.size, 0);
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "attach-demo" &&
+          row.subject === "user:dev:alice" &&
+          row.scope === "runtime_peer",
+      ),
+      false,
+    );
+    const statusRequest = events.requests.find(
+      (entry) => new URL(entry.url).pathname === "/status",
+    );
+    assert.equal(statusRequest?.objectName, requestedObjectName);
+    assert.ok(!events.requests.some((entry) => entry.objectName === defaultObjectName));
   });
 
   it("does not attach another principal's workstation to an owned notebook", async () => {
@@ -6936,7 +7043,7 @@ describe("Workstation pairing", () => {
       new Request("http://localhost/api/n/pairing-attach-demo/workstation-attachments", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...OWNER_HEADERS },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ workstation_id: "ws-paired" }),
       }),
       env,
       fakeContext(),
