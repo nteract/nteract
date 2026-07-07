@@ -122,13 +122,13 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
         );
         return;
       }
-      clearCachedCloudNotebookListFromWindow();
+      clearCachedCloudNotebookListFromLocalStorage();
       setListState({ kind: "signed_out" });
       return;
     }
 
     if (refreshIndex === 0 && bootstrap) {
-      writeCachedCloudNotebookListToWindow(
+      writeCachedCloudNotebookListToLocalStorage(
         authState,
         appSessionStatus.session,
         bootstrap.notebooks,
@@ -155,7 +155,12 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
         if (!isCloudNotebookListResponse(body)) {
           throw new Error("Unable to list notebooks: response shape was invalid");
         }
-        writeCachedCloudNotebookListToWindow(authState, appSessionStatus.session, body.notebooks);
+        writeCachedCloudNotebookListToLocalStorage(
+          authState,
+          appSessionStatus.session,
+          body.notebooks,
+          body.current_user_principal,
+        );
         if (typeof body.current_user_display === "string" && body.current_user_display.trim()) {
           setCurrentUserDisplay(body.current_user_display.trim());
         }
@@ -322,7 +327,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
               }
             : notebook,
         );
-        writeCachedCloudNotebookListToWindow(authState, appSessionStatus.session, notebooks);
+        writeCachedCloudNotebookListToLocalStorage(authState, appSessionStatus.session, notebooks);
         return {
           kind: "ready",
           notebooks,
@@ -340,7 +345,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
     setBootstrap(null);
     setDashboardQuery("");
     auth.clearAppSessionStatus();
-    clearCachedCloudNotebookListFromWindow();
+    clearCachedCloudNotebookListFromLocalStorage();
     void clearCloudAppSession()
       .catch((error: unknown) => {
         console.warn("[notebook-cloud] app session clear failed", error);
@@ -766,10 +771,10 @@ function cloudNotebookListSeedFromBootstrapOrCache(
   appSession: CloudAppSession | null | undefined,
   bootstrap: CloudNotebookListBootstrap | null,
 ): CloudNotebookListItem[] | null {
-  return bootstrap?.notebooks ?? readCachedCloudNotebookListFromWindow(authState, appSession);
+  return bootstrap?.notebooks ?? readCachedCloudNotebookListFromLocalStorage(authState, appSession);
 }
 
-function readCachedCloudNotebookListFromWindow(
+function readCachedCloudNotebookListFromLocalStorage(
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
 ): CloudNotebookListItem[] | null {
@@ -777,19 +782,20 @@ function readCachedCloudNotebookListFromWindow(
   return storage ? readCachedCloudNotebookList(storage, authState, appSession) : null;
 }
 
-function writeCachedCloudNotebookListToWindow(
+function writeCachedCloudNotebookListToLocalStorage(
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
   notebooks: CloudNotebookListItem[],
+  principal?: string | null,
 ): void {
   const storage = cloudNotebookListCacheStorage();
   if (!storage) {
     return;
   }
-  writeCachedCloudNotebookList(storage, authState, appSession, notebooks);
+  writeCachedCloudNotebookList(storage, authState, appSession, notebooks, { principal });
 }
 
-function clearCachedCloudNotebookListFromWindow(): void {
+function clearCachedCloudNotebookListFromLocalStorage(): void {
   const storage = cloudNotebookListCacheStorage();
   if (!storage) {
     return;
@@ -799,7 +805,7 @@ function clearCachedCloudNotebookListFromWindow(): void {
 
 function cloudNotebookListCacheStorage(): Storage | null {
   try {
-    return window.sessionStorage;
+    return window.localStorage;
   } catch {
     return null;
   }

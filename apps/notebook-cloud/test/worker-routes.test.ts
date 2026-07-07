@@ -1958,6 +1958,7 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     const body = (await response.json()) as {
+      current_user_principal?: string;
       notebooks: Array<{
         endpoints: Record<string, string>;
         notebook_id: string;
@@ -1968,6 +1969,7 @@ describe("Worker artifact routes", () => {
       ok: boolean;
     };
     assert.equal(body.ok, true);
+    assert.equal(body.current_user_principal, "user:dev:alice");
     assert.deepEqual(
       body.notebooks.map((notebook) => [notebook.notebook_id, notebook.scope]),
       [

@@ -24,6 +24,8 @@ export type ViewerRuntimeState =
 export interface CloudNotebookListResponse {
   ok: boolean;
   notebooks: CloudNotebookListItem[];
+  /** Requester's worker principal, used only to key local-first shell cache. */
+  current_user_principal?: string;
   /** Requester's unified-profile display name, when the store has one. */
   current_user_display?: string;
   /** Requester's unified-profile avatar URL, when the store has one. */

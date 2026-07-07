@@ -1270,6 +1270,7 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
         roomPresence,
         principalDisplays,
       ),
+      current_user_principal: principal,
       ...(currentUserDisplay ? { current_user_display: currentUserDisplay } : {}),
       ...(currentUserAvatar ? { current_user_avatar: currentUserAvatar } : {}),
     }),

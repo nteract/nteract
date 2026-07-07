@@ -28,6 +28,7 @@ import {
   cloudSyncAuthFromPrototypeAuthState,
   type CloudSyncAuth,
 } from "./collaborator-auth";
+import { isAnonymousCloudPrincipal } from "./cloud-principal";
 import {
   createBootstrapNotebookHandle,
   encodeCursorPresenceAfterInit,
@@ -37,6 +38,8 @@ import {
   loadNotebookHandleFromBytes,
   type NotebookHandle,
 } from "./runtimed-wasm-client";
+
+export { isAnonymousCloudPrincipal } from "./cloud-principal";
 
 export type CloudRoomReady = Extract<SessionControlMessage, { type: "cloud_room_ready" }>;
 
@@ -523,18 +526,6 @@ export function startCloudBootstrapSync(
 export function cloudPrincipalFromActorLabel(actorLabel: string): string {
   const [principal] = splitNotebookActorPrincipalOperator(actorLabel);
   return principal;
-}
-
-/**
- * Anonymous principals (`anonymous:<encodedSession>`, minted by the worker
- * from the per-connection viewer_session nonce) change on every connect,
- * so a persisted record can never match the next session — and an
- * anonymous session must never clear a signed-in user's record on
- * principal mismatch. Persistence is skipped entirely for them: no seed,
- * no save, no clear.
- */
-export function isAnonymousCloudPrincipal(principal: string): boolean {
-  return principal.startsWith("anonymous:");
 }
 
 /**

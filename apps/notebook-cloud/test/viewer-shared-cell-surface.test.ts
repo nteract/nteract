@@ -804,13 +804,13 @@ test("cloud notebook list trusts server bootstrap on initial app-session paint",
   );
   assert.match(
     sourceText,
-    /if \(refreshIndex === 0 && bootstrap\) \{[\s\S]*writeCachedCloudNotebookListToWindow\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*bootstrap\.notebooks,[\s\S]*\);[\s\S]*setListState\(\{ kind: "ready", notebooks: bootstrap\.notebooks \}\);[\s\S]*return;/,
+    /if \(refreshIndex === 0 && bootstrap\) \{[\s\S]*writeCachedCloudNotebookListToLocalStorage\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*bootstrap\.notebooks,[\s\S]*\);[\s\S]*setListState\(\{ kind: "ready", notebooks: bootstrap\.notebooks \}\);[\s\S]*return;/,
     "fresh notebook-home bootstrap should satisfy the initial render without an immediate duplicate /api/n fetch",
   );
   assert.match(
     sourceText,
-    /return bootstrap\?\.notebooks \?\? readCachedCloudNotebookListFromWindow\(authState, appSession\);/,
-    "server bootstrap should beat stale sessionStorage cache when both are present",
+    /return bootstrap\?\.notebooks \?\? readCachedCloudNotebookListFromLocalStorage\(authState, appSession\);/,
+    "server bootstrap should beat stale localStorage cache when both are present",
   );
 });
 

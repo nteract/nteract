@@ -35,72 +35,15 @@ import {
   type PersistedNotebookDoc,
   type StorageAdapter,
 } from "runtimed";
-import { devPrincipalLabel, type CloudPrototypeAuthState } from "./collaborator-auth";
-import { isAnonymousCloudPrincipal, withReadyTimeout } from "./live-sync";
+import { withReadyTimeout } from "./live-sync";
+
+export { cloudInstantPaintPrincipalMatcher } from "./cloud-principal";
 
 /**
  * Bound on the instant-paint IndexedDB reads. A hung IDB open must
  * degrade to no-paint; the live room is dialing in parallel regardless.
  */
 const INSTANT_PAINT_READ_TIMEOUT_MS = 2_000;
-
-const DEV_PRINCIPAL_PREFIX = "user:dev:";
-
-/**
- * Derive a principal matcher from locally stored auth material, WITHOUT
- * the room handshake. Returns null when no principal is derivable — the
- * caller must then skip the paint entirely.
- *
- * - Dev token: the worker derives the principal deterministically from
- *   the presented user, so an exact match is available.
- * - OIDC (valid stored token, or expired claims backed by a live
- *   app-session cookie — the cookie was minted from that subject's
- *   token): the worker's principal is `<namespace>:<encoded sub>` with a
- *   server-configured namespace, so the matcher pins the encoded subject
- *   as the principal's id segment and rejects the namespaces it cannot
- *   belong to (anonymous, dev).
- *
- * HEURISTIC, deliberately weaker than the post-handshake guard. The
- * full-principal equality check in `resolveCloudNotebookHandle` compares
- * against the handshake's actual principal; this matcher cannot, because
- * the OIDC namespace is server configuration that is not client-derivable
- * before the first handshake. Its namespace-agnostic id-segment match is
- * sound today only because browser-written records carry exactly one of:
- * `user:dev:*` (rejected here unless dev-derived), the deployment's
- * single OIDC/API-key namespace, or anonymous (never persisted at all).
- * Adding a browser-reachable auth provider whose subject space overlaps
- * the OIDC sub space widens this match — revisit then. The backstops if
- * it ever false-positives: the post-handshake guard clears the mismatched
- * seed, the live materialization replaces the paint wholesale, and an
- * authoritative EMPTY room displaces it too (the zero-cell guard's
- * caught-up displacement) — a foreign paint cannot outlive the handshake.
- *
- * Anonymous principals never match any matcher: they are per-connection
- * nonces and persisted records are never written for them anyway.
- */
-export function cloudInstantPaintPrincipalMatcher(
-  authState: CloudPrototypeAuthState,
-  options: { hasAppSession?: boolean } = {},
-): ((principal: string) => boolean) | null {
-  if (authState.mode === "dev" && authState.token) {
-    const expected = devPrincipalLabel(authState.user ?? "browser-editor");
-    return (principal) => !isAnonymousCloudPrincipal(principal) && principal === expected;
-  }
-
-  const sub = authState.oidcClaims?.sub?.trim();
-  const oidcUsable =
-    authState.mode === "oidc" ||
-    (authState.mode === "oidc_expired" && options.hasAppSession === true);
-  if (oidcUsable && sub) {
-    const encodedSub = encodeURIComponent(sub);
-    return (principal) =>
-      !isAnonymousCloudPrincipal(principal) &&
-      !principal.startsWith(DEV_PRINCIPAL_PREFIX) &&
-      principal.endsWith(`:${encodedSub}`);
-  }
-
-  return null;
-}
 
 /**
  * Zero-cell displacement policy for the live materialization path.
