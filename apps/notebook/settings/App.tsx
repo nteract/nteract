@@ -1,8 +1,10 @@
 import { AlertCircle, ChevronDown, Monitor, Moon, Sun, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { useNotebookEditorSettings } from "@/components/editor/editor-settings-store";
 import {
   FEATURE_FLAGS,
   isKnownPythonEnv,
@@ -33,6 +35,76 @@ function formatDuration(secs: number): string {
     return remainingSecs > 0 ? `${mins}m ${remainingSecs}s` : `${mins}m`;
   }
   return `${secs}s`;
+}
+
+function FontFamilyInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+  description,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  description: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const inputId = `editor-${label.toLowerCase().replace(/\s+/g, "-")}`;
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = useCallback(() => {
+    const next = draft.trim();
+    if (next !== value) onChange(next);
+  }, [draft, onChange, value]);
+
+  const clear = useCallback(() => {
+    setDraft("");
+    if (value !== "") onChange("");
+  }, [onChange, value]);
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-3">
+        <label className="text-sm text-muted-foreground" htmlFor={inputId}>
+          {label}
+        </label>
+        <div className="relative min-w-0 flex-1">
+          <Input
+            id={inputId}
+            value={draft}
+            placeholder={placeholder}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              }
+            }}
+            className="h-8 pr-8 font-mono text-xs"
+          />
+          {draft ? (
+            <button
+              type="button"
+              aria-label={`Clear ${label.toLowerCase()}`}
+              title="Clear"
+              onClick={clear}
+              className="absolute right-1.5 top-1/2 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <p className="pl-[5.5rem] text-[10px] text-muted-foreground/70">{description}</p>
+    </div>
+  );
 }
 
 // Exponential slider constants
@@ -150,6 +222,58 @@ function RuntimeSection({
   );
 }
 
+function EditorSection({
+  codeFontFamily,
+  markdownFontFamily,
+  lineNumbers,
+  onCodeFontFamilyChange,
+  onMarkdownFontFamilyChange,
+  onLineNumbersChange,
+}: {
+  codeFontFamily: string;
+  markdownFontFamily: string;
+  lineNumbers: boolean;
+  onCodeFontFamilyChange: (value: string) => void;
+  onMarkdownFontFamilyChange: (value: string) => void;
+  onLineNumbersChange: (value: boolean) => void;
+}) {
+  return (
+    <div className="space-y-4 pt-4 border-t border-border/50">
+      <div>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+          Editor
+        </span>
+      </div>
+
+      <div className="space-y-3">
+        <FontFamilyInput
+          label="Code font"
+          value={codeFontFamily}
+          onChange={onCodeFontFamilyChange}
+          placeholder='ui-monospace, "SF Mono", monospace'
+          description="Code cells, raw cells, inline code, and code blocks"
+        />
+        <FontFamilyInput
+          label="Markdown font"
+          value={markdownFontFamily}
+          onChange={onMarkdownFontFamilyChange}
+          placeholder="system-ui, sans-serif"
+          description="Rendered Markdown and Markdown input"
+        />
+        <div className="flex items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <span className="text-sm text-foreground">Line numbers</span>
+            <p className="text-[10px] text-muted-foreground/70">
+              Show line numbers in notebook editors
+            </p>
+          </div>
+          <Switch checked={lineNumbers} onCheckedChange={onLineNumbersChange} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Badge input for managing a list of package names */
 function PackageBadgeInput({
   packages,
@@ -245,6 +369,7 @@ export default function App() {
   // IMPORTANT: Use theme/setTheme/colorTheme/setColorTheme from useSyncedTheme, not a separate
   // useSyncedSettings call, so that setState updates the same instance that applies the DOM theme.
   const { theme, setTheme, colorTheme, setColorTheme } = useSyncedTheme();
+  const editorSettings = useNotebookEditorSettings();
 
   const {
     defaultRuntime,
@@ -261,6 +386,9 @@ export default function App() {
     setInstallDefaultDataPackages,
     keepAliveSecs,
     setKeepAliveSecs,
+    setEditorCodeFontFamily,
+    setEditorMarkdownFontFamily,
+    setEditorLineNumbers,
     featureFlags,
     setFeatureFlag,
     telemetryEnabled,
@@ -516,6 +644,15 @@ export default function App() {
           onRedactEnvValuesInOutputsChange={setRedactEnvValuesInOutputs}
           importShellEnvironment={importShellEnvironment}
           onImportShellEnvironmentChange={setImportShellEnvironment}
+        />
+
+        <EditorSection
+          codeFontFamily={editorSettings.codeFontFamily}
+          markdownFontFamily={editorSettings.markdownFontFamily}
+          lineNumbers={editorSettings.lineNumbers}
+          onCodeFontFamilyChange={setEditorCodeFontFamily}
+          onMarkdownFontFamilyChange={setEditorMarkdownFontFamily}
+          onLineNumbersChange={setEditorLineNumbers}
         />
 
         <PrivacySection

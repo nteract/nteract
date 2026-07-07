@@ -4,6 +4,10 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "../codemirror-editor";
+import {
+  DEFAULT_NOTEBOOK_EDITOR_SETTINGS,
+  setNotebookEditorSettings,
+} from "../editor-settings-store";
 import { ReadOnlyCodeMirror } from "../readonly-codemirror";
 
 vi.mock("@/lib/dark-mode", () => ({
@@ -29,6 +33,7 @@ describe("CodeMirrorEditor", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    setNotebookEditorSettings(DEFAULT_NOTEBOOK_EDITOR_SETTINGS);
     document.body.replaceChildren();
   });
 
@@ -115,6 +120,36 @@ describe("CodeMirrorEditor", () => {
     });
 
     expect(onSelectionChange).toHaveBeenCalledWith(5);
+  });
+
+  it("reconfigures line numbers from editor settings without remounting", async () => {
+    const ref = createRef<CodeMirrorEditorRef>();
+    render(<CodeMirrorEditor ref={ref} initialValue={"first\nsecond"} theme="light" />);
+
+    const editorView = await waitFor(() => {
+      const view = ref.current?.getEditor();
+      expect(view).not.toBeNull();
+      return view;
+    });
+    expect(document.querySelector(".cm-lineNumbers")).toBeNull();
+
+    act(() => {
+      setNotebookEditorSettings({ lineNumbers: true });
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector(".cm-lineNumbers")).not.toBeNull();
+    });
+    expect(ref.current?.getEditor()).toBe(editorView);
+
+    act(() => {
+      setNotebookEditorSettings({ lineNumbers: false });
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector(".cm-lineNumbers")).toBeNull();
+    });
+    expect(ref.current?.getEditor()).toBe(editorView);
   });
 
   it("keeps read-only CodeMirror content in sync with value changes", async () => {

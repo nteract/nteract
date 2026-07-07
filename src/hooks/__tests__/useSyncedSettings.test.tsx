@@ -1,5 +1,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import {
+  DEFAULT_NOTEBOOK_EDITOR_SETTINGS,
+  getNotebookEditorSettingsSnapshot,
+  setNotebookEditorSettings,
+} from "@/components/editor/editor-settings-store";
 import { useSyncedSettings, useSyncedTheme } from "../useSyncedSettings";
 
 const mocks = vi.hoisted(() => {
@@ -64,6 +69,7 @@ describe("useSyncedSettings", () => {
     mocks.rotateInstallId.mockResolvedValue("install-2");
     mocks.setNativeTheme.mockResolvedValue(undefined);
     mocks.setSynced.mockResolvedValue(undefined);
+    setNotebookEditorSettings(DEFAULT_NOTEBOOK_EDITOR_SETTINGS);
   });
 
   afterEach(() => {
@@ -129,6 +135,44 @@ describe("useSyncedSettings", () => {
     expect(mocks.rotateInstallId).toHaveBeenCalledTimes(1);
     expect(result.current.installId).toBe("install-2");
   });
+
+  it("projects and persists editor settings through the host settings namespace", async () => {
+    mocks.getSynced.mockResolvedValue({
+      editor: {
+        code_font_family: '"Hack", monospace',
+        markdown_font_family: "Georgia, serif",
+        line_numbers: true,
+      },
+    });
+
+    const { result } = renderHook(() => useSyncedSettings());
+
+    await waitFor(() => {
+      expect(getNotebookEditorSettingsSnapshot()).toEqual({
+        codeFontFamily: '"Hack", monospace',
+        markdownFontFamily: "Georgia, serif",
+        lineNumbers: true,
+      });
+    });
+
+    await act(async () => {
+      result.current.setEditorCodeFontFamily('"Fira Code", monospace');
+      result.current.setEditorMarkdownFontFamily("");
+      result.current.setEditorLineNumbers(false);
+    });
+
+    expect(mocks.setSynced).toHaveBeenCalledWith(
+      "editor.code_font_family",
+      '"Fira Code", monospace',
+    );
+    expect(mocks.setSynced).toHaveBeenCalledWith("editor.markdown_font_family", "");
+    expect(mocks.setSynced).toHaveBeenCalledWith("editor.line_numbers", false);
+    expect(getNotebookEditorSettingsSnapshot()).toEqual({
+      codeFontFamily: '"Fira Code", monospace',
+      markdownFontFamily: "",
+      lineNumbers: false,
+    });
+  });
 });
 
 describe("useSyncedTheme", () => {
@@ -144,6 +188,7 @@ describe("useSyncedTheme", () => {
     mocks.onChanged.mockReturnValue(mocks.unlisten);
     mocks.setNativeTheme.mockResolvedValue(undefined);
     mocks.setSynced.mockResolvedValue(undefined);
+    setNotebookEditorSettings(DEFAULT_NOTEBOOK_EDITOR_SETTINGS);
 
     Object.defineProperty(window, "matchMedia", {
       configurable: true,

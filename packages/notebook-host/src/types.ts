@@ -357,6 +357,11 @@ export type HostNativeTheme = "light" | "dark" | null;
 export interface HostSyncedSettings {
   theme?: unknown;
   color_theme?: unknown;
+  editor?: {
+    code_font_family?: unknown;
+    markdown_font_family?: unknown;
+    line_numbers?: unknown;
+  };
   default_runtime?: unknown;
   default_python_env?: unknown;
   uv?: { default_packages?: unknown };

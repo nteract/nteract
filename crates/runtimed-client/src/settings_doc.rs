@@ -17,6 +17,10 @@
 //!   disable_nteract_launcher: false
 //!   enable_comments: false
 //!   disable_auto_format: false
+//!   editor/                        ← nested Map
+//!     code_font_family: ""         ← Empty string means use the theme default
+//!     markdown_font_family: ""     ← Empty string means use the theme default
+//!     line_numbers: false
 //!   uv/                           ← nested Map
 //!     default_packages: List[…]   ← List of Str
 //!   conda/                        ← nested Map
@@ -178,6 +182,26 @@ pub struct PixiDefaults {
     pub default_packages: Vec<String>,
 }
 
+/// Notebook editor preferences.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+pub struct EditorSettings {
+    /// CSS font-family override for code-oriented notebook editor surfaces.
+    /// Empty string means use the theme default.
+    #[serde(default)]
+    pub code_font_family: String,
+
+    /// CSS font-family override for Markdown prose and Markdown input.
+    /// Empty string means use the theme default.
+    #[serde(default)]
+    pub markdown_font_family: String,
+
+    /// Show line numbers in CodeMirror editor surfaces. Default off.
+    #[serde(default)]
+    pub line_numbers: bool,
+}
+
 /// Default keep-alive duration in seconds for notebook rooms.
 /// When all clients disconnect, the daemon waits this long before evicting the room.
 pub const DEFAULT_KEEP_ALIVE_SECS: u64 = 30;
@@ -239,6 +263,10 @@ pub struct SyncedSettings {
     /// Color theme (classic/cream)
     #[serde(default)]
     pub color_theme: ColorTheme,
+
+    /// Notebook editor preferences
+    #[serde(default)]
+    pub editor: EditorSettings,
 
     /// Default runtime for new notebooks
     #[serde(default)]
@@ -373,6 +401,7 @@ impl Default for SyncedSettings {
         Self {
             theme: ThemeMode::default(),
             color_theme: ColorTheme::default(),
+            editor: EditorSettings::default(),
             default_runtime: Runtime::default(),
             default_python_env: PythonEnvType::default(),
             uv: UvDefaults::default(),
@@ -565,6 +594,19 @@ impl SettingsDoc {
                 ColorTheme::Cream => "cream",
             },
         );
+        if let Ok(editor_id) = doc.put_object(automerge::ROOT, "editor", ObjType::Map) {
+            let _ = doc.put(
+                &editor_id,
+                "code_font_family",
+                defaults.editor.code_font_family.as_str(),
+            );
+            let _ = doc.put(
+                &editor_id,
+                "markdown_font_family",
+                defaults.editor.markdown_font_family.as_str(),
+            );
+            let _ = doc.put(&editor_id, "line_numbers", defaults.editor.line_numbers);
+        }
         let _ = doc.put(
             automerge::ROOT,
             "default_runtime",
@@ -706,6 +748,20 @@ impl SettingsDoc {
         }
         if let Some(color_theme) = json.get("color_theme").and_then(|v| v.as_str()) {
             settings.put("color_theme", color_theme);
+        }
+        if let Some(editor) = json.get("editor").and_then(|v| v.as_object()) {
+            if let Some(code_font_family) = editor.get("code_font_family").and_then(|v| v.as_str())
+            {
+                settings.put("editor.code_font_family", code_font_family);
+            }
+            if let Some(markdown_font_family) =
+                editor.get("markdown_font_family").and_then(|v| v.as_str())
+            {
+                settings.put("editor.markdown_font_family", markdown_font_family);
+            }
+            if let Some(line_numbers) = editor.get("line_numbers").and_then(|v| v.as_bool()) {
+                settings.put_bool("editor.line_numbers", line_numbers);
+            }
         }
         if let Some(runtime) = json.get("default_runtime").and_then(|v| v.as_str()) {
             settings.put("default_runtime", runtime);
@@ -938,6 +994,24 @@ impl SettingsDoc {
 
     /// Get a boolean setting value from the root.
     pub fn get_bool(&self, key: &str) -> Option<bool> {
+        if let Some((map_key, sub_key)) = key.split_once('.') {
+            let map_id = self.get_map_id(map_key)?;
+            return self.doc.get(&map_id, sub_key).ok().flatten().and_then(
+                |(value, _)| match value {
+                    automerge::Value::Scalar(s) => match s.as_ref() {
+                        automerge::ScalarValue::Boolean(b) => Some(*b),
+                        automerge::ScalarValue::Str(s) => match s.as_str() {
+                            "true" => Some(true),
+                            "false" => Some(false),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                },
+            );
+        }
+
         self.doc
             .get(automerge::ROOT, key)
             .ok()
@@ -959,7 +1033,12 @@ impl SettingsDoc {
 
     /// Set a boolean setting value at the root.
     pub fn put_bool(&mut self, key: &str, value: bool) {
-        let _ = self.doc.put(automerge::ROOT, key, value);
+        if let Some((map_key, sub_key)) = key.split_once('.') {
+            let map_id = self.ensure_map(map_key);
+            let _ = self.doc.put(&map_id, sub_key, value);
+        } else {
+            let _ = self.doc.put(automerge::ROOT, key, value);
+        }
     }
 
     /// Get a u64 setting value from the root.
@@ -1166,6 +1245,17 @@ impl SettingsDoc {
                 .get("color_theme")
                 .and_then(|s| serde_json::from_str::<ColorTheme>(&format!("\"{s}\"")).ok())
                 .unwrap_or(defaults.color_theme),
+            editor: EditorSettings {
+                code_font_family: self
+                    .get("editor.code_font_family")
+                    .unwrap_or_else(|| defaults.editor.code_font_family.clone()),
+                markdown_font_family: self
+                    .get("editor.markdown_font_family")
+                    .unwrap_or_else(|| defaults.editor.markdown_font_family.clone()),
+                line_numbers: self
+                    .get_bool("editor.line_numbers")
+                    .unwrap_or(defaults.editor.line_numbers),
+            },
             default_runtime: self
                 .get("default_runtime")
                 .and_then(|s| s.parse().ok())
@@ -1311,6 +1401,35 @@ impl SettingsDoc {
                         current.as_deref()
                     );
                     self.put(key, value);
+                    changed = true;
+                }
+            }
+        }
+
+        if let Some(editor) = json.get("editor").and_then(|v| v.as_object()) {
+            for key in &["code_font_family", "markdown_font_family"] {
+                if let Some(value) = editor.get(*key).and_then(|v| v.as_str()) {
+                    let dotted_key = format!("editor.{key}");
+                    let current = self.get(&dotted_key);
+                    if current.as_deref() != Some(value) {
+                        info!(
+                            "[settings] apply_json_changes: {dotted_key} changed {:?} -> {value:?}",
+                            current.as_deref()
+                        );
+                        self.put(&dotted_key, value);
+                        changed = true;
+                    }
+                }
+            }
+
+            if let Some(line_numbers) = editor.get("line_numbers").and_then(|v| v.as_bool()) {
+                let current = self.get_bool("editor.line_numbers");
+                if current != Some(line_numbers) {
+                    info!(
+                        "[settings] apply_json_changes: editor.line_numbers changed {:?} -> {}",
+                        current, line_numbers
+                    );
+                    self.put_bool("editor.line_numbers", line_numbers);
                     changed = true;
                 }
             }
@@ -1677,6 +1796,7 @@ mod tests {
         assert!(!settings.disable_nteract_launcher);
         assert!(!settings.enable_comments);
         assert!(!settings.disable_auto_format);
+        assert_eq!(settings.editor, EditorSettings::default());
         assert!(settings.feature_flags().bootstrap_dx);
         assert!(settings.redact_env_values_in_outputs);
     }
@@ -1779,6 +1899,30 @@ mod tests {
         let settings = doc.get_all();
         assert_eq!(doc.get_bool("disable_auto_format"), Some(true));
         assert!(settings.disable_auto_format);
+    }
+
+    #[test]
+    fn test_editor_settings_can_be_set_from_json() {
+        let mut doc = SettingsDoc::new();
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "editor": {
+                "code_font_family": "\"Hack\", monospace",
+                "markdown_font_family": "Georgia, serif",
+                "line_numbers": true
+            }
+        })));
+
+        let settings = doc.get_all();
+        assert_eq!(
+            settings.editor.code_font_family,
+            "\"Hack\", monospace".to_string()
+        );
+        assert_eq!(
+            settings.editor.markdown_font_family,
+            "Georgia, serif".to_string()
+        );
+        assert!(settings.editor.line_numbers);
     }
 
     #[test]
@@ -2174,6 +2318,9 @@ mod tests {
         assert!(schema_str.contains("disable_nteract_launcher"));
         assert!(schema_str.contains("enable_comments"));
         assert!(schema_str.contains("disable_auto_format"));
+        assert!(schema_str.contains("code_font_family"));
+        assert!(schema_str.contains("markdown_font_family"));
+        assert!(schema_str.contains("line_numbers"));
         assert!(schema_str.contains("redact_env_values_in_outputs"));
         // Should have known values as examples for editor autocomplete
         assert!(schema_str.contains("python"));
@@ -2511,6 +2658,10 @@ mod tests {
         let json = serde_json::json!({
             "theme": "dark",
             "color_theme": "cream",
+            "editor": {
+                "code_font_family": "\"Fira Code\", monospace",
+                "line_numbers": true
+            },
             "pixi": { "default_packages": ["numpy", "polars"] },
         });
 
@@ -2519,6 +2670,11 @@ mod tests {
 
         assert_eq!(settings.theme, ThemeMode::Dark);
         assert_eq!(settings.color_theme, ColorTheme::Cream);
+        assert_eq!(
+            settings.editor.code_font_family,
+            "\"Fira Code\", monospace".to_string()
+        );
+        assert!(settings.editor.line_numbers);
         assert_eq!(
             settings.pixi.default_packages,
             vec!["numpy".to_string(), "polars".to_string()]

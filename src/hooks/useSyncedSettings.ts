@@ -5,6 +5,12 @@ import {
 } from "@nteract/notebook-host";
 import { useCallback, useEffect, useState } from "react";
 import type { ColorTheme, PythonEnvType, Runtime, ThemeMode } from "@/bindings";
+import {
+  getNotebookEditorSettingsSnapshot,
+  projectNotebookEditorSettings,
+  setNotebookEditorSettings,
+  updateNotebookEditorSettings,
+} from "@/components/editor/editor-settings-store";
 
 // Re-export generated types so consumers can import from this module.
 export type { ColorTheme, ThemeMode, Runtime, PythonEnvType };
@@ -201,6 +207,9 @@ export function useSyncedSettings() {
       setColorThemeState(settings.color_theme);
       setStoredColorTheme(settings.color_theme);
     }
+    setNotebookEditorSettings(
+      projectNotebookEditorSettings(settings.editor, getNotebookEditorSettingsSnapshot()),
+    );
     if (typeof settings.default_runtime === "string") {
       setDefaultRuntimeState(settings.default_runtime);
     }
@@ -393,6 +402,45 @@ export function useSyncedSettings() {
     [host],
   );
 
+  const setEditorCodeFontFamily = useCallback(
+    (fontFamily: string) => {
+      const next = updateNotebookEditorSettings({ codeFontFamily: fontFamily });
+      persistSyncedSetting(
+        host,
+        "editor.code_font_family",
+        next.codeFontFamily,
+        "[settings] Failed to persist editor.code_font_family:",
+      );
+    },
+    [host],
+  );
+
+  const setEditorMarkdownFontFamily = useCallback(
+    (fontFamily: string) => {
+      const next = updateNotebookEditorSettings({ markdownFontFamily: fontFamily });
+      persistSyncedSetting(
+        host,
+        "editor.markdown_font_family",
+        next.markdownFontFamily,
+        "[settings] Failed to persist editor.markdown_font_family:",
+      );
+    },
+    [host],
+  );
+
+  const setEditorLineNumbers = useCallback(
+    (enabled: boolean) => {
+      const next = updateNotebookEditorSettings({ lineNumbers: enabled });
+      persistSyncedSetting(
+        host,
+        "editor.line_numbers",
+        next.lineNumbers,
+        "[settings] Failed to persist editor.line_numbers:",
+      );
+    },
+    [host],
+  );
+
   const setFeatureFlag = useCallback(
     (id: FeatureFlagId, enabled: boolean) => {
       setFeatureFlagsState((prev) => ({ ...prev, [id]: enabled }));
@@ -486,6 +534,9 @@ export function useSyncedSettings() {
     setInstallDefaultDataPackages,
     keepAliveSecs,
     setKeepAliveSecs,
+    setEditorCodeFontFamily,
+    setEditorMarkdownFontFamily,
+    setEditorLineNumbers,
     featureFlags,
     setFeatureFlag,
     telemetryEnabled,

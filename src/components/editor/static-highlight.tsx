@@ -216,7 +216,7 @@ export function StaticCodeBlock({
         color: colors.foreground,
         padding: "12px 16px",
         fontFamily:
-          'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+          'var(--output-mono-font, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace)',
         fontSize: "13px",
         lineHeight: 1.5,
         borderRadius: "6px",
