@@ -34,6 +34,7 @@ interface UseCloudShellCapabilitiesInput {
   runtimePeerAvailable: boolean;
   runtimePeerCount: number;
   kernelStatusLabel: string | null;
+  runtimeLastSeenAt?: string | null;
   workstationAttachment: WorkstationAttachmentState | null;
   hostCapabilities: CloudViewerConfig["hostCapabilities"];
 }
@@ -67,6 +68,7 @@ export function useCloudShellCapabilities({
   runtimePeerAvailable,
   runtimePeerCount,
   kernelStatusLabel,
+  runtimeLastSeenAt = null,
   workstationAttachment,
   hostCapabilities,
 }: UseCloudShellCapabilitiesInput): CloudShellCapabilities {
@@ -126,6 +128,7 @@ export function useCloudShellCapabilities({
         runtimeAvailable: runtimePeerAvailable,
         runtimePeerCount,
         kernelStatusLabel,
+        runtimeLastSeenAt,
         workstationAttachment,
         hostCapabilities,
       }),
@@ -143,6 +146,7 @@ export function useCloudShellCapabilities({
       editReadiness.canAcceptCellMutations,
       editReadiness.editAccessRequestPending,
       kernelStatusLabel,
+      runtimeLastSeenAt,
       runtimePeerCount,
       runtimePeerAvailable,
       selectedMode,

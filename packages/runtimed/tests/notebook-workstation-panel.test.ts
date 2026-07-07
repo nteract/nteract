@@ -218,10 +218,14 @@ describe("projectNotebookWorkstationPanel", () => {
       status: "attention" as const,
       label: "Lab2",
       statusLabel: "Needs attention",
-      detail:
-        "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
+      detail: "Room link lost: no compute session is currently attached to the room.",
       providerLabel: "Workstation",
       defaultEnvironmentLabel: "Current Python",
+      roomLink: {
+        status: "lost" as const,
+        statusLabel: "Lost",
+        lastSeenAt: "2026-06-07T21:02:00Z",
+      },
     };
     const ownerProjection = projectNotebookWorkstationPanel(
       capabilities({
@@ -257,6 +261,9 @@ describe("projectNotebookWorkstationPanel", () => {
     );
     expect(ownerProjection.detail).not.toContain("runtime peer");
     expect(viewerProjection.detail).not.toContain("grace window");
+    expect(ownerProjection.facts.map((fact) => [fact.kind, fact.label, fact.value])).toContainEqual(
+      ["room_link", "Room link", "Lost - last seen 2026-06-07T21:02:00Z"],
+    );
     expect(ownerProjection).not.toBe(viewerProjection);
   });
 });

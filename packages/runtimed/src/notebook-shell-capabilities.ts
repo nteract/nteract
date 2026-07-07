@@ -57,6 +57,14 @@ export type NotebookShellRuntimeTargetStatus =
   | "offline"
   | "attention";
 
+export type NotebookShellRoomLinkStatus = "connected" | "reconnecting" | "lost";
+
+export interface NotebookShellRoomLinkProjection {
+  status: NotebookShellRoomLinkStatus;
+  statusLabel: string;
+  lastSeenAt: string | null;
+}
+
 export interface NotebookShellRuntimeTargetProjection {
   /**
    * Stable host-owned workstation identifier. This is intentionally not a
@@ -96,6 +104,12 @@ export interface NotebookShellRuntimeTargetProjection {
    * is presence/runtime state, not an ACL or workstation registry fact.
    */
   runtimePeerCount?: number | null;
+  /**
+   * Host-observed link between a hosted runtime/workstation peer and the room.
+   * The host projects this from durable runtime state and room presence; shared
+   * UI should not infer transport health from React-local socket state.
+   */
+  roomLink?: NotebookShellRoomLinkProjection | null;
   workingDirectoryLabel?: string | null;
 }
 
@@ -144,6 +158,7 @@ export interface ProjectNotebookRuntimeTargetFromWorkstationAttachmentOptions {
    */
   requireRuntimePeer?: boolean;
   runtimePeerCount?: number | null;
+  runtimeLastSeenAt?: string | null;
 }
 
 export interface NotebookShellCapabilities {
@@ -286,6 +301,7 @@ export function projectNotebookRuntimeTargetFromWorkstationAttachment(
   if (!attachment) return null;
 
   const runtimePeerCount = normalizePositiveInteger(options.runtimePeerCount);
+  const runtimeLastSeenAt = trimToNull(options.runtimeLastSeenAt);
   const missingRequiredRuntimePeer =
     Boolean(options.requireRuntimePeer) &&
     workstationAttachmentCanExecute(attachment) &&
@@ -316,6 +332,12 @@ export function projectNotebookRuntimeTargetFromWorkstationAttachment(
     cpuCount: normalizePositiveInteger(attachment.cpu_count),
     memoryBytes: normalizePositiveInteger(attachment.memory_bytes),
     runtimePeerCount,
+    roomLink: projectRuntimeRoomLink({
+      attachmentStatus: attachment.status,
+      missingRequiredRuntimePeer,
+      runtimeLastSeenAt,
+      runtimePeerCount,
+    }),
     workingDirectoryLabel: trimToNull(attachment.working_directory),
   };
 }
@@ -325,6 +347,52 @@ export function workstationAttachmentCanExecute(
 ): boolean {
   if (!attachment) return false;
   return attachment.status === "ready" || attachment.status === "busy";
+}
+
+function projectRuntimeRoomLink({
+  attachmentStatus,
+  missingRequiredRuntimePeer,
+  runtimeLastSeenAt,
+  runtimePeerCount,
+}: {
+  attachmentStatus: string | null | undefined;
+  missingRequiredRuntimePeer: boolean;
+  runtimeLastSeenAt: string | null;
+  runtimePeerCount: number | null;
+}): NotebookShellRoomLinkProjection | null {
+  if (runtimePeerCount !== null) {
+    return {
+      status: "connected",
+      statusLabel: "Connected",
+      lastSeenAt: runtimeLastSeenAt,
+    };
+  }
+
+  if (missingRequiredRuntimePeer) {
+    return {
+      status: "lost",
+      statusLabel: "Lost",
+      lastSeenAt: runtimeLastSeenAt,
+    };
+  }
+
+  if (attachmentStatus === "connecting") {
+    return {
+      status: "reconnecting",
+      statusLabel: "Reconnecting",
+      lastSeenAt: runtimeLastSeenAt,
+    };
+  }
+
+  if (runtimeLastSeenAt) {
+    return {
+      status: "lost",
+      statusLabel: "Lost",
+      lastSeenAt: runtimeLastSeenAt,
+    };
+  }
+
+  return null;
 }
 
 export function workstationAttachmentIsConnected(
@@ -499,6 +567,12 @@ const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   memoryBytes: (target) => target.memoryBytes ?? null,
   resourceLabel: (target) => target.resourceLabel ?? null,
   runtimePeerCount: (target) => target.runtimePeerCount ?? null,
+  roomLink: (target) =>
+    stableCacheKey([
+      target.roomLink?.status ?? null,
+      target.roomLink?.statusLabel ?? null,
+      target.roomLink?.lastSeenAt ?? null,
+    ]),
   workingDirectoryLabel: (target) => target.workingDirectoryLabel ?? null,
   runtimeSessionId: (target) => target.runtimeSessionId ?? null,
 } satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeTargetProjection>;
@@ -794,6 +868,13 @@ function stableNotebookShellRuntimeTarget(
     memoryBytes: target.memoryBytes ?? null,
     resourceLabel: target.resourceLabel ?? null,
     runtimePeerCount: target.runtimePeerCount ?? null,
+    roomLink: target.roomLink
+      ? Object.freeze({
+          status: target.roomLink.status,
+          statusLabel: target.roomLink.statusLabel,
+          lastSeenAt: target.roomLink.lastSeenAt,
+        })
+      : null,
     workingDirectoryLabel: target.workingDirectoryLabel ?? null,
   });
   setBoundedCacheValue(SHELL_RUNTIME_TARGET_CACHE, cacheKey, stableTarget, SHELL_PART_CACHE_LIMIT);
@@ -875,7 +956,7 @@ function workstationAttachmentStatusProjection(
     return {
       status: "attention",
       statusLabel: "Needs attention",
-      detail: "Runtime peer disconnected: no compute session is currently attached to the room.",
+      detail: "Room link lost: no compute session is currently attached to the room.",
     };
   }
 
