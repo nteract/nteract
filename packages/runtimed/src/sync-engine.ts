@@ -447,6 +447,18 @@ export class SyncEngine {
   readonly notebookDocChanged$: Observable<void>;
 
   /**
+   * Fires when a local NotebookDoc sync flush was accepted by the transport.
+   * Replays the latest delivery to late subscribers so hosts can observe an
+   * initial bootstrap flush that completed before their app shell mounted.
+   *
+   * This is paired with the outbound side of `notebookDocChanged$`: hosts
+   * that persist "local work is still pending remote acceptance" markers can
+   * set them on local flush attempts and clear them only after confirmed
+   * delivery. Failed or timed-out deliveries are silent here.
+   */
+  readonly notebookDocFlushDelivered$: Observable<void>;
+
+  /**
    * Fires once per APPLIED inbound NotebookDoc sync frame, whether or not
    * the document changed.
    *
@@ -478,6 +490,7 @@ export class SyncEngine {
   }>();
   private readonly _executionViewChanges$ = new Subject<ExecutionViewChangeset>();
   private readonly _notebookDocChanged$ = new Subject<void>();
+  private readonly _notebookDocFlushDelivered$ = new ReplaySubject<void>(1);
   private readonly _notebookSyncApplied$ = new Subject<void>();
 
   constructor(opts: SyncEngineOptions) {
@@ -502,6 +515,7 @@ export class SyncEngine {
     this.outputIdChanges$ = this._outputIdChanges$.asObservable();
     this.executionViewChanges$ = this._executionViewChanges$.asObservable();
     this.notebookDocChanged$ = this._notebookDocChanged$.asObservable();
+    this.notebookDocFlushDelivered$ = this._notebookDocFlushDelivered$.asObservable();
     this.notebookSyncApplied$ = this._notebookSyncApplied$.asObservable();
 
     // Typed broadcast sub-observables (derived from broadcasts$)
@@ -1368,6 +1382,11 @@ export class SyncEngine {
         "sync to relay",
         () => handle.cancel_last_flush(),
       );
+      done.then((delivered) => {
+        if (delivered) {
+          this._notebookDocFlushDelivered$.next();
+        }
+      });
       // Track the in-flight flush so flushAndWait() can await it.
       this.trackInflightFlush("notebook", done);
     }
@@ -1466,6 +1485,7 @@ export class SyncEngine {
       if (!delivered) {
         return false;
       }
+      this._notebookDocFlushDelivered$.next();
     }
 
     // Also flush RuntimeStateDoc sync.

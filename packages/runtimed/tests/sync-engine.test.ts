@@ -1542,6 +1542,64 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("fires delivery after a local flush is accepted", async () => {
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([1, 2, 3]),
+      );
+
+      const engine = createEngine();
+      engine.start();
+
+      let deliveries = 0;
+      engine.notebookDocFlushDelivered$.subscribe(() => {
+        deliveries++;
+      });
+
+      engine.flush();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(deliveries).toBe(1);
+      engine.stop();
+    });
+
+    it("replays the latest accepted local flush to late subscribers", async () => {
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([1, 2, 3]),
+      );
+
+      const engine = createEngine();
+      engine.start();
+
+      engine.flush();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      let deliveries = 0;
+      engine.notebookDocFlushDelivered$.subscribe(() => {
+        deliveries++;
+      });
+      expect(deliveries).toBe(1);
+      engine.stop();
+    });
+
+    it("does not fire delivery when a local flush fails", async () => {
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([1, 2, 3]),
+      );
+      transport.simulateFailure = true;
+
+      const engine = createEngine();
+      engine.start();
+
+      let deliveries = 0;
+      engine.notebookDocFlushDelivered$.subscribe(() => {
+        deliveries++;
+      });
+
+      engine.flush();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(deliveries).toBe(0);
+      engine.stop();
+    });
+
     it("does not fire on a no-op flush", () => {
       (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(null);
 
@@ -1597,6 +1655,24 @@ describe("SyncEngine", () => {
 
       await engine.flushAndWait();
       expect(emissions).toBe(1);
+      engine.stop();
+    });
+
+    it("fires delivery after flushAndWait succeeds", async () => {
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([1, 2, 3]),
+      );
+
+      const engine = createEngine();
+      engine.start();
+
+      let deliveries = 0;
+      engine.notebookDocFlushDelivered$.subscribe(() => {
+        deliveries++;
+      });
+
+      await engine.flushAndWait();
+      expect(deliveries).toBe(1);
       engine.stop();
     });
 

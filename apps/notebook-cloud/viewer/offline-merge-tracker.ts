@@ -80,11 +80,11 @@ export interface OfflineMergeTrackerOptions {
  * elapses fires, once, and firing resets everything. A reconnect with
  * nothing pending resets silently — flaps surface nothing.
  *
- * Out of scope here (recorded in the local-first ADR): cross-reload seeded
- * offline edits (every signed-in reload seeds from the persisted record, so
- * "seeded" alone cannot distinguish offline work from a routine reload
- * without room heads in the handshake) and edits made in the zombie-socket
- * seconds before the transport notices a drop.
+ * Cross-reload seeded offline edits arrive through the durable
+ * pending-local-edit marker: the marker is validated against the loaded
+ * persistence record before calling `notePersistedPendingLocalWork()`, so a
+ * routine signed-in seed stays silent. Edits made in the zombie-socket seconds
+ * before the transport notices a drop remain out of scope.
  */
 export class OfflineMergeTracker {
   private phase: "idle" | "offline" | "settling" = "idle";
@@ -158,6 +158,21 @@ export class OfflineMergeTracker {
     if (!this.eligible) return;
     if (this.phase === "offline") {
       this.pendingLocalFlush = true;
+    }
+  }
+
+  /**
+   * A locally persisted seed carried work that was pending remote acceptance
+   * before this page loaded. Treat the initial connection as the recovery leg
+   * for that prior outage; callers should replay the current connection status
+   * afterward because the bridge may already be "online" by the time the seed
+   * is resolved.
+   */
+  notePersistedPendingLocalWork(): void {
+    if (!this.eligible) return;
+    this.pendingLocalFlush = true;
+    if (this.phase === "idle") {
+      this.phase = "offline";
     }
   }
 
