@@ -2819,10 +2819,7 @@ export function workstationStatusForResponse(
   // lapsed lease as live. Falls back to the lazy D1 staleness check when no
   // lease exists (a workstation registered before this shipped, or a dropped
   // lease write).
-  if (
-    lease &&
-    (workstation.status === "online" || workstation.status === "offline")
-  ) {
+  if (lease && (workstation.status === "online" || workstation.status === "offline")) {
     return lease.online && lease.lease_expires_at > now ? "online" : "offline";
   }
   if (workstation.status === "online" && workstation.last_seen_at) {

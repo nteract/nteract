@@ -21,6 +21,21 @@ export interface WorkstationAttachJobNotification {
   updated_at: string;
 }
 
+/**
+ * Pushed by the registry DO's lease alarm the moment a workstation's lease
+ * lapses, so listeners learn it went offline without waiting to infer absence
+ * from a missed poll.
+ */
+export interface WorkstationWentOfflineNotification {
+  event: "went_offline";
+  workstation_id: string;
+  reason: string;
+}
+
+export type WorkstationEventNotification =
+  | WorkstationAttachJobNotification
+  | WorkstationWentOfflineNotification;
+
 export function workstationEventsObjectName(ownerPrincipal: string, workstationId: string): string {
   return `${ownerPrincipal}\n${workstationId}`;
 }
@@ -227,7 +242,7 @@ function socketAttachment(socket: CloudflareWebSocket): EventSocketAttachment | 
 
 async function readNotification(
   request: Request,
-): Promise<WorkstationAttachJobNotification | Response> {
+): Promise<WorkstationEventNotification | Response> {
   let body: unknown;
   try {
     body = await request.json();
@@ -238,6 +253,19 @@ async function readNotification(
     return Response.json({ error: "notification body must be an object" }, { status: 400 });
   }
   const event = stringField(body.event);
+
+  if (event === "went_offline") {
+    const workstationId = stringField(body.workstation_id);
+    if (!workstationId) {
+      return Response.json({ error: "invalid notification body" }, { status: 400 });
+    }
+    return {
+      event: "went_offline",
+      workstation_id: workstationId,
+      reason: stringField(body.reason) || "went offline",
+    };
+  }
+
   const notification = {
     event,
     workstation_id: stringField(body.workstation_id),
@@ -258,7 +286,7 @@ async function readNotification(
   ) {
     return Response.json({ error: "invalid notification body" }, { status: 400 });
   }
-  return { ...notification, event };
+  return { ...notification, event: "attach_jobs" };
 }
 
 function stringField(value: unknown): string {

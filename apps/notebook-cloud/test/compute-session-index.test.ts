@@ -148,6 +148,82 @@ describe("OwnerComputeIndex workstation leases", () => {
   });
 });
 
+describe("OwnerComputeIndex lease notifications and GC", () => {
+  it("pushes went_offline to WorkstationEvents when a lease lapses", async () => {
+    const { state, values } = fakeStateWithAlarm();
+    const events = fakeWorkstationEvents();
+    const object = new OwnerComputeIndex(state, events.env);
+
+    await object.fetch(leaseUpsert("ws-a", "user:dev:alice", 60_000));
+    const stored = values.get("lease:ws-a") as Record<string, unknown>;
+    values.set("lease:ws-a", { ...stored, lease_expires_at: Date.now() - 1 });
+
+    await object.alarm();
+
+    assert.equal(events.notifications.length, 1);
+    assert.equal(events.notifications[0].objectName, "user:dev:alice\nws-a");
+    assert.equal(events.notifications[0].body.event, "went_offline");
+    assert.equal(events.notifications[0].body.workstation_id, "ws-a");
+    assert.match(events.notifications[0].body.reason as string, /lease expired/);
+  });
+
+  it("does not push for a lease that is already offline", async () => {
+    const { state, values } = fakeStateWithAlarm();
+    const events = fakeWorkstationEvents();
+    const object = new OwnerComputeIndex(state, events.env);
+
+    await object.fetch(leaseUpsert("ws-a", "user:dev:alice", 60_000));
+    const stored = values.get("lease:ws-a") as Record<string, unknown>;
+    values.set("lease:ws-a", { ...stored, online: false, lease_expires_at: Date.now() - 1 });
+
+    await object.alarm();
+
+    assert.equal(events.notifications.length, 0);
+  });
+
+  it("garbage-collects leases offline past the GC window", async () => {
+    const { state, values } = fakeStateWithAlarm();
+    const object = new OwnerComputeIndex(state, {} as Env);
+
+    await object.fetch(leaseUpsert("ws-old", "user:dev:alice", 60_000));
+    // Offline for well over a day past expiry.
+    const stored = values.get("lease:ws-old") as Record<string, unknown>;
+    values.set("lease:ws-old", {
+      ...stored,
+      online: false,
+      lease_expires_at: Date.now() - 25 * 60 * 60_000,
+    });
+
+    await object.alarm();
+
+    assert.equal((await listLeases(object)).length, 0);
+    assert.equal(values.has("lease:ws-old"), false);
+  });
+});
+
+function fakeWorkstationEvents(): {
+  env: Env;
+  notifications: Array<{ objectName: string; body: Record<string, unknown> }>;
+} {
+  const notifications: Array<{ objectName: string; body: Record<string, unknown> }> = [];
+  const namespace = {
+    idFromName: (name: string) => ({ toString: () => name, name }),
+    get: (id: { name: string }) => ({
+      fetch: async (request: Request) => {
+        notifications.push({
+          objectName: id.name,
+          body: (await request.json()) as Record<string, unknown>,
+        });
+        return Response.json({ ok: true, delivered: 1 });
+      },
+    }),
+  };
+  return {
+    env: { WORKSTATION_EVENTS: namespace } as unknown as Env,
+    notifications,
+  };
+}
+
 function leaseUpsert(workstationId: string, ownerPrincipal: string, ttlMs: number): Request {
   return new Request("https://compute.internal/lease/upsert", {
     method: "POST",

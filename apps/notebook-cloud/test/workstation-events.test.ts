@@ -107,6 +107,49 @@ test("workstation events notify sends JSON wakeups to connected sockets", async 
   });
 });
 
+test("workstation events notify delivers went_offline to connected sockets", async () => {
+  const socket = new FakeSocket();
+  const events = new WorkstationEvents(
+    stateWithSockets([socket.asCloudflareWebSocket()]),
+    {} as Env,
+  );
+
+  const response = await events.fetch(
+    new Request("https://workstation-events.internal/notify", {
+      method: "POST",
+      body: JSON.stringify({
+        event: "went_offline",
+        workstation_id: "ws-lab2",
+        reason: "lease expired: no heartbeat within the lease window",
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, delivered: 1 });
+  assert.deepEqual(JSON.parse(socket.sent[0]!), {
+    event: "went_offline",
+    data: {
+      event: "went_offline",
+      workstation_id: "ws-lab2",
+      reason: "lease expired: no heartbeat within the lease window",
+    },
+  });
+});
+
+test("workstation events rejects went_offline without a workstation id", async () => {
+  const events = new WorkstationEvents(stateWithSockets([]), {} as Env);
+
+  const response = await events.fetch(
+    new Request("https://workstation-events.internal/notify", {
+      method: "POST",
+      body: JSON.stringify({ event: "went_offline" }),
+    }),
+  );
+
+  assert.equal(response.status, 400);
+});
+
 test("workstation events answers ping in the non-hibernation fallback path", () => {
   const socket = new FakeSocket();
   const events = new WorkstationEvents(stateWithSockets([]), {} as Env);

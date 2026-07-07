@@ -2,11 +2,17 @@ import type { DurableObjectNamespace, DurableObjectState, Env } from "./cloudfla
 import { isNotebookComputeSessionSummary, type NotebookComputeSessionSummary } from "runtimed";
 import { json } from "./http-responses.ts";
 import { cloudLog, errorMessage } from "./observability.ts";
+import { workstationEventsObjectName } from "./workstation-events.ts";
 
 const COMPUTE_SESSION_KEY_PREFIX = "session:";
 const WORKSTATION_LEASE_KEY_PREFIX = "lease:";
 const OWNER_COMPUTE_INDEX_OBJECT_PREFIX = "owner-compute:v1:";
 const MAX_NOTEBOOK_IDS_PER_LIST = 500;
+// A lease that has stayed offline this far past its expiry is dead weight. The
+// alarm drops it so DO storage does not accumulate stale records; D1 remains the
+// registry of record, so the workstation still lists (offline) until it is
+// deregistered.
+const WORKSTATION_LEASE_GC_MS = 24 * 60 * 60_000;
 
 /**
  * A workstation liveness lease held in the owner-scoped registry DO. The
@@ -32,9 +38,7 @@ export class OwnerComputeIndex {
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: Env,
-  ) {
-    void this.env;
-  }
+  ) {}
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -141,8 +145,14 @@ export class OwnerComputeIndex {
 
   private async sweepExpiredLeases(now: number): Promise<number> {
     const leases = await this.readLeases();
-    let expired = 0;
+    const wentOffline: WorkstationLeaseRecord[] = [];
     for (const [key, lease] of leases) {
+      // Drop leases that have stayed offline well past their window so the DO
+      // does not accumulate dead records.
+      if (!lease.online && now - lease.lease_expires_at > WORKSTATION_LEASE_GC_MS) {
+        await this.state.storage.delete(key);
+        continue;
+      }
       if (lease.online && lease.lease_expires_at <= now) {
         const offline: WorkstationLeaseRecord = {
           ...lease,
@@ -150,7 +160,7 @@ export class OwnerComputeIndex {
           offline_reason: "lease expired: no heartbeat within the lease window",
         };
         await this.state.storage.put(key, offline);
-        expired += 1;
+        wentOffline.push(offline);
         cloudLog("info", "fleet_registry.lease_expired", {
           owner_principal: lease.owner_principal,
           workstation_id: lease.workstation_id,
@@ -160,7 +170,47 @@ export class OwnerComputeIndex {
       }
     }
     await this.armLeaseAlarm();
-    return expired;
+    // Push the offline transition to any listeners, so the rail/toolbar learn
+    // it went offline instead of inferring absence from a missed poll. The
+    // registry reaches the socket-holding DO by fetch, never by holding a
+    // socket itself.
+    await this.notifyWentOffline(wentOffline);
+    return wentOffline.length;
+  }
+
+  private async notifyWentOffline(leases: WorkstationLeaseRecord[]): Promise<void> {
+    const namespace = this.env.WORKSTATION_EVENTS;
+    if (!namespace || leases.length === 0) {
+      return;
+    }
+    await Promise.allSettled(
+      leases.map(async (lease) => {
+        try {
+          const id = namespace.idFromName(
+            workstationEventsObjectName(lease.owner_principal, lease.workstation_id),
+          );
+          await namespace.get(id).fetch(
+            new Request("https://workstation-events.internal/notify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                event: "went_offline",
+                workstation_id: lease.workstation_id,
+                reason: lease.offline_reason ?? "went offline",
+              }),
+            }),
+          );
+        } catch (error) {
+          cloudLog("warn", "fleet_registry.went_offline_notify_failed", {
+            owner_principal: lease.owner_principal,
+            workstation_id: lease.workstation_id,
+            error: errorMessage(error),
+            counter: "fleet_registry_went_offline_notify_failed",
+            counter_delta: 1,
+          });
+        }
+      }),
+    );
   }
 
   private async handleUpsert(request: Request): Promise<Response> {
