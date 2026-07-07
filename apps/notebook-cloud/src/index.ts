@@ -93,7 +93,9 @@ import {
 import {
   OwnerComputeIndex,
   listOwnerComputeSessions,
+  listWorkstationLeases,
   upsertWorkstationLease,
+  type WorkstationLeaseRecord,
 } from "./compute-session-index.ts";
 import {
   SNAPSHOT_PREVIEW_TEXT_MAX_LENGTH,
@@ -1720,9 +1722,10 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
   const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
 
   if (request.method === "GET") {
-    const [workstations, defaultWorkstationId] = await Promise.all([
+    const [workstations, defaultWorkstationId, leases] = await Promise.all([
       listWorkstationsForPrincipal(env, ownerPrincipal),
       getDefaultWorkstationId(env, ownerPrincipal),
+      listWorkstationLeases(env, ownerPrincipal),
     ]);
     const now = Date.now();
     const presenceByWorkstationId = await workstationEventPresenceById(
@@ -1739,6 +1742,7 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
           defaultWorkstationId,
           now,
           eventPresence: presenceByWorkstationId.get(workstation.workstation_id) ?? null,
+          lease: leases.get(workstation.workstation_id) ?? null,
         }),
       ),
     });
@@ -2761,9 +2765,15 @@ function workstationResponseRow(
     defaultWorkstationId: string | null;
     now: number;
     eventPresence?: WorkstationEventPresence | null;
+    lease?: WorkstationLeaseRecord | null;
   },
 ): Record<string, unknown> {
-  const status = workstationStatusForResponse(workstation, options.now, options.eventPresence);
+  const status = workstationStatusForResponse(
+    workstation,
+    options.now,
+    options.eventPresence,
+    options.lease,
+  );
   return {
     workstation_id: workstation.workstation_id,
     display_name: workstation.display_name,
@@ -2791,16 +2801,29 @@ function workstationResponseRow(
   };
 }
 
-function workstationStatusForResponse(
+export function workstationStatusForResponse(
   workstation: WorkstationRow,
   now: number,
   eventPresence: WorkstationEventPresence | null | undefined = null,
+  lease: WorkstationLeaseRecord | null | undefined = null,
 ): WorkstationStatus {
   if (
     eventPresence?.connected === true &&
     (workstation.status === "online" || workstation.status === "offline")
   ) {
     return "online";
+  }
+  // The registry-DO lease is the proactive liveness signal: its alarm sweeps a
+  // workstation offline at expiry instead of waiting for a read to notice.
+  // Still check the expiry timestamp directly so a late alarm can't report a
+  // lapsed lease as live. Falls back to the lazy D1 staleness check when no
+  // lease exists (a workstation registered before this shipped, or a dropped
+  // lease write).
+  if (
+    lease &&
+    (workstation.status === "online" || workstation.status === "offline")
+  ) {
+    return lease.online && lease.lease_expires_at > now ? "online" : "offline";
   }
   if (workstation.status === "online" && workstation.last_seen_at) {
     const lastSeen = Date.parse(workstation.last_seen_at);
