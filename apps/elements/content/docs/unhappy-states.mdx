@@ -1,6 +1,6 @@
 ---
 title: Unhappy states
-description: Cloud viewer empty, blocked, notice, and rail status fixtures.
+description: Cloud viewer empty, blocked, notice, auth recovery, and rail status fixtures.
 ---
 
 import {
@@ -8,12 +8,17 @@ import {
   ElementsEmptyStateExample,
   ElementsNoticeBannerExample,
   ElementsRailStatusExample,
+  ElementsSessionExpiredReturnExample,
 } from "@/components/unhappy-states-example";
 
 Cloud viewer unhappy paths use one visual family: centered copy, a quiet icon
 badge, one sentence of detail, and at most one action. Severity changes the icon
-and subtle badge or border tone, not the whole surface. These fixtures keep the
-states calm across empty, blocked, stale, loading, and signed-out paths. Titles are short labels without trailing periods; details are single sentences.
+and subtle badge or border tone, not the whole surface. Severity colors reuse
+the runtime state language: kernel-starting blue for info, executing amber for
+attention, destructive red for broken, live-presence green for success. These
+fixtures keep the states calm across empty, blocked, stale, loading, and
+signed-out paths. Titles are short labels without trailing periods; details are
+single sentences.
 
 ## Empty state family
 
@@ -36,9 +41,20 @@ approved access transitions.
 
 <ElementsNoticeBannerExample />
 
+## Session-expired return
+
+The list page during auth recovery: reads as recovery in progress, the cached
+list stays visible but visibly stale, sign-in is always reachable, and there is
+no doomed Retry.
+
+<ElementsSessionExpiredReturnExample />
+
 ## Rail status row
 
 Compact notebook rail rows for workstation loading, configuration attention, and
 recoverable load failures.
+
+Loading is skeleton shimmer wherever content will appear; a spinner appears only
+inside inline banners where a skeleton has no room.
 
 <ElementsRailStatusExample />
