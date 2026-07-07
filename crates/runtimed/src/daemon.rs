@@ -4772,6 +4772,9 @@ impl Daemon {
             // of the oneshot signal.
             room.file_binding.shutdown_notebook_watcher().await;
             room.file_binding.shutdown_project_file_watcher().await;
+            if let Some(path) = path.as_ref() {
+                crate::notebook_sync_server::release_autosave_owner_marker_for_path(path).await;
+            }
 
             // Step 5: take the persist debouncer out so its senders
             // drop and the task exits via its shutdown arm with one
