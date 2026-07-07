@@ -129,6 +129,7 @@ describe("cloud notebook header chrome projection", () => {
       }),
       {
         showConnectionIdentity: false,
+        showEditModeControl: false,
         showPresenceStatus: false,
       },
     );
@@ -142,6 +143,7 @@ describe("cloud notebook header chrome projection", () => {
       }),
       {
         showConnectionIdentity: false,
+        showEditModeControl: false,
         showPresenceStatus: false,
       },
     );
@@ -155,6 +157,7 @@ describe("cloud notebook header chrome projection", () => {
       }),
       {
         showConnectionIdentity: true,
+        showEditModeControl: true,
         showPresenceStatus: true,
       },
     );
