@@ -121,6 +121,13 @@ Results on this machine (profiling build, 10s settle):
   The reference-held `appSession$` does its job in a real browser, not just
   in virtual time.
 - Render commits after settle: `/n` 7, `/workstations` 7, notebook room 16.
+  - Re-measured 2026-07-07 on main 4281c7851 (post store-consolidation
+    #3906/#3909/#3910, CloudUserStore #3923, copy pass #3954), two runs,
+    identical: `/n` 8, `/workstations` 7, notebook room **14**. The room
+    dropped two commits; `/n` gained one (unattributed - within a commit of
+    band, watch on the next measurement). Reconnect probe PASS (ws 1->1,
+    reload nonce survived); renewal probe PASS (`tokenRotated=true`,
+    `appSession=true`, ws 1->1).
 - Notebook-route marks: `viewer-start@~490ms`, `live-room-ready@~525`,
   `live-initial-cells@~615`, `live-ready@~635` (fresh empty notebook, so the
   live path fires rather than instant paint).
