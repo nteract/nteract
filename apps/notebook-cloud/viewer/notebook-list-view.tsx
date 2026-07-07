@@ -72,7 +72,18 @@ import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { preloadNotebookRoute } from "./notebook-route-preload";
 
-export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
+const CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS = 8_000;
+const CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS = 20_000;
+
+export interface CloudNotebookListViewProps {
+  authConfig: CloudViewerAuthConfig;
+  appSessionWaitDeadlineMs?: number;
+}
+
+export function CloudNotebookListView({
+  appSessionWaitDeadlineMs,
+  authConfig,
+}: CloudNotebookListViewProps) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const auth = useCloudAuthStore();
   const [bootstrap, setBootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
@@ -100,6 +111,8 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
     signedIn,
     waitingForAppSession,
   } = hostedAuth;
+  const appSessionWaitDeadline =
+    appSessionWaitDeadlineMs ?? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;
   const dashboardModel = useMemo(
     () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
     [listState],
@@ -115,43 +128,26 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
       appSessionStatus.session,
       bootstrap,
     );
-    if (!canFetchNotebookList) {
-      if (waitingForAppSession) {
-        setListState(
-          seededNotebooks ? { kind: "ready", notebooks: seededNotebooks } : { kind: "loading" },
-        );
-        return;
-      }
-      clearCachedCloudNotebookListFromLocalStorage();
-      setListState({ kind: "signed_out" });
-      return;
-    }
-
-    if (refreshIndex === 0 && bootstrap) {
-      writeCachedCloudNotebookListToLocalStorage(
-        authState,
-        appSessionStatus.session,
-        bootstrap.notebooks,
-      );
-      setListState({ kind: "ready", notebooks: bootstrap.notebooks });
-      return;
-    }
-
-    const controller = new AbortController();
-    setListState(
-      seededNotebooks ? { kind: "ready", notebooks: seededNotebooks } : { kind: "loading" },
-    );
-    void (async () => {
+    const initialState = seededNotebooks
+      ? { kind: "ready" as const, notebooks: seededNotebooks }
+      : { kind: "loading" as const };
+    const loadNotebookList = async (controller: AbortController, warningLabel: string) => {
       try {
         const response = await fetchCloudNotebookList(
           authState,
-          AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]),
+          AbortSignal.any([
+            controller.signal,
+            AbortSignal.timeout(CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS),
+          ]),
         );
         if (controller.signal.aborted) return;
         if (!response.ok) {
-          throw await cloudResponseError(response, "Unable to list notebooks");
+          const responseError = await cloudResponseError(response, "Unable to list notebooks");
+          if (controller.signal.aborted) return;
+          throw responseError;
         }
         const body = (await response.json()) as unknown;
+        if (controller.signal.aborted) return;
         if (!isCloudNotebookListResponse(body)) {
           throw new Error("Unable to list notebooks: response shape was invalid");
         }
@@ -172,23 +168,59 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
         setListState({ kind: "ready", notebooks: body.notebooks });
       } catch (error) {
         if (controller.signal.aborted) return;
-        const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+        if (seededNotebooks) {
+          console.warn(
+            `[notebook-cloud] notebook list refresh failed${warningLabel}; keeping cached list`,
+            error,
+          );
+          return;
+        }
         setListState({
           kind: "error",
-          message: timedOut
-            ? "Loading notebooks timed out - the service may be mid-deploy. Retry, or hard-refresh if this persists."
-            : error instanceof Error
-              ? error.message
-              : String(error),
+          message: notebookListFetchErrorMessage(error),
         });
       }
-    })();
+    };
+    if (!canFetchNotebookList) {
+      if (waitingForAppSession) {
+        const controller = new AbortController();
+        setListState(initialState);
+        const deadline = window.setTimeout(
+          () => {
+            void loadNotebookList(controller, " after app-session wait deadline");
+          },
+          Math.max(0, appSessionWaitDeadline),
+        );
+        return () => {
+          window.clearTimeout(deadline);
+          controller.abort();
+        };
+      }
+      clearCachedCloudNotebookListFromLocalStorage();
+      setListState({ kind: "signed_out" });
+      return;
+    }
+
+    if (refreshIndex === 0 && bootstrap) {
+      writeCachedCloudNotebookListToLocalStorage(
+        authState,
+        appSessionStatus.session,
+        bootstrap.notebooks,
+      );
+      setListState({ kind: "ready", notebooks: bootstrap.notebooks });
+      return;
+    }
+
+    const controller = new AbortController();
+    setListState(initialState);
+    void loadNotebookList(controller, "");
 
     return () => {
       controller.abort();
     };
   }, [
     appSessionStatus.session,
+    appSessionWaitDeadline,
     authState,
     bootstrap,
     canFetchNotebookList,
@@ -764,6 +796,14 @@ function fetchCloudNotebookList(
     headers: { Accept: "application/json" },
     signal,
   });
+}
+
+function notebookListFetchErrorMessage(error: unknown): string {
+  const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+  if (timedOut) {
+    return "Loading notebooks timed out - the service may be mid-deploy. Retry, or hard-refresh if this persists.";
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 function cloudNotebookListSeedFromBootstrapOrCache(

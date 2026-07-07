@@ -774,7 +774,7 @@ test("cloud notebook list refresh re-establishes app sessions before listing not
   );
 });
 
-test("cloud notebook list waits for app-session cookies before catalog fetches", () => {
+test("cloud notebook list bounds app-session waits before catalog fetches", () => {
   const sourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
@@ -785,12 +785,22 @@ test("cloud notebook list waits for app-session cookies before catalog fetches",
   assert.match(sourceText, /const hostedAuth = useHostedCatalogAuth\(\);/);
   assert.match(
     sourceText,
-    /if \(!canFetchNotebookList\) \{[\s\S]*if \(waitingForAppSession\) \{[\s\S]*\{ kind: "loading" \}[\s\S]*return;/,
+    /const appSessionWaitDeadline =[\s\S]*appSessionWaitDeadlineMs \?\? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;/,
   );
   assert.match(
     sourceText,
-    /fetchCloudNotebookList\(\s*authState,\s*AbortSignal\.any\(\[controller\.signal, AbortSignal\.timeout\(/,
-    "catalog fetch should still use the existing auth helper once the cookie-backed state is ready",
+    /if \(!canFetchNotebookList\) \{[\s\S]*if \(waitingForAppSession\) \{[\s\S]*window\.setTimeout\(\(\) => \{[\s\S]*loadNotebookList\(controller, " after app-session wait deadline"\);/,
+    "waiting for the trusted cookie must have a deadline fallback instead of an eternal skeleton",
+  );
+  assert.match(
+    sourceText,
+    /if \(seededNotebooks\) \{[\s\S]*console\.warn\([\s\S]*keeping cached list/,
+    "stale local-first content should stay visible when a refresh fails",
+  );
+  assert.match(
+    sourceText,
+    /fetchCloudNotebookList\(\s*authState,\s*AbortSignal\.any\(\[[\s\S]*AbortSignal\.timeout\(CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS\)/,
+    "catalog fetch should still use the existing auth helper on ready and deadline paths",
   );
 });
 
