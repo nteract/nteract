@@ -4219,7 +4219,13 @@ pub(crate) async fn auto_launch_kernel(
                             kernel_type, es_label
                         );
                     }
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
+                    Ok(
+                        notebook_protocol::protocol::RuntimeAgentResponse::Error { error }
+                        | notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunchFailed {
+                            error,
+                            ..
+                        },
+                    ) => {
                         warn!("[notebook-sync] Agent kernel launch failed: {}", error);
                         // Surface the failure through CRDT so the UI
                         // doesn't sit on "starting" forever. The error
