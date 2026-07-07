@@ -57,11 +57,14 @@ The pairing flow needs no externally issued credential
 (`docs/adr/hosted-credential-transport.md`, Decision 9):
 
 1. In the hosted workstation panel, mint a pairing code. Codes look like
-   `XXXX-XXXX-XXXX`, live 10 minutes, and are single use.
-2. On the workstation:
+   `XXXX-XXXX-XXXX`, live 10 minutes, and are single use. The panel's
+   "Connect a machine" card shows these commands with the correct cloud host
+   filled in - prefer copying from there.
+2. On the workstation, using the cloud host you signed in to (currently
+   `https://preview.runt.run`):
 
 ```bash
-runt workstation connect https://app.runt.run --code XXXX-XXXX-XXXX
+runt workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
 ```
 
    (Omit `--code` to be prompted.) This redeems the code for a long-lived
@@ -171,7 +174,7 @@ deployments that issue their own credentials:
 
 ```bash
 RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \
-  --cloud-url https://app.runt.run \
+  --cloud-url https://<cloud-host> \
   --notebook-id <id> \
   --python-path "$(command -v python3)"
 ```
