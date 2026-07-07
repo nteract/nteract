@@ -435,7 +435,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   );
   assert.match(
     editModeButtonSourceText,
-    /<NotebookEditModeButton[\s\S]*state=\{accessPending \? "viewing" : interaction\.state\}/,
+    /<NotebookEditModeButton[\s\S]*state=\{\s*accessPending \|\| \(!hasSentEditRequest && interaction\.state === "requested"\)\s*\? "viewing"\s*: interaction\.state\s*\}/,
   );
   assert.match(editModeButtonSourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
   assert.match(authControlsSourceText, /authConfig\.localDev\?\.label\?\.trim\(\)/);
@@ -464,6 +464,10 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   );
   assert.match(editModeButtonSourceText, /onModeChange=\{\(mode\) => \{/);
   assert.match(sourceText, /accessLevel=\{shellCapabilities\.access\.level\}/);
+  assert.match(
+    sourceText,
+    /hasSentEditRequest=\{\s*accessRequestFacts\.requestedByUser \|\| Boolean\(cloudAccessFacts\.effectiveAccessRequest\)\s*\}/,
+  );
   assert.doesNotMatch(sourceText, /projectCloudNotebookEditAccess/);
   assert.doesNotMatch(sourceText, /cloudNotebookShellCapabilities/);
   assert.match(shellHookSourceText, /projectCloudNotebookEditAccess/);
@@ -487,7 +491,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /accessPending=\{editAccessPending\}/);
   assert.match(
     editModeButtonSourceText,
-    /state=\{accessPending \? "viewing" : interaction\.state\}/,
+    /state=\{\s*accessPending \|\| \(!hasSentEditRequest && interaction\.state === "requested"\)\s*\? "viewing"\s*: interaction\.state\s*\}/,
   );
   assert.match(editModeButtonSourceText, /disabled=\{accessPending\}/);
   assert.match(
