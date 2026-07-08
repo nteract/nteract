@@ -8,6 +8,8 @@ import {
   Frame,
   IdCard,
   LayoutDashboard,
+  Loader2,
+  Minus,
   ListPlus,
   MessageSquareText,
   MousePointer2,
@@ -79,6 +81,18 @@ const catalogGroups = [
         description: "Theme-aware shimmer placeholders for known loading shapes.",
         href: "/docs/skeleton",
         icon: Rows3,
+      },
+      {
+        title: "Separator",
+        description: "Token-native horizontal and vertical rules.",
+        href: "/docs/separator",
+        icon: Minus,
+      },
+      {
+        title: "Spinner",
+        description: "Colorless compact loading motion.",
+        href: "/docs/spinner",
+        icon: Loader2,
       },
       {
         title: "Compute placement",
