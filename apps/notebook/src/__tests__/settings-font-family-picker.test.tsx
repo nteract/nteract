@@ -67,9 +67,17 @@ describe("FontFamilyPicker", () => {
     );
     const option = screen.getByText("Use custom value").closest("[cmdk-item]");
     expect(option).not.toBeNull();
-    await user.click(within(option as HTMLElement).getByText("Use custom value"));
+    await user.click(within(option!).getByText("Use custom value"));
 
     expect(onChange).toHaveBeenCalledWith("Fraunces, Georgia, serif");
+  });
+
+  it("displays selected multi-word font names without CSS quotes", () => {
+    renderPicker('"SF Mono"');
+
+    const combobox = screen.getByRole("combobox", { name: "Markdown font" });
+    expect(combobox.textContent).toContain("SF Mono");
+    expect(combobox.textContent).not.toContain('"SF Mono"');
   });
 
   it("clears back to the theme default", async () => {

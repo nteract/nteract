@@ -132,6 +132,7 @@ export function FontFamilyPicker({
   );
   const customCandidate = searchValue.trim();
   const showCustomCandidate = customCandidate.length > 0 && !exactSearchMatch;
+  const displayValue = currentSingleFamily || value || placeholder;
 
   const clear = useCallback(() => {
     if (value !== "") onChange("");
@@ -179,7 +180,7 @@ export function FontFamilyPicker({
                   value ? "text-foreground" : "text-muted-foreground",
                 )}
               >
-                <span className="min-w-0 truncate font-mono">{value || placeholder}</span>
+                <span className="min-w-0 truncate font-mono">{displayValue}</span>
                 <ChevronsUpDown className="ml-2 size-3.5 shrink-0 text-muted-foreground" />
               </button>
             </PopoverTrigger>
