@@ -51,11 +51,11 @@ describe("workstationStatusForResponse", () => {
     assert.equal(workstationStatusForResponse(stale, NOW, null, null), "offline");
   });
 
-  it("lets a live event socket override a swept lease", () => {
+  it("lets a fresh offline lease beat a connected event socket", () => {
     const swept = lease({ online: false });
     assert.equal(
       workstationStatusForResponse(row(), NOW, { connected: true, connections: 1 }, swept),
-      "online",
+      "offline",
     );
   });
 

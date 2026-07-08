@@ -30,6 +30,7 @@ import type {
   R2PutOptions,
 } from "../src/cloudflare-types.ts";
 import type { NotebookComputeSessionSummary } from "runtimed";
+import type { WorkstationLeaseRecord } from "../src/compute-session-index.ts";
 import { NotebookHandle, RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import {
   WORKSTATION_ATTACH_JOB_STALE_MS,
@@ -2490,6 +2491,49 @@ describe("Worker artifact routes", () => {
     assert.equal(statusRequest?.objectName, objectName);
   });
 
+  it("does not probe event-socket status when a fresh offline lease decides the list row", async () => {
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute, WORKSTATION_EVENTS: events });
+    const now = Date.now();
+    const lastSeenAt = new Date(now - 4 * 60_000).toISOString();
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+    });
+    seedWorkstationLease(compute, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+      online: false,
+    });
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as {
+      workstations: Array<{
+        workstation_id: string;
+        status: string;
+      }>;
+    };
+    assert.equal(body.workstations[0]?.workstation_id, "ws-lab2");
+    assert.equal(body.workstations[0]?.status, "offline");
+    assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
+  });
+
   it("does not fan out event-socket status checks for fresh workstation rows", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
@@ -3000,6 +3044,78 @@ describe("Worker artifact routes", () => {
     assert.equal(env.DB.workstationAttachJobs.get(body.job.job_id)?.workstation_id, "ws-lab2");
     assert.ok(events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
     assert.ok(events.requests.some((entry) => new URL(entry.url).pathname === "/notify"));
+  });
+
+  it("rejects attach when a fresh offline lease outvotes a lingering event socket", async () => {
+    const roomRequests: string[] = [];
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({
+      OWNER_COMPUTE_INDEX: compute,
+      WORKSTATION_EVENTS: events,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            roomRequests.push(new URL(request.url).pathname);
+            return Response.json({ ok: true, changed: true });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    const now = Date.now();
+    const lastSeenAt = new Date(now - 4 * 60_000).toISOString();
+    seedNotebook(env, "attach-lease-demo");
+    seedAcl(env, { notebookId: "attach-lease-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+    });
+    seedWorkstationLease(compute, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+      online: false,
+    });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-lease-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 409);
+    const body = (await attach.json()) as {
+      error?: string;
+      workstation?: { workstation_id?: string; status?: string };
+    };
+    assert.equal(body.error, "workstation is not online");
+    assert.equal(body.workstation?.workstation_id, "ws-lab2");
+    assert.equal(body.workstation?.status, "offline");
+    assert.deepEqual(roomRequests, ["/internal/n/attach-lease-demo/runtime-state-repair"]);
+    assert.equal(env.DB.workstationAttachJobs.size, 0);
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "attach-lease-demo" &&
+          row.subject === "user:dev:alice" &&
+          row.scope === "runtime_peer",
+      ),
+      false,
+    );
+    assert.ok(events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
+    assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/notify"));
   });
 
   it("reuses the active workstation attach job for repeated owner requests", async () => {
@@ -7635,6 +7751,27 @@ function seedWorkstation(
   });
 }
 
+function seedWorkstationLease(
+  compute: FakeOwnerComputeIndexNamespace,
+  input: {
+    ownerPrincipal: string;
+    workstationId: string;
+    lastSeenAt: string;
+    leaseExpiresAt?: number;
+    offlineReason?: string | null;
+    online?: boolean;
+  },
+): void {
+  compute.leases.set(input.workstationId, {
+    workstation_id: input.workstationId,
+    owner_principal: input.ownerPrincipal,
+    last_seen_at: input.lastSeenAt,
+    lease_expires_at: input.leaseExpiresAt ?? Date.now() + 60_000,
+    online: input.online ?? true,
+    offline_reason: input.offlineReason ?? null,
+  });
+}
+
 function seedWorkstationAttachJob(
   env: FakeEnv,
   input: {
@@ -8217,10 +8354,12 @@ class FakeWorkstationEventsNamespace implements DurableObjectNamespace {
 interface FakeOwnerComputeIndexRequest {
   notebookIds: string[];
   objectName: string;
+  pathname: string;
 }
 
 class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
   readonly requests: FakeOwnerComputeIndexRequest[] = [];
+  readonly leases = new Map<string, WorkstationLeaseRecord>();
   readonly sessions = new Map<string, NotebookComputeSessionSummary>();
 
   idFromName(name: string): { toString(): string } {
@@ -8234,6 +8373,10 @@ class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
     return {
       fetch: async (request: Request) => {
         const pathname = new URL(request.url).pathname;
+        if (pathname === "/lease/list") {
+          requests.push({ objectName, notebookIds: [], pathname });
+          return Response.json({ ok: true, leases: Array.from(this.leases.values()) });
+        }
         if (pathname !== "/list") {
           return Response.json({ error: "not found" }, { status: 404 });
         }
@@ -8241,7 +8384,7 @@ class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
           notebook_ids?: string[];
         };
         const notebookIds = Array.isArray(payload.notebook_ids) ? payload.notebook_ids : [];
-        requests.push({ objectName, notebookIds });
+        requests.push({ objectName, notebookIds, pathname });
         return Response.json({
           ok: true,
           sessions: notebookIds.map((notebookId) => sessions.get(notebookId)).filter(Boolean),

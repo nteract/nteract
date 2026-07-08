@@ -1732,6 +1732,7 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
       env,
       ownerPrincipal,
       workstations,
+      leases,
       now,
     );
     return json({
@@ -2095,9 +2096,18 @@ async function routeNotebookWorkstationAttachment(
     return json({ error: "workstation not found" }, 404);
   }
 
-  const defaultWorkstationId = await getDefaultWorkstationId(env, ownerPrincipal);
-  const eventPresence = await workstationEventPresence(env, ownerPrincipal, workstationId);
-  const projectedStatus = workstationStatusForResponse(workstation, Date.now(), eventPresence);
+  const [defaultWorkstationId, eventPresence, leases] = await Promise.all([
+    getDefaultWorkstationId(env, ownerPrincipal),
+    workstationEventPresence(env, ownerPrincipal, workstationId),
+    listWorkstationLeases(env, ownerPrincipal),
+  ]);
+  const lease = leases.get(workstationId) ?? null;
+  const projectedStatus = workstationStatusForResponse(
+    workstation,
+    Date.now(),
+    eventPresence,
+    lease,
+  );
   if (projectedStatus !== "online") {
     await repairNotebookRuntimeStateIfNoRuntimePeer(env, notebookId, {
       reason: `workstation ${workstationId} is not online while attaching compute`,
@@ -2110,6 +2120,7 @@ async function routeNotebookWorkstationAttachment(
           defaultWorkstationId,
           now: Date.now(),
           eventPresence,
+          lease,
         }),
       },
       409,
@@ -2156,6 +2167,7 @@ async function routeNotebookWorkstationAttachment(
         defaultWorkstationId,
         now: Date.now(),
         eventPresence,
+        lease,
       }),
     },
     202,
@@ -2379,13 +2391,18 @@ async function workstationEventPresenceById(
   env: Env,
   ownerPrincipal: string,
   workstations: readonly WorkstationRow[],
+  leases: ReadonlyMap<string, WorkstationLeaseRecord>,
   now: number,
 ): Promise<Map<string, WorkstationEventPresence | null>> {
   if (!env.WORKSTATION_EVENTS || workstations.length === 0) {
     return new Map();
   }
   const staleWorkstations = workstations.filter((workstation) =>
-    workstationListNeedsEventPresence(workstation, now),
+    workstationListNeedsEventPresence(
+      workstation,
+      now,
+      leases.get(workstation.workstation_id) ?? null,
+    ),
   );
   if (staleWorkstations.length === 0) {
     return new Map();
@@ -2403,8 +2420,15 @@ async function workstationEventPresenceById(
   return new Map(entries);
 }
 
-function workstationListNeedsEventPresence(workstation: WorkstationRow, now: number): boolean {
+function workstationListNeedsEventPresence(
+  workstation: WorkstationRow,
+  now: number,
+  lease: WorkstationLeaseRecord | null | undefined,
+): boolean {
   if (workstation.status !== "online" || !workstation.last_seen_at) {
+    return false;
+  }
+  if (lease && !lease.online && workstationLeaseIsFreshEnough(workstation, lease)) {
     return false;
   }
   const lastSeen = Date.parse(workstation.last_seen_at);
@@ -2807,12 +2831,7 @@ export function workstationStatusForResponse(
   eventPresence: WorkstationEventPresence | null | undefined = null,
   lease: WorkstationLeaseRecord | null | undefined = null,
 ): WorkstationStatus {
-  if (
-    eventPresence?.connected === true &&
-    (workstation.status === "online" || workstation.status === "offline")
-  ) {
-    return "online";
-  }
+  const statusUsesLiveness = workstation.status === "online" || workstation.status === "offline";
   // The registry-DO lease is the proactive liveness signal: its alarm sweeps a
   // workstation offline at expiry instead of waiting for a read to notice.
   // Still check the expiry timestamp directly so a late alarm can't report a
@@ -2821,14 +2840,11 @@ export function workstationStatusForResponse(
   // best-effort, so if that write lagged or failed, D1 is the newer signal and
   // a stale offline lease must not override it. Falls back to the lazy D1
   // staleness check when no (or a stale) lease exists.
-  if (lease && (workstation.status === "online" || workstation.status === "offline")) {
-    const rowSeen = workstation.last_seen_at ? Date.parse(workstation.last_seen_at) : NaN;
-    const leaseSeen = Date.parse(lease.last_seen_at);
-    const leaseIsFreshEnough =
-      !Number.isFinite(rowSeen) || (Number.isFinite(leaseSeen) && leaseSeen >= rowSeen);
-    if (leaseIsFreshEnough) {
-      return lease.online && lease.lease_expires_at > now ? "online" : "offline";
-    }
+  if (statusUsesLiveness && lease && workstationLeaseIsFreshEnough(workstation, lease)) {
+    return lease.online && lease.lease_expires_at > now ? "online" : "offline";
+  }
+  if (statusUsesLiveness && eventPresence?.connected === true) {
+    return "online";
   }
   if (workstation.status === "online" && workstation.last_seen_at) {
     const lastSeen = Date.parse(workstation.last_seen_at);
@@ -2837,6 +2853,15 @@ export function workstationStatusForResponse(
     }
   }
   return workstation.status;
+}
+
+function workstationLeaseIsFreshEnough(
+  workstation: WorkstationRow,
+  lease: WorkstationLeaseRecord,
+): boolean {
+  const rowSeen = workstation.last_seen_at ? Date.parse(workstation.last_seen_at) : NaN;
+  const leaseSeen = Date.parse(lease.last_seen_at);
+  return !Number.isFinite(rowSeen) || (Number.isFinite(leaseSeen) && leaseSeen >= rowSeen);
 }
 
 function parseStoredWorkstationEnvironments(value: string | null): unknown[] {
