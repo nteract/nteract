@@ -4,8 +4,17 @@ import type {
   Env,
   WebSocketRequestResponsePair,
 } from "./cloudflare-types.ts";
-import { projectNotebookComputeSessionSummary, type WorkstationAttachmentState } from "runtimed";
-import { deleteOwnerComputeSession, upsertOwnerComputeSession } from "./compute-session-index.ts";
+import {
+  projectNotebookComputeSessionSummary,
+  projectNotebookWorkstationAttachmentFromClaim,
+  type WorkstationAttachmentState,
+} from "runtimed";
+import {
+  deleteOwnerComputeSession,
+  listWorkstationLeases,
+  upsertOwnerComputeSession,
+  type WorkstationLeaseRecord,
+} from "./compute-session-index.ts";
 import { identityDisplayLabel } from "./display-label.ts";
 import {
   allowsBlobUpload,
@@ -43,11 +52,21 @@ import {
   type SyncFrameBudgetSummary,
 } from "./sync-frame-budget.ts";
 import {
+  createWorkstationAttachJob,
   getNotebookRow,
+  getWorkstationRow,
+  grantNotebookAclRow,
   roomSummaryKey,
+  updateWorkstationAttachJobStatus,
   type NotebookRoomSummary,
   type NotebookRoomSummaryOccupant,
+  type WorkstationAttachJobRow,
+  type WorkstationRow,
 } from "./storage.ts";
+import {
+  workstationEventsObjectName,
+  type WorkstationAttachJobNotification,
+} from "./workstation-events.ts";
 
 interface Peer {
   id: string;
@@ -78,6 +97,7 @@ interface RuntimePeerWorkstationMetadata {
 interface SelectedRuntimePeerSession {
   workstationId: string;
   runtimeSessionId: string | null;
+  status: string;
 }
 
 interface RejectFrameOptions {
@@ -128,18 +148,28 @@ interface PendingRuntimePeerResponse {
 /// kernel that is about to come back: if a `runtime_peer` rejoins inside the
 /// window the alarm is disarmed.
 const RUNTIME_PEER_GONE_GRACE_MS = 30_000;
+export const RUNTIME_IDLE_TTL_MS = 30 * 60_000;
 const ROOM_SUMMARY_REFRESH_MS = 60_000;
 const MAX_CONSECUTIVE_REJECTED_FRAMES = 8;
 const REJECTED_FRAME_POLICY_CLOSE_CODE = 1008;
 const REJECTED_FRAME_POLICY_CLOSE_REASON = "too many rejected frames";
 const DUPLICATE_RUNTIME_PEER_CLOSE_CODE = 1008;
 const DUPLICATE_RUNTIME_PEER_CLOSE_REASON = "replaced by newer runtime peer";
+const RUNTIME_IDLE_CLOSE_CODE = 1000;
+const RUNTIME_IDLE_CLOSE_REASON = "runtime idle timeout";
+const RUNTIME_IDLE_STATUS_MESSAGE =
+  "Compute stopped after 30 minutes without queued or active execution.";
+const EXECUTION_RESUME_ACTOR_LABEL = "execution resume";
+const WORKSTATION_EVENT_NOTIFY_TIMEOUT_MS = 5_000;
+const WORKSTATION_HEARTBEAT_STALE_MS = 3 * 60_000;
 
 /// Storage key holding the notebook id whose `runtime_peer` departure armed the
 /// reconciliation alarm. Persisted so a DO that hibernates between the alarm
 /// being set and firing still knows which room to reconcile.
 const RUNTIME_PEER_WATCH_KEY = "runtime_peer_gone_watch";
 const RUNTIME_PEER_WATCH_ALARM_AT_KEY = "runtime_peer_gone_watch_alarm_at";
+const RUNTIME_IDLE_WATCH_KEY = "runtime_idle_watch";
+const RUNTIME_IDLE_WATCH_ALARM_AT_KEY = "runtime_idle_watch_alarm_at";
 const ROOM_SUMMARY_REFRESH_KEY = "room_summary_refresh";
 const ROOM_SUMMARY_REFRESH_ALARM_AT_KEY = "room_summary_refresh_alarm_at";
 const runtimePeerForwardedRequestActions = new Set<RuntimePeerForwardedRequestAction>([
@@ -1175,7 +1205,10 @@ export class NotebookRoom {
         : null;
     if (hostedExecutionAction) {
       const runtimePeer = await this.activeRuntimePeer(notebookId, peer.id);
-      if (!runtimePeer && !(await this.executionCanWaitForStartingRuntime(notebookId))) {
+      if (
+        !runtimePeer &&
+        !(await this.ensureRuntimeForHostedExecution(notebookId, hostedExecutionAction))
+      ) {
         await this.reconcileMissingRuntimePeer(
           notebookId,
           `no runtime peer is attached for ${hostedExecutionAction}`,
@@ -1248,6 +1281,7 @@ export class NotebookRoom {
         this.scheduleRoomHostCheckpoint(notebookId, materializer, "materialized_frame");
       }
       if (result.runtime_state_changed) {
+        this.refreshRuntimeIdleWatch(notebookId);
         this.state.waitUntil(
           this.publishCurrentComputeSessionSummary(notebookId, undefined, {
             onlyIfQueueDepthChanged: true,
@@ -1405,6 +1439,7 @@ export class NotebookRoom {
         this.deliverRoomHostFrames(notebookId, result);
         await this.checkpointRoomHost(notebookId, materializer, "runtime_peer_attachment");
       }
+      this.refreshRuntimeIdleWatch(notebookId);
       await this.publishCurrentComputeSessionSummary(notebookId);
       cloudLog("debug", "room.workstation_attachment.published", {
         notebook_id: notebookId,
@@ -1521,6 +1556,10 @@ export class NotebookRoom {
     const selected = await this.selectedRuntimePeerSession(notebookId);
     if (!selected) {
       return null;
+    }
+
+    if (!runtimePeerSessionStatusAcceptsPeer(selected.status)) {
+      return `selected runtime session is ${selected.status}`;
     }
 
     const presentedWorkstationId = runtimePeerWorkstationId(workstation);
@@ -1683,13 +1722,185 @@ export class NotebookRoom {
     return selected;
   }
 
-  private async executionCanWaitForStartingRuntime(notebookId: string): Promise<boolean> {
+  private async ensureRuntimeForHostedExecution(
+    notebookId: string,
+    action: HostedExecutionRequestAction,
+  ): Promise<boolean> {
     const materializer = this.materializerFor(notebookId);
     if (typeof materializer.getWorkstationAttachment !== "function") {
       return false;
     }
     const attachment = await materializer.getWorkstationAttachment();
-    return attachment?.status === "connecting";
+    if (attachment?.status === "connecting") {
+      return true;
+    }
+    if (!this.env.DB || !attachment || !runtimeAttachmentCanResumeForExecution(attachment)) {
+      return false;
+    }
+    return this.requestRuntimeResumeForExecution(notebookId, attachment, action);
+  }
+
+  private async requestRuntimeResumeForExecution(
+    notebookId: string,
+    attachment: WorkstationAttachmentState,
+    action: HostedExecutionRequestAction,
+  ): Promise<boolean> {
+    const notebook = await getNotebookRow(this.env, notebookId);
+    if (!notebook) {
+      return false;
+    }
+    const ownerPrincipal = notebook.owner_principal;
+    const workstationId = attachment.workstation_id.trim();
+    const workstation = await getWorkstationRow(this.env, ownerPrincipal, workstationId);
+    if (!workstation || !(await this.workstationCanResumeExecution(ownerPrincipal, workstation))) {
+      return false;
+    }
+
+    await grantNotebookAclRow(this.env, {
+      notebookId,
+      subjectKind: "principal",
+      subject: ownerPrincipal,
+      scope: "runtime_peer",
+      actorLabel: EXECUTION_RESUME_ACTOR_LABEL,
+    });
+
+    const attachJob = await createWorkstationAttachJob(this.env, {
+      notebookId,
+      ownerPrincipal,
+      replaceActive: false,
+      workstationId,
+      actorLabel: EXECUTION_RESUME_ACTOR_LABEL,
+    });
+    if (!attachJob) {
+      return false;
+    }
+
+    const nextAttachment = projectNotebookWorkstationAttachmentFromClaim({
+      workstation: workstationAttachmentTargetFromRow(workstation),
+      claim: {
+        status: attachJob.job.status,
+        errorMessage: attachJob.job.error_message,
+        runtimeSessionId: attachJob.job.id,
+        updatedAt: attachJob.job.updated_at,
+      },
+    });
+    const materializer = this.materializerFor(notebookId);
+    const result = await materializer.setWorkstationAttachment(nextAttachment);
+    if (!result.ignored_stale) {
+      this.cacheSelectedRuntimePeerSession(notebookId, nextAttachment);
+    }
+    if (result.changed) {
+      this.deliverRoomHostFrames(notebookId, result);
+      this.scheduleRoomHostCheckpoint(notebookId, materializer, "execution_runtime_resume");
+    }
+    this.state.waitUntil(
+      Promise.allSettled([
+        this.notifyWorkstationAttachJob(ownerPrincipal, attachJob.job),
+        this.publishCurrentComputeSessionSummary(notebookId, nextAttachment),
+      ]).then(() => undefined),
+    );
+    cloudLog("info", "room.execution_runtime_resume.requested", {
+      notebook_id: notebookId,
+      workstation_id: workstationId,
+      job_id: attachJob.job.id,
+      action,
+      counter: "execution_runtime_resume_requests",
+      counter_delta: 1,
+    });
+    return true;
+  }
+
+  private async workstationCanResumeExecution(
+    ownerPrincipal: string,
+    workstation: WorkstationRow,
+  ): Promise<boolean> {
+    if (workstation.status !== "online") {
+      return false;
+    }
+    const leases = await listWorkstationLeases(this.env, ownerPrincipal);
+    const lease = leases.get(workstation.workstation_id) ?? null;
+    if (lease && workstationLeaseIsFreshEnough(workstation, lease)) {
+      return lease.online && lease.lease_expires_at > Date.now();
+    }
+    if (!workstation.last_seen_at) {
+      return true;
+    }
+    const lastSeen = Date.parse(workstation.last_seen_at);
+    return !Number.isFinite(lastSeen) || Date.now() - lastSeen <= WORKSTATION_HEARTBEAT_STALE_MS;
+  }
+
+  private async notifyWorkstationAttachJob(
+    ownerPrincipal: string,
+    job: WorkstationAttachJobRow,
+  ): Promise<void> {
+    const namespace = this.env.WORKSTATION_EVENTS;
+    if (!namespace) {
+      return;
+    }
+    try {
+      const id = namespace.idFromName(
+        workstationEventsObjectName(ownerPrincipal, job.workstation_id),
+      );
+      const notification: WorkstationAttachJobNotification = {
+        event: "attach_jobs",
+        workstation_id: job.workstation_id,
+        job_id: job.id,
+        notebook_id: job.notebook_id,
+        status: job.status,
+        requested_at: job.requested_at,
+        updated_at: job.updated_at,
+      };
+      await namespace.get(id).fetch(
+        new Request("https://workstation-events.internal/notify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(notification),
+          signal: AbortSignal.timeout(WORKSTATION_EVENT_NOTIFY_TIMEOUT_MS),
+        }),
+      );
+    } catch (error) {
+      cloudLog("warn", "room.execution_runtime_resume.notify_failed", {
+        notebook_id: job.notebook_id,
+        workstation_id: job.workstation_id,
+        job_id: job.id,
+        error: errorMessage(error),
+        counter: "execution_runtime_resume_notify_failures",
+        counter_delta: 1,
+      });
+    }
+  }
+
+  private async markSelectedRuntimeSessionCompletedForIdle(notebookId: string): Promise<void> {
+    if (!this.env.DB) {
+      return;
+    }
+    const materializer = this.materializerFor(notebookId);
+    const [notebook, attachment] = await Promise.all([
+      getNotebookRow(this.env, notebookId),
+      materializer.getWorkstationAttachment(),
+    ]);
+    const workstationId = attachment?.workstation_id.trim();
+    const runtimeSessionId = attachment?.runtime_session_id?.trim();
+    if (!notebook || !workstationId || !runtimeSessionId) {
+      return;
+    }
+    const job = await updateWorkstationAttachJobStatus(this.env, {
+      ownerPrincipal: notebook.owner_principal,
+      workstationId,
+      jobId: runtimeSessionId,
+      status: "completed",
+      errorMessage: null,
+    });
+    if (!job || job.status !== "completed") {
+      cloudLog("warn", "room.runtime_idle_watch.attach_job_complete_skipped", {
+        notebook_id: notebookId,
+        workstation_id: workstationId,
+        runtime_session_id: runtimeSessionId,
+        status: job?.status ?? null,
+        counter: "runtime_idle_attach_job_complete_skipped",
+        counter_delta: 1,
+      });
+    }
   }
 
   private async reconcileMissingRuntimePeer(
@@ -2349,6 +2560,39 @@ export class NotebookRoom {
     );
   }
 
+  private refreshRuntimeIdleWatch(notebookId: string): void {
+    const storage = this.state.storage;
+    if (!storage.setAlarm || !storage.deleteAlarm) {
+      return;
+    }
+    this.state.waitUntil(
+      (async () => {
+        try {
+          const activity = await this.materializerFor(notebookId).getRuntimeExecutionActivity();
+          if (!this.hasRuntimePeer() || activity.executing || activity.queueDepth > 0) {
+            await storage.delete(RUNTIME_IDLE_WATCH_KEY);
+            await storage.delete(RUNTIME_IDLE_WATCH_ALARM_AT_KEY);
+            await this.rescheduleRoomAlarm();
+            return;
+          }
+          const existingAlarmAt = await storage.get<unknown>(RUNTIME_IDLE_WATCH_ALARM_AT_KEY);
+          if (isFiniteTimestamp(existingAlarmAt) && existingAlarmAt > Date.now()) {
+            return;
+          }
+          const alarmAt = Date.now() + RUNTIME_IDLE_TTL_MS;
+          await storage.put(RUNTIME_IDLE_WATCH_KEY, notebookId);
+          await storage.put(RUNTIME_IDLE_WATCH_ALARM_AT_KEY, alarmAt);
+          await this.rescheduleRoomAlarm();
+        } catch (error) {
+          cloudLog("warn", "room.runtime_idle_watch.refresh_failed", {
+            notebook_id: notebookId,
+            error: errorMessage(error),
+          });
+        }
+      })(),
+    );
+  }
+
   private async rescheduleRoomAlarm(): Promise<void> {
     const storage = this.state.storage;
     if (!storage.setAlarm || !storage.deleteAlarm) {
@@ -2357,6 +2601,7 @@ export class NotebookRoom {
 
     const alarmTimes = [
       await storage.get<unknown>(RUNTIME_PEER_WATCH_ALARM_AT_KEY),
+      await storage.get<unknown>(RUNTIME_IDLE_WATCH_ALARM_AT_KEY),
       await storage.get<unknown>(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY),
     ]
       .filter(isFiniteTimestamp)
@@ -2381,6 +2626,11 @@ export class NotebookRoom {
       RUNTIME_PEER_WATCH_ALARM_AT_KEY,
       nowMs,
     );
+    const runtimeIdleWatch = await this.dueAlarmTask(
+      RUNTIME_IDLE_WATCH_KEY,
+      RUNTIME_IDLE_WATCH_ALARM_AT_KEY,
+      nowMs,
+    );
     const roomSummaryRefresh = await this.dueAlarmTask(
       ROOM_SUMMARY_REFRESH_KEY,
       ROOM_SUMMARY_REFRESH_ALARM_AT_KEY,
@@ -2391,6 +2641,12 @@ export class NotebookRoom {
       await storage.delete(RUNTIME_PEER_WATCH_KEY);
       await storage.delete(RUNTIME_PEER_WATCH_ALARM_AT_KEY);
       await this.handleRuntimePeerWatchAlarm(runtimeWatch);
+    }
+
+    if (runtimeIdleWatch) {
+      await storage.delete(RUNTIME_IDLE_WATCH_KEY);
+      await storage.delete(RUNTIME_IDLE_WATCH_ALARM_AT_KEY);
+      await this.handleRuntimeIdleWatchAlarm(runtimeIdleWatch);
     }
 
     if (roomSummaryRefresh) {
@@ -2450,6 +2706,68 @@ export class NotebookRoom {
       cloudLog("error", "room.runtime_peer_watch.reconcile_failed", {
         notebook_id: notebookId,
         error: errorMessage(error),
+      });
+    }
+  }
+
+  private async handleRuntimeIdleWatchAlarm(notebookId: string): Promise<void> {
+    let activity;
+    try {
+      activity = await this.materializerFor(notebookId).getRuntimeExecutionActivity();
+    } catch (error) {
+      cloudLog("warn", "room.runtime_idle_watch.activity_read_failed", {
+        notebook_id: notebookId,
+        error: errorMessage(error),
+      });
+      return;
+    }
+
+    if (activity.executing || activity.queueDepth > 0) {
+      cloudLog("info", "room.runtime_idle_watch.deferred_for_execution", {
+        notebook_id: notebookId,
+        executing: activity.executing,
+        queue_depth: activity.queueDepth,
+        counter: "runtime_idle_teardowns_deferred_for_execution",
+        counter_delta: 1,
+      });
+      return;
+    }
+
+    if (!this.hasRuntimePeer()) {
+      await this.publishCurrentComputeSessionSummary(notebookId);
+      return;
+    }
+
+    const updatedAt = new Date().toISOString();
+    try {
+      await this.markSelectedRuntimeSessionCompletedForIdle(notebookId);
+      this.removeRuntimePeers(notebookId, {
+        code: RUNTIME_IDLE_CLOSE_CODE,
+        reason: RUNTIME_IDLE_CLOSE_REASON,
+        suppressRuntimePeerWatch: true,
+      });
+      const materializer = this.materializerFor(notebookId);
+      const result = await materializer.reconcileRuntimeIdleTimeout(
+        RUNTIME_IDLE_STATUS_MESSAGE,
+        updatedAt,
+      );
+      this.invalidateSelectedRuntimePeerSession(notebookId);
+      if (result.changed) {
+        this.deliverRoomHostFrames(notebookId, result);
+        this.scheduleRoomHostCheckpoint(notebookId, materializer, "runtime_idle_timeout");
+      }
+      this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
+      cloudLog("info", "room.runtime_idle_watch.torn_down", {
+        notebook_id: notebookId,
+        counter: "runtime_idle_teardowns",
+        counter_delta: 1,
+      });
+    } catch (error) {
+      cloudLog("warn", "room.runtime_idle_watch.teardown_failed", {
+        notebook_id: notebookId,
+        error: errorMessage(error),
+        counter: "runtime_idle_teardown_failures",
+        counter_delta: 1,
       });
     }
   }
@@ -2557,7 +2875,43 @@ function selectedRuntimePeerSessionFromAttachment(
   return {
     workstationId,
     runtimeSessionId: attachment.runtime_session_id?.trim() || null,
+    status: attachment.status.trim().toLowerCase(),
   };
+}
+
+function runtimePeerSessionStatusAcceptsPeer(status: string): boolean {
+  return status !== "disconnected";
+}
+
+function runtimeAttachmentCanResumeForExecution(attachment: WorkstationAttachmentState): boolean {
+  const workstationId = attachment.workstation_id.trim();
+  if (!workstationId || workstationId === "runtime-peer") {
+    return false;
+  }
+  const status = attachment.status.trim().toLowerCase();
+  return status === "ready" || status === "disconnected";
+}
+
+function workstationAttachmentTargetFromRow(workstation: WorkstationRow) {
+  return {
+    workstationId: workstation.workstation_id,
+    displayName: workstation.display_name,
+    provider: workstation.provider,
+    defaultEnvironmentLabel: workstation.default_environment_label,
+    environmentPolicy: workstation.environment_policy,
+    cpuCount: workstation.cpu_count,
+    memoryBytes: workstation.memory_bytes,
+    workingDirectory: workstation.working_directory,
+  };
+}
+
+function workstationLeaseIsFreshEnough(
+  workstation: WorkstationRow,
+  lease: WorkstationLeaseRecord,
+): boolean {
+  const rowSeen = workstation.last_seen_at ? Date.parse(workstation.last_seen_at) : NaN;
+  const leaseSeen = Date.parse(lease.last_seen_at);
+  return !Number.isFinite(rowSeen) || (Number.isFinite(leaseSeen) && leaseSeen >= rowSeen);
 }
 
 function runtimePeerMatchesSelectedSession(

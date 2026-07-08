@@ -846,6 +846,33 @@ impl RoomHostHandle {
         self.state_doc.read_state().queue.queued.len()
     }
 
+    /// Execution-only activity snapshot for hosted runtime idle guards.
+    ///
+    /// The room host uses this to decide whether the runtime can be lazily
+    /// torn down after its idle TTL. It intentionally reports only execution
+    /// state from RuntimeStateDoc: no room occupant or WebSocket presence facts
+    /// participate in the decision.
+    pub fn get_runtime_execution_activity_json(&self) -> Result<String, JsError> {
+        serde_json::to_string(&runtime_execution_activity(&self.state_doc.read_state()))
+            .map_err(|e| JsError::new(&format!("serialize runtime execution activity: {e}")))
+    }
+
+    /// Cleanly reconcile an execution-idle hosted runtime after the idle TTL.
+    ///
+    /// This is not the crash watchdog: it does not mark executions failed and
+    /// it does not turn the kernel into Error. The caller must first decide the
+    /// runtime peer should be stopped. This method rechecks RuntimeStateDoc and
+    /// only shuts down when no execution is active and the queue is empty.
+    pub fn reconcile_runtime_idle_timeout(
+        &mut self,
+        reason: &str,
+        updated_at: &str,
+    ) -> Result<JsValue, JsError> {
+        let result = self.reconcile_runtime_idle_timeout_inner(reason, updated_at)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize runtime idle timeout result: {e}")))
+    }
+
     /// Generate current sync frames for a peer.
     ///
     /// The Worker calls this immediately after accepting a socket and after the
@@ -1841,6 +1868,56 @@ impl RoomHostHandle {
         Ok(result)
     }
 
+    fn reconcile_runtime_idle_timeout_inner(
+        &mut self,
+        reason: &str,
+        updated_at: &str,
+    ) -> Result<RoomHostFrameResult, JsError> {
+        let state = self.state_doc.read_state();
+        let activity = runtime_execution_activity(&state);
+        if activity.executing || activity.queue_depth > 0 {
+            return Ok(RoomHostFrameResult::empty());
+        }
+        drop(state);
+
+        let heads_before = self.state_doc.get_heads();
+        self.state_doc
+            .set_queue(None, &[])
+            .map_err(|e| JsError::new(&format!("reconcile idle queue: {e}")))?;
+
+        let lifecycle = self.state_doc.read_state().kernel.lifecycle;
+        if lifecycle_is_live(&lifecycle) {
+            self.state_doc
+                .set_lifecycle(&RuntimeLifecycle::Shutdown)
+                .map_err(|e| JsError::new(&format!("reconcile idle lifecycle: {e}")))?;
+        }
+
+        if let Some(attachment) = runtime_idle_timeout_workstation_attachment(
+            self.state_doc.workstation_attachment(),
+            reason,
+            updated_at,
+        ) {
+            self.state_doc
+                .set_workstation_attachment(Some(&attachment))
+                .map_err(|e| {
+                    JsError::new(&format!("reconcile idle workstation attachment: {e}"))
+                })?;
+        }
+
+        let changed = self.state_doc.get_heads() != heads_before;
+        let mut result = RoomHostFrameResult {
+            changed,
+            ignored_stale: false,
+            notebook_changed: false,
+            runtime_state_changed: changed,
+            outbound: Vec::new(),
+        };
+        if changed {
+            self.queue_runtime_state_sync_for_other_peers("", &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+
     /// Native-testable core of [`Self::set_workstation_attachment_json`].
     fn set_workstation_attachment_inner(
         &mut self,
@@ -1919,6 +1996,35 @@ fn runtime_peer_gone_workstation_attachment(
     attachment.status = "error".to_string();
     attachment.status_message = Some(format!("runtime peer disconnected: {reason}"));
     attachment
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeExecutionActivity {
+    executing: bool,
+    queue_depth: usize,
+}
+
+fn runtime_execution_activity(state: &RuntimeState) -> RuntimeExecutionActivity {
+    RuntimeExecutionActivity {
+        executing: state.queue.executing.is_some()
+            || state
+                .executions
+                .values()
+                .any(|execution| execution.status == "running"),
+        queue_depth: state.queue.queued.len(),
+    }
+}
+
+fn runtime_idle_timeout_workstation_attachment(
+    current: Option<WorkstationAttachmentState>,
+    reason: &str,
+    updated_at: &str,
+) -> Option<WorkstationAttachmentState> {
+    let mut attachment = current?;
+    attachment.status = "disconnected".to_string();
+    attachment.status_message = Some(reason.to_string());
+    attachment.updated_at = Some(updated_at.to_string());
+    Some(attachment)
 }
 
 fn runtime_peer_attachment_is_ready(attachment: &WorkstationAttachmentState) -> bool {
@@ -6038,6 +6144,79 @@ mod tests {
             Some("2026-06-07T00:00:00.000Z"),
             "peer-gone reconciliation preserves the publish timestamp"
         );
+    }
+
+    #[test]
+    fn runtime_execution_activity_reports_running_and_queued_work() {
+        let host = host_with_inflight_work();
+        let activity = runtime_execution_activity(&host.state_doc.read_state());
+
+        assert!(activity.executing);
+        assert_eq!(activity.queue_depth, 1);
+    }
+
+    #[test]
+    fn reconcile_runtime_idle_timeout_shuts_down_idle_kernel_and_disconnects_attachment() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .expect("set idle lifecycle");
+        host.set_workstation_attachment_inner(Some(&workstation_attachment_fixture()))
+            .expect("seed attachment");
+
+        let result = host
+            .reconcile_runtime_idle_timeout_inner(
+                "Compute stopped after 30 minutes without queued or active execution.",
+                "2026-07-08T00:30:00.000Z",
+            )
+            .expect("idle reconcile");
+
+        assert!(result.changed);
+        assert!(result.runtime_state_changed);
+        let state = host.state_doc.read_state();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown);
+        assert!(state.queue.executing.is_none());
+        assert!(state.queue.queued.is_empty());
+        assert_eq!(
+            state.workstation.as_ref().map(|ws| ws.status.as_str()),
+            Some("disconnected")
+        );
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .and_then(|ws| ws.status_message.as_deref()),
+            Some("Compute stopped after 30 minutes without queued or active execution.")
+        );
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .and_then(|ws| ws.updated_at.as_deref()),
+            Some("2026-07-08T00:30:00.000Z")
+        );
+    }
+
+    #[test]
+    fn reconcile_runtime_idle_timeout_noops_while_execution_is_active() {
+        let mut host = host_with_inflight_work();
+
+        let result = host
+            .reconcile_runtime_idle_timeout_inner(
+                "Compute stopped after 30 minutes without queued or active execution.",
+                "2026-07-08T00:30:00.000Z",
+            )
+            .expect("idle reconcile");
+
+        assert!(!result.changed);
+        let state = host.state_doc.read_state();
+        assert_eq!(
+            state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+        assert!(state.queue.executing.is_some());
+        assert_eq!(state.queue.queued.len(), 1);
     }
 
     #[test]

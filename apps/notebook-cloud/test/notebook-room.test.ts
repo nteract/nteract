@@ -18,6 +18,7 @@ import {
 } from "../src/identity.ts";
 import {
   NotebookRoom,
+  RUNTIME_IDLE_TTL_MS,
   presencePeerLabel,
   rejectedFramePolicy,
   runtimePeerWorkstationMetadataFromRequest,
@@ -3277,6 +3278,121 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(accepted.type, "cloud_frame_accepted");
   });
 
+  it("creates an owner-scoped resume attach job when owner execution finds no runtime peer", async () => {
+    const db = new ResumeNotebookD1();
+    const room = new NotebookRoom(fakeState(), { DB: db } as unknown as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    let materialized = 0;
+    let publishedAttachment: unknown = null;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "disconnected",
+        status_message: "Compute stopped after 30 minutes without queued or active execution.",
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: "/srv/project",
+        updated_at: "2026-05-22T00:00:00.000Z",
+        runtime_session_id: "job-old",
+      }),
+      setWorkstationAttachment: async (attachment: unknown) => {
+        publishedAttachment = attachment;
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+        };
+      },
+    } as never);
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+
+    assert.equal(materialized, 1);
+    assert.equal(db.attachJobs.length, 1);
+    assert.equal(db.attachJobs[0]?.owner_principal, "user:dev:alice");
+    assert.equal(db.attachJobs[0]?.requested_by_actor_label, "execution resume");
+    assert.equal((publishedAttachment as { status?: string })?.status, "connecting");
+    assert.equal(
+      (publishedAttachment as { runtime_session_id?: string })?.runtime_session_id,
+      db.attachJobs[0]?.id,
+    );
+    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
+  it("rejects non-owner execution without creating a resume attach job", async () => {
+    const db = new ResumeNotebookD1();
+    const room = new NotebookRoom(fakeState(), { DB: db } as unknown as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "editor",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        throw new Error("non-owner execution should not reach the room host");
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => {
+        throw new Error("non-owner execution should not inspect workstation attachment");
+      },
+    } as never);
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+
+    assert.equal(db.attachJobs.length, 0);
+    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(rejected.type, "cloud_frame_rejected");
+    assert.equal(rejected.reason, "editor cannot write request frames");
+  });
+
   it("rejects response-bearing runtime REQUEST frames instead of acknowledging no-ops", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
@@ -3514,6 +3630,77 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     await (room as unknown as { alarm(): Promise<void> }).alarm();
     await state.drain();
     assert.equal(reconcileCalls, 1, "alarm reconciles the orphaned room");
+  });
+
+  it("tears down an idle runtime after the TTL without considering viewer sockets", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const runtimeSocket = new FakeSocket();
+    const viewerSocket = new FakeSocket();
+    const runtimePeer = peerWithScope("rt", "runtime_peer");
+    runtimePeer.socket = runtimeSocket.asCloudflareWebSocket();
+    const viewerPeer = peerWithScope("viewer", "viewer");
+    viewerPeer.socket = viewerSocket.asCloudflareWebSocket();
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.peers.set(viewerPeer.id, viewerPeer);
+    let idleReconciles = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getRuntimeExecutionActivity: async () => ({ executing: false, queueDepth: 0 }),
+      reconcileRuntimeIdleTimeout: async () => {
+        idleReconciles += 1;
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+        };
+      },
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "ready",
+        status_message: null,
+        updated_at: "2026-05-22T00:00:00.000Z",
+        runtime_session_id: "job-idle",
+      }),
+    } as never);
+
+    harness.refreshRuntimeIdleWatch?.("demo");
+    await state.drain();
+
+    assert.equal(await state.getAlarm(), state.now + RUNTIME_IDLE_TTL_MS);
+
+    await (room as unknown as { alarm(): Promise<void> }).alarm();
+    await state.drain();
+
+    assert.equal(idleReconciles, 1);
+    assert.equal(runtimeSocket.closed, true);
+    assert.equal(runtimeSocket.closeReason, "runtime idle timeout");
+    assert.equal(viewerSocket.closed, false, "viewer presence must not defer idle teardown");
+  });
+
+  it("does not arm idle teardown while execution is active or queued", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    harness.peers.set("rt", peerWithScope("rt", "runtime_peer"));
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getRuntimeExecutionActivity: async () => ({ executing: true, queueDepth: 1 }),
+    } as never);
+
+    harness.refreshRuntimeIdleWatch?.("demo");
+    await state.drain();
+
+    assert.equal(await state.getAlarm(), null);
   });
 
   it("publishes active runtime peers to the owner compute index", async () => {
@@ -4147,13 +4334,16 @@ interface RoomHarness {
       syncPeer?(): Promise<RoomHostFrameResult>;
       receiveFrame(): Promise<RoomHostFrameResult>;
       checkpoint(): Promise<void>;
+      getRuntimeExecutionActivity?(): Promise<{ executing: boolean; queueDepth: number }>;
       getRuntimeQueueDepth?(): Promise<number>;
       getWorkstationAttachment?(): Promise<unknown>;
       removePeer?(peerId: string): Promise<void>;
+      reconcileRuntimeIdleTimeout?(reason: string, updatedAt: string): Promise<RoomHostFrameResult>;
       reconcileRuntimePeerGone?(reason: string): Promise<RoomHostFrameResult>;
       setWorkstationAttachment?(attachment: unknown): Promise<RoomHostFrameResult>;
     }
   >;
+  refreshRuntimeIdleWatch?(notebookId: string): void;
   refreshRuntimePeerWatch?(notebookId: string): void;
   roomSummaryOccupantKeys(): Set<string>;
   publishRoomSummaryIfHumanOccupantsChanged(
@@ -4400,6 +4590,129 @@ class CountingNotebookOwnerD1 extends NotebookOwnerD1 {
       this.notebookLookupCount += 1;
     }
     return super.prepare(query);
+  }
+}
+
+class ResumeNotebookD1 implements D1Database {
+  readonly attachJobs: Array<{
+    id: string;
+    notebook_id: string;
+    owner_principal: string;
+    workstation_id: string;
+    status: string;
+    requested_by_actor_label: string;
+    requested_at: string;
+    updated_at: string;
+    accepted_at: string | null;
+    finished_at: string | null;
+    error_message: string | null;
+  }> = [];
+
+  prepare(query: string): D1PreparedStatement {
+    return new ResumeNotebookD1Statement(this, query);
+  }
+
+  async exec(): Promise<D1Result> {
+    return d1OkResult();
+  }
+
+  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    const results: D1Result<T>[] = [];
+    for (const statement of statements) {
+      results.push(await statement.run<T>());
+    }
+    return results;
+  }
+}
+
+class ResumeNotebookD1Statement implements D1PreparedStatement {
+  private values: unknown[] = [];
+
+  constructor(
+    private readonly db: ResumeNotebookD1,
+    private readonly query: string,
+  ) {}
+
+  bind(...values: unknown[]): D1PreparedStatement {
+    this.values = values;
+    return this;
+  }
+
+  async first<T = unknown>(): Promise<T | null> {
+    if (this.query.includes("FROM notebooks") && this.query.includes("WHERE id = ?")) {
+      const notebookId = String(this.values[0] ?? "demo");
+      return {
+        id: notebookId,
+        owner_principal: "user:dev:alice",
+        title: "Demo",
+        created_at: "2026-06-23T00:00:00.000Z",
+        updated_at: "2026-06-23T00:00:00.000Z",
+        latest_revision_id: null,
+      } as T;
+    }
+    if (this.query.includes("FROM workstations") && this.query.includes("workstation_id = ?")) {
+      return {
+        owner_principal: "user:dev:alice",
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        provider_label: null,
+        status: "online",
+        status_message: null,
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        working_directory: "/srv/project",
+        cpu_count: null,
+        memory_bytes: null,
+        environments_json: null,
+        created_at: "2026-06-23T00:00:00.000Z",
+        updated_at: "2026-06-23T00:00:00.000Z",
+        last_seen_at: new Date().toISOString(),
+      } as T;
+    }
+    if (this.query.includes("FROM workstation_attach_jobs") && this.query.includes("LIMIT 1")) {
+      return null;
+    }
+    if (
+      this.query.includes("FROM workstation_attach_jobs") &&
+      this.query.includes("WHERE id = ?")
+    ) {
+      const [jobId] = this.values;
+      return (this.db.attachJobs.find((job) => job.id === jobId) ?? null) as T | null;
+    }
+    return null;
+  }
+
+  async run<T = unknown>(): Promise<D1Result<T>> {
+    if (this.query.includes("INSERT INTO workstation_attach_jobs")) {
+      const [
+        id,
+        notebookId,
+        ownerPrincipal,
+        workstationId,
+        requestedByActorLabel,
+        requestedAt,
+        updatedAt,
+      ] = this.values.map((value) => String(value));
+      this.db.attachJobs.push({
+        id,
+        notebook_id: notebookId,
+        owner_principal: ownerPrincipal,
+        workstation_id: workstationId,
+        status: "pending",
+        requested_by_actor_label: requestedByActorLabel,
+        requested_at: requestedAt,
+        updated_at: updatedAt,
+        accepted_at: null,
+        finished_at: null,
+        error_message: null,
+      });
+    }
+    return d1OkResult<T>();
+  }
+
+  async all<T = unknown>(): Promise<D1Result<T>> {
+    return d1OkResult<T>([]);
   }
 }
 
