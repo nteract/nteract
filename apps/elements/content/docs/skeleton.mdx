@@ -1,0 +1,22 @@
+---
+title: Skeleton
+description: Theme-aware loading placeholders with the ratified shimmer motion.
+---
+
+import { SkeletonExample } from "@/components/skeleton-example";
+
+Skeleton is the generic loading primitive for known content shapes. It uses the
+ratified shimmer convention: a moving gradient sweep, not a pulse. The gradient
+is theme-aware through `color-mix()` against notebook tokens, so the same
+primitive works in light and dark themes without separate palette classes.
+
+Use Skeleton when the pending content shape is known: text lines, avatars,
+cards, table rows, and notebook cells. Use a spinner only where the shape is not
+known or where the surface has no room for a skeleton, such as a compact inline
+status banner.
+
+This primitive is the shared convergence target for the cloud startup shimmer
+and Sift loading shimmer. Those local shimmers remain in place until their
+surfaces migrate to the shared primitive.
+
+<SkeletonExample />

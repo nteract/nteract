@@ -79,8 +79,9 @@ Sanctioned exceptions:
 
 1. Traceback may use a left rule for the failing code line.
 2. Cell insertion ribbons may use directional gradients.
-3. Presence green and comment author colors may carry identity.
-4. Cell toolbar `backdrop-blur-sm` is the only blur.
+3. Skeleton loading uses a horizontal shimmer gradient over a muted, chroma-free tint (`Skeleton` / `.nb-skeleton`); this is the mechanism convention 6 asks for.
+4. Presence green and comment author colors may carry identity.
+5. Cell toolbar `backdrop-blur-sm` is the only blur.
 
 Severity aliases:
 
