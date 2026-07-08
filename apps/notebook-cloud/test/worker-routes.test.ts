@@ -33,6 +33,7 @@ import type { NotebookComputeSessionSummary } from "runtimed";
 import type { WorkstationLeaseRecord } from "../src/compute-session-index.ts";
 import { NotebookHandle, RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import {
+  WORKSTATION_ATTACH_PENDING_STALE_MS,
   WORKSTATION_ATTACH_JOB_STALE_MS,
   blobKey,
   commsDocSnapshotKey,
@@ -3425,6 +3426,95 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("expires stale pending attach jobs on poll and repairs runtime state", async () => {
+    const repairRequests: Array<{ body: unknown; path: string }> = [];
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            repairRequests.push({
+              body: await request.json(),
+              path: new URL(request.url).pathname,
+            });
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "stale-pending-job",
+      notebookId: "nb-stale-pending",
+      ownerPrincipal: "user:dev:alice",
+      requestedAt: new Date(Date.now() - WORKSTATION_ATTACH_PENDING_STALE_MS - 5_000).toISOString(),
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { jobs: Array<{ job_id: string; status: string }> };
+    assert.deepEqual(body.jobs, []);
+    const expired = env.DB.workstationAttachJobs.get("stale-pending-job");
+    assert.equal(expired?.status, "failed");
+    assert.ok(expired?.finished_at);
+    assert.match(expired?.error_message ?? "", /expired before host accepted/);
+    assert.deepEqual(repairRequests, [
+      {
+        path: "/internal/n/nb-stale-pending/runtime-state-repair",
+        body: {
+          reason: "stale workstation attach job expired before host accepted the request",
+        },
+      },
+    ]);
+  });
+
+  it("keeps fresh pending attach jobs visible on poll", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "fresh-pending-job",
+      notebookId: "nb-fresh-pending",
+      ownerPrincipal: "user:dev:alice",
+      requestedAt: new Date().toISOString(),
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { jobs: Array<{ job_id: string; status: string }> };
+    assert.deepEqual(
+      body.jobs.map((job) => [job.job_id, job.status]),
+      [["fresh-pending-job", "pending"]],
+    );
+    assert.equal(env.DB.workstationAttachJobs.get("fresh-pending-job")?.status, "pending");
+  });
+
   it("only lists attach jobs for the authenticated workstation owner", async () => {
     const env = fakeEnv();
     seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
@@ -3433,6 +3523,7 @@ describe("Worker artifact routes", () => {
       id: "job-alice",
       notebookId: "nb-alice",
       ownerPrincipal: "user:dev:alice",
+      requestedAt: new Date().toISOString(),
       workstationId: "ws-lab2",
     });
     seedWorkstationAttachJob(env, {
@@ -7893,6 +7984,7 @@ function seedWorkstationAttachJob(
     workstationId: string;
     errorMessage?: string | null;
     finishedAt?: string | null;
+    requestedAt?: string;
     status?: WorkstationAttachJobRow["status"];
     updatedAt?: string;
   },
@@ -7904,7 +7996,7 @@ function seedWorkstationAttachJob(
     workstation_id: input.workstationId,
     status: input.status ?? "pending",
     requested_by_actor_label: "user:dev:alice/browser:tab",
-    requested_at: "2026-05-22T00:00:00.000Z",
+    requested_at: input.requestedAt ?? "2026-05-22T00:00:00.000Z",
     updated_at: input.updatedAt ?? "2026-05-22T00:00:00.000Z",
     accepted_at: null,
     finished_at: input.finishedAt ?? null,
@@ -7912,9 +8004,18 @@ function seedWorkstationAttachJob(
   });
 }
 
-function isActiveWorkstationAttachJob(job: WorkstationAttachJobRow, staleBefore: string): boolean {
+function isActiveWorkstationAttachJob(
+  job: WorkstationAttachJobRow,
+  {
+    pendingStaleBefore,
+    staleBefore,
+  }: {
+    pendingStaleBefore: string;
+    staleBefore: string;
+  },
+): boolean {
   return (
-    job.status === "pending" ||
+    (job.status === "pending" && job.requested_at >= pendingStaleBefore) ||
     ((job.status === "accepted" || job.status === "running") && job.updated_at >= staleBefore)
   );
 }
@@ -8955,20 +9056,33 @@ class FakeD1Statement implements D1PreparedStatement {
       return okResult(undefined, { changes: 1 });
     } else if (
       this.query.includes("UPDATE workstation_attach_jobs") &&
-      this.query.includes("stale workstation attach job expired")
+      this.query.includes("stale workstation attach job expired after heartbeat timeout")
     ) {
-      const [updatedAt, finishedAt, notebookId, ownerPrincipal, staleBefore] = this.values as [
+      const [
+        updatedAt,
+        finishedAt,
+        notebookId,
+        notebookIdRepeat,
+        ownerPrincipal,
+        workstationId,
+        workstationIdRepeat,
+        staleBefore,
+      ] = this.values as [
         string,
         string,
+        string | null,
+        string | null,
         string,
-        string,
+        string | null,
+        string | null,
         string,
       ];
       let changes = 0;
       for (const job of this.db.workstationAttachJobs.values()) {
         if (
-          job.notebook_id === notebookId &&
+          (notebookId === null || job.notebook_id === notebookIdRepeat) &&
           job.owner_principal === ownerPrincipal &&
+          (workstationId === null || job.workstation_id === workstationIdRepeat) &&
           (job.status === "accepted" || job.status === "running") &&
           job.updated_at < staleBefore
         ) {
@@ -9518,14 +9632,19 @@ class FakeD1Statement implements D1PreparedStatement {
     }
     if (this.query.includes("FROM workstation_attach_jobs")) {
       if (this.query.includes("notebook_id = ?")) {
-        const [notebookId, ownerPrincipal, staleBefore] = this.values as [string, string, string];
+        const [notebookId, ownerPrincipal, pendingStaleBefore, staleBefore] = this.values as [
+          string,
+          string,
+          string,
+          string,
+        ];
         return (
           ([...this.db.workstationAttachJobs.values()]
             .filter(
               (job) =>
                 job.notebook_id === notebookId &&
                 job.owner_principal === ownerPrincipal &&
-                isActiveWorkstationAttachJob(job, staleBefore),
+                isActiveWorkstationAttachJob(job, { pendingStaleBefore, staleBefore }),
             )
             .sort((left, right) => right.requested_at.localeCompare(left.requested_at))[0] as
             | T
@@ -9598,6 +9717,48 @@ class FakeD1Statement implements D1PreparedStatement {
     if (pragmaMatch) {
       const columns = this.db.tableColumns.get(pragmaMatch[1] ?? "") ?? new Set<string>();
       return okResult([...columns].map((name) => ({ name })) as T[]);
+    }
+    if (
+      this.query.includes("UPDATE workstation_attach_jobs") &&
+      this.query.includes("stale workstation attach job expired before host accepted the request")
+    ) {
+      const [
+        updatedAt,
+        finishedAt,
+        notebookId,
+        notebookIdRepeat,
+        ownerPrincipal,
+        workstationId,
+        workstationIdRepeat,
+        pendingStaleBefore,
+      ] = this.values as [
+        string,
+        string,
+        string | null,
+        string | null,
+        string,
+        string | null,
+        string | null,
+        string,
+      ];
+      const expired: WorkstationAttachJobRow[] = [];
+      for (const job of this.db.workstationAttachJobs.values()) {
+        if (
+          (notebookId === null || job.notebook_id === notebookIdRepeat) &&
+          job.owner_principal === ownerPrincipal &&
+          (workstationId === null || job.workstation_id === workstationIdRepeat) &&
+          job.status === "pending" &&
+          job.requested_at < pendingStaleBefore
+        ) {
+          job.status = "failed";
+          job.updated_at = updatedAt;
+          job.finished_at = finishedAt;
+          job.error_message =
+            "stale workstation attach job expired before host accepted the request";
+          expired.push({ ...job });
+        }
+      }
+      return okResult(expired as T[], { changes: expired.length });
     }
     if (
       this.query.includes("FROM workstation_credentials") &&
@@ -9679,12 +9840,8 @@ class FakeD1Statement implements D1PreparedStatement {
       );
     }
     if (this.query.includes("FROM workstation_attach_jobs")) {
-      const [ownerPrincipal, workstationId, staleBefore, limitValue] = this.values as [
-        string,
-        string,
-        string,
-        number,
-      ];
+      const [ownerPrincipal, workstationId, pendingStaleBefore, staleBefore, limitValue] = this
+        .values as [string, string, string, string, number];
       const limit = Number.isFinite(limitValue) ? limitValue : Number.POSITIVE_INFINITY;
       return okResult(
         [...this.db.workstationAttachJobs.values()]
@@ -9692,7 +9849,7 @@ class FakeD1Statement implements D1PreparedStatement {
             (job) =>
               job.owner_principal === ownerPrincipal &&
               job.workstation_id === workstationId &&
-              isActiveWorkstationAttachJob(job, staleBefore),
+              isActiveWorkstationAttachJob(job, { pendingStaleBefore, staleBefore }),
           )
           .sort((left, right) => left.requested_at.localeCompare(right.requested_at))
           .slice(0, limit) as T[],

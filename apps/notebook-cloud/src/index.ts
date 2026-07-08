@@ -2313,7 +2313,21 @@ async function routeWorkstationAttachJobs(
   if (limit instanceof Response) {
     return limit;
   }
-  const jobs = await listActiveWorkstationAttachJobs(env, ownerPrincipal, workstationId, limit);
+  const { expiredPendingJobs, jobs } = await listActiveWorkstationAttachJobs(
+    env,
+    ownerPrincipal,
+    workstationId,
+    limit,
+  );
+  await Promise.all(
+    expiredPendingJobs.map((job) =>
+      repairNotebookRuntimeStateIfNoRuntimePeer(env, job.notebook_id, {
+        reason:
+          job.error_message ?? "pending workstation attach job expired before host accepted it",
+        operation: "workstation_attach_job_pending_expired",
+      }),
+    ),
+  );
   return json({
     ok: true,
     workstation: workstationResponseRow(workstation, {
