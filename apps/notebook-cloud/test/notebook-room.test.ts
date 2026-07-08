@@ -944,6 +944,53 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.deepEqual([...viewerSocket.sent[0]], [FrameType.RUNTIME_STATE_SYNC, 1, 2, 3]);
   });
 
+  it("does not cache selected runtime session for ignored stale runtime-peer publishes", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const runtimePeer = {
+      id: "runtime",
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+        ),
+      ),
+      connectedAt: "2026-06-07T00:00:01.000Z",
+      workstation: {
+        workstationId: "ws-lab2",
+        displayName: "Lab2 workstation",
+        defaultEnvironmentLabel: "Current Python",
+        environmentPolicy: "current_python",
+        runtimeSessionId: "job-stale",
+        workingDirectory: "/home/ubuntu/project",
+      },
+    };
+    let checkpointed = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => {
+        checkpointed += 1;
+      },
+      setWorkstationAttachment: async () => ({
+        ...noopMaterializedResult(),
+        ignored_stale: true,
+      }),
+    } as never);
+
+    await harness.publishRuntimePeerAttachment("demo", runtimePeer);
+
+    assert.equal(checkpointed, 0, "ignored stale publishes are not checkpointed");
+    assert.equal(
+      await harness.runtimePeerAuthorityError?.("demo", {
+        ...runtimePeer.workstation,
+        runtimeSessionId: "job-current",
+      }),
+      null,
+      "ignored stale publish does not poison selected runtime session authority",
+    );
+  });
+
   it("publishes workstation attachment control updates through the room host", async () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);
@@ -1132,6 +1179,64 @@ describe("NotebookRoom peer lifecycle", () => {
       ]),
       [["owner-compute:v1:user:dev:alice", "/upsert", "starting", 0, "ws-lab2"]],
     );
+  });
+
+  it("keeps runtime peers when replacement workstation attachment control is ignored as stale", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const runtimeSocket = new FakeSocket();
+    const runtimePeer = {
+      id: "runtime",
+      socket: runtimeSocket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+        ),
+      ),
+      connectedAt: "2026-06-07T00:00:00.000Z",
+    };
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      setWorkstationAttachment: async () => ({
+        ...noopMaterializedResult(),
+        ignored_stale: true,
+      }),
+    } as never);
+
+    const response = await room.fetch(
+      new Request("https://room.internal/internal/n/demo/workstation-attachment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          close_runtime_peers: true,
+          close_reason: "workstation restart requested",
+          attachment: {
+            workstation_id: "ws-lab2",
+            display_name: "Lab2 workstation",
+            provider: "runtime_peer",
+            default_environment_label: "Current Python",
+            environment_policy: "current_python",
+            status: "connecting",
+            status_message: "Waiting for Lab2 to accept the compute request.",
+            cpu_count: 8,
+            memory_bytes: 16_000_000_000,
+            working_directory: "/home/ubuntu/project",
+            updated_at: "2026-06-07T00:00:01.000Z",
+            runtime_session_id: "job-stale",
+          },
+        }),
+      }),
+    );
+
+    await state.drain();
+    assert.equal(response.status, 200);
+    assert.equal(harness.hasRuntimePeer(), true);
+    assert.equal(runtimeSocket.closed, false);
+    assert.equal(await state.getAlarm(), null, "ignored stale close does not arm stale repair");
   });
 
   it("does not resurrect a runtime-peer compute summary after attachment clear wins", async () => {

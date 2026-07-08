@@ -22,6 +22,7 @@ interface RoomHostOutboundFrame {
 
 export interface RoomHostFrameResult {
   changed: boolean;
+  ignored_stale?: boolean;
   notebook_changed: boolean;
   runtime_state_changed: boolean;
   outbound: RoomHostOutboundFrame[];
@@ -768,6 +769,7 @@ function normalizeResult(value: unknown): RoomHostFrameResult {
   const result = value as Partial<RoomHostFrameResult> | undefined;
   return {
     changed: result?.changed ?? false,
+    ignored_stale: result?.ignored_stale ?? false,
     notebook_changed: result?.notebook_changed ?? false,
     runtime_state_changed: result?.runtime_state_changed ?? false,
     outbound: result?.outbound ?? [],

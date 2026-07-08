@@ -447,15 +447,29 @@ export class NotebookRoom {
     try {
       const materializer = this.materializerFor(notebookId);
       const result = await materializer.setWorkstationAttachment(attachment);
-      this.cacheSelectedRuntimePeerSession(notebookId, attachment);
-      if (closeRuntimePeers) {
+      if (result.ignored_stale) {
+        cloudLog("warn", "room.workstation_attachment.stale_publish_ignored", {
+          notebook_id: notebookId,
+          runtime_session_id: attachment?.runtime_session_id ?? null,
+          updated_at: attachment?.updated_at ?? null,
+          counter: "workstation_attachment_stale_publishes_ignored",
+          counter_delta: 1,
+        });
+      } else {
+        this.cacheSelectedRuntimePeerSession(notebookId, attachment);
+      }
+      if (closeRuntimePeers && !result.ignored_stale) {
         this.removeRuntimePeers(notebookId, {
           code: 1012,
           reason: closeReason,
           suppressRuntimePeerWatch: true,
         });
       }
-      this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId, attachment));
+      this.state.waitUntil(
+        result.ignored_stale
+          ? this.publishCurrentComputeSessionSummary(notebookId)
+          : this.publishCurrentComputeSessionSummary(notebookId, attachment),
+      );
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
       }
@@ -468,7 +482,8 @@ export class NotebookRoom {
         checkpoint_persisted: checkpointPersisted,
         duration_ms: durationMs(startedAt),
         outbound_frame_count: result.outbound.length,
-        closed_runtime_peers: closeRuntimePeers,
+        ignored_stale: result.ignored_stale ?? false,
+        closed_runtime_peers: closeRuntimePeers && !result.ignored_stale,
         counter: "workstation_attachment_control_published",
         counter_delta: result.changed ? 1 : 0,
       });
@@ -1374,7 +1389,18 @@ export class NotebookRoom {
       const materializer = this.materializerFor(notebookId);
       const attachment = runtimePeerWorkstationAttachment(peer);
       const result = await materializer.setWorkstationAttachment(attachment);
-      this.cacheSelectedRuntimePeerSession(notebookId, attachment);
+      if (result.ignored_stale) {
+        cloudLog("warn", "room.workstation_attachment.stale_publish_ignored", {
+          notebook_id: notebookId,
+          peer_id: peer.id,
+          runtime_session_id: attachment.runtime_session_id,
+          updated_at: attachment.updated_at,
+          counter: "workstation_attachment_stale_publishes_ignored",
+          counter_delta: 1,
+        });
+      } else {
+        this.cacheSelectedRuntimePeerSession(notebookId, attachment);
+      }
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
         await this.checkpointRoomHost(notebookId, materializer, "runtime_peer_attachment");
@@ -1385,6 +1411,7 @@ export class NotebookRoom {
         peer_id: peer.id,
         scope: peer.identity.scope,
         changed: result.changed,
+        ignored_stale: result.ignored_stale ?? false,
         duration_ms: durationMs(startedAt),
         outbound_frame_count: result.outbound.length,
         counter: "workstation_attachments_published",

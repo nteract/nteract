@@ -405,6 +405,7 @@ pub struct RoomHostOutboundFrame {
 #[derive(Serialize, Debug)]
 pub struct RoomHostFrameResult {
     pub changed: bool,
+    pub ignored_stale: bool,
     pub notebook_changed: bool,
     pub runtime_state_changed: bool,
     pub outbound: Vec<RoomHostOutboundFrame>,
@@ -414,6 +415,7 @@ impl RoomHostFrameResult {
     fn empty() -> Self {
         Self {
             changed: false,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: false,
             outbound: Vec::new(),
@@ -1081,6 +1083,7 @@ impl RoomHostHandle {
 
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: changed,
             runtime_state_changed: false,
             outbound: Vec::new(),
@@ -1153,6 +1156,7 @@ impl RoomHostHandle {
 
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: changed,
             outbound: Vec::new(),
@@ -1217,6 +1221,7 @@ impl RoomHostHandle {
 
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: false,
             outbound: Vec::new(),
@@ -1287,6 +1292,7 @@ impl RoomHostHandle {
 
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: false,
             outbound: Vec::new(),
@@ -1457,6 +1463,7 @@ impl RoomHostHandle {
         // execution_id pointer (NotebookDoc) to the sender and all other peers.
         let mut result = RoomHostFrameResult {
             changed: true,
+            ignored_stale: false,
             notebook_changed: true,
             runtime_state_changed: true,
             outbound: Vec::new(),
@@ -1566,6 +1573,7 @@ impl RoomHostHandle {
 
         let mut result = RoomHostFrameResult {
             changed: true,
+            ignored_stale: false,
             notebook_changed: true,
             runtime_state_changed: true,
             outbound: Vec::new(),
@@ -1818,6 +1826,7 @@ impl RoomHostHandle {
         let changed = self.state_doc.get_heads() != heads_before;
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: changed,
             outbound: Vec::new(),
@@ -1838,6 +1847,16 @@ impl RoomHostHandle {
         attachment: Option<&WorkstationAttachmentState>,
     ) -> Result<RoomHostFrameResult, JsError> {
         let heads_before = self.state_doc.get_heads();
+        let current_attachment = self.state_doc.workstation_attachment();
+        if workstation_attachment_publish_is_stale(current_attachment.as_ref(), attachment) {
+            return Ok(RoomHostFrameResult {
+                changed: false,
+                ignored_stale: true,
+                notebook_changed: false,
+                runtime_state_changed: false,
+                outbound: Vec::new(),
+            });
+        }
         if attachment.is_some_and(runtime_peer_attachment_is_ready) {
             self.clear_stale_runtime_peer_gone_error()?;
         }
@@ -1847,6 +1866,7 @@ impl RoomHostHandle {
         let changed = self.state_doc.get_heads() != heads_before;
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: changed,
             outbound: Vec::new(),
@@ -1903,6 +1923,31 @@ fn runtime_peer_gone_workstation_attachment(
 
 fn runtime_peer_attachment_is_ready(attachment: &WorkstationAttachmentState) -> bool {
     attachment.provider == "runtime_peer" && attachment.status == "ready"
+}
+
+fn workstation_attachment_publish_is_stale(
+    current: Option<&WorkstationAttachmentState>,
+    incoming: Option<&WorkstationAttachmentState>,
+) -> bool {
+    let (Some(current), Some(incoming)) = (current, incoming) else {
+        return false;
+    };
+    let (Some(current_session_id), Some(incoming_session_id)) = (
+        current.runtime_session_id.as_deref(),
+        incoming.runtime_session_id.as_deref(),
+    ) else {
+        return false;
+    };
+    if current_session_id == incoming_session_id {
+        return false;
+    }
+    let (Some(current_updated_at), Some(incoming_updated_at)) = (
+        current.updated_at.as_deref(),
+        incoming.updated_at.as_deref(),
+    ) else {
+        return false;
+    };
+    incoming_updated_at < current_updated_at
 }
 
 /// Whether a kernel lifecycle still reads as "alive" — i.e. a viewer would see
@@ -5985,6 +6030,14 @@ mod tests {
                 .and_then(|ws| ws.status_message.as_deref()),
             Some("runtime peer disconnected: daemon dropped")
         );
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .and_then(|ws| ws.updated_at.as_deref()),
+            Some("2026-06-07T00:00:00.000Z"),
+            "peer-gone reconciliation preserves the publish timestamp"
+        );
     }
 
     #[test]
@@ -6156,6 +6209,127 @@ mod tests {
         assert_eq!(
             state.workstation.as_ref().map(|ws| ws.provider.as_str()),
             Some("runtime_peer")
+        );
+    }
+
+    #[test]
+    fn set_workstation_attachment_ignores_cross_session_strictly_older_publish() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut current = workstation_attachment_fixture();
+        current.workstation_id = "ws-current".to_string();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed current attachment");
+        let heads_before = host.state_doc.get_heads();
+
+        let mut stale = current.clone();
+        stale.workstation_id = "ws-stale".to_string();
+        stale.runtime_session_id = Some("job-stale".to_string());
+        stale.updated_at = Some("2026-06-07T00:00:01.000Z".to_string());
+
+        let result = host
+            .set_workstation_attachment_inner(Some(&stale))
+            .expect("stale publish is handled");
+
+        assert!(!result.changed);
+        assert!(result.ignored_stale);
+        assert_eq!(result.outbound.len(), 0);
+        assert_eq!(host.state_doc.get_heads(), heads_before);
+        assert_eq!(host.state_doc.read_state().workstation, Some(current));
+    }
+
+    #[test]
+    fn set_workstation_attachment_allows_same_session_older_timestamp() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut current = workstation_attachment_fixture();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed current attachment");
+
+        let mut same_session = current.clone();
+        same_session.status = "connecting".to_string();
+        same_session.updated_at = Some("2026-06-07T00:00:01.000Z".to_string());
+        let result = host
+            .set_workstation_attachment_inner(Some(&same_session))
+            .expect("same-session publish passes");
+
+        assert!(result.changed);
+        assert!(!result.ignored_stale);
+        assert_eq!(host.state_doc.read_state().workstation, Some(same_session));
+    }
+
+    #[test]
+    fn set_workstation_attachment_allows_cross_session_equal_timestamp_tie() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut current = workstation_attachment_fixture();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:01.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed current attachment");
+
+        let mut tied = current.clone();
+        tied.status = "connecting".to_string();
+        tied.runtime_session_id = Some("job-tied".to_string());
+        let result = host
+            .set_workstation_attachment_inner(Some(&tied))
+            .expect("equal timestamp publish passes");
+
+        assert!(result.changed);
+        assert!(!result.ignored_stale);
+        assert_eq!(host.state_doc.read_state().workstation, Some(tied));
+    }
+
+    #[test]
+    fn set_workstation_attachment_allows_sessionless_incoming_publish() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut current = workstation_attachment_fixture();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed current attachment");
+
+        let mut legacy = current.clone();
+        legacy.status = "connecting".to_string();
+        legacy.runtime_session_id = None;
+        legacy.updated_at = Some("2026-06-07T00:00:01.000Z".to_string());
+        let result = host
+            .set_workstation_attachment_inner(Some(&legacy))
+            .expect("sessionless publish passes");
+
+        assert!(result.changed);
+        assert!(!result.ignored_stale);
+        assert_eq!(host.state_doc.read_state().workstation, Some(legacy));
+    }
+
+    #[test]
+    fn set_workstation_attachment_allows_publish_with_missing_updated_at() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut current = workstation_attachment_fixture();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed current attachment");
+
+        let mut missing_updated_at = current.clone();
+        missing_updated_at.status = "connecting".to_string();
+        missing_updated_at.runtime_session_id = Some("job-missing-updated-at".to_string());
+        missing_updated_at.updated_at = None;
+        let result = host
+            .set_workstation_attachment_inner(Some(&missing_updated_at))
+            .expect("publish without updated_at passes");
+
+        assert!(result.changed);
+        assert!(!result.ignored_stale);
+        assert_eq!(
+            host.state_doc.read_state().workstation,
+            Some(missing_updated_at)
         );
     }
 
