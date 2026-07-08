@@ -19,6 +19,12 @@
   --k-start: #3b82f6;
   --k-stale: #9ca3af;
   --k-error: var(--destructive, #dc2626);
+  /* Severity aliases runtime meaning tokens so banners/notices have named inputs
+     and never reach for raw palette. */
+  --sev-info: var(--k-start);
+  --sev-warn: var(--k-exec);
+  --sev-ok: var(--live-ink);
+  --sev-error: var(--destructive);
 }
 
 .dark,

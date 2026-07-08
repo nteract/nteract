@@ -65,3 +65,28 @@ return import(/* @vite-ignore */ esm);
 **Build errors after shadcn update:** Run `tsc -b` to catch TypeScript errors. Common: missing imports, path mismatches, type mismatches from prop changes.
 
 Use `pnpm` as the package manager for shadcn operations.
+
+## Design law (ratified 2026-07-07)
+
+1. Radius: controls and menus use `rounded-md`; dialogs use `rounded-lg`; full circles are only for dots, avatars, and thumbs. Banners are not pills, and `rounded-xl`/`rounded-2xl` do not belong in shared UI.
+2. Focus: use `focus-visible:ring-1 ring-ring` with no offset everywhere.
+3. Chroma carries meaning: component chroma comes from `--ct-*`, `--k-*`, `--live`, `--live-ink`, `--destructive`, `--sev-*`, and uv identity. Raw Tailwind palette color classes in component code are lint failures.
+4. Left rules mark code lines, never notices. The traceback failing-line rule is the sanctioned left-border pattern; banner/card left accents are not.
+5. Banners: use a 1px full border tinted from a meaning token, a background tint of 8% or less, small radius, and severity in the icon. Do not use full-color panels.
+6. Loading: use skeleton shimmer where content will appear; use a spinner only where a skeleton has no room.
+
+Sanctioned exceptions:
+
+1. Traceback may use a left rule for the failing code line.
+2. Cell insertion ribbons may use directional gradients.
+3. Presence green and comment author colors may carry identity.
+4. Cell toolbar `backdrop-blur-sm` is the only blur.
+
+Severity aliases:
+
+| Alias | Target |
+| --- | --- |
+| `--sev-info` | `var(--k-start)` |
+| `--sev-warn` | `var(--k-exec)` |
+| `--sev-ok` | `var(--live-ink)` |
+| `--sev-error` | `var(--destructive)` |
