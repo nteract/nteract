@@ -38,7 +38,9 @@ describe("notebook command runtime projection", () => {
 
   it("projects lifecycle labels through the same status-key table", () => {
     expect(getLifecycleLabel({ lifecycle: "Launching" }, null)).toBe("launching kernel");
-    expect(getLifecycleLabel({ lifecycle: "Running", activity: "Unknown" }, null)).toBe("running");
+    expect(getLifecycleLabel({ lifecycle: "Running", activity: "Unknown" }, null)).toBe(
+      "available",
+    );
   });
 
   it("maps expanded status keys to toolbar states", () => {
@@ -103,7 +105,7 @@ describe("notebook command runtime projection", () => {
     });
   });
 
-  it("treats scaffolded not-started state as running when host execution is already available", () => {
+  it("keeps scaffolded not-started state honest when host execution is available", () => {
     const projection = projectNotebookCommandRuntimeStatusFromRuntimeState(
       {
         kernel: {
@@ -115,10 +117,11 @@ describe("notebook command runtime projection", () => {
     );
 
     expect(projection).toMatchObject({
-      label: "running",
+      label: "available",
       state: "idle",
       statusKey: RUNTIME_STATUS.RUNNING_UNKNOWN,
     });
+    expect(projection.label).not.toBe("running");
   });
 
   it("projects stable runtime command affordances from capabilities and host actions", () => {
