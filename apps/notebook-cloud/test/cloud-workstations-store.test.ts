@@ -65,7 +65,11 @@ const STABLE_AUTH: CloudPrototypeAuthState = {
   problem: null,
 };
 
-function workstation(id: string, displayName: string): NotebookRegisteredWorkstation {
+function workstation(
+  id: string,
+  displayName: string,
+  overrides: Partial<NotebookRegisteredWorkstation> = {},
+): NotebookRegisteredWorkstation {
   return {
     id,
     displayName,
@@ -80,6 +84,7 @@ function workstation(id: string, displayName: string): NotebookRegisteredWorksta
     memoryBytes: null,
     updatedAt: null,
     environments: [],
+    ...overrides,
   };
 }
 
@@ -182,6 +187,59 @@ describe("CloudWorkstationsStore registry gate", () => {
     assert.equal(store.snapshot.registry.defaultWorkstationId, "ws-1");
     assert.equal(store.snapshot.registry.workstations.length, 1);
 
+    dispose();
+  });
+
+  it("keeps workstation order stable when liveness changes", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const emittedOrders: string[][] = [];
+    const subscription = store.registry$.subscribe((current) => {
+      if (current.workstations.length > 0) {
+        emittedOrders.push(current.workstations.map((workstation) => workstation.id));
+      }
+    });
+    let loadCalls = 0;
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        loadWorkstations: async () => {
+          loadCalls += 1;
+          return loadCalls === 1
+            ? registry({
+                workstations: [
+                  workstation("ws-b", "Beta", { status: "online" }),
+                  workstation("ws-a", "Alpha", { status: "offline" }),
+                ],
+              })
+            : registry({
+                workstations: [
+                  workstation("ws-a", "Alpha", { status: "online" }),
+                  workstation("ws-b", "Beta", { status: "offline" }),
+                ],
+              });
+        },
+      }),
+    );
+
+    await drainMicrotasks();
+    assert.deepEqual(
+      store.snapshot.registry.workstations.map((workstation) => workstation.id),
+      ["ws-a", "ws-b"],
+    );
+
+    await store.refreshNow();
+    await drainMicrotasks();
+    assert.deepEqual(
+      store.snapshot.registry.workstations.map((workstation) => workstation.id),
+      ["ws-a", "ws-b"],
+    );
+    assert.deepEqual(emittedOrders, [
+      ["ws-a", "ws-b"],
+      ["ws-a", "ws-b"],
+    ]);
+
+    subscription.unsubscribe();
     dispose();
   });
 
