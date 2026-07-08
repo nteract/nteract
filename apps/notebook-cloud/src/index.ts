@@ -2134,19 +2134,27 @@ async function routeNotebookWorkstationAttachment(
     scope: "runtime_peer",
     actorLabel: identity.actorLabel,
   });
-  const job = await createWorkstationAttachJob(env, {
+  const attachJob = await createWorkstationAttachJob(env, {
     notebookId,
     ownerPrincipal,
     replaceActive: replaceExisting,
     workstationId,
     actorLabel: identity.actorLabel,
   });
-  if (!job) {
+  if (!attachJob) {
     return json({ error: "workstation attach job was not created" }, 500);
   }
+  const { job } = attachJob;
+  const switchedWorkstations =
+    attachJob.cancelledActiveJob !== null &&
+    attachJob.cancelledActiveJob.workstation_id !== workstationId;
   await publishWorkstationAttachJobRuntimeState(env, job, workstation, {
-    closeRuntimePeers: replaceExisting,
-    closeReason: replaceExisting ? "workstation restart requested" : undefined,
+    closeRuntimePeers: replaceExisting || switchedWorkstations,
+    closeReason: replaceExisting
+      ? "workstation restart requested"
+      : switchedWorkstations
+        ? "workstation attachment switched"
+        : undefined,
   });
   await notifyWorkstationAttachJob(env, ownerPrincipal, job);
 
