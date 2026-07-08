@@ -71,6 +71,12 @@ const catalogGroups = [
         icon: LayoutDashboard,
       },
       {
+        title: "Site chrome",
+        description: "Ink-forward host frames for sign-in, home, empty, and blocked cloud states.",
+        href: "/docs/site-chrome",
+        icon: PanelTop,
+      },
+      {
         title: "Unhappy states",
         description: "Empty, blocked, notice, and rail status states for cloud viewer paths.",
         href: "/docs/unhappy-states",
