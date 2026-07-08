@@ -35,7 +35,7 @@ describe("MarkdownText", () => {
     expect(screen.getByText("seed=13")).toHaveClass(
       "border",
       "bg-muted/70",
-      "font-[var(--output-mono-font)]",
+      "[font-family:var(--output-mono-font)]",
     );
   });
 });

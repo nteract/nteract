@@ -1,19 +1,19 @@
 import type { CSSProperties } from "react";
 
 export const markdownDocumentClassName =
-  "not-prose select-text py-2 text-base leading-[1.68] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [hyphens:auto] [text-rendering:optimizeLegibility] selection:bg-primary/15 selection:text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_abbr]:cursor-help [&_abbr]:decoration-dotted [&_abbr]:underline-offset-4 [&_figcaption]:mt-2 [&_figcaption]:font-[var(--output-ui-font)] [&_figcaption]:text-xs [&_figcaption]:leading-5 [&_figcaption]:text-muted-foreground [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_.katex-display]:my-5 [&_.katex-display]:overflow-x-clip [&_.katex-display]:text-center [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_small]:font-[var(--output-ui-font)] [&_small]:text-[0.82em] [&_small]:leading-normal [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]";
+  "not-prose select-text py-2 text-base leading-[1.68] text-foreground [font-family:var(--output-document-font)] [font-kerning:normal] [hyphens:auto] [text-rendering:optimizeLegibility] selection:bg-primary/15 selection:text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_abbr]:cursor-help [&_abbr]:decoration-dotted [&_abbr]:underline-offset-4 [&_figcaption]:mt-2 [&_figcaption]:[font-family:var(--output-ui-font)] [&_figcaption]:text-xs [&_figcaption]:leading-5 [&_figcaption]:text-muted-foreground [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:[font-family:var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_.katex-display]:my-5 [&_.katex-display]:overflow-x-clip [&_.katex-display]:text-center [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_small]:[font-family:var(--output-ui-font)] [&_small]:text-[0.82em] [&_small]:leading-normal [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]";
 
 export const markdownLinkClassName =
   "rounded-[2px] font-medium text-primary underline decoration-primary/45 decoration-1 underline-offset-4 transition-[background-color,color,text-decoration-color] hover:bg-primary/5 hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
 
 export const markdownInlineCodeClassName =
-  "rounded-sm border border-border/70 bg-muted/70 px-1.5 py-0.5 font-[var(--output-mono-font)] text-[0.88em] text-foreground break-words";
+  "rounded-sm border border-border/70 bg-muted/70 px-1.5 py-0.5 [font-family:var(--output-mono-font)] text-[0.88em] text-foreground break-words";
 
 export const markdownCodeBlockShellClassName =
   "group/codeblock my-4 overflow-hidden border-l-2 border-border bg-muted/[0.14]";
 
 export const markdownCodeBlockToolbarClassName =
-  "flex min-h-7 items-center justify-between gap-3 px-3 pt-1.5 pb-0.5 font-[var(--output-ui-font)] text-[11px] leading-none text-muted-foreground";
+  "flex min-h-7 items-center justify-between gap-3 px-3 pt-1.5 pb-0.5 [font-family:var(--output-ui-font)] text-[11px] leading-none text-muted-foreground";
 
 export const markdownCodeBlockLabelClassName = "truncate font-medium text-muted-foreground/80";
 
@@ -47,10 +47,10 @@ export const markdownDetailsClassName =
   "group/details my-5 overflow-hidden rounded-md border border-border/75 bg-muted/[0.14] shadow-sm open:bg-muted/[0.18] [&>:not(summary)]:mx-4 [&>:not(summary)]:my-3 [&>:last-child]:mb-4 [&>summary+*]:mt-3";
 
 export const markdownSummaryClassName =
-  "flex cursor-pointer list-none items-center gap-2 border-b border-transparent px-4 py-3 font-[var(--output-ui-font)] text-sm leading-5 font-semibold text-foreground transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 group-open/details:border-border/65 [&::-webkit-details-marker]:hidden";
+  "flex cursor-pointer list-none items-center gap-2 border-b border-transparent px-4 py-3 [font-family:var(--output-ui-font)] text-sm leading-5 font-semibold text-foreground transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 group-open/details:border-border/65 [&::-webkit-details-marker]:hidden";
 
 export const markdownSummaryIndicatorClassName =
-  "inline-flex size-5 shrink-0 items-center justify-center rounded-full border border-primary/25 bg-primary/6 font-[var(--output-ui-font)] text-[12px] leading-none text-primary transition-transform group-open/details:rotate-90";
+  "inline-flex size-5 shrink-0 items-center justify-center rounded-full border border-primary/25 bg-primary/6 [font-family:var(--output-ui-font)] text-[12px] leading-none text-primary transition-transform group-open/details:rotate-90";
 
 export const markdownDetailsBodyClassName =
   "px-4 pt-1 pb-4 text-[0.96em] leading-relaxed [&>*:first-child]:mt-0 [&>*:last-child]:mb-0";
@@ -77,7 +77,7 @@ export const markdownTableWrapperClassName =
   "my-5 overflow-x-auto rounded-sm border border-border/80 bg-background shadow-sm";
 
 export const markdownTableClassName =
-  "min-w-full border-collapse font-[var(--output-ui-font)] text-sm leading-normal";
+  "min-w-full border-collapse [font-family:var(--output-ui-font)] text-sm leading-normal";
 
 export const markdownTableHeadClassName = "bg-muted/65";
 
@@ -95,19 +95,19 @@ export const markdownImageClassName =
 export const markdownFigureClassName = "my-5";
 
 export const markdownFigureCaptionClassName =
-  "mt-2 font-[var(--output-ui-font)] text-xs leading-5 text-muted-foreground";
+  "mt-2 [font-family:var(--output-ui-font)] text-xs leading-5 text-muted-foreground";
 
 export const markdownFootnotesClassName =
-  "mt-8 border-t border-border/70 pt-4 font-[var(--output-ui-font)] text-sm leading-6 text-muted-foreground";
+  "mt-8 border-t border-border/70 pt-4 [font-family:var(--output-ui-font)] text-sm leading-6 text-muted-foreground";
 
 export const markdownFootnoteBackrefClassName =
-  "ml-1 font-[var(--output-ui-font)] text-xs no-underline hover:bg-transparent";
+  "ml-1 [font-family:var(--output-ui-font)] text-xs no-underline hover:bg-transparent";
 
 export const markdownFootnoteRefClassName =
-  "mx-0.5 inline-flex min-w-4 translate-y-[-0.22em] justify-center rounded-full border border-primary/20 bg-primary/6 px-1 font-[var(--output-ui-font)] text-[0.68em] leading-4 text-primary no-underline decoration-transparent hover:bg-primary/10 hover:decoration-transparent";
+  "mx-0.5 inline-flex min-w-4 translate-y-[-0.22em] justify-center rounded-full border border-primary/20 bg-primary/6 px-1 [font-family:var(--output-ui-font)] text-[0.68em] leading-4 text-primary no-underline decoration-transparent hover:bg-primary/10 hover:decoration-transparent";
 
 export const markdownHeadingAnchorClassName =
-  "ml-2 inline-flex select-none translate-y-[-0.08em] rounded-[2px] font-[var(--output-ui-font)] text-[0.58em] font-medium text-muted-foreground/40 no-underline decoration-transparent transition-colors hover:bg-primary/5 hover:text-primary focus-visible:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
+  "ml-2 inline-flex select-none translate-y-[-0.08em] rounded-[2px] [font-family:var(--output-ui-font)] text-[0.58em] font-medium text-muted-foreground/40 no-underline decoration-transparent transition-colors hover:bg-primary/5 hover:text-primary focus-visible:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
 
 export function markdownHeadingClassName(element: string) {
   if (element === "h1") {

@@ -18,7 +18,7 @@ describe("MarkdownFigure", () => {
       "shadow-sm",
     );
     expect(screen.getByText("Residual topology sketch")).toHaveClass(
-      "font-[var(--output-ui-font)]",
+      "[font-family:var(--output-ui-font)]",
       "text-xs",
       "text-muted-foreground",
     );
