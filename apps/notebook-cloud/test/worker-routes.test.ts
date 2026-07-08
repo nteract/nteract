@@ -2422,6 +2422,107 @@ describe("Worker artifact routes", () => {
     assert.equal(body.workstations[0]?.is_default, true);
   });
 
+  it("deregisters an owned workstation, deletes its lease, and pushes went_offline once", async () => {
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const events = new FakeWorkstationEventsNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute, WORKSTATION_EVENTS: events });
+    const ownerPrincipal = "user:dev:alice";
+    const workstationId = "ws-lab2";
+    const objectName = workstationEventsObjectName(ownerPrincipal, workstationId);
+    seedWorkstation(env, { ownerPrincipal, workstationId });
+    seedWorkstationLease(compute, {
+      ownerPrincipal,
+      workstationId,
+      lastSeenAt: new Date().toISOString(),
+    });
+    env.DB.workstationDefaults.set(ownerPrincipal, workstationId);
+
+    const deleted = await worker.fetch(
+      new Request(`http://localhost/api/workstations/${workstationId}`, {
+        method: "DELETE",
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(deleted.status, 200);
+    assert.deepEqual(await deleted.json(), {
+      ok: true,
+      workstation_id: workstationId,
+      deregistered: true,
+    });
+    assert.equal(compute.leases.has(workstationId), false);
+    assert.equal(env.DB.workstations.has(workstationKey(ownerPrincipal, workstationId)), false);
+    assert.equal(env.DB.workstationDefaults.has(ownerPrincipal), false);
+
+    const wentOffline = events.requests.filter(
+      (entry) =>
+        entry.objectName === objectName &&
+        new URL(entry.url).pathname === "/notify" &&
+        (entry.body as { event?: string } | null)?.event === "went_offline",
+    );
+    assert.equal(wentOffline.length, 1);
+    assert.deepEqual(wentOffline[0]?.body, {
+      event: "went_offline",
+      workstation_id: workstationId,
+      reason: "workstation deregistered",
+    });
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as {
+      default_workstation_id: string | null;
+      workstations: Array<Record<string, unknown>>;
+    };
+    assert.equal(body.default_workstation_id, null);
+    assert.deepEqual(body.workstations, []);
+  });
+
+  it("does not let another principal deregister a workstation", async () => {
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const events = new FakeWorkstationEventsNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute, WORKSTATION_EVENTS: events });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationLease(compute, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    const deleted = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2", {
+        method: "DELETE",
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "bob",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(deleted.status, 404);
+    assert.equal(compute.leases.has("ws-lab2"), true);
+    assert.equal(env.DB.workstations.has(workstationKey("user:dev:alice", "ws-lab2")), true);
+    assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/notify"));
+  });
+
   it("forwards user-owned workstation event socket upgrades", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
@@ -8572,6 +8673,7 @@ interface FakeOwnerComputeIndexRequest {
   notebookIds: string[];
   objectName: string;
   pathname: string;
+  workstationId: string | null;
 }
 
 class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
@@ -8591,8 +8693,33 @@ class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
       fetch: async (request: Request) => {
         const pathname = new URL(request.url).pathname;
         if (pathname === "/lease/list") {
-          requests.push({ objectName, notebookIds: [], pathname });
+          requests.push({ objectName, notebookIds: [], pathname, workstationId: null });
           return Response.json({ ok: true, leases: Array.from(this.leases.values()) });
+        }
+        if (pathname === "/lease/delete") {
+          const payload = (await request.json().catch(() => ({}))) as {
+            owner_principal?: string;
+            workstation_id?: string;
+          };
+          const workstationId =
+            typeof payload.workstation_id === "string" ? payload.workstation_id : null;
+          requests.push({ objectName, notebookIds: [], pathname, workstationId });
+          const lease = workstationId ? this.leases.get(workstationId) : undefined;
+          if (!workstationId || !lease || lease.owner_principal !== payload.owner_principal) {
+            return Response.json({
+              ok: true,
+              deleted: false,
+              went_offline: false,
+              reason: null,
+            });
+          }
+          this.leases.delete(workstationId);
+          return Response.json({
+            ok: true,
+            deleted: true,
+            went_offline: lease.online,
+            reason: lease.offline_reason,
+          });
         }
         if (pathname !== "/list") {
           return Response.json({ error: "not found" }, { status: 404 });
@@ -8601,7 +8728,7 @@ class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
           notebook_ids?: string[];
         };
         const notebookIds = Array.isArray(payload.notebook_ids) ? payload.notebook_ids : [];
-        requests.push({ objectName, notebookIds, pathname });
+        requests.push({ objectName, notebookIds, pathname, workstationId: null });
         return Response.json({
           ok: true,
           sessions: notebookIds.map((notebookId) => sessions.get(notebookId)).filter(Boolean),
@@ -9026,6 +9153,17 @@ class FakeD1Statement implements D1PreparedStatement {
       const [ownerPrincipal, workstationId] = this.values as [string, string, string];
       this.db.workstationDefaults.set(ownerPrincipal, workstationId);
       return okResult(undefined, { changes: 1 });
+    } else if (this.query.includes("DELETE FROM workstation_defaults")) {
+      const [ownerPrincipal, workstationId] = this.values as [string, string];
+      if (this.db.workstationDefaults.get(ownerPrincipal) === workstationId) {
+        this.db.workstationDefaults.delete(ownerPrincipal);
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
+    } else if (this.query.includes("DELETE FROM workstations")) {
+      const [ownerPrincipal, workstationId] = this.values as [string, string];
+      const deleted = this.db.workstations.delete(workstationKey(ownerPrincipal, workstationId));
+      return okResult(undefined, { changes: deleted ? 1 : 0 });
     } else if (this.query.includes("INSERT INTO workstation_attach_jobs")) {
       const [id, notebookId, ownerPrincipal, workstationId, actorLabel, requestedAt, updatedAt] =
         this.values as [string, string, string, string, string, string, string];

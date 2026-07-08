@@ -92,6 +92,7 @@ import {
 } from "./workstation-events.ts";
 import {
   OwnerComputeIndex,
+  deleteWorkstationLease,
   listOwnerComputeSessions,
   listWorkstationLeases,
   upsertWorkstationLease,
@@ -375,6 +376,14 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     methods: ["POST"],
     handler: ({ params }, request, env) =>
       routeWorkstationCredentialRevoke(request, env, params.credentialId),
+  },
+  {
+    match: routePath("/api/workstations/:workstationId", {
+      trailingSlash: "optional",
+    }),
+    methods: ["DELETE"],
+    handler: ({ params }, request, env) =>
+      routeWorkstationDeregister(request, env, params.workstationId),
   },
   {
     match: routePath("/api/workstations/:workstationId/events", {
@@ -1806,6 +1815,68 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
   );
 }
 
+async function routeWorkstationDeregister(
+  request: Request,
+  env: Env,
+  workstationIdParam: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const workstationId = boundedStringField(workstationIdParam, "workstation_id", 128);
+  if (workstationId instanceof Response) {
+    return workstationId;
+  }
+
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner", {
+    allowWorkstationCredential: true,
+  });
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to deregister a workstation" }, 401);
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
+  if (!workstation) {
+    return missingWorkstationResponse();
+  }
+
+  const leaseDelete = await deleteWorkstationLease(env, ownerPrincipal, workstationId);
+  const deleted = await deleteRegisteredWorkstation(env, ownerPrincipal, workstationId);
+  if (!deleted) {
+    return missingWorkstationResponse();
+  }
+  if (leaseDelete.went_offline) {
+    await notifyWorkstationWentOffline(
+      env,
+      ownerPrincipal,
+      workstationId,
+      leaseDelete.reason ?? "workstation deregistered",
+    );
+  }
+
+  cloudLog("info", "workstation.deregistered", {
+    principal: ownerPrincipal,
+    workstation_id: workstationId,
+    counter: "workstation_deregistrations",
+    counter_delta: 1,
+  });
+  return json({
+    ok: true,
+    workstation_id: workstationId,
+    deregistered: true,
+  });
+}
+
 async function routeDefaultWorkstation(request: Request, env: Env): Promise<Response> {
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
@@ -2384,6 +2455,78 @@ async function notifyWorkstationAttachJob(
       counter_delta: 1,
     });
   }
+}
+
+async function notifyWorkstationWentOffline(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+  reason: string,
+): Promise<void> {
+  if (!env.WORKSTATION_EVENTS) {
+    return;
+  }
+  try {
+    const response = await workstationEventsStub(env, ownerPrincipal, workstationId).fetch(
+      new Request("https://workstation-events.internal/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event: "went_offline",
+          workstation_id: workstationId,
+          reason,
+        }),
+      }),
+    );
+    if (response.ok) {
+      return;
+    }
+    cloudLog("warn", "workstation.events.went_offline_notify_failed", {
+      principal: ownerPrincipal,
+      workstation_id: workstationId,
+      response_status: response.status,
+      counter: "workstation_events_went_offline_notify_failed",
+      counter_delta: 1,
+    });
+  } catch (error) {
+    cloudLog("warn", "workstation.events.went_offline_notify_failed", {
+      principal: ownerPrincipal,
+      workstation_id: workstationId,
+      error: error instanceof Error ? error.message : String(error),
+      counter: "workstation_events_went_offline_notify_failed",
+      counter_delta: 1,
+    });
+  }
+}
+
+async function deleteRegisteredWorkstation(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+): Promise<boolean> {
+  if (!env.DB) {
+    return false;
+  }
+  await env.DB.prepare(
+    `DELETE FROM workstation_defaults
+      WHERE owner_principal = ?
+        AND workstation_id = ?`,
+  )
+    .bind(ownerPrincipal, workstationId)
+    .run();
+  const result = await env.DB.prepare(
+    `DELETE FROM workstations
+      WHERE owner_principal = ?
+        AND workstation_id = ?`,
+  )
+    .bind(ownerPrincipal, workstationId)
+    .run();
+  return d1MutationChanges(result) > 0;
+}
+
+function d1MutationChanges(result: { meta?: Record<string, unknown> }): number {
+  const changes = result.meta?.changes;
+  return typeof changes === "number" ? changes : 0;
 }
 
 function workstationEventsStub(
