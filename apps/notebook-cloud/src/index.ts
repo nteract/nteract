@@ -2396,6 +2396,7 @@ async function routeWorkstationAttachJobs(
         reason:
           job.error_message ?? "pending workstation attach job expired before host accepted it",
         operation: "workstation_attach_job_pending_expired",
+        expectedRuntimeSessionId: job.id,
       }),
     ),
   );
@@ -2725,6 +2726,7 @@ async function routeWorkstationAttachJob(
       reason:
         job.error_message ?? `workstation attach job ${job.status} before a runtime peer attached`,
       operation: `workstation_attach_job_${job.status}`,
+      expectedRuntimeSessionId: job.id,
     });
   }
   return json({
@@ -3125,6 +3127,7 @@ async function repairNotebookRuntimeStateIfNoRuntimePeer(
   env: Env,
   notebookId: string,
   options: {
+    expectedRuntimeSessionId?: string | null;
     operation: string;
     reason: string;
   },
@@ -3140,7 +3143,12 @@ async function repairNotebookRuntimeStateIfNoRuntimePeer(
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: options.reason }),
+          body: JSON.stringify({
+            reason: options.reason,
+            ...(options.expectedRuntimeSessionId
+              ? { expected_runtime_session_id: options.expectedRuntimeSessionId }
+              : {}),
+          }),
         },
       ),
     );

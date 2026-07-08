@@ -3609,6 +3609,129 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     assert.deepEqual([...viewerSocket.sent[0]], [FrameType.RUNTIME_STATE_SYNC, 9, 8, 7]);
   });
 
+  it("skips runtime-state repair when the expected runtime session is stale", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const harness = roomHarness(room);
+    let checkpointed = 0;
+    let reconcileCalls = 0;
+    const attachment = {
+      workstation_id: "ws-lab2",
+      display_name: "Lab2",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      runtime_session_id: "fresh-job",
+      status: "connecting",
+      status_message: "Waiting for Lab2 to accept the compute request.",
+      cpu_count: 8,
+      memory_bytes: 16_000_000_000,
+      working_directory: "/home/ubuntu/project",
+      updated_at: "2026-05-22T00:00:01.000Z",
+    };
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => {
+        checkpointed += 1;
+      },
+      getWorkstationAttachment: async () => attachment,
+      reconcileRuntimePeerGone: async () => {
+        reconcileCalls += 1;
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+        };
+      },
+    } as never);
+
+    const response = await room.fetch(
+      new Request("https://room.internal/internal/n/demo/runtime-state-repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expected_runtime_session_id: "expired-job",
+          reason: "expired pending attach job",
+        }),
+      }),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      changed: false,
+      skipped: true,
+      skip_reason: "runtime_session_mismatch",
+      forced: false,
+      runtime_peer_count: 0,
+    });
+    assert.equal(reconcileCalls, 0);
+    assert.equal(checkpointed, 0);
+    assert.equal(attachment.status, "connecting");
+    assert.equal(attachment.runtime_session_id, "fresh-job");
+  });
+
+  it("repairs RuntimeStateDoc when the expected runtime session still owns the attachment", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const harness = roomHarness(room);
+    let checkpointed = 0;
+    let repairReason: string | undefined;
+    const attachment = {
+      workstation_id: "ws-lab2",
+      display_name: "Lab2",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      runtime_session_id: "expired-job",
+      status: "connecting",
+      status_message: "Waiting for Lab2 to accept the compute request.",
+      cpu_count: 8,
+      memory_bytes: 16_000_000_000,
+      working_directory: "/home/ubuntu/project",
+      updated_at: "2026-05-22T00:00:01.000Z",
+    };
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => {
+        checkpointed += 1;
+      },
+      getWorkstationAttachment: async () => attachment,
+      reconcileRuntimePeerGone: async (reason: string) => {
+        repairReason = reason;
+        attachment.status = "error";
+        attachment.status_message = "runtime peer left";
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+        };
+      },
+    } as never);
+
+    const response = await room.fetch(
+      new Request("https://room.internal/internal/n/demo/runtime-state-repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expected_runtime_session_id: "expired-job",
+          reason: "expired pending attach job",
+        }),
+      }),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      changed: true,
+      forced: false,
+      checkpoint_persisted: true,
+      runtime_peer_count: 0,
+    });
+    assert.equal(repairReason, "expired pending attach job");
+    assert.equal(checkpointed, 1);
+    assert.equal(attachment.status, "error");
+    assert.equal(attachment.runtime_session_id, "expired-job");
+  });
+
   it("refuses manual runtime-state repair while a runtime_peer is connected", async () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);

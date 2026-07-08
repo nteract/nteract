@@ -40,6 +40,6 @@ UPDATE workstation_attach_jobs
 
 DROP INDEX IF EXISTS workstation_attach_jobs_active_unique_idx;
 
-CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_unique_idx
+CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_owner_unique_idx
   ON workstation_attach_jobs(notebook_id, owner_principal)
   WHERE status IN ('pending', 'accepted', 'running');

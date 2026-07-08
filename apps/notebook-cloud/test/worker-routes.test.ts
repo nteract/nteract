@@ -3305,6 +3305,7 @@ describe("Worker artifact routes", () => {
     assert.notEqual(body.job.job_id, "running-job-a");
     assert.equal(body.job.status, "pending");
     assert.equal(body.job.workstation_id, "ws-lab-b");
+    assert.equal(env.DB.batchSizes.at(-1), 2);
     assert.equal(env.DB.workstationAttachJobs.get("running-job-a")?.status, "cancelled");
     assert.match(
       env.DB.workstationAttachJobs.get("running-job-a")?.error_message ?? "",
@@ -3453,6 +3454,7 @@ describe("Worker artifact routes", () => {
     const body = (await attach.json()) as { job: { job_id: string; status: string } };
     assert.notEqual(body.job.job_id, "running-job");
     assert.equal(body.job.status, "pending");
+    assert.equal(env.DB.batchSizes.at(-1), 2);
     assert.equal(env.DB.workstationAttachJobs.get("running-job")?.status, "cancelled");
     assert.match(
       env.DB.workstationAttachJobs.get("running-job")?.error_message ?? "",
@@ -3578,6 +3580,7 @@ describe("Worker artifact routes", () => {
       {
         path: "/internal/n/nb-stale-pending/runtime-state-repair",
         body: {
+          expected_runtime_session_id: "stale-pending-job",
           reason: "stale workstation attach job expired before host accepted the request",
         },
       },
@@ -3792,14 +3795,84 @@ describe("Worker artifact routes", () => {
     assert.equal(attachmentMessage, "Lab2 accepted the request and is starting compute.");
   });
 
+  it("rejects delayed workstation status patches that would move a job backward", async () => {
+    let publishCount = 0;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            publishCount += 1;
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-running",
+      notebookId: "nb-running",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      status: "running",
+      updatedAt: "2026-05-22T00:00:02.000Z",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs/job-running", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ status: "accepted" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(publishCount, 0);
+    const row = env.DB.workstationAttachJobs.get("job-running");
+    assert.equal(row?.status, "running");
+    assert.equal(row?.updated_at, "2026-05-22T00:00:02.000Z");
+    assert.deepEqual(await response.json(), {
+      error: "workstation attach job is no longer active",
+      job: {
+        job_id: "job-running",
+        notebook_id: "nb-running",
+        workstation_id: "ws-lab2",
+        status: "running",
+        requested_at: "2026-05-22T00:00:00.000Z",
+        updated_at: "2026-05-22T00:00:02.000Z",
+        accepted_at: null,
+        finished_at: null,
+        error_message: null,
+        runtime_peer: {
+          cloud_url: "http://localhost",
+          notebook_id: "nb-running",
+          scope: "runtime_peer",
+        },
+      },
+    });
+  });
+
   it("repairs RuntimeStateDoc when a workstation attach job fails before runtime peer connects", async () => {
-    const roomRequests: string[] = [];
+    const roomRequests: Array<{ body: unknown; path: string }> = [];
     const env = fakeEnv({
       NOTEBOOK_ROOMS: {
         idFromName: (name: string) => ({ toString: () => name }),
         get: () => ({
           fetch: async (request: Request) => {
-            roomRequests.push(new URL(request.url).pathname);
+            roomRequests.push({
+              body: await request.json(),
+              path: new URL(request.url).pathname,
+            });
             return new Response(JSON.stringify({ ok: true, changed: true }), {
               status: 200,
               headers: { "Content-Type": "application/json" },
@@ -3833,8 +3906,32 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     assert.deepEqual(roomRequests, [
-      "/internal/n/nb-fail/workstation-attachment",
-      "/internal/n/nb-fail/runtime-state-repair",
+      {
+        path: "/internal/n/nb-fail/workstation-attachment",
+        body: {
+          attachment: {
+            workstation_id: "ws-lab2",
+            display_name: "Lab2",
+            provider: "runtime_peer",
+            default_environment_label: "Current Python",
+            environment_policy: "current_python",
+            runtime_session_id: "job-fail",
+            status: "error",
+            status_message: "spawn failed",
+            cpu_count: 8,
+            memory_bytes: 16_000_000_000,
+            working_directory: "/home/ubuntu/project",
+            updated_at: env.DB.workstationAttachJobs.get("job-fail")?.updated_at,
+          },
+        },
+      },
+      {
+        path: "/internal/n/nb-fail/runtime-state-repair",
+        body: {
+          expected_runtime_session_id: "job-fail",
+          reason: "spawn failed",
+        },
+      },
     ]);
   });
 
@@ -7164,6 +7261,38 @@ describe("Worker artifact routes", () => {
 });
 
 describe("catalog schema migrations", () => {
+  it("converges workstation attach active uniqueness to the owner-level index name", async () => {
+    const legacyDrop = "DROP INDEX IF EXISTS workstation_attach_jobs_active_unique_idx";
+    const ownerIndexCreate =
+      "CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_owner_unique_idx";
+    const legacyIndexCreate =
+      "CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_unique_idx";
+
+    const storageSource = await readFile(new URL("../src/storage.ts", import.meta.url), "utf8");
+    const dropOffset = storageSource.indexOf(legacyDrop);
+    const createOffset = storageSource.indexOf(ownerIndexCreate);
+    assert.ok(dropOffset >= 0, "runtime schema drops the old 3-column index name");
+    assert.ok(createOffset >= 0, "runtime schema creates the new owner-level index name");
+    assert.ok(dropOffset < createOffset, "runtime schema drops the old name before creating new");
+    assert.equal(
+      storageSource.includes(`${legacyIndexCreate}\n    ON workstation_attach_jobs`),
+      false,
+      "runtime schema does not recreate the old index name",
+    );
+
+    const migration = await readFile(
+      new URL("../migrations/0008_workstation_attach_active_owner_unique.sql", import.meta.url),
+      "utf8",
+    );
+    assert.ok(migration.includes(legacyDrop), "migration drops the old index name");
+    assert.ok(migration.includes(ownerIndexCreate), "migration creates the new index name");
+    assert.equal(
+      migration.includes(`${legacyIndexCreate}\n  ON workstation_attach_jobs`),
+      false,
+      "migration does not recreate the old index name",
+    );
+  });
+
   it("adds dashboard summary and cover columns via ALTER TABLE when absent", async () => {
     const db = new FakeD1();
     // Simulate a pre-migration deployment: the columns do not exist yet.
@@ -8125,6 +8254,27 @@ function isActiveWorkstationAttachJobStatus(status: WorkstationAttachJobRow["sta
   return status === "pending" || status === "accepted" || status === "running";
 }
 
+function workstationAttachJobStatusRank(status: WorkstationAttachJobRow["status"]): number {
+  switch (status) {
+    case "pending":
+      return 0;
+    case "accepted":
+      return 1;
+    case "running":
+      return 2;
+    case "failed":
+    case "completed":
+    case "cancelled":
+      return 3;
+  }
+}
+
+function cloneWorkstationAttachJobs(
+  jobs: ReadonlyMap<string, WorkstationAttachJobRow>,
+): Map<string, WorkstationAttachJobRow> {
+  return new Map([...jobs].map(([id, job]) => [id, { ...job }]));
+}
+
 function seedPendingInvite(
   env: FakeEnv,
   input: {
@@ -8598,9 +8748,18 @@ class FakeD1 implements D1Database {
 
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
     this.batchSizes.push(statements.length);
+    const attachJobsBefore = cloneWorkstationAttachJobs(this.workstationAttachJobs);
     const results: D1Result<T>[] = [];
-    for (const statement of statements) {
-      results.push(await statement.run<T>());
+    try {
+      for (const statement of statements) {
+        results.push(await statement.run<T>());
+      }
+    } catch (error) {
+      this.workstationAttachJobs.clear();
+      for (const [id, job] of attachJobsBefore) {
+        this.workstationAttachJobs.set(id, job);
+      }
+      throw error;
     }
     return results;
   }
@@ -9289,6 +9448,12 @@ class FakeD1Statement implements D1PreparedStatement {
           job.status !== "pending" &&
           job.status !== "accepted" &&
           job.status !== "running"
+        ) {
+          return okResult(undefined, { changes: 0 });
+        }
+        if (
+          this.query.includes("CASE status") &&
+          workstationAttachJobStatusRank(job.status) > workstationAttachJobStatusRank(status)
         ) {
           return okResult(undefined, { changes: 0 });
         }
