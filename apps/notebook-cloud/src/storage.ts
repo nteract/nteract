@@ -1340,12 +1340,7 @@ export async function updateWorkstationAttachJobStatus(
               WHEN 'accepted' THEN 1
               WHEN 'running' THEN 2
               ELSE 3
-            END <= CASE ?
-              WHEN 'pending' THEN 0
-              WHEN 'accepted' THEN 1
-              WHEN 'running' THEN 2
-              ELSE 3
-            END`,
+            END <= ?`,
   )
     .bind(
       input.status,
@@ -1358,10 +1353,25 @@ export async function updateWorkstationAttachJobStatus(
       input.jobId,
       input.ownerPrincipal,
       input.workstationId,
-      input.status,
+      workstationAttachJobStatusRank(input.status),
     )
     .run();
   return getWorkstationAttachJob(env, input.ownerPrincipal, input.workstationId, input.jobId);
+}
+
+function workstationAttachJobStatusRank(status: WorkstationAttachJobStatus): number {
+  switch (status) {
+    case "pending":
+      return 0;
+    case "accepted":
+      return 1;
+    case "running":
+      return 2;
+    case "failed":
+    case "completed":
+    case "cancelled":
+      return 3;
+  }
 }
 
 async function getActiveWorkstationAttachJob(

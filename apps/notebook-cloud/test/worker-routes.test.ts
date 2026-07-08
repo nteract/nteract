@@ -3873,11 +3873,16 @@ describe("Worker artifact routes", () => {
     );
 
     assert.equal(response.status, 200);
+    const body = (await response.json()) as { job: { job_id: string; status: string } };
+    assert.equal(body.job.job_id, "job-claim");
+    assert.equal(body.job.status, "accepted");
+    assert.equal(env.DB.workstationAttachJobs.get("job-claim")?.status, "accepted");
+    assert.ok(env.DB.workstationAttachJobs.get("job-claim")?.accepted_at);
     assert.equal(attachmentStatus, "connecting");
     assert.equal(attachmentMessage, "Lab2 accepted the request and is starting compute.");
   });
 
-  it("rejects delayed workstation status patches that would move a job backward", async () => {
+  it("no-ops delayed workstation status patches that would move a job backward", async () => {
     let publishCount = 0;
     const env = fakeEnv({
       NOTEBOOK_ROOMS: {
@@ -4017,7 +4022,7 @@ describe("Worker artifact routes", () => {
     ]);
   });
 
-  it("rejects late workstation status patches after a replacement cancelled the job", async () => {
+  it("keeps terminal workstation attach jobs sticky after replacement cancellation", async () => {
     let publishCount = 0;
     const env = fakeEnv({
       NOTEBOOK_ROOMS: {
