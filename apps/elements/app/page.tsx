@@ -15,6 +15,7 @@ import {
   Palette,
   PanelLeft,
   PanelTop,
+  Rows3,
   Search,
   Server,
   ShieldCheck,
@@ -72,6 +73,12 @@ const catalogGroups = [
         description: "Empty, blocked, notice, and rail status states for cloud viewer paths.",
         href: "/docs/unhappy-states",
         icon: TriangleAlert,
+      },
+      {
+        title: "Skeleton",
+        description: "Theme-aware shimmer placeholders for known loading shapes.",
+        href: "/docs/skeleton",
+        icon: Rows3,
       },
       {
         title: "Compute placement",

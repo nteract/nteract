@@ -1,4 +1,5 @@
 import { cellContentColumnInset, notebookCellLayoutVars } from "@/components/cell/cell-layout";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 const skeletonCells = [
@@ -13,10 +14,7 @@ function SkeletonCell({ height, delay }: { height: string; delay: string }) {
       <div className="w-1 self-stretch rounded-sm bg-muted/40" />
 
       <div className={cn("min-w-0 flex-1 py-3 pr-3", cellContentColumnInset)}>
-        <div
-          className="rounded bg-muted/30 animate-pulse"
-          style={{ minHeight: height, animationDelay: delay }}
-        />
+        <Skeleton style={{ minHeight: height, animationDelay: delay }} />
       </div>
     </div>
   );
