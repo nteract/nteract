@@ -3,6 +3,7 @@ import {
   EditorView,
   type KeyBinding,
   keymap,
+  lineNumbers,
   placeholder as placeholderExt,
 } from "@codemirror/view";
 import {
@@ -17,6 +18,7 @@ import {
 
 import { cn } from "@/lib/utils";
 import { defaultExtensions } from "./extensions";
+import { editorFontFamilyForLanguage, useNotebookEditorSettings } from "./editor-settings-store";
 import { getIPythonExtension, getLanguageExtension, type SupportedLanguage } from "./languages";
 import { useColorTheme } from "@/lib/dark-mode";
 import { type ColorTheme, getTheme, isDarkMode, type ThemeMode } from "./themes";
@@ -125,6 +127,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
   ) => {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const viewRef = useRef<EditorView | null>(null);
+    const editorSettings = useNotebookEditorSettings();
 
     // Stable refs for callbacks so the updateListener closure doesn't go stale.
     const onValueChangeRef = useRef(onValueChange);
@@ -135,8 +138,10 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
     // Compartments for dynamic reconfiguration without recreating the view.
     const langCompartment = useRef(new Compartment());
     const themeCompartment = useRef(new Compartment());
+    const fontCompartment = useRef(new Compartment());
     const keymapCompartment = useRef(new Compartment());
     const placeholderCompartment = useRef(new Compartment());
+    const lineNumbersCompartment = useRef(new Compartment());
     const lineWrappingCompartment = useRef(new Compartment());
     const readOnlyCompartment = useRef(new Compartment());
     const contentAttributesCompartment = useRef(new Compartment());
@@ -203,6 +208,25 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
       return getTheme(mode, resolvedColorTheme);
     }, [theme, resolvedColorTheme, isDark]);
 
+    const editorFontFamily = editorFontFamilyForLanguage(language, editorSettings);
+
+    const fontExtension = useMemo((): Extension[] => {
+      if (!editorFontFamily) return [];
+      return [
+        EditorView.theme({
+          "&": { fontFamily: editorFontFamily },
+          ".cm-content": { fontFamily: editorFontFamily },
+          ".cm-line": { fontFamily: editorFontFamily },
+          ".cm-gutters": { fontFamily: editorFontFamily },
+        }),
+      ];
+    }, [editorFontFamily]);
+
+    const lineNumbersExtension = useMemo(
+      () => (editorSettings.lineNumbers ? lineNumbers() : []),
+      [editorSettings.lineNumbers],
+    );
+
     // ── Max height ───────────────────────────────────────────────────
 
     const maxHeightTheme = useMemo((): Extension[] => {
@@ -263,7 +287,9 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
           ...baseExtensions,
           langCompartment.current.of(langExtension),
           themeCompartment.current.of(themeExtension),
+          fontCompartment.current.of(fontExtension),
           placeholderCompartment.current.of(placeholder ? placeholderExt(placeholder) : []),
+          lineNumbersCompartment.current.of(lineNumbersExtension),
           lineWrappingCompartment.current.of(lineWrapping ? EditorView.lineWrapping : []),
           readOnlyCompartment.current.of(readOnlyExtensions(readOnly)),
           contentAttributesCompartment.current.of(contentAttributeExtensions(contentAttributes)),
@@ -334,6 +360,12 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
 
     useEffect(() => {
       viewRef.current?.dispatch({
+        effects: fontCompartment.current.reconfigure(fontExtension),
+      });
+    }, [fontExtension]);
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
         effects: keymapCompartment.current.reconfigure(
           keyMap && keyMap.length > 0 ? keymap.of(keyMap) : [],
         ),
@@ -347,6 +379,12 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
         ),
       });
     }, [placeholder]);
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: lineNumbersCompartment.current.reconfigure(lineNumbersExtension),
+      });
+    }, [lineNumbersExtension]);
 
     useEffect(() => {
       viewRef.current?.dispatch({

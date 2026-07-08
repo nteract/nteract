@@ -7,7 +7,7 @@ export const markdownLinkClassName =
   "rounded-[2px] font-medium text-primary underline decoration-primary/45 decoration-1 underline-offset-4 transition-[background-color,color,text-decoration-color] hover:bg-primary/5 hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
 
 export const markdownInlineCodeClassName =
-  "rounded-sm border border-border/70 bg-muted/70 px-1.5 py-0.5 font-mono text-[0.88em] text-foreground break-words";
+  "rounded-sm border border-border/70 bg-muted/70 px-1.5 py-0.5 font-[var(--output-mono-font)] text-[0.88em] text-foreground break-words";
 
 export const markdownCodeBlockShellClassName =
   "group/codeblock my-4 overflow-hidden border-l-2 border-border bg-muted/[0.14]";

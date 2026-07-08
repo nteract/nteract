@@ -2,6 +2,7 @@
 
 export type { ColorTheme } from "./ColorTheme";
 export type { CondaDefaults } from "./CondaDefaults";
+export type { EditorSettings } from "./EditorSettings";
 export type { PythonEnvType } from "./PythonEnvType";
 export type { Runtime } from "./Runtime";
 export type { SyncedSettings } from "./SyncedSettings";

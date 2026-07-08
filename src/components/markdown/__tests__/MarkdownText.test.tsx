@@ -32,6 +32,10 @@ describe("MarkdownText", () => {
     expect(screen.getByText("important")).toHaveClass("font-semibold", "text-foreground");
     expect(screen.getByText("paper margin")).toHaveClass("italic", "text-foreground");
     expect(screen.getByText("removed")).toHaveClass("decoration-destructive/55");
-    expect(screen.getByText("seed=13")).toHaveClass("border", "bg-muted/70", "font-mono");
+    expect(screen.getByText("seed=13")).toHaveClass(
+      "border",
+      "bg-muted/70",
+      "font-[var(--output-mono-font)]",
+    );
   });
 });

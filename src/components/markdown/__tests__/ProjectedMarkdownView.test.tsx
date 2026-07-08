@@ -1498,7 +1498,11 @@ describe("ProjectedMarkdownView", () => {
     );
 
     expect(screen.getByText("value").tagName).toBe("CODE");
-    expect(screen.getByText("value")).toHaveClass("border", "bg-muted/70", "font-mono");
+    expect(screen.getByText("value")).toHaveClass(
+      "border",
+      "bg-muted/70",
+      "font-[var(--output-mono-font)]",
+    );
   });
 
   it("renders projected code blocks with visible lab bench controls", () => {
