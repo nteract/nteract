@@ -2636,6 +2636,49 @@ describe("Worker artifact routes", () => {
     assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
   });
 
+  it("does not probe event-socket status when a fresh online lease decides a stale list row", async () => {
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute, WORKSTATION_EVENTS: events });
+    const now = Date.now();
+    const staleLastSeenAt = new Date(now - 4 * 60_000).toISOString();
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt: staleLastSeenAt,
+    });
+    seedWorkstationLease(compute, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt: new Date(now).toISOString(),
+      online: true,
+    });
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as {
+      workstations: Array<{
+        workstation_id: string;
+        status: string;
+      }>;
+    };
+    assert.equal(body.workstations[0]?.workstation_id, "ws-lab2");
+    assert.equal(body.workstations[0]?.status, "online");
+    assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
+  });
+
   it("does not fan out event-socket status checks for fresh workstation rows", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
@@ -3617,6 +3660,45 @@ describe("Worker artifact routes", () => {
       [["fresh-pending-job", "pending"]],
     );
     assert.equal(env.DB.workstationAttachJobs.get("fresh-pending-job")?.status, "pending");
+  });
+
+  it("honors a fresh offline workstation lease in the attach-jobs poll response", async () => {
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute });
+    const lastSeenAt = new Date().toISOString();
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+    });
+    seedWorkstationLease(compute, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+      online: false,
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      workstation: {
+        status: string;
+        workstation_id: string;
+      };
+    };
+    assert.equal(body.workstation.workstation_id, "ws-lab2");
+    assert.equal(body.workstation.status, "offline");
   });
 
   it("only lists attach jobs for the authenticated workstation owner", async () => {

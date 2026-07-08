@@ -2400,11 +2400,17 @@ async function routeWorkstationAttachJobs(
       }),
     ),
   );
+  const [defaultWorkstationId, leases] = await Promise.all([
+    getDefaultWorkstationId(env, ownerPrincipal),
+    listWorkstationLeases(env, ownerPrincipal),
+  ]);
+  const lease = leases.get(workstationId) ?? null;
   return json({
     ok: true,
     workstation: workstationResponseRow(workstation, {
-      defaultWorkstationId: await getDefaultWorkstationId(env, ownerPrincipal),
+      defaultWorkstationId,
       now: Date.now(),
+      lease,
     }),
     jobs: jobs.map((job) => workstationAttachJobResponseRow(request, job)),
   });
@@ -2594,7 +2600,7 @@ function workstationListNeedsEventPresence(
   if (workstation.status !== "online" || !workstation.last_seen_at) {
     return false;
   }
-  if (lease && !lease.online && workstationLeaseIsFreshEnough(workstation, lease)) {
+  if (lease && workstationLeaseIsFreshEnough(workstation, lease)) {
     return false;
   }
   const lastSeen = Date.parse(workstation.last_seen_at);
