@@ -1,4 +1,9 @@
-import { createCommandRegistry, type NotebookHost, type Unlisten } from "@nteract/notebook-host";
+import {
+  DEFAULT_FONT_FAMILIES,
+  createCommandRegistry,
+  type NotebookHost,
+  type Unlisten,
+} from "@nteract/notebook-host";
 import { EMPTY, type Observable } from "rxjs";
 import type {
   BlobResolver,
@@ -225,7 +230,7 @@ export function createCloudNotebookHost({
     system: {
       getGitInfo: async () => null,
       getUsername: async () => "notebook-cloud",
-      getFontFamilies: async () => ["Arial", "Georgia", "Menlo", "SF Mono", "Times New Roman"],
+      getFontFamilies: async () => [...DEFAULT_FONT_FAMILIES],
     },
     dialog: {
       openFile: async () => null,

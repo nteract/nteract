@@ -9,7 +9,13 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNotebookHost } from "@nteract/notebook-host";
+import {
+  DEFAULT_FONT_FAMILIES,
+  fontFamilyNameToCssValue,
+  singleFontFamilyFromCssValue,
+  uniqueSortedFontFamilies,
+  useNotebookHost,
+} from "@nteract/notebook-host";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Command,
@@ -55,78 +61,10 @@ function formatDuration(secs: number): string {
   return `${secs}s`;
 }
 
-const FONT_FAMILY_FALLBACKS = [
-  "Arial",
-  "Courier New",
-  "Georgia",
-  "Helvetica",
-  "Inter",
-  "Menlo",
-  "Monaco",
-  "SF Mono",
-  "Times New Roman",
-  "Trebuchet MS",
-  "Verdana",
-];
-
-const GENERIC_FONT_FAMILIES = new Set([
-  "cursive",
-  "emoji",
-  "fantasy",
-  "fangsong",
-  "math",
-  "monospace",
-  "sans-serif",
-  "serif",
-  "system-ui",
-  "ui-monospace",
-  "ui-rounded",
-  "ui-sans-serif",
-  "ui-serif",
-]);
-
-function uniqueSortedFontFamilies(fontFamilies: readonly string[]): string[] {
-  const byKey = new Map<string, string>();
-  for (const fontFamily of fontFamilies) {
-    const trimmed = fontFamily.trim();
-    if (!trimmed) continue;
-    const key = trimmed.toLocaleLowerCase();
-    if (!byKey.has(key)) byKey.set(key, trimmed);
-  }
-  return Array.from(byKey.values()).sort((a, b) =>
-    a.localeCompare(b, undefined, { sensitivity: "base" }),
-  );
-}
-
-function stripCssFamilyQuotes(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length < 2) return trimmed;
-  const quote = trimmed[0];
-  if ((quote !== '"' && quote !== "'") || trimmed[trimmed.length - 1] !== quote) return trimmed;
-  return trimmed
-    .slice(1, -1)
-    .replace(/\\(["'\\])/g, "$1")
-    .trim();
-}
-
-function singleFontFamilyFromCssValue(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.includes(",")) return null;
-  return stripCssFamilyQuotes(trimmed);
-}
-
-export function fontFamilyNameToCssValue(fontFamily: string): string {
-  const trimmed = fontFamily.trim();
-  if (!trimmed) return "";
-  if (GENERIC_FONT_FAMILIES.has(trimmed.toLocaleLowerCase())) return trimmed;
-  if (/^-?[_a-zA-Z][_a-zA-Z0-9-]*$/.test(trimmed)) return trimmed;
-  return `"${trimmed.replace(/["\\]/g, "\\$&")}"`;
-}
-
 function useAvailableFontFamilies() {
   const host = useNotebookHost();
   const [fontFamilies, setFontFamilies] = useState(() =>
-    uniqueSortedFontFamilies(FONT_FAMILY_FALLBACKS),
+    uniqueSortedFontFamilies(DEFAULT_FONT_FAMILIES),
   );
 
   useEffect(() => {
@@ -135,7 +73,7 @@ function useAvailableFontFamilies() {
       .getFontFamilies()
       .then((families) => {
         if (cancelled) return;
-        setFontFamilies(uniqueSortedFontFamilies([...FONT_FAMILY_FALLBACKS, ...families]));
+        setFontFamilies(uniqueSortedFontFamilies([...DEFAULT_FONT_FAMILIES, ...families]));
       })
       .catch((error) => {
         host.log.warn(

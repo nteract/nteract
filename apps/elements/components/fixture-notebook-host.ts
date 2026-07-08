@@ -1,5 +1,5 @@
 import { EMPTY } from "rxjs";
-import type { NotebookHost } from "@nteract/notebook-host";
+import { DEFAULT_FONT_FAMILIES, type NotebookHost } from "@nteract/notebook-host";
 
 export const noop = () => {};
 export const asyncNoop = async () => {};
@@ -79,7 +79,7 @@ export function createFixtureNotebookHost({
     system: {
       getGitInfo: async () => null,
       getUsername: async () => "kyle",
-      getFontFamilies: async () => ["Arial", "Georgia", "Menlo", "SF Mono", "Times New Roman"],
+      getFontFamilies: async () => [...DEFAULT_FONT_FAMILIES],
     },
     dialog: {
       openFile: async () => null,

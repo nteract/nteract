@@ -1,7 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { fontFamilyNameToCssValue } from "@nteract/notebook-host";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { FontFamilyPicker, fontFamilyNameToCssValue } from "../../settings/App";
+import { FontFamilyPicker } from "../../settings/App";
 
 const fontFamilies = ["Fraunces", "Georgia", "SF Mono", "Times New Roman"];
 
