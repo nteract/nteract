@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { fontFamilyNameToCssValue } from "@nteract/notebook-host";
+import { fontFamilyNameToCssValue, uniqueSortedFontFamilies } from "@nteract/notebook-host";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { FontFamilyPicker } from "../../settings/App";
 
@@ -85,5 +85,12 @@ describe("FontFamilyPicker", () => {
     expect(fontFamilyNameToCssValue("Fraunces")).toBe("Fraunces");
     expect(fontFamilyNameToCssValue("SF Mono")).toBe('"SF Mono"');
     expect(fontFamilyNameToCssValue("serif")).toBe("serif");
+  });
+
+  it("deduplicates unicode font names case-insensitively", () => {
+    expect(uniqueSortedFontFamilies(["  Ümlaut  ", "ümlaut", "Naïve", "naïve"])).toEqual([
+      "Naïve",
+      "Ümlaut",
+    ]);
   });
 });

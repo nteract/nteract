@@ -1089,6 +1089,14 @@ mod tests {
     }
 
     #[test]
+    fn normalize_font_families_dedupes_unicode_names_case_insensitively() {
+        assert_eq!(
+            normalize_font_families(["  Ümlaut  ", "ümlaut", "Naïve", "naïve"]),
+            vec!["Naïve", "Ümlaut"]
+        );
+    }
+
+    #[test]
     fn next_available_sample_path_reuses_original_name_when_available() {
         let temp_dir = TempDir::new().expect("temp dir");
         let path = next_available_sample_path(temp_dir.path(), "example.ipynb");
