@@ -225,6 +225,7 @@ export function createCloudNotebookHost({
     system: {
       getGitInfo: async () => null,
       getUsername: async () => "notebook-cloud",
+      getFontFamilies: async () => ["Arial", "Georgia", "Menlo", "SF Mono", "Times New Roman"],
     },
     dialog: {
       openFile: async () => null,

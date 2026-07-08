@@ -79,6 +79,7 @@ export function createFixtureNotebookHost({
     system: {
       getGitInfo: async () => null,
       getUsername: async () => "kyle",
+      getFontFamilies: async () => ["Arial", "Georgia", "Menlo", "SF Mono", "Times New Roman"],
     },
     dialog: {
       openFile: async () => null,
