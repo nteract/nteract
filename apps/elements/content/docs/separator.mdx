@@ -1,0 +1,16 @@
+---
+title: Separator
+description: Token-native horizontal and vertical rules for nearby notebook content.
+---
+
+import { SeparatorExample } from "@/components/separator-example";
+
+Separator is the shared divider primitive for local content grouping. It wraps
+Radix Separator, defaults to decorative horizontal rules, and uses the shared
+`border` token through `bg-border` instead of local palette colors.
+
+Use horizontal separators to divide stacked sections and vertical separators to
+split compact inline metadata. Migrations from existing hand-rolled dividers
+should happen in follow-up convergence sweeps.
+
+<SeparatorExample />
