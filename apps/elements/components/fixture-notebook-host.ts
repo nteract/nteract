@@ -1,5 +1,5 @@
 import { EMPTY } from "rxjs";
-import type { NotebookHost } from "@nteract/notebook-host";
+import { DEFAULT_FONT_FAMILIES, type NotebookHost } from "@nteract/notebook-host";
 
 export const noop = () => {};
 export const asyncNoop = async () => {};
@@ -9,11 +9,13 @@ const unlisten = () => {};
 
 interface FixtureNotebookHostOptions {
   name?: string;
+  fontFamilies?: string[];
   transport?: Partial<NotebookHost["transport"]>;
 }
 
 export function createFixtureNotebookHost({
   name = "elements-fixture",
+  fontFamilies = [...DEFAULT_FONT_FAMILIES],
   transport: transportOverrides = {},
 }: FixtureNotebookHostOptions = {}): NotebookHost {
   const transport: NotebookHost["transport"] = {
@@ -79,6 +81,7 @@ export function createFixtureNotebookHost({
     system: {
       getGitInfo: async () => null,
       getUsername: async () => "kyle",
+      getFontFamilies: async () => [...fontFamilies],
     },
     dialog: {
       openFile: async () => null,

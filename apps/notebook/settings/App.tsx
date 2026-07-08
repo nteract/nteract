@@ -1,7 +1,31 @@
-import { AlertCircle, ChevronDown, Monitor, Moon, Sun, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  AlertCircle,
+  Check,
+  ChevronDown,
+  ChevronsUpDown,
+  Monitor,
+  Moon,
+  Sun,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  DEFAULT_FONT_FAMILIES,
+  fontFamilyNameToCssValue,
+  singleFontFamilyFromCssValue,
+  uniqueSortedFontFamilies,
+  useNotebookHost,
+} from "@nteract/notebook-host";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useNotebookEditorSettings } from "@/components/editor/editor-settings-store";
@@ -37,35 +61,98 @@ function formatDuration(secs: number): string {
   return `${secs}s`;
 }
 
-function FontFamilyInput({
+function useAvailableFontFamilies() {
+  const host = useNotebookHost();
+  const [fontFamilies, setFontFamilies] = useState(() =>
+    uniqueSortedFontFamilies(DEFAULT_FONT_FAMILIES),
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    host.system
+      .getFontFamilies()
+      .then((families) => {
+        if (cancelled) return;
+        setFontFamilies(uniqueSortedFontFamilies([...DEFAULT_FONT_FAMILIES, ...families]));
+      })
+      .catch((error) => {
+        host.log.warn(
+          `[settings] Failed to load system font families: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [host]);
+
+  return fontFamilies;
+}
+
+export function FontFamilyPicker({
   label,
   value,
   onChange,
   placeholder,
   description,
+  fontFamilies,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
   description: string;
+  fontFamilies: readonly string[];
 }) {
-  const [draft, setDraft] = useState(value);
+  const [open, setOpen] = useState(false);
+  const [searchValue, setSearchValue] = useState("");
   const inputId = `editor-${label.toLowerCase().replace(/\s+/g, "-")}`;
+  const listId = `${inputId}-list`;
 
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
+  const options = useMemo(() => {
+    const currentSingleFamily = singleFontFamilyFromCssValue(value);
+    return uniqueSortedFontFamilies([
+      ...fontFamilies,
+      ...(currentSingleFamily ? [currentSingleFamily] : []),
+    ]);
+  }, [fontFamilies, value]);
 
-  const commit = useCallback(() => {
-    const next = draft.trim();
-    if (next !== value) onChange(next);
-  }, [draft, onChange, value]);
+  const normalizedSearchValue = searchValue.trim().toLocaleLowerCase();
+  const visibleOptions = useMemo(() => {
+    if (!normalizedSearchValue) return options.slice(0, 200);
+    return options
+      .filter((fontFamily) => fontFamily.toLocaleLowerCase().includes(normalizedSearchValue))
+      .slice(0, 200);
+  }, [normalizedSearchValue, options]);
+
+  const currentSingleFamily = singleFontFamilyFromCssValue(value);
+  const exactSearchMatch = options.some(
+    (fontFamily) => fontFamily.toLocaleLowerCase() === normalizedSearchValue,
+  );
+  const customCandidate = searchValue.trim();
+  const showCustomCandidate = customCandidate.length > 0 && !exactSearchMatch;
+  const displayValue = currentSingleFamily || value || placeholder;
 
   const clear = useCallback(() => {
-    setDraft("");
     if (value !== "") onChange("");
   }, [onChange, value]);
+
+  const selectValue = useCallback(
+    (next: string) => {
+      onChange(next);
+      setSearchValue("");
+      setOpen(false);
+    },
+    [onChange],
+  );
+
+  const selectFontFamily = useCallback(
+    (fontFamily: string) => {
+      selectValue(fontFamilyNameToCssValue(fontFamily));
+    },
+    [selectValue],
+  );
 
   return (
     <div className="space-y-1.5">
@@ -73,29 +160,109 @@ function FontFamilyInput({
         <label className="text-sm text-muted-foreground" htmlFor={inputId}>
           {label}
         </label>
-        <div className="relative min-w-0 flex-1">
-          <Input
-            id={inputId}
-            value={draft}
-            placeholder={placeholder}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => setDraft(event.target.value)}
-            onBlur={commit}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.currentTarget.blur();
-              }
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <Popover
+            open={open}
+            onOpenChange={(nextOpen) => {
+              setOpen(nextOpen);
+              if (nextOpen) setSearchValue("");
             }}
-            className="h-8 pr-8 font-mono text-xs"
-          />
-          {draft ? (
+          >
+            <PopoverTrigger asChild>
+              <button
+                id={inputId}
+                type="button"
+                role="combobox"
+                aria-controls={listId}
+                aria-expanded={open}
+                className={cn(
+                  "flex h-8 min-w-0 flex-1 items-center justify-between rounded-md border border-input bg-background px-3 py-1 text-left text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  value ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                <span className="min-w-0 truncate font-mono">{displayValue}</span>
+                <ChevronsUpDown className="ml-2 size-3.5 shrink-0 text-muted-foreground" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent id={listId} align="end" className="w-[min(29rem,calc(100vw-2rem))] p-0">
+              <Command shouldFilter={false}>
+                <CommandInput
+                  value={searchValue}
+                  onValueChange={setSearchValue}
+                  placeholder="Search fonts or enter a CSS stack"
+                />
+                <CommandList className="max-h-72">
+                  <CommandGroup heading="Fonts">
+                    <CommandItem value="__default__" onSelect={() => selectValue("")}>
+                      <Check
+                        className={cn("size-3.5", value === "" ? "opacity-100" : "opacity-0")}
+                      />
+                      <div className="min-w-0">
+                        <div className="truncate text-sm">Theme default</div>
+                        <div className="truncate font-mono text-[10px] text-muted-foreground">
+                          {placeholder}
+                        </div>
+                      </div>
+                    </CommandItem>
+                    {visibleOptions.map((fontFamily) => {
+                      const selected = currentSingleFamily === fontFamily;
+                      const cssValue = fontFamilyNameToCssValue(fontFamily);
+                      return (
+                        <CommandItem
+                          key={fontFamily}
+                          value={fontFamily}
+                          onSelect={() => selectFontFamily(fontFamily)}
+                          className="items-start"
+                        >
+                          <Check
+                            className={cn(
+                              "mt-0.5 size-3.5",
+                              selected ? "opacity-100" : "opacity-0",
+                            )}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm" style={{ fontFamily: cssValue }}>
+                              {fontFamily}
+                            </div>
+                            <div
+                              className="truncate text-[11px] text-muted-foreground"
+                              style={{ fontFamily: cssValue }}
+                            >
+                              Aa The quick brown fox 0123
+                            </div>
+                          </div>
+                        </CommandItem>
+                      );
+                    })}
+                    {showCustomCandidate ? (
+                      <CommandItem
+                        value={customCandidate}
+                        onSelect={() => selectValue(customCandidate)}
+                      >
+                        <Check className="size-3.5 opacity-0" />
+                        <div className="min-w-0">
+                          <div className="truncate text-sm">Use custom value</div>
+                          <div className="truncate font-mono text-[10px] text-muted-foreground">
+                            {customCandidate}
+                          </div>
+                        </div>
+                      </CommandItem>
+                    ) : null}
+                  </CommandGroup>
+                  {visibleOptions.length === 0 && !showCustomCandidate ? (
+                    <CommandEmpty>No fonts found.</CommandEmpty>
+                  ) : null}
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+          {value ? (
             <button
               type="button"
               aria-label={`Clear ${label.toLowerCase()}`}
               title="Clear"
               onClick={clear}
-              className="absolute right-1.5 top-1/2 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-input text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <X className="size-3" />
             </button>
@@ -237,6 +404,8 @@ function EditorSection({
   onMarkdownFontFamilyChange: (value: string) => void;
   onLineNumbersChange: (value: boolean) => void;
 }) {
+  const fontFamilies = useAvailableFontFamilies();
+
   return (
     <div className="space-y-4 pt-4 border-t border-border/50">
       <div>
@@ -246,19 +415,21 @@ function EditorSection({
       </div>
 
       <div className="space-y-3">
-        <FontFamilyInput
+        <FontFamilyPicker
           label="Code font"
           value={codeFontFamily}
           onChange={onCodeFontFamilyChange}
           placeholder='ui-monospace, "SF Mono", monospace'
           description="Code cells, raw cells, inline code, and code blocks"
+          fontFamilies={fontFamilies}
         />
-        <FontFamilyInput
+        <FontFamilyPicker
           label="Markdown font"
           value={markdownFontFamily}
           onChange={onMarkdownFontFamilyChange}
           placeholder="system-ui, sans-serif"
           description="Rendered Markdown and Markdown input"
+          fontFamilies={fontFamilies}
         />
         <div className="flex items-center justify-between gap-3">
           <div className="space-y-0.5">

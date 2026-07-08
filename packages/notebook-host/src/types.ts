@@ -259,6 +259,7 @@ export interface HostWindow {
 export interface HostSystem {
   getGitInfo(): Promise<GitInfo | null>;
   getUsername(): Promise<string>;
+  getFontFamilies(): Promise<string[]>;
 }
 
 /** File picker. Returned paths are platform-native strings, or null if cancelled. */

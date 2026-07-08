@@ -33,11 +33,11 @@ import type {
   TyposquatWarning,
   Unlisten,
 } from "../types";
+import { DEFAULT_FONT_FAMILIES, uniqueSortedFontFamilies } from "../font-families";
 
 const DEFAULT_CONFIG_URL = "/__nteract_dev_relay/config";
 const FRAME_TYPE_REQUEST = 0x01;
 const FRAME_TYPE_RESPONSE = 0x02;
-
 interface BrowserRelayConfig {
   websocket_url: string;
   token: string;
@@ -63,6 +63,38 @@ export interface CreateBrowserHostOptions {
   fetchImpl?: typeof fetch;
   /** Test seam. */
   WebSocketImpl?: typeof WebSocket;
+}
+
+type BrowserFontAccess = {
+  query?: () => Promise<Iterable<{ family?: string }>>;
+};
+
+async function getBrowserFontFamilies(): Promise<string[]> {
+  const fontFamilies: string[] = [...DEFAULT_FONT_FAMILIES];
+  const fontAccess =
+    typeof navigator !== "undefined"
+      ? (navigator as Navigator & { fonts?: BrowserFontAccess }).fonts
+      : undefined;
+
+  if (typeof fontAccess?.query === "function") {
+    try {
+      const availableFonts = await fontAccess.query();
+      for (const font of availableFonts) {
+        if (font.family) fontFamilies.push(font.family);
+      }
+    } catch {
+      // The Font Access API is optional and permission-gated; loaded CSS fonts
+      // and the curated defaults still give the picker useful options.
+    }
+  }
+
+  if (typeof document !== "undefined" && "fonts" in document) {
+    document.fonts.forEach((fontFace) => {
+      if (fontFace.family) fontFamilies.push(fontFace.family);
+    });
+  }
+
+  return uniqueSortedFontFamilies(fontFamilies);
 }
 
 interface PendingEntry {
@@ -575,6 +607,7 @@ export async function createBrowserHost(
       async getUsername() {
         return "browser";
       },
+      getFontFamilies: getBrowserFontFamilies,
     },
     dialog: {
       async openFile() {

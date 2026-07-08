@@ -45,6 +45,14 @@ export {
 export { NotebookHostProvider, type NotebookHostProviderProps, useNotebookHost } from "./react";
 
 export {
+  DEFAULT_FONT_FAMILIES,
+  fontFamilyNameToCssValue,
+  singleFontFamilyFromCssValue,
+  stripCssFamilyQuotes,
+  uniqueSortedFontFamilies,
+} from "./font-families";
+
+export {
   startRelayBootstrapCoordinator,
   type RelayBootstrapCoordinator,
   type RelayBootstrapCoordinatorOptions,

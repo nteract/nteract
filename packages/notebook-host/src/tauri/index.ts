@@ -304,6 +304,9 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     async getUsername() {
       return invoke<string>("get_username");
     },
+    async getFontFamilies() {
+      return invoke<string[]>("list_font_families");
+    },
   };
 
   const dialog: HostDialog = {

@@ -1049,8 +1049,9 @@ async fn setup_sync_receivers(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_commit_hash, next_available_sample_path, pathless_file_open_policy, reopen_action,
-        PathlessFileOpenPolicy, ReopenAction, SyncReadyState,
+        extract_commit_hash, next_available_sample_path, normalize_font_families,
+        pathless_file_open_policy, reopen_action, PathlessFileOpenPolicy, ReopenAction,
+        SyncReadyState,
     };
     use tempfile::TempDir;
 
@@ -1063,6 +1064,36 @@ mod tests {
             "dirty suffix is informational; SHA equality is what drives upgrade decisions"
         );
         assert_eq!(extract_commit_hash("1.4.1"), None);
+    }
+
+    #[test]
+    fn normalize_font_families_returns_empty_for_empty_input() {
+        let families: Vec<&str> = Vec::new();
+        assert!(normalize_font_families(families).is_empty());
+    }
+
+    #[test]
+    fn normalize_font_families_trims_and_dedupes_case_insensitively() {
+        assert_eq!(
+            normalize_font_families(["  Fraunces  ", "fraunces", "", "Georgia"]),
+            vec!["Fraunces", "Georgia"]
+        );
+    }
+
+    #[test]
+    fn normalize_font_families_sorts_case_insensitively() {
+        assert_eq!(
+            normalize_font_families(["zeta", "Alpha", "beta"]),
+            vec!["Alpha", "beta", "zeta"]
+        );
+    }
+
+    #[test]
+    fn normalize_font_families_dedupes_unicode_names_case_insensitively() {
+        assert_eq!(
+            normalize_font_families(["  Ümlaut  ", "ümlaut", "Naïve", "naïve"]),
+            vec!["Naïve", "Ümlaut"]
+        );
     }
 
     #[test]
@@ -3138,6 +3169,38 @@ async fn check_typosquats(packages: Vec<String>) -> Vec<typosquat::TyposquatWarn
     typosquat::check_packages(&packages)
 }
 
+/// List installed system font families for settings font pickers.
+#[tauri::command]
+fn list_font_families() -> Vec<String> {
+    let mut database = fontdb::Database::new();
+    database.load_system_fonts();
+
+    normalize_font_families(
+        database
+            .faces()
+            .flat_map(|face| face.families.iter().map(|(family, _language)| family)),
+    )
+}
+
+fn normalize_font_families<I, S>(font_families: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut by_key = std::collections::BTreeMap::new();
+    for font_family in font_families {
+        let font_family = font_family.as_ref().trim();
+        if font_family.is_empty() {
+            continue;
+        }
+        by_key
+            .entry(font_family.to_lowercase())
+            .or_insert_with(|| font_family.to_string());
+    }
+
+    by_key.into_values().collect()
+}
+
 /// Get synced settings from the Automerge settings document via runtimed.
 /// Falls back to reading settings.json when the daemon is unavailable,
 /// so the frontend always gets real settings instead of hardcoded defaults.
@@ -4127,6 +4190,7 @@ pub fn run(
             get_daemon_info,
             get_blob_port,
             get_username,
+            list_font_families,
             // Feedback
             open_feedback_window,
             get_feedback_system_info,

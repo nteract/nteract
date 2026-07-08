@@ -36,6 +36,8 @@ vi.mock("@tauri-apps/api/core", () => ({
         return Promise.resolve([]);
       case "get_username":
         return Promise.resolve("kyle");
+      case "list_font_families":
+        return Promise.resolve(["Fraunces", "Georgia"]);
       case "get_daemon_ready_info":
         return Promise.resolve({
           notebook_id: "nb-1",
@@ -328,7 +330,7 @@ describe("createTauriHost()", () => {
     expect(capturedInvokes[2].args).toEqual({ path: "/tmp/notebooks/a.ipynb" });
   });
 
-  it("system.getGitInfo and getUsername route to the correct commands", async () => {
+  it("system methods route to the correct commands", async () => {
     const host = createTauriHost({ transport: stubTransport });
     await expect(host.system.getGitInfo()).resolves.toEqual({
       branch: "main",
@@ -336,6 +338,12 @@ describe("createTauriHost()", () => {
       description: null,
     });
     await expect(host.system.getUsername()).resolves.toBe("kyle");
+    await expect(host.system.getFontFamilies()).resolves.toEqual(["Fraunces", "Georgia"]);
+    expect(capturedInvokes.map((x) => x.cmd)).toEqual([
+      "get_git_info",
+      "get_username",
+      "list_font_families",
+    ]);
   });
 
   it("daemonEvents.onReady subscribes to 'daemon:ready' and returns a working unlisten", async () => {
