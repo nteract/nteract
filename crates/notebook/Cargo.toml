@@ -58,6 +58,7 @@ rfd = "0.17"  # Native dialogs for pre-window error display
 flate2 = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 tar = { workspace = true }
+fontdb = "0.23.0"
 
 # WebDriver plugin for E2E testing
 tauri-plugin-webdriver = { version = "0.2", optional = true }

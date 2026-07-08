@@ -3138,6 +3138,27 @@ async fn check_typosquats(packages: Vec<String>) -> Vec<typosquat::TyposquatWarn
     typosquat::check_packages(&packages)
 }
 
+/// List installed system font families for settings font pickers.
+#[tauri::command]
+fn list_font_families() -> Vec<String> {
+    let mut database = fontdb::Database::new();
+    database.load_system_fonts();
+
+    let mut families = std::collections::BTreeSet::new();
+    for face in database.faces() {
+        for (family, _language) in &face.families {
+            let family = family.trim();
+            if !family.is_empty() {
+                families.insert(family.to_string());
+            }
+        }
+    }
+
+    let mut families: Vec<String> = families.into_iter().collect();
+    families.sort_by_key(|family| family.to_lowercase());
+    families
+}
+
 /// Get synced settings from the Automerge settings document via runtimed.
 /// Falls back to reading settings.json when the daemon is unavailable,
 /// so the frontend always gets real settings instead of hardcoded defaults.
@@ -4127,6 +4148,7 @@ pub fn run(
             get_daemon_info,
             get_blob_port,
             get_username,
+            list_font_families,
             // Feedback
             open_feedback_window,
             get_feedback_system_info,

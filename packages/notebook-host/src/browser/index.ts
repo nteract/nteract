@@ -37,6 +37,19 @@ import type {
 const DEFAULT_CONFIG_URL = "/__nteract_dev_relay/config";
 const FRAME_TYPE_REQUEST = 0x01;
 const FRAME_TYPE_RESPONSE = 0x02;
+const BROWSER_FONT_FAMILY_FALLBACKS = [
+  "Arial",
+  "Courier New",
+  "Georgia",
+  "Helvetica",
+  "Inter",
+  "Menlo",
+  "Monaco",
+  "SF Mono",
+  "Times New Roman",
+  "Trebuchet MS",
+  "Verdana",
+];
 
 interface BrowserRelayConfig {
   websocket_url: string;
@@ -574,6 +587,9 @@ export async function createBrowserHost(
       },
       async getUsername() {
         return "browser";
+      },
+      async getFontFamilies() {
+        return BROWSER_FONT_FAMILY_FALLBACKS;
       },
     },
     dialog: {
