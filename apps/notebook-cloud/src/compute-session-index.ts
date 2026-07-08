@@ -2,7 +2,14 @@ import type { DurableObjectNamespace, DurableObjectState, Env } from "./cloudfla
 import { isNotebookComputeSessionSummary, type NotebookComputeSessionSummary } from "runtimed";
 import { json } from "./http-responses.ts";
 import { cloudLog, errorMessage } from "./observability.ts";
-import { workstationEventsObjectName } from "./workstation-events.ts";
+import {
+  failActiveWorkstationAttachJobsForWorkstation,
+  type WorkstationAttachJobRow,
+} from "./storage.ts";
+import {
+  workstationEventsObjectName,
+  type WorkstationAttachJobNotification,
+} from "./workstation-events.ts";
 
 const COMPUTE_SESSION_KEY_PREFIX = "session:";
 const WORKSTATION_LEASE_KEY_PREFIX = "lease:";
@@ -16,6 +23,9 @@ export const WORKSTATION_LEASE_GC_MS = 24 * 60 * 60_000;
 // Hard ceiling on a single went_offline delivery so a slow or dead events DO
 // cannot keep the background notify (and thus the registry DO) alive.
 const WORKSTATION_WENT_OFFLINE_NOTIFY_TIMEOUT_MS = 5_000;
+const WORKSTATION_LEASE_EXPIRED_ATTACH_JOB_MESSAGE =
+  "workstation lease expired: no heartbeat within the lease window";
+const WORKSTATION_LEASE_RUNTIME_REPAIR_TIMEOUT_MS = 5_000;
 
 /**
  * A workstation liveness lease held in the owner-scoped registry DO. The
@@ -196,6 +206,7 @@ export class OwnerComputeIndex {
   private async sweepExpiredLeases(now: number): Promise<number> {
     const leases = await this.readLeases();
     const wentOffline: WorkstationLeaseRecord[] = [];
+    const failedAttachJobs: WorkstationAttachJobRow[] = [];
     for (const [key, lease] of leases) {
       // Drop leases that have stayed offline well past their window so the DO
       // does not accumulate dead records.
@@ -204,12 +215,14 @@ export class OwnerComputeIndex {
         continue;
       }
       if (lease.online && lease.lease_expires_at <= now) {
+        const failedJobs = await this.failActiveAttachJobsForExpiredLease(lease);
         const offline: WorkstationLeaseRecord = {
           ...lease,
           online: false,
           offline_reason: "lease expired: no heartbeat within the lease window",
         };
         await this.state.storage.put(key, offline);
+        failedAttachJobs.push(...failedJobs);
         wentOffline.push(offline);
         cloudLog("info", "fleet_registry.lease_expired", {
           owner_principal: lease.owner_principal,
@@ -227,13 +240,58 @@ export class OwnerComputeIndex {
     // events DO must not keep the handler running, which would pin this DO
     // resident and break hibernation. waitUntil lets the handler return now
     // while the bounded-timeout delivery drains in the background.
-    const notify = this.notifyWentOffline(wentOffline);
+    const notify = this.notifyExpiredLeaseSideEffects(wentOffline, failedAttachJobs);
     if (this.state.waitUntil) {
       this.state.waitUntil(notify);
     } else {
       void notify;
     }
     return wentOffline.length;
+  }
+
+  private async failActiveAttachJobsForExpiredLease(
+    lease: WorkstationLeaseRecord,
+  ): Promise<WorkstationAttachJobRow[]> {
+    if (!this.env.DB) {
+      return [];
+    }
+    try {
+      const failedJobs = await failActiveWorkstationAttachJobsForWorkstation(this.env, {
+        ownerPrincipal: lease.owner_principal,
+        workstationId: lease.workstation_id,
+        errorMessage: WORKSTATION_LEASE_EXPIRED_ATTACH_JOB_MESSAGE,
+      });
+      if (failedJobs.length > 0) {
+        cloudLog("info", "fleet_registry.attach_jobs_failed_for_expired_lease", {
+          owner_principal: lease.owner_principal,
+          workstation_id: lease.workstation_id,
+          job_count: failedJobs.length,
+          counter: "fleet_registry_attach_jobs_failed_for_expired_lease",
+          counter_delta: failedJobs.length,
+        });
+      }
+      return failedJobs;
+    } catch (error) {
+      cloudLog("warn", "fleet_registry.attach_jobs_fail_for_expired_lease_failed", {
+        owner_principal: lease.owner_principal,
+        workstation_id: lease.workstation_id,
+        error: errorMessage(error),
+        counter: "fleet_registry_attach_jobs_fail_for_expired_lease_failed",
+        counter_delta: 1,
+      });
+      throw error;
+    }
+  }
+
+  private async notifyExpiredLeaseSideEffects(
+    wentOffline: WorkstationLeaseRecord[],
+    failedAttachJobs: WorkstationAttachJobRow[],
+  ): Promise<void> {
+    await Promise.allSettled([
+      this.notifyWentOffline(wentOffline),
+      this.notifyAttachJobsFailed(failedAttachJobs),
+      this.repairRuntimeStateForFailedAttachJobs(failedAttachJobs),
+    ]);
   }
 
   private async notifyWentOffline(leases: WorkstationLeaseRecord[]): Promise<void> {
@@ -265,6 +323,100 @@ export class OwnerComputeIndex {
             workstation_id: lease.workstation_id,
             error: errorMessage(error),
             counter: "fleet_registry_went_offline_notify_failed",
+            counter_delta: 1,
+          });
+        }
+      }),
+    );
+  }
+
+  private async notifyAttachJobsFailed(jobs: WorkstationAttachJobRow[]): Promise<void> {
+    const namespace = this.env.WORKSTATION_EVENTS;
+    if (!namespace || jobs.length === 0) {
+      return;
+    }
+    await Promise.allSettled(
+      jobs.map(async (job) => {
+        try {
+          const id = namespace.idFromName(
+            workstationEventsObjectName(job.owner_principal, job.workstation_id),
+          );
+          const notification: WorkstationAttachJobNotification = {
+            event: "attach_jobs",
+            workstation_id: job.workstation_id,
+            job_id: job.id,
+            notebook_id: job.notebook_id,
+            status: job.status,
+            requested_at: job.requested_at,
+            updated_at: job.updated_at,
+          };
+          await namespace.get(id).fetch(
+            new Request("https://workstation-events.internal/notify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(notification),
+              signal: AbortSignal.timeout(WORKSTATION_WENT_OFFLINE_NOTIFY_TIMEOUT_MS),
+            }),
+          );
+        } catch (error) {
+          cloudLog("warn", "fleet_registry.attach_job_notify_failed", {
+            owner_principal: job.owner_principal,
+            workstation_id: job.workstation_id,
+            job_id: job.id,
+            error: errorMessage(error),
+            counter: "fleet_registry_attach_job_notify_failed",
+            counter_delta: 1,
+          });
+        }
+      }),
+    );
+  }
+
+  private async repairRuntimeStateForFailedAttachJobs(
+    jobs: WorkstationAttachJobRow[],
+  ): Promise<void> {
+    if (jobs.length === 0) {
+      return;
+    }
+    const namespace = this.env.NOTEBOOK_ROOMS;
+    await Promise.allSettled(
+      jobs.map(async (job) => {
+        try {
+          const id = namespace.idFromName(job.notebook_id);
+          const response = await namespace.get(id).fetch(
+            new Request(
+              `https://notebook-room.internal/internal/n/${encodeURIComponent(
+                job.notebook_id,
+              )}/runtime-state-repair`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  expected_runtime_session_id: job.id,
+                  reason: job.error_message ?? WORKSTATION_LEASE_EXPIRED_ATTACH_JOB_MESSAGE,
+                }),
+                signal: AbortSignal.timeout(WORKSTATION_LEASE_RUNTIME_REPAIR_TIMEOUT_MS),
+              },
+            ),
+          );
+          if (response.ok || response.status === 409) {
+            return;
+          }
+          cloudLog("warn", "fleet_registry.attach_job_runtime_state_repair_failed", {
+            notebook_id: job.notebook_id,
+            workstation_id: job.workstation_id,
+            job_id: job.id,
+            response_status: response.status,
+            counter: "fleet_registry_attach_job_runtime_state_repair_failed",
+            counter_delta: 1,
+          });
+        } catch (error) {
+          cloudLog("warn", "fleet_registry.attach_job_runtime_state_repair_failed", {
+            notebook_id: job.notebook_id,
+            workstation_id: job.workstation_id,
+            job_id: job.id,
+            error: errorMessage(error),
+            counter: "fleet_registry_attach_job_runtime_state_repair_failed",
             counter_delta: 1,
           });
         }

@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { DurableObjectState, Env } from "../src/cloudflare-types.ts";
+import type {
+  D1Database,
+  D1PreparedStatement,
+  D1Result,
+  D1Value,
+  DurableObjectNamespace,
+  DurableObjectState,
+  Env,
+} from "../src/cloudflare-types.ts";
 import {
   OwnerComputeIndex,
   ownerComputeIndexObjectName,
   WORKSTATION_LEASE_GC_MS,
 } from "../src/compute-session-index.ts";
+import type { WorkstationAttachJobRow, WorkstationAttachJobStatus } from "../src/storage.ts";
 import type { NotebookComputeSessionSummary } from "runtimed";
 
 describe("OwnerComputeIndex", () => {
@@ -178,6 +187,60 @@ describe("OwnerComputeIndex lease notifications and GC", () => {
     assert.match(events.notifications[0].body.reason as string, /lease expired/);
   });
 
+  it("fails active attach jobs when a lease lapses", async () => {
+    const { state, values, settle, deliverAlarm } = fakeStateWithAlarm();
+    const events = fakeWorkstationEvents();
+    const rooms = fakeNotebookRooms();
+    const jobs = new Map<string, WorkstationAttachJobRow>([
+      ["pending-job", attachJob("pending-job", "pending", { notebook_id: "nb-pending" })],
+      ["accepted-job", attachJob("accepted-job", "accepted", { notebook_id: "nb-accepted" })],
+      ["running-job", attachJob("running-job", "running", { notebook_id: "nb-running" })],
+      ["completed-job", attachJob("completed-job", "completed", { notebook_id: "nb-done" })],
+    ]);
+    const object = new OwnerComputeIndex(state, {
+      ...events.env,
+      DB: fakeAttachJobsDb(jobs),
+      NOTEBOOK_ROOMS: rooms.namespace,
+    } as Env);
+
+    await object.fetch(leaseUpsert("ws-a", "user:dev:alice", 60_000));
+    const stored = values.get("lease:ws-a") as Record<string, unknown>;
+    values.set("lease:ws-a", { ...stored, lease_expires_at: Date.now() - 1 });
+
+    deliverAlarm();
+    await object.alarm();
+    await settle();
+
+    const expectedError = "workstation lease expired: no heartbeat within the lease window";
+    for (const jobId of ["pending-job", "accepted-job", "running-job"]) {
+      assert.equal(jobs.get(jobId)?.status, "failed");
+      assert.equal(jobs.get(jobId)?.error_message, expectedError);
+      assert.ok(jobs.get(jobId)?.finished_at);
+    }
+    assert.equal(jobs.get("completed-job")?.status, "completed");
+    assert.equal(jobs.get("completed-job")?.error_message, null);
+
+    const attachNotifications = events.notifications.filter(
+      (entry) => entry.body.event === "attach_jobs",
+    );
+    assert.deepEqual(
+      new Set(attachNotifications.map((entry) => entry.body.job_id)),
+      new Set(["pending-job", "accepted-job", "running-job"]),
+    );
+    assert.equal(
+      events.notifications.some((entry) => entry.body.event === "went_offline"),
+      true,
+    );
+    assert.deepEqual(
+      new Set(rooms.repairs.map((repair) => repair.body.expected_runtime_session_id)),
+      new Set(["pending-job", "accepted-job", "running-job"]),
+    );
+    assert.equal(
+      rooms.repairs.every((repair) => repair.body.reason === expectedError),
+      true,
+    );
+  });
+
   it("deletes an online lease and leaves no lease for a concurrent sweep to notify", async () => {
     const { state, scheduledAlarm, settle, deliverAlarm } = fakeStateWithAlarm();
     const events = fakeWorkstationEvents();
@@ -286,6 +349,104 @@ function fakeWorkstationEvents(): {
   return {
     env: { WORKSTATION_EVENTS: namespace } as unknown as Env,
     notifications,
+  };
+}
+
+function fakeNotebookRooms(): {
+  namespace: DurableObjectNamespace;
+  repairs: Array<{ objectName: string; body: Record<string, unknown> }>;
+} {
+  const repairs: Array<{ objectName: string; body: Record<string, unknown> }> = [];
+  const namespace = {
+    idFromName: (name: string) => ({ toString: () => name, name }),
+    get: (id: { name: string }) => ({
+      fetch: async (request: Request) => {
+        repairs.push({
+          objectName: id.name,
+          body: (await request.json()) as Record<string, unknown>,
+        });
+        return Response.json({ ok: true, repaired: true });
+      },
+    }),
+  };
+  return { namespace: namespace as unknown as DurableObjectNamespace, repairs };
+}
+
+function fakeAttachJobsDb(jobs: Map<string, WorkstationAttachJobRow>): D1Database {
+  return {
+    prepare: (query: string) => fakeD1Statement(query, jobs),
+    exec: async () => d1Result(),
+    batch: async <T>(statements: D1PreparedStatement[]) =>
+      Promise.all(statements.map((statement) => statement.run<T>())),
+  };
+}
+
+function fakeD1Statement(
+  query: string,
+  jobs: Map<string, WorkstationAttachJobRow>,
+): D1PreparedStatement {
+  let boundValues: D1Value[] = [];
+  const statement: D1PreparedStatement = {
+    bind: (...values: D1Value[]) => {
+      boundValues = values;
+      return statement;
+    },
+    first: async () => null,
+    run: async <T>() => d1Result<T>(),
+    all: async <T>() => {
+      if (query.includes("UPDATE workstation_attach_jobs") && query.includes("RETURNING id")) {
+        const [updatedAt, finishedAt, errorMessage, ownerPrincipal, workstationId] = boundValues;
+        const failed: WorkstationAttachJobRow[] = [];
+        for (const job of jobs.values()) {
+          if (
+            job.owner_principal !== ownerPrincipal ||
+            job.workstation_id !== workstationId ||
+            !["pending", "accepted", "running"].includes(job.status)
+          ) {
+            continue;
+          }
+          const next: WorkstationAttachJobRow = {
+            ...job,
+            status: "failed",
+            updated_at: String(updatedAt),
+            finished_at: String(finishedAt),
+            error_message: String(errorMessage),
+          };
+          jobs.set(job.id, next);
+          failed.push(next);
+        }
+        return d1Result(failed as T[]);
+      }
+      return d1Result<T>();
+    },
+  };
+  return statement;
+}
+
+function d1Result<T = unknown>(results: T[] = []): D1Result<T> {
+  return { results, success: true, meta: {} };
+}
+
+function attachJob(
+  id: string,
+  status: WorkstationAttachJobStatus,
+  overrides: Partial<WorkstationAttachJobRow> = {},
+): WorkstationAttachJobRow {
+  return {
+    id,
+    notebook_id: "nb-1",
+    owner_principal: "user:dev:alice",
+    workstation_id: "ws-a",
+    status,
+    requested_by_actor_label: "alice",
+    requested_at: "2026-07-07T00:00:00.000Z",
+    updated_at: "2026-07-07T00:00:00.000Z",
+    accepted_at: status === "pending" ? null : "2026-07-07T00:01:00.000Z",
+    finished_at: ["failed", "completed", "cancelled"].includes(status)
+      ? "2026-07-07T00:02:00.000Z"
+      : null,
+    error_message: null,
+    ...overrides,
   };
 }
 

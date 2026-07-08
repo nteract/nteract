@@ -1359,6 +1359,47 @@ export async function updateWorkstationAttachJobStatus(
   return getWorkstationAttachJob(env, input.ownerPrincipal, input.workstationId, input.jobId);
 }
 
+export async function failActiveWorkstationAttachJobsForWorkstation(
+  env: Env,
+  input: {
+    ownerPrincipal: string;
+    workstationId: string;
+    errorMessage: string;
+    now?: string;
+  },
+): Promise<WorkstationAttachJobRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const now = input.now ?? new Date().toISOString();
+  const failed = await env.DB.prepare(
+    `UPDATE workstation_attach_jobs
+        SET status = 'failed',
+            updated_at = ?,
+            finished_at = ?,
+            error_message = ?
+      WHERE owner_principal = ?
+        AND workstation_id = ?
+        AND status IN ('pending', 'accepted', 'running')
+      RETURNING id,
+                notebook_id,
+                owner_principal,
+                workstation_id,
+                status,
+                requested_by_actor_label,
+                requested_at,
+                updated_at,
+                accepted_at,
+                finished_at,
+                error_message`,
+  )
+    .bind(now, now, input.errorMessage, input.ownerPrincipal, input.workstationId)
+    .all<WorkstationAttachJobRow>();
+  return failed.results ?? [];
+}
+
 function workstationAttachJobStatusRank(status: WorkstationAttachJobStatus): number {
   switch (status) {
     case "pending":
