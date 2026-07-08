@@ -1,10 +1,12 @@
 # shadcn AI Elements + Vercel-aligned registries: an nteract adoption plan
 
-Status: research / options. 2026-07-07.
+Status: research, with the convergence call now decided. 2026-07-07.
 
-Vercel's [AI Elements](https://elements.ai-sdk.dev) is a shadcn-compatible registry of ~50 components built for agent UIs: a chatbot family (Message, Reasoning, Tool, Task, Prompt Input, Model Selector), a code family (Code Block, Terminal, Stack Trace, Test Results, Package Info, File Tree, Schema Display), plus voice and workflow-graph families. Several of the code-family components overlap nteract's real output surfaces directly. This memo says what to take, what to leave, and how to take it without breaking our token discipline.
+> **Decision (2026-07-07, Kyle):** AI Elements is a **pattern reference only**. Our output rendering stays as it is, deliberately closer to Jupyter. We do not port or converge output renderers (Code Block, Terminal, Stack Trace, Test Results, Package Info, Task/Queue) onto the AI Elements look. What survives from this memo is the **base shadcn primitive** track (Separator, Skeleton, Spinner, Kbd, Tooltip, Empty), which is not AI Elements at all.
 
-**The recommendation in one line:** consume the *canonical shadcn primitives* (Separator, Skeleton, Spinner, Kbd, Tooltip, Empty) through the shadcn CLI as we already do; treat *AI Elements components* as vetted UX patterns to hand-port and re-tokenize, never as a dependency to install verbatim.
+Vercel's [AI Elements](https://elements.ai-sdk.dev) is a shadcn-compatible registry of ~50 components built for agent UIs: a chatbot family (Message, Reasoning, Tool, Task, Prompt Input, Model Selector), a code family (Code Block, Terminal, Stack Trace, Test Results, Package Info, File Tree, Schema Display), plus voice and workflow-graph families. Several of the code-family components overlap nteract's output surfaces. This memo says what to take, what to leave, and how to take it without breaking our token discipline.
+
+**The recommendation in one line:** consume the *canonical shadcn primitives* (Separator, Skeleton, Spinner, Kbd, Tooltip, Empty) through the shadcn CLI as we already do; look at *AI Elements components* as UX-pattern references only, do not vendor them (per the decision above).
 
 ## How the registry works
 
@@ -37,7 +39,9 @@ For the plain shadcn primitives, our documented flow (`pnpm dlx shadcn@latest ad
 | Tooltip | needs Kyle | No token gap, but a real call: upstream's inverted `bg-foreground/text-background` vs the `--popover` pair the rest of the overlay stack uses. Also needs a `TooltipProvider` mount point in the app root. |
 | Empty (EmptyState) | needs Kyle | Tokens trivial, but `EmptyMedia`'s `size-10 rounded-lg` icon badge needs an explicit radius-law exemption before landing. Backs page-level empty states (no cells / comments / workstations). |
 
-## AI Elements worth porting (ranked)
+## AI Elements to nteract surface map (reference only)
+
+Per the decision at the top, none of these are being adopted or ported. The table is kept as a reference map: which AI Elements pattern corresponds to which nteract surface, so if any single surface is ever revisited as an nteract-native improvement (on its own merits, not to converge on the AI Elements look), the pattern is already located. The "Mode" column reads as "how we'd have taken it," now moot.
 
 | Component | nteract surface | Mode | Why |
 | --- | --- | --- | --- |
@@ -56,18 +60,22 @@ For the plain shadcn primitives, our documented flow (`pnpm dlx shadcn@latest ad
 
 ## Ordered plan
 
-Autonomous (no design call): **1** Separator. **2** Skeleton (done, #3964). **3** Spinner. **6** Code Block into mcp-app (highest-value AI Elements pull). **7** Task for run-all + tool-call transcript, folding Queue in. **12** Package Info version-diff badges.
+The AI Elements port steps are dropped per the decision. What remains is the base shadcn primitive track:
 
-Needs Kyle: **4** Tooltip surface tokens + provider mount, then Tooltip + Kbd together. **5** Empty's icon-badge radius exemption, then Empty for page-level empties. **8** the convergence call (below) gates **9** Stack Trace. **10** the Shimmer/gradient-law call. **11** the AI-cell roadmap gates Message/Reasoning/Model Selector.
+Autonomous (no design call): **1** Separator (in flight). **2** Skeleton (done, #3964). **3** Spinner (in flight).
+
+Needs a small design call: **4** Tooltip surface tokens + provider mount, then Tooltip + Kbd together. **5** Empty's icon-badge radius exemption, then Empty for page-level empties (no cells / comments / workstations).
+
+Deferred to the AI-cell roadmap (not now): a streaming *text* shimmer and the Message/Reasoning/Model Selector family only become real when the AI cell graduates from a gutter-color placeholder to a composed surface.
 
 ## Open questions for Kyle
 
 1. **Shimmer / gradient law:** convention 6 already mandates skeleton shimmer (a gradient sweep), and #3964 sanctions that in the exceptions list. Separate question: is AI Elements' gradient-sweep *text* shimmer for streaming output worth a further allow-list entry, or does streaming stay pulse/other?
 2. **Tooltip tokens:** align `TooltipContent` to `--popover`/`--popover-foreground` (matching Dialog/Popover) or ship upstream's inverted `bg-foreground/text-background`?
 3. **Empty icon badge:** is `size-10 rounded-lg` an acceptable radius-law exemption, or reshape to `rounded-md`?
-4. **Convergence:** should our output renderers (Terminal, Stack Trace, Test Results) visually converge toward the AI Elements look over time, or does AI Elements stay strictly a pattern reference while the sanctioned token-native renderers stay as-is?
+4. **Convergence:** ~~should our output renderers converge toward the AI Elements look?~~ **Answered (Kyle, 2026-07-07): no.** Reference only; outputs stay Jupyter-adjacent. This is the decision at the top of the memo.
 5. **AI cell roadmap:** when does the AI cell graduate from gutter-color placeholder to a composed surface? That gates Message/Reasoning/Prompt Input/Model Selector past reference-only.
-6. **mcp-app theming boundary:** should the MCP Apps widget (rendered inside third-party chat hosts) share our full token system, or a lighter host-neutral palette, since it lives in someone else's chrome?
+6. **mcp-app theming boundary:** now largely moot, since we are not porting Code Block. If the mcp-app widget's unstyled code rendering is ever improved on its own merits, this (full token system vs a lighter host-neutral palette inside third-party chrome) is the call to make then.
 
 ## Risks
 
