@@ -9,11 +9,13 @@ const unlisten = () => {};
 
 interface FixtureNotebookHostOptions {
   name?: string;
+  fontFamilies?: string[];
   transport?: Partial<NotebookHost["transport"]>;
 }
 
 export function createFixtureNotebookHost({
   name = "elements-fixture",
+  fontFamilies = [...DEFAULT_FONT_FAMILIES],
   transport: transportOverrides = {},
 }: FixtureNotebookHostOptions = {}): NotebookHost {
   const transport: NotebookHost["transport"] = {
@@ -79,7 +81,7 @@ export function createFixtureNotebookHost({
     system: {
       getGitInfo: async () => null,
       getUsername: async () => "kyle",
-      getFontFamilies: async () => [...DEFAULT_FONT_FAMILIES],
+      getFontFamilies: async () => [...fontFamilies],
     },
     dialog: {
       openFile: async () => null,
