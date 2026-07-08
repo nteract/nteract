@@ -235,6 +235,26 @@ const EMPTY_STATE: CloudWorkstationsState = {
   pairing: null,
 };
 
+function compareRegisteredWorkstationStableId(
+  left: NotebookRegisteredWorkstation,
+  right: NotebookRegisteredWorkstation,
+): number {
+  return left.id.localeCompare(right.id);
+}
+
+function registryWithStableWorkstationOrder(
+  registry: CloudWorkstationsRegistry,
+): CloudWorkstationsRegistry {
+  if (registry.workstations.length < 2) {
+    return registry;
+  }
+  const workstations = [...registry.workstations].sort(compareRegisteredWorkstationStableId);
+  const alreadyStable = workstations.every(
+    (workstation, index) => workstation === registry.workstations[index],
+  );
+  return alreadyStable ? registry : { ...registry, workstations };
+}
+
 /** Dedup identity for the registry projection. */
 export function cloudWorkstationsRegistryEquals(
   a: CloudWorkstationsRegistry,
@@ -862,7 +882,13 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
 
   /** Apply a resolved registry: mark ready and clear the error. */
   private applyRegistrySuccess(registry: CloudWorkstationsRegistry): void {
-    this.updateState((state) => ({ ...state, status: "ready", registry, error: null }));
+    const orderedRegistry = registryWithStableWorkstationOrder(registry);
+    this.updateState((state) => ({
+      ...state,
+      status: "ready",
+      registry: orderedRegistry,
+      error: null,
+    }));
   }
 
   /**

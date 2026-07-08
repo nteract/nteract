@@ -124,6 +124,9 @@ export type WorkstationAttachJobStatus =
   | "cancelled";
 
 export const WORKSTATION_ATTACH_JOB_STALE_MS = 2 * 60_000;
+// Pending jobs cover host cold start before the agent accepts the request; give
+// a slow host one extra minute beyond the accepted/running heartbeat timeout.
+export const WORKSTATION_ATTACH_PENDING_STALE_MS = 3 * 60_000;
 
 export interface WorkstationRow {
   owner_principal: string;
@@ -171,6 +174,22 @@ export interface WorkstationAttachJobRow {
   finished_at: string | null;
   error_message: string | null;
 }
+
+export interface CreateWorkstationAttachJobResult {
+  job: WorkstationAttachJobRow;
+  cancelledActiveJob: WorkstationAttachJobRow | null;
+}
+
+export interface ListActiveWorkstationAttachJobsResult {
+  jobs: WorkstationAttachJobRow[];
+  expiredPendingJobs: WorkstationAttachJobRow[];
+}
+
+const WORKSTATION_ATTACH_JOBS_DROP_LEGACY_ACTIVE_UNIQUE_INDEX = `DROP INDEX IF EXISTS workstation_attach_jobs_active_unique_idx`;
+
+const WORKSTATION_ATTACH_JOBS_ACTIVE_UNIQUE_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_owner_unique_idx
+    ON workstation_attach_jobs(notebook_id, owner_principal)
+    WHERE status IN ('pending', 'accepted', 'running')`;
 
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebooks (
@@ -338,9 +357,8 @@ const SCHEMA_STATEMENTS = [
     error_message TEXT,
     FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_unique_idx
-    ON workstation_attach_jobs(notebook_id, owner_principal, workstation_id)
-    WHERE status IN ('pending', 'accepted', 'running')`,
+  WORKSTATION_ATTACH_JOBS_DROP_LEGACY_ACTIVE_UNIQUE_INDEX,
+  WORKSTATION_ATTACH_JOBS_ACTIVE_UNIQUE_INDEX,
   `CREATE INDEX IF NOT EXISTS workstation_attach_jobs_poll_idx
     ON workstation_attach_jobs(owner_principal, workstation_id, status, requested_at)`,
   `CREATE TABLE IF NOT EXISTS workstation_pairing_codes (
@@ -1134,7 +1152,7 @@ export async function createWorkstationAttachJob(
     workstationId: string;
     actorLabel: string;
   },
-): Promise<WorkstationAttachJobRow | null> {
+): Promise<CreateWorkstationAttachJobResult | null> {
   if (!env.DB) {
     return null;
   }
@@ -1143,21 +1161,37 @@ export async function createWorkstationAttachJob(
   const now = new Date();
   const nowIso = now.toISOString();
   const staleBefore = new Date(now.getTime() - WORKSTATION_ATTACH_JOB_STALE_MS).toISOString();
-  await expireStaleWorkstationAttachJobs(env, input, { now: nowIso, staleBefore });
-  if (input.replaceActive === true) {
-    await cancelActiveWorkstationAttachJobs(env, input, {
+  const pendingStaleBefore = new Date(
+    now.getTime() - WORKSTATION_ATTACH_PENDING_STALE_MS,
+  ).toISOString();
+  await expireStaleWorkstationAttachJobs(
+    env,
+    { notebookId: input.notebookId, ownerPrincipal: input.ownerPrincipal },
+    {
       now: nowIso,
-      errorMessage: "replaced by a newer workstation attach request",
-    });
-  }
-  const existing = await getActiveWorkstationAttachJob(env, input, staleBefore);
+      pendingStaleBefore,
+      staleBefore,
+    },
+  );
+  let cancelledActiveJob: WorkstationAttachJobRow | null = null;
+  let activeJobToCancel: WorkstationAttachJobRow | null = null;
+
+  const existing = await getActiveWorkstationAttachJob(env, input, {
+    pendingStaleBefore,
+    staleBefore,
+  });
   if (existing) {
-    return existing;
+    if (input.replaceActive !== true && existing.workstation_id === input.workstationId) {
+      return { job: existing, cancelledActiveJob: null };
+    }
+    cancelledActiveJob = existing;
+    activeJobToCancel = existing;
   }
 
-  const jobId = crypto.randomUUID();
-  const insert = env.DB.prepare(
-    `INSERT INTO workstation_attach_jobs (
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const jobId = crypto.randomUUID();
+    const insert = env.DB.prepare(
+      `INSERT INTO workstation_attach_jobs (
        id,
        notebook_id,
        owner_principal,
@@ -1167,25 +1201,53 @@ export async function createWorkstationAttachJob(
        requested_at,
        updated_at
      ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
-  ).bind(
-    jobId,
-    input.notebookId,
-    input.ownerPrincipal,
-    input.workstationId,
-    input.actorLabel,
-    nowIso,
-    nowIso,
-  );
-  try {
-    await insert.run();
-  } catch (error) {
-    const racedExisting = await getActiveWorkstationAttachJob(env, input, staleBefore);
-    if (racedExisting) {
-      return racedExisting;
+    ).bind(
+      jobId,
+      input.notebookId,
+      input.ownerPrincipal,
+      input.workstationId,
+      input.actorLabel,
+      nowIso,
+      nowIso,
+    );
+    try {
+      if (activeJobToCancel) {
+        await env.DB.batch([
+          cancelActiveWorkstationAttachJobsStatement(env, input, {
+            now: nowIso,
+            errorMessage: "replaced by a newer workstation attach request",
+          }),
+          insert,
+        ]);
+      } else {
+        await insert.run();
+      }
+      const job = await getWorkstationAttachJob(
+        env,
+        input.ownerPrincipal,
+        input.workstationId,
+        jobId,
+      );
+      if (!job) {
+        throw new Error("workstation attach job insert did not return a row");
+      }
+      return { job, cancelledActiveJob };
+    } catch (error) {
+      const racedExisting = await getActiveWorkstationAttachJob(env, input, {
+        pendingStaleBefore,
+        staleBefore,
+      });
+      if (!racedExisting || attempt > 0) {
+        throw error;
+      }
+      if (input.replaceActive !== true && racedExisting.workstation_id === input.workstationId) {
+        return { job: racedExisting, cancelledActiveJob };
+      }
+      cancelledActiveJob ??= racedExisting;
+      activeJobToCancel = racedExisting;
     }
-    throw error;
   }
-  return getWorkstationAttachJob(env, input.ownerPrincipal, input.workstationId, jobId);
+  throw new Error("workstation attach job was not created");
 }
 
 export async function listActiveWorkstationAttachJobs(
@@ -1193,13 +1255,23 @@ export async function listActiveWorkstationAttachJobs(
   ownerPrincipal: string,
   workstationId: string,
   limit = 10,
-): Promise<WorkstationAttachJobRow[]> {
+): Promise<ListActiveWorkstationAttachJobsResult> {
   if (!env.DB) {
-    return [];
+    return { jobs: [], expiredPendingJobs: [] };
   }
 
   await ensureCatalogSchema(env);
-  const staleBefore = new Date(Date.now() - WORKSTATION_ATTACH_JOB_STALE_MS).toISOString();
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const staleBefore = new Date(now.getTime() - WORKSTATION_ATTACH_JOB_STALE_MS).toISOString();
+  const pendingStaleBefore = new Date(
+    now.getTime() - WORKSTATION_ATTACH_PENDING_STALE_MS,
+  ).toISOString();
+  const expiredPendingJobs = await expireStaleWorkstationAttachJobs(
+    env,
+    { ownerPrincipal, workstationId },
+    { now: nowIso, pendingStaleBefore, staleBefore },
+  );
   const rows = await env.DB.prepare(
     `SELECT id,
             notebook_id,
@@ -1216,15 +1288,18 @@ export async function listActiveWorkstationAttachJobs(
       WHERE owner_principal = ?
         AND workstation_id = ?
         AND (
-          status = 'pending'
+          (status = 'pending' AND requested_at >= ?)
           OR (status IN ('accepted', 'running') AND updated_at >= ?)
         )
       ORDER BY requested_at ASC
       LIMIT ?`,
   )
-    .bind(ownerPrincipal, workstationId, staleBefore, limit)
+    .bind(ownerPrincipal, workstationId, pendingStaleBefore, staleBefore, limit)
     .all<WorkstationAttachJobRow>();
-  return rows.results ?? [];
+  return {
+    jobs: rows.results ?? [],
+    expiredPendingJobs,
+  };
 }
 
 export async function updateWorkstationAttachJobStatus(
@@ -1259,7 +1334,13 @@ export async function updateWorkstationAttachJobStatus(
       WHERE id = ?
         AND owner_principal = ?
         AND workstation_id = ?
-        AND status IN ('pending', 'accepted', 'running')`,
+        AND status IN ('pending', 'accepted', 'running')
+        AND CASE status
+              WHEN 'pending' THEN 0
+              WHEN 'accepted' THEN 1
+              WHEN 'running' THEN 2
+              ELSE 3
+            END <= ?`,
   )
     .bind(
       input.status,
@@ -1272,9 +1353,25 @@ export async function updateWorkstationAttachJobStatus(
       input.jobId,
       input.ownerPrincipal,
       input.workstationId,
+      workstationAttachJobStatusRank(input.status),
     )
     .run();
   return getWorkstationAttachJob(env, input.ownerPrincipal, input.workstationId, input.jobId);
+}
+
+function workstationAttachJobStatusRank(status: WorkstationAttachJobStatus): number {
+  switch (status) {
+    case "pending":
+      return 0;
+    case "accepted":
+      return 1;
+    case "running":
+      return 2;
+    case "failed":
+    case "completed":
+    case "cancelled":
+      return 3;
+  }
 }
 
 async function getActiveWorkstationAttachJob(
@@ -1282,9 +1379,14 @@ async function getActiveWorkstationAttachJob(
   input: {
     notebookId: string;
     ownerPrincipal: string;
-    workstationId: string;
   },
-  staleBefore: string,
+  {
+    pendingStaleBefore,
+    staleBefore,
+  }: {
+    pendingStaleBefore: string;
+    staleBefore: string;
+  },
 ): Promise<WorkstationAttachJobRow | null> {
   const row = await env
     .DB!.prepare(
@@ -1302,15 +1404,14 @@ async function getActiveWorkstationAttachJob(
        FROM workstation_attach_jobs
       WHERE notebook_id = ?
         AND owner_principal = ?
-        AND workstation_id = ?
         AND (
-          status = 'pending'
+          (status = 'pending' AND requested_at >= ?)
           OR (status IN ('accepted', 'running') AND updated_at >= ?)
         )
       ORDER BY requested_at DESC
       LIMIT 1`,
     )
-    .bind(input.notebookId, input.ownerPrincipal, input.workstationId, staleBefore)
+    .bind(input.notebookId, input.ownerPrincipal, pendingStaleBefore, staleBefore)
     .first<WorkstationAttachJobRow>();
   return row;
 }
@@ -1318,18 +1419,20 @@ async function getActiveWorkstationAttachJob(
 async function expireStaleWorkstationAttachJobs(
   env: Env,
   input: {
-    notebookId: string;
+    notebookId?: string;
     ownerPrincipal: string;
-    workstationId: string;
+    workstationId?: string;
   },
   {
     now,
+    pendingStaleBefore,
     staleBefore,
   }: {
     now: string;
+    pendingStaleBefore: string;
     staleBefore: string;
   },
-): Promise<void> {
+): Promise<WorkstationAttachJobRow[]> {
   await env
     .DB!.prepare(
       `UPDATE workstation_attach_jobs
@@ -1337,22 +1440,66 @@ async function expireStaleWorkstationAttachJobs(
               updated_at = ?,
               finished_at = ?,
               error_message = 'stale workstation attach job expired after heartbeat timeout'
-        WHERE notebook_id = ?
+        WHERE (? IS NULL OR notebook_id = ?)
           AND owner_principal = ?
-          AND workstation_id = ?
+          AND (? IS NULL OR workstation_id = ?)
           AND status IN ('accepted', 'running')
           AND updated_at < ?`,
     )
-    .bind(now, now, input.notebookId, input.ownerPrincipal, input.workstationId, staleBefore)
+    .bind(
+      now,
+      now,
+      input.notebookId ?? null,
+      input.notebookId ?? null,
+      input.ownerPrincipal,
+      input.workstationId ?? null,
+      input.workstationId ?? null,
+      staleBefore,
+    )
     .run();
+  const expiredPending = await env
+    .DB!.prepare(
+      `UPDATE workstation_attach_jobs
+          SET status = 'failed',
+              updated_at = ?,
+              finished_at = ?,
+              error_message = 'stale workstation attach job expired before host accepted the request'
+        WHERE (? IS NULL OR notebook_id = ?)
+          AND owner_principal = ?
+          AND (? IS NULL OR workstation_id = ?)
+          AND status = 'pending'
+          AND requested_at < ?
+        RETURNING id,
+                  notebook_id,
+                  owner_principal,
+                  workstation_id,
+                  status,
+                  requested_by_actor_label,
+                  requested_at,
+                  updated_at,
+                  accepted_at,
+                  finished_at,
+                  error_message`,
+    )
+    .bind(
+      now,
+      now,
+      input.notebookId ?? null,
+      input.notebookId ?? null,
+      input.ownerPrincipal,
+      input.workstationId ?? null,
+      input.workstationId ?? null,
+      pendingStaleBefore,
+    )
+    .all<WorkstationAttachJobRow>();
+  return expiredPending.results ?? [];
 }
 
-async function cancelActiveWorkstationAttachJobs(
+function cancelActiveWorkstationAttachJobsStatement(
   env: Env,
   input: {
     notebookId: string;
     ownerPrincipal: string;
-    workstationId: string;
   },
   {
     now,
@@ -1361,8 +1508,8 @@ async function cancelActiveWorkstationAttachJobs(
     now: string;
     errorMessage: string;
   },
-): Promise<void> {
-  await env
+): D1PreparedStatement {
+  return env
     .DB!.prepare(
       `UPDATE workstation_attach_jobs
           SET status = 'cancelled',
@@ -1371,11 +1518,9 @@ async function cancelActiveWorkstationAttachJobs(
               error_message = ?
         WHERE notebook_id = ?
           AND owner_principal = ?
-          AND workstation_id = ?
           AND status IN ('pending', 'accepted', 'running')`,
     )
-    .bind(now, now, errorMessage, input.notebookId, input.ownerPrincipal, input.workstationId)
-    .run();
+    .bind(now, now, errorMessage, input.notebookId, input.ownerPrincipal);
 }
 
 async function getWorkstationAttachJob(

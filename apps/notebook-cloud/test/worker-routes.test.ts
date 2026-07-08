@@ -30,8 +30,10 @@ import type {
   R2PutOptions,
 } from "../src/cloudflare-types.ts";
 import type { NotebookComputeSessionSummary } from "runtimed";
+import type { WorkstationLeaseRecord } from "../src/compute-session-index.ts";
 import { NotebookHandle, RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import {
+  WORKSTATION_ATTACH_PENDING_STALE_MS,
   WORKSTATION_ATTACH_JOB_STALE_MS,
   blobKey,
   commsDocSnapshotKey,
@@ -2420,6 +2422,107 @@ describe("Worker artifact routes", () => {
     assert.equal(body.workstations[0]?.is_default, true);
   });
 
+  it("deregisters an owned workstation, deletes its lease, and pushes went_offline once", async () => {
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const events = new FakeWorkstationEventsNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute, WORKSTATION_EVENTS: events });
+    const ownerPrincipal = "user:dev:alice";
+    const workstationId = "ws-lab2";
+    const objectName = workstationEventsObjectName(ownerPrincipal, workstationId);
+    seedWorkstation(env, { ownerPrincipal, workstationId });
+    seedWorkstationLease(compute, {
+      ownerPrincipal,
+      workstationId,
+      lastSeenAt: new Date().toISOString(),
+    });
+    env.DB.workstationDefaults.set(ownerPrincipal, workstationId);
+
+    const deleted = await worker.fetch(
+      new Request(`http://localhost/api/workstations/${workstationId}`, {
+        method: "DELETE",
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(deleted.status, 200);
+    assert.deepEqual(await deleted.json(), {
+      ok: true,
+      workstation_id: workstationId,
+      deregistered: true,
+    });
+    assert.equal(compute.leases.has(workstationId), false);
+    assert.equal(env.DB.workstations.has(workstationKey(ownerPrincipal, workstationId)), false);
+    assert.equal(env.DB.workstationDefaults.has(ownerPrincipal), false);
+
+    const wentOffline = events.requests.filter(
+      (entry) =>
+        entry.objectName === objectName &&
+        new URL(entry.url).pathname === "/notify" &&
+        (entry.body as { event?: string } | null)?.event === "went_offline",
+    );
+    assert.equal(wentOffline.length, 1);
+    assert.deepEqual(wentOffline[0]?.body, {
+      event: "went_offline",
+      workstation_id: workstationId,
+      reason: "workstation deregistered",
+    });
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as {
+      default_workstation_id: string | null;
+      workstations: Array<Record<string, unknown>>;
+    };
+    assert.equal(body.default_workstation_id, null);
+    assert.deepEqual(body.workstations, []);
+  });
+
+  it("does not let another principal deregister a workstation", async () => {
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const events = new FakeWorkstationEventsNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute, WORKSTATION_EVENTS: events });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationLease(compute, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    const deleted = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2", {
+        method: "DELETE",
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "bob",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(deleted.status, 404);
+    assert.equal(compute.leases.has("ws-lab2"), true);
+    assert.equal(env.DB.workstations.has(workstationKey("user:dev:alice", "ws-lab2")), true);
+    assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/notify"));
+  });
+
   it("forwards user-owned workstation event socket upgrades", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
@@ -2488,6 +2591,92 @@ describe("Worker artifact routes", () => {
       (entry) => new URL(entry.url).pathname === "/status",
     );
     assert.equal(statusRequest?.objectName, objectName);
+  });
+
+  it("does not probe event-socket status when a fresh offline lease decides the list row", async () => {
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute, WORKSTATION_EVENTS: events });
+    const now = Date.now();
+    const lastSeenAt = new Date(now - 4 * 60_000).toISOString();
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+    });
+    seedWorkstationLease(compute, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+      online: false,
+    });
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as {
+      workstations: Array<{
+        workstation_id: string;
+        status: string;
+      }>;
+    };
+    assert.equal(body.workstations[0]?.workstation_id, "ws-lab2");
+    assert.equal(body.workstations[0]?.status, "offline");
+    assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
+  });
+
+  it("does not probe event-socket status when a fresh online lease decides a stale list row", async () => {
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute, WORKSTATION_EVENTS: events });
+    const now = Date.now();
+    const staleLastSeenAt = new Date(now - 4 * 60_000).toISOString();
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt: staleLastSeenAt,
+    });
+    seedWorkstationLease(compute, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt: new Date(now).toISOString(),
+      online: true,
+    });
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as {
+      workstations: Array<{
+        workstation_id: string;
+        status: string;
+      }>;
+    };
+    assert.equal(body.workstations[0]?.workstation_id, "ws-lab2");
+    assert.equal(body.workstations[0]?.status, "online");
+    assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
   });
 
   it("does not fan out event-socket status checks for fresh workstation rows", async () => {
@@ -3002,6 +3191,78 @@ describe("Worker artifact routes", () => {
     assert.ok(events.requests.some((entry) => new URL(entry.url).pathname === "/notify"));
   });
 
+  it("rejects attach when a fresh offline lease outvotes a lingering event socket", async () => {
+    const roomRequests: string[] = [];
+    const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
+    const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({
+      OWNER_COMPUTE_INDEX: compute,
+      WORKSTATION_EVENTS: events,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            roomRequests.push(new URL(request.url).pathname);
+            return Response.json({ ok: true, changed: true });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    const now = Date.now();
+    const lastSeenAt = new Date(now - 4 * 60_000).toISOString();
+    seedNotebook(env, "attach-lease-demo");
+    seedAcl(env, { notebookId: "attach-lease-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+    });
+    seedWorkstationLease(compute, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+      online: false,
+    });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-lease-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 409);
+    const body = (await attach.json()) as {
+      error?: string;
+      workstation?: { workstation_id?: string; status?: string };
+    };
+    assert.equal(body.error, "workstation is not online");
+    assert.equal(body.workstation?.workstation_id, "ws-lab2");
+    assert.equal(body.workstation?.status, "offline");
+    assert.deepEqual(roomRequests, ["/internal/n/attach-lease-demo/runtime-state-repair"]);
+    assert.equal(env.DB.workstationAttachJobs.size, 0);
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "attach-lease-demo" &&
+          row.subject === "user:dev:alice" &&
+          row.scope === "runtime_peer",
+      ),
+      false,
+    );
+    assert.ok(events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
+    assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/notify"));
+  });
+
   it("reuses the active workstation attach job for repeated owner requests", async () => {
     const env = fakeEnv();
     seedNotebook(env, "attach-demo");
@@ -3034,6 +3295,119 @@ describe("Worker artifact routes", () => {
     const secondBody = (await second.json()) as { job: { job_id: string } };
     assert.equal(secondBody.job.job_id, firstBody.job.job_id);
     assert.equal(env.DB.workstationAttachJobs.size, 1);
+  });
+
+  it("switches active workstation attach jobs to the newly attached workstation", async () => {
+    let runtimeStateRequest: Request | undefined;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            runtimeStateRequest = request;
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab-a" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab-b" });
+    seedWorkstationAttachJob(env, {
+      id: "running-job-a",
+      notebookId: "attach-demo",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab-a",
+      status: "running",
+      updatedAt: new Date().toISOString(),
+    });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab-b" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 202);
+    const body = (await attach.json()) as {
+      job: { job_id: string; status: string; workstation_id: string };
+    };
+    assert.notEqual(body.job.job_id, "running-job-a");
+    assert.equal(body.job.status, "pending");
+    assert.equal(body.job.workstation_id, "ws-lab-b");
+    assert.equal(env.DB.batchSizes.at(-1), 2);
+    assert.equal(env.DB.workstationAttachJobs.get("running-job-a")?.status, "cancelled");
+    assert.match(
+      env.DB.workstationAttachJobs.get("running-job-a")?.error_message ?? "",
+      /replaced by a newer workstation attach request/,
+    );
+    assert.ok(runtimeStateRequest);
+    const payload = (await runtimeStateRequest.json()) as {
+      attachment?: {
+        status?: string;
+        status_message?: string | null;
+        workstation_id?: string;
+        runtime_session_id?: string | null;
+      };
+      close_runtime_peers?: boolean;
+      close_reason?: string;
+    };
+    assert.equal(payload.close_runtime_peers, true);
+    assert.equal(payload.close_reason, "workstation attachment switched");
+    assert.equal(payload.attachment?.workstation_id, "ws-lab-b");
+  });
+
+  it("enforces one active workstation attach job per notebook owner", async () => {
+    const env = fakeEnv();
+    const now = new Date().toISOString();
+    const insert = (id: string, workstationId: string) =>
+      env.DB.prepare(
+        `INSERT INTO workstation_attach_jobs (
+           id,
+           notebook_id,
+           owner_principal,
+           workstation_id,
+           status,
+           requested_by_actor_label,
+           requested_at,
+           updated_at
+         ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+      )
+        .bind(
+          id,
+          "attach-demo",
+          "user:dev:alice",
+          workstationId,
+          "user:dev:alice/browser:tab",
+          now,
+          now,
+        )
+        .run();
+
+    await insert("pending-a", "ws-lab-a");
+    await assert.rejects(
+      insert("pending-b", "ws-lab-b"),
+      /UNIQUE constraint failed: workstation_attach_jobs.notebook_id, workstation_attach_jobs.owner_principal/,
+    );
+    const active = env.DB.workstationAttachJobs.get("pending-a");
+    assert.ok(active);
+    active.status = "cancelled";
+
+    await insert("pending-b", "ws-lab-b");
+    assert.equal(env.DB.workstationAttachJobs.get("pending-b")?.workstation_id, "ws-lab-b");
   });
 
   it("expires stale running attach jobs before creating a replacement", async () => {
@@ -3123,6 +3497,7 @@ describe("Worker artifact routes", () => {
     const body = (await attach.json()) as { job: { job_id: string; status: string } };
     assert.notEqual(body.job.job_id, "running-job");
     assert.equal(body.job.status, "pending");
+    assert.equal(env.DB.batchSizes.at(-1), 2);
     assert.equal(env.DB.workstationAttachJobs.get("running-job")?.status, "cancelled");
     assert.match(
       env.DB.workstationAttachJobs.get("running-job")?.error_message ?? "",
@@ -3197,6 +3572,135 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("expires stale pending attach jobs on poll and repairs runtime state", async () => {
+    const repairRequests: Array<{ body: unknown; path: string }> = [];
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            repairRequests.push({
+              body: await request.json(),
+              path: new URL(request.url).pathname,
+            });
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "stale-pending-job",
+      notebookId: "nb-stale-pending",
+      ownerPrincipal: "user:dev:alice",
+      requestedAt: new Date(Date.now() - WORKSTATION_ATTACH_PENDING_STALE_MS - 5_000).toISOString(),
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { jobs: Array<{ job_id: string; status: string }> };
+    assert.deepEqual(body.jobs, []);
+    const expired = env.DB.workstationAttachJobs.get("stale-pending-job");
+    assert.equal(expired?.status, "failed");
+    assert.ok(expired?.finished_at);
+    assert.match(expired?.error_message ?? "", /expired before host accepted/);
+    assert.deepEqual(repairRequests, [
+      {
+        path: "/internal/n/nb-stale-pending/runtime-state-repair",
+        body: {
+          expected_runtime_session_id: "stale-pending-job",
+          reason: "stale workstation attach job expired before host accepted the request",
+        },
+      },
+    ]);
+  });
+
+  it("keeps fresh pending attach jobs visible on poll", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "fresh-pending-job",
+      notebookId: "nb-fresh-pending",
+      ownerPrincipal: "user:dev:alice",
+      requestedAt: new Date().toISOString(),
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { jobs: Array<{ job_id: string; status: string }> };
+    assert.deepEqual(
+      body.jobs.map((job) => [job.job_id, job.status]),
+      [["fresh-pending-job", "pending"]],
+    );
+    assert.equal(env.DB.workstationAttachJobs.get("fresh-pending-job")?.status, "pending");
+  });
+
+  it("honors a fresh offline workstation lease in the attach-jobs poll response", async () => {
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({ OWNER_COMPUTE_INDEX: compute });
+    const lastSeenAt = new Date().toISOString();
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+    });
+    seedWorkstationLease(compute, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      lastSeenAt,
+      online: false,
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      workstation: {
+        status: string;
+        workstation_id: string;
+      };
+    };
+    assert.equal(body.workstation.workstation_id, "ws-lab2");
+    assert.equal(body.workstation.status, "offline");
+  });
+
   it("only lists attach jobs for the authenticated workstation owner", async () => {
     const env = fakeEnv();
     seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
@@ -3205,6 +3709,7 @@ describe("Worker artifact routes", () => {
       id: "job-alice",
       notebookId: "nb-alice",
       ownerPrincipal: "user:dev:alice",
+      requestedAt: new Date().toISOString(),
       workstationId: "ws-lab2",
     });
     seedWorkstationAttachJob(env, {
@@ -3368,18 +3873,93 @@ describe("Worker artifact routes", () => {
     );
 
     assert.equal(response.status, 200);
+    const body = (await response.json()) as { job: { job_id: string; status: string } };
+    assert.equal(body.job.job_id, "job-claim");
+    assert.equal(body.job.status, "accepted");
+    assert.equal(env.DB.workstationAttachJobs.get("job-claim")?.status, "accepted");
+    assert.ok(env.DB.workstationAttachJobs.get("job-claim")?.accepted_at);
     assert.equal(attachmentStatus, "connecting");
     assert.equal(attachmentMessage, "Lab2 accepted the request and is starting compute.");
   });
 
+  it("no-ops delayed workstation status patches that would move a job backward", async () => {
+    let publishCount = 0;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            publishCount += 1;
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-running",
+      notebookId: "nb-running",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      status: "running",
+      updatedAt: "2026-05-22T00:00:02.000Z",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs/job-running", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ status: "accepted" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(publishCount, 0);
+    const row = env.DB.workstationAttachJobs.get("job-running");
+    assert.equal(row?.status, "running");
+    assert.equal(row?.updated_at, "2026-05-22T00:00:02.000Z");
+    assert.deepEqual(await response.json(), {
+      error: "workstation attach job is no longer active",
+      job: {
+        job_id: "job-running",
+        notebook_id: "nb-running",
+        workstation_id: "ws-lab2",
+        status: "running",
+        requested_at: "2026-05-22T00:00:00.000Z",
+        updated_at: "2026-05-22T00:00:02.000Z",
+        accepted_at: null,
+        finished_at: null,
+        error_message: null,
+        runtime_peer: {
+          cloud_url: "http://localhost",
+          notebook_id: "nb-running",
+          scope: "runtime_peer",
+        },
+      },
+    });
+  });
+
   it("repairs RuntimeStateDoc when a workstation attach job fails before runtime peer connects", async () => {
-    const roomRequests: string[] = [];
+    const roomRequests: Array<{ body: unknown; path: string }> = [];
     const env = fakeEnv({
       NOTEBOOK_ROOMS: {
         idFromName: (name: string) => ({ toString: () => name }),
         get: () => ({
           fetch: async (request: Request) => {
-            roomRequests.push(new URL(request.url).pathname);
+            roomRequests.push({
+              body: await request.json(),
+              path: new URL(request.url).pathname,
+            });
             return new Response(JSON.stringify({ ok: true, changed: true }), {
               status: 200,
               headers: { "Content-Type": "application/json" },
@@ -3413,12 +3993,36 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     assert.deepEqual(roomRequests, [
-      "/internal/n/nb-fail/workstation-attachment",
-      "/internal/n/nb-fail/runtime-state-repair",
+      {
+        path: "/internal/n/nb-fail/workstation-attachment",
+        body: {
+          attachment: {
+            workstation_id: "ws-lab2",
+            display_name: "Lab2",
+            provider: "runtime_peer",
+            default_environment_label: "Current Python",
+            environment_policy: "current_python",
+            runtime_session_id: "job-fail",
+            status: "error",
+            status_message: "spawn failed",
+            cpu_count: 8,
+            memory_bytes: 16_000_000_000,
+            working_directory: "/home/ubuntu/project",
+            updated_at: env.DB.workstationAttachJobs.get("job-fail")?.updated_at,
+          },
+        },
+      },
+      {
+        path: "/internal/n/nb-fail/runtime-state-repair",
+        body: {
+          expected_runtime_session_id: "job-fail",
+          reason: "spawn failed",
+        },
+      },
     ]);
   });
 
-  it("rejects late workstation status patches after a replacement cancelled the job", async () => {
+  it("keeps terminal workstation attach jobs sticky after replacement cancellation", async () => {
     let publishCount = 0;
     const env = fakeEnv({
       NOTEBOOK_ROOMS: {
@@ -6744,6 +7348,38 @@ describe("Worker artifact routes", () => {
 });
 
 describe("catalog schema migrations", () => {
+  it("converges workstation attach active uniqueness to the owner-level index name", async () => {
+    const legacyDrop = "DROP INDEX IF EXISTS workstation_attach_jobs_active_unique_idx";
+    const ownerIndexCreate =
+      "CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_owner_unique_idx";
+    const legacyIndexCreate =
+      "CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_unique_idx";
+
+    const storageSource = await readFile(new URL("../src/storage.ts", import.meta.url), "utf8");
+    const dropOffset = storageSource.indexOf(legacyDrop);
+    const createOffset = storageSource.indexOf(ownerIndexCreate);
+    assert.ok(dropOffset >= 0, "runtime schema drops the old 3-column index name");
+    assert.ok(createOffset >= 0, "runtime schema creates the new owner-level index name");
+    assert.ok(dropOffset < createOffset, "runtime schema drops the old name before creating new");
+    assert.equal(
+      storageSource.includes(`${legacyIndexCreate}\n    ON workstation_attach_jobs`),
+      false,
+      "runtime schema does not recreate the old index name",
+    );
+
+    const migration = await readFile(
+      new URL("../migrations/0008_workstation_attach_active_owner_unique.sql", import.meta.url),
+      "utf8",
+    );
+    assert.ok(migration.includes(legacyDrop), "migration drops the old index name");
+    assert.ok(migration.includes(ownerIndexCreate), "migration creates the new index name");
+    assert.equal(
+      migration.includes(`${legacyIndexCreate}\n  ON workstation_attach_jobs`),
+      false,
+      "migration does not recreate the old index name",
+    );
+  });
+
   it("adds dashboard summary and cover columns via ALTER TABLE when absent", async () => {
     const db = new FakeD1();
     // Simulate a pre-migration deployment: the columns do not exist yet.
@@ -7635,6 +8271,27 @@ function seedWorkstation(
   });
 }
 
+function seedWorkstationLease(
+  compute: FakeOwnerComputeIndexNamespace,
+  input: {
+    ownerPrincipal: string;
+    workstationId: string;
+    lastSeenAt: string;
+    leaseExpiresAt?: number;
+    offlineReason?: string | null;
+    online?: boolean;
+  },
+): void {
+  compute.leases.set(input.workstationId, {
+    workstation_id: input.workstationId,
+    owner_principal: input.ownerPrincipal,
+    last_seen_at: input.lastSeenAt,
+    lease_expires_at: input.leaseExpiresAt ?? Date.now() + 60_000,
+    online: input.online ?? true,
+    offline_reason: input.offlineReason ?? null,
+  });
+}
+
 function seedWorkstationAttachJob(
   env: FakeEnv,
   input: {
@@ -7644,6 +8301,7 @@ function seedWorkstationAttachJob(
     workstationId: string;
     errorMessage?: string | null;
     finishedAt?: string | null;
+    requestedAt?: string;
     status?: WorkstationAttachJobRow["status"];
     updatedAt?: string;
   },
@@ -7655,7 +8313,7 @@ function seedWorkstationAttachJob(
     workstation_id: input.workstationId,
     status: input.status ?? "pending",
     requested_by_actor_label: "user:dev:alice/browser:tab",
-    requested_at: "2026-05-22T00:00:00.000Z",
+    requested_at: input.requestedAt ?? "2026-05-22T00:00:00.000Z",
     updated_at: input.updatedAt ?? "2026-05-22T00:00:00.000Z",
     accepted_at: null,
     finished_at: input.finishedAt ?? null,
@@ -7663,11 +8321,45 @@ function seedWorkstationAttachJob(
   });
 }
 
-function isActiveWorkstationAttachJob(job: WorkstationAttachJobRow, staleBefore: string): boolean {
+function isActiveWorkstationAttachJob(
+  job: WorkstationAttachJobRow,
+  {
+    pendingStaleBefore,
+    staleBefore,
+  }: {
+    pendingStaleBefore: string;
+    staleBefore: string;
+  },
+): boolean {
   return (
-    job.status === "pending" ||
+    (job.status === "pending" && job.requested_at >= pendingStaleBefore) ||
     ((job.status === "accepted" || job.status === "running") && job.updated_at >= staleBefore)
   );
+}
+
+function isActiveWorkstationAttachJobStatus(status: WorkstationAttachJobRow["status"]): boolean {
+  return status === "pending" || status === "accepted" || status === "running";
+}
+
+function workstationAttachJobStatusRank(status: WorkstationAttachJobRow["status"]): number {
+  switch (status) {
+    case "pending":
+      return 0;
+    case "accepted":
+      return 1;
+    case "running":
+      return 2;
+    case "failed":
+    case "completed":
+    case "cancelled":
+      return 3;
+  }
+}
+
+function cloneWorkstationAttachJobs(
+  jobs: ReadonlyMap<string, WorkstationAttachJobRow>,
+): Map<string, WorkstationAttachJobRow> {
+  return new Map([...jobs].map(([id, job]) => [id, { ...job }]));
 }
 
 function seedPendingInvite(
@@ -8143,9 +8835,18 @@ class FakeD1 implements D1Database {
 
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
     this.batchSizes.push(statements.length);
+    const attachJobsBefore = cloneWorkstationAttachJobs(this.workstationAttachJobs);
     const results: D1Result<T>[] = [];
-    for (const statement of statements) {
-      results.push(await statement.run<T>());
+    try {
+      for (const statement of statements) {
+        results.push(await statement.run<T>());
+      }
+    } catch (error) {
+      this.workstationAttachJobs.clear();
+      for (const [id, job] of attachJobsBefore) {
+        this.workstationAttachJobs.set(id, job);
+      }
+      throw error;
     }
     return results;
   }
@@ -8217,10 +8918,13 @@ class FakeWorkstationEventsNamespace implements DurableObjectNamespace {
 interface FakeOwnerComputeIndexRequest {
   notebookIds: string[];
   objectName: string;
+  pathname: string;
+  workstationId: string | null;
 }
 
 class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
   readonly requests: FakeOwnerComputeIndexRequest[] = [];
+  readonly leases = new Map<string, WorkstationLeaseRecord>();
   readonly sessions = new Map<string, NotebookComputeSessionSummary>();
 
   idFromName(name: string): { toString(): string } {
@@ -8234,6 +8938,35 @@ class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
     return {
       fetch: async (request: Request) => {
         const pathname = new URL(request.url).pathname;
+        if (pathname === "/lease/list") {
+          requests.push({ objectName, notebookIds: [], pathname, workstationId: null });
+          return Response.json({ ok: true, leases: Array.from(this.leases.values()) });
+        }
+        if (pathname === "/lease/delete") {
+          const payload = (await request.json().catch(() => ({}))) as {
+            owner_principal?: string;
+            workstation_id?: string;
+          };
+          const workstationId =
+            typeof payload.workstation_id === "string" ? payload.workstation_id : null;
+          requests.push({ objectName, notebookIds: [], pathname, workstationId });
+          const lease = workstationId ? this.leases.get(workstationId) : undefined;
+          if (!workstationId || !lease || lease.owner_principal !== payload.owner_principal) {
+            return Response.json({
+              ok: true,
+              deleted: false,
+              went_offline: false,
+              reason: null,
+            });
+          }
+          this.leases.delete(workstationId);
+          return Response.json({
+            ok: true,
+            deleted: true,
+            went_offline: lease.online,
+            reason: lease.offline_reason,
+          });
+        }
         if (pathname !== "/list") {
           return Response.json({ error: "not found" }, { status: 404 });
         }
@@ -8241,7 +8974,7 @@ class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
           notebook_ids?: string[];
         };
         const notebookIds = Array.isArray(payload.notebook_ids) ? payload.notebook_ids : [];
-        requests.push({ objectName, notebookIds });
+        requests.push({ objectName, notebookIds, pathname, workstationId: null });
         return Response.json({
           ok: true,
           sessions: notebookIds.map((notebookId) => sessions.get(notebookId)).filter(Boolean),
@@ -8666,9 +9399,31 @@ class FakeD1Statement implements D1PreparedStatement {
       const [ownerPrincipal, workstationId] = this.values as [string, string, string];
       this.db.workstationDefaults.set(ownerPrincipal, workstationId);
       return okResult(undefined, { changes: 1 });
+    } else if (this.query.includes("DELETE FROM workstation_defaults")) {
+      const [ownerPrincipal, workstationId] = this.values as [string, string];
+      if (this.db.workstationDefaults.get(ownerPrincipal) === workstationId) {
+        this.db.workstationDefaults.delete(ownerPrincipal);
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
+    } else if (this.query.includes("DELETE FROM workstations")) {
+      const [ownerPrincipal, workstationId] = this.values as [string, string];
+      const deleted = this.db.workstations.delete(workstationKey(ownerPrincipal, workstationId));
+      return okResult(undefined, { changes: deleted ? 1 : 0 });
     } else if (this.query.includes("INSERT INTO workstation_attach_jobs")) {
       const [id, notebookId, ownerPrincipal, workstationId, actorLabel, requestedAt, updatedAt] =
         this.values as [string, string, string, string, string, string, string];
+      const duplicate = [...this.db.workstationAttachJobs.values()].find(
+        (job) =>
+          job.notebook_id === notebookId &&
+          job.owner_principal === ownerPrincipal &&
+          isActiveWorkstationAttachJobStatus(job.status),
+      );
+      if (duplicate) {
+        throw new Error(
+          "D1_ERROR: UNIQUE constraint failed: workstation_attach_jobs.notebook_id, workstation_attach_jobs.owner_principal",
+        );
+      }
       this.db.workstationAttachJobs.set(id, {
         id,
         notebook_id: notebookId,
@@ -8685,16 +9440,33 @@ class FakeD1Statement implements D1PreparedStatement {
       return okResult(undefined, { changes: 1 });
     } else if (
       this.query.includes("UPDATE workstation_attach_jobs") &&
-      this.query.includes("stale workstation attach job expired")
+      this.query.includes("stale workstation attach job expired after heartbeat timeout")
     ) {
-      const [updatedAt, finishedAt, notebookId, ownerPrincipal, workstationId, staleBefore] = this
-        .values as [string, string, string, string, string, string];
+      const [
+        updatedAt,
+        finishedAt,
+        notebookId,
+        notebookIdRepeat,
+        ownerPrincipal,
+        workstationId,
+        workstationIdRepeat,
+        staleBefore,
+      ] = this.values as [
+        string,
+        string,
+        string | null,
+        string | null,
+        string,
+        string | null,
+        string | null,
+        string,
+      ];
       let changes = 0;
       for (const job of this.db.workstationAttachJobs.values()) {
         if (
-          job.notebook_id === notebookId &&
+          (notebookId === null || job.notebook_id === notebookIdRepeat) &&
           job.owner_principal === ownerPrincipal &&
-          job.workstation_id === workstationId &&
+          (workstationId === null || job.workstation_id === workstationIdRepeat) &&
           (job.status === "accepted" || job.status === "running") &&
           job.updated_at < staleBefore
         ) {
@@ -8710,14 +9482,18 @@ class FakeD1Statement implements D1PreparedStatement {
       this.query.includes("UPDATE workstation_attach_jobs") &&
       this.query.includes("SET status = 'cancelled'")
     ) {
-      const [updatedAt, finishedAt, errorMessage, notebookId, ownerPrincipal, workstationId] = this
-        .values as [string, string, string, string, string, string];
+      const [updatedAt, finishedAt, errorMessage, notebookId, ownerPrincipal] = this.values as [
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
       let changes = 0;
       for (const job of this.db.workstationAttachJobs.values()) {
         if (
           job.notebook_id === notebookId &&
           job.owner_principal === ownerPrincipal &&
-          job.workstation_id === workstationId &&
           (job.status === "pending" || job.status === "accepted" || job.status === "running")
         ) {
           job.status = "cancelled";
@@ -8759,6 +9535,12 @@ class FakeD1Statement implements D1PreparedStatement {
           job.status !== "pending" &&
           job.status !== "accepted" &&
           job.status !== "running"
+        ) {
+          return okResult(undefined, { changes: 0 });
+        }
+        if (
+          this.query.includes("CASE status") &&
+          workstationAttachJobStatusRank(job.status) > workstationAttachJobStatusRank(status)
         ) {
           return okResult(undefined, { changes: 0 });
         }
@@ -9240,7 +10022,7 @@ class FakeD1Statement implements D1PreparedStatement {
     }
     if (this.query.includes("FROM workstation_attach_jobs")) {
       if (this.query.includes("notebook_id = ?")) {
-        const [notebookId, ownerPrincipal, workstationId, staleBefore] = this.values as [
+        const [notebookId, ownerPrincipal, pendingStaleBefore, staleBefore] = this.values as [
           string,
           string,
           string,
@@ -9252,8 +10034,7 @@ class FakeD1Statement implements D1PreparedStatement {
               (job) =>
                 job.notebook_id === notebookId &&
                 job.owner_principal === ownerPrincipal &&
-                job.workstation_id === workstationId &&
-                isActiveWorkstationAttachJob(job, staleBefore),
+                isActiveWorkstationAttachJob(job, { pendingStaleBefore, staleBefore }),
             )
             .sort((left, right) => right.requested_at.localeCompare(left.requested_at))[0] as
             | T
@@ -9326,6 +10107,48 @@ class FakeD1Statement implements D1PreparedStatement {
     if (pragmaMatch) {
       const columns = this.db.tableColumns.get(pragmaMatch[1] ?? "") ?? new Set<string>();
       return okResult([...columns].map((name) => ({ name })) as T[]);
+    }
+    if (
+      this.query.includes("UPDATE workstation_attach_jobs") &&
+      this.query.includes("stale workstation attach job expired before host accepted the request")
+    ) {
+      const [
+        updatedAt,
+        finishedAt,
+        notebookId,
+        notebookIdRepeat,
+        ownerPrincipal,
+        workstationId,
+        workstationIdRepeat,
+        pendingStaleBefore,
+      ] = this.values as [
+        string,
+        string,
+        string | null,
+        string | null,
+        string,
+        string | null,
+        string | null,
+        string,
+      ];
+      const expired: WorkstationAttachJobRow[] = [];
+      for (const job of this.db.workstationAttachJobs.values()) {
+        if (
+          (notebookId === null || job.notebook_id === notebookIdRepeat) &&
+          job.owner_principal === ownerPrincipal &&
+          (workstationId === null || job.workstation_id === workstationIdRepeat) &&
+          job.status === "pending" &&
+          job.requested_at < pendingStaleBefore
+        ) {
+          job.status = "failed";
+          job.updated_at = updatedAt;
+          job.finished_at = finishedAt;
+          job.error_message =
+            "stale workstation attach job expired before host accepted the request";
+          expired.push({ ...job });
+        }
+      }
+      return okResult(expired as T[], { changes: expired.length });
     }
     if (
       this.query.includes("FROM workstation_credentials") &&
@@ -9407,12 +10230,8 @@ class FakeD1Statement implements D1PreparedStatement {
       );
     }
     if (this.query.includes("FROM workstation_attach_jobs")) {
-      const [ownerPrincipal, workstationId, staleBefore, limitValue] = this.values as [
-        string,
-        string,
-        string,
-        number,
-      ];
+      const [ownerPrincipal, workstationId, pendingStaleBefore, staleBefore, limitValue] = this
+        .values as [string, string, string, string, number];
       const limit = Number.isFinite(limitValue) ? limitValue : Number.POSITIVE_INFINITY;
       return okResult(
         [...this.db.workstationAttachJobs.values()]
@@ -9420,7 +10239,7 @@ class FakeD1Statement implements D1PreparedStatement {
             (job) =>
               job.owner_principal === ownerPrincipal &&
               job.workstation_id === workstationId &&
-              isActiveWorkstationAttachJob(job, staleBefore),
+              isActiveWorkstationAttachJob(job, { pendingStaleBefore, staleBefore }),
           )
           .sort((left, right) => left.requested_at.localeCompare(right.requested_at))
           .slice(0, limit) as T[],

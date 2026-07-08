@@ -178,6 +178,55 @@ describe("OwnerComputeIndex lease notifications and GC", () => {
     assert.match(events.notifications[0].body.reason as string, /lease expired/);
   });
 
+  it("deletes an online lease and leaves no lease for a concurrent sweep to notify", async () => {
+    const { state, scheduledAlarm, settle, deliverAlarm } = fakeStateWithAlarm();
+    const events = fakeWorkstationEvents();
+    const object = new OwnerComputeIndex(state, events.env);
+
+    await object.fetch(leaseUpsert("ws-a", "user:dev:alice", 60_000));
+
+    const deleted = await object.fetch(leaseDelete("ws-a", "user:dev:alice"));
+    assert.equal(deleted.status, 200);
+    assert.deepEqual(await deleted.json(), {
+      ok: true,
+      deleted: true,
+      went_offline: true,
+      reason: null,
+    });
+    assert.equal((await listLeases(object)).length, 0);
+    assert.equal(scheduledAlarm(), null);
+
+    deliverAlarm();
+    await object.alarm();
+    await settle();
+
+    assert.equal(events.notifications.length, 0);
+  });
+
+  it("does not ask delete callers to notify again when the sweep already marked offline", async () => {
+    const { state, values, settle, deliverAlarm } = fakeStateWithAlarm();
+    const events = fakeWorkstationEvents();
+    const object = new OwnerComputeIndex(state, events.env);
+
+    await object.fetch(leaseUpsert("ws-a", "user:dev:alice", 60_000));
+    const stored = values.get("lease:ws-a") as Record<string, unknown>;
+    values.set("lease:ws-a", { ...stored, lease_expires_at: Date.now() - 1 });
+
+    deliverAlarm();
+    await object.alarm();
+    await settle();
+
+    const deleted = await object.fetch(leaseDelete("ws-a", "user:dev:alice"));
+    assert.equal(deleted.status, 200);
+    assert.deepEqual(await deleted.json(), {
+      ok: true,
+      deleted: true,
+      went_offline: false,
+      reason: "lease expired: no heartbeat within the lease window",
+    });
+    assert.equal(events.notifications.length, 1);
+  });
+
   it("does not push for a lease that is already offline", async () => {
     const { state, values, settle, deliverAlarm } = fakeStateWithAlarm();
     const events = fakeWorkstationEvents();
@@ -248,6 +297,17 @@ function leaseUpsert(workstationId: string, ownerPrincipal: string, ttlMs: numbe
       workstation_id: workstationId,
       owner_principal: ownerPrincipal,
       ttl_ms: ttlMs,
+    }),
+  });
+}
+
+function leaseDelete(workstationId: string, ownerPrincipal: string): Request {
+  return new Request("https://compute.internal/lease/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      workstation_id: workstationId,
+      owner_principal: ownerPrincipal,
     }),
   });
 }

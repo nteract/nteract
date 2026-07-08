@@ -37,6 +37,12 @@ export interface WorkstationLeaseRecord {
   offline_reason: string | null;
 }
 
+export interface WorkstationLeaseDeleteResult {
+  deleted: boolean;
+  went_offline: boolean;
+  reason: string | null;
+}
+
 export class OwnerComputeIndex {
   constructor(
     private readonly state: DurableObjectState,
@@ -56,6 +62,9 @@ export class OwnerComputeIndex {
     }
     if (request.method === "POST" && url.pathname === "/lease/upsert") {
       return this.handleLeaseUpsert(request);
+    }
+    if (request.method === "POST" && url.pathname === "/lease/delete") {
+      return this.handleLeaseDelete(request);
     }
     if (request.method === "POST" && url.pathname === "/lease/list") {
       return this.handleLeaseList();
@@ -96,6 +105,38 @@ export class OwnerComputeIndex {
     await this.state.storage.put(leaseKey(workstationId), lease);
     await this.armLeaseAlarm();
     return json({ ok: true, lease_expires_at: lease.lease_expires_at });
+  }
+
+  private async handleLeaseDelete(request: Request): Promise<Response> {
+    const payload = await readJsonObject(request);
+    if (payload instanceof Response) {
+      return payload;
+    }
+    const workstationId = boundedString(payload.workstation_id ?? payload.workstationId, 128);
+    const ownerPrincipal = boundedString(payload.owner_principal ?? payload.ownerPrincipal, 320);
+    if (!workstationId || !ownerPrincipal) {
+      return json({ error: "workstation_id and owner_principal are required" }, 400);
+    }
+
+    const key = leaseKey(workstationId);
+    const lease = await this.state.storage.get<unknown>(key);
+    if (!isWorkstationLeaseRecord(lease) || lease.owner_principal !== ownerPrincipal) {
+      return json({
+        ok: true,
+        deleted: false,
+        went_offline: false,
+        reason: null,
+      });
+    }
+
+    await this.state.storage.delete(key);
+    await this.armLeaseAlarm();
+    return json({
+      ok: true,
+      deleted: true,
+      went_offline: lease.online,
+      reason: lease.offline_reason,
+    });
   }
 
   private async handleLeaseList(): Promise<Response> {
@@ -417,6 +458,68 @@ export async function upsertWorkstationLease(
     });
   }
   return false;
+}
+
+/**
+ * Delete a workstation liveness lease from the owner registry. Returns whether
+ * the delete consumed an online lease so callers can send exactly one
+ * went_offline notification and avoid racing the alarm sweep's own transition.
+ */
+export async function deleteWorkstationLease(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+): Promise<WorkstationLeaseDeleteResult> {
+  const namespace = env.OWNER_COMPUTE_INDEX;
+  const fallback: WorkstationLeaseDeleteResult = {
+    deleted: false,
+    went_offline: false,
+    reason: null,
+  };
+  if (!namespace) {
+    return fallback;
+  }
+  try {
+    const response = await ownerComputeIndexStub(namespace, ownerPrincipal).fetch(
+      new Request("https://owner-compute-index.internal/lease/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workstation_id: workstationId,
+          owner_principal: ownerPrincipal,
+        }),
+      }),
+    );
+    if (!response.ok) {
+      cloudLog("warn", "fleet_registry.lease_delete_failed", {
+        owner_principal: ownerPrincipal,
+        workstation_id: workstationId,
+        response_status: response.status,
+        counter: "fleet_registry_lease_delete_failed",
+        counter_delta: 1,
+      });
+      return fallback;
+    }
+    const body = (await response.json()) as unknown;
+    if (!body || typeof body !== "object") {
+      return fallback;
+    }
+    const result = body as Partial<WorkstationLeaseDeleteResult>;
+    return {
+      deleted: result.deleted === true,
+      went_offline: result.went_offline === true,
+      reason: typeof result.reason === "string" ? result.reason : null,
+    };
+  } catch (error) {
+    cloudLog("warn", "fleet_registry.lease_delete_failed", {
+      owner_principal: ownerPrincipal,
+      workstation_id: workstationId,
+      error: errorMessage(error),
+      counter: "fleet_registry_lease_delete_failed",
+      counter_delta: 1,
+    });
+    return fallback;
+  }
 }
 
 /** Read every lease this owner holds, keyed by workstation id. */

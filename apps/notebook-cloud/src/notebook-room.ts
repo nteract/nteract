@@ -510,6 +510,43 @@ export class NotebookRoom {
     if (reason instanceof Response) {
       return reason;
     }
+    const expectedRuntimeSessionId = optionalBoundedStringField(
+      payload?.expected_runtime_session_id ?? payload?.expectedRuntimeSessionId,
+      "expected_runtime_session_id",
+      128,
+    );
+    if (expectedRuntimeSessionId instanceof Response) {
+      return expectedRuntimeSessionId;
+    }
+
+    const startedAt = Date.now();
+    const materializer = this.materializerFor(notebookId);
+    if (expectedRuntimeSessionId) {
+      const currentAttachment = await materializer.getWorkstationAttachment();
+      const currentRuntimeSessionId = currentAttachment?.runtime_session_id ?? null;
+      if (currentRuntimeSessionId !== expectedRuntimeSessionId) {
+        cloudLog("info", "room.runtime_state_repair.skipped_session_mismatch", {
+          notebook_id: notebookId,
+          expected_runtime_session_id: expectedRuntimeSessionId,
+          current_runtime_session_id: currentRuntimeSessionId,
+          runtime_peer_count: this.runtimePeerCount(),
+          duration_ms: durationMs(startedAt),
+          counter: "runtime_state_repairs_skipped_session_mismatch",
+          counter_delta: 1,
+        });
+        return json(
+          {
+            ok: true,
+            changed: false,
+            skipped: true,
+            skip_reason: "runtime_session_mismatch",
+            forced: force,
+            runtime_peer_count: this.runtimePeerCount(),
+          },
+          200,
+        );
+      }
+    }
 
     if (this.hasRuntimePeer()) {
       if (!force) {
@@ -527,9 +564,7 @@ export class NotebookRoom {
       });
     }
 
-    const startedAt = Date.now();
     try {
-      const materializer = this.materializerFor(notebookId);
       const result = await materializer.reconcileRuntimePeerGone(reason);
       this.invalidateSelectedRuntimePeerSession(notebookId);
       if (result.changed) {

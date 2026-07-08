@@ -92,6 +92,7 @@ import {
 } from "./workstation-events.ts";
 import {
   OwnerComputeIndex,
+  deleteWorkstationLease,
   listOwnerComputeSessions,
   listWorkstationLeases,
   upsertWorkstationLease,
@@ -375,6 +376,14 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     methods: ["POST"],
     handler: ({ params }, request, env) =>
       routeWorkstationCredentialRevoke(request, env, params.credentialId),
+  },
+  {
+    match: routePath("/api/workstations/:workstationId", {
+      trailingSlash: "optional",
+    }),
+    methods: ["DELETE"],
+    handler: ({ params }, request, env) =>
+      routeWorkstationDeregister(request, env, params.workstationId),
   },
   {
     match: routePath("/api/workstations/:workstationId/events", {
@@ -1732,6 +1741,7 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
       env,
       ownerPrincipal,
       workstations,
+      leases,
       now,
     );
     return json({
@@ -1803,6 +1813,68 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
     },
     201,
   );
+}
+
+async function routeWorkstationDeregister(
+  request: Request,
+  env: Env,
+  workstationIdParam: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const workstationId = boundedStringField(workstationIdParam, "workstation_id", 128);
+  if (workstationId instanceof Response) {
+    return workstationId;
+  }
+
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner", {
+    allowWorkstationCredential: true,
+  });
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to deregister a workstation" }, 401);
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
+  if (!workstation) {
+    return missingWorkstationResponse();
+  }
+
+  const leaseDelete = await deleteWorkstationLease(env, ownerPrincipal, workstationId);
+  const deleted = await deleteRegisteredWorkstation(env, ownerPrincipal, workstationId);
+  if (!deleted) {
+    return missingWorkstationResponse();
+  }
+  if (leaseDelete.went_offline) {
+    await notifyWorkstationWentOffline(
+      env,
+      ownerPrincipal,
+      workstationId,
+      leaseDelete.reason ?? "workstation deregistered",
+    );
+  }
+
+  cloudLog("info", "workstation.deregistered", {
+    principal: ownerPrincipal,
+    workstation_id: workstationId,
+    counter: "workstation_deregistrations",
+    counter_delta: 1,
+  });
+  return json({
+    ok: true,
+    workstation_id: workstationId,
+    deregistered: true,
+  });
 }
 
 async function routeDefaultWorkstation(request: Request, env: Env): Promise<Response> {
@@ -2095,9 +2167,18 @@ async function routeNotebookWorkstationAttachment(
     return json({ error: "workstation not found" }, 404);
   }
 
-  const defaultWorkstationId = await getDefaultWorkstationId(env, ownerPrincipal);
-  const eventPresence = await workstationEventPresence(env, ownerPrincipal, workstationId);
-  const projectedStatus = workstationStatusForResponse(workstation, Date.now(), eventPresence);
+  const [defaultWorkstationId, eventPresence, leases] = await Promise.all([
+    getDefaultWorkstationId(env, ownerPrincipal),
+    workstationEventPresence(env, ownerPrincipal, workstationId),
+    listWorkstationLeases(env, ownerPrincipal),
+  ]);
+  const lease = leases.get(workstationId) ?? null;
+  const projectedStatus = workstationStatusForResponse(
+    workstation,
+    Date.now(),
+    eventPresence,
+    lease,
+  );
   if (projectedStatus !== "online") {
     await repairNotebookRuntimeStateIfNoRuntimePeer(env, notebookId, {
       reason: `workstation ${workstationId} is not online while attaching compute`,
@@ -2110,6 +2191,7 @@ async function routeNotebookWorkstationAttachment(
           defaultWorkstationId,
           now: Date.now(),
           eventPresence,
+          lease,
         }),
       },
       409,
@@ -2123,19 +2205,27 @@ async function routeNotebookWorkstationAttachment(
     scope: "runtime_peer",
     actorLabel: identity.actorLabel,
   });
-  const job = await createWorkstationAttachJob(env, {
+  const attachJob = await createWorkstationAttachJob(env, {
     notebookId,
     ownerPrincipal,
     replaceActive: replaceExisting,
     workstationId,
     actorLabel: identity.actorLabel,
   });
-  if (!job) {
+  if (!attachJob) {
     return json({ error: "workstation attach job was not created" }, 500);
   }
+  const { job } = attachJob;
+  const switchedWorkstations =
+    attachJob.cancelledActiveJob !== null &&
+    attachJob.cancelledActiveJob.workstation_id !== workstationId;
   await publishWorkstationAttachJobRuntimeState(env, job, workstation, {
-    closeRuntimePeers: replaceExisting,
-    closeReason: replaceExisting ? "workstation restart requested" : undefined,
+    closeRuntimePeers: replaceExisting || switchedWorkstations,
+    closeReason: replaceExisting
+      ? "workstation restart requested"
+      : switchedWorkstations
+        ? "workstation attachment switched"
+        : undefined,
   });
   await notifyWorkstationAttachJob(env, ownerPrincipal, job);
 
@@ -2156,6 +2246,7 @@ async function routeNotebookWorkstationAttachment(
         defaultWorkstationId,
         now: Date.now(),
         eventPresence,
+        lease,
       }),
     },
     202,
@@ -2293,12 +2384,33 @@ async function routeWorkstationAttachJobs(
   if (limit instanceof Response) {
     return limit;
   }
-  const jobs = await listActiveWorkstationAttachJobs(env, ownerPrincipal, workstationId, limit);
+  const { expiredPendingJobs, jobs } = await listActiveWorkstationAttachJobs(
+    env,
+    ownerPrincipal,
+    workstationId,
+    limit,
+  );
+  await Promise.all(
+    expiredPendingJobs.map((job) =>
+      repairNotebookRuntimeStateIfNoRuntimePeer(env, job.notebook_id, {
+        reason:
+          job.error_message ?? "pending workstation attach job expired before host accepted it",
+        operation: "workstation_attach_job_pending_expired",
+        expectedRuntimeSessionId: job.id,
+      }),
+    ),
+  );
+  const [defaultWorkstationId, leases] = await Promise.all([
+    getDefaultWorkstationId(env, ownerPrincipal),
+    listWorkstationLeases(env, ownerPrincipal),
+  ]);
+  const lease = leases.get(workstationId) ?? null;
   return json({
     ok: true,
     workstation: workstationResponseRow(workstation, {
-      defaultWorkstationId: await getDefaultWorkstationId(env, ownerPrincipal),
+      defaultWorkstationId,
       now: Date.now(),
+      lease,
     }),
     jobs: jobs.map((job) => workstationAttachJobResponseRow(request, job)),
   });
@@ -2352,6 +2464,78 @@ async function notifyWorkstationAttachJob(
   }
 }
 
+async function notifyWorkstationWentOffline(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+  reason: string,
+): Promise<void> {
+  if (!env.WORKSTATION_EVENTS) {
+    return;
+  }
+  try {
+    const response = await workstationEventsStub(env, ownerPrincipal, workstationId).fetch(
+      new Request("https://workstation-events.internal/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event: "went_offline",
+          workstation_id: workstationId,
+          reason,
+        }),
+      }),
+    );
+    if (response.ok) {
+      return;
+    }
+    cloudLog("warn", "workstation.events.went_offline_notify_failed", {
+      principal: ownerPrincipal,
+      workstation_id: workstationId,
+      response_status: response.status,
+      counter: "workstation_events_went_offline_notify_failed",
+      counter_delta: 1,
+    });
+  } catch (error) {
+    cloudLog("warn", "workstation.events.went_offline_notify_failed", {
+      principal: ownerPrincipal,
+      workstation_id: workstationId,
+      error: error instanceof Error ? error.message : String(error),
+      counter: "workstation_events_went_offline_notify_failed",
+      counter_delta: 1,
+    });
+  }
+}
+
+async function deleteRegisteredWorkstation(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+): Promise<boolean> {
+  if (!env.DB) {
+    return false;
+  }
+  await env.DB.prepare(
+    `DELETE FROM workstation_defaults
+      WHERE owner_principal = ?
+        AND workstation_id = ?`,
+  )
+    .bind(ownerPrincipal, workstationId)
+    .run();
+  const result = await env.DB.prepare(
+    `DELETE FROM workstations
+      WHERE owner_principal = ?
+        AND workstation_id = ?`,
+  )
+    .bind(ownerPrincipal, workstationId)
+    .run();
+  return d1MutationChanges(result) > 0;
+}
+
+function d1MutationChanges(result: { meta?: Record<string, unknown> }): number {
+  const changes = result.meta?.changes;
+  return typeof changes === "number" ? changes : 0;
+}
+
 function workstationEventsStub(
   env: Env,
   ownerPrincipal: string,
@@ -2379,13 +2563,18 @@ async function workstationEventPresenceById(
   env: Env,
   ownerPrincipal: string,
   workstations: readonly WorkstationRow[],
+  leases: ReadonlyMap<string, WorkstationLeaseRecord>,
   now: number,
 ): Promise<Map<string, WorkstationEventPresence | null>> {
   if (!env.WORKSTATION_EVENTS || workstations.length === 0) {
     return new Map();
   }
   const staleWorkstations = workstations.filter((workstation) =>
-    workstationListNeedsEventPresence(workstation, now),
+    workstationListNeedsEventPresence(
+      workstation,
+      now,
+      leases.get(workstation.workstation_id) ?? null,
+    ),
   );
   if (staleWorkstations.length === 0) {
     return new Map();
@@ -2403,8 +2592,15 @@ async function workstationEventPresenceById(
   return new Map(entries);
 }
 
-function workstationListNeedsEventPresence(workstation: WorkstationRow, now: number): boolean {
+function workstationListNeedsEventPresence(
+  workstation: WorkstationRow,
+  now: number,
+  lease: WorkstationLeaseRecord | null | undefined,
+): boolean {
   if (workstation.status !== "online" || !workstation.last_seen_at) {
+    return false;
+  }
+  if (lease && workstationLeaseIsFreshEnough(workstation, lease)) {
     return false;
   }
   const lastSeen = Date.parse(workstation.last_seen_at);
@@ -2536,6 +2732,7 @@ async function routeWorkstationAttachJob(
       reason:
         job.error_message ?? `workstation attach job ${job.status} before a runtime peer attached`,
       operation: `workstation_attach_job_${job.status}`,
+      expectedRuntimeSessionId: job.id,
     });
   }
   return json({
@@ -2807,12 +3004,7 @@ export function workstationStatusForResponse(
   eventPresence: WorkstationEventPresence | null | undefined = null,
   lease: WorkstationLeaseRecord | null | undefined = null,
 ): WorkstationStatus {
-  if (
-    eventPresence?.connected === true &&
-    (workstation.status === "online" || workstation.status === "offline")
-  ) {
-    return "online";
-  }
+  const statusUsesLiveness = workstation.status === "online" || workstation.status === "offline";
   // The registry-DO lease is the proactive liveness signal: its alarm sweeps a
   // workstation offline at expiry instead of waiting for a read to notice.
   // Still check the expiry timestamp directly so a late alarm can't report a
@@ -2821,14 +3013,11 @@ export function workstationStatusForResponse(
   // best-effort, so if that write lagged or failed, D1 is the newer signal and
   // a stale offline lease must not override it. Falls back to the lazy D1
   // staleness check when no (or a stale) lease exists.
-  if (lease && (workstation.status === "online" || workstation.status === "offline")) {
-    const rowSeen = workstation.last_seen_at ? Date.parse(workstation.last_seen_at) : NaN;
-    const leaseSeen = Date.parse(lease.last_seen_at);
-    const leaseIsFreshEnough =
-      !Number.isFinite(rowSeen) || (Number.isFinite(leaseSeen) && leaseSeen >= rowSeen);
-    if (leaseIsFreshEnough) {
-      return lease.online && lease.lease_expires_at > now ? "online" : "offline";
-    }
+  if (statusUsesLiveness && lease && workstationLeaseIsFreshEnough(workstation, lease)) {
+    return lease.online && lease.lease_expires_at > now ? "online" : "offline";
+  }
+  if (statusUsesLiveness && eventPresence?.connected === true) {
+    return "online";
   }
   if (workstation.status === "online" && workstation.last_seen_at) {
     const lastSeen = Date.parse(workstation.last_seen_at);
@@ -2837,6 +3026,15 @@ export function workstationStatusForResponse(
     }
   }
   return workstation.status;
+}
+
+function workstationLeaseIsFreshEnough(
+  workstation: WorkstationRow,
+  lease: WorkstationLeaseRecord,
+): boolean {
+  const rowSeen = workstation.last_seen_at ? Date.parse(workstation.last_seen_at) : NaN;
+  const leaseSeen = Date.parse(lease.last_seen_at);
+  return !Number.isFinite(rowSeen) || (Number.isFinite(leaseSeen) && leaseSeen >= rowSeen);
 }
 
 function parseStoredWorkstationEnvironments(value: string | null): unknown[] {
@@ -2935,6 +3133,7 @@ async function repairNotebookRuntimeStateIfNoRuntimePeer(
   env: Env,
   notebookId: string,
   options: {
+    expectedRuntimeSessionId?: string | null;
     operation: string;
     reason: string;
   },
@@ -2950,7 +3149,12 @@ async function repairNotebookRuntimeStateIfNoRuntimePeer(
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: options.reason }),
+          body: JSON.stringify({
+            reason: options.reason,
+            ...(options.expectedRuntimeSessionId
+              ? { expected_runtime_session_id: options.expectedRuntimeSessionId }
+              : {}),
+          }),
         },
       ),
     );
