@@ -168,7 +168,7 @@ describe("MarkdownOutput heading anchors", () => {
     render(<MarkdownOutput content={"Claim with a note.[^1]\n\n[^1]: Detailed citation."} />);
 
     const footnotes = document.querySelector("section[data-footnotes]");
-    expect(footnotes).toHaveClass("border-t", "font-[var(--output-ui-font)]", "text-sm");
+    expect(footnotes).toHaveClass("border-t", "[font-family:var(--output-ui-font)]", "text-sm");
     expect(screen.getByRole("link", { name: "1" })).toHaveClass(
       "rounded-full",
       "bg-primary/6",
@@ -189,7 +189,7 @@ describe("MarkdownOutput heading anchors", () => {
     expect(screen.getByRole("figure")).toHaveClass("my-5");
     expect(screen.getByRole("img", { name: "Plot" })).toHaveClass("border", "shadow-sm");
     expect(screen.getByText("Figure 1. Residual topology.")).toHaveClass(
-      "font-[var(--output-ui-font)]",
+      "[font-family:var(--output-ui-font)]",
       "text-xs",
     );
   });
@@ -211,7 +211,7 @@ describe("MarkdownOutput heading anchors", () => {
     );
     expect(screen.getByText("Failure appendix").closest("summary")).toHaveClass(
       "cursor-pointer",
-      "font-[var(--output-ui-font)]",
+      "[font-family:var(--output-ui-font)]",
       "group-open/details:border-border/65",
     );
     expect(screen.getByText("›")).toHaveClass("group-open/details:rotate-90");

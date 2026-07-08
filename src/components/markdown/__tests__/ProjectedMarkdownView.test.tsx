@@ -1501,7 +1501,7 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("value")).toHaveClass(
       "border",
       "bg-muted/70",
-      "font-[var(--output-mono-font)]",
+      "[font-family:var(--output-mono-font)]",
     );
   });
 

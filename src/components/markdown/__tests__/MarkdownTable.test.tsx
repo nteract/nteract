@@ -39,7 +39,7 @@ describe("MarkdownTable", () => {
       "border",
       "shadow-sm",
     );
-    expect(screen.getByRole("table")).toHaveClass("font-[var(--output-ui-font)]", "text-sm");
+    expect(screen.getByRole("table")).toHaveClass("[font-family:var(--output-ui-font)]", "text-sm");
     expect(screen.getByRole("columnheader", { name: "metric" })).toHaveClass(
       "border-border/80",
       "font-semibold",
