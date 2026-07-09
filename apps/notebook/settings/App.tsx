@@ -167,12 +167,12 @@ export function FontFamilyPicker({
   }, [customMode, onChange]);
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between gap-3">
-        <label className="text-sm text-foreground" htmlFor={inputId}>
-          {label}
-        </label>
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+    <div className="contents">
+      <label className="text-sm text-foreground self-center" htmlFor={inputId}>
+        {label}
+      </label>
+      <div className="space-y-1.5 min-w-0">
+        <div className="flex min-w-0 items-center gap-1.5">
           <Popover
             open={open}
             onOpenChange={(nextOpen) => {
@@ -281,9 +281,7 @@ export function FontFamilyPicker({
             </button>
           ) : null}
         </div>
-      </div>
-      {customMode ? (
-        <div className="pl-[5.5rem]">
+        {customMode ? (
           <input
             ref={customInputRef}
             type="text"
@@ -292,9 +290,9 @@ export function FontFamilyPicker({
             placeholder="e.g. Helvetica, Arial, sans-serif"
             className="w-full h-7 rounded-md border border-input bg-background px-2 font-mono text-xs text-foreground placeholder:text-muted-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
-        </div>
-      ) : null}
-      <p className="pl-[5.5rem] text-[10px] text-muted-foreground/70">{description}</p>
+        ) : null}
+        <p className="text-[10px] text-muted-foreground/70">{description}</p>
+      </div>
     </div>
   );
 }
@@ -440,22 +438,24 @@ function EditorSection({
       </div>
 
       <div className="space-y-3">
-        <FontFamilyPicker
-          label="Code font"
-          value={codeFontFamily}
-          onChange={onCodeFontFamilyChange}
-          placeholder='ui-monospace, "SF Mono", monospace'
-          description="Code cells, raw cells, inline code, and code blocks"
-          fontFamilies={fontFamilies}
-        />
-        <FontFamilyPicker
-          label="Markdown font"
-          value={markdownFontFamily}
-          onChange={onMarkdownFontFamilyChange}
-          placeholder="system-ui, sans-serif"
-          description="Rendered Markdown and Markdown input"
-          fontFamilies={fontFamilies}
-        />
+        <div className="grid gap-x-3 gap-y-3" style={{ gridTemplateColumns: "auto 1fr" }}>
+          <FontFamilyPicker
+            label="Code font"
+            value={codeFontFamily}
+            onChange={onCodeFontFamilyChange}
+            placeholder='ui-monospace, "SF Mono", monospace'
+            description="Code cells, raw cells, inline code, and code blocks"
+            fontFamilies={fontFamilies}
+          />
+          <FontFamilyPicker
+            label="Markdown font"
+            value={markdownFontFamily}
+            onChange={onMarkdownFontFamilyChange}
+            placeholder="system-ui, sans-serif"
+            description="Rendered Markdown and Markdown input"
+            fontFamilies={fontFamilies}
+          />
+        </div>
         <div className="flex items-center justify-between gap-3">
           <div className="space-y-0.5">
             <span className="text-sm text-foreground">Line numbers</span>
