@@ -120,10 +120,10 @@ export function FontFamilyPicker({
 
   const normalizedSearchValue = searchValue.trim().toLocaleLowerCase();
   const visibleOptions = useMemo(() => {
-    if (!normalizedSearchValue) return options.slice(0, 200);
-    return options
-      .filter((fontFamily) => fontFamily.toLocaleLowerCase().includes(normalizedSearchValue))
-      .slice(0, 200);
+    if (!normalizedSearchValue) return options;
+    return options.filter((fontFamily) =>
+      fontFamily.toLocaleLowerCase().includes(normalizedSearchValue),
+    );
   }, [normalizedSearchValue, options]);
 
   const currentSingleFamily = singleFontFamilyFromCssValue(value);
