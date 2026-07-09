@@ -35,6 +35,8 @@ export interface NotebookRegisteredWorkstation {
   environmentPolicy?: NotebookWorkstationEnvironmentPolicy | string | null;
   environments?: readonly NotebookRegisteredWorkstationEnvironment[] | null;
   id: string;
+  installedBuild?: string | null;
+  channel?: string | null;
   memoryBytes?: number | null;
   provider?: string | null;
   providerLabel?: string | null;
@@ -76,6 +78,8 @@ export interface NotebookRegisteredWorkstationProjection {
   facts: readonly NotebookRegisteredWorkstationFactProjection[];
   id: string;
   idLabel: string;
+  installedBuild: string | null;
+  channel: string | null;
   isAttached: boolean;
   isDefault: boolean;
   isSelected: boolean;
@@ -264,6 +268,8 @@ function projectRegisteredWorkstation(
   const environments = normalizeWorkstationEnvironments(workstation.environments);
   const cpuCount = normalizePositiveInteger(workstation.cpuCount);
   const defaultEnvironmentLabel = trimToNull(workstation.defaultEnvironmentLabel);
+  const installedBuild = trimToNull(workstation.installedBuild);
+  const channel = trimToNull(workstation.channel);
   const memoryBytes = normalizePositiveInteger(workstation.memoryBytes);
   const workingDirectoryLabel = trimToNull(workstation.workingDirectory);
   const facts = projectRegisteredWorkstationFacts({
@@ -296,6 +302,8 @@ function projectRegisteredWorkstation(
     facts: Object.freeze(facts),
     id: workstation.id,
     idLabel: `id ${workstation.id}`,
+    installedBuild,
+    channel,
     isAttached: activeWorkstationId === workstation.id,
     isDefault: defaultWorkstationId === workstation.id,
     isSelected: selectedWorkstationId === workstation.id,
@@ -433,6 +441,8 @@ function registeredWorkstationCacheKey(workstation: NotebookRegisteredWorkstatio
     workstation.providerLabel ?? null,
     workstation.defaultEnvironmentLabel ?? null,
     workstation.environmentPolicy ?? null,
+    workstation.installedBuild ?? null,
+    workstation.channel ?? null,
     workstation.status ?? null,
     workstation.statusMessage ?? null,
     workstation.cpuCount ?? null,

@@ -138,7 +138,8 @@ pub struct AttachJobSpawnPlan {
 /// Field set mirrors `buildWorkstationRegistrationPayload` in
 /// `hosted-workstation-agent-core.mjs`; `cpu_count`/`memory_bytes` are
 /// omitted (the route treats them as optional) where the platform cannot
-/// report them.
+/// report them. The build/channel fields identify the installed agent binary
+/// that owns the heartbeat.
 pub fn registration_payload(
     workstation_id: &str,
     display_name: &str,
@@ -153,6 +154,8 @@ pub fn registration_payload(
         "provider": "runtime_peer",
         "default_environment_label": "Current Python",
         "environment_policy": "current_python",
+        "installed_build": crate::daemon_version(),
+        "channel": runt_workspace::channel_display_name(),
         "working_directory": working_directory,
         "capabilities": {
             "launch_current_python": true,
@@ -1828,26 +1831,40 @@ mod tests {
             Some(8),
             Some(16_000_000_000),
         );
-        assert_eq!(
-            payload,
-            serde_json::json!({
-                "workstation_id": "ws-lab2",
-                "display_name": "lab2 workstation",
-                "provider": "runtime_peer",
-                "default_environment_label": "Current Python",
-                "environment_policy": "current_python",
-                "working_directory": "/home/ubuntu/project",
-                "cpu_count": 8,
-                "memory_bytes": 16_000_000_000u64,
-                "capabilities": {
-                    "launch_current_python": true,
-                },
-                "runtime": {
-                    "binary": "runtimed",
-                    "python_path": "/opt/k/bin/python",
-                },
-            })
-        );
+        let expected_shape = serde_json::json!({
+            "workstation_id": "ws-lab2",
+            "display_name": "lab2 workstation",
+            "provider": "runtime_peer",
+            "default_environment_label": "Current Python",
+            "environment_policy": "current_python",
+            "working_directory": "/home/ubuntu/project",
+            "cpu_count": 8,
+            "memory_bytes": 16_000_000_000u64,
+            "capabilities": {
+                "launch_current_python": true,
+            },
+            "runtime": {
+                "binary": "runtimed",
+                "python_path": "/opt/k/bin/python",
+            },
+        });
+        for (key, value) in expected_shape.as_object().unwrap() {
+            assert_eq!(payload.get(key), Some(value));
+        }
+
+        let installed_build = payload
+            .get("installed_build")
+            .and_then(|value| value.as_str())
+            .expect("installed_build is present");
+        assert!(!installed_build.is_empty());
+        assert!(installed_build.contains('+'));
+        assert!(!installed_build.chars().any(char::is_whitespace));
+
+        let channel = payload
+            .get("channel")
+            .and_then(|value| value.as_str())
+            .expect("channel is present");
+        assert!(matches!(channel, "nightly" | "stable"));
     }
 
     #[test]

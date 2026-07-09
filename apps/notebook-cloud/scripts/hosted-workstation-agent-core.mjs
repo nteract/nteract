@@ -13,10 +13,12 @@ export function buildWorkstationRegistrationPayload({
   displayName,
   workingDirectory,
   pythonPath,
+  installedBuild,
+  channel,
   cpuCount = os.cpus().length,
   memoryBytes = os.totalmem(),
 }) {
-  return {
+  const payload = {
     workstation_id: workstationId,
     display_name: displayName,
     provider: "runtime_peer",
@@ -33,6 +35,13 @@ export function buildWorkstationRegistrationPayload({
       python_path: pythonPath,
     },
   };
+  if (typeof installedBuild === "string" && installedBuild.trim().length > 0) {
+    payload.installed_build = installedBuild;
+  }
+  if (typeof channel === "string" && channel.trim().length > 0) {
+    payload.channel = channel;
+  }
+  return payload;
 }
 
 export function buildAttachJobSpawnPlan({

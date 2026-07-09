@@ -150,6 +150,12 @@ function projectWorkstationSpecCells(
   if (memoryValue) {
     cells.push(specCell("memory", "Memory", memoryValue));
   }
+  if (workstation.installedBuild) {
+    cells.push(specCell("build", "Build", workstation.installedBuild));
+  }
+  if (workstation.channel) {
+    cells.push(specCell("channel", "Channel", workstation.channel));
+  }
   const gpuLabel = trimToNull(facts?.gpuLabel);
   if (gpuLabel) {
     cells.push(specCell("gpu", "GPU", gpuLabel));

@@ -140,6 +140,8 @@ export interface WorkstationRow {
   status_message: string | null;
   default_environment_label: string | null;
   environment_policy: string | null;
+  installed_build: string | null;
+  channel: string | null;
   working_directory: string | null;
   cpu_count: number | null;
   memory_bytes: number | null;
@@ -157,6 +159,8 @@ export interface WorkstationRegistrationInput {
   statusMessage?: string | null;
   defaultEnvironmentLabel?: string | null;
   environmentPolicy?: string | null;
+  installedBuild?: string | null;
+  channel?: string | null;
   workingDirectory?: string | null;
   cpuCount?: number | null;
   memoryBytes?: number | null;
@@ -350,6 +354,8 @@ const SCHEMA_STATEMENTS = [
     status_message TEXT,
     default_environment_label TEXT,
     environment_policy TEXT,
+    installed_build TEXT,
+    channel TEXT,
     working_directory TEXT,
     cpu_count INTEGER,
     memory_bytes INTEGER,
@@ -459,6 +465,16 @@ const SCHEMA_MIGRATIONS = [
     table: "workstation_attach_jobs",
     column: "trigger",
     statement: `ALTER TABLE workstation_attach_jobs ADD COLUMN trigger TEXT NOT NULL DEFAULT 'user_attach'`,
+  },
+  {
+    table: "workstations",
+    column: "installed_build",
+    statement: `ALTER TABLE workstations ADD COLUMN installed_build TEXT`,
+  },
+  {
+    table: "workstations",
+    column: "channel",
+    statement: `ALTER TABLE workstations ADD COLUMN channel TEXT`,
   },
   {
     table: "notebooks",
@@ -1014,6 +1030,8 @@ export async function registerWorkstation(
        status_message,
        default_environment_label,
        environment_policy,
+       installed_build,
+       channel,
        working_directory,
        cpu_count,
        memory_bytes,
@@ -1021,7 +1039,7 @@ export async function registerWorkstation(
        created_at,
        updated_at,
        last_seen_at
-     ) VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(owner_principal, workstation_id) DO UPDATE SET
        display_name = excluded.display_name,
        provider = excluded.provider,
@@ -1030,6 +1048,8 @@ export async function registerWorkstation(
        status_message = excluded.status_message,
        default_environment_label = excluded.default_environment_label,
        environment_policy = excluded.environment_policy,
+       installed_build = excluded.installed_build,
+       channel = excluded.channel,
        working_directory = excluded.working_directory,
        cpu_count = excluded.cpu_count,
        memory_bytes = excluded.memory_bytes,
@@ -1046,6 +1066,8 @@ export async function registerWorkstation(
       input.statusMessage ?? null,
       input.defaultEnvironmentLabel ?? null,
       input.environmentPolicy ?? null,
+      input.installedBuild ?? null,
+      input.channel ?? null,
       input.workingDirectory ?? null,
       input.cpuCount ?? null,
       input.memoryBytes ?? null,
@@ -1078,6 +1100,8 @@ export async function getWorkstationRow(
             status_message,
             default_environment_label,
             environment_policy,
+            installed_build,
+            channel,
             working_directory,
             cpu_count,
             memory_bytes,
@@ -1112,6 +1136,8 @@ export async function listWorkstationsForPrincipal(
             status_message,
             default_environment_label,
             environment_policy,
+            installed_build,
+            channel,
             working_directory,
             cpu_count,
             memory_bytes,
