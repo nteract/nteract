@@ -271,6 +271,7 @@ export class NotebookRoom {
     { notebookId: string; peer: Peer; closeOptions: PeerCloseOptions }
   >();
   private broadcastDepth = 0;
+  private runtimePeerWatchSuppressionDepth = 0;
   private readonly materializers = new Map<string, RoomMaterializer>();
   private readonly selectedRuntimePeerSessions = new Map<
     string,
@@ -1647,6 +1648,23 @@ export class NotebookRoom {
     }
   }
 
+  private withRuntimePeerWatchSuppressed<T>(callback: () => T): T {
+    this.runtimePeerWatchSuppressionDepth += 1;
+    try {
+      return callback();
+    } finally {
+      this.runtimePeerWatchSuppressionDepth -= 1;
+    }
+  }
+
+  private runtimePeerWatchSuppressed(): boolean {
+    return this.runtimePeerWatchSuppressionDepth > 0;
+  }
+
+  private sendFailureCloseOptions(): PeerCloseOptions {
+    return this.runtimePeerWatchSuppressed() ? { suppressRuntimePeerWatch: true } : {};
+  }
+
   private async forwardRequestToActiveRuntimePeer(
     notebookId: string,
     frame: TypedFrame,
@@ -1983,7 +2001,7 @@ export class NotebookRoom {
       if (this.trySendFrame(notebookId, runtimePeer, encoded)) {
         delivered = true;
       } else {
-        this.queuePeerRemoval(notebookId, runtimePeer);
+        this.queuePeerRemoval(notebookId, runtimePeer, this.sendFailureCloseOptions());
       }
     } finally {
       this.broadcastDepth -= 1;
@@ -2199,7 +2217,7 @@ export class NotebookRoom {
     try {
       for (const peer of peers) {
         if (!this.trySendFrame(notebookId, peer, frame)) {
-          this.queuePeerRemoval(notebookId, peer);
+          this.queuePeerRemoval(notebookId, peer, this.sendFailureCloseOptions());
         }
       }
     } finally {
@@ -2221,7 +2239,7 @@ export class NotebookRoom {
         counter: "peer_send_failed",
         counter_delta: 1,
       });
-      this.removePeer(notebookId, peer);
+      this.removePeer(notebookId, peer, this.sendFailureCloseOptions());
     }
   }
 
@@ -2316,7 +2334,11 @@ export class NotebookRoom {
     // A runtime_peer departure is the one failure the daemon can't self-correct
     // (its death IS the trigger). Arm the reconciliation watchdog if it left no
     // runtime_peer behind.
-    if (peer.identity.scope === "runtime_peer" && !closeOptions.suppressRuntimePeerWatch) {
+    if (
+      peer.identity.scope === "runtime_peer" &&
+      !closeOptions.suppressRuntimePeerWatch &&
+      !this.runtimePeerWatchSuppressed()
+    ) {
       this.refreshRuntimePeerWatch(notebookId);
       this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
     }
@@ -2587,17 +2609,28 @@ export class NotebookRoom {
       (async () => {
         try {
           const activity = await this.materializerFor(notebookId).getRuntimeExecutionActivity();
-          if (!this.hasRuntimePeer() || activity.executing || activity.queueDepth > 0) {
+          if (activity.executing || activity.queueDepth > 0) {
             await storage.delete(RUNTIME_IDLE_WATCH_KEY);
             await storage.delete(RUNTIME_IDLE_WATCH_ALARM_AT_KEY);
             await this.rescheduleRoomAlarm();
             return;
           }
+          const nowMs = Date.now();
           const existingAlarmAt = await storage.get<unknown>(RUNTIME_IDLE_WATCH_ALARM_AT_KEY);
-          if (isFiniteTimestamp(existingAlarmAt) && existingAlarmAt > Date.now()) {
+          if (!this.hasRuntimePeer()) {
+            if (isFiniteTimestamp(existingAlarmAt) && existingAlarmAt > nowMs) {
+              await this.rescheduleRoomAlarm();
+              return;
+            }
+            await storage.delete(RUNTIME_IDLE_WATCH_KEY);
+            await storage.delete(RUNTIME_IDLE_WATCH_ALARM_AT_KEY);
+            await this.rescheduleRoomAlarm();
             return;
           }
-          const alarmAt = Date.now() + RUNTIME_IDLE_TTL_MS;
+          if (isFiniteTimestamp(existingAlarmAt) && existingAlarmAt > nowMs) {
+            return;
+          }
+          const alarmAt = nowMs + RUNTIME_IDLE_TTL_MS;
           await storage.put(RUNTIME_IDLE_WATCH_KEY, notebookId);
           await storage.put(RUNTIME_IDLE_WATCH_ALARM_AT_KEY, alarmAt);
           await this.rescheduleRoomAlarm();
@@ -2780,14 +2813,16 @@ export class NotebookRoom {
         updatedAt,
       );
       this.invalidateSelectedRuntimePeerSession(notebookId);
-      if (result.changed) {
-        this.deliverRoomHostFrames(notebookId, result);
-        this.scheduleRoomHostCheckpoint(notebookId, materializer, "runtime_idle_timeout");
-      }
-      this.removeRuntimePeers(notebookId, {
-        code: RUNTIME_IDLE_CLOSE_CODE,
-        reason: RUNTIME_IDLE_CLOSE_REASON,
-        suppressRuntimePeerWatch: true,
+      this.withRuntimePeerWatchSuppressed(() => {
+        if (result.changed) {
+          this.deliverRoomHostFrames(notebookId, result);
+          this.scheduleRoomHostCheckpoint(notebookId, materializer, "runtime_idle_timeout");
+        }
+        this.removeRuntimePeers(notebookId, {
+          code: RUNTIME_IDLE_CLOSE_CODE,
+          reason: RUNTIME_IDLE_CLOSE_REASON,
+          suppressRuntimePeerWatch: true,
+        });
       });
       await this.clearRuntimePeerWatch(notebookId);
       this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
