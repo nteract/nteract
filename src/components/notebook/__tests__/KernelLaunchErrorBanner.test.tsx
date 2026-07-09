@@ -14,7 +14,9 @@ import userEvent from "@testing-library/user-event";
 import { KERNEL_ERROR_REASON, type RuntimeLifecycle } from "runtimed";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  ComputeDisconnectedNotice,
   KernelLaunchErrorBanner,
+  isRuntimePeerDisconnectedErrorDetails,
   shouldShowKernelLaunchErrorBanner,
 } from "../KernelLaunchErrorBanner";
 
@@ -23,6 +25,8 @@ const STDERR_TAIL = [
   "stderr tail:",
   "/path/to/python: No module named nteract_kernel_launcher",
 ].join("\n");
+const PEER_DISCONNECTED_DETAILS =
+  "runtime peer disconnected: runtime peer left the room and did not return within the grace window";
 
 describe("KernelLaunchErrorBanner", () => {
   it("shows the failure heading", () => {
@@ -97,6 +101,27 @@ describe("KernelLaunchErrorBanner", () => {
   });
 });
 
+describe("ComputeDisconnectedNotice", () => {
+  it("shows calm disconnected copy with retry and run-as-wake guidance", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn();
+    render(
+      <ComputeDisconnectedNotice
+        errorDetails={PEER_DISCONNECTED_DETAILS}
+        onRetry={onRetry}
+        onDismiss={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("Compute disconnected")).toBeInTheDocument();
+    expect(screen.getByText(/Run any cell to wake compute again/)).toBeInTheDocument();
+    expect(screen.getByText(/runtime peer left the room/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /retry/i }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("shouldShowKernelLaunchErrorBanner", () => {
   const ERROR: RuntimeLifecycle = { lifecycle: "Error" };
   const IDLE: RuntimeLifecycle = { lifecycle: "Running", activity: "Idle" };
@@ -110,6 +135,18 @@ describe("shouldShowKernelLaunchErrorBanner", () => {
         runtime: "python",
       }),
     ).toBe(true);
+  });
+
+  it("hides for runtime peer disconnect cleanup errors", () => {
+    expect(isRuntimePeerDisconnectedErrorDetails(PEER_DISCONNECTED_DETAILS)).toBe(true);
+    expect(
+      shouldShowKernelLaunchErrorBanner({
+        lifecycle: ERROR,
+        errorDetails: PEER_DISCONNECTED_DETAILS,
+        errorReason: null,
+        runtime: "python",
+      }),
+    ).toBe(false);
   });
 
   it("hides when lifecycle is not Error", () => {

@@ -1,8 +1,23 @@
-import { AlertCircle, Check, Copy, RotateCw } from "lucide-react";
+import { AlertCircle, Check, Copy, RotateCw, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { KERNEL_ERROR_REASON, type RuntimeLifecycle } from "runtimed";
 import { Button } from "@/components/ui/button";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
+
+const RUNTIME_PEER_DISCONNECTED_ERROR_PREFIX = "runtime peer disconnected:";
+
+export function isRuntimePeerDisconnectedErrorDetails(
+  errorDetails: string | null | undefined,
+): boolean {
+  return errorDetails?.startsWith(RUNTIME_PEER_DISCONNECTED_ERROR_PREFIX) ?? false;
+}
+
+function runtimePeerDisconnectedReason(errorDetails: string | null | undefined): string | null {
+  const details = errorDetails ?? "";
+  if (!isRuntimePeerDisconnectedErrorDetails(details)) return null;
+  const reason = details.slice(RUNTIME_PEER_DISCONNECTED_ERROR_PREFIX.length).trim();
+  return reason.length > 0 ? reason : null;
+}
 
 /**
  * Decide whether the generic kernel-launch banner should render.
@@ -20,6 +35,8 @@ import { NotebookNotice } from "@/components/notebook/NotebookNotice";
  *   toolbar renders targeted prompts that already consume the error message.
  * - Skip `runtime === "deno"`: toolbar renders the Deno
  *   "auto-install failed" prompt that already consumes it.
+ * - Skip room-host peer-loss reconciliation: the kernel is terminalized for
+ *   cleanup, but cloud recovery is a disconnected compute state.
  *
  * Everything else — solver/install errors, stderr tails from generic
  * subprocess crashes, env-build rate limits — falls through to this banner.
@@ -36,6 +53,7 @@ export function shouldShowKernelLaunchErrorBanner(params: {
   if (params.errorReason === KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL) return false;
   if (params.errorReason === KERNEL_ERROR_REASON.IPYKERNEL_SITE_PACKAGES_MISMATCH) return false;
   if (params.errorReason === KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING) return false;
+  if (isRuntimePeerDisconnectedErrorDetails(params.errorDetails)) return false;
   if (params.runtime === "deno") return false;
   return true;
 }
@@ -107,6 +125,41 @@ export function KernelLaunchErrorBanner({
             Retry
           </Button>
         </>
+      }
+    />
+  );
+}
+
+export interface ComputeDisconnectedNoticeProps {
+  errorDetails: string | null;
+  onRetry: () => void;
+  onDismiss?: () => void;
+}
+
+export function ComputeDisconnectedNotice({
+  errorDetails,
+  onRetry,
+  onDismiss,
+}: ComputeDisconnectedNoticeProps) {
+  const reason = runtimePeerDisconnectedReason(errorDetails);
+
+  return (
+    <NotebookNotice
+      tone="warning"
+      icon={<WifiOff className="size-4" />}
+      title="Compute disconnected"
+      onDismiss={onDismiss}
+      details={
+        <span>
+          Run any cell to wake compute again
+          {reason ? `; last disconnect: ${reason}` : ""}.
+        </span>
+      }
+      actions={
+        <Button size="sm" variant="secondary" className="h-6 px-2 text-xs" onClick={onRetry}>
+          <RotateCw className="size-3 mr-1" />
+          Retry
+        </Button>
       }
     />
   );

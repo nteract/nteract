@@ -511,6 +511,32 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
     });
   });
 
+  it("projects disconnected attachments as offline while error attachments stay attention", () => {
+    const disconnected = projectNotebookRuntimeTargetFromWorkstationAttachment(
+      attachment({
+        status: "disconnected",
+        status_message: "compute disconnected: runtime peer left the room",
+      }),
+    );
+    const failed = projectNotebookRuntimeTargetFromWorkstationAttachment(
+      attachment({
+        status: "error",
+        status_message: "Failed to launch kernel: missing module",
+      }),
+    );
+
+    expect(disconnected).toMatchObject({
+      status: "offline",
+      statusLabel: "Offline",
+      detail: "compute disconnected: runtime peer left the room",
+    });
+    expect(failed).toMatchObject({
+      status: "attention",
+      statusLabel: "Needs attention",
+      detail: "Failed to launch kernel: missing module",
+    });
+  });
+
   it("carries room-link last-seen state for stale hosted attachments", () => {
     const target = projectNotebookRuntimeTargetFromWorkstationAttachment(attachment(), {
       requireRuntimePeer: true,

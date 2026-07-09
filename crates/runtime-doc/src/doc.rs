@@ -65,7 +65,9 @@
 //!     default_environment_label: Str
 //!     environment_policy: Str
 //!     status: Str             ("disconnected" | "connecting" | "ready" | "busy" | "idle" | "error")
+//!                             "disconnected" means compute was lost and can resume on execution.
 //!                             "idle" means attached compute is stopped and can resume on execution.
+//!                             "error" means startup or attachment failed and needs attention.
 //!     status_message: Str|null
 //!     cpu_count: Uint|null
 //!     memory_bytes: Uint|null
