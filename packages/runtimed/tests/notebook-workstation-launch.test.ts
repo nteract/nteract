@@ -6,6 +6,8 @@ import {
   projectNotebookWorkstationSelection,
   type NotebookRegisteredWorkstation,
   type NotebookShellCapabilities,
+  type NotebookShellRuntimeTargetProjection,
+  type NotebookWorkstationSelectionProjection,
 } from "../src";
 
 type LaunchCapabilities = Pick<NotebookShellCapabilities, "canExecute" | "runtime">;
@@ -60,6 +62,25 @@ const lab2Workstation: NotebookRegisteredWorkstation = {
   workingDirectory: "/home/ubuntu/codex/nteract",
 };
 
+function selectionWithActiveTarget(
+  activeTarget: NotebookShellRuntimeTargetProjection,
+): NotebookWorkstationSelectionProjection {
+  return {
+    activeTarget,
+    activeWorkstationId: activeTarget.id ?? null,
+    canRegisterWorkstation: false,
+    canSelectWorkstation: false,
+    canSetDefaultWorkstation: false,
+    defaultWorkstation: null,
+    defaultWorkstationId: null,
+    launchCandidate: null,
+    registeredWorkstations: Object.freeze([]),
+    selectedWorkstation: null,
+    selectedWorkstationId: null,
+    state: "attached",
+  };
+}
+
 beforeEach(() => {
   clearNotebookWorkstationLaunchReadinessProjectionCacheForTests();
   clearNotebookWorkstationSelectionProjectionCacheForTests();
@@ -83,6 +104,89 @@ describe("notebook workstation launch readiness projection", () => {
       statusLabel: "Ready",
       targetLabel: "This machine",
       workstationId: "local-daemon",
+      primaryAction: {
+        kind: "none",
+      },
+    });
+  });
+
+  it("projects idle attached compute as a wake-on-run target", () => {
+    const nonIdleTarget: NotebookShellRuntimeTargetProjection = {
+      id: "ws-lab2",
+      kind: "cloud_workstation",
+      label: "Lab2 workstation",
+      status: "attached",
+      statusLabel: "Idle",
+      detail: "Compute is attached and starts on the next run.",
+    };
+    const idleTarget: NotebookShellRuntimeTargetProjection = {
+      ...nonIdleTarget,
+      attachmentIdle: true,
+    };
+    const nonIdleProjection = projectNotebookWorkstationLaunchReadiness({
+      capabilities: {
+        canExecute: true,
+        runtime: {
+          ...cloudUnavailableCapabilities.runtime,
+          executionAvailable: true,
+          target: nonIdleTarget,
+        },
+      },
+      selection: selectionWithActiveTarget(nonIdleTarget),
+    });
+    const idleProjection = projectNotebookWorkstationLaunchReadiness({
+      capabilities: {
+        canExecute: true,
+        runtime: {
+          ...cloudUnavailableCapabilities.runtime,
+          executionAvailable: true,
+          target: idleTarget,
+        },
+      },
+      selection: selectionWithActiveTarget(idleTarget),
+    });
+
+    expect(nonIdleProjection.state).toBe("ready");
+    expect(idleProjection).not.toBe(nonIdleProjection);
+    expect(idleProjection).toMatchObject({
+      canRun: true,
+      detail: "Runs will start compute on Lab2 workstation.",
+      primaryAction: {
+        kind: "none",
+      },
+      state: "idle_attached",
+      statusLabel: "Idle",
+      targetLabel: "Lab2 workstation",
+      workstationId: "ws-lab2",
+    });
+  });
+
+  it("keeps idle attached compute limited when execution is not allowed", () => {
+    const idleTarget: NotebookShellRuntimeTargetProjection = {
+      id: "ws-lab2",
+      kind: "cloud_workstation",
+      label: "Lab2 workstation",
+      status: "attached",
+      statusLabel: "Idle",
+      detail: "Compute is attached and starts on the next run.",
+      attachmentIdle: true,
+    };
+    const projection = projectNotebookWorkstationLaunchReadiness({
+      capabilities: {
+        canExecute: false,
+        runtime: {
+          ...cloudUnavailableCapabilities.runtime,
+          executionAvailable: true,
+          target: idleTarget,
+        },
+      },
+      selection: selectionWithActiveTarget(idleTarget),
+    });
+
+    expect(projection).toMatchObject({
+      canRun: false,
+      state: "limited",
+      statusLabel: "Idle",
       primaryAction: {
         kind: "none",
       },

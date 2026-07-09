@@ -18,6 +18,7 @@ import {
 } from "../src/identity.ts";
 import {
   NotebookRoom,
+  RUNTIME_IDLE_TTL_MS,
   presencePeerLabel,
   rejectedFramePolicy,
   runtimePeerWorkstationMetadataFromRequest,
@@ -34,7 +35,7 @@ import {
   splitTypedFrame,
 } from "../src/protocol.ts";
 import { decodePresenceFrame, encodePresenceFrame } from "../src/runtimed-wasm.ts";
-import type { RoomHostFrameResult } from "../src/room-materializer.ts";
+import { RoomMaterializer, type RoomHostFrameResult } from "../src/room-materializer.ts";
 import { roomSummaryKey, type NotebookRoomSummary } from "../src/storage.ts";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 
@@ -944,6 +945,53 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.deepEqual([...viewerSocket.sent[0]], [FrameType.RUNTIME_STATE_SYNC, 1, 2, 3]);
   });
 
+  it("does not cache selected runtime session for ignored stale runtime-peer publishes", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const runtimePeer = {
+      id: "runtime",
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+        ),
+      ),
+      connectedAt: "2026-06-07T00:00:01.000Z",
+      workstation: {
+        workstationId: "ws-lab2",
+        displayName: "Lab2 workstation",
+        defaultEnvironmentLabel: "Current Python",
+        environmentPolicy: "current_python",
+        runtimeSessionId: "job-stale",
+        workingDirectory: "/home/ubuntu/project",
+      },
+    };
+    let checkpointed = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => {
+        checkpointed += 1;
+      },
+      setWorkstationAttachment: async () => ({
+        ...noopMaterializedResult(),
+        ignored_stale: true,
+      }),
+    } as never);
+
+    await harness.publishRuntimePeerAttachment("demo", runtimePeer);
+
+    assert.equal(checkpointed, 0, "ignored stale publishes are not checkpointed");
+    assert.equal(
+      await harness.runtimePeerAuthorityError?.("demo", {
+        ...runtimePeer.workstation,
+        runtimeSessionId: "job-current",
+      }),
+      null,
+      "ignored stale publish does not poison selected runtime session authority",
+    );
+  });
+
   it("publishes workstation attachment control updates through the room host", async () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);
@@ -1132,6 +1180,64 @@ describe("NotebookRoom peer lifecycle", () => {
       ]),
       [["owner-compute:v1:user:dev:alice", "/upsert", "starting", 0, "ws-lab2"]],
     );
+  });
+
+  it("keeps runtime peers when replacement workstation attachment control is ignored as stale", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const runtimeSocket = new FakeSocket();
+    const runtimePeer = {
+      id: "runtime",
+      socket: runtimeSocket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+        ),
+      ),
+      connectedAt: "2026-06-07T00:00:00.000Z",
+    };
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      setWorkstationAttachment: async () => ({
+        ...noopMaterializedResult(),
+        ignored_stale: true,
+      }),
+    } as never);
+
+    const response = await room.fetch(
+      new Request("https://room.internal/internal/n/demo/workstation-attachment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          close_runtime_peers: true,
+          close_reason: "workstation restart requested",
+          attachment: {
+            workstation_id: "ws-lab2",
+            display_name: "Lab2 workstation",
+            provider: "runtime_peer",
+            default_environment_label: "Current Python",
+            environment_policy: "current_python",
+            status: "connecting",
+            status_message: "Waiting for Lab2 to accept the compute request.",
+            cpu_count: 8,
+            memory_bytes: 16_000_000_000,
+            working_directory: "/home/ubuntu/project",
+            updated_at: "2026-06-07T00:00:01.000Z",
+            runtime_session_id: "job-stale",
+          },
+        }),
+      }),
+    );
+
+    await state.drain();
+    assert.equal(response.status, 200);
+    assert.equal(harness.hasRuntimePeer(), true);
+    assert.equal(runtimeSocket.closed, false);
+    assert.equal(await state.getAlarm(), null, "ignored stale close does not arm stale repair");
   });
 
   it("does not resurrect a runtime-peer compute summary after attachment clear wins", async () => {
@@ -1436,6 +1542,49 @@ describe("NotebookRoom peer lifecycle", () => {
       1,
       "selected runtime session is cached after the first attachment read",
     );
+  });
+
+  it("rejects runtime-peer upgrades for idle selected sessions", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const harness = roomHarness(room);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "lab2",
+        display_name: "lab2 workstation",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "idle",
+        status_message: "Compute stopped after 30 minutes without queued or active execution.",
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: "/home/ubuntu/codex/nteract",
+        runtime_session_id: "job-old",
+        updated_at: "2026-06-07T00:00:00.000Z",
+      }),
+    } as never);
+    const identity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+      ),
+    );
+    const response = await room.fetch(
+      stampTrustedIdentity(
+        new Request("https://cloud.test/n/demo/sync", {
+          headers: {
+            Upgrade: "websocket",
+            "x-nteract-workstation-id": "lab2",
+            "x-nteract-runtime-session-id": "job-old",
+          },
+        }),
+        identity,
+      ),
+    );
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: "selected runtime session is idle" });
   });
 
   it("refreshes the selected runtime session cache when a runtime peer publishes", async () => {
@@ -3172,6 +3321,267 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(accepted.type, "cloud_frame_accepted");
   });
 
+  it("creates an owner-scoped resume attach job when owner execution finds no runtime peer", async () => {
+    const db = new ResumeNotebookD1();
+    const room = new NotebookRoom(fakeState(), { DB: db } as unknown as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    let materialized = 0;
+    let publishedAttachment: unknown = null;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "disconnected",
+        status_message: "Compute stopped after 30 minutes without queued or active execution.",
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: "/srv/project",
+        updated_at: "2026-05-22T00:00:00.000Z",
+        runtime_session_id: "job-old",
+      }),
+      setWorkstationAttachment: async (attachment: unknown) => {
+        publishedAttachment = attachment;
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+        };
+      },
+    } as never);
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+
+    assert.equal(materialized, 1);
+    assert.equal(db.attachJobs.length, 1);
+    assert.equal(db.attachJobs[0]?.owner_principal, "user:dev:alice");
+    assert.equal(db.attachJobs[0]?.trigger, "resume");
+    assert.equal(db.attachJobs[0]?.requested_by_actor_label, "execution resume");
+    assert.equal((publishedAttachment as { status?: string })?.status, "connecting");
+    assert.equal(
+      (publishedAttachment as { runtime_session_id?: string })?.runtime_session_id,
+      db.attachJobs[0]?.id,
+    );
+    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
+  it("creates an owner-scoped resume attach job when idle owner execution finds no runtime peer", async () => {
+    const db = new ResumeNotebookD1();
+    const room = new NotebookRoom(fakeState(), { DB: db } as unknown as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    let materialized = 0;
+    let publishedAttachment: unknown = null;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "idle",
+        status_message: "Compute stopped after 30 minutes without queued or active execution.",
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: "/srv/project",
+        updated_at: "2026-05-22T00:00:00.000Z",
+        runtime_session_id: "job-old",
+      }),
+      setWorkstationAttachment: async (attachment: unknown) => {
+        publishedAttachment = attachment;
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+        };
+      },
+    } as never);
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+
+    assert.equal(materialized, 1);
+    assert.equal(db.attachJobs.length, 1);
+    assert.equal(db.attachJobs[0]?.owner_principal, "user:dev:alice");
+    assert.equal(db.attachJobs[0]?.trigger, "resume");
+    assert.equal(db.attachJobs[0]?.requested_by_actor_label, "execution resume");
+    assert.equal((publishedAttachment as { status?: string })?.status, "connecting");
+    assert.equal(
+      (publishedAttachment as { runtime_session_id?: string })?.runtime_session_id,
+      db.attachJobs[0]?.id,
+    );
+    assert.equal(
+      await harness.runtimePeerAuthorityError?.("demo", {
+        workstationId: "ws-lab2",
+        runtimeSessionId: db.attachJobs[0]?.id,
+      }),
+      null,
+    );
+    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
+  it("admits owner execution after real idle reconciliation idles the attachment", async () => {
+    const db = new ResumeNotebookD1();
+    const state = fakeState();
+    const env = { DB: db } as unknown as Env;
+    const room = new NotebookRoom(state, env);
+    const materializer = new RoomMaterializer("demo", state, env);
+    const harness = roomHarness(room);
+    harness.materializers.set("demo", materializer as never);
+    await materializer.setWorkstationAttachment({
+      workstation_id: "ws-lab2",
+      display_name: "Lab2",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: null,
+      memory_bytes: null,
+      working_directory: "/srv/project",
+      updated_at: "2026-05-22T00:00:00.000Z",
+      runtime_session_id: "job-old",
+    });
+
+    const idleResult = await materializer.reconcileRuntimeIdleTimeout(
+      "Compute stopped after 30 minutes without queued or active execution.",
+      "2026-07-08T00:30:00.000Z",
+    );
+    assert.equal(idleResult.changed, true);
+    assert.equal((await materializer.getWorkstationAttachment())?.status, "idle");
+
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({
+            id: "request-1",
+            action: "execute_cell",
+            cell_id: initialHostedCellIdForTest("demo"),
+          }),
+        ),
+      ),
+    );
+
+    assert.equal(db.attachJobs.length, 1);
+    const attachment = await materializer.getWorkstationAttachment();
+    assert.equal(attachment?.status, "connecting");
+    assert.equal(attachment?.runtime_session_id, db.attachJobs[0]?.id);
+    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
+  it("rejects non-owner execution without creating a resume attach job", async () => {
+    const db = new ResumeNotebookD1();
+    const room = new NotebookRoom(fakeState(), { DB: db } as unknown as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "editor",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        throw new Error("non-owner execution should not reach the room host");
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => {
+        throw new Error("non-owner execution should not inspect workstation attachment");
+      },
+    } as never);
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+
+    assert.equal(db.attachJobs.length, 0);
+    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(rejected.type, "cloud_frame_rejected");
+    assert.equal(rejected.reason, "editor cannot write request frames");
+  });
+
   it("rejects response-bearing runtime REQUEST frames instead of acknowledging no-ops", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
@@ -3390,6 +3800,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
       receiveFrame: async () => noopMaterializedResult(),
       checkpoint: async () => undefined,
       removePeer: async () => undefined,
+      getWorkstationAttachment: async () => null,
       reconcileRuntimePeerGone: async () => {
         reconcileCalls += 1;
         return reconciled;
@@ -3409,6 +3820,191 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     await (room as unknown as { alarm(): Promise<void> }).alarm();
     await state.drain();
     assert.equal(reconcileCalls, 1, "alarm reconciles the orphaned room");
+  });
+
+  it("skips peer-gone reconcile when idle teardown already materialized", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const attachment = {
+      workstation_id: "ws-lab2",
+      display_name: "Lab2",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "idle",
+      status_message: "Compute stopped after 30 minutes without queued or active execution.",
+      updated_at: "2026-05-22T00:00:02.000Z",
+      runtime_session_id: "job-idle",
+    };
+    let reconcileCalls = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => attachment,
+      reconcileRuntimePeerGone: async () => {
+        reconcileCalls += 1;
+        attachment.status = "error";
+        attachment.status_message = "runtime peer disconnected";
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+        };
+      },
+    } as never);
+
+    const runtimePeer = peerWithScope("rt", "runtime_peer");
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.removePeer("demo", runtimePeer);
+    await state.drain();
+    assert.equal(await state.getAlarm(), state.now + 30_000, "watch armed after departure");
+
+    const logs: unknown[][] = [];
+    const originalInfo = console.info;
+    console.info = (...args: unknown[]) => {
+      logs.push(args);
+    };
+    try {
+      await (room as unknown as { alarm(): Promise<void> }).alarm();
+      await state.drain();
+    } finally {
+      console.info = originalInfo;
+    }
+
+    assert.equal(reconcileCalls, 0, "idle attachment suppresses peer-gone reconcile");
+    assert.equal(attachment.status, "idle");
+    assert.equal(attachment.runtime_session_id, "job-idle");
+    assert.equal(attachment.updated_at, "2026-05-22T00:00:02.000Z");
+    const skipLog = logs
+      .map((args) => args[1])
+      .find(
+        (record): record is { event?: unknown; counter?: unknown } =>
+          typeof record === "object" &&
+          record !== null &&
+          (record as { counter?: unknown }).counter === "runtime_peer_watch_skipped_idle",
+      );
+    assert.equal(skipLog?.event, "room.runtime_peer_watch.skipped_idle");
+  });
+
+  it("tears down an idle runtime after the TTL without considering viewer sockets", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const runtimeSocket = new FakeSocket();
+    const viewerSocket = new FakeSocket();
+    const runtimePeer = peerWithScope("rt", "runtime_peer");
+    runtimePeer.socket = runtimeSocket.asCloudflareWebSocket();
+    const viewerPeer = peerWithScope("viewer", "viewer");
+    viewerPeer.socket = viewerSocket.asCloudflareWebSocket();
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.peers.set(viewerPeer.id, viewerPeer);
+    let idleReconciles = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getRuntimeExecutionActivity: async () => ({ executing: false, queueDepth: 0 }),
+      reconcileRuntimeIdleTimeout: async () => {
+        idleReconciles += 1;
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+          outbound: [
+            {
+              peer_id: "rt",
+              frame_type: FrameType.RUNTIME_STATE_SYNC,
+              payload: new Uint8Array([7, 8, 9]),
+            },
+          ],
+        };
+      },
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "ready",
+        status_message: null,
+        updated_at: "2026-05-22T00:00:00.000Z",
+        runtime_session_id: "job-idle",
+      }),
+    } as never);
+
+    harness.refreshRuntimeIdleWatch?.("demo");
+    await state.drain();
+
+    assert.equal(await state.getAlarm(), state.now + RUNTIME_IDLE_TTL_MS);
+
+    await (room as unknown as { alarm(): Promise<void> }).alarm();
+    await state.drain();
+
+    assert.equal(idleReconciles, 1);
+    assert.deepEqual([...runtimeSocket.sent[0]], [FrameType.RUNTIME_STATE_SYNC, 7, 8, 9]);
+    assert.equal(runtimeSocket.closed, true);
+    assert.equal(runtimeSocket.closeReason, "runtime idle timeout");
+    assert.equal(viewerSocket.closed, false, "viewer presence must not defer idle teardown");
+  });
+
+  it("clears a racing peer-gone watch after idle teardown owns the room state", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const runtimeSocket = new FakeSocket();
+    const runtimePeer = peerWithScope("rt", "runtime_peer");
+    runtimePeer.socket = runtimeSocket.asCloudflareWebSocket();
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    let idleReconciles = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getRuntimeExecutionActivity: async () => ({ executing: false, queueDepth: 0 }),
+      reconcileRuntimeIdleTimeout: async () => {
+        idleReconciles += 1;
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+        };
+      },
+    } as never);
+
+    await state.state.storage.put("runtime_peer_gone_watch", "demo");
+    await state.state.storage.put("runtime_peer_gone_watch_alarm_at", Number.MAX_SAFE_INTEGER);
+    await state.state.storage.put("runtime_idle_watch", "demo");
+    await state.state.storage.put("runtime_idle_watch_alarm_at", 0);
+
+    await (room as unknown as { alarm(): Promise<void> }).alarm();
+    await state.drain();
+
+    assert.equal(idleReconciles, 1);
+    assert.equal(runtimeSocket.closed, true);
+    assert.equal(runtimeSocket.closeReason, "runtime idle timeout");
+    assert.equal(await state.state.storage.get("runtime_peer_gone_watch"), undefined);
+    assert.equal(await state.state.storage.get("runtime_peer_gone_watch_alarm_at"), undefined);
+    assert.equal(await state.getAlarm(), null);
+  });
+
+  it("does not arm idle teardown while execution is active or queued", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    harness.peers.set("rt", peerWithScope("rt", "runtime_peer"));
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getRuntimeExecutionActivity: async () => ({ executing: true, queueDepth: 1 }),
+    } as never);
+
+    harness.refreshRuntimeIdleWatch?.("demo");
+    await state.drain();
+
+    assert.equal(await state.getAlarm(), null);
   });
 
   it("publishes active runtime peers to the owner compute index", async () => {
@@ -4042,13 +4638,16 @@ interface RoomHarness {
       syncPeer?(): Promise<RoomHostFrameResult>;
       receiveFrame(): Promise<RoomHostFrameResult>;
       checkpoint(): Promise<void>;
+      getRuntimeExecutionActivity?(): Promise<{ executing: boolean; queueDepth: number }>;
       getRuntimeQueueDepth?(): Promise<number>;
       getWorkstationAttachment?(): Promise<unknown>;
       removePeer?(peerId: string): Promise<void>;
+      reconcileRuntimeIdleTimeout?(reason: string, updatedAt: string): Promise<RoomHostFrameResult>;
       reconcileRuntimePeerGone?(reason: string): Promise<RoomHostFrameResult>;
       setWorkstationAttachment?(attachment: unknown): Promise<RoomHostFrameResult>;
     }
   >;
+  refreshRuntimeIdleWatch?(notebookId: string): void;
   refreshRuntimePeerWatch?(notebookId: string): void;
   roomSummaryOccupantKeys(): Set<string>;
   publishRoomSummaryIfHumanOccupantsChanged(
@@ -4298,6 +4897,132 @@ class CountingNotebookOwnerD1 extends NotebookOwnerD1 {
   }
 }
 
+class ResumeNotebookD1 implements D1Database {
+  readonly attachJobs: Array<{
+    id: string;
+    notebook_id: string;
+    owner_principal: string;
+    workstation_id: string;
+    status: string;
+    trigger: string;
+    requested_by_actor_label: string;
+    requested_at: string;
+    updated_at: string;
+    accepted_at: string | null;
+    finished_at: string | null;
+    error_message: string | null;
+  }> = [];
+
+  prepare(query: string): D1PreparedStatement {
+    return new ResumeNotebookD1Statement(this, query);
+  }
+
+  async exec(): Promise<D1Result> {
+    return d1OkResult();
+  }
+
+  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    const results: D1Result<T>[] = [];
+    for (const statement of statements) {
+      results.push(await statement.run<T>());
+    }
+    return results;
+  }
+}
+
+class ResumeNotebookD1Statement implements D1PreparedStatement {
+  private values: unknown[] = [];
+
+  constructor(
+    private readonly db: ResumeNotebookD1,
+    private readonly query: string,
+  ) {}
+
+  bind(...values: unknown[]): D1PreparedStatement {
+    this.values = values;
+    return this;
+  }
+
+  async first<T = unknown>(): Promise<T | null> {
+    if (this.query.includes("FROM notebooks") && this.query.includes("WHERE id = ?")) {
+      const notebookId = String(this.values[0] ?? "demo");
+      return {
+        id: notebookId,
+        owner_principal: "user:dev:alice",
+        title: "Demo",
+        created_at: "2026-06-23T00:00:00.000Z",
+        updated_at: "2026-06-23T00:00:00.000Z",
+        latest_revision_id: null,
+      } as T;
+    }
+    if (this.query.includes("FROM workstations") && this.query.includes("workstation_id = ?")) {
+      return {
+        owner_principal: "user:dev:alice",
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        provider_label: null,
+        status: "online",
+        status_message: null,
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        working_directory: "/srv/project",
+        cpu_count: null,
+        memory_bytes: null,
+        environments_json: null,
+        created_at: "2026-06-23T00:00:00.000Z",
+        updated_at: "2026-06-23T00:00:00.000Z",
+        last_seen_at: new Date().toISOString(),
+      } as T;
+    }
+    if (this.query.includes("FROM workstation_attach_jobs") && this.query.includes("LIMIT 1")) {
+      return null;
+    }
+    if (
+      this.query.includes("FROM workstation_attach_jobs") &&
+      this.query.includes("WHERE id = ?")
+    ) {
+      const [jobId] = this.values;
+      return (this.db.attachJobs.find((job) => job.id === jobId) ?? null) as T | null;
+    }
+    return null;
+  }
+
+  async run<T = unknown>(): Promise<D1Result<T>> {
+    if (this.query.includes("INSERT INTO workstation_attach_jobs")) {
+      const [
+        id,
+        notebookId,
+        ownerPrincipal,
+        workstationId,
+        trigger,
+        requestedByActorLabel,
+        requestedAt,
+        updatedAt,
+      ] = this.values.map((value) => String(value));
+      this.db.attachJobs.push({
+        id,
+        notebook_id: notebookId,
+        owner_principal: ownerPrincipal,
+        workstation_id: workstationId,
+        status: "pending",
+        trigger,
+        requested_by_actor_label: requestedByActorLabel,
+        requested_at: requestedAt,
+        updated_at: updatedAt,
+        accepted_at: null,
+        finished_at: null,
+        error_message: null,
+      });
+    }
+    return d1OkResult<T>();
+  }
+
+  async all<T = unknown>(): Promise<D1Result<T>> {
+    return d1OkResult<T>([]);
+  }
+}
+
 class NotebookOwnerD1Statement implements D1PreparedStatement {
   private values: unknown[] = [];
 
@@ -4334,6 +5059,19 @@ class NotebookOwnerD1Statement implements D1PreparedStatement {
 
 function d1OkResult<T = unknown>(results: T[] = []): D1Result<T> {
   return { results, success: true, meta: {} };
+}
+
+function initialHostedCellIdForTest(notebookId: string): string {
+  return `cell-room-${stableRoomKeyForTest(notebookId)}`;
+}
+
+function stableRoomKeyForTest(value: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, "0");
 }
 
 function hibernatedState(sockets: CloudflareWebSocket[]): {

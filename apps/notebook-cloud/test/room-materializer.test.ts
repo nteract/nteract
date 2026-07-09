@@ -1700,6 +1700,7 @@ describe("RoomMaterializer", () => {
     const result = await materializer.setWorkstationAttachment(attachment);
 
     assert.equal(result.changed, true);
+    assert.equal(result.ignored_stale, false);
     assert.equal(result.runtime_state_changed, true);
     assert.ok(
       result.outbound.some(
@@ -1717,7 +1718,44 @@ describe("RoomMaterializer", () => {
 
     const again = await materializer.setWorkstationAttachment(attachment);
     assert.equal(again.changed, false, "same attachment is idempotent");
+    assert.equal(again.ignored_stale, false);
     assert.deepEqual(again.outbound, []);
+  });
+
+  it("passes through ignored stale workstation attachment publishes", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const current = {
+      workstation_id: "ws-current",
+      display_name: "Current workstation",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "runtime_peer",
+      status: "ready",
+      status_message: null,
+      cpu_count: null,
+      memory_bytes: null,
+      working_directory: null,
+      updated_at: "2026-06-07T00:00:02.000Z",
+      runtime_session_id: "job-current",
+    };
+    const seeded = await materializer.setWorkstationAttachment(current);
+    assert.equal(seeded.changed, true);
+    assert.equal(seeded.ignored_stale, false);
+
+    const stale = {
+      ...current,
+      workstation_id: "ws-stale",
+      display_name: "Stale workstation",
+      updated_at: "2026-06-07T00:00:01.000Z",
+      runtime_session_id: "job-stale",
+    };
+    const ignored = await materializer.setWorkstationAttachment(stale);
+
+    assert.equal(ignored.changed, false);
+    assert.equal(ignored.ignored_stale, true);
+    assert.deepEqual(ignored.outbound, []);
+    assert.deepEqual(await materializer.getWorkstationAttachment(), current);
   });
 
   it("allows owner-scoped CommsDoc changes to existing runtime comm topology", async () => {

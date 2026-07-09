@@ -131,13 +131,14 @@ export function cloudNotebookShellCapabilities({
     normalizedSelfDisplayValue(selfDisplay?.imageUrl) ?? cloudIdentityImageUrl(authState);
   const visibleRuntimePeerCount = Math.max(0, Math.floor(runtimePeerCount));
   const hasRuntimePeer = visibleRuntimePeerCount > 0;
+  const attachmentIdleWake = workstationAttachment?.status === "idle";
   const attachmentConnected = workstationAttachmentIsConnected(workstationAttachment);
   const attachmentExecutionAvailable =
     workstationAttachmentCanExecute(workstationAttachment) && hasRuntimePeer;
   const hasAttachmentSnapshot = workstationAttachment !== null;
   const effectiveRuntimeConnected = hasAttachmentSnapshot ? attachmentConnected : runtimeAvailable;
   const effectiveRuntimeAvailable = hasAttachmentSnapshot
-    ? attachmentExecutionAvailable
+    ? attachmentExecutionAvailable || attachmentIdleWake
     : runtimeAvailable;
   const auth = {
     canSignIn: !hasAppSession && authState.mode !== "oidc",

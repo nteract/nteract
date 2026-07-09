@@ -38,6 +38,7 @@ import {
   blobKey,
   commsDocSnapshotKey,
   createNotebookWithOwnerAcl,
+  ensureCatalogSchema,
   getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
   roomSummaryKey,
@@ -60,6 +61,93 @@ const APP_SESSION_SECRET = "0123456789abcdef0123456789abcdef";
 
 before(async () => {
   await initializeTestRuntimedWasm();
+});
+
+describe("catalog schema runtime initialization", () => {
+  it("dedupes duplicate active attach jobs before creating the owner unique index", async () => {
+    const db = new FakeD1();
+    db.indexes.delete("workstation_attach_jobs_active_owner_unique_idx");
+    const env = fakeEnv({ DB: db });
+    const errorMessage = "cancelled by active workstation attach job uniqueness migration";
+
+    seedWorkstationAttachJob(env, {
+      id: "older-active",
+      notebookId: "notebook-duplicate-attach",
+      ownerPrincipal: "principal:alice",
+      workstationId: "ws-lab-a",
+      status: "accepted",
+      requestedAt: "2026-07-09T00:00:00.000Z",
+      updatedAt: "2026-07-09T00:00:01.000Z",
+    });
+    seedWorkstationAttachJob(env, {
+      id: "newer-active",
+      notebookId: "notebook-duplicate-attach",
+      ownerPrincipal: "principal:alice",
+      workstationId: "ws-lab-b",
+      status: "running",
+      requestedAt: "2026-07-09T00:01:00.000Z",
+      updatedAt: "2026-07-09T00:01:01.000Z",
+    });
+
+    await ensureCatalogSchema(env);
+
+    assert.equal(db.workstationAttachJobs.get("newer-active")?.status, "running");
+    const older = db.workstationAttachJobs.get("older-active");
+    assert.equal(older?.status, "cancelled");
+    assert.equal(older?.error_message, errorMessage);
+    assert.ok(older?.updated_at, "dedupe stamps updated_at");
+    assert.ok(older?.finished_at, "dedupe stamps finished_at");
+    assert.ok(
+      db.indexes.has("workstation_attach_jobs_active_owner_unique_idx"),
+      "owner unique index was created",
+    );
+
+    const dedupeOffset = db.executedStatements.findIndex(
+      (statement) => statement.includes("ROW_NUMBER() OVER") && statement.includes(errorMessage),
+    );
+    const dropOffset = db.executedStatements.findIndex((statement) =>
+      statement.includes("DROP INDEX IF EXISTS workstation_attach_jobs_active_unique_idx"),
+    );
+    const createOffset = db.executedStatements.findIndex((statement) =>
+      statement.includes(
+        "CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_owner_unique_idx",
+      ),
+    );
+    assert.ok(dedupeOffset >= 0, "runtime schema executed the active attach-job dedupe");
+    assert.ok(dropOffset >= 0, "runtime schema dropped the legacy active index");
+    assert.ok(createOffset >= 0, "runtime schema created the owner active index");
+    assert.ok(dedupeOffset < dropOffset, "dedupe ran before the legacy index drop");
+    assert.ok(dropOffset < createOffset, "legacy index drop ran before owner index create");
+
+    await assert.rejects(
+      db
+        .prepare(
+          `INSERT INTO workstation_attach_jobs (
+             id,
+             notebook_id,
+             owner_principal,
+             workstation_id,
+             status,
+             trigger,
+             requested_by_actor_label,
+             requested_at,
+             updated_at
+           ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+        )
+        .bind(
+          "third-active",
+          "notebook-duplicate-attach",
+          "principal:alice",
+          "ws-lab-c",
+          "user_attach",
+          "user:dev:alice/browser:tab",
+          "2026-07-09T00:02:00.000Z",
+          "2026-07-09T00:02:00.000Z",
+        )
+        .run(),
+      /UNIQUE constraint failed: workstation_attach_jobs\.notebook_id, workstation_attach_jobs\.owner_principal/,
+    );
+  });
 });
 
 describe("Worker artifact routes", () => {
@@ -2951,14 +3039,16 @@ describe("Worker artifact routes", () => {
 
     assert.equal(attach.status, 202);
     const body = (await attach.json()) as {
-      job: { job_id: string; notebook_id: string; status: string };
+      job: { job_id: string; notebook_id: string; status: string; trigger: string };
       workstation: { is_default?: boolean; workstation_id?: string };
     };
     assert.equal(body.job.notebook_id, "attach-demo");
     assert.equal(body.job.status, "pending");
+    assert.equal(body.job.trigger, "user_attach");
     assert.equal(body.workstation.workstation_id, "ws-lab1");
     assert.equal(body.workstation.is_default, false);
     assert.equal(env.DB.workstationAttachJobs.get(body.job.job_id)?.workstation_id, "ws-lab1");
+    assert.equal(env.DB.workstationAttachJobs.get(body.job.job_id)?.trigger, "user_attach");
     assert.equal(
       env.DB.acl.some(
         (row) =>
@@ -2989,10 +3079,14 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
     assert.equal(poll.status, 200);
-    const polled = (await poll.json()) as { jobs: Array<{ job_id: string }> };
+    const polled = (await poll.json()) as { jobs: Array<{ job_id: string; trigger: string }> };
     assert.deepEqual(
       polled.jobs.map((job) => job.job_id),
       [body.job.job_id],
+    );
+    assert.deepEqual(
+      polled.jobs.map((job) => job.trigger),
+      ["user_attach"],
     );
   });
 
@@ -3295,6 +3389,60 @@ describe("Worker artifact routes", () => {
     const secondBody = (await second.json()) as { job: { job_id: string } };
     assert.equal(secondBody.job.job_id, firstBody.job.job_id);
     assert.equal(env.DB.workstationAttachJobs.size, 1);
+  });
+
+  it("upgrades a deduped resume attach job when the owner explicitly attaches", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "resume-job",
+      notebookId: "attach-demo",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      requestedAt: new Date().toISOString(),
+      trigger: "resume",
+    });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 202);
+    const body = (await attach.json()) as { job: { job_id: string; trigger: string } };
+    assert.equal(body.job.job_id, "resume-job");
+    assert.equal(body.job.trigger, "user_attach");
+    assert.equal(env.DB.workstationAttachJobs.get("resume-job")?.trigger, "user_attach");
+
+    const poll = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(poll.status, 200);
+    const polled = (await poll.json()) as { jobs: Array<{ job_id: string; trigger: string }> };
+    assert.deepEqual(
+      polled.jobs.map((job) => ({ job_id: job.job_id, trigger: job.trigger })),
+      [{ job_id: "resume-job", trigger: "user_attach" }],
+    );
   });
 
   it("switches active workstation attach jobs to the newly attached workstation", async () => {
@@ -3785,6 +3933,7 @@ describe("Worker artifact routes", () => {
       notebook_id: "nb-1",
       workstation_id: "ws-lab2",
       status: "running",
+      trigger: "user_attach",
       requested_at: "2026-05-22T00:00:00.000Z",
       updated_at: env.DB.workstationAttachJobs.get("job-1")?.updated_at,
       accepted_at: env.DB.workstationAttachJobs.get("job-1")?.accepted_at,
@@ -3935,6 +4084,7 @@ describe("Worker artifact routes", () => {
         notebook_id: "nb-running",
         workstation_id: "ws-lab2",
         status: "running",
+        trigger: "user_attach",
         requested_at: "2026-05-22T00:00:00.000Z",
         updated_at: "2026-05-22T00:00:02.000Z",
         accepted_at: null,
@@ -4074,6 +4224,7 @@ describe("Worker artifact routes", () => {
         notebook_id: "nb-old",
         workstation_id: "ws-lab2",
         status: "cancelled",
+        trigger: "user_attach",
         requested_at: "2026-05-22T00:00:00.000Z",
         updated_at: "2026-05-22T00:00:00.000Z",
         accepted_at: null,
@@ -7356,21 +7507,53 @@ describe("catalog schema migrations", () => {
       "CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_unique_idx";
 
     const storageSource = await readFile(new URL("../src/storage.ts", import.meta.url), "utf8");
+    const migration = await readFile(
+      new URL("../migrations/0008_workstation_attach_active_owner_unique.sql", import.meta.url),
+      "utf8",
+    );
+    const dedupeStart = migration.indexOf("UPDATE workstation_attach_jobs");
+    const dedupeEnd = migration.indexOf("\n\nDROP INDEX", dedupeStart);
+    assert.ok(dedupeStart >= 0, "migration dedupes duplicate active attach jobs");
+    assert.ok(dedupeEnd > dedupeStart, "migration orders dedupe before index swap");
+    const dedupeUpdate = migration.slice(dedupeStart, dedupeEnd);
+    const dedupeOffset = storageSource.indexOf(dedupeUpdate);
+    assert.ok(dedupeOffset >= 0, "runtime schema includes the migration dedupe update");
+
+    const schemaStart = storageSource.indexOf("const SCHEMA_STATEMENTS = [");
+    assert.ok(schemaStart >= 0, "runtime schema statements are present");
+    const schemaDedupeOffset = storageSource.indexOf(
+      "WORKSTATION_ATTACH_JOBS_DEDUPE_ACTIVE_OWNER",
+      schemaStart,
+    );
+    const schemaDropOffset = storageSource.indexOf(
+      "WORKSTATION_ATTACH_JOBS_DROP_LEGACY_ACTIVE_UNIQUE_INDEX",
+      schemaStart,
+    );
+    const schemaCreateOffset = storageSource.indexOf(
+      "WORKSTATION_ATTACH_JOBS_ACTIVE_UNIQUE_INDEX",
+      schemaStart,
+    );
     const dropOffset = storageSource.indexOf(legacyDrop);
     const createOffset = storageSource.indexOf(ownerIndexCreate);
     assert.ok(dropOffset >= 0, "runtime schema drops the old 3-column index name");
     assert.ok(createOffset >= 0, "runtime schema creates the new owner-level index name");
-    assert.ok(dropOffset < createOffset, "runtime schema drops the old name before creating new");
+    assert.ok(schemaDedupeOffset >= 0, "runtime schema references the dedupe statement");
+    assert.ok(schemaDropOffset >= 0, "runtime schema references the legacy index drop");
+    assert.ok(schemaCreateOffset >= 0, "runtime schema references the owner index create");
+    assert.ok(
+      schemaDedupeOffset < schemaDropOffset,
+      "runtime schema dedupes before dropping the old index",
+    );
+    assert.ok(
+      schemaDropOffset < schemaCreateOffset,
+      "runtime schema drops the old name before creating new",
+    );
     assert.equal(
       storageSource.includes(`${legacyIndexCreate}\n    ON workstation_attach_jobs`),
       false,
       "runtime schema does not recreate the old index name",
     );
 
-    const migration = await readFile(
-      new URL("../migrations/0008_workstation_attach_active_owner_unique.sql", import.meta.url),
-      "utf8",
-    );
     assert.ok(migration.includes(legacyDrop), "migration drops the old index name");
     assert.ok(migration.includes(ownerIndexCreate), "migration creates the new index name");
     assert.equal(
@@ -7392,6 +7575,9 @@ describe("catalog schema migrations", () => {
     assert.ok(revisionColumns);
     revisionColumns.delete("cover_blob_hash");
     revisionColumns.delete("cover_mime");
+    const attachJobColumns = db.tableColumns.get("workstation_attach_jobs");
+    assert.ok(attachJobColumns);
+    attachJobColumns.delete("trigger");
 
     const env = fakeEnv({ DB: db });
     await runCatalogMigrations(env);
@@ -7403,6 +7589,8 @@ describe("catalog schema migrations", () => {
     const migratedRevisions = db.tableColumns.get("notebook_revisions");
     assert.ok(migratedRevisions?.has("cover_blob_hash"), "cover_blob_hash added by migration");
     assert.ok(migratedRevisions?.has("cover_mime"), "cover_mime added by migration");
+    const migratedAttachJobs = db.tableColumns.get("workstation_attach_jobs");
+    assert.ok(migratedAttachJobs?.has("trigger"), "attach job trigger added by migration");
   });
 });
 
@@ -8303,6 +8491,7 @@ function seedWorkstationAttachJob(
     finishedAt?: string | null;
     requestedAt?: string;
     status?: WorkstationAttachJobRow["status"];
+    trigger?: WorkstationAttachJobRow["trigger"];
     updatedAt?: string;
   },
 ): void {
@@ -8312,6 +8501,7 @@ function seedWorkstationAttachJob(
     owner_principal: input.ownerPrincipal,
     workstation_id: input.workstationId,
     status: input.status ?? "pending",
+    trigger: input.trigger ?? "user_attach",
     requested_by_actor_label: "user:dev:alice/browser:tab",
     requested_at: input.requestedAt ?? "2026-05-22T00:00:00.000Z",
     updated_at: input.updatedAt ?? "2026-05-22T00:00:00.000Z",
@@ -8762,6 +8952,7 @@ interface WorkstationAttachJobRow {
   owner_principal: string;
   workstation_id: string;
   status: "pending" | "accepted" | "running" | "failed" | "completed" | "cancelled";
+  trigger: "user_attach" | "resume";
   requested_by_actor_label: string;
   requested_at: string;
   updated_at: string;
@@ -8785,6 +8976,8 @@ class FakeD1 implements D1Database {
   readonly workstationPairingCodes = new Map<string, WorkstationPairingCodeRow>();
   readonly workstationCredentials = new Map<string, WorkstationCredentialRow>();
   readonly batchSizes: number[] = [];
+  readonly executedStatements: string[] = [];
+  readonly indexes = new Set<string>(["workstation_attach_jobs_active_owner_unique_idx"]);
   readonly tableColumns = new Map<string, Set<string>>([
     [
       "notebooks",
@@ -8818,6 +9011,23 @@ class FakeD1 implements D1Database {
         "cover_mime",
         "actor_label",
         "created_at",
+      ]),
+    ],
+    [
+      "workstation_attach_jobs",
+      new Set([
+        "id",
+        "notebook_id",
+        "owner_principal",
+        "workstation_id",
+        "status",
+        "trigger",
+        "requested_by_actor_label",
+        "requested_at",
+        "updated_at",
+        "accepted_at",
+        "finished_at",
+        "error_message",
       ]),
     ],
   ]);
@@ -8998,6 +9208,7 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async run<T = unknown>(): Promise<D1Result<T>> {
+    this.db.executedStatements.push(this.query);
     const alterMatch = this.query.match(/ALTER TABLE\s+(\w+)\s+ADD COLUMN\s+(\w+)/i);
     if (alterMatch) {
       const [, table, column] = alterMatch;
@@ -9410,16 +9621,54 @@ class FakeD1Statement implements D1PreparedStatement {
       const [ownerPrincipal, workstationId] = this.values as [string, string];
       const deleted = this.db.workstations.delete(workstationKey(ownerPrincipal, workstationId));
       return okResult(undefined, { changes: deleted ? 1 : 0 });
+    } else if (
+      this.query.includes("DROP INDEX IF EXISTS workstation_attach_jobs_active_unique_idx")
+    ) {
+      this.db.indexes.delete("workstation_attach_jobs_active_unique_idx");
+    } else if (
+      this.query.includes(
+        "CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_owner_unique_idx",
+      )
+    ) {
+      if (!this.db.indexes.has("workstation_attach_jobs_active_owner_unique_idx")) {
+        const activeGroups = new Set<string>();
+        for (const job of this.db.workstationAttachJobs.values()) {
+          if (!isActiveWorkstationAttachJobStatus(job.status)) {
+            continue;
+          }
+          const key = `${job.notebook_id}\u0000${job.owner_principal}`;
+          if (activeGroups.has(key)) {
+            throw new Error(
+              "D1_ERROR: UNIQUE constraint failed: workstation_attach_jobs.notebook_id, workstation_attach_jobs.owner_principal",
+            );
+          }
+          activeGroups.add(key);
+        }
+        this.db.indexes.add("workstation_attach_jobs_active_owner_unique_idx");
+      }
     } else if (this.query.includes("INSERT INTO workstation_attach_jobs")) {
-      const [id, notebookId, ownerPrincipal, workstationId, actorLabel, requestedAt, updatedAt] =
-        this.values as [string, string, string, string, string, string, string];
-      const duplicate = [...this.db.workstationAttachJobs.values()].find(
-        (job) =>
-          job.notebook_id === notebookId &&
-          job.owner_principal === ownerPrincipal &&
-          isActiveWorkstationAttachJobStatus(job.status),
-      );
-      if (duplicate) {
+      const hasTriggerColumn = /\btrigger\b/i.test(this.query);
+      const [id, notebookId, ownerPrincipal, workstationId] = this.values as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      const trigger = hasTriggerColumn
+        ? (this.values[4] as WorkstationAttachJobRow["trigger"])
+        : "user_attach";
+      const actorLabel = String(this.values[hasTriggerColumn ? 5 : 4]);
+      const requestedAt = String(this.values[hasTriggerColumn ? 6 : 5]);
+      const updatedAt = String(this.values[hasTriggerColumn ? 7 : 6]);
+      if (
+        this.db.indexes.has("workstation_attach_jobs_active_owner_unique_idx") &&
+        [...this.db.workstationAttachJobs.values()].some(
+          (job) =>
+            job.notebook_id === notebookId &&
+            job.owner_principal === ownerPrincipal &&
+            isActiveWorkstationAttachJobStatus(job.status),
+        )
+      ) {
         throw new Error(
           "D1_ERROR: UNIQUE constraint failed: workstation_attach_jobs.notebook_id, workstation_attach_jobs.owner_principal",
         );
@@ -9430,6 +9679,7 @@ class FakeD1Statement implements D1PreparedStatement {
         owner_principal: ownerPrincipal,
         workstation_id: workstationId,
         status: "pending",
+        trigger,
         requested_by_actor_label: actorLabel,
         requested_at: requestedAt,
         updated_at: updatedAt,
@@ -9438,6 +9688,39 @@ class FakeD1Statement implements D1PreparedStatement {
         error_message: null,
       });
       return okResult(undefined, { changes: 1 });
+    } else if (
+      this.query.includes("UPDATE workstation_attach_jobs") &&
+      this.query.includes("ROW_NUMBER() OVER") &&
+      this.query.includes("cancelled by active workstation attach job uniqueness migration")
+    ) {
+      const now = new Date().toISOString();
+      let changes = 0;
+      const groups = new Map<string, WorkstationAttachJobRow[]>();
+      for (const job of this.db.workstationAttachJobs.values()) {
+        if (!isActiveWorkstationAttachJobStatus(job.status)) {
+          continue;
+        }
+        const key = `${job.notebook_id}\u0000${job.owner_principal}`;
+        const group = groups.get(key) ?? [];
+        group.push(job);
+        groups.set(key, group);
+      }
+      for (const group of groups.values()) {
+        group.sort(
+          (left, right) =>
+            right.requested_at.localeCompare(left.requested_at) ||
+            right.updated_at.localeCompare(left.updated_at) ||
+            right.id.localeCompare(left.id),
+        );
+        for (const job of group.slice(1)) {
+          job.status = "cancelled";
+          job.updated_at = now;
+          job.finished_at = now;
+          job.error_message = "cancelled by active workstation attach job uniqueness migration";
+          changes += 1;
+        }
+      }
+      return okResult(undefined, { changes });
     } else if (
       this.query.includes("UPDATE workstation_attach_jobs") &&
       this.query.includes("stale workstation attach job expired after heartbeat timeout")
@@ -9478,6 +9761,29 @@ class FakeD1Statement implements D1PreparedStatement {
         }
       }
       return okResult(undefined, { changes });
+    } else if (
+      this.query.includes("UPDATE workstation_attach_jobs") &&
+      this.query.includes("SET trigger = 'user_attach'")
+    ) {
+      const [updatedAt, jobId, ownerPrincipal, workstationId] = this.values as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      const job = this.db.workstationAttachJobs.get(jobId);
+      if (
+        job &&
+        job.owner_principal === ownerPrincipal &&
+        job.workstation_id === workstationId &&
+        job.trigger === "resume" &&
+        isActiveWorkstationAttachJobStatus(job.status)
+      ) {
+        job.trigger = "user_attach";
+        job.updated_at = updatedAt;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (
       this.query.includes("UPDATE workstation_attach_jobs") &&
       this.query.includes("SET status = 'cancelled'")

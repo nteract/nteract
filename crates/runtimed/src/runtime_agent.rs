@@ -64,6 +64,13 @@ fn runtime_agent_response_error(response: &RuntimeAgentResponse) -> Option<&str>
     }
 }
 
+fn should_clear_pending_initial_launch_after_rpc(
+    is_launch_or_restart: bool,
+    response: &RuntimeAgentResponse,
+) -> bool {
+    is_launch_or_restart && runtime_agent_response_error(response).is_none()
+}
+
 /// Minimum interval between reconnect cycles on a recoverable transport,
 /// covering *both* recoverable-failure arms: a clean EOF and a stream framing
 /// error. `reconnect_with_backoff` only delays between *failed* connects, so a
@@ -80,6 +87,21 @@ const RECOVERABLE_RECONNECT_FLOOR: std::time::Duration = std::time::Duration::fr
 /// The UDS path is local daemon transport and stays out of this hosted-room
 /// signal.
 const RUNTIME_ROOM_LINK_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(15);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchTrigger {
+    OnAttach,
+    OnFirstExecution,
+}
+
+impl LaunchTrigger {
+    fn label(self) -> &'static str {
+        match self {
+            LaunchTrigger::OnAttach => "launch-on-attach",
+            LaunchTrigger::OnFirstExecution => "launch-on-execute",
+        }
+    }
+}
 
 /// Runtime-agent-local buffer for live kernel broadcasts. These carry
 /// ephemeral custom widget events such as ipympl PNG frames. Match the
@@ -230,12 +252,13 @@ pub async fn run_runtime_agent(
 ///   hazard the `runt-cloud-peer` spike documented.
 ///
 /// `initial_launch`, when `Some`, is a [`RuntimeAgentRequest::LaunchKernel`] the
-/// agent applies *once* after the initial RuntimeStateDoc sync, so the
-/// workstation endpoint can *start* a runtime in env X without waiting for an
-/// inbound `LaunchKernel` RPC. Waiting for the RuntimeStateDoc sync keeps the
-/// launch lifecycle write causally after the room checkpoint instead of racing
-/// stale published lifecycle state. `None` keeps the historical attach-only
-/// behavior. Build it with [`crate::workstation::build_current_python_launch`].
+/// agent applies once according to its [`LaunchTrigger`], so the workstation
+/// endpoint can either start a runtime eagerly on attach or lazily after synced
+/// execution intent appears without waiting for an inbound `LaunchKernel` RPC.
+/// Waiting for the RuntimeStateDoc sync keeps the launch lifecycle write
+/// causally after the room checkpoint instead of racing stale published
+/// lifecycle state. `None` keeps the historical attach-only behavior. Build it
+/// with [`crate::workstation::build_current_python_launch`].
 ///
 /// CODE-ONLY (Phase 3c/3b): this builds and unit-tests the spawn path behind the
 /// transport gate; the live cross-machine re-proof (a preview room + the
@@ -245,15 +268,15 @@ pub async fn run_cloud_runtime_agent(
     config: notebook_cloud_transport::CloudWsConfig,
     operator: String,
     blob_root: PathBuf,
-    initial_launch: Option<RuntimeAgentRequest>,
+    initial_launch: Option<(LaunchTrigger, RuntimeAgentRequest)>,
 ) -> anyhow::Result<()> {
     let notebook_id = config.notebook_id.clone();
     info!(
-        "[runtime-agent] Starting cloud runtime_agent notebook_id={} url={} scope={} launch_on_attach={}",
+        "[runtime-agent] Starting cloud runtime_agent notebook_id={} url={} scope={} initial_launch={:?}",
         notebook_id,
         notebook_cloud_transport::build_ws_url(&config.cloud_url, &notebook_id),
         config.scope,
-        initial_launch.is_some(),
+        initial_launch.as_ref().map(|(trigger, _)| *trigger),
     );
 
     let output_blob_publisher = OutputBlobPublisher::cloud(&config);
@@ -408,6 +431,26 @@ fn reassert_live_kernel_projection_if_needed<K: KernelConnection>(
     Ok(true)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamErrorDisposition {
+    Recoverable,
+    TerminalFailed,
+    TerminalGraceful,
+}
+
+fn classify_stream_error<T: FrameTransport>(
+    transport: &T,
+    error: &std::io::Error,
+) -> StreamErrorDisposition {
+    if transport.stream_error_is_recoverable(error) {
+        StreamErrorDisposition::Recoverable
+    } else if transport.stream_error_is_graceful_shutdown(error) {
+        StreamErrorDisposition::TerminalGraceful
+    } else {
+        StreamErrorDisposition::TerminalFailed
+    }
+}
+
 /// Run the runtime agent over an arbitrary [`FrameTransport`].
 ///
 /// The desktop/daemon path ([`run_runtime_agent`]) and the cloud path
@@ -431,7 +474,7 @@ async fn run_runtime_agent_on_transport<T, F>(
     blob_root: PathBuf,
     resolve_actor: F,
     output_blob_publisher: OutputBlobPublisher,
-    initial_launch: Option<RuntimeAgentRequest>,
+    initial_launch: Option<(LaunchTrigger, RuntimeAgentRequest)>,
 ) -> anyhow::Result<()>
 where
     T: FrameTransport,
@@ -555,31 +598,43 @@ where
         record_runtime_room_link_seen(&state);
     }
 
-    // -- 3b. Launch-on-attach gate (cloud only) -----------------------------
+    // -- 3b. Initial launch gate (cloud only) -------------------------------
     //
     // The workstation endpoint can hand the agent an initial `LaunchKernel` to
-    // apply after the first RuntimeStateDoc sync, so it *starts* a runtime in env
-    // X without waiting for an inbound RPC. The RuntimeStateDoc sync is
-    // load-bearing: the room may bootstrap from a published checkpoint whose
-    // lifecycle still says AwaitingTrust/Error. If the runtime peer writes
-    // Running before receiving that checkpoint, the writes are concurrent and
-    // Automerge can keep projecting the stale checkpoint value even though the
-    // kernel launched. Gated on `clean_eof_is_recoverable()`, the
-    // recoverable/cloud-transport discriminant: the daemon/UDS path drives launch
-    // via its own RPC and must never launch on attach, so even a (never-passed)
-    // `Some` here is ignored on UDS. The launch runs through the *same*
-    // `handle_runtime_agent_request` path an inbound RPC would, so the kernel
-    // drive, queue release, and command-receiver install are identical — only the
-    // trigger differs.
+    // apply after RuntimeStateDoc sync. `OnAttach` applies after the first sync,
+    // preserving today's eager user-attach behavior. `OnFirstExecution` applies
+    // only after a later sync observes queued execution intent while no kernel
+    // exists. The RuntimeStateDoc sync is load-bearing: the room may bootstrap
+    // from a published checkpoint whose lifecycle still says AwaitingTrust/Error.
+    // If the runtime peer writes Running before receiving that checkpoint, the
+    // writes are concurrent and Automerge can keep projecting the stale checkpoint
+    // value even though the kernel launched. Gated on `clean_eof_is_recoverable()`,
+    // the recoverable/cloud-transport discriminant: the daemon/UDS path drives
+    // launch via its own RPC and must never launch from this template, so even a
+    // (never-passed) `Some` here is ignored on UDS. The launch runs through the
+    // *same* `handle_runtime_agent_request` path an inbound RPC would, so the
+    // kernel drive, queue release, and command-receiver install are identical —
+    // only the trigger differs.
     let mut pending_initial_launch = match initial_launch {
-        Some(launch) if transport.clean_eof_is_recoverable() => {
-            info!("[runtime-agent] Deferring launch-on-attach until initial RuntimeStateDoc sync");
+        Some((trigger, launch)) if transport.clean_eof_is_recoverable() => {
+            match trigger {
+                LaunchTrigger::OnAttach => {
+                    info!(
+                        "[runtime-agent] Deferring launch-on-attach until initial RuntimeStateDoc sync"
+                    );
+                }
+                LaunchTrigger::OnFirstExecution => {
+                    info!(
+                        "[runtime-agent] Deferring launch-on-execute until RuntimeStateDoc sync observes queued execution"
+                    );
+                }
+            }
             let _ = state_kick_tx.send(());
-            Some(launch)
+            Some((trigger, launch))
         }
         Some(_) => {
             warn!(
-                "[runtime-agent] Ignoring launch-on-attach on a non-recoverable transport \
+                "[runtime-agent] Ignoring initial launch on a non-recoverable transport \
                  (daemon-driven launch only)"
             );
             None
@@ -756,6 +811,12 @@ where
                                         lifecycle_rx = Some(rx.lifecycle_rx);
                                         work_rx = Some(rx.work_rx);
                                     }
+                                    if should_clear_pending_initial_launch_after_rpc(
+                                        is_launch_or_restart,
+                                        &response,
+                                    ) {
+                                        pending_initial_launch = None;
+                                    }
                                     // Update interrupt handle after any request that may change kernel state
                                     interrupt_handle = kernel.as_ref().and_then(|k| k.interrupt_handle());
 
@@ -771,6 +832,7 @@ where
                                 let sync_started = std::time::Instant::now();
                                 let mut inbound_queued_count = 0usize;
                                 let mut accepted_queued_count = 0usize;
+                                let mut queued_nonempty = false;
                                 if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                                     let sync_result = ctx.state.with_doc(|sd| {
                                         match sd.receive_sync_message_with_changes_recovering(
@@ -797,6 +859,7 @@ where
                                         Ok(Some(queued)) => {
                                             runtime_state_doc_seen = true;
                                             inbound_queued_count = queued.len();
+                                            queued_nonempty = !queued.is_empty();
                                             accepted_queued_count = queue_synced_executions(
                                                 queued,
                                                 &mut seen_execution_ids,
@@ -831,42 +894,38 @@ where
                                                 sync_started.elapsed().as_millis()
                                             );
                                         }
-                                        if let Some(launch) = pending_initial_launch.take() {
-                                            info!(
-                                                "[runtime-agent] Applying launch-on-attach LaunchKernel after RuntimeStateDoc sync startup_elapsed_ms={}",
-                                                agent_started.elapsed().as_millis()
-                                            );
-                                            let launch_apply_started = std::time::Instant::now();
-                                            let (response, new_cmd_rx) =
-                                                handle_runtime_agent_request(
-                                                    launch,
-                                                    &ctx,
-                                                    &mut kernel,
-                                                    &mut kernel_state,
-                                                    &mut seen_execution_ids,
+                                        let should_apply_launch = pending_initial_launch
+                                            .as_ref()
+                                            .map(|(trigger, _)| {
+                                                should_apply_initial_launch(
+                                                    *trigger,
+                                                    runtime_state_doc_seen,
+                                                    kernel.is_some(),
+                                                    queued_nonempty,
                                                 )
-                                                .await;
-                                            if let Some(rx) = new_cmd_rx {
-                                                lifecycle_rx = Some(rx.lifecycle_rx);
-                                                work_rx = Some(rx.work_rx);
-                                            }
-                                            interrupt_handle = kernel
-                                                .as_ref()
-                                                .and_then(|k| k.interrupt_handle());
-                                            if let Some(error) =
-                                                runtime_agent_response_error(&response)
-                                            {
-                                                warn!(
-                                                    "[runtime-agent] Launch-on-attach failed: {}",
-                                                    error
-                                                );
-                                            } else {
-                                                info!(
-                                                    "[runtime-agent-timing] launch-on-attach completed elapsed_ms={} startup_elapsed_ms={}",
-                                                    launch_apply_started.elapsed().as_millis(),
-                                                    agent_started.elapsed().as_millis()
-                                                );
-                                            }
+                                            })
+                                            .unwrap_or(false);
+                                        if should_apply_launch {
+                                            let Some((trigger, launch)) =
+                                                pending_initial_launch.take()
+                                            else {
+                                                unreachable!(
+                                                    "checked pending_initial_launch above"
+                                                )
+                                            };
+                                            apply_initial_launch(
+                                                trigger,
+                                                launch,
+                                                &ctx,
+                                                &mut kernel,
+                                                &mut kernel_state,
+                                                &mut seen_execution_ids,
+                                                &mut lifecycle_rx,
+                                                &mut work_rx,
+                                                &mut interrupt_handle,
+                                                agent_started,
+                                            )
+                                            .await;
                                         }
 
                                         match reassert_live_kernel_projection_if_needed(
@@ -1121,16 +1180,25 @@ where
                         }
                     }
                     Some(Err(e)) => {
-                        if !transport.stream_error_is_recoverable(&e) {
-                            error!(
-                                "[runtime-agent] Non-recoverable sync stream error: {}; \
-                                 shutting down instead of reconnecting",
-                                e
-                            );
-                            terminal_error = Some(anyhow::anyhow!(
-                                "runtime agent sync stream rejected by room: {e}"
-                            ));
-                            break;
+                        match classify_stream_error(&transport, &e) {
+                            StreamErrorDisposition::TerminalGraceful => {
+                                info!(
+                                    "[runtime-agent] Sync stream closed gracefully by transport; shutting down cleanly"
+                                );
+                                break;
+                            }
+                            StreamErrorDisposition::TerminalFailed => {
+                                error!(
+                                    "[runtime-agent] Non-recoverable sync stream error: {}; \
+                                     shutting down instead of reconnecting",
+                                    e
+                                );
+                                terminal_error = Some(anyhow::anyhow!(
+                                    "runtime agent sync stream rejected by room: {e}"
+                                ));
+                                break;
+                            }
+                            StreamErrorDisposition::Recoverable => {}
                         }
                         // A framing error here means one of two things:
                         //   - the daemon half-closed the sync stream (clean),
@@ -1696,6 +1764,60 @@ async fn queue_synced_executions<K: KernelConnection>(
     }
 
     queued_count
+}
+
+fn should_apply_initial_launch(
+    trigger: LaunchTrigger,
+    runtime_state_doc_seen: bool,
+    kernel_exists: bool,
+    queued_nonempty: bool,
+) -> bool {
+    if !runtime_state_doc_seen {
+        return false;
+    }
+
+    match trigger {
+        LaunchTrigger::OnAttach => true,
+        LaunchTrigger::OnFirstExecution => !kernel_exists && queued_nonempty,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_initial_launch(
+    trigger: LaunchTrigger,
+    launch: RuntimeAgentRequest,
+    ctx: &RuntimeAgentContext,
+    kernel: &mut Option<Kernel>,
+    kernel_state: &mut KernelState,
+    seen_execution_ids: &mut HashSet<String>,
+    lifecycle_rx: &mut Option<mpsc::UnboundedReceiver<LifecycleSignal>>,
+    work_rx: &mut Option<mpsc::Receiver<WorkCommand>>,
+    interrupt_handle: &mut Option<crate::jupyter_kernel::InterruptHandle>,
+    agent_started: std::time::Instant,
+) {
+    info!(
+        "[runtime-agent] Applying {} LaunchKernel after RuntimeStateDoc sync startup_elapsed_ms={}",
+        trigger.label(),
+        agent_started.elapsed().as_millis()
+    );
+    let launch_apply_started = std::time::Instant::now();
+    let (response, new_cmd_rx) =
+        handle_runtime_agent_request(launch, ctx, kernel, kernel_state, seen_execution_ids).await;
+    if let Some(rx) = new_cmd_rx {
+        *lifecycle_rx = Some(rx.lifecycle_rx);
+        *work_rx = Some(rx.work_rx);
+    }
+    *interrupt_handle = kernel.as_ref().and_then(|k| k.interrupt_handle());
+    if let Some(error) = runtime_agent_response_error(&response) {
+        warn!("[runtime-agent] {} failed: {}", trigger.label(), error);
+    } else {
+        info!(
+            "[runtime-agent-timing] {} completed elapsed_ms={} startup_elapsed_ms={}",
+            trigger.label(),
+            launch_apply_started.elapsed().as_millis(),
+            agent_started.elapsed().as_millis()
+        );
+    }
 }
 
 /// Handle a `RuntimeAgentRequest` and return a `RuntimeAgentResponse`.
@@ -2916,6 +3038,93 @@ mod tests {
         }
     }
 
+    struct ClassifyingTransport {
+        recoverable: bool,
+        graceful: bool,
+    }
+
+    impl FrameTransport for ClassifyingTransport {
+        type Source = NullSource;
+        type Sink = NullSink;
+
+        async fn connect(&self) -> std::io::Result<(Self::Source, Self::Sink)> {
+            Ok((NullSource, NullSink))
+        }
+
+        fn stream_error_is_recoverable(&self, _: &std::io::Error) -> bool {
+            self.recoverable
+        }
+
+        fn stream_error_is_graceful_shutdown(&self, _: &std::io::Error) -> bool {
+            self.graceful
+        }
+    }
+
+    #[test]
+    fn stream_error_classification_has_terminal_graceful_split() {
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "mock");
+
+        assert_eq!(
+            classify_stream_error(
+                &ClassifyingTransport {
+                    recoverable: true,
+                    graceful: false,
+                },
+                &error
+            ),
+            StreamErrorDisposition::Recoverable
+        );
+        assert_eq!(
+            classify_stream_error(
+                &ClassifyingTransport {
+                    recoverable: false,
+                    graceful: false,
+                },
+                &error
+            ),
+            StreamErrorDisposition::TerminalFailed
+        );
+        assert_eq!(
+            classify_stream_error(
+                &ClassifyingTransport {
+                    recoverable: false,
+                    graceful: true,
+                },
+                &error
+            ),
+            StreamErrorDisposition::TerminalGraceful
+        );
+    }
+
+    #[test]
+    fn successful_inbound_launch_or_restart_clears_pending_initial_launch() {
+        let launched = RuntimeAgentResponse::KernelLaunched {
+            env_source: notebook_protocol::connection::EnvSource::Unknown("test".to_string()),
+        };
+        assert!(should_clear_pending_initial_launch_after_rpc(
+            true, &launched
+        ));
+
+        let restarted = RuntimeAgentResponse::KernelRestarted {
+            env_source: notebook_protocol::connection::EnvSource::Unknown("test".to_string()),
+        };
+        assert!(should_clear_pending_initial_launch_after_rpc(
+            true, &restarted
+        ));
+
+        let failed = RuntimeAgentResponse::KernelLaunchFailed {
+            kind: notebook_protocol::protocol::KernelLaunchFailureKind::PortBind,
+            error: "port busy".to_string(),
+        };
+        assert!(!should_clear_pending_initial_launch_after_rpc(
+            true, &failed
+        ));
+        assert!(!should_clear_pending_initial_launch_after_rpc(
+            false,
+            &RuntimeAgentResponse::Ok
+        ));
+    }
+
     /// A `FrameTransport` whose `connect` fails the first `fail_before` calls
     /// (with a `ConnectionRefused` io error, the shape a dial failure takes),
     /// then succeeds. Counts total connect attempts.
@@ -3065,6 +3274,60 @@ mod tests {
             !uds_like.clean_eof_is_recoverable(),
             "a non-recoverable (UDS) transport ignores launch-on-attach"
         );
+    }
+
+    #[test]
+    fn initial_launch_trigger_waits_for_runtime_state_doc_sync() {
+        assert!(!should_apply_initial_launch(
+            LaunchTrigger::OnAttach,
+            false,
+            false,
+            true
+        ));
+        assert!(!should_apply_initial_launch(
+            LaunchTrigger::OnFirstExecution,
+            false,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn launch_on_first_execution_requires_no_kernel_and_queued_work() {
+        assert!(should_apply_initial_launch(
+            LaunchTrigger::OnFirstExecution,
+            true,
+            false,
+            true
+        ));
+        assert!(!should_apply_initial_launch(
+            LaunchTrigger::OnFirstExecution,
+            true,
+            true,
+            true
+        ));
+        assert!(!should_apply_initial_launch(
+            LaunchTrigger::OnFirstExecution,
+            true,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn launch_on_attach_is_ready_after_runtime_state_doc_sync_only() {
+        assert!(should_apply_initial_launch(
+            LaunchTrigger::OnAttach,
+            true,
+            false,
+            false
+        ));
+        assert!(should_apply_initial_launch(
+            LaunchTrigger::OnAttach,
+            true,
+            true,
+            true
+        ));
     }
 
     // -- cloud doc-actor label (Phase 3c) ---------------------------------

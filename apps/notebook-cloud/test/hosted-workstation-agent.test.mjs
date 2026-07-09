@@ -59,6 +59,28 @@ describe("hosted workstation agent launch contract", () => {
     ]);
   });
 
+  it("uses execute launch mode for resume attach jobs", () => {
+    const plan = buildAttachJobSpawnPlan({
+      job: {
+        job_id: "job-resume",
+        notebook_id: "nb-resume",
+        trigger: "resume",
+      },
+      pythonPath: "/opt/k/bin/python",
+      agentRoot: "/tmp/agent",
+      baseUrl: "https://preview.runt.run",
+      workingDirectory: "/home/ubuntu/project",
+      workstationId: "ws-lab2",
+      displayName: "lab2 workstation",
+    });
+
+    assert.equal(
+      plan.args.some((arg, index) => arg === "--launch-mode" && plan.args[index + 1] === "execute"),
+      true,
+    );
+    assert.equal(plan.args.includes("/opt/k/bin/python"), true);
+  });
+
   it("can launch runtime peers with OIDC bearer auth without an API-key provider header", () => {
     const plan = buildAttachJobSpawnPlan({
       job: {

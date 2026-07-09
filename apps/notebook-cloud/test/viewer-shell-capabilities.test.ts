@@ -263,6 +263,46 @@ test("cloud shell capabilities require live runtime peer presence for executable
   assert.equal(capabilities.canExecute, false);
 });
 
+test("cloud shell capabilities let owners run to wake an idle attachment without claiming connectivity", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: false,
+    runtimePeerCount: 0,
+    runtimeLastSeenAt: "2026-06-07T21:02:00Z",
+    workstationAttachment: {
+      workstation_id: "ws-lab2",
+      display_name: "Lab 2",
+      provider: "local_daemon",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "idle",
+      status_message: null,
+      cpu_count: 8,
+      memory_bytes: 32 * 1024 ** 3,
+      working_directory: "/home/ubuntu/notebooks",
+      updated_at: "2026-06-07T21:00:00Z",
+    },
+  });
+
+  assert.equal(capabilities.runtime.connected, false);
+  assert.equal(capabilities.runtime.executionAvailable, true);
+  assert.equal(capabilities.runtime.target?.id, "ws-lab2");
+  assert.equal(capabilities.runtime.target?.label, "Lab 2");
+  assert.equal(capabilities.runtime.target?.status, "attached");
+  assert.equal(capabilities.runtime.target?.attachmentIdle, true);
+  assert.equal(capabilities.runtime.target?.statusLabel, "Idle");
+  assert.equal(
+    capabilities.runtime.target?.detail,
+    "Compute is attached and starts on the next run.",
+  );
+  assert.equal(capabilities.runtime.target?.runtimePeerCount, null);
+  assert.equal(capabilities.runtime.target?.roomLink, null);
+  assert.equal(capabilities.canExecute, true);
+});
+
 test("cloud shell capabilities surface RuntimeStateDoc kernel status on workstation targets", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "owner"),

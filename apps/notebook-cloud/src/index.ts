@@ -2209,6 +2209,7 @@ async function routeNotebookWorkstationAttachment(
     notebookId,
     ownerPrincipal,
     replaceActive: replaceExisting,
+    trigger: "user_attach",
     workstationId,
     actorLabel: identity.actorLabel,
   });
@@ -3058,6 +3059,7 @@ function workstationAttachJobResponseRow(
     notebook_id: job.notebook_id,
     workstation_id: job.workstation_id,
     status: job.status,
+    trigger: job.trigger,
     requested_at: job.requested_at,
     updated_at: job.updated_at,
     accepted_at: job.accepted_at,

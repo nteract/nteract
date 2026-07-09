@@ -459,6 +459,7 @@ function activeTargetCacheKey(target: NotebookShellRuntimeTargetProjection | nul
     target.id ?? null,
     target.kind,
     target.status,
+    target.attachmentIdle ?? false,
     target.label,
     target.statusLabel ?? null,
     target.detail ?? null,

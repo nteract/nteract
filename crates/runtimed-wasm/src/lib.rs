@@ -405,6 +405,7 @@ pub struct RoomHostOutboundFrame {
 #[derive(Serialize, Debug)]
 pub struct RoomHostFrameResult {
     pub changed: bool,
+    pub ignored_stale: bool,
     pub notebook_changed: bool,
     pub runtime_state_changed: bool,
     pub outbound: Vec<RoomHostOutboundFrame>,
@@ -414,6 +415,7 @@ impl RoomHostFrameResult {
     fn empty() -> Self {
         Self {
             changed: false,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: false,
             outbound: Vec::new(),
@@ -844,6 +846,33 @@ impl RoomHostHandle {
         self.state_doc.read_state().queue.queued.len()
     }
 
+    /// Execution-only activity snapshot for hosted runtime idle guards.
+    ///
+    /// The room host uses this to decide whether the runtime can be lazily
+    /// torn down after its idle TTL. It intentionally reports only execution
+    /// state from RuntimeStateDoc: no room occupant or WebSocket presence facts
+    /// participate in the decision.
+    pub fn get_runtime_execution_activity_json(&self) -> Result<String, JsError> {
+        serde_json::to_string(&runtime_execution_activity(&self.state_doc.read_state()))
+            .map_err(|e| JsError::new(&format!("serialize runtime execution activity: {e}")))
+    }
+
+    /// Cleanly reconcile an execution-idle hosted runtime after the idle TTL.
+    ///
+    /// This is not the crash watchdog: it does not mark executions failed and
+    /// it does not turn the kernel into Error. The caller must first decide the
+    /// runtime peer should be stopped. This method rechecks RuntimeStateDoc and
+    /// only shuts down when no execution is active and the queue is empty.
+    pub fn reconcile_runtime_idle_timeout(
+        &mut self,
+        reason: &str,
+        _updated_at: &str,
+    ) -> Result<JsValue, JsError> {
+        let result = self.reconcile_runtime_idle_timeout_inner(reason)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize runtime idle timeout result: {e}")))
+    }
+
     /// Generate current sync frames for a peer.
     ///
     /// The Worker calls this immediately after accepting a socket and after the
@@ -1081,6 +1110,7 @@ impl RoomHostHandle {
 
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: changed,
             runtime_state_changed: false,
             outbound: Vec::new(),
@@ -1153,6 +1183,7 @@ impl RoomHostHandle {
 
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: changed,
             outbound: Vec::new(),
@@ -1217,6 +1248,7 @@ impl RoomHostHandle {
 
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: false,
             outbound: Vec::new(),
@@ -1287,6 +1319,7 @@ impl RoomHostHandle {
 
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: false,
             outbound: Vec::new(),
@@ -1457,6 +1490,7 @@ impl RoomHostHandle {
         // execution_id pointer (NotebookDoc) to the sender and all other peers.
         let mut result = RoomHostFrameResult {
             changed: true,
+            ignored_stale: false,
             notebook_changed: true,
             runtime_state_changed: true,
             outbound: Vec::new(),
@@ -1566,6 +1600,7 @@ impl RoomHostHandle {
 
         let mut result = RoomHostFrameResult {
             changed: true,
+            ignored_stale: false,
             notebook_changed: true,
             runtime_state_changed: true,
             outbound: Vec::new(),
@@ -1807,7 +1842,12 @@ impl RoomHostHandle {
         }
 
         let current_attachment = self.state_doc.workstation_attachment();
-        if current_attachment.is_some() || self.state_doc.get_heads() != heads_before {
+        let attachment_is_idle = current_attachment
+            .as_ref()
+            .is_some_and(workstation_attachment_is_idle);
+        if !attachment_is_idle
+            && (current_attachment.is_some() || self.state_doc.get_heads() != heads_before)
+        {
             let next_attachment =
                 runtime_peer_gone_workstation_attachment(current_attachment, reason);
             self.state_doc
@@ -1818,6 +1858,7 @@ impl RoomHostHandle {
         let changed = self.state_doc.get_heads() != heads_before;
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: changed,
             outbound: Vec::new(),
@@ -1832,12 +1873,70 @@ impl RoomHostHandle {
         Ok(result)
     }
 
+    fn reconcile_runtime_idle_timeout_inner(
+        &mut self,
+        reason: &str,
+    ) -> Result<RoomHostFrameResult, JsError> {
+        let state = self.state_doc.read_state();
+        let activity = runtime_execution_activity(&state);
+        if activity.executing || activity.queue_depth > 0 {
+            return Ok(RoomHostFrameResult::empty());
+        }
+        drop(state);
+
+        let heads_before = self.state_doc.get_heads();
+        self.state_doc
+            .set_queue(None, &[])
+            .map_err(|e| JsError::new(&format!("reconcile idle queue: {e}")))?;
+
+        let lifecycle = self.state_doc.read_state().kernel.lifecycle;
+        if lifecycle_is_live(&lifecycle) {
+            self.state_doc
+                .set_lifecycle(&RuntimeLifecycle::Shutdown)
+                .map_err(|e| JsError::new(&format!("reconcile idle lifecycle: {e}")))?;
+        }
+
+        if let Some(attachment) = runtime_idle_timeout_workstation_attachment(
+            self.state_doc.workstation_attachment(),
+            reason,
+        ) {
+            self.state_doc
+                .set_workstation_attachment(Some(&attachment))
+                .map_err(|e| {
+                    JsError::new(&format!("reconcile idle workstation attachment: {e}"))
+                })?;
+        }
+
+        let changed = self.state_doc.get_heads() != heads_before;
+        let mut result = RoomHostFrameResult {
+            changed,
+            ignored_stale: false,
+            notebook_changed: false,
+            runtime_state_changed: changed,
+            outbound: Vec::new(),
+        };
+        if changed {
+            self.queue_runtime_state_sync_for_other_peers("", &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+
     /// Native-testable core of [`Self::set_workstation_attachment_json`].
     fn set_workstation_attachment_inner(
         &mut self,
         attachment: Option<&WorkstationAttachmentState>,
     ) -> Result<RoomHostFrameResult, JsError> {
         let heads_before = self.state_doc.get_heads();
+        let current_attachment = self.state_doc.workstation_attachment();
+        if workstation_attachment_publish_is_stale(current_attachment.as_ref(), attachment) {
+            return Ok(RoomHostFrameResult {
+                changed: false,
+                ignored_stale: true,
+                notebook_changed: false,
+                runtime_state_changed: false,
+                outbound: Vec::new(),
+            });
+        }
         if attachment.is_some_and(runtime_peer_attachment_is_ready) {
             self.clear_stale_runtime_peer_gone_error()?;
         }
@@ -1847,6 +1946,7 @@ impl RoomHostHandle {
         let changed = self.state_doc.get_heads() != heads_before;
         let mut result = RoomHostFrameResult {
             changed,
+            ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: changed,
             outbound: Vec::new(),
@@ -1901,8 +2001,64 @@ fn runtime_peer_gone_workstation_attachment(
     attachment
 }
 
+fn workstation_attachment_is_idle(attachment: &WorkstationAttachmentState) -> bool {
+    attachment.status == "idle"
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeExecutionActivity {
+    executing: bool,
+    queue_depth: usize,
+}
+
+fn runtime_execution_activity(state: &RuntimeState) -> RuntimeExecutionActivity {
+    RuntimeExecutionActivity {
+        executing: state.queue.executing.is_some()
+            || state
+                .executions
+                .values()
+                .any(|execution| execution.status == "running"),
+        queue_depth: state.queue.queued.len(),
+    }
+}
+
+fn runtime_idle_timeout_workstation_attachment(
+    current: Option<WorkstationAttachmentState>,
+    reason: &str,
+) -> Option<WorkstationAttachmentState> {
+    let mut attachment = current?;
+    attachment.status = "idle".to_string();
+    attachment.status_message = Some(reason.to_string());
+    Some(attachment)
+}
+
 fn runtime_peer_attachment_is_ready(attachment: &WorkstationAttachmentState) -> bool {
     attachment.provider == "runtime_peer" && attachment.status == "ready"
+}
+
+fn workstation_attachment_publish_is_stale(
+    current: Option<&WorkstationAttachmentState>,
+    incoming: Option<&WorkstationAttachmentState>,
+) -> bool {
+    let (Some(current), Some(incoming)) = (current, incoming) else {
+        return false;
+    };
+    let (Some(current_session_id), Some(incoming_session_id)) = (
+        current.runtime_session_id.as_deref(),
+        incoming.runtime_session_id.as_deref(),
+    ) else {
+        return false;
+    };
+    if current_session_id == incoming_session_id {
+        return false;
+    }
+    let (Some(current_updated_at), Some(incoming_updated_at)) = (
+        current.updated_at.as_deref(),
+        incoming.updated_at.as_deref(),
+    ) else {
+        return false;
+    };
+    incoming_updated_at < current_updated_at
 }
 
 /// Whether a kernel lifecycle still reads as "alive" — i.e. a viewer would see
@@ -5985,6 +6141,118 @@ mod tests {
                 .and_then(|ws| ws.status_message.as_deref()),
             Some("runtime peer disconnected: daemon dropped")
         );
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .and_then(|ws| ws.updated_at.as_deref()),
+            Some("2026-06-07T00:00:00.000Z"),
+            "peer-gone reconciliation preserves the publish timestamp"
+        );
+    }
+
+    #[test]
+    fn runtime_execution_activity_reports_running_and_queued_work() {
+        let host = host_with_inflight_work();
+        let activity = runtime_execution_activity(&host.state_doc.read_state());
+
+        assert!(activity.executing);
+        assert_eq!(activity.queue_depth, 1);
+    }
+
+    #[test]
+    fn reconcile_runtime_idle_timeout_shuts_down_idle_kernel_and_idles_attachment() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .expect("set idle lifecycle");
+        host.set_workstation_attachment_inner(Some(&workstation_attachment_fixture()))
+            .expect("seed attachment");
+
+        let result = host
+            .reconcile_runtime_idle_timeout_inner(
+                "Compute stopped after 30 minutes without queued or active execution.",
+            )
+            .expect("idle reconcile");
+
+        assert!(result.changed);
+        assert!(result.runtime_state_changed);
+        let state = host.state_doc.read_state();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown);
+        assert!(state.queue.executing.is_none());
+        assert!(state.queue.queued.is_empty());
+        assert_eq!(
+            state.workstation.as_ref().map(|ws| ws.status.as_str()),
+            Some("idle")
+        );
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .and_then(|ws| ws.status_message.as_deref()),
+            Some("Compute stopped after 30 minutes without queued or active execution.")
+        );
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .and_then(|ws| ws.updated_at.as_deref()),
+            Some("2026-06-07T00:00:00.000Z"),
+            "idle reconciliation preserves the original publish timestamp"
+        );
+    }
+
+    #[test]
+    fn reconcile_runtime_idle_timeout_keeps_session_and_timestamp_for_monotonic_guard() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .expect("set idle lifecycle");
+        let mut current = workstation_attachment_fixture();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed attachment");
+
+        host.reconcile_runtime_idle_timeout_inner(
+            "Compute stopped after 30 minutes without queued or active execution.",
+        )
+        .expect("idle reconcile");
+
+        let state = host.state_doc.read_state();
+        let attachment = state.workstation.as_ref().expect("attachment remains");
+        assert_eq!(attachment.status, "idle");
+        assert_eq!(
+            attachment.runtime_session_id.as_deref(),
+            Some("job-current")
+        );
+        assert_eq!(
+            attachment.updated_at.as_deref(),
+            Some("2026-06-07T00:00:02.000Z"),
+            "internal idle rewrite must not outrank a newer cross-session publish"
+        );
+    }
+
+    #[test]
+    fn reconcile_runtime_idle_timeout_noops_while_execution_is_active() {
+        let mut host = host_with_inflight_work();
+
+        let result = host
+            .reconcile_runtime_idle_timeout_inner(
+                "Compute stopped after 30 minutes without queued or active execution.",
+            )
+            .expect("idle reconcile");
+
+        assert!(!result.changed);
+        let state = host.state_doc.read_state();
+        assert_eq!(
+            state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+        assert!(state.queue.executing.is_some());
+        assert_eq!(state.queue.queued.len(), 1);
     }
 
     #[test]
@@ -6035,6 +6303,53 @@ mod tests {
         assert_eq!(
             state.workstation.as_ref().map(|ws| ws.status.as_str()),
             Some("error")
+        );
+    }
+
+    #[test]
+    fn reconcile_runtime_peer_gone_does_not_demote_idle_attachment() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Shutdown)
+            .unwrap();
+        let mut attachment = workstation_attachment_fixture();
+        attachment.status = "idle".to_string();
+        attachment.status_message = Some(
+            "Compute stopped after 30 minutes without queued or active execution.".to_string(),
+        );
+        attachment.runtime_session_id = Some("job-idle".to_string());
+        attachment.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&attachment))
+            .expect("seed idle attachment");
+
+        let result = host
+            .reconcile_runtime_peer_gone_inner("late disconnect")
+            .expect("reconcile ok");
+
+        assert!(!result.changed, "idle peer-gone reconcile is a no-op");
+        assert!(result.outbound.is_empty());
+        let state = host.state_doc.read_state();
+        assert_ne!(
+            state.kernel.lifecycle,
+            RuntimeLifecycle::Error,
+            "peer-gone reconcile must not write an error kernel state for idle"
+        );
+        assert!(
+            !state
+                .kernel
+                .error_details
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("runtime peer disconnected:"),
+            "peer-gone reconcile must not write a peer-gone kernel error for idle"
+        );
+        let attachment = state.workstation.as_ref().expect("idle attachment remains");
+        assert_eq!(attachment.status, "idle");
+        assert_eq!(attachment.runtime_session_id.as_deref(), Some("job-idle"));
+        assert_eq!(
+            attachment.updated_at.as_deref(),
+            Some("2026-06-07T00:00:02.000Z")
         );
     }
 
@@ -6156,6 +6471,127 @@ mod tests {
         assert_eq!(
             state.workstation.as_ref().map(|ws| ws.provider.as_str()),
             Some("runtime_peer")
+        );
+    }
+
+    #[test]
+    fn set_workstation_attachment_ignores_cross_session_strictly_older_publish() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut current = workstation_attachment_fixture();
+        current.workstation_id = "ws-current".to_string();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed current attachment");
+        let heads_before = host.state_doc.get_heads();
+
+        let mut stale = current.clone();
+        stale.workstation_id = "ws-stale".to_string();
+        stale.runtime_session_id = Some("job-stale".to_string());
+        stale.updated_at = Some("2026-06-07T00:00:01.000Z".to_string());
+
+        let result = host
+            .set_workstation_attachment_inner(Some(&stale))
+            .expect("stale publish is handled");
+
+        assert!(!result.changed);
+        assert!(result.ignored_stale);
+        assert_eq!(result.outbound.len(), 0);
+        assert_eq!(host.state_doc.get_heads(), heads_before);
+        assert_eq!(host.state_doc.read_state().workstation, Some(current));
+    }
+
+    #[test]
+    fn set_workstation_attachment_allows_same_session_older_timestamp() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut current = workstation_attachment_fixture();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed current attachment");
+
+        let mut same_session = current.clone();
+        same_session.status = "connecting".to_string();
+        same_session.updated_at = Some("2026-06-07T00:00:01.000Z".to_string());
+        let result = host
+            .set_workstation_attachment_inner(Some(&same_session))
+            .expect("same-session publish passes");
+
+        assert!(result.changed);
+        assert!(!result.ignored_stale);
+        assert_eq!(host.state_doc.read_state().workstation, Some(same_session));
+    }
+
+    #[test]
+    fn set_workstation_attachment_allows_cross_session_equal_timestamp_tie() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut current = workstation_attachment_fixture();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:01.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed current attachment");
+
+        let mut tied = current.clone();
+        tied.status = "connecting".to_string();
+        tied.runtime_session_id = Some("job-tied".to_string());
+        let result = host
+            .set_workstation_attachment_inner(Some(&tied))
+            .expect("equal timestamp publish passes");
+
+        assert!(result.changed);
+        assert!(!result.ignored_stale);
+        assert_eq!(host.state_doc.read_state().workstation, Some(tied));
+    }
+
+    #[test]
+    fn set_workstation_attachment_allows_sessionless_incoming_publish() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut current = workstation_attachment_fixture();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed current attachment");
+
+        let mut legacy = current.clone();
+        legacy.status = "connecting".to_string();
+        legacy.runtime_session_id = None;
+        legacy.updated_at = Some("2026-06-07T00:00:01.000Z".to_string());
+        let result = host
+            .set_workstation_attachment_inner(Some(&legacy))
+            .expect("sessionless publish passes");
+
+        assert!(result.changed);
+        assert!(!result.ignored_stale);
+        assert_eq!(host.state_doc.read_state().workstation, Some(legacy));
+    }
+
+    #[test]
+    fn set_workstation_attachment_allows_publish_with_missing_updated_at() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut current = workstation_attachment_fixture();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed current attachment");
+
+        let mut missing_updated_at = current.clone();
+        missing_updated_at.status = "connecting".to_string();
+        missing_updated_at.runtime_session_id = Some("job-missing-updated-at".to_string());
+        missing_updated_at.updated_at = None;
+        let result = host
+            .set_workstation_attachment_inner(Some(&missing_updated_at))
+            .expect("publish without updated_at passes");
+
+        assert!(result.changed);
+        assert!(!result.ignored_stale);
+        assert_eq!(
+            host.state_doc.read_state().workstation,
+            Some(missing_updated_at)
         );
     }
 

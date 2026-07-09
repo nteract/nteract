@@ -6,6 +6,8 @@ import {
   readOnlyNotebookShellCapabilities,
   resolveNotebookShellRuntimeTarget,
   stabilizeNotebookShellCapabilities,
+  workstationAttachmentCanExecute,
+  workstationAttachmentIsConnected,
   type NotebookShellAccessCapabilities,
   type NotebookShellAuthCapabilities,
   type NotebookShellRuntimeCapabilities,
@@ -523,6 +525,30 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
         statusLabel: "Lost",
         lastSeenAt: "2026-06-07T21:02:00Z",
       },
+    });
+  });
+
+  it("projects idle workstation attachments as attached wake targets without lost room chrome", () => {
+    const idleAttachment = attachment({
+      status: "idle",
+      status_message: null,
+    });
+    const target = projectNotebookRuntimeTargetFromWorkstationAttachment(idleAttachment, {
+      requireRuntimePeer: true,
+      runtimePeerCount: 0,
+      runtimeLastSeenAt: "2026-06-07T21:02:00Z",
+    });
+
+    expect(workstationAttachmentCanExecute(idleAttachment)).toBe(false);
+    expect(workstationAttachmentIsConnected(idleAttachment)).toBe(false);
+    expect(target).toMatchObject({
+      id: "ws-lab2",
+      status: "attached",
+      attachmentIdle: true,
+      statusLabel: "Idle",
+      detail: "Compute is attached and starts on the next run.",
+      runtimePeerCount: null,
+      roomLink: null,
     });
   });
 });

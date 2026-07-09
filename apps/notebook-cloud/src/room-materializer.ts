@@ -22,9 +22,15 @@ interface RoomHostOutboundFrame {
 
 export interface RoomHostFrameResult {
   changed: boolean;
+  ignored_stale?: boolean;
   notebook_changed: boolean;
   runtime_state_changed: boolean;
   outbound: RoomHostOutboundFrame[];
+}
+
+export interface RuntimeExecutionActivity {
+  executing: boolean;
+  queueDepth: number;
 }
 
 interface RoomCheckpointMetadata {
@@ -91,6 +97,12 @@ export class RoomMaterializer {
     return this.withHost((host) => Math.max(0, Math.trunc(host.get_runtime_queue_depth())));
   }
 
+  async getRuntimeExecutionActivity(): Promise<RuntimeExecutionActivity> {
+    return this.withHost((host) =>
+      normalizeRuntimeExecutionActivityJson(host.get_runtime_execution_activity_json()),
+    );
+  }
+
   async getWorkstationAttachment(): Promise<WorkstationAttachmentState | null> {
     return this.withHost((host) =>
       normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json()),
@@ -111,6 +123,15 @@ export class RoomMaterializer {
   ): Promise<RoomHostFrameResult> {
     return this.withHost((host) =>
       normalizeResult(host.set_workstation_attachment_json(JSON.stringify(attachment))),
+    );
+  }
+
+  async reconcileRuntimeIdleTimeout(
+    reason: string,
+    updatedAt: string,
+  ): Promise<RoomHostFrameResult> {
+    return this.withHost((host) =>
+      normalizeResult(host.reconcile_runtime_idle_timeout(reason, updatedAt)),
     );
   }
 
@@ -768,6 +789,7 @@ function normalizeResult(value: unknown): RoomHostFrameResult {
   const result = value as Partial<RoomHostFrameResult> | undefined;
   return {
     changed: result?.changed ?? false,
+    ignored_stale: result?.ignored_stale ?? false,
     notebook_changed: result?.notebook_changed ?? false,
     runtime_state_changed: result?.runtime_state_changed ?? false,
     outbound: result?.outbound ?? [],
@@ -780,6 +802,27 @@ function normalizeWorkstationAttachmentJson(value: string): WorkstationAttachmen
     return parsed;
   }
   throw new Error("RoomHostHandle returned an invalid workstation attachment");
+}
+
+function normalizeRuntimeExecutionActivityJson(value: string): RuntimeExecutionActivity {
+  const parsed = JSON.parse(value) as unknown;
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("RoomHostHandle returned invalid runtime execution activity");
+  }
+  const record = parsed as Record<string, unknown>;
+  const queueDepth = record.queue_depth;
+  if (
+    typeof record.executing !== "boolean" ||
+    typeof queueDepth !== "number" ||
+    !Number.isSafeInteger(queueDepth) ||
+    queueDepth < 0
+  ) {
+    throw new Error("RoomHostHandle returned invalid runtime execution activity");
+  }
+  return {
+    executing: record.executing,
+    queueDepth,
+  };
 }
 
 function commentAuthorActorLabelsFromProjection(projection: unknown): string[] {

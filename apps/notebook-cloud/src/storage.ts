@@ -123,6 +123,8 @@ export type WorkstationAttachJobStatus =
   | "completed"
   | "cancelled";
 
+export type WorkstationAttachJobTrigger = "user_attach" | "resume";
+
 export const WORKSTATION_ATTACH_JOB_STALE_MS = 2 * 60_000;
 // Pending jobs cover host cold start before the agent accepts the request; give
 // a slow host one extra minute beyond the accepted/running heartbeat timeout.
@@ -167,6 +169,7 @@ export interface WorkstationAttachJobRow {
   owner_principal: string;
   workstation_id: string;
   status: WorkstationAttachJobStatus;
+  trigger: WorkstationAttachJobTrigger;
   requested_by_actor_label: string;
   requested_at: string;
   updated_at: string;
@@ -186,6 +189,26 @@ export interface ListActiveWorkstationAttachJobsResult {
 }
 
 const WORKSTATION_ATTACH_JOBS_DROP_LEGACY_ACTIVE_UNIQUE_INDEX = `DROP INDEX IF EXISTS workstation_attach_jobs_active_unique_idx`;
+
+const WORKSTATION_ATTACH_JOBS_DEDUPE_ACTIVE_OWNER = `UPDATE workstation_attach_jobs
+   SET status = 'cancelled',
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+       finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+       error_message = 'cancelled by active workstation attach job uniqueness migration'
+ WHERE status IN ('pending', 'accepted', 'running')
+   AND id IN (
+     SELECT id
+       FROM (
+         SELECT id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY notebook_id, owner_principal
+                  ORDER BY requested_at DESC, updated_at DESC, id DESC
+                ) AS active_rank
+           FROM workstation_attach_jobs
+          WHERE status IN ('pending', 'accepted', 'running')
+       )
+      WHERE active_rank > 1
+   );`;
 
 const WORKSTATION_ATTACH_JOBS_ACTIVE_UNIQUE_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_owner_unique_idx
     ON workstation_attach_jobs(notebook_id, owner_principal)
@@ -349,6 +372,7 @@ const SCHEMA_STATEMENTS = [
     owner_principal TEXT NOT NULL,
     workstation_id TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'running', 'failed', 'completed', 'cancelled')),
+    trigger TEXT NOT NULL DEFAULT 'user_attach',
     requested_by_actor_label TEXT NOT NULL,
     requested_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -357,6 +381,7 @@ const SCHEMA_STATEMENTS = [
     error_message TEXT,
     FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
   )`,
+  WORKSTATION_ATTACH_JOBS_DEDUPE_ACTIVE_OWNER,
   WORKSTATION_ATTACH_JOBS_DROP_LEGACY_ACTIVE_UNIQUE_INDEX,
   WORKSTATION_ATTACH_JOBS_ACTIVE_UNIQUE_INDEX,
   `CREATE INDEX IF NOT EXISTS workstation_attach_jobs_poll_idx
@@ -431,6 +456,11 @@ const SCHEMA_MIGRATIONS = [
     statement: `ALTER TABLE notebook_revisions ADD COLUMN cover_mime TEXT`,
   },
   {
+    table: "workstation_attach_jobs",
+    column: "trigger",
+    statement: `ALTER TABLE workstation_attach_jobs ADD COLUMN trigger TEXT NOT NULL DEFAULT 'user_attach'`,
+  },
+  {
     table: "notebooks",
     column: "cell_composition",
     statement: `ALTER TABLE notebooks ADD COLUMN cell_composition TEXT`,
@@ -491,7 +521,9 @@ export async function ensureCatalogSchema(env: Env): Promise<void> {
 }
 
 async function initializeCatalogSchema(env: Env): Promise<void> {
-  await Promise.all(SCHEMA_STATEMENTS.map((statement) => env.DB!.prepare(statement).run()));
+  for (const statement of SCHEMA_STATEMENTS) {
+    await env.DB!.prepare(statement).run();
+  }
   await runCatalogMigrations(env);
   await backfillNotebookAcl(env);
 }
@@ -1149,6 +1181,7 @@ export async function createWorkstationAttachJob(
     notebookId: string;
     ownerPrincipal: string;
     replaceActive?: boolean;
+    trigger?: WorkstationAttachJobTrigger;
     workstationId: string;
     actorLabel: string;
   },
@@ -1164,6 +1197,10 @@ export async function createWorkstationAttachJob(
   const pendingStaleBefore = new Date(
     now.getTime() - WORKSTATION_ATTACH_PENDING_STALE_MS,
   ).toISOString();
+  const trigger = input.trigger ?? "user_attach";
+  if (!isWorkstationAttachJobTrigger(trigger)) {
+    throw new Error(`invalid workstation attach job trigger: ${trigger}`);
+  }
   await expireStaleWorkstationAttachJobs(
     env,
     { notebookId: input.notebookId, ownerPrincipal: input.ownerPrincipal },
@@ -1182,7 +1219,8 @@ export async function createWorkstationAttachJob(
   });
   if (existing) {
     if (input.replaceActive !== true && existing.workstation_id === input.workstationId) {
-      return { job: existing, cancelledActiveJob: null };
+      const job = await upgradeDedupedAttachJobTriggerToUserAttach(env, existing, trigger, nowIso);
+      return { job, cancelledActiveJob: null };
     }
     cancelledActiveJob = existing;
     activeJobToCancel = existing;
@@ -1197,15 +1235,17 @@ export async function createWorkstationAttachJob(
        owner_principal,
        workstation_id,
        status,
+       trigger,
        requested_by_actor_label,
        requested_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
     ).bind(
       jobId,
       input.notebookId,
       input.ownerPrincipal,
       input.workstationId,
+      trigger,
       input.actorLabel,
       nowIso,
       nowIso,
@@ -1241,7 +1281,13 @@ export async function createWorkstationAttachJob(
         throw error;
       }
       if (input.replaceActive !== true && racedExisting.workstation_id === input.workstationId) {
-        return { job: racedExisting, cancelledActiveJob };
+        const job = await upgradeDedupedAttachJobTriggerToUserAttach(
+          env,
+          racedExisting,
+          trigger,
+          nowIso,
+        );
+        return { job, cancelledActiveJob };
       }
       cancelledActiveJob ??= racedExisting;
       activeJobToCancel = racedExisting;
@@ -1278,6 +1324,7 @@ export async function listActiveWorkstationAttachJobs(
             owner_principal,
             workstation_id,
             status,
+            trigger,
             requested_by_actor_label,
             requested_at,
             updated_at,
@@ -1359,6 +1406,48 @@ export async function updateWorkstationAttachJobStatus(
   return getWorkstationAttachJob(env, input.ownerPrincipal, input.workstationId, input.jobId);
 }
 
+export async function failActiveWorkstationAttachJobsForWorkstation(
+  env: Env,
+  input: {
+    ownerPrincipal: string;
+    workstationId: string;
+    errorMessage: string;
+    now?: string;
+  },
+): Promise<WorkstationAttachJobRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const now = input.now ?? new Date().toISOString();
+  const failed = await env.DB.prepare(
+    `UPDATE workstation_attach_jobs
+        SET status = 'failed',
+            updated_at = ?,
+            finished_at = ?,
+            error_message = ?
+      WHERE owner_principal = ?
+        AND workstation_id = ?
+        AND status IN ('pending', 'accepted', 'running')
+      RETURNING id,
+                notebook_id,
+                owner_principal,
+                workstation_id,
+                status,
+                trigger,
+                requested_by_actor_label,
+                requested_at,
+                updated_at,
+                accepted_at,
+                finished_at,
+                error_message`,
+  )
+    .bind(now, now, input.errorMessage, input.ownerPrincipal, input.workstationId)
+    .all<WorkstationAttachJobRow>();
+  return failed.results ?? [];
+}
+
 function workstationAttachJobStatusRank(status: WorkstationAttachJobStatus): number {
   switch (status) {
     case "pending":
@@ -1395,6 +1484,7 @@ async function getActiveWorkstationAttachJob(
             owner_principal,
             workstation_id,
             status,
+            trigger,
             requested_by_actor_label,
             requested_at,
             updated_at,
@@ -1414,6 +1504,33 @@ async function getActiveWorkstationAttachJob(
     .bind(input.notebookId, input.ownerPrincipal, pendingStaleBefore, staleBefore)
     .first<WorkstationAttachJobRow>();
   return row;
+}
+
+async function upgradeDedupedAttachJobTriggerToUserAttach(
+  env: Env,
+  job: WorkstationAttachJobRow,
+  requestedTrigger: WorkstationAttachJobTrigger,
+  now: string,
+): Promise<WorkstationAttachJobRow> {
+  if (requestedTrigger !== "user_attach" || job.trigger === "user_attach") {
+    return job;
+  }
+  await env
+    .DB!.prepare(
+      `UPDATE workstation_attach_jobs
+          SET trigger = 'user_attach',
+              updated_at = ?
+        WHERE id = ?
+          AND owner_principal = ?
+          AND workstation_id = ?
+          AND trigger = 'resume'
+          AND status IN ('pending', 'accepted', 'running')`,
+    )
+    .bind(now, job.id, job.owner_principal, job.workstation_id)
+    .run();
+  return (
+    (await getWorkstationAttachJob(env, job.owner_principal, job.workstation_id, job.id)) ?? job
+  );
 }
 
 async function expireStaleWorkstationAttachJobs(
@@ -1474,6 +1591,7 @@ async function expireStaleWorkstationAttachJobs(
                   owner_principal,
                   workstation_id,
                   status,
+                  trigger,
                   requested_by_actor_label,
                   requested_at,
                   updated_at,
@@ -1536,6 +1654,7 @@ async function getWorkstationAttachJob(
             owner_principal,
             workstation_id,
             status,
+            trigger,
             requested_by_actor_label,
             requested_at,
             updated_at,
@@ -1550,6 +1669,10 @@ async function getWorkstationAttachJob(
     .bind(jobId, ownerPrincipal, workstationId)
     .first<WorkstationAttachJobRow>();
   return row;
+}
+
+function isWorkstationAttachJobTrigger(value: string): value is WorkstationAttachJobTrigger {
+  return value === "user_attach" || value === "resume";
 }
 
 export interface CreateNotebookWithOwnerAclResult {

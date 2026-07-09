@@ -80,6 +80,12 @@ export interface NotebookShellRuntimeTargetProjection {
   runtimeSessionId?: string | null;
   kind: NotebookShellRuntimeTargetKind;
   status: NotebookShellRuntimeTargetStatus;
+  /**
+   * A hosted workstation attachment that is deliberately hibernated. The
+   * RuntimeStateDoc owns this fact; clients use it to label the target and let
+   * Run wake compute without treating the room link as lost.
+   */
+  attachmentIdle?: boolean;
   label: string;
   statusLabel?: string | null;
   detail?: string | null;
@@ -320,6 +326,7 @@ export function projectNotebookRuntimeTargetFromWorkstationAttachment(
     runtimeSessionId: trimToNull(attachment.runtime_session_id),
     kind: options.kind ?? "cloud_workstation",
     status: statusProjection.status,
+    ...(attachment.status === "idle" ? { attachmentIdle: true } : {}),
     label: trimToNull(attachment.display_name) ?? "Attached workstation",
     statusLabel: statusProjection.statusLabel,
     detail: missingRequiredRuntimePeer
@@ -360,6 +367,10 @@ function projectRuntimeRoomLink({
   runtimeLastSeenAt: string | null;
   runtimePeerCount: number | null;
 }): NotebookShellRoomLinkProjection | null {
+  if (attachmentStatus === "idle") {
+    return null;
+  }
+
   if (runtimePeerCount !== null) {
     return {
       status: "connected",
@@ -556,6 +567,7 @@ const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   id: (target) => target.id ?? null,
   kind: (target) => target.kind,
   status: (target) => target.status,
+  attachmentIdle: (target) => target.attachmentIdle ?? false,
   label: (target) => target.label,
   statusLabel: (target) => target.statusLabel ?? null,
   detail: (target) => target.detail ?? null,
@@ -857,6 +869,7 @@ function stableNotebookShellRuntimeTarget(
     runtimeSessionId: target.runtimeSessionId ?? null,
     kind: target.kind,
     status: target.status,
+    ...(target.attachmentIdle ? { attachmentIdle: true } : {}),
     label: target.label,
     statusLabel: target.statusLabel ?? null,
     detail: target.detail ?? null,
@@ -965,6 +978,12 @@ function workstationAttachmentStatusProjection(
       return { status: "ready", statusLabel: "Ready", detail: null };
     case "busy":
       return { status: "attached", statusLabel: "Busy", detail: null };
+    case "idle":
+      return {
+        status: "attached",
+        statusLabel: "Idle",
+        detail: "Compute is attached and starts on the next run.",
+      };
     case "connecting":
       return {
         status: "connecting",

@@ -108,6 +108,12 @@ pub trait FrameTransport: Send + Sync {
     fn stream_error_is_recoverable(&self, _error: &std::io::Error) -> bool {
         true
     }
+
+    /// Whether a terminal read-side stream error means the peer deliberately
+    /// completed its work and should shut down without surfacing failure.
+    fn stream_error_is_graceful_shutdown(&self, _error: &std::io::Error) -> bool {
+        false
+    }
 }
 
 // -- UDS implementation -----------------------------------------------------
@@ -311,5 +317,17 @@ mod tests {
         );
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "mock");
         assert!(transport.stream_error_is_recoverable(&error));
+    }
+
+    #[test]
+    fn uds_stream_errors_are_not_graceful_shutdowns_by_default() {
+        let transport = UdsFrameTransport::new(
+            "/tmp/does-not-need-to-exist.sock",
+            "nb",
+            "runtime-agent:test",
+            "/tmp/blobs",
+        );
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "mock");
+        assert!(!transport.stream_error_is_graceful_shutdown(&error));
     }
 }

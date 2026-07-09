@@ -7,6 +7,7 @@ import type {
 
 export type NotebookWorkstationLaunchReadinessState =
   | "ready"
+  | "idle_attached"
   | "attaching"
   | "limited"
   | "needs_registration"
@@ -67,12 +68,14 @@ export function projectNotebookWorkstationLaunchReadiness({
     runtimeTarget?.id ?? null,
     runtimeTarget?.kind ?? null,
     runtimeTarget?.status ?? null,
+    runtimeTarget?.attachmentIdle ?? false,
     runtimeTarget?.statusLabel ?? null,
     runtimeTarget?.label ?? null,
     runtimeTarget?.detail ?? null,
     activeTarget?.id ?? null,
     activeTarget?.kind ?? null,
     activeTarget?.status ?? null,
+    activeTarget?.attachmentIdle ?? false,
     activeTarget?.statusLabel ?? null,
     activeTarget?.label ?? null,
     activeTarget?.detail ?? null,
@@ -87,7 +90,22 @@ export function projectNotebookWorkstationLaunchReadiness({
 
   let projection: NotebookWorkstationLaunchReadinessProjection;
   const runtimeCanExecute = Boolean(capabilities.runtime.executionAvailable);
-  if (runtimeCanExecute && capabilities.canExecute) {
+  if (
+    capabilities.canExecute &&
+    activeTarget?.kind === "cloud_workstation" &&
+    activeTarget.status === "attached" &&
+    activeTarget.attachmentIdle
+  ) {
+    projection = launchProjection({
+      canRun: true,
+      detail: `Runs will start compute on ${activeTarget.label}.`,
+      primaryAction: NO_ACTION,
+      state: "idle_attached",
+      statusLabel: "Idle",
+      targetLabel: activeTarget.label,
+      workstationId: activeTarget.id ?? selection?.activeWorkstationId ?? null,
+    });
+  } else if (runtimeCanExecute && capabilities.canExecute) {
     projection = launchProjection({
       canRun: true,
       detail: null,

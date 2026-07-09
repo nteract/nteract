@@ -120,6 +120,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     get_comments_doc_heads_hex(): string[];
     get_comments_projection(): unknown;
     get_heads_hex(): string[];
+    get_runtime_execution_activity_json(): string;
     get_runtime_queue_depth(): number;
     get_runtime_state_heads_hex(): string[];
     load_comms_doc(commsBytes: Uint8Array): void;
@@ -131,6 +132,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
       canWriteAllNotebookChanges: boolean,
       frameBytes: Uint8Array,
     ): unknown;
+    reconcile_runtime_idle_timeout(reason: string, updatedAt: string): unknown;
     remove_peer(peerId: string): void;
     save_notebook(): Uint8Array;
     save_comms_doc(): Uint8Array;
