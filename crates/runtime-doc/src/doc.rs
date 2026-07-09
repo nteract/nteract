@@ -846,6 +846,66 @@ impl RuntimeStateDoc {
             .unwrap_or_default()
     }
 
+    fn read_str_conflicts(&self, obj: &automerge::ObjId, key: &str) -> Vec<String> {
+        self.doc
+            .get_all(obj, key)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(value, _)| match value {
+                Value::Scalar(s) => match s.as_ref() {
+                    ScalarValue::Str(s) => Some(s.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn resolve_kernel_lifecycle(&self, kernel: &automerge::ObjId) -> RuntimeLifecycle {
+        let lifecycle_key = self.read_str(kernel, "lifecycle");
+        let activity_key = self.read_str(kernel, "activity");
+        // Pre-typed docs (captured fixtures, `from_doc` with external bytes)
+        // only have the string shape. resolve_lifecycle falls back to it when
+        // the typed keys are missing.
+        let stored_status = self.read_str(kernel, "status");
+        let stored_starting_phase = self.read_str(kernel, "starting_phase");
+        let lifecycle = crate::types::resolve_lifecycle(
+            &lifecycle_key,
+            &activity_key,
+            &stored_status,
+            &stored_starting_phase,
+        );
+
+        let lifecycle_conflicts = self.read_str_conflicts(kernel, "lifecycle");
+        if lifecycle_conflicts.iter().any(|value| value == "Error") {
+            return RuntimeLifecycle::Error;
+        }
+
+        if !matches!(
+            lifecycle,
+            RuntimeLifecycle::NotStarted | RuntimeLifecycle::Shutdown
+        ) {
+            return lifecycle;
+        }
+
+        if !lifecycle_conflicts.iter().any(|value| value == "Running") {
+            return lifecycle;
+        }
+
+        let activity_conflicts = self.read_str_conflicts(kernel, "activity");
+        let activity = if KernelActivity::parse(&activity_key).is_some() {
+            KernelActivity::parse(&activity_key).unwrap_or(KernelActivity::Unknown)
+        } else if activity_conflicts.iter().any(|value| value == "Idle") {
+            KernelActivity::Idle
+        } else if activity_conflicts.iter().any(|value| value == "Busy") {
+            KernelActivity::Busy
+        } else {
+            KernelActivity::Unknown
+        };
+
+        RuntimeLifecycle::Running(activity)
+    }
+
     /// Read an optional string (null → None) from a map object.
     fn read_opt_str(&self, obj: &automerge::ObjId, key: &str) -> Option<String> {
         self.doc
@@ -1156,7 +1216,7 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
-    /// Update just the kernel activity. The hot path for IOPub idle/busy,
+    /// Update the kernel activity. The hot path for IOPub idle/busy,
     /// called on every kernel status message.
     ///
     /// A no-op when the stored value already matches the requested value,
@@ -1164,21 +1224,21 @@ impl RuntimeStateDoc {
     /// `Busy → Busy` writes. This is the throttle that keeps sync traffic
     /// bounded during heavy execution.
     ///
-    /// Callers are expected to have set `lifecycle = Running(...)` first
-    /// (typically via [`set_lifecycle`]). This method does NOT verify
-    /// that invariant: writing activity while lifecycle is something
-    /// else produces a doc that [`read_state`] will report as
-    /// `Running(<activity>)` because the lifecycle CRDT key takes
-    /// precedence. Use the type-safe entry point [`set_lifecycle`] for
-    /// state transitions; reserve this method for the idle/busy flip.
+    /// A real idle/busy signal also re-publishes
+    /// `lifecycle = Running(<activity>)`. That keeps the live kernel branch
+    /// newer than any concurrent terminal lifecycle retained by a read-only
+    /// replica after room wake.
     pub fn set_activity(&mut self, activity: KernelActivity) -> Result<(), RuntimeStateError> {
         let kernel = self.scaffold_map("kernel")?;
+        let current_lifecycle = self.read_str(&kernel, "lifecycle");
         let current_activity = self.read_str(&kernel, "activity");
         // Short-circuit only when the typed activity already matches
-        // AND the legacy keys are already cleared. Otherwise a
-        // pre-typed doc hydrated via from_doc would stay stuck on
-        // stale `status="starting"` + `starting_phase="connecting"`
-        // after the first IOPub activity update.
+        // AND the lifecycle already reads as Running AND the legacy keys
+        // are already cleared. Otherwise a pre-typed doc hydrated via
+        // from_doc would stay stuck on stale `status="starting"` +
+        // `starting_phase="connecting"` after the first IOPub activity
+        // update, and a read-only replica can keep a concurrent
+        // `lifecycle = Shutdown` branch after room wake.
         let has_stale_legacy = self.doc.get(&kernel, "status").ok().flatten().is_some()
             || self
                 .doc
@@ -1186,10 +1246,15 @@ impl RuntimeStateDoc {
                 .ok()
                 .flatten()
                 .is_some();
-        if current_activity == activity.as_str() && !has_stale_legacy {
+        let lifecycle_needs_running_republish = current_lifecycle != "Running";
+        if current_activity == activity.as_str()
+            && !lifecycle_needs_running_republish
+            && !has_stale_legacy
+        {
             return Ok(());
         }
-        if current_activity != activity.as_str() {
+        if lifecycle_needs_running_republish || current_activity != activity.as_str() {
+            self.doc.put(&kernel, "lifecycle", "Running")?;
             self.doc.put(&kernel, "activity", activity.as_str())?;
         }
         if has_stale_legacy {
@@ -2986,20 +3051,9 @@ impl RuntimeStateDoc {
         let kernel_state = kernel
             .as_ref()
             .map(|k| {
-                let lifecycle_key = self.read_str(k, "lifecycle");
-                let activity_key = self.read_str(k, "activity");
-                // Pre-typed docs (captured fixtures, `from_doc` with
-                // external bytes) only have the string shape.
-                // resolve_lifecycle falls back to it when the typed keys
-                // are missing.
+                let lifecycle = self.resolve_kernel_lifecycle(k);
                 let stored_status = self.read_str(k, "status");
                 let stored_starting_phase = self.read_str(k, "starting_phase");
-                let lifecycle = crate::types::resolve_lifecycle(
-                    &lifecycle_key,
-                    &activity_key,
-                    &stored_status,
-                    &stored_starting_phase,
-                );
                 // Project the resolved lifecycle back to the string
                 // shape for source-compat with pre-migration consumers.
                 // Always derive from the resolved lifecycle rather than
@@ -3928,6 +3982,31 @@ mod tests {
             .collect()
     }
 
+    fn sync_runtime_docs(
+        a: &mut RuntimeStateDoc,
+        a_state: &mut sync::State,
+        b: &mut RuntimeStateDoc,
+        b_state: &mut sync::State,
+    ) {
+        for _ in 0..20 {
+            let a_msg = a.generate_sync_message(a_state);
+            if let Some(message) = a_msg.clone() {
+                b.receive_sync_message_with_changes(b_state, message)
+                    .expect("b receive runtime sync");
+            }
+
+            let b_msg = b.generate_sync_message(b_state);
+            if let Some(message) = b_msg.clone() {
+                a.receive_sync_message_with_changes(a_state, message)
+                    .expect("a receive runtime sync");
+            }
+
+            if a_msg.is_none() && b_msg.is_none() {
+                break;
+            }
+        }
+    }
+
     #[test]
     fn test_new_doc_has_default_state() {
         let doc = RuntimeStateDoc::new();
@@ -4357,6 +4436,159 @@ mod tests {
         // Underlying activity key is cleared to "".
         let kernel = doc.get_map("kernel").unwrap();
         assert_eq!(doc.read_str(&kernel, "activity"), "");
+    }
+
+    #[test]
+    fn activity_republish_heals_stale_shutdown_after_wake_on_execute() {
+        let mut room =
+            RuntimeStateDoc::try_new_with_actor("owner@example.com/room-host:before").unwrap();
+        room.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
+        room.set_kernel_info("python", "python", "uv:current_python")
+            .unwrap();
+        room.set_runtime_agent_id("owner@example.com/runtime:kernel:old")
+            .unwrap();
+
+        let mut viewer = RuntimeStateDoc::try_new_with_actor("viewer@example.com/app:web").unwrap();
+        let mut room_viewer_state = sync::State::new();
+        let mut viewer_room_state = sync::State::new();
+        sync_runtime_docs(
+            &mut room,
+            &mut room_viewer_state,
+            &mut viewer,
+            &mut viewer_room_state,
+        );
+
+        let checkpoint_before_teardown = room.doc_mut().save();
+        for second in 0..30 {
+            room.set_last_seen(Some(&format!("2026-07-09T21:00:{second:02}Z")))
+                .unwrap();
+        }
+        room.set_queue(None, &[]).unwrap();
+        room.set_lifecycle(&RuntimeLifecycle::Shutdown).unwrap();
+        sync_runtime_docs(
+            &mut room,
+            &mut room_viewer_state,
+            &mut viewer,
+            &mut viewer_room_state,
+        );
+        assert_eq!(
+            viewer.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Shutdown
+        );
+
+        let rehydrated = AutoCommit::load(&checkpoint_before_teardown).unwrap();
+        let mut room = RuntimeStateDoc::from_doc(rehydrated);
+        room.set_actor("owner@example.com/room-host:after");
+        let mut room_viewer_state = sync::State::new();
+        let mut viewer_room_state = sync::State::new();
+
+        let exec_id = "exec-after-wake";
+        room.create_execution_with_source_provenance(
+            exec_id,
+            "print('hi')",
+            1,
+            Some("owner@example.com/app:web"),
+            Some("cell-1"),
+        )
+        .unwrap();
+        room.set_queue(
+            None,
+            &[QueueEntry {
+                execution_id: exec_id.to_string(),
+            }],
+        )
+        .unwrap();
+
+        let mut agent =
+            RuntimeStateDoc::try_new_with_actor("owner@example.com/agent:runt:new").unwrap();
+        agent.set_last_seen(Some("2026-07-09T22:00:00Z")).unwrap();
+        let mut room_agent_state = sync::State::new();
+        let mut agent_room_state = sync::State::new();
+        sync_runtime_docs(
+            &mut room,
+            &mut room_agent_state,
+            &mut agent,
+            &mut agent_room_state,
+        );
+
+        agent.set_lifecycle(&RuntimeLifecycle::Launching).unwrap();
+        agent
+            .set_kernel_info("python", "python", "uv:current_python")
+            .unwrap();
+        agent
+            .set_runtime_agent_id("owner@example.com/runtime:kernel:new")
+            .unwrap();
+        agent
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
+        agent.set_execution_running(exec_id).unwrap();
+        agent
+            .set_queue(
+                Some(&QueueEntry {
+                    execution_id: exec_id.to_string(),
+                }),
+                &[],
+            )
+            .unwrap();
+        agent.set_activity(KernelActivity::Busy).unwrap();
+        agent.set_execution_done(exec_id, true).unwrap();
+        agent.set_queue(None, &[]).unwrap();
+        agent.set_activity(KernelActivity::Idle).unwrap();
+
+        sync_runtime_docs(
+            &mut room,
+            &mut room_agent_state,
+            &mut agent,
+            &mut agent_room_state,
+        );
+        sync_runtime_docs(
+            &mut room,
+            &mut room_viewer_state,
+            &mut viewer,
+            &mut viewer_room_state,
+        );
+
+        let viewer_state = viewer.read_state();
+        assert_eq!(
+            viewer_state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+        assert_eq!(
+            viewer_state
+                .executions
+                .get(exec_id)
+                .map(|execution| execution.status.as_str()),
+            Some("done")
+        );
+    }
+
+    #[test]
+    fn lifecycle_conflict_with_error_keeps_launch_failure_loud() {
+        let mut base = RuntimeStateDoc::new();
+        let mut failed = base.fork_with_actor("owner@example.com/runtime:kernel:failed");
+        let mut running = base.fork_with_actor("owner@example.com/runtime:kernel:running");
+
+        failed
+            .set_lifecycle_with_error_details(
+                &RuntimeLifecycle::Error,
+                None,
+                Some("Failed to launch kernel: missing ipykernel"),
+            )
+            .unwrap();
+        running
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
+
+        base.merge(&mut running).unwrap();
+        base.merge(&mut failed).unwrap();
+
+        let state = base.read_state();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Error);
+        assert_eq!(
+            state.kernel.error_details.as_deref(),
+            Some("Failed to launch kernel: missing ipykernel")
+        );
     }
 
     #[test]
@@ -7202,22 +7434,18 @@ mod tests {
     }
 
     #[test]
-    fn set_activity_without_preceding_lifecycle_leaves_activity_stranded(
-    ) -> Result<(), RuntimeStateError> {
-        // set_activity does not transition the lifecycle — callers must
-        // have set Running(_) first. If they haven't, the CRDT ends up
-        // with lifecycle = "NotStarted" and activity = "Busy", which
-        // resolve_lifecycle reads as NotStarted (activity is ignored for
-        // non-Running variants). This is fine: the stranded activity is
-        // harmless, and the next set_lifecycle writes the correct state.
+    fn set_activity_republishes_running_lifecycle() -> Result<(), RuntimeStateError> {
+        // A real idle/busy signal is live-kernel evidence. It must publish the
+        // typed lifecycle as Running so read-only replicas can converge away
+        // from any retained terminal branch after room wake.
         let mut doc = RuntimeStateDoc::new();
         doc.set_activity(KernelActivity::Busy)?;
 
         let k = doc.read_state().kernel;
         assert_eq!(
             k.lifecycle,
-            RuntimeLifecycle::NotStarted,
-            "activity without a Running lifecycle has no effect on the typed read"
+            RuntimeLifecycle::Running(KernelActivity::Busy),
+            "activity must publish the running lifecycle"
         );
         Ok(())
     }
