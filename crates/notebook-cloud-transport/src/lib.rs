@@ -60,6 +60,7 @@ use tracing::{debug, info, warn};
 /// First-byte constant for the session-control channel (`cloud_room_ready`
 /// arrives here). Re-export of the wire constant for local readability.
 const SESSION_CONTROL: u8 = notebook_wire::frame_types::SESSION_CONTROL;
+pub const RUNTIME_IDLE_TIMEOUT_CLOSE_REASON: &str = "runtime idle timeout";
 
 /// How long [`CloudWsFrameTransport::connect`] waits for the room to reach the
 /// `cloud_room_ready` / `cloud_frame_rejected` state after a successful WS
@@ -342,6 +343,7 @@ fn terminal_cloud_close_error(code: Option<u16>, reason: &str) -> Option<std::io
         reason,
         "too many rejected frames"
             | "replaced by newer runtime peer"
+            | RUNTIME_IDLE_TIMEOUT_CLOSE_REASON
             | "workstation attachment replaced"
             | "workstation restart requested"
             | "workstation mismatch"
@@ -363,6 +365,13 @@ fn terminal_cloud_close_error(code: Option<u16>, reason: &str) -> Option<std::io
             }
         ),
     ))
+}
+
+pub fn cloud_close_is_graceful_shutdown(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+        && error
+            .to_string()
+            .contains(RUNTIME_IDLE_TIMEOUT_CLOSE_REASON)
 }
 
 /// Read frames from `source` until the room reaches a terminal ready state,
@@ -782,6 +791,10 @@ impl FrameTransport for CloudWsFrameTransport {
         error.kind() != std::io::ErrorKind::PermissionDenied
     }
 
+    fn stream_error_is_graceful_shutdown(&self, error: &std::io::Error) -> bool {
+        cloud_close_is_graceful_shutdown(error)
+    }
+
     async fn connect(&self) -> std::io::Result<(Self::Source, Self::Sink)> {
         let (source, sink, principal) = self.connect_cloud().await?;
         // Cache the principal for `Self::principal`. Reconnects to the same room
@@ -998,6 +1011,52 @@ mod tests {
         assert!(restart
             .to_string()
             .contains("workstation restart requested"));
+    }
+
+    #[test]
+    fn runtime_idle_timeout_close_reason_is_pinned_to_room_constant() {
+        // Mirrors apps/notebook-cloud/src/notebook-room.ts RUNTIME_IDLE_CLOSE_REASON.
+        assert_eq!(RUNTIME_IDLE_TIMEOUT_CLOSE_REASON, "runtime idle timeout");
+    }
+
+    #[test]
+    fn runtime_idle_timeout_close_is_terminal_and_graceful() {
+        let transport = CloudWsFrameTransport::new(test_config());
+        let idle = terminal_cloud_close_error(Some(1012), RUNTIME_IDLE_TIMEOUT_CLOSE_REASON)
+            .expect("runtime idle timeout should be terminal");
+        assert_eq!(idle.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(cloud_close_is_graceful_shutdown(&idle));
+        assert!(!transport.stream_error_is_recoverable(&idle));
+        assert!(transport.stream_error_is_graceful_shutdown(&idle));
+    }
+
+    #[test]
+    fn graceful_shutdown_helper_rejects_other_terminal_and_clean_closes() {
+        let transport = CloudWsFrameTransport::new(test_config());
+        for reason in [
+            "too many rejected frames",
+            "replaced by newer runtime peer",
+            "workstation attachment replaced",
+            "workstation restart requested",
+            "workstation mismatch",
+        ] {
+            let error = terminal_cloud_close_error(Some(1008), reason)
+                .expect("allowlisted reason should be terminal");
+            assert!(
+                !cloud_close_is_graceful_shutdown(&error),
+                "{reason} must remain terminal-failed"
+            );
+            assert!(!transport.stream_error_is_graceful_shutdown(&error));
+        }
+
+        assert!(terminal_cloud_close_error(Some(1000), "going away").is_none());
+        assert!(terminal_cloud_close_error(Some(1012), "server restart").is_none());
+        let arbitrary_clean_close = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "cloud room closed runtime peer: code=1000 reason=going away",
+        );
+        assert!(!cloud_close_is_graceful_shutdown(&arbitrary_clean_close));
+        assert!(!transport.stream_error_is_graceful_shutdown(&arbitrary_clean_close));
     }
 
     #[test]

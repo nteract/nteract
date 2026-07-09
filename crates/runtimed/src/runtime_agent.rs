@@ -408,6 +408,26 @@ fn reassert_live_kernel_projection_if_needed<K: KernelConnection>(
     Ok(true)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamErrorDisposition {
+    Recoverable,
+    TerminalFailed,
+    TerminalGraceful,
+}
+
+fn classify_stream_error<T: FrameTransport>(
+    transport: &T,
+    error: &std::io::Error,
+) -> StreamErrorDisposition {
+    if transport.stream_error_is_recoverable(error) {
+        StreamErrorDisposition::Recoverable
+    } else if transport.stream_error_is_graceful_shutdown(error) {
+        StreamErrorDisposition::TerminalGraceful
+    } else {
+        StreamErrorDisposition::TerminalFailed
+    }
+}
+
 /// Run the runtime agent over an arbitrary [`FrameTransport`].
 ///
 /// The desktop/daemon path ([`run_runtime_agent`]) and the cloud path
@@ -1121,16 +1141,25 @@ where
                         }
                     }
                     Some(Err(e)) => {
-                        if !transport.stream_error_is_recoverable(&e) {
-                            error!(
-                                "[runtime-agent] Non-recoverable sync stream error: {}; \
-                                 shutting down instead of reconnecting",
-                                e
-                            );
-                            terminal_error = Some(anyhow::anyhow!(
-                                "runtime agent sync stream rejected by room: {e}"
-                            ));
-                            break;
+                        match classify_stream_error(&transport, &e) {
+                            StreamErrorDisposition::TerminalGraceful => {
+                                info!(
+                                    "room closed runtime peer for idle timeout; shutting down cleanly"
+                                );
+                                break;
+                            }
+                            StreamErrorDisposition::TerminalFailed => {
+                                error!(
+                                    "[runtime-agent] Non-recoverable sync stream error: {}; \
+                                     shutting down instead of reconnecting",
+                                    e
+                                );
+                                terminal_error = Some(anyhow::anyhow!(
+                                    "runtime agent sync stream rejected by room: {e}"
+                                ));
+                                break;
+                            }
+                            StreamErrorDisposition::Recoverable => {}
                         }
                         // A framing error here means one of two things:
                         //   - the daemon half-closed the sync stream (clean),
@@ -2914,6 +2943,64 @@ mod tests {
         async fn send_frame(&mut self, _: NotebookFrameType, _: &[u8]) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    struct ClassifyingTransport {
+        recoverable: bool,
+        graceful: bool,
+    }
+
+    impl FrameTransport for ClassifyingTransport {
+        type Source = NullSource;
+        type Sink = NullSink;
+
+        async fn connect(&self) -> std::io::Result<(Self::Source, Self::Sink)> {
+            Ok((NullSource, NullSink))
+        }
+
+        fn stream_error_is_recoverable(&self, _: &std::io::Error) -> bool {
+            self.recoverable
+        }
+
+        fn stream_error_is_graceful_shutdown(&self, _: &std::io::Error) -> bool {
+            self.graceful
+        }
+    }
+
+    #[test]
+    fn stream_error_classification_has_terminal_graceful_split() {
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "mock");
+
+        assert_eq!(
+            classify_stream_error(
+                &ClassifyingTransport {
+                    recoverable: true,
+                    graceful: false,
+                },
+                &error
+            ),
+            StreamErrorDisposition::Recoverable
+        );
+        assert_eq!(
+            classify_stream_error(
+                &ClassifyingTransport {
+                    recoverable: false,
+                    graceful: false,
+                },
+                &error
+            ),
+            StreamErrorDisposition::TerminalFailed
+        );
+        assert_eq!(
+            classify_stream_error(
+                &ClassifyingTransport {
+                    recoverable: false,
+                    graceful: true,
+                },
+                &error
+            ),
+            StreamErrorDisposition::TerminalGraceful
+        );
     }
 
     /// A `FrameTransport` whose `connect` fails the first `fail_before` calls
