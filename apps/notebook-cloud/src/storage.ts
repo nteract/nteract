@@ -123,6 +123,8 @@ export type WorkstationAttachJobStatus =
   | "completed"
   | "cancelled";
 
+export type WorkstationAttachJobTrigger = "user_attach" | "resume";
+
 export const WORKSTATION_ATTACH_JOB_STALE_MS = 2 * 60_000;
 // Pending jobs cover host cold start before the agent accepts the request; give
 // a slow host one extra minute beyond the accepted/running heartbeat timeout.
@@ -167,6 +169,7 @@ export interface WorkstationAttachJobRow {
   owner_principal: string;
   workstation_id: string;
   status: WorkstationAttachJobStatus;
+  trigger: WorkstationAttachJobTrigger;
   requested_by_actor_label: string;
   requested_at: string;
   updated_at: string;
@@ -349,6 +352,7 @@ const SCHEMA_STATEMENTS = [
     owner_principal TEXT NOT NULL,
     workstation_id TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'running', 'failed', 'completed', 'cancelled')),
+    trigger TEXT NOT NULL DEFAULT 'user_attach',
     requested_by_actor_label TEXT NOT NULL,
     requested_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -429,6 +433,11 @@ const SCHEMA_MIGRATIONS = [
     table: "notebook_revisions",
     column: "cover_mime",
     statement: `ALTER TABLE notebook_revisions ADD COLUMN cover_mime TEXT`,
+  },
+  {
+    table: "workstation_attach_jobs",
+    column: "trigger",
+    statement: `ALTER TABLE workstation_attach_jobs ADD COLUMN trigger TEXT NOT NULL DEFAULT 'user_attach'`,
   },
   {
     table: "notebooks",
@@ -1149,6 +1158,7 @@ export async function createWorkstationAttachJob(
     notebookId: string;
     ownerPrincipal: string;
     replaceActive?: boolean;
+    trigger?: WorkstationAttachJobTrigger;
     workstationId: string;
     actorLabel: string;
   },
@@ -1164,6 +1174,10 @@ export async function createWorkstationAttachJob(
   const pendingStaleBefore = new Date(
     now.getTime() - WORKSTATION_ATTACH_PENDING_STALE_MS,
   ).toISOString();
+  const trigger = input.trigger ?? "user_attach";
+  if (!isWorkstationAttachJobTrigger(trigger)) {
+    throw new Error(`invalid workstation attach job trigger: ${trigger}`);
+  }
   await expireStaleWorkstationAttachJobs(
     env,
     { notebookId: input.notebookId, ownerPrincipal: input.ownerPrincipal },
@@ -1197,15 +1211,17 @@ export async function createWorkstationAttachJob(
        owner_principal,
        workstation_id,
        status,
+       trigger,
        requested_by_actor_label,
        requested_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
     ).bind(
       jobId,
       input.notebookId,
       input.ownerPrincipal,
       input.workstationId,
+      trigger,
       input.actorLabel,
       nowIso,
       nowIso,
@@ -1278,6 +1294,7 @@ export async function listActiveWorkstationAttachJobs(
             owner_principal,
             workstation_id,
             status,
+            trigger,
             requested_by_actor_label,
             requested_at,
             updated_at,
@@ -1388,6 +1405,7 @@ export async function failActiveWorkstationAttachJobsForWorkstation(
                 owner_principal,
                 workstation_id,
                 status,
+                trigger,
                 requested_by_actor_label,
                 requested_at,
                 updated_at,
@@ -1436,6 +1454,7 @@ async function getActiveWorkstationAttachJob(
             owner_principal,
             workstation_id,
             status,
+            trigger,
             requested_by_actor_label,
             requested_at,
             updated_at,
@@ -1515,6 +1534,7 @@ async function expireStaleWorkstationAttachJobs(
                   owner_principal,
                   workstation_id,
                   status,
+                  trigger,
                   requested_by_actor_label,
                   requested_at,
                   updated_at,
@@ -1577,6 +1597,7 @@ async function getWorkstationAttachJob(
             owner_principal,
             workstation_id,
             status,
+            trigger,
             requested_by_actor_label,
             requested_at,
             updated_at,
@@ -1591,6 +1612,10 @@ async function getWorkstationAttachJob(
     .bind(jobId, ownerPrincipal, workstationId)
     .first<WorkstationAttachJobRow>();
   return row;
+}
+
+function isWorkstationAttachJobTrigger(value: string): value is WorkstationAttachJobTrigger {
+  return value === "user_attach" || value === "resume";
 }
 
 export interface CreateNotebookWithOwnerAclResult {

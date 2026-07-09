@@ -80,6 +80,10 @@ export function buildAttachJobSpawnPlan({
     displayName,
   ];
 
+  if (job.trigger === "resume") {
+    args.splice(args.length - 2, 0, "--launch-mode", "execute");
+  }
+
   if (typeof job.notebook_path === "string" && job.notebook_path.length > 0) {
     args.push("--notebook-path", job.notebook_path);
   }

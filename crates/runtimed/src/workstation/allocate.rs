@@ -25,6 +25,7 @@ use notebook_cloud_transport::{CloudAuth, CloudWorkstationMetadata, CloudWsConfi
 use notebook_protocol::protocol::{KernelPorts, RuntimeAgentRequest};
 
 use super::launch_on_attach::{build_current_python_launch, CurrentPythonLaunch};
+use crate::runtime_agent::LaunchTrigger;
 
 /// The cloud room a runtime is being allocated for.
 #[derive(Debug, Clone)]
@@ -105,6 +106,7 @@ pub async fn allocate_current_python_runtime(
     working_dir: Option<PathBuf>,
     env_vars: HashMap<String, String>,
     blob_root: PathBuf,
+    launch_trigger: LaunchTrigger,
 ) -> anyhow::Result<()> {
     let reservation = crate::kernel_ports::reserve_kernel_ports().await?;
     let allocation = plan_current_python_allocation(
@@ -123,7 +125,7 @@ pub async fn allocate_current_python_runtime(
         allocation.config,
         allocation.operator,
         blob_root,
-        Some(allocation.initial_launch),
+        Some((launch_trigger, allocation.initial_launch)),
     )
     .await
 }

@@ -438,6 +438,7 @@ function attachJob(
     owner_principal: "user:dev:alice",
     workstation_id: "ws-a",
     status,
+    trigger: "user_attach",
     requested_by_actor_label: "alice",
     requested_at: "2026-07-07T00:00:00.000Z",
     updated_at: "2026-07-07T00:00:00.000Z",

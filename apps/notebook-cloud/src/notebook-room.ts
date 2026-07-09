@@ -1768,6 +1768,7 @@ export class NotebookRoom {
       notebookId,
       ownerPrincipal,
       replaceActive: false,
+      trigger: "resume",
       workstationId,
       actorLabel: EXECUTION_RESUME_ACTOR_LABEL,
     });

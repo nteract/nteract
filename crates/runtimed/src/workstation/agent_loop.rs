@@ -104,10 +104,16 @@ pub struct AttachJob {
     pub notebook_id: String,
     #[serde(default)]
     pub status: String,
+    #[serde(default = "default_attach_trigger")]
+    pub trigger: String,
     #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]
     pub notebook_path: Option<String>,
+}
+
+fn default_attach_trigger() -> String {
+    "user_attach".into()
 }
 
 /// Filesystem + argv plan for spawning one runtime peer. Pure data so the
@@ -258,7 +264,6 @@ pub fn build_attach_job_spawn_plan(
         .as_deref()
         .map(PathBuf::from)
         .unwrap_or_else(|| opts.working_dir.clone());
-
     let mut args = vec![
         "cloud-runtime-agent".to_string(),
         "--auth-kind".to_string(),
@@ -282,6 +287,10 @@ pub fn build_attach_job_spawn_plan(
         "--workstation-display-name".to_string(),
         opts.display_name.clone(),
     ];
+    if job.trigger == "resume" {
+        args.insert(args.len() - 2, "--launch-mode".to_string());
+        args.insert(args.len() - 2, "execute".to_string());
+    }
     if let Some(notebook_path) = job.notebook_path.as_deref().filter(|path| !path.is_empty()) {
         args.push("--notebook-path".to_string());
         args.push(notebook_path.to_string());
@@ -1731,6 +1740,7 @@ mod tests {
             job_id: job_id.to_string(),
             notebook_id: notebook_id.to_string(),
             status: "pending".to_string(),
+            trigger: "user_attach".to_string(),
             working_directory: None,
             notebook_path: None,
         }
@@ -2106,6 +2116,35 @@ mod tests {
                 "lab2 workstation".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn attach_job_trigger_defaults_to_user_attach() {
+        let job: AttachJob = serde_json::from_value(json!({
+            "job_id": "job-default",
+            "notebook_id": "nb-default",
+        }))
+        .unwrap();
+
+        assert_eq!(job.trigger, "user_attach");
+        let plan = build_attach_job_spawn_plan(&job, &options()).unwrap();
+        assert!(!plan.args.iter().any(|arg| arg == "--launch-mode"));
+    }
+
+    #[test]
+    fn spawn_plan_uses_execute_launch_mode_for_resume_jobs() {
+        let mut resume = job("job-resume", "nb-resume");
+        resume.trigger = "resume".to_string();
+        let plan = build_attach_job_spawn_plan(&resume, &options()).unwrap();
+
+        assert!(plan
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "--launch-mode" && pair[1] == "execute"));
+        assert!(plan
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "--python-path" && pair[1] == "/opt/k/bin/python"));
     }
 
     #[test]

@@ -2951,14 +2951,16 @@ describe("Worker artifact routes", () => {
 
     assert.equal(attach.status, 202);
     const body = (await attach.json()) as {
-      job: { job_id: string; notebook_id: string; status: string };
+      job: { job_id: string; notebook_id: string; status: string; trigger: string };
       workstation: { is_default?: boolean; workstation_id?: string };
     };
     assert.equal(body.job.notebook_id, "attach-demo");
     assert.equal(body.job.status, "pending");
+    assert.equal(body.job.trigger, "user_attach");
     assert.equal(body.workstation.workstation_id, "ws-lab1");
     assert.equal(body.workstation.is_default, false);
     assert.equal(env.DB.workstationAttachJobs.get(body.job.job_id)?.workstation_id, "ws-lab1");
+    assert.equal(env.DB.workstationAttachJobs.get(body.job.job_id)?.trigger, "user_attach");
     assert.equal(
       env.DB.acl.some(
         (row) =>
@@ -2989,10 +2991,14 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
     assert.equal(poll.status, 200);
-    const polled = (await poll.json()) as { jobs: Array<{ job_id: string }> };
+    const polled = (await poll.json()) as { jobs: Array<{ job_id: string; trigger: string }> };
     assert.deepEqual(
       polled.jobs.map((job) => job.job_id),
       [body.job.job_id],
+    );
+    assert.deepEqual(
+      polled.jobs.map((job) => job.trigger),
+      ["user_attach"],
     );
   });
 
@@ -3785,6 +3791,7 @@ describe("Worker artifact routes", () => {
       notebook_id: "nb-1",
       workstation_id: "ws-lab2",
       status: "running",
+      trigger: "user_attach",
       requested_at: "2026-05-22T00:00:00.000Z",
       updated_at: env.DB.workstationAttachJobs.get("job-1")?.updated_at,
       accepted_at: env.DB.workstationAttachJobs.get("job-1")?.accepted_at,
@@ -3935,6 +3942,7 @@ describe("Worker artifact routes", () => {
         notebook_id: "nb-running",
         workstation_id: "ws-lab2",
         status: "running",
+        trigger: "user_attach",
         requested_at: "2026-05-22T00:00:00.000Z",
         updated_at: "2026-05-22T00:00:02.000Z",
         accepted_at: null,
@@ -4074,6 +4082,7 @@ describe("Worker artifact routes", () => {
         notebook_id: "nb-old",
         workstation_id: "ws-lab2",
         status: "cancelled",
+        trigger: "user_attach",
         requested_at: "2026-05-22T00:00:00.000Z",
         updated_at: "2026-05-22T00:00:00.000Z",
         accepted_at: null,
@@ -7392,6 +7401,9 @@ describe("catalog schema migrations", () => {
     assert.ok(revisionColumns);
     revisionColumns.delete("cover_blob_hash");
     revisionColumns.delete("cover_mime");
+    const attachJobColumns = db.tableColumns.get("workstation_attach_jobs");
+    assert.ok(attachJobColumns);
+    attachJobColumns.delete("trigger");
 
     const env = fakeEnv({ DB: db });
     await runCatalogMigrations(env);
@@ -7403,6 +7415,8 @@ describe("catalog schema migrations", () => {
     const migratedRevisions = db.tableColumns.get("notebook_revisions");
     assert.ok(migratedRevisions?.has("cover_blob_hash"), "cover_blob_hash added by migration");
     assert.ok(migratedRevisions?.has("cover_mime"), "cover_mime added by migration");
+    const migratedAttachJobs = db.tableColumns.get("workstation_attach_jobs");
+    assert.ok(migratedAttachJobs?.has("trigger"), "attach job trigger added by migration");
   });
 });
 
@@ -8303,6 +8317,7 @@ function seedWorkstationAttachJob(
     finishedAt?: string | null;
     requestedAt?: string;
     status?: WorkstationAttachJobRow["status"];
+    trigger?: WorkstationAttachJobRow["trigger"];
     updatedAt?: string;
   },
 ): void {
@@ -8312,6 +8327,7 @@ function seedWorkstationAttachJob(
     owner_principal: input.ownerPrincipal,
     workstation_id: input.workstationId,
     status: input.status ?? "pending",
+    trigger: input.trigger ?? "user_attach",
     requested_by_actor_label: "user:dev:alice/browser:tab",
     requested_at: input.requestedAt ?? "2026-05-22T00:00:00.000Z",
     updated_at: input.updatedAt ?? "2026-05-22T00:00:00.000Z",
@@ -8762,6 +8778,7 @@ interface WorkstationAttachJobRow {
   owner_principal: string;
   workstation_id: string;
   status: "pending" | "accepted" | "running" | "failed" | "completed" | "cancelled";
+  trigger: "user_attach" | "resume";
   requested_by_actor_label: string;
   requested_at: string;
   updated_at: string;
@@ -8818,6 +8835,23 @@ class FakeD1 implements D1Database {
         "cover_mime",
         "actor_label",
         "created_at",
+      ]),
+    ],
+    [
+      "workstation_attach_jobs",
+      new Set([
+        "id",
+        "notebook_id",
+        "owner_principal",
+        "workstation_id",
+        "status",
+        "trigger",
+        "requested_by_actor_label",
+        "requested_at",
+        "updated_at",
+        "accepted_at",
+        "finished_at",
+        "error_message",
       ]),
     ],
   ]);
@@ -9411,8 +9445,19 @@ class FakeD1Statement implements D1PreparedStatement {
       const deleted = this.db.workstations.delete(workstationKey(ownerPrincipal, workstationId));
       return okResult(undefined, { changes: deleted ? 1 : 0 });
     } else if (this.query.includes("INSERT INTO workstation_attach_jobs")) {
-      const [id, notebookId, ownerPrincipal, workstationId, actorLabel, requestedAt, updatedAt] =
-        this.values as [string, string, string, string, string, string, string];
+      const hasTriggerColumn = /\btrigger\b/i.test(this.query);
+      const [id, notebookId, ownerPrincipal, workstationId] = this.values as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      const trigger = hasTriggerColumn
+        ? (this.values[4] as WorkstationAttachJobRow["trigger"])
+        : "user_attach";
+      const actorLabel = String(this.values[hasTriggerColumn ? 5 : 4]);
+      const requestedAt = String(this.values[hasTriggerColumn ? 6 : 5]);
+      const updatedAt = String(this.values[hasTriggerColumn ? 7 : 6]);
       const duplicate = [...this.db.workstationAttachJobs.values()].find(
         (job) =>
           job.notebook_id === notebookId &&
@@ -9430,6 +9475,7 @@ class FakeD1Statement implements D1PreparedStatement {
         owner_principal: ownerPrincipal,
         workstation_id: workstationId,
         status: "pending",
+        trigger,
         requested_by_actor_label: actorLabel,
         requested_at: requestedAt,
         updated_at: updatedAt,

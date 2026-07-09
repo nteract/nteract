@@ -3340,6 +3340,7 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(materialized, 1);
     assert.equal(db.attachJobs.length, 1);
     assert.equal(db.attachJobs[0]?.owner_principal, "user:dev:alice");
+    assert.equal(db.attachJobs[0]?.trigger, "resume");
     assert.equal(db.attachJobs[0]?.requested_by_actor_label, "execution resume");
     assert.equal((publishedAttachment as { status?: string })?.status, "connecting");
     assert.equal(
@@ -4600,6 +4601,7 @@ class ResumeNotebookD1 implements D1Database {
     owner_principal: string;
     workstation_id: string;
     status: string;
+    trigger: string;
     requested_by_actor_label: string;
     requested_at: string;
     updated_at: string;
@@ -4690,6 +4692,7 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
         notebookId,
         ownerPrincipal,
         workstationId,
+        trigger,
         requestedByActorLabel,
         requestedAt,
         updatedAt,
@@ -4700,6 +4703,7 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
         owner_principal: ownerPrincipal,
         workstation_id: workstationId,
         status: "pending",
+        trigger,
         requested_by_actor_label: requestedByActorLabel,
         requested_at: requestedAt,
         updated_at: updatedAt,

@@ -190,6 +190,10 @@ enum Commands {
         /// jobs pass their job id here so the room can fence stale peers.
         #[arg(long)]
         runtime_session_id: Option<String>,
+        /// Whether the initial current-Python launch runs on attach or waits for
+        /// synced execution intent.
+        #[arg(long, value_parser = ["attach", "execute"], default_value = "attach")]
+        launch_mode: Option<String>,
     },
 
     /// Serve this machine as a workstation for a hosted nteract cloud:
@@ -556,6 +560,7 @@ async fn main() -> anyhow::Result<()> {
             workstation_id,
             workstation_display_name,
             runtime_session_id,
+            launch_mode,
         }) => {
             let cli_args = runtimed::workstation::CloudAgentArgs {
                 cloud_url,
@@ -610,6 +615,11 @@ async fn main() -> anyhow::Result<()> {
                         operator,
                         workstation: Some(workstation_metadata),
                     };
+                    let launch_trigger = match launch_mode.as_deref().unwrap_or("attach") {
+                        "execute" => runtimed::runtime_agent::LaunchTrigger::OnFirstExecution,
+                        "attach" => runtimed::runtime_agent::LaunchTrigger::OnAttach,
+                        _ => unreachable!("clap validates launch-mode"),
+                    };
                     runtimed::workstation::allocate_current_python_runtime(
                         target,
                         config.auth,
@@ -618,6 +628,7 @@ async fn main() -> anyhow::Result<()> {
                         launch_working_dir,
                         std::collections::HashMap::new(),
                         blob_root,
+                        launch_trigger,
                     )
                     .await
                 }
