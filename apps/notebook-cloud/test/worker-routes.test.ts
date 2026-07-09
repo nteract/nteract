@@ -9411,6 +9411,9 @@ class FakeD1Statement implements D1PreparedStatement {
 
   async run<T = unknown>(): Promise<D1Result<T>> {
     this.db.executedStatements.push(this.query);
+    if (this.query.includes("INSERT INTO workstations")) {
+      assertInsertValuesArity(this.query, "workstations");
+    }
     const alterMatch = this.query.match(/ALTER TABLE\s+(\w+)\s+ADD COLUMN\s+(\w+)/i);
     if (alterMatch) {
       const [, table, column] = alterMatch;
@@ -10876,6 +10879,27 @@ function scopeRank(scope: NotebookAclRow["scope"]): number {
     case "viewer":
       return 1;
   }
+}
+
+function assertInsertValuesArity(query: string, table: string): void {
+  const normalized = query.replace(/\s+/g, " ");
+  const match = normalized.match(
+    new RegExp(`INSERT INTO ${table}\\s*\\((.*?)\\)\\s*VALUES\\s*\\((.*?)\\)`, "i"),
+  );
+  assert.ok(match, `expected ${table} insert statement`);
+  const [, columnsSql = "", valuesSql = ""] = match;
+  assert.equal(
+    splitSqlList(valuesSql).length,
+    splitSqlList(columnsSql).length,
+    `${table} insert must provide one value expression per column`,
+  );
+}
+
+function splitSqlList(list: string): string[] {
+  return list
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function workstationKey(ownerPrincipal: string, workstationId: string): string {
