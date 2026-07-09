@@ -190,6 +190,26 @@ export interface ListActiveWorkstationAttachJobsResult {
 
 const WORKSTATION_ATTACH_JOBS_DROP_LEGACY_ACTIVE_UNIQUE_INDEX = `DROP INDEX IF EXISTS workstation_attach_jobs_active_unique_idx`;
 
+const WORKSTATION_ATTACH_JOBS_DEDUPE_ACTIVE_OWNER = `UPDATE workstation_attach_jobs
+   SET status = 'cancelled',
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+       finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+       error_message = 'cancelled by active workstation attach job uniqueness migration'
+ WHERE status IN ('pending', 'accepted', 'running')
+   AND id IN (
+     SELECT id
+       FROM (
+         SELECT id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY notebook_id, owner_principal
+                  ORDER BY requested_at DESC, updated_at DESC, id DESC
+                ) AS active_rank
+           FROM workstation_attach_jobs
+          WHERE status IN ('pending', 'accepted', 'running')
+       )
+      WHERE active_rank > 1
+   );`;
+
 const WORKSTATION_ATTACH_JOBS_ACTIVE_UNIQUE_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_owner_unique_idx
     ON workstation_attach_jobs(notebook_id, owner_principal)
     WHERE status IN ('pending', 'accepted', 'running')`;
@@ -361,6 +381,7 @@ const SCHEMA_STATEMENTS = [
     error_message TEXT,
     FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
   )`,
+  WORKSTATION_ATTACH_JOBS_DEDUPE_ACTIVE_OWNER,
   WORKSTATION_ATTACH_JOBS_DROP_LEGACY_ACTIVE_UNIQUE_INDEX,
   WORKSTATION_ATTACH_JOBS_ACTIVE_UNIQUE_INDEX,
   `CREATE INDEX IF NOT EXISTS workstation_attach_jobs_poll_idx
@@ -500,7 +521,9 @@ export async function ensureCatalogSchema(env: Env): Promise<void> {
 }
 
 async function initializeCatalogSchema(env: Env): Promise<void> {
-  await Promise.all(SCHEMA_STATEMENTS.map((statement) => env.DB!.prepare(statement).run()));
+  for (const statement of SCHEMA_STATEMENTS) {
+    await env.DB!.prepare(statement).run();
+  }
   await runCatalogMigrations(env);
   await backfillNotebookAcl(env);
 }
