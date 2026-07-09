@@ -174,7 +174,7 @@ export function FontFamilyPicker({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-3">
-        <label className="text-sm text-muted-foreground" htmlFor={inputId}>
+        <label className="text-sm text-foreground" htmlFor={inputId}>
           {label}
         </label>
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
