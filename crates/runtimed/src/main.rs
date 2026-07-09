@@ -621,14 +621,16 @@ async fn main() -> anyhow::Result<()> {
                         _ => unreachable!("clap validates launch-mode"),
                     };
                     runtimed::workstation::allocate_current_python_runtime(
-                        target,
-                        config.auth,
-                        python_path,
-                        notebook_path,
-                        launch_working_dir,
-                        std::collections::HashMap::new(),
-                        blob_root,
-                        launch_trigger,
+                        runtimed::workstation::CurrentPythonLaunchSpec {
+                            target,
+                            auth: config.auth,
+                            python_path,
+                            notebook_path,
+                            working_dir: launch_working_dir,
+                            env_vars: std::collections::HashMap::new(),
+                            blob_root,
+                            launch_trigger,
+                        },
                     )
                     .await
                 }

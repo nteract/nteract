@@ -451,6 +451,66 @@ fn classify_stream_error<T: FrameTransport>(
     }
 }
 
+/// Kernel-session slots owned by the runtime agent's `select!` loop.
+///
+/// Groups the kernel slot with everything the launch paths must install or
+/// consult together: the local queue view (`kernel_state`), the dedupe set for
+/// CRDT-synced executions (`seen_execution_ids`), the control/work channel
+/// receivers, and the out-of-band interrupt handle.
+///
+/// `kernel_state` and `seen_execution_ids` outlive any single kernel process:
+/// both survive transport reconnects and kernel death, and
+/// `seen_execution_ids` clears only in the RestartKernel arm. They live in the
+/// session anyway because every consumer — the RPC dispatcher, sync-driven
+/// queueing, and queue release on launch — threads them together with the
+/// kernel slot; grouping them removes the parallel parameter lists without
+/// implying they share a kernel's lifetime.
+///
+/// After construction, the channel slots (`lifecycle_rx`, `work_rx`,
+/// `interrupt_handle`) are written only through
+/// [`KernelSession::install_kernel_channels`], so a launched kernel cannot be
+/// observed with a partially installed channel set.
+struct KernelSession {
+    kernel: Option<Kernel>,
+    kernel_state: KernelState,
+    /// Execution IDs already handed to `KernelState::queue_cell`, so repeated
+    /// RuntimeStateDoc syncs do not re-queue the same entry.
+    seen_execution_ids: HashSet<String>,
+    lifecycle_rx: Option<mpsc::UnboundedReceiver<LifecycleSignal>>,
+    work_rx: Option<mpsc::Receiver<WorkCommand>>,
+    interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle>,
+}
+
+impl KernelSession {
+    fn new(kernel_state: KernelState) -> Self {
+        Self {
+            kernel: None,
+            kernel_state,
+            seen_execution_ids: HashSet::new(),
+            lifecycle_rx: None,
+            work_rx: None,
+            interrupt_handle: None,
+        }
+    }
+
+    /// Adopt the outcome of a request that may have launched, restarted, or
+    /// shut down the kernel. A successful launch/restart hands back
+    /// [`QueueCommandReceivers`]; the pair is indivisible, so both receivers
+    /// install in one step, and the interrupt handle re-derives from the
+    /// current kernel slot in the same call. Runs after *every*
+    /// `handle_runtime_agent_request`, so the handle also clears when a
+    /// request tears the kernel down. `None` receivers leave the previous
+    /// channels in place: buffered signals from a torn-down kernel still
+    /// drain through them.
+    fn install_kernel_channels(&mut self, receivers: Option<QueueCommandReceivers>) {
+        if let Some(rx) = receivers {
+            self.lifecycle_rx = Some(rx.lifecycle_rx);
+            self.work_rx = Some(rx.work_rx);
+        }
+        self.interrupt_handle = self.kernel.as_ref().and_then(|k| k.interrupt_handle());
+    }
+}
+
 /// Run the runtime agent over an arbitrary [`FrameTransport`].
 ///
 /// The desktop/daemon path ([`run_runtime_agent`]) and the cloud path
@@ -549,10 +609,7 @@ where
 
     // -- Local variables owned by the select! loop (no mutex) ---------------
 
-    let mut kernel: Option<Kernel> = None;
-    let mut interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle> = None;
-    let mut kernel_state = KernelState::new(state.clone());
-    let mut seen_execution_ids = HashSet::new();
+    let mut session = KernelSession::new(KernelState::new(state.clone()));
     let mut echo_suppressor = EchoSuppressor::default();
     // Timestamp of the last recoverable reconnect (clean EOF *or* framing
     // error), used to enforce a floor between reconnect cycles on a recoverable
@@ -561,8 +618,6 @@ where
     // whose framing-error reconnect is gated out of the floor and which never
     // reconnects on clean EOF.
     let mut last_recoverable_reconnect: Option<tokio::time::Instant> = None;
-    let mut lifecycle_rx: Option<mpsc::UnboundedReceiver<LifecycleSignal>> = None;
-    let mut work_rx: Option<mpsc::Receiver<WorkCommand>> = None;
     let mut terminal_error: Option<anyhow::Error> = None;
 
     // Async responses from spawned tasks (currently: SyncEnvironment).
@@ -668,14 +723,14 @@ where
                                 if let Ok(envelope) = serde_json::from_slice::<
                                     notebook_protocol::protocol::RuntimeAgentRequestEnvelope,
                                 >(&typed_frame.payload) {
-                                    // Jupyter interrupts bypass &mut kernel via InterruptHandle.
-                                    // Kernels without an out-of-band handle fall through to the
-                                    // generic request handler below.
+                                    // Jupyter interrupts bypass the &mut kernel slot via
+                                    // InterruptHandle. Kernels without an out-of-band handle
+                                    // fall through to the generic request handler below.
                                     if matches!(envelope.request, RuntimeAgentRequest::InterruptExecution)
                                         && interrupt_via_handle_if_available(
-                                            interrupt_handle.as_ref(),
+                                            session.interrupt_handle.as_ref(),
                                             &state,
-                                            &mut kernel_state,
+                                            &mut session.kernel_state,
                                         )
                                     {
                                         continue;
@@ -717,7 +772,7 @@ where
                                             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                                             .wrapping_add(1);
 
-                                        let snapshot = kernel.as_ref().map(|k| {
+                                        let snapshot = session.kernel.as_ref().map(|k| {
                                             (k.env_source().to_string(), k.launched_config().clone())
                                         });
                                         let env_kind = env_kind.clone();
@@ -802,23 +857,18 @@ where
                                     let (response, new_cmd_rx) = handle_runtime_agent_request(
                                         envelope.request,
                                         &ctx,
-                                        &mut kernel,
-                                        &mut kernel_state,
-                                        &mut seen_execution_ids,
+                                        &mut session.kernel,
+                                        &mut session.kernel_state,
+                                        &mut session.seen_execution_ids,
                                     ).await;
 
-                                    if let Some(rx) = new_cmd_rx {
-                                        lifecycle_rx = Some(rx.lifecycle_rx);
-                                        work_rx = Some(rx.work_rx);
-                                    }
+                                    session.install_kernel_channels(new_cmd_rx);
                                     if should_clear_pending_initial_launch_after_rpc(
                                         is_launch_or_restart,
                                         &response,
                                     ) {
                                         pending_initial_launch = None;
                                     }
-                                    // Update interrupt handle after any request that may change kernel state
-                                    interrupt_handle = kernel.as_ref().and_then(|k| k.interrupt_handle());
 
                                     // Only send response for queries (not commands)
                                     if !is_command {
@@ -862,9 +912,9 @@ where
                                             queued_nonempty = !queued.is_empty();
                                             accepted_queued_count = queue_synced_executions(
                                                 queued,
-                                                &mut seen_execution_ids,
-                                                &mut kernel_state,
-                                                kernel.as_mut(),
+                                                &mut session.seen_execution_ids,
+                                                &mut session.kernel_state,
+                                                session.kernel.as_mut(),
                                             )
                                             .await;
                                         }
@@ -900,7 +950,7 @@ where
                                                 should_apply_initial_launch(
                                                     *trigger,
                                                     runtime_state_doc_seen,
-                                                    kernel.is_some(),
+                                                    session.kernel.is_some(),
                                                     queued_nonempty,
                                                 )
                                             })
@@ -917,12 +967,7 @@ where
                                                 trigger,
                                                 launch,
                                                 &ctx,
-                                                &mut kernel,
-                                                &mut kernel_state,
-                                                &mut seen_execution_ids,
-                                                &mut lifecycle_rx,
-                                                &mut work_rx,
-                                                &mut interrupt_handle,
+                                                &mut session,
                                                 agent_started,
                                             )
                                             .await;
@@ -930,7 +975,7 @@ where
 
                                         match reassert_live_kernel_projection_if_needed(
                                             &ctx,
-                                            kernel.as_ref(),
+                                            session.kernel.as_ref(),
                                         ) {
                                             Ok(true) => {
                                                 info!(
@@ -1057,7 +1102,7 @@ where
                                     match sync_result {
                                         Ok(Some((comm_updates, superseded_hashes_by_comm))) => {
                                             if !comm_updates.is_empty() {
-                                                if let Some(ref mut k) = kernel {
+                                                if let Some(ref mut k) = session.kernel {
                                                     for (comm_id, delta) in &comm_updates {
                                                         let superseded_hashes =
                                                             superseded_hashes_by_comm
@@ -1338,7 +1383,7 @@ where
             // control-plane signals and intentionally do not share the
             // bounded output/work queue.
             Some(signal) = async {
-                match lifecycle_rx.as_mut() {
+                match session.lifecycle_rx.as_mut() {
                     Some(rx) => rx.recv().await,
                     None => std::future::pending().await,
                 }
@@ -1346,8 +1391,8 @@ where
                 if let Err(e) = handle_lifecycle_signal(
                     signal,
                     &ctx,
-                    &mut kernel,
-                    &mut kernel_state,
+                    &mut session.kernel,
+                    &mut session.kernel_state,
                 ).await {
                     warn!("[runtime-agent] Error handling lifecycle signal: {}", e);
                 }
@@ -1355,7 +1400,7 @@ where
 
             // Process bounded output/work commands from kernel tasks.
             Some(command) = async {
-                match work_rx.as_mut() {
+                match session.work_rx.as_mut() {
                     Some(rx) => rx.recv().await,
                     None => std::future::pending().await,
                 }
@@ -1363,17 +1408,17 @@ where
                 // If output work was selected while lifecycle signals were
                 // also pending, drain lifecycle first so output transport
                 // cannot sit ahead of idle/done/error/death processing.
-                if let Some(rx) = lifecycle_rx.as_mut() {
+                if let Some(rx) = session.lifecycle_rx.as_mut() {
                     if let Err(e) = drain_lifecycle_commands(
                         rx,
                         &ctx,
-                        &mut kernel,
-                        &mut kernel_state,
+                        &mut session.kernel,
+                        &mut session.kernel_state,
                     ).await {
                         warn!("[runtime-agent] Error draining lifecycle commands: {}", e);
                     }
                 }
-                if let Err(e) = handle_work_command(command, &mut kernel).await {
+                if let Err(e) = handle_work_command(command, &mut session.kernel).await {
                     warn!("[runtime-agent] Error handling work command: {}", e);
                 }
             }
@@ -1633,7 +1678,7 @@ where
     // -- 5. Cleanup ---------------------------------------------------------
 
     info!("[runtime-agent] Shutting down");
-    if let Some(ref mut k) = kernel {
+    if let Some(ref mut k) = session.kernel {
         k.shutdown().await.ok();
     }
 
@@ -1782,17 +1827,11 @@ fn should_apply_initial_launch(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn apply_initial_launch(
     trigger: LaunchTrigger,
     launch: RuntimeAgentRequest,
     ctx: &RuntimeAgentContext,
-    kernel: &mut Option<Kernel>,
-    kernel_state: &mut KernelState,
-    seen_execution_ids: &mut HashSet<String>,
-    lifecycle_rx: &mut Option<mpsc::UnboundedReceiver<LifecycleSignal>>,
-    work_rx: &mut Option<mpsc::Receiver<WorkCommand>>,
-    interrupt_handle: &mut Option<crate::jupyter_kernel::InterruptHandle>,
+    session: &mut KernelSession,
     agent_started: std::time::Instant,
 ) {
     info!(
@@ -1801,13 +1840,15 @@ async fn apply_initial_launch(
         agent_started.elapsed().as_millis()
     );
     let launch_apply_started = std::time::Instant::now();
-    let (response, new_cmd_rx) =
-        handle_runtime_agent_request(launch, ctx, kernel, kernel_state, seen_execution_ids).await;
-    if let Some(rx) = new_cmd_rx {
-        *lifecycle_rx = Some(rx.lifecycle_rx);
-        *work_rx = Some(rx.work_rx);
-    }
-    *interrupt_handle = kernel.as_ref().and_then(|k| k.interrupt_handle());
+    let (response, new_cmd_rx) = handle_runtime_agent_request(
+        launch,
+        ctx,
+        &mut session.kernel,
+        &mut session.kernel_state,
+        &mut session.seen_execution_ids,
+    )
+    .await;
+    session.install_kernel_channels(new_cmd_rx);
     if let Some(error) = runtime_agent_response_error(&response) {
         warn!("[runtime-agent] {} failed: {}", trigger.label(), error);
     } else {
