@@ -35,4 +35,31 @@ describe("workstations page model", () => {
       ["working-directory", "Working directory", "/home/ubuntu/project"],
     ]);
   });
+
+  it("projects outdated build metadata without changing liveness actions", () => {
+    const selection = projectNotebookWorkstationSelection({
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          ...labWorkstation,
+          latestBuild: "0.2.0-nightly.202607091009",
+          isOutdated: true,
+        },
+      ],
+    });
+
+    const page = projectWorkstationsPage(selection.registeredWorkstations);
+    const item = page.items[0];
+    const buildSpec = item?.specs.find((spec) => spec.key === "build");
+
+    expect(item?.outdatedLabel).toBe("Update available");
+    expect(item?.latestBuildLabel).toBe("Latest 0.2.0-nightly.202607091009");
+    expect(item?.rowSublineLabel).toBe("Online · Latest 0.2.0-nightly.202607091009");
+    expect(item?.canReconnect).toBe(false);
+    expect(item?.canRestart).toBe(true);
+    expect(buildSpec).toMatchObject({
+      detail: "Latest 0.2.0-nightly.202607091009",
+      tone: "attention",
+    });
+  });
 });

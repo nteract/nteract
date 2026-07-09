@@ -106,6 +106,25 @@ describe("notebook workstation selection projection", () => {
     expect(attached.selectedWorkstation?.id).toBe("ws-lab2");
   });
 
+  it("carries latest build metadata into registered workstation projections", () => {
+    const projection = projectNotebookWorkstationSelection({
+      registeredWorkstations: [
+        {
+          ...lab2Workstation,
+          latestBuild: "0.2.0-nightly.202607091009",
+          isOutdated: true,
+        },
+      ],
+    });
+
+    expect(projection.registeredWorkstations[0]).toMatchObject({
+      installedBuild: "0.1.0+abc123",
+      channel: "nightly",
+      latestBuild: "0.2.0-nightly.202607091009",
+      isOutdated: true,
+    });
+  });
+
   it("does not let a stale attachment hide an offline registered workstation", () => {
     const projection = projectNotebookWorkstationSelection({
       activeAttachment: {

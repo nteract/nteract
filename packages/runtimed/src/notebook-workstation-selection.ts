@@ -37,6 +37,8 @@ export interface NotebookRegisteredWorkstation {
   id: string;
   installedBuild?: string | null;
   channel?: string | null;
+  latestBuild?: string | null;
+  isOutdated?: boolean | null;
   memoryBytes?: number | null;
   provider?: string | null;
   providerLabel?: string | null;
@@ -80,6 +82,8 @@ export interface NotebookRegisteredWorkstationProjection {
   idLabel: string;
   installedBuild: string | null;
   channel: string | null;
+  latestBuild: string | null;
+  isOutdated: boolean;
   isAttached: boolean;
   isDefault: boolean;
   isSelected: boolean;
@@ -270,6 +274,9 @@ function projectRegisteredWorkstation(
   const defaultEnvironmentLabel = trimToNull(workstation.defaultEnvironmentLabel);
   const installedBuild = trimToNull(workstation.installedBuild);
   const channel = trimToNull(workstation.channel);
+  const latestBuild = trimToNull(workstation.latestBuild);
+  const isOutdated =
+    Boolean(workstation.isOutdated) && Boolean(installedBuild) && Boolean(latestBuild);
   const memoryBytes = normalizePositiveInteger(workstation.memoryBytes);
   const workingDirectoryLabel = trimToNull(workstation.workingDirectory);
   const facts = projectRegisteredWorkstationFacts({
@@ -304,6 +311,8 @@ function projectRegisteredWorkstation(
     idLabel: `id ${workstation.id}`,
     installedBuild,
     channel,
+    latestBuild,
+    isOutdated,
     isAttached: activeWorkstationId === workstation.id,
     isDefault: defaultWorkstationId === workstation.id,
     isSelected: selectedWorkstationId === workstation.id,
@@ -443,6 +452,8 @@ function registeredWorkstationCacheKey(workstation: NotebookRegisteredWorkstatio
     workstation.environmentPolicy ?? null,
     workstation.installedBuild ?? null,
     workstation.channel ?? null,
+    workstation.latestBuild ?? null,
+    workstation.isOutdated === true,
     workstation.status ?? null,
     workstation.statusMessage ?? null,
     workstation.cpuCount ?? null,

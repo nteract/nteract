@@ -219,6 +219,7 @@ function WorkstationListRow({
         <span className="flex items-center gap-2">
           <span className="truncate font-mono text-sm font-semibold">{item.name}</span>
           {item.sourceLabel ? <WorkstationSourcePill label={item.sourceLabel} /> : null}
+          {item.outdatedLabel ? <WorkstationOutdatedChip label={item.outdatedLabel} /> : null}
         </span>
         <span className="mt-0.5 block truncate text-[11.5px] text-muted-foreground">
           {item.rowSublineLabel}
@@ -251,6 +252,19 @@ function WorkstationSourcePill({ label, subdued = false }: { label: string; subd
       className={cn(
         "shrink-0 whitespace-nowrap rounded-full border border-border font-medium text-muted-foreground",
         subdued ? "bg-muted px-2 py-0.5 text-[11px]" : "px-1.5 py-px text-[10px]",
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+function WorkstationOutdatedChip({ label, subdued = false }: { label: string; subdued?: boolean }) {
+  return (
+    <span
+      className={cn(
+        "shrink-0 whitespace-nowrap rounded-full border border-amber-300/70 bg-amber-50 font-medium text-amber-900 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-100",
+        subdued ? "px-2 py-0.5 text-[11px]" : "px-1.5 py-px text-[10px]",
       )}
     >
       {label}
@@ -296,11 +310,19 @@ function WorkstationDetail({
                 {item.name}
               </h3>
               {item.sourceLabel ? <WorkstationSourcePill label={item.sourceLabel} subdued /> : null}
+              {item.outdatedLabel ? (
+                <WorkstationOutdatedChip label={item.outdatedLabel} subdued />
+              ) : null}
             </div>
             <p className="mt-1.5 text-[13px] text-muted-foreground">
               {item.detailContextLabel ? <>{item.detailContextLabel} &middot; </> : null}
               <span className="font-medium text-foreground">{item.statusLabel}</span>
             </p>
+            {item.latestBuildLabel ? (
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {item.latestBuildLabel}
+              </p>
+            ) : null}
             {item.statusMessage ? (
               <p className="mt-1 text-xs leading-5 text-muted-foreground">{item.statusMessage}</p>
             ) : null}
@@ -372,11 +394,17 @@ function WorkstationDetail({
                   className={cn(
                     "mt-0.5 truncate font-mono text-[15px] font-semibold",
                     spec.uvInk && "text-uv",
+                    spec.tone === "attention" && "text-amber-900 dark:text-amber-100",
                   )}
                   title={spec.value}
                 >
                   {spec.value}
                 </div>
+                {spec.detail ? (
+                  <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                    {spec.detail}
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>

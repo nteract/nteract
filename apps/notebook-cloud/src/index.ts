@@ -91,6 +91,13 @@ import {
   type WorkstationAttachJobNotification,
 } from "./workstation-events.ts";
 import {
+  getLatestWorkstationBuildsForEnv,
+  isWorkstationBuildOutdated,
+  latestWorkstationBuildForChannel,
+  latestWorkstationBuildVersionsByChannel,
+  type LatestWorkstationBuildMap,
+} from "./latest-workstation-builds.ts";
+import {
   OwnerComputeIndex,
   deleteWorkstationLease,
   listOwnerComputeSessions,
@@ -339,7 +346,7 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: exactPath("/api/workstations"),
     methods: ["GET", "POST"],
-    handler: (_match, request, env) => routeWorkstations(request, env),
+    handler: (_match, request, env, ctx) => routeWorkstations(request, env, ctx),
   },
   {
     match: exactPath("/api/workstations/default"),
@@ -1703,7 +1710,11 @@ interface WorkstationEventPresence {
   connections: number;
 }
 
-async function routeWorkstations(request: Request, env: Env): Promise<Response> {
+async function routeWorkstations(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
@@ -1731,10 +1742,11 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
   const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
 
   if (request.method === "GET") {
-    const [workstations, defaultWorkstationId, leases] = await Promise.all([
+    const [workstations, defaultWorkstationId, leases, latestBuilds] = await Promise.all([
       listWorkstationsForPrincipal(env, ownerPrincipal),
       getDefaultWorkstationId(env, ownerPrincipal),
       listWorkstationLeases(env, ownerPrincipal),
+      getLatestWorkstationBuildsForEnv(env, ctx),
     ]);
     const now = Date.now();
     const presenceByWorkstationId = await workstationEventPresenceById(
@@ -1747,12 +1759,14 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
     return json({
       ok: true,
       default_workstation_id: defaultWorkstationId,
+      latest_builds: latestWorkstationBuildVersionsByChannel(latestBuilds),
       workstations: workstations.map((workstation) =>
         workstationResponseRow(workstation, {
           defaultWorkstationId,
           now,
           eventPresence: presenceByWorkstationId.get(workstation.workstation_id) ?? null,
           lease: leases.get(workstation.workstation_id) ?? null,
+          latestBuilds,
         }),
       ),
     });
@@ -1802,13 +1816,16 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
     counter: "workstation_registrations",
     counter_delta: 1,
   });
+  const latestBuilds = await getLatestWorkstationBuildsForEnv(env, ctx);
   return json(
     {
       ok: true,
+      latest_builds: latestWorkstationBuildVersionsByChannel(latestBuilds),
       workstation: workstationResponseRow(workstation, {
         defaultWorkstationId,
         now: Date.now(),
         eventPresence: null,
+        latestBuilds,
       }),
     },
     201,
@@ -2978,6 +2995,7 @@ function workstationResponseRow(
     now: number;
     eventPresence?: WorkstationEventPresence | null;
     lease?: WorkstationLeaseRecord | null;
+    latestBuilds?: LatestWorkstationBuildMap;
   },
 ): Record<string, unknown> {
   const status = workstationStatusForResponse(
@@ -2986,6 +3004,7 @@ function workstationResponseRow(
     options.eventPresence,
     options.lease,
   );
+  const latestBuild = latestWorkstationBuildForChannel(options.latestBuilds, workstation.channel);
   return {
     workstation_id: workstation.workstation_id,
     display_name: workstation.display_name,
@@ -3004,6 +3023,8 @@ function workstationResponseRow(
     environment_policy: workstation.environment_policy,
     installed_build: workstation.installed_build,
     channel: workstation.channel,
+    latest_build: latestBuild,
+    is_outdated: isWorkstationBuildOutdated(workstation.installed_build, latestBuild),
     working_directory: workstation.working_directory,
     cpu_count: workstation.cpu_count,
     memory_bytes: workstation.memory_bytes,
