@@ -2021,7 +2021,7 @@ fn runtime_idle_timeout_workstation_attachment(
     updated_at: &str,
 ) -> Option<WorkstationAttachmentState> {
     let mut attachment = current?;
-    attachment.status = "disconnected".to_string();
+    attachment.status = "idle".to_string();
     attachment.status_message = Some(reason.to_string());
     attachment.updated_at = Some(updated_at.to_string());
     Some(attachment)
@@ -6156,7 +6156,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_runtime_idle_timeout_shuts_down_idle_kernel_and_disconnects_attachment() {
+    fn reconcile_runtime_idle_timeout_shuts_down_idle_kernel_and_idles_attachment() {
         let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
             .expect("create room host");
         host.state_doc
@@ -6180,7 +6180,7 @@ mod tests {
         assert!(state.queue.queued.is_empty());
         assert_eq!(
             state.workstation.as_ref().map(|ws| ws.status.as_str()),
-            Some("disconnected")
+            Some("idle")
         );
         assert_eq!(
             state

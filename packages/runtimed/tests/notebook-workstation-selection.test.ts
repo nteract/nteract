@@ -135,6 +135,40 @@ describe("notebook workstation selection projection", () => {
     expect(projection.launchCandidate?.id).toBe("ws-lab2");
   });
 
+  it("keeps idle attachment identity when an offline registry row degrades the target", () => {
+    const projection = projectNotebookWorkstationSelection({
+      activeAttachment: {
+        workstation_id: "ws-lab2",
+        display_name: "Lab2 workstation",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "idle",
+      },
+      canSelectWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          ...lab2Workstation,
+          status: "offline",
+          statusMessage: "No heartbeat from this workstation recently.",
+        },
+      ],
+    });
+
+    expect(projection.state).toBe("default");
+    expect(projection.activeWorkstationId).toBe("ws-lab2");
+    expect(projection.activeTarget).toMatchObject({
+      id: "ws-lab2",
+      label: "Lab2 workstation",
+      status: "offline",
+      attachmentIdle: true,
+      detail: "No heartbeat from this workstation recently.",
+    });
+    expect(projection.defaultWorkstation?.isAttached).toBe(false);
+    expect(projection.launchCandidate?.id).toBe("ws-lab2");
+  });
+
   it("directs owners with no registered workstations toward workstation setup", () => {
     const projection = projectNotebookWorkstationSelection({
       canRegisterWorkstation: true,

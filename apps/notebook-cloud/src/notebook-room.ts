@@ -2881,7 +2881,7 @@ function selectedRuntimePeerSessionFromAttachment(
 }
 
 function runtimePeerSessionStatusAcceptsPeer(status: string): boolean {
-  return status !== "disconnected";
+  return status !== "disconnected" && status !== "idle";
 }
 
 function runtimeAttachmentCanResumeForExecution(attachment: WorkstationAttachmentState): boolean {
@@ -2890,7 +2890,7 @@ function runtimeAttachmentCanResumeForExecution(attachment: WorkstationAttachmen
     return false;
   }
   const status = attachment.status.trim().toLowerCase();
-  return status === "ready" || status === "disconnected";
+  return status === "ready" || status === "disconnected" || status === "idle";
 }
 
 function workstationAttachmentTargetFromRow(workstation: WorkstationRow) {
