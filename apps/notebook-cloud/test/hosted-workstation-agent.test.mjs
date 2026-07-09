@@ -163,6 +163,8 @@ describe("hosted workstation agent launch contract", () => {
         displayName: "lab2 workstation",
         workingDirectory: "/home/ubuntu/project",
         pythonPath: "/opt/k/bin/python",
+        installedBuild: "0.1.0+abc123",
+        channel: "nightly",
         cpuCount: 8,
         memoryBytes: 16_000_000_000,
       }),
@@ -172,6 +174,8 @@ describe("hosted workstation agent launch contract", () => {
         provider: "runtime_peer",
         default_environment_label: "Current Python",
         environment_policy: "current_python",
+        installed_build: "0.1.0+abc123",
+        channel: "nightly",
         working_directory: "/home/ubuntu/project",
         cpu_count: 8,
         memory_bytes: 16_000_000_000,
@@ -184,6 +188,20 @@ describe("hosted workstation agent launch contract", () => {
         },
       },
     );
+  });
+
+  it("omits hosted agent build metadata when no detector supplies it", () => {
+    const payload = buildWorkstationRegistrationPayload({
+      workstationId: "ws-hosted",
+      displayName: "hosted workstation",
+      workingDirectory: "/home/ubuntu/project",
+      pythonPath: "/opt/k/bin/python",
+      cpuCount: 8,
+      memoryBytes: 16_000_000_000,
+    });
+
+    assert.equal(Object.hasOwn(payload, "installed_build"), false);
+    assert.equal(Object.hasOwn(payload, "channel"), false);
   });
 
   it("keeps generated workstation ids and polling intervals bounded", () => {

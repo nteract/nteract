@@ -298,6 +298,8 @@ function normalizeCloudWorkstation(value: unknown): NotebookRegisteredWorkstatio
     statusMessage: scalarString(raw.status_message),
     defaultEnvironmentLabel: scalarString(raw.default_environment_label),
     environmentPolicy: scalarString(raw.environment_policy),
+    installedBuild: scalarString(raw.installed_build),
+    channel: scalarString(raw.channel),
     workingDirectory: scalarString(raw.working_directory),
     cpuCount: scalarNumber(raw.cpu_count),
     memoryBytes: scalarNumber(raw.memory_bytes),

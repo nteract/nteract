@@ -2873,6 +2873,18 @@ function parseWorkstationRegistrationPayload(
   if (environmentPolicy instanceof Response) {
     return environmentPolicy;
   }
+  const installedBuild = optionalBoundedStringField(
+    payload.installed_build ?? payload.installedBuild,
+    "installed_build",
+    160,
+  );
+  if (installedBuild instanceof Response) {
+    return installedBuild;
+  }
+  const channel = optionalBoundedStringField(payload.channel, "channel", 40);
+  if (channel instanceof Response) {
+    return channel;
+  }
   const workingDirectory = optionalBoundedStringField(
     payload.working_directory ?? payload.workingDirectory,
     "working_directory",
@@ -2905,6 +2917,8 @@ function parseWorkstationRegistrationPayload(
     statusMessage,
     defaultEnvironmentLabel,
     environmentPolicy,
+    installedBuild,
+    channel,
     workingDirectory,
     cpuCount,
     memoryBytes,
@@ -2988,6 +3002,8 @@ function workstationResponseRow(
             : workstation.status_message,
     default_environment_label: workstation.default_environment_label,
     environment_policy: workstation.environment_policy,
+    installed_build: workstation.installed_build,
+    channel: workstation.channel,
     working_directory: workstation.working_directory,
     cpu_count: workstation.cpu_count,
     memory_bytes: workstation.memory_bytes,

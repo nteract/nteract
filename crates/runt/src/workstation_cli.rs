@@ -531,8 +531,8 @@ async fn status(json_output: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<28} {:<24} {:<9} {:<25} DEFAULT",
-        "WORKSTATION", "NAME", "STATUS", "LAST SEEN"
+        "{:<28} {:<24} {:<9} {:<8} {:<24} {:<25} DEFAULT",
+        "WORKSTATION", "NAME", "STATUS", "CHANNEL", "BUILD", "LAST SEEN"
     );
     for workstation in &workstations {
         let field = |key: &str| {
@@ -547,10 +547,12 @@ async fn status(json_output: bool) -> Result<()> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         println!(
-            "{:<28} {:<24} {:<9} {:<25} {}",
+            "{:<28} {:<24} {:<9} {:<8} {:<24} {:<25} {}",
             field("workstation_id"),
             field("display_name"),
             field("status"),
+            field("channel"),
+            field("installed_build"),
             field("last_seen_at"),
             if is_default { "*" } else { "" }
         );

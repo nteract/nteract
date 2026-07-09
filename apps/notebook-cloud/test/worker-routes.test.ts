@@ -2461,6 +2461,8 @@ describe("Worker artifact routes", () => {
           provider: "runtime_peer",
           default_environment_label: "Current Python",
           environment_policy: "current_python",
+          installed_build: "0.1.0+abc123",
+          channel: "nightly",
           working_directory: "/home/ubuntu/project",
           cpu_count: 8,
           memory_bytes: 16_000_000_000,
@@ -2484,6 +2486,8 @@ describe("Worker artifact routes", () => {
     };
     assert.equal(registered.workstation.workstation_id, "ws-lab2");
     assert.equal(registered.workstation.status, "online");
+    assert.equal(registered.workstation.installed_build, "0.1.0+abc123");
+    assert.equal(registered.workstation.channel, "nightly");
     assert.equal(registered.workstation.is_default, true);
     assert.doesNotMatch(JSON.stringify(registered), /secret|token/i);
 
@@ -2507,7 +2511,38 @@ describe("Worker artifact routes", () => {
     assert.equal(body.default_workstation_id, "ws-lab2");
     assert.equal(body.workstations.length, 1);
     assert.equal(body.workstations[0]?.display_name, "Lab2");
+    assert.equal(body.workstations[0]?.installed_build, "0.1.0+abc123");
+    assert.equal(body.workstations[0]?.channel, "nightly");
     assert.equal(body.workstations[0]?.is_default, true);
+  });
+
+  it("keeps old workstation registration payloads compatible", async () => {
+    const env = fakeEnv();
+
+    const register = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({
+          workstation_id: "ws-old-agent",
+          display_name: "Old Agent",
+          provider: "runtime_peer",
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(register.status, 201);
+    const body = (await register.json()) as { workstation: Record<string, unknown> };
+    assert.equal(body.workstation.workstation_id, "ws-old-agent");
+    assert.equal(body.workstation.installed_build, null);
+    assert.equal(body.workstation.channel, null);
   });
 
   it("deregisters an owned workstation, deletes its lease, and pushes went_offline once", async () => {
@@ -7578,6 +7613,10 @@ describe("catalog schema migrations", () => {
     const attachJobColumns = db.tableColumns.get("workstation_attach_jobs");
     assert.ok(attachJobColumns);
     attachJobColumns.delete("trigger");
+    const workstationColumns = db.tableColumns.get("workstations");
+    assert.ok(workstationColumns);
+    workstationColumns.delete("installed_build");
+    workstationColumns.delete("channel");
 
     const env = fakeEnv({ DB: db });
     await runCatalogMigrations(env);
@@ -7591,6 +7630,9 @@ describe("catalog schema migrations", () => {
     assert.ok(migratedRevisions?.has("cover_mime"), "cover_mime added by migration");
     const migratedAttachJobs = db.tableColumns.get("workstation_attach_jobs");
     assert.ok(migratedAttachJobs?.has("trigger"), "attach job trigger added by migration");
+    const migratedWorkstations = db.tableColumns.get("workstations");
+    assert.ok(migratedWorkstations?.has("installed_build"), "installed_build added by migration");
+    assert.ok(migratedWorkstations?.has("channel"), "channel added by migration");
   });
 });
 
@@ -8436,6 +8478,8 @@ function seedWorkstation(
     ownerPrincipal: string;
     workstationId: string;
     status?: WorkstationRow["status"];
+    installedBuild?: string | null;
+    channel?: string | null;
     lastSeenAt?: string;
   },
 ): void {
@@ -8449,6 +8493,8 @@ function seedWorkstation(
     status_message: null,
     default_environment_label: "Current Python",
     environment_policy: "current_python",
+    installed_build: input.installedBuild ?? null,
+    channel: input.channel ?? null,
     working_directory: "/home/ubuntu/project",
     cpu_count: 8,
     memory_bytes: 16_000_000_000,
@@ -8937,6 +8983,8 @@ interface WorkstationRow {
   status_message: string | null;
   default_environment_label: string | null;
   environment_policy: string | null;
+  installed_build: string | null;
+  channel: string | null;
   working_directory: string | null;
   cpu_count: number | null;
   memory_bytes: number | null;
@@ -9011,6 +9059,29 @@ class FakeD1 implements D1Database {
         "cover_mime",
         "actor_label",
         "created_at",
+      ]),
+    ],
+    [
+      "workstations",
+      new Set([
+        "owner_principal",
+        "workstation_id",
+        "display_name",
+        "provider",
+        "provider_label",
+        "status",
+        "status_message",
+        "default_environment_label",
+        "environment_policy",
+        "installed_build",
+        "channel",
+        "working_directory",
+        "cpu_count",
+        "memory_bytes",
+        "environments_json",
+        "created_at",
+        "updated_at",
+        "last_seen_at",
       ]),
     ],
     [
@@ -9561,6 +9632,8 @@ class FakeD1Statement implements D1PreparedStatement {
         statusMessage,
         defaultEnvironmentLabel,
         environmentPolicy,
+        installedBuild,
+        channel,
         workingDirectory,
         cpuCount,
         memoryBytes,
@@ -9573,6 +9646,8 @@ class FakeD1Statement implements D1PreparedStatement {
         string,
         string,
         string,
+        string | null,
+        string | null,
         string | null,
         string | null,
         string | null,
@@ -9597,6 +9672,8 @@ class FakeD1Statement implements D1PreparedStatement {
         status_message: statusMessage,
         default_environment_label: defaultEnvironmentLabel,
         environment_policy: environmentPolicy,
+        installed_build: installedBuild,
+        channel,
         working_directory: workingDirectory,
         cpu_count: cpuCount,
         memory_bytes: memoryBytes,
