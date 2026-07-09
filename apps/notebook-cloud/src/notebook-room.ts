@@ -2561,6 +2561,23 @@ export class NotebookRoom {
     );
   }
 
+  private async clearRuntimePeerWatch(notebookId: string): Promise<void> {
+    const storage = this.state.storage;
+    if (!storage.setAlarm || !storage.deleteAlarm) {
+      return;
+    }
+    try {
+      await storage.delete(RUNTIME_PEER_WATCH_KEY);
+      await storage.delete(RUNTIME_PEER_WATCH_ALARM_AT_KEY);
+      await this.rescheduleRoomAlarm();
+    } catch (error) {
+      cloudLog("warn", "room.runtime_peer_watch.clear_failed", {
+        notebook_id: notebookId,
+        error: errorMessage(error),
+      });
+    }
+  }
+
   private refreshRuntimeIdleWatch(notebookId: string): void {
     const storage = this.state.storage;
     if (!storage.setAlarm || !storage.deleteAlarm) {
@@ -2683,18 +2700,33 @@ export class NotebookRoom {
       return;
     }
 
+    const materializer = this.materializerFor(notebookId);
     try {
-      const result = await this.materializerFor(notebookId).reconcileRuntimePeerGone(
+      const attachment = await materializer.getWorkstationAttachment();
+      if (attachment?.status === "idle") {
+        cloudLog("info", "room.runtime_peer_watch.skipped_idle", {
+          notebook_id: notebookId,
+          counter: "runtime_peer_watch_skipped_idle",
+          counter_delta: 1,
+        });
+        this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId, attachment));
+        return;
+      }
+    } catch (error) {
+      cloudLog("warn", "room.runtime_peer_watch.attachment_read_failed", {
+        notebook_id: notebookId,
+        error: errorMessage(error),
+      });
+    }
+
+    try {
+      const result = await materializer.reconcileRuntimePeerGone(
         "runtime peer left the room and did not return within the grace window",
       );
       this.invalidateSelectedRuntimePeerSession(notebookId);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
-        this.scheduleRoomHostCheckpoint(
-          notebookId,
-          this.materializerFor(notebookId),
-          "runtime_peer_watch_reconcile",
-        );
+        this.scheduleRoomHostCheckpoint(notebookId, materializer, "runtime_peer_watch_reconcile");
       }
       this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
       cloudLog("info", "room.runtime_peer_watch.reconciled", {
@@ -2757,6 +2789,7 @@ export class NotebookRoom {
         reason: RUNTIME_IDLE_CLOSE_REASON,
         suppressRuntimePeerWatch: true,
       });
+      await this.clearRuntimePeerWatch(notebookId);
       this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
       cloudLog("info", "room.runtime_idle_watch.torn_down", {
         notebook_id: notebookId,

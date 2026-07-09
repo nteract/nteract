@@ -1842,7 +1842,12 @@ impl RoomHostHandle {
         }
 
         let current_attachment = self.state_doc.workstation_attachment();
-        if current_attachment.is_some() || self.state_doc.get_heads() != heads_before {
+        let attachment_is_idle = current_attachment
+            .as_ref()
+            .is_some_and(workstation_attachment_is_idle);
+        if !attachment_is_idle
+            && (current_attachment.is_some() || self.state_doc.get_heads() != heads_before)
+        {
             let next_attachment =
                 runtime_peer_gone_workstation_attachment(current_attachment, reason);
             self.state_doc
@@ -1994,6 +1999,10 @@ fn runtime_peer_gone_workstation_attachment(
     attachment.status = "error".to_string();
     attachment.status_message = Some(format!("runtime peer disconnected: {reason}"));
     attachment
+}
+
+fn workstation_attachment_is_idle(attachment: &WorkstationAttachmentState) -> bool {
+    attachment.status == "idle"
 }
 
 #[derive(Debug, Serialize)]
@@ -6294,6 +6303,53 @@ mod tests {
         assert_eq!(
             state.workstation.as_ref().map(|ws| ws.status.as_str()),
             Some("error")
+        );
+    }
+
+    #[test]
+    fn reconcile_runtime_peer_gone_does_not_demote_idle_attachment() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Shutdown)
+            .unwrap();
+        let mut attachment = workstation_attachment_fixture();
+        attachment.status = "idle".to_string();
+        attachment.status_message = Some(
+            "Compute stopped after 30 minutes without queued or active execution.".to_string(),
+        );
+        attachment.runtime_session_id = Some("job-idle".to_string());
+        attachment.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&attachment))
+            .expect("seed idle attachment");
+
+        let result = host
+            .reconcile_runtime_peer_gone_inner("late disconnect")
+            .expect("reconcile ok");
+
+        assert!(!result.changed, "idle peer-gone reconcile is a no-op");
+        assert!(result.outbound.is_empty());
+        let state = host.state_doc.read_state();
+        assert_ne!(
+            state.kernel.lifecycle,
+            RuntimeLifecycle::Error,
+            "peer-gone reconcile must not write an error kernel state for idle"
+        );
+        assert!(
+            !state
+                .kernel
+                .error_details
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("runtime peer disconnected:"),
+            "peer-gone reconcile must not write a peer-gone kernel error for idle"
+        );
+        let attachment = state.workstation.as_ref().expect("idle attachment remains");
+        assert_eq!(attachment.status, "idle");
+        assert_eq!(attachment.runtime_session_id.as_deref(), Some("job-idle"));
+        assert_eq!(
+            attachment.updated_at.as_deref(),
+            Some("2026-06-07T00:00:02.000Z")
         );
     }
 
