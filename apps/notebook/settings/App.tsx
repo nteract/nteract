@@ -111,10 +111,7 @@ export function FontFamilyPicker({
   const inputId = `editor-${label.toLowerCase().replace(/\s+/g, "-")}`;
   const listId = `${inputId}-list`;
 
-  const options = useMemo(
-    () => uniqueSortedFontFamilies([...fontFamilies]),
-    [fontFamilies],
-  );
+  const options = useMemo(() => uniqueSortedFontFamilies([...fontFamilies]), [fontFamilies]);
 
   const currentSingleFamily = singleFontFamilyFromCssValue(value);
   const isKnownFont =
@@ -133,9 +130,7 @@ export function FontFamilyPicker({
     return options.filter((f) => f.toLocaleLowerCase().includes(normalizedSearchValue));
   }, [normalizedSearchValue, options]);
 
-  const displayValue = customMode
-    ? value || "Custom…"
-    : currentSingleFamily || value || placeholder;
+  const displayValue = customMode ? "Custom…" : currentSingleFamily || value || placeholder;
 
   const clear = useCallback(() => {
     onChange("");
@@ -225,9 +220,7 @@ export function FontFamilyPicker({
                       </div>
                     </CommandItem>
                     <CommandItem value="__custom__" onSelect={selectCustomMode}>
-                      <Check
-                        className={cn("size-3.5", customMode ? "opacity-100" : "opacity-0")}
-                      />
+                      <Check className={cn("size-3.5", customMode ? "opacity-100" : "opacity-0")} />
                       <div className="min-w-0">
                         <div className="truncate text-sm">Custom</div>
                         <div className="truncate text-[10px] text-muted-foreground">
@@ -296,7 +289,7 @@ export function FontFamilyPicker({
             type="text"
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            placeholder='e.g. Helvetica, Arial, sans-serif'
+            placeholder="e.g. Helvetica, Arial, sans-serif"
             className="w-full h-7 rounded-md border border-input bg-background px-2 font-mono text-xs text-foreground placeholder:text-muted-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
         </div>
