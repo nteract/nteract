@@ -3989,6 +3989,69 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     assert.equal(await state.getAlarm(), null);
   });
 
+  it("suppresses peer-gone watch when idle teardown drops a dead runtime socket", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const runtimeSocket = new FakeSocket({ throwOnSend: true });
+    const runtimePeer = peerWithScope("rt", "runtime_peer");
+    runtimePeer.socket = runtimeSocket.asCloudflareWebSocket();
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    let idleReconciles = 0;
+    let peerGoneReconciles = 0;
+    let peerWatchRefreshes = 0;
+    const peerWatchSpy = room as unknown as {
+      refreshRuntimePeerWatch(notebookId: string): void;
+    };
+    const originalRefreshRuntimePeerWatch = peerWatchSpy.refreshRuntimePeerWatch.bind(room);
+    peerWatchSpy.refreshRuntimePeerWatch = (notebookId: string) => {
+      peerWatchRefreshes += 1;
+      originalRefreshRuntimePeerWatch(notebookId);
+    };
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getRuntimeExecutionActivity: async () => ({ executing: false, queueDepth: 0 }),
+      reconcileRuntimeIdleTimeout: async () => {
+        idleReconciles += 1;
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+          outbound: [
+            {
+              peer_id: "rt",
+              frame_type: FrameType.RUNTIME_STATE_SYNC,
+              payload: new Uint8Array([7, 8, 9]),
+            },
+          ],
+        };
+      },
+      reconcileRuntimePeerGone: async () => {
+        peerGoneReconciles += 1;
+        return noopMaterializedResult();
+      },
+    } as never);
+
+    harness.refreshRuntimeIdleWatch?.("demo");
+    await state.drain();
+
+    await (room as unknown as { alarm(): Promise<void> }).alarm();
+    await state.drain();
+    await (room as unknown as { alarm(): Promise<void> }).alarm();
+    await state.drain();
+
+    assert.equal(idleReconciles, 1);
+    assert.equal(peerWatchRefreshes, 0, "send failure must not arm peer-gone watch");
+    assert.equal(peerGoneReconciles, 0, "no peer-gone reconcile follows idle teardown");
+    assert.equal(harness.peers.has(runtimePeer.id), false);
+    assert.equal(runtimeSocket.closed, true);
+    assert.equal(await state.state.storage.get("runtime_peer_gone_watch"), undefined);
+    assert.equal(await state.state.storage.get("runtime_peer_gone_watch_alarm_at"), undefined);
+    assert.equal(await state.getAlarm(), null);
+  });
+
   it("does not arm idle teardown while execution is active or queued", async () => {
     const state = alarmCapableState();
     const room = new NotebookRoom(state.state, {} as Env);
@@ -4004,6 +4067,46 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     harness.refreshRuntimeIdleWatch?.("demo");
     await state.drain();
 
+    assert.equal(await state.getAlarm(), null);
+  });
+
+  it("preserves a future idle deadline while the runtime peer is transiently absent", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    let idleReconciles = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getRuntimeExecutionActivity: async () => ({ executing: false, queueDepth: 0 }),
+      reconcileRuntimeIdleTimeout: async () => {
+        idleReconciles += 1;
+        return noopMaterializedResult();
+      },
+    } as never);
+    const existingAlarmAt = state.now + RUNTIME_IDLE_TTL_MS / 2;
+    await state.state.storage.put("runtime_idle_watch", "demo");
+    await state.state.storage.put("runtime_idle_watch_alarm_at", existingAlarmAt);
+    await state.state.storage.setAlarm?.(existingAlarmAt);
+
+    harness.refreshRuntimeIdleWatch?.("demo");
+    await state.drain();
+
+    assert.equal(await state.state.storage.get("runtime_idle_watch"), "demo");
+    assert.equal(await state.state.storage.get("runtime_idle_watch_alarm_at"), existingAlarmAt);
+    assert.equal(await state.getAlarm(), existingAlarmAt);
+
+    await state.state.storage.put("runtime_idle_watch_alarm_at", 0);
+    await state.state.storage.setAlarm?.(0);
+    await assert.doesNotReject(async () => {
+      await (room as unknown as { alarm(): Promise<void> }).alarm();
+      await state.drain();
+    });
+
+    assert.equal(idleReconciles, 0, "peerless idle alarm is a no-op");
+    assert.equal(await state.state.storage.get("runtime_idle_watch"), undefined);
+    assert.equal(await state.state.storage.get("runtime_idle_watch_alarm_at"), undefined);
     assert.equal(await state.getAlarm(), null);
   });
 
