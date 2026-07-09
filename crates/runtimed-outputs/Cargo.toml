@@ -1,6 +1,6 @@
 [package]
 name = "runtimed-outputs"
-version = "2.6.2"
+version = "2.6.3"
 edition.workspace = true
 description = "Output resolution and LLM-friendly output formatting for runtimed"
 repository.workspace = true
