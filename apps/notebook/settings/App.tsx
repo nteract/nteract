@@ -192,7 +192,7 @@ export function FontFamilyPicker({
                   placeholder="Search fonts or enter a CSS stack"
                 />
                 <CommandList className="max-h-72">
-                  <CommandGroup heading="Fonts">
+                  <CommandGroup>
                     <CommandItem value="__default__" onSelect={() => selectValue("")}>
                       <Check
                         className={cn("size-3.5", value === "" ? "opacity-100" : "opacity-0")}
@@ -204,36 +204,6 @@ export function FontFamilyPicker({
                         </div>
                       </div>
                     </CommandItem>
-                    {visibleOptions.map((fontFamily) => {
-                      const selected = currentSingleFamily === fontFamily;
-                      const cssValue = fontFamilyNameToCssValue(fontFamily);
-                      return (
-                        <CommandItem
-                          key={fontFamily}
-                          value={fontFamily}
-                          onSelect={() => selectFontFamily(fontFamily)}
-                          className="items-start"
-                        >
-                          <Check
-                            className={cn(
-                              "mt-0.5 size-3.5",
-                              selected ? "opacity-100" : "opacity-0",
-                            )}
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-sm" style={{ fontFamily: cssValue }}>
-                              {fontFamily}
-                            </div>
-                            <div
-                              className="truncate text-[11px] text-muted-foreground"
-                              style={{ fontFamily: cssValue }}
-                            >
-                              Aa The quick brown fox 0123
-                            </div>
-                          </div>
-                        </CommandItem>
-                      );
-                    })}
                     {showCustomCandidate ? (
                       <CommandItem
                         value={customCandidate}
@@ -249,7 +219,40 @@ export function FontFamilyPicker({
                       </CommandItem>
                     ) : null}
                   </CommandGroup>
-                  {visibleOptions.length === 0 && !showCustomCandidate ? (
+                  {visibleOptions.length > 0 ? (
+                    <CommandGroup heading="Fonts">
+                      {visibleOptions.map((fontFamily) => {
+                        const selected = currentSingleFamily === fontFamily;
+                        const cssValue = fontFamilyNameToCssValue(fontFamily);
+                        return (
+                          <CommandItem
+                            key={fontFamily}
+                            value={fontFamily}
+                            onSelect={() => selectFontFamily(fontFamily)}
+                            className="items-start"
+                          >
+                            <Check
+                              className={cn(
+                                "mt-0.5 size-3.5",
+                                selected ? "opacity-100" : "opacity-0",
+                              )}
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm" style={{ fontFamily: cssValue }}>
+                                {fontFamily}
+                              </div>
+                              <div
+                                className="truncate text-[11px] text-muted-foreground"
+                                style={{ fontFamily: cssValue }}
+                              >
+                                Aa The quick brown fox 0123
+                              </div>
+                            </div>
+                          </CommandItem>
+                        );
+                      })}
+                    </CommandGroup>
+                  ) : !showCustomCandidate ? (
                     <CommandEmpty>No fonts found.</CommandEmpty>
                   ) : null}
                 </CommandList>
