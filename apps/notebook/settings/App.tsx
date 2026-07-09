@@ -168,9 +168,7 @@ export function FontFamilyPicker({
 
   return (
     <div className="contents">
-      <label className="text-sm text-foreground self-center" htmlFor={inputId}>
-        {label}
-      </label>
+      <span className="text-sm text-muted-foreground whitespace-nowrap self-center">{label}</span>
       <div className="space-y-1.5 min-w-0">
         <div className="flex min-w-0 items-center gap-1.5">
           <Popover
