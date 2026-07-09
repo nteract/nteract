@@ -107,36 +107,40 @@ export function FontFamilyPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [searchValue, setSearchValue] = useState("");
+  const customInputRef = useRef<HTMLInputElement>(null);
   const inputId = `editor-${label.toLowerCase().replace(/\s+/g, "-")}`;
   const listId = `${inputId}-list`;
 
-  const options = useMemo(() => {
-    const currentSingleFamily = singleFontFamilyFromCssValue(value);
-    return uniqueSortedFontFamilies([
-      ...fontFamilies,
-      ...(currentSingleFamily ? [currentSingleFamily] : []),
-    ]);
-  }, [fontFamilies, value]);
+  const options = useMemo(
+    () => uniqueSortedFontFamilies([...fontFamilies]),
+    [fontFamilies],
+  );
+
+  const currentSingleFamily = singleFontFamilyFromCssValue(value);
+  const isKnownFont =
+    currentSingleFamily != null &&
+    options.some((f) => f.toLocaleLowerCase() === currentSingleFamily.toLocaleLowerCase());
+
+  const [customMode, setCustomMode] = useState(() => value !== "" && !isKnownFont);
+
+  useEffect(() => {
+    if (customMode) customInputRef.current?.focus();
+  }, [customMode]);
 
   const normalizedSearchValue = searchValue.trim().toLocaleLowerCase();
   const visibleOptions = useMemo(() => {
     if (!normalizedSearchValue) return options;
-    return options.filter((fontFamily) =>
-      fontFamily.toLocaleLowerCase().includes(normalizedSearchValue),
-    );
+    return options.filter((f) => f.toLocaleLowerCase().includes(normalizedSearchValue));
   }, [normalizedSearchValue, options]);
 
-  const currentSingleFamily = singleFontFamilyFromCssValue(value);
-  const exactSearchMatch = options.some(
-    (fontFamily) => fontFamily.toLocaleLowerCase() === normalizedSearchValue,
-  );
-  const customCandidate = searchValue.trim();
-  const showCustomCandidate = customCandidate.length > 0 && !exactSearchMatch;
-  const displayValue = currentSingleFamily || value || placeholder;
+  const displayValue = customMode
+    ? value || "Custom…"
+    : currentSingleFamily || value || placeholder;
 
   const clear = useCallback(() => {
-    if (value !== "") onChange("");
-  }, [onChange, value]);
+    onChange("");
+    setCustomMode(false);
+  }, [onChange]);
 
   const selectValue = useCallback(
     (next: string) => {
@@ -149,10 +153,23 @@ export function FontFamilyPicker({
 
   const selectFontFamily = useCallback(
     (fontFamily: string) => {
+      setCustomMode(false);
       selectValue(fontFamilyNameToCssValue(fontFamily));
     },
     [selectValue],
   );
+
+  const selectDefault = useCallback(() => {
+    setCustomMode(false);
+    selectValue("");
+  }, [selectValue]);
+
+  const selectCustomMode = useCallback(() => {
+    if (!customMode) onChange("");
+    setCustomMode(true);
+    setSearchValue("");
+    setOpen(false);
+  }, [customMode, onChange]);
 
   return (
     <div className="space-y-1.5">
@@ -177,7 +194,7 @@ export function FontFamilyPicker({
                 aria-expanded={open}
                 className={cn(
                   "flex h-8 min-w-0 flex-1 items-center justify-between rounded-md border border-input bg-background px-3 py-1 text-left text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  value ? "text-foreground" : "text-muted-foreground",
+                  value || customMode ? "text-foreground" : "text-muted-foreground",
                 )}
               >
                 <span className="min-w-0 truncate font-mono">{displayValue}</span>
@@ -189,13 +206,16 @@ export function FontFamilyPicker({
                 <CommandInput
                   value={searchValue}
                   onValueChange={setSearchValue}
-                  placeholder="Search fonts or enter a CSS stack"
+                  placeholder="Search fonts"
                 />
                 <CommandList className="max-h-72">
                   <CommandGroup>
-                    <CommandItem value="__default__" onSelect={() => selectValue("")}>
+                    <CommandItem value="__default__" onSelect={selectDefault}>
                       <Check
-                        className={cn("size-3.5", value === "" ? "opacity-100" : "opacity-0")}
+                        className={cn(
+                          "size-3.5",
+                          !customMode && value === "" ? "opacity-100" : "opacity-0",
+                        )}
                       />
                       <div className="min-w-0">
                         <div className="truncate text-sm">Theme default</div>
@@ -204,25 +224,22 @@ export function FontFamilyPicker({
                         </div>
                       </div>
                     </CommandItem>
-                    {showCustomCandidate ? (
-                      <CommandItem
-                        value={customCandidate}
-                        onSelect={() => selectValue(customCandidate)}
-                      >
-                        <Check className="size-3.5 opacity-0" />
-                        <div className="min-w-0">
-                          <div className="truncate text-sm">Use custom value</div>
-                          <div className="truncate font-mono text-[10px] text-muted-foreground">
-                            {customCandidate}
-                          </div>
+                    <CommandItem value="__custom__" onSelect={selectCustomMode}>
+                      <Check
+                        className={cn("size-3.5", customMode ? "opacity-100" : "opacity-0")}
+                      />
+                      <div className="min-w-0">
+                        <div className="truncate text-sm">Custom</div>
+                        <div className="truncate text-[10px] text-muted-foreground">
+                          Enter a CSS font stack
                         </div>
-                      </CommandItem>
-                    ) : null}
+                      </div>
+                    </CommandItem>
                   </CommandGroup>
                   {visibleOptions.length > 0 ? (
                     <CommandGroup heading="System fonts">
                       {visibleOptions.map((fontFamily) => {
-                        const selected = currentSingleFamily === fontFamily;
+                        const selected = !customMode && currentSingleFamily === fontFamily;
                         const cssValue = fontFamilyNameToCssValue(fontFamily);
                         return (
                           <CommandItem
@@ -252,14 +269,14 @@ export function FontFamilyPicker({
                         );
                       })}
                     </CommandGroup>
-                  ) : !showCustomCandidate ? (
+                  ) : (
                     <CommandEmpty>No fonts found.</CommandEmpty>
-                  ) : null}
+                  )}
                 </CommandList>
               </Command>
             </PopoverContent>
           </Popover>
-          {value ? (
+          {value || customMode ? (
             <button
               type="button"
               aria-label={`Clear ${label.toLowerCase()}`}
@@ -272,6 +289,18 @@ export function FontFamilyPicker({
           ) : null}
         </div>
       </div>
+      {customMode ? (
+        <div className="pl-[5.5rem]">
+          <input
+            ref={customInputRef}
+            type="text"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder='e.g. Helvetica, Arial, sans-serif'
+            className="w-full h-7 rounded-md border border-input bg-background px-2 font-mono text-xs text-foreground placeholder:text-muted-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+        </div>
+      ) : null}
       <p className="pl-[5.5rem] text-[10px] text-muted-foreground/70">{description}</p>
     </div>
   );
