@@ -789,8 +789,8 @@ mod tests {
         let before = runtime_state_policy_snapshot(&before_doc);
         let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
         let mut next = workstation_attachment();
-        next.status = "error".to_string();
-        next.status_message = Some("runtime peer disconnected".to_string());
+        next.status = "disconnected".to_string();
+        next.status_message = Some("compute disconnected: runtime peer left".to_string());
         after_doc.set_workstation_attachment(Some(&next)).unwrap();
         let after = runtime_state_policy_snapshot(&after_doc);
 

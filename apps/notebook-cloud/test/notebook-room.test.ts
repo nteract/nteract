@@ -1544,6 +1544,43 @@ describe("NotebookRoom peer lifecycle", () => {
     );
   });
 
+  it("allows only the matching selected runtime session to rejoin after disconnect", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "lab2",
+        display_name: "lab2 workstation",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "disconnected",
+        status_message: "compute disconnected: runtime peer left the room",
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: "/home/ubuntu/codex/nteract",
+        runtime_session_id: "job-123",
+        updated_at: "2026-06-07T00:00:00.000Z",
+      }),
+      setWorkstationAttachment: async () => noopMaterializedResult(),
+    } as never);
+
+    const matching = await harness.runtimePeerAuthorityError?.("demo", {
+      workstationId: "lab2",
+      runtimeSessionId: "job-123",
+    });
+    const staleSession = await harness.runtimePeerAuthorityError?.("demo", {
+      workstationId: "lab2",
+      runtimeSessionId: "job-456",
+    });
+
+    assert.equal(matching, null);
+    assert.match(String(staleSession), /does not match selected runtime session job-123/);
+  });
+
   it("rejects runtime-peer upgrades for idle selected sessions", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const harness = roomHarness(room);
@@ -3539,6 +3576,93 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(accepted.type, "cloud_frame_accepted");
   });
 
+  it("creates a resume attach job after grace reconciliation disconnects compute", async () => {
+    const db = new ResumeNotebookD1();
+    const state = alarmCapableState();
+    const env = { DB: db } as unknown as Env;
+    const room = new NotebookRoom(state.state, env);
+    const materializer = new RoomMaterializer("demo", state.state, env);
+    const harness = roomHarness(room);
+    harness.materializers.set("demo", materializer as never);
+    await materializer.setWorkstationAttachment({
+      workstation_id: "ws-lab2",
+      display_name: "Lab2",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: null,
+      memory_bytes: null,
+      working_directory: "/srv/project",
+      updated_at: "2026-05-22T00:00:00.000Z",
+      runtime_session_id: "job-old",
+    });
+
+    const runtimePeer = {
+      id: "runtime",
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=alice&operator=runtime:py&scope=runtime_peer",
+        ),
+      ),
+      connectedAt: "2026-05-22T00:00:01.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.removePeer("demo", runtimePeer);
+    await state.drain();
+    assert.equal(await state.getAlarm(), state.now + 30_000, "watch armed after departure");
+
+    await (room as unknown as { alarm(): Promise<void> }).alarm();
+    await state.drain();
+    const disconnectedAttachment = await materializer.getWorkstationAttachment();
+    assert.equal(disconnectedAttachment?.status, "disconnected");
+    assert.equal(
+      disconnectedAttachment?.status_message,
+      "compute disconnected: runtime peer left the room and did not return within the grace window",
+    );
+    assert.equal(disconnectedAttachment?.runtime_session_id, "job-old");
+    assert.equal(disconnectedAttachment?.updated_at, "2026-05-22T00:00:00.000Z");
+
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const ownerPeer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:02.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+
+    await harness.handleMessage(
+      "demo",
+      ownerPeer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({
+            id: "request-1",
+            action: "execute_cell",
+            cell_id: initialHostedCellIdForTest("demo"),
+          }),
+        ),
+      ),
+    );
+
+    assert.equal(db.attachJobs.length, 1);
+    assert.equal(db.attachJobs[0]?.trigger, "resume");
+    assert.equal(db.attachJobs[0]?.requested_by_actor_label, "execution resume");
+    const reconnectingAttachment = await materializer.getWorkstationAttachment();
+    assert.equal(reconnectingAttachment?.status, "connecting");
+    assert.equal(reconnectingAttachment?.runtime_session_id, db.attachJobs[0]?.id);
+    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
   it("rejects non-owner execution without creating a resume attach job", async () => {
     const db = new ResumeNotebookD1();
     const room = new NotebookRoom(fakeState(), { DB: db } as unknown as Env);
@@ -3845,8 +3969,8 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
       getWorkstationAttachment: async () => attachment,
       reconcileRuntimePeerGone: async () => {
         reconcileCalls += 1;
-        attachment.status = "error";
-        attachment.status_message = "runtime peer disconnected";
+        attachment.status = "disconnected";
+        attachment.status_message = "compute disconnected: runtime peer disconnected";
         return {
           ...noopMaterializedResult(),
           changed: true,
@@ -4293,8 +4417,8 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
       getWorkstationAttachment: async () => attachment,
       reconcileRuntimePeerGone: async (reason: string) => {
         repairReason = reason;
-        attachment.status = "error";
-        attachment.status_message = "runtime peer left";
+        attachment.status = "disconnected";
+        attachment.status_message = "compute disconnected: runtime peer left";
         return {
           ...noopMaterializedResult(),
           changed: true,
@@ -4324,7 +4448,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     });
     assert.equal(repairReason, "expired pending attach job");
     assert.equal(checkpointed, 1);
-    assert.equal(attachment.status, "error");
+    assert.equal(attachment.status, "disconnected");
     assert.equal(attachment.runtime_session_id, "expired-job");
   });
 

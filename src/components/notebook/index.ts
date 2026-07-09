@@ -135,8 +135,11 @@ export {
 } from "./DaemonStatusBanner";
 export { DebugBanner, type DebugBannerProps } from "./DebugBanner";
 export {
+  ComputeDisconnectedNotice,
   KernelLaunchErrorBanner,
+  isRuntimePeerDisconnectedErrorDetails,
   shouldShowKernelLaunchErrorBanner,
+  type ComputeDisconnectedNoticeProps,
   type KernelLaunchErrorBannerProps,
 } from "./KernelLaunchErrorBanner";
 export {

@@ -1549,6 +1549,11 @@ export class NotebookRoom {
     }
   }
 
+  /**
+   * A disconnected selected runtime session is recoverable room state: the
+   * same runtime peer may rejoin with its preserved workstation/session IDs
+   * and publish a ready attachment. Idle remains terminal execution teardown.
+   */
   private async runtimePeerAuthorityError(
     notebookId: string,
     workstation: RuntimePeerWorkstationMetadata | null,
@@ -1558,23 +1563,35 @@ export class NotebookRoom {
       return null;
     }
 
-    if (!runtimePeerSessionStatusAcceptsPeer(selected.status)) {
+    const presentedWorkstationId = runtimePeerWorkstationId(workstation);
+    const presentedSessionId = runtimePeerRuntimeSessionId(workstation);
+    const workstationMatches = presentedWorkstationId === selected.workstationId;
+    const sessionMatches =
+      !selected.runtimeSessionId || presentedSessionId === selected.runtimeSessionId;
+
+    if (selected.status === "disconnected" && workstationMatches && sessionMatches) {
+      return null;
+    }
+
+    if (
+      !runtimePeerSessionStatusAcceptsPeer(selected.status) &&
+      selected.status !== "disconnected"
+    ) {
       return `selected runtime session is ${selected.status}`;
     }
 
-    const presentedWorkstationId = runtimePeerWorkstationId(workstation);
-    if (presentedWorkstationId === selected.workstationId) {
-      if (!selected.runtimeSessionId) {
-        return null;
-      }
-      const presentedSessionId = runtimePeerRuntimeSessionId(workstation);
-      if (presentedSessionId === selected.runtimeSessionId) {
-        return null;
-      }
-      return `runtime peer session ${presentedSessionId ?? "unknown"} does not match selected runtime session ${selected.runtimeSessionId}`;
+    if (!workstationMatches) {
+      return `runtime peer workstation ${presentedWorkstationId} does not match selected workstation ${selected.workstationId}`;
     }
 
-    return `runtime peer workstation ${presentedWorkstationId} does not match selected workstation ${selected.workstationId}`;
+    if (!selected.runtimeSessionId) {
+      return null;
+    }
+    if (sessionMatches) {
+      return null;
+    }
+
+    return `runtime peer session ${presentedSessionId ?? "unknown"} does not match selected runtime session ${selected.runtimeSessionId}`;
   }
 
   private removeRuntimePeers(notebookId: string, closeOptions: PeerCloseOptions): void {

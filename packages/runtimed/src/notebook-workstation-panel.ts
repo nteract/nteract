@@ -248,6 +248,7 @@ function isRuntimePeerDisconnectDetail(detail: string): boolean {
   const normalized = detail.trim().toLowerCase();
   return (
     normalized.startsWith("runtime peer disconnected") ||
+    normalized.startsWith("compute disconnected") ||
     normalized.includes("runtime peer left the room") ||
     normalized.startsWith("room link lost")
   );

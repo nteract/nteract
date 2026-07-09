@@ -55,7 +55,9 @@ import {
   DaemonStatusBanner,
   DebugBanner,
   EnvBuildDecisionDialog,
+  ComputeDisconnectedNotice,
   KernelLaunchErrorBanner,
+  isRuntimePeerDisconnectedErrorDetails,
   NotebookCommentsPanel,
   NotebookConnectionIdentity,
   NotebookDocumentRail,
@@ -1887,6 +1889,17 @@ function AppContent() {
             </button>
           </div>
         )}
+        {isRuntimePeerDisconnectedErrorDetails(errorDetails) &&
+          dismissedLaunchError !== errorDetails && (
+            <ComputeDisconnectedNotice
+              errorDetails={errorDetails as string}
+              onRetry={() => {
+                setDismissedLaunchError(null);
+                tryStartKernel();
+              }}
+              onDismiss={() => setDismissedLaunchError(errorDetails)}
+            />
+          )}
         {shouldShowKernelLaunchErrorBanner({
           lifecycle,
           errorDetails,

@@ -1845,7 +1845,11 @@ impl RoomHostHandle {
         let attachment_is_idle = current_attachment
             .as_ref()
             .is_some_and(workstation_attachment_is_idle);
+        let attachment_is_error = current_attachment
+            .as_ref()
+            .is_some_and(workstation_attachment_is_error);
         if !attachment_is_idle
+            && !attachment_is_error
             && (current_attachment.is_some() || self.state_doc.get_heads() != heads_before)
         {
             let next_attachment =
@@ -1996,13 +2000,17 @@ fn runtime_peer_gone_workstation_attachment(
         updated_at: None,
         runtime_session_id: None,
     });
-    attachment.status = "error".to_string();
-    attachment.status_message = Some(format!("runtime peer disconnected: {reason}"));
+    attachment.status = "disconnected".to_string();
+    attachment.status_message = Some(format!("compute disconnected: {reason}"));
     attachment
 }
 
 fn workstation_attachment_is_idle(attachment: &WorkstationAttachmentState) -> bool {
     attachment.status == "idle"
+}
+
+fn workstation_attachment_is_error(attachment: &WorkstationAttachmentState) -> bool {
+    attachment.status == "error"
 }
 
 #[derive(Debug, Serialize)]
@@ -6132,14 +6140,14 @@ mod tests {
         );
         assert_eq!(
             state.workstation.as_ref().map(|ws| ws.status.as_str()),
-            Some("error")
+            Some("disconnected")
         );
         assert_eq!(
             state
                 .workstation
                 .as_ref()
                 .and_then(|ws| ws.status_message.as_deref()),
-            Some("runtime peer disconnected: daemon dropped")
+            Some("compute disconnected: daemon dropped")
         );
         assert_eq!(
             state
@@ -6262,6 +6270,16 @@ mod tests {
             .reconcile_runtime_peer_gone_inner("blip")
             .expect("first reconcile");
         assert!(first.changed);
+        let state = host.state_doc.read_state();
+        let attachment = state
+            .workstation
+            .as_ref()
+            .expect("peer loss writes a disconnected attachment");
+        assert_eq!(attachment.status, "disconnected");
+        assert_eq!(
+            attachment.status_message.as_deref(),
+            Some("compute disconnected: blip")
+        );
 
         // A second alarm (e.g. the grace timer re-firing) is a safe no-op:
         // everything is already terminal, so nothing changes and no frames are
@@ -6302,7 +6320,28 @@ mod tests {
         );
         assert_eq!(
             state.workstation.as_ref().map(|ws| ws.status.as_str()),
-            Some("error")
+            Some("disconnected")
+        );
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .and_then(|ws| ws.status_message.as_deref()),
+            Some("compute disconnected: late disconnect")
+        );
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .and_then(|ws| ws.runtime_session_id.as_deref()),
+            Some("job-runtime")
+        );
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .and_then(|ws| ws.updated_at.as_deref()),
+            Some("2026-06-07T00:00:00.000Z")
         );
     }
 
@@ -6350,6 +6389,50 @@ mod tests {
         assert_eq!(
             attachment.updated_at.as_deref(),
             Some("2026-06-07T00:00:02.000Z")
+        );
+    }
+
+    #[test]
+    fn reconcile_runtime_peer_gone_does_not_demote_error_attachment() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Shutdown)
+            .unwrap();
+        let mut attachment = workstation_attachment_fixture();
+        attachment.status = "error".to_string();
+        attachment.status_message =
+            Some("Launch failed while creating the workstation session.".to_string());
+        attachment.runtime_session_id = Some("job-error".to_string());
+        attachment.updated_at = Some("2026-06-07T00:00:03.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&attachment))
+            .expect("seed error attachment");
+
+        let result = host
+            .reconcile_runtime_peer_gone_inner("late disconnect")
+            .expect("reconcile ok");
+
+        assert!(!result.changed, "error peer-gone reconcile is a no-op");
+        assert!(result.outbound.is_empty());
+        let state = host.state_doc.read_state();
+        assert_ne!(
+            state.kernel.lifecycle,
+            RuntimeLifecycle::Error,
+            "peer-gone reconcile must not write an error kernel state for a terminal lifecycle"
+        );
+        let attachment = state
+            .workstation
+            .as_ref()
+            .expect("error attachment remains");
+        assert_eq!(attachment.status, "error");
+        assert_eq!(
+            attachment.status_message.as_deref(),
+            Some("Launch failed while creating the workstation session.")
+        );
+        assert_eq!(attachment.runtime_session_id.as_deref(), Some("job-error"));
+        assert_eq!(
+            attachment.updated_at.as_deref(),
+            Some("2026-06-07T00:00:03.000Z")
         );
     }
 
@@ -6420,6 +6503,26 @@ mod tests {
         assert_eq!(
             state.kernel.error_details.as_deref(),
             Some("kernel launch failed: missing module")
+        );
+    }
+
+    #[test]
+    fn set_workstation_attachment_keeps_launch_failure_error_status() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let mut attachment = workstation_attachment_fixture();
+        attachment.status = "error".to_string();
+        attachment.status_message = Some("Failed to launch kernel: missing module".to_string());
+
+        host.set_workstation_attachment_inner(Some(&attachment))
+            .expect("publish launch failure attachment");
+
+        let state = host.state_doc.read_state();
+        let attachment = state.workstation.as_ref().expect("attachment remains");
+        assert_eq!(attachment.status, "error");
+        assert_eq!(
+            attachment.status_message.as_deref(),
+            Some("Failed to launch kernel: missing module")
         );
     }
 

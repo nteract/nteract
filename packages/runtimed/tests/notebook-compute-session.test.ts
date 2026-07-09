@@ -55,15 +55,20 @@ describe("projectNotebookComputeSessionSummary", () => {
     expect(isNotebookComputeSessionSummary(summary)).toBe(true);
   });
 
-  it("keeps a disconnected ready attachment visible as stale", () => {
+  it("keeps a disconnected attachment visible as stale", () => {
     const summary = projectNotebookComputeSessionSummary({
-      attachment,
+      attachment: {
+        ...attachment,
+        status: "disconnected",
+        status_message: "compute disconnected: runtime peer left the room",
+      },
       notebookId: "topic-viz",
       ownerPrincipal: "user:dev:alice",
       runtimePeerCount: 0,
     });
 
     expect(summary?.status).toBe("stale");
+    expect(summary?.status_message).toBe("compute disconnected: runtime peer left the room");
     expect(summary?.last_runtime_seen_at).toBeNull();
   });
 

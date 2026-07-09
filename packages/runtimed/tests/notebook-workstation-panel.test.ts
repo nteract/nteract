@@ -266,4 +266,34 @@ describe("projectNotebookWorkstationPanel", () => {
     );
     expect(ownerProjection).not.toBe(viewerProjection);
   });
+
+  it("projects compute-disconnected attachment details as friendly stale copy", () => {
+    const projection = projectNotebookWorkstationPanel(
+      capabilities({
+        accessOverrides: { level: "owner", source: "cloud" },
+        authOverrides: { canUseAuthenticatedIdentity: true },
+        runtimeOverrides: {
+          canWriteRuntimeState: false,
+          connected: false,
+          executionAvailable: false,
+          source: "cloud",
+          target: {
+            id: "ws-lab2",
+            kind: "cloud_workstation",
+            status: "attention",
+            label: "Lab2",
+            statusLabel: "Needs attention",
+            detail: "compute disconnected: expired pending attach job",
+            providerLabel: "Workstation",
+            defaultEnvironmentLabel: "Current Python",
+          },
+        },
+      }),
+    );
+
+    expect(projection.detail).toBe(
+      "Compute from Lab2 is no longer connected to this notebook. Start compute again from an available workstation.",
+    );
+    expect(projection.detail).not.toContain("expired pending attach job");
+  });
 });
