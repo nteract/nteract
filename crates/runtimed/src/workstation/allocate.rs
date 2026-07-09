@@ -98,6 +98,7 @@ pub fn plan_current_python_allocation(
 ///
 /// Deferred (decision 42): the live attach against a real preview room
 /// (staging creds + deployed worker + the `runtime_peer` ACL row).
+#[allow(clippy::too_many_arguments)]
 pub async fn allocate_current_python_runtime(
     target: RoomTarget,
     auth: CloudAuth,

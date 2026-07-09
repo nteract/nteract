@@ -1782,6 +1782,7 @@ fn should_apply_initial_launch(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn apply_initial_launch(
     trigger: LaunchTrigger,
     launch: RuntimeAgentRequest,
