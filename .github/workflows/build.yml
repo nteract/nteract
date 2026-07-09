@@ -575,7 +575,23 @@ jobs:
     # run it post-merge or manually when the native smoke signal is needed.
     if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-22.04
+    env:
+      # Shrink test-profile debuginfo to stay under the runner disk ceiling.
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
+      - name: Reclaim runner disk
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"
+          df -h
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL
+          echo "Disk after cleanup:"
+          df -h
+
       - uses: actions/checkout@v6
         with:
           lfs: true
@@ -686,6 +702,19 @@ jobs:
       )
     runs-on: ubuntu-24.04
     steps:
+      - name: Reclaim runner disk
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"
+          df -h
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL
+          echo "Disk after cleanup:"
+          df -h
+
       - uses: actions/checkout@v6
         with:
           lfs: true
@@ -726,7 +755,23 @@ jobs:
         contains(github.event.pull_request.labels.*.name, 'ci:rust')
       )
     runs-on: ubuntu-24.04
+    env:
+      # Shrink test-profile debuginfo to stay under the runner disk ceiling.
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
+      - name: Reclaim runner disk
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"
+          df -h
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL
+          echo "Disk after cleanup:"
+          df -h
+
       - uses: actions/checkout@v6
         with:
           lfs: true
@@ -768,6 +813,19 @@ jobs:
       )
     runs-on: ubuntu-24.04
     steps:
+      - name: Reclaim runner disk
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"
+          df -h
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL
+          echo "Disk after cleanup:"
+          df -h
+
       - uses: actions/checkout@v6
         with:
           lfs: true
