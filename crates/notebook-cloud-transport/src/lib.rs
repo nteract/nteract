@@ -368,10 +368,10 @@ fn terminal_cloud_close_error(code: Option<u16>, reason: &str) -> Option<std::io
 }
 
 pub fn cloud_close_is_graceful_shutdown(error: &std::io::Error) -> bool {
+    let message = error.to_string();
     error.kind() == std::io::ErrorKind::PermissionDenied
-        && error
-            .to_string()
-            .contains(RUNTIME_IDLE_TIMEOUT_CLOSE_REASON)
+        && message.starts_with("cloud room closed runtime peer:")
+        && message.ends_with("reason=runtime idle timeout")
 }
 
 /// Read frames from `source` until the room reaches a terminal ready state,
@@ -1057,6 +1057,13 @@ mod tests {
         );
         assert!(!cloud_close_is_graceful_shutdown(&arbitrary_clean_close));
         assert!(!transport.stream_error_is_graceful_shutdown(&arbitrary_clean_close));
+
+        let rejected_frame = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "cloud frame rejected: reason=runtime idle timeout is not valid in this context",
+        );
+        assert!(!cloud_close_is_graceful_shutdown(&rejected_frame));
+        assert!(!transport.stream_error_is_graceful_shutdown(&rejected_frame));
     }
 
     #[test]

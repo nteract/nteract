@@ -25,6 +25,7 @@ export const WORKSTATION_LEASE_GC_MS = 24 * 60 * 60_000;
 const WORKSTATION_WENT_OFFLINE_NOTIFY_TIMEOUT_MS = 5_000;
 const WORKSTATION_LEASE_EXPIRED_ATTACH_JOB_MESSAGE =
   "workstation lease expired: no heartbeat within the lease window";
+const WORKSTATION_LEASE_EXPIRED_ATTACH_JOB_TIMEOUT_MS = 5_000;
 const WORKSTATION_LEASE_RUNTIME_REPAIR_TIMEOUT_MS = 5_000;
 
 /**
@@ -206,7 +207,6 @@ export class OwnerComputeIndex {
   private async sweepExpiredLeases(now: number): Promise<number> {
     const leases = await this.readLeases();
     const wentOffline: WorkstationLeaseRecord[] = [];
-    const failedAttachJobs: WorkstationAttachJobRow[] = [];
     for (const [key, lease] of leases) {
       // Drop leases that have stayed offline well past their window so the DO
       // does not accumulate dead records.
@@ -215,14 +215,12 @@ export class OwnerComputeIndex {
         continue;
       }
       if (lease.online && lease.lease_expires_at <= now) {
-        const failedJobs = await this.failActiveAttachJobsForExpiredLease(lease);
         const offline: WorkstationLeaseRecord = {
           ...lease,
           online: false,
           offline_reason: "lease expired: no heartbeat within the lease window",
         };
         await this.state.storage.put(key, offline);
-        failedAttachJobs.push(...failedJobs);
         wentOffline.push(offline);
         cloudLog("info", "fleet_registry.lease_expired", {
           owner_principal: lease.owner_principal,
@@ -240,7 +238,7 @@ export class OwnerComputeIndex {
     // events DO must not keep the handler running, which would pin this DO
     // resident and break hibernation. waitUntil lets the handler return now
     // while the bounded-timeout delivery drains in the background.
-    const notify = this.notifyExpiredLeaseSideEffects(wentOffline, failedAttachJobs);
+    const notify = this.notifyExpiredLeaseSideEffects(wentOffline);
     if (this.state.waitUntil) {
       this.state.waitUntil(notify);
     } else {
@@ -285,13 +283,48 @@ export class OwnerComputeIndex {
 
   private async notifyExpiredLeaseSideEffects(
     wentOffline: WorkstationLeaseRecord[],
-    failedAttachJobs: WorkstationAttachJobRow[],
   ): Promise<void> {
     await Promise.allSettled([
       this.notifyWentOffline(wentOffline),
+      this.failAndNotifyAttachJobsForExpiredLeases(wentOffline),
+    ]);
+  }
+
+  private async failAndNotifyAttachJobsForExpiredLeases(
+    leases: WorkstationLeaseRecord[],
+  ): Promise<void> {
+    if (!this.env.DB || leases.length === 0) {
+      return;
+    }
+    const failedAttachJobs = await this.failActiveAttachJobsForExpiredLeases(leases);
+    await Promise.allSettled([
       this.notifyAttachJobsFailed(failedAttachJobs),
       this.repairRuntimeStateForFailedAttachJobs(failedAttachJobs),
     ]);
+  }
+
+  private async failActiveAttachJobsForExpiredLeases(
+    leases: WorkstationLeaseRecord[],
+  ): Promise<WorkstationAttachJobRow[]> {
+    const timeout = delay(WORKSTATION_LEASE_EXPIRED_ATTACH_JOB_TIMEOUT_MS).then(
+      () => "timeout" as const,
+    );
+    const failures = Promise.allSettled(
+      leases.map((lease) => this.failActiveAttachJobsForExpiredLease(lease)),
+    ).then((results) =>
+      results.flatMap((result) => (result.status === "fulfilled" ? result.value : [])),
+    );
+    const result = await Promise.race([failures, timeout]);
+    if (result === "timeout") {
+      cloudLog("warn", "fleet_registry.attach_jobs_fail_for_expired_lease_timeout", {
+        lease_count: leases.length,
+        timeout_ms: WORKSTATION_LEASE_EXPIRED_ATTACH_JOB_TIMEOUT_MS,
+        counter: "fleet_registry_attach_jobs_fail_for_expired_lease_timeout",
+        counter_delta: 1,
+      });
+      return [];
+    }
+    return result;
   }
 
   private async notifyWentOffline(leases: WorkstationLeaseRecord[]): Promise<void> {
@@ -768,6 +801,10 @@ function sessionKey(notebookId: string): string {
 
 function leaseKey(workstationId: string): string {
   return `${WORKSTATION_LEASE_KEY_PREFIX}${workstationId}`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function positiveInteger(value: unknown): number | null {

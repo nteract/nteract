@@ -1196,7 +1196,8 @@ export async function createWorkstationAttachJob(
   });
   if (existing) {
     if (input.replaceActive !== true && existing.workstation_id === input.workstationId) {
-      return { job: existing, cancelledActiveJob: null };
+      const job = await upgradeDedupedAttachJobTriggerToUserAttach(env, existing, trigger, nowIso);
+      return { job, cancelledActiveJob: null };
     }
     cancelledActiveJob = existing;
     activeJobToCancel = existing;
@@ -1257,7 +1258,13 @@ export async function createWorkstationAttachJob(
         throw error;
       }
       if (input.replaceActive !== true && racedExisting.workstation_id === input.workstationId) {
-        return { job: racedExisting, cancelledActiveJob };
+        const job = await upgradeDedupedAttachJobTriggerToUserAttach(
+          env,
+          racedExisting,
+          trigger,
+          nowIso,
+        );
+        return { job, cancelledActiveJob };
       }
       cancelledActiveJob ??= racedExisting;
       activeJobToCancel = racedExisting;
@@ -1474,6 +1481,33 @@ async function getActiveWorkstationAttachJob(
     .bind(input.notebookId, input.ownerPrincipal, pendingStaleBefore, staleBefore)
     .first<WorkstationAttachJobRow>();
   return row;
+}
+
+async function upgradeDedupedAttachJobTriggerToUserAttach(
+  env: Env,
+  job: WorkstationAttachJobRow,
+  requestedTrigger: WorkstationAttachJobTrigger,
+  now: string,
+): Promise<WorkstationAttachJobRow> {
+  if (requestedTrigger !== "user_attach" || job.trigger === "user_attach") {
+    return job;
+  }
+  await env
+    .DB!.prepare(
+      `UPDATE workstation_attach_jobs
+          SET trigger = 'user_attach',
+              updated_at = ?
+        WHERE id = ?
+          AND owner_principal = ?
+          AND workstation_id = ?
+          AND trigger = 'resume'
+          AND status IN ('pending', 'accepted', 'running')`,
+    )
+    .bind(now, job.id, job.owner_principal, job.workstation_id)
+    .run();
+  return (
+    (await getWorkstationAttachJob(env, job.owner_principal, job.workstation_id, job.id)) ?? job
+  );
 }
 
 async function expireStaleWorkstationAttachJobs(

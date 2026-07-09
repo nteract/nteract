@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig};
 use runtimed::service::ServiceManager;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
 #[command(name = "runtimed")]
@@ -193,7 +193,7 @@ enum Commands {
         /// Whether the initial current-Python launch runs on attach or waits for
         /// synced execution intent.
         #[arg(long, value_parser = ["attach", "execute"], default_value = "attach")]
-        launch_mode: Option<String>,
+        launch_mode: String,
     },
 
     /// Serve this machine as a workstation for a hosted nteract cloud:
@@ -615,7 +615,7 @@ async fn main() -> anyhow::Result<()> {
                         operator,
                         workstation: Some(workstation_metadata),
                     };
-                    let launch_trigger = match launch_mode.as_deref().unwrap_or("attach") {
+                    let launch_trigger = match launch_mode.as_str() {
                         "execute" => runtimed::runtime_agent::LaunchTrigger::OnFirstExecution,
                         "attach" => runtimed::runtime_agent::LaunchTrigger::OnAttach,
                         _ => unreachable!("clap validates launch-mode"),
@@ -634,6 +634,11 @@ async fn main() -> anyhow::Result<()> {
                 }
                 // Attach-only: wait for an inbound launch (req #5, deferred).
                 None => {
+                    if launch_mode == "execute" {
+                        warn!(
+                            "[cloud-runtime-agent] --launch-mode execute ignored without --python-path; attaching without an initial launch template"
+                        );
+                    }
                     runtimed::runtime_agent::run_cloud_runtime_agent(
                         config, operator, blob_root, None,
                     )

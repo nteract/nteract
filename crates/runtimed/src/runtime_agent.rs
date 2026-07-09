@@ -64,6 +64,13 @@ fn runtime_agent_response_error(response: &RuntimeAgentResponse) -> Option<&str>
     }
 }
 
+fn should_clear_pending_initial_launch_after_rpc(
+    is_launch_or_restart: bool,
+    response: &RuntimeAgentResponse,
+) -> bool {
+    is_launch_or_restart && runtime_agent_response_error(response).is_none()
+}
+
 /// Minimum interval between reconnect cycles on a recoverable transport,
 /// covering *both* recoverable-failure arms: a clean EOF and a stream framing
 /// error. `reconnect_with_backoff` only delays between *failed* connects, so a
@@ -804,6 +811,12 @@ where
                                         lifecycle_rx = Some(rx.lifecycle_rx);
                                         work_rx = Some(rx.work_rx);
                                     }
+                                    if should_clear_pending_initial_launch_after_rpc(
+                                        is_launch_or_restart,
+                                        &response,
+                                    ) {
+                                        pending_initial_launch = None;
+                                    }
                                     // Update interrupt handle after any request that may change kernel state
                                     interrupt_handle = kernel.as_ref().and_then(|k| k.interrupt_handle());
 
@@ -1170,7 +1183,7 @@ where
                         match classify_stream_error(&transport, &e) {
                             StreamErrorDisposition::TerminalGraceful => {
                                 info!(
-                                    "room closed runtime peer for idle timeout; shutting down cleanly"
+                                    "[runtime-agent] Sync stream closed gracefully by transport; shutting down cleanly"
                                 );
                                 break;
                             }
@@ -3080,6 +3093,35 @@ mod tests {
             ),
             StreamErrorDisposition::TerminalGraceful
         );
+    }
+
+    #[test]
+    fn successful_inbound_launch_or_restart_clears_pending_initial_launch() {
+        let launched = RuntimeAgentResponse::KernelLaunched {
+            env_source: notebook_protocol::connection::EnvSource::Unknown("test".to_string()),
+        };
+        assert!(should_clear_pending_initial_launch_after_rpc(
+            true, &launched
+        ));
+
+        let restarted = RuntimeAgentResponse::KernelRestarted {
+            env_source: notebook_protocol::connection::EnvSource::Unknown("test".to_string()),
+        };
+        assert!(should_clear_pending_initial_launch_after_rpc(
+            true, &restarted
+        ));
+
+        let failed = RuntimeAgentResponse::KernelLaunchFailed {
+            kind: notebook_protocol::protocol::KernelLaunchFailureKind::PortBind,
+            error: "port busy".to_string(),
+        };
+        assert!(!should_clear_pending_initial_launch_after_rpc(
+            true, &failed
+        ));
+        assert!(!should_clear_pending_initial_launch_after_rpc(
+            false,
+            &RuntimeAgentResponse::Ok
+        ));
     }
 
     /// A `FrameTransport` whose `connect` fails the first `fail_before` calls

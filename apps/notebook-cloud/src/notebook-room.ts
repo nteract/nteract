@@ -2742,11 +2742,6 @@ export class NotebookRoom {
     const updatedAt = new Date().toISOString();
     try {
       await this.markSelectedRuntimeSessionCompletedForIdle(notebookId);
-      this.removeRuntimePeers(notebookId, {
-        code: RUNTIME_IDLE_CLOSE_CODE,
-        reason: RUNTIME_IDLE_CLOSE_REASON,
-        suppressRuntimePeerWatch: true,
-      });
       const materializer = this.materializerFor(notebookId);
       const result = await materializer.reconcileRuntimeIdleTimeout(
         RUNTIME_IDLE_STATUS_MESSAGE,
@@ -2757,6 +2752,11 @@ export class NotebookRoom {
         this.deliverRoomHostFrames(notebookId, result);
         this.scheduleRoomHostCheckpoint(notebookId, materializer, "runtime_idle_timeout");
       }
+      this.removeRuntimePeers(notebookId, {
+        code: RUNTIME_IDLE_CLOSE_CODE,
+        reason: RUNTIME_IDLE_CLOSE_REASON,
+        suppressRuntimePeerWatch: true,
+      });
       this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
       cloudLog("info", "room.runtime_idle_watch.torn_down", {
         notebook_id: notebookId,

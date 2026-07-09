@@ -241,6 +241,39 @@ describe("OwnerComputeIndex lease notifications and GC", () => {
     );
   });
 
+  it("does not block the lease alarm on attach-job failure side effects", async () => {
+    const { state, values, settle, deliverAlarm } = fakeStateWithAlarm();
+    const jobs = new Map<string, WorkstationAttachJobRow>([
+      ["pending-job", attachJob("pending-job", "pending")],
+    ]);
+    let releaseD1!: () => void;
+    const d1Gate = new Promise<void>((resolve) => {
+      releaseD1 = resolve;
+    });
+    const object = new OwnerComputeIndex(state, {
+      DB: fakeAttachJobsDb(jobs, {
+        beforeFailActiveJobs: () => d1Gate,
+      }),
+    } as Env);
+
+    await object.fetch(leaseUpsert("ws-a", "user:dev:alice", 60_000));
+    const stored = values.get("lease:ws-a") as Record<string, unknown>;
+    values.set("lease:ws-a", { ...stored, lease_expires_at: Date.now() - 1 });
+
+    deliverAlarm();
+    const alarmPromise = object.alarm();
+    const alarmResult = await Promise.race([
+      alarmPromise.then(() => "returned" as const),
+      testDelay(20).then(() => "blocked" as const),
+    ]);
+    releaseD1();
+    await alarmPromise;
+    await settle();
+
+    assert.equal(alarmResult, "returned");
+    assert.equal(jobs.get("pending-job")?.status, "failed");
+  });
+
   it("deletes an online lease and leaves no lease for a concurrent sweep to notify", async () => {
     const { state, scheduledAlarm, settle, deliverAlarm } = fakeStateWithAlarm();
     const events = fakeWorkstationEvents();
@@ -372,9 +405,12 @@ function fakeNotebookRooms(): {
   return { namespace: namespace as unknown as DurableObjectNamespace, repairs };
 }
 
-function fakeAttachJobsDb(jobs: Map<string, WorkstationAttachJobRow>): D1Database {
+function fakeAttachJobsDb(
+  jobs: Map<string, WorkstationAttachJobRow>,
+  options: { beforeFailActiveJobs?: () => Promise<void> } = {},
+): D1Database {
   return {
-    prepare: (query: string) => fakeD1Statement(query, jobs),
+    prepare: (query: string) => fakeD1Statement(query, jobs, options),
     exec: async () => d1Result(),
     batch: async <T>(statements: D1PreparedStatement[]) =>
       Promise.all(statements.map((statement) => statement.run<T>())),
@@ -384,6 +420,7 @@ function fakeAttachJobsDb(jobs: Map<string, WorkstationAttachJobRow>): D1Databas
 function fakeD1Statement(
   query: string,
   jobs: Map<string, WorkstationAttachJobRow>,
+  options: { beforeFailActiveJobs?: () => Promise<void> },
 ): D1PreparedStatement {
   let boundValues: D1Value[] = [];
   const statement: D1PreparedStatement = {
@@ -395,6 +432,7 @@ function fakeD1Statement(
     run: async <T>() => d1Result<T>(),
     all: async <T>() => {
       if (query.includes("UPDATE workstation_attach_jobs") && query.includes("RETURNING id")) {
+        await options.beforeFailActiveJobs?.();
         const [updatedAt, finishedAt, errorMessage, ownerPrincipal, workstationId] = boundValues;
         const failed: WorkstationAttachJobRow[] = [];
         for (const job of jobs.values()) {
@@ -421,6 +459,10 @@ function fakeD1Statement(
     },
   };
   return statement;
+}
+
+function testDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function d1Result<T = unknown>(results: T[] = []): D1Result<T> {

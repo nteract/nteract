@@ -3303,6 +3303,60 @@ describe("Worker artifact routes", () => {
     assert.equal(env.DB.workstationAttachJobs.size, 1);
   });
 
+  it("upgrades a deduped resume attach job when the owner explicitly attaches", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "resume-job",
+      notebookId: "attach-demo",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      requestedAt: new Date().toISOString(),
+      trigger: "resume",
+    });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 202);
+    const body = (await attach.json()) as { job: { job_id: string; trigger: string } };
+    assert.equal(body.job.job_id, "resume-job");
+    assert.equal(body.job.trigger, "user_attach");
+    assert.equal(env.DB.workstationAttachJobs.get("resume-job")?.trigger, "user_attach");
+
+    const poll = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(poll.status, 200);
+    const polled = (await poll.json()) as { jobs: Array<{ job_id: string; trigger: string }> };
+    assert.deepEqual(
+      polled.jobs.map((job) => ({ job_id: job.job_id, trigger: job.trigger })),
+      [{ job_id: "resume-job", trigger: "user_attach" }],
+    );
+  });
+
   it("switches active workstation attach jobs to the newly attached workstation", async () => {
     let runtimeStateRequest: Request | undefined;
     const env = fakeEnv({
@@ -9524,6 +9578,29 @@ class FakeD1Statement implements D1PreparedStatement {
         }
       }
       return okResult(undefined, { changes });
+    } else if (
+      this.query.includes("UPDATE workstation_attach_jobs") &&
+      this.query.includes("SET trigger = 'user_attach'")
+    ) {
+      const [updatedAt, jobId, ownerPrincipal, workstationId] = this.values as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      const job = this.db.workstationAttachJobs.get(jobId);
+      if (
+        job &&
+        job.owner_principal === ownerPrincipal &&
+        job.workstation_id === workstationId &&
+        job.trigger === "resume" &&
+        isActiveWorkstationAttachJobStatus(job.status)
+      ) {
+        job.trigger = "user_attach";
+        job.updated_at = updatedAt;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (
       this.query.includes("UPDATE workstation_attach_jobs") &&
       this.query.includes("SET status = 'cancelled'")

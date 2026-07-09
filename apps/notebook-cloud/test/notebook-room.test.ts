@@ -3845,6 +3845,13 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
           ...noopMaterializedResult(),
           changed: true,
           runtime_state_changed: true,
+          outbound: [
+            {
+              peer_id: "rt",
+              frame_type: FrameType.RUNTIME_STATE_SYNC,
+              payload: new Uint8Array([7, 8, 9]),
+            },
+          ],
         };
       },
       getWorkstationAttachment: async () => ({
@@ -3869,6 +3876,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     await state.drain();
 
     assert.equal(idleReconciles, 1);
+    assert.deepEqual([...runtimeSocket.sent[0]], [FrameType.RUNTIME_STATE_SYNC, 7, 8, 9]);
     assert.equal(runtimeSocket.closed, true);
     assert.equal(runtimeSocket.closeReason, "runtime idle timeout");
     assert.equal(viewerSocket.closed, false, "viewer presence must not defer idle teardown");

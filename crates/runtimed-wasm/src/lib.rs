@@ -866,9 +866,9 @@ impl RoomHostHandle {
     pub fn reconcile_runtime_idle_timeout(
         &mut self,
         reason: &str,
-        updated_at: &str,
+        _updated_at: &str,
     ) -> Result<JsValue, JsError> {
-        let result = self.reconcile_runtime_idle_timeout_inner(reason, updated_at)?;
+        let result = self.reconcile_runtime_idle_timeout_inner(reason)?;
         serialize_to_js(&result)
             .map_err(|e| JsError::new(&format!("serialize runtime idle timeout result: {e}")))
     }
@@ -1871,7 +1871,6 @@ impl RoomHostHandle {
     fn reconcile_runtime_idle_timeout_inner(
         &mut self,
         reason: &str,
-        updated_at: &str,
     ) -> Result<RoomHostFrameResult, JsError> {
         let state = self.state_doc.read_state();
         let activity = runtime_execution_activity(&state);
@@ -1895,7 +1894,6 @@ impl RoomHostHandle {
         if let Some(attachment) = runtime_idle_timeout_workstation_attachment(
             self.state_doc.workstation_attachment(),
             reason,
-            updated_at,
         ) {
             self.state_doc
                 .set_workstation_attachment(Some(&attachment))
@@ -2018,12 +2016,10 @@ fn runtime_execution_activity(state: &RuntimeState) -> RuntimeExecutionActivity 
 fn runtime_idle_timeout_workstation_attachment(
     current: Option<WorkstationAttachmentState>,
     reason: &str,
-    updated_at: &str,
 ) -> Option<WorkstationAttachmentState> {
     let mut attachment = current?;
     attachment.status = "idle".to_string();
     attachment.status_message = Some(reason.to_string());
-    attachment.updated_at = Some(updated_at.to_string());
     Some(attachment)
 }
 
@@ -6168,7 +6164,6 @@ mod tests {
         let result = host
             .reconcile_runtime_idle_timeout_inner(
                 "Compute stopped after 30 minutes without queued or active execution.",
-                "2026-07-08T00:30:00.000Z",
             )
             .expect("idle reconcile");
 
@@ -6194,7 +6189,40 @@ mod tests {
                 .workstation
                 .as_ref()
                 .and_then(|ws| ws.updated_at.as_deref()),
-            Some("2026-07-08T00:30:00.000Z")
+            Some("2026-06-07T00:00:00.000Z"),
+            "idle reconciliation preserves the original publish timestamp"
+        );
+    }
+
+    #[test]
+    fn reconcile_runtime_idle_timeout_keeps_session_and_timestamp_for_monotonic_guard() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .expect("set idle lifecycle");
+        let mut current = workstation_attachment_fixture();
+        current.runtime_session_id = Some("job-current".to_string());
+        current.updated_at = Some("2026-06-07T00:00:02.000Z".to_string());
+        host.set_workstation_attachment_inner(Some(&current))
+            .expect("seed attachment");
+
+        host.reconcile_runtime_idle_timeout_inner(
+            "Compute stopped after 30 minutes without queued or active execution.",
+        )
+        .expect("idle reconcile");
+
+        let state = host.state_doc.read_state();
+        let attachment = state.workstation.as_ref().expect("attachment remains");
+        assert_eq!(attachment.status, "idle");
+        assert_eq!(
+            attachment.runtime_session_id.as_deref(),
+            Some("job-current")
+        );
+        assert_eq!(
+            attachment.updated_at.as_deref(),
+            Some("2026-06-07T00:00:02.000Z"),
+            "internal idle rewrite must not outrank a newer cross-session publish"
         );
     }
 
@@ -6205,7 +6233,6 @@ mod tests {
         let result = host
             .reconcile_runtime_idle_timeout_inner(
                 "Compute stopped after 30 minutes without queued or active execution.",
-                "2026-07-08T00:30:00.000Z",
             )
             .expect("idle reconcile");
 
