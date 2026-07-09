@@ -1039,7 +1039,7 @@ export async function registerWorkstation(
        created_at,
        updated_at,
        last_seen_at
-     ) VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(owner_principal, workstation_id) DO UPDATE SET
        display_name = excluded.display_name,
        provider = excluded.provider,
