@@ -31,6 +31,8 @@ export interface WorkstationSpecCellView {
   key: string;
   label: string;
   value: string;
+  detail: string | null;
+  tone: "default" | "attention";
   /** uv magenta is env-label ink only, never a page accent. */
   uvInk: boolean;
 }
@@ -63,6 +65,8 @@ export interface WorkstationsPageItemView {
   kernelCountLabel: string | null;
   detailKernelCountLabel: string | null;
   hasLiveKernels: boolean;
+  outdatedLabel: string | null;
+  latestBuildLabel: string | null;
   lastSeenLabel: string | null;
   specs: readonly WorkstationSpecCellView[];
   /** null means this host has no kernel inventory; the section does not render. */
@@ -104,12 +108,14 @@ function projectWorkstationsPageItem(
   const spineStatus = workstationSpineStatus(workstation.status);
   const statusLabel = workstationSpineStatusLabel(spineStatus);
   const kernels = facts?.kernels ?? null;
+  const latestBuildLabel = workstationLatestBuildLabel(workstation);
   const detailContextLabel =
     joinFactLabels([facts?.kindLabel ?? null, facts?.osLabel ?? null]) ?? null;
   const rowSublineLabel =
     joinFactLabels([
       facts?.kindLabel ?? null,
       spineStatus === "attention" ? (workstation.statusMessage ?? statusLabel) : statusLabel,
+      latestBuildLabel,
     ]) ?? statusLabel;
 
   return {
@@ -127,6 +133,8 @@ function projectWorkstationsPageItem(
     hasLiveKernels: Boolean(
       kernels?.some((kernel) => kernel.status === "executing" || kernel.status === "ready"),
     ),
+    outdatedLabel: latestBuildLabel ? "Update available" : null,
+    latestBuildLabel,
     lastSeenLabel: workstationLastSeenLabel(spineStatus, workstation.updatedAt, nowMs),
     specs: projectWorkstationSpecCells(workstation, facts),
     kernels,
@@ -151,7 +159,13 @@ function projectWorkstationSpecCells(
     cells.push(specCell("memory", "Memory", memoryValue));
   }
   if (workstation.installedBuild) {
-    cells.push(specCell("build", "Build", workstation.installedBuild));
+    const latestBuildLabel = workstationLatestBuildLabel(workstation);
+    cells.push(
+      specCell("build", "Build", workstation.installedBuild, {
+        detail: latestBuildLabel,
+        tone: latestBuildLabel ? "attention" : "default",
+      }),
+    );
   }
   if (workstation.channel) {
     cells.push(specCell("channel", "Channel", workstation.channel));
@@ -174,8 +188,28 @@ function projectWorkstationSpecCells(
   return cells;
 }
 
-function specCell(key: string, label: string, value: string): WorkstationSpecCellView {
-  return { key, label, value, uvInk: value.trim().toLowerCase() === "uv" };
+function specCell(
+  key: string,
+  label: string,
+  value: string,
+  options: { detail?: string | null; tone?: WorkstationSpecCellView["tone"] } = {},
+): WorkstationSpecCellView {
+  return {
+    key,
+    label,
+    value,
+    detail: options.detail ?? null,
+    tone: options.tone ?? "default",
+    uvInk: value.trim().toLowerCase() === "uv",
+  };
+}
+
+function workstationLatestBuildLabel(
+  workstation: NotebookRegisteredWorkstationProjection,
+): string | null {
+  return workstation.isOutdated && workstation.latestBuild
+    ? `Latest ${workstation.latestBuild}`
+    : null;
 }
 
 export function workstationSpineStatus(

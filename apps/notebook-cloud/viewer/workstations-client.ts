@@ -300,6 +300,8 @@ function normalizeCloudWorkstation(value: unknown): NotebookRegisteredWorkstatio
     environmentPolicy: scalarString(raw.environment_policy),
     installedBuild: scalarString(raw.installed_build),
     channel: scalarString(raw.channel),
+    latestBuild: scalarString(raw.latest_build),
+    isOutdated: raw.is_outdated === true || raw.isOutdated === true,
     workingDirectory: scalarString(raw.working_directory),
     cpuCount: scalarNumber(raw.cpu_count),
     memoryBytes: scalarNumber(raw.memory_bytes),

@@ -49,6 +49,7 @@ import {
 import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
 import { canonicalAccountPrincipalForProfile } from "../src/sharing-storage.ts";
 import type { PrincipalAccountLinkRow } from "../src/storage.ts";
+import { clearLatestWorkstationBuildCacheForTests } from "../src/latest-workstation-builds.ts";
 import type {
   WorkstationCredentialRow,
   WorkstationPairingCodeRow,
@@ -2514,6 +2515,135 @@ describe("Worker artifact routes", () => {
     assert.equal(body.workstations[0]?.installed_build, "0.1.0+abc123");
     assert.equal(body.workstations[0]?.channel, "nightly");
     assert.equal(body.workstations[0]?.is_default, true);
+  });
+
+  it("advertises latest workstation builds and marks outdated rows", async (t) => {
+    clearLatestWorkstationBuildCacheForTests();
+    const latestNightly = "2.6.2-nightly.202607091009";
+    const latestStable = "2.6.2";
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_WORKSTATION_LATEST_BUILD_BASE_URL:
+        "https://updates.test/nteract/releases/download",
+    });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-old",
+      installedBuild: "2.6.2-nightly.202607091008+abc123",
+      channel: "nightly",
+    });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-new",
+      installedBuild: "2.6.2-nightly.202607091010+abc123",
+      channel: "nightly",
+    });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-old-agent",
+      installedBuild: null,
+      channel: "nightly",
+    });
+
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/nightly-latest/latest.json")) {
+        return jsonResponse({ version: latestNightly, pub_date: "2026-07-09T10:43:33Z" });
+      }
+      if (url.endsWith("/stable-latest/latest.json")) {
+        return jsonResponse({ version: latestStable, pub_date: "2026-07-08T10:43:33Z" });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    try {
+      const list = await worker.fetch(
+        new Request("http://localhost/api/workstations", {
+          headers: {
+            "X-Operator": "browser:tab",
+            "X-Scope": "owner",
+            "X-User": "alice",
+          },
+        }),
+        env,
+        fakeContext(),
+      );
+
+      assert.equal(list.status, 200);
+      const body = (await list.json()) as {
+        latest_builds: Record<string, string | null>;
+        workstations: Array<Record<string, unknown>>;
+      };
+      assert.deepEqual(body.latest_builds, {
+        stable: latestStable,
+        nightly: latestNightly,
+      });
+      const byId = new Map(
+        body.workstations.map((workstation) => [workstation.workstation_id, workstation]),
+      );
+      assert.equal(byId.get("ws-old")?.latest_build, latestNightly);
+      assert.equal(byId.get("ws-old")?.is_outdated, true);
+      assert.equal(byId.get("ws-new")?.latest_build, latestNightly);
+      assert.equal(byId.get("ws-new")?.is_outdated, false);
+      assert.equal(byId.get("ws-old-agent")?.latest_build, latestNightly);
+      assert.equal(byId.get("ws-old-agent")?.is_outdated, false);
+    } finally {
+      clearLatestWorkstationBuildCacheForTests();
+    }
+  });
+
+  it("degrades rejected latest workstation build fetches to unknown on list routes", async (t) => {
+    clearLatestWorkstationBuildCacheForTests();
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_WORKSTATION_LATEST_BUILD_BASE_URL:
+        "https://updates.test/nteract/releases/download",
+    });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-nightly",
+      installedBuild: "2.6.1-nightly.202607091008+abc123",
+      channel: "nightly",
+    });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-stable",
+      installedBuild: "2.6.1+abc123",
+      channel: "stable",
+    });
+
+    t.mock.method(globalThis, "fetch", async () => {
+      throw new Error("latest build source unavailable");
+    });
+
+    try {
+      const list = await worker.fetch(
+        new Request("http://localhost/api/workstations", {
+          headers: {
+            "X-Operator": "browser:tab",
+            "X-Scope": "owner",
+            "X-User": "alice",
+          },
+        }),
+        env,
+        fakeContext(),
+      );
+
+      assert.equal(list.status, 200);
+      const body = (await list.json()) as {
+        latest_builds: Record<string, string | null>;
+        workstations: Array<Record<string, unknown>>;
+      };
+      assert.deepEqual(body.latest_builds, {
+        stable: null,
+        nightly: null,
+      });
+      assert.equal(body.workstations.length, 2);
+      for (const workstation of body.workstations) {
+        assert.equal(workstation.latest_build, null);
+        assert.equal(workstation.is_outdated, false);
+      }
+    } finally {
+      clearLatestWorkstationBuildCacheForTests();
+    }
   });
 
   it("keeps old workstation registration payloads compatible", async () => {
@@ -8699,6 +8829,7 @@ interface FakeEnv extends Env {
 function fakeEnv(overrides: Partial<Env> = {}): FakeEnv {
   const env: FakeEnv = {
     DEPLOYMENT_ENV: "development",
+    NOTEBOOK_CLOUD_WORKSTATION_LATEST_BUILD_BASE_URL: "disabled",
     DB: new FakeD1(),
     NOTEBOOK_SNAPSHOTS: new FakeR2Bucket(),
     NOTEBOOK_ROOMS: {
