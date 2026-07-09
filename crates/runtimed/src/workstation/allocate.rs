@@ -88,6 +88,23 @@ pub fn plan_current_python_allocation(
     }
 }
 
+/// Everything a `current_python` allocation needs, by name: the room to attach
+/// to (`target`, `auth`), the interpreter and workspace facts the launch
+/// carries (`python_path`, `notebook_path`, `working_dir`, `env_vars`), the
+/// agent's blob store root (`blob_root`), and when the deferred launch applies
+/// (`launch_trigger`).
+#[derive(Debug, Clone)]
+pub struct CurrentPythonLaunchSpec {
+    pub target: RoomTarget,
+    pub auth: CloudAuth,
+    pub python_path: PathBuf,
+    pub notebook_path: Option<String>,
+    pub working_dir: Option<PathBuf>,
+    pub env_vars: HashMap<String, String>,
+    pub blob_root: PathBuf,
+    pub launch_trigger: LaunchTrigger,
+}
+
 /// Allocate a `current_python` runtime for a cloud room and run it to
 /// completion: reserve kernel ports, plan the allocation, and drive
 /// [`run_cloud_runtime_agent`] with launch-on-attach.
@@ -98,25 +115,15 @@ pub fn plan_current_python_allocation(
 ///
 /// Deferred (decision 42): the live attach against a real preview room
 /// (staging creds + deployed worker + the `runtime_peer` ACL row).
-#[allow(clippy::too_many_arguments)]
-pub async fn allocate_current_python_runtime(
-    target: RoomTarget,
-    auth: CloudAuth,
-    python_path: PathBuf,
-    notebook_path: Option<String>,
-    working_dir: Option<PathBuf>,
-    env_vars: HashMap<String, String>,
-    blob_root: PathBuf,
-    launch_trigger: LaunchTrigger,
-) -> anyhow::Result<()> {
+pub async fn allocate_current_python_runtime(spec: CurrentPythonLaunchSpec) -> anyhow::Result<()> {
     let reservation = crate::kernel_ports::reserve_kernel_ports().await?;
     let allocation = plan_current_python_allocation(
-        &target,
-        auth,
-        python_path,
-        notebook_path,
-        working_dir,
-        env_vars,
+        &spec.target,
+        spec.auth,
+        spec.python_path,
+        spec.notebook_path,
+        spec.working_dir,
+        spec.env_vars,
         reservation.ports(),
     );
     // Hold the reservation for the agent's lifetime so the ports stay claimed
@@ -125,8 +132,8 @@ pub async fn allocate_current_python_runtime(
     crate::runtime_agent::run_cloud_runtime_agent(
         allocation.config,
         allocation.operator,
-        blob_root,
-        Some((launch_trigger, allocation.initial_launch)),
+        spec.blob_root,
+        Some((spec.launch_trigger, allocation.initial_launch)),
     )
     .await
 }
