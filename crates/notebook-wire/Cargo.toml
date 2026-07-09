@@ -1,6 +1,6 @@
 [package]
 name = "notebook-wire"
-version = "0.3.2"
+version = "0.3.3"
 edition.workspace = true
 description = "Low-level notebook wire constants, frame limits, and session-control types"
 repository.workspace = true
