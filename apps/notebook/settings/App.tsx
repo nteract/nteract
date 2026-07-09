@@ -220,7 +220,7 @@ export function FontFamilyPicker({
                     ) : null}
                   </CommandGroup>
                   {visibleOptions.length > 0 ? (
-                    <CommandGroup heading="Fonts">
+                    <CommandGroup heading="System fonts">
                       {visibleOptions.map((fontFamily) => {
                         const selected = currentSingleFamily === fontFamily;
                         const cssValue = fontFamilyNameToCssValue(fontFamily);
