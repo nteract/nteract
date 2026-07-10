@@ -83,7 +83,8 @@ where
 
     let mut notebook_doc_phase = notebook_protocol::protocol::NotebookDocPhaseWire::Pending;
     let mut runtime_state_phase = notebook_protocol::protocol::RuntimeStatePhaseWire::Pending;
-    let mut initial_load_phase = if needs_load.is_some() {
+    let room_load_in_progress = room.is_loading();
+    let mut initial_load_phase = if needs_load.is_some() || room_load_in_progress {
         notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
     } else {
         notebook_protocol::protocol::InitialLoadPhaseWire::NotNeeded
@@ -102,7 +103,7 @@ where
     // Fresh file-backed rooms stream the file itself as the initial doc sync.
     // Sending an empty-doc handshake first leaves Automerge with an in-flight
     // message and can collapse the visible cell batches into one final update.
-    let defer_initial_doc_sync_for_file_load = if needs_load.is_some() {
+    let defer_initial_doc_sync_for_file_load = if needs_load.is_some() || room_load_in_progress {
         let doc = room.doc.read().await;
         doc.cell_count() == 0
     } else {
@@ -444,23 +445,6 @@ where
             // Another peer changed the document — push update to this client
             _ = changed_rx.recv() => {
                 forward_notebook_doc_broadcast(room, &mut peer_state, &peer_writer).await?;
-
-                if matches!(
-                    initial_load_phase,
-                    notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
-                ) && !room.is_loading()
-                {
-                    initial_load_phase =
-                        notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
-                    if client_protocol_version >= 3 {
-                        queue_session_status(
-                            &peer_writer,
-                            notebook_doc_phase,
-                            runtime_state_phase,
-                            initial_load_phase.clone(),
-                        )?;
-                    }
-                }
             }
 
             // RuntimeStateDoc changed — push update to this client

@@ -1720,6 +1720,7 @@ fn test_room_with_path_and_store(
         doc: Arc::new(RwLock::new(doc)),
         broadcasts: RoomBroadcasts::default(),
         persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
+        initial_load: RoomInitialLoad::default(),
         file_binding: NotebookFileBinding::new(Some(notebook_path.clone()), false),
         identity: RoomIdentity::new(persist_path),
         connections: RoomConnections::default(),
