@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -7,6 +7,7 @@ import {
   NTERACT_BOKEH_SESSION_MIME_TYPE,
 } from "@/components/outputs/bokeh-mime";
 import type { RendererProps } from "@/lib/renderer-registry";
+import { NTERACT_BOKEH_SESSION_STATE } from "@/components/isolated/rpc-methods";
 import { install } from "../bokeh-renderer";
 
 function installBokehRenderer(
@@ -276,7 +277,17 @@ describe("Bokeh renderer plugin", () => {
       checkpoint: { revision: 0, document: { roots: [{ id: "root-1" }] }, buffers: [] },
       patchTail: [],
     }));
-    const { NativeRenderer } = installBokehRenderer({ requestHost });
+    const notifications = new Map<string, (params: unknown) => void>();
+    const subscribeHostNotification = vi.fn(
+      (method: string, listener: (params: unknown) => void) => {
+        notifications.set(method, listener);
+        return () => notifications.delete(method);
+      },
+    );
+    const { NativeRenderer } = installBokehRenderer({
+      requestHost,
+      subscribeHostNotification,
+    });
     const { container } = render(
       <NativeRenderer
         data={{
@@ -307,5 +318,16 @@ describe("Bokeh renderer plugin", () => {
       sessionId: "session-1",
       outputId: "output-1",
     });
+
+    await act(async () => {
+      notifications.get(NTERACT_BOKEH_SESSION_STATE)?.({
+        sessionId: "session-1",
+        outputId: "output-1",
+        status: "disconnected",
+        headRevision: 0,
+      });
+    });
+    expect(container).toHaveTextContent("Disconnected");
+    expect(container.querySelector('[data-testid="native-bokeh-root"]')).not.toBeNull();
   });
 });

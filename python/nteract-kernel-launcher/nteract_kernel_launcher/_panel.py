@@ -99,7 +99,6 @@ class _PanelBootstrapFilter:
     Panel's own view registry. Other HoloViews and Panel outputs pass through.
     """
 
-    _nteract_installed = True
     _nteract_panel_bootstrap_filter = True
 
     def __init__(self) -> None:

@@ -136,6 +136,23 @@ describe("BokehSessionBridgeManager", () => {
     expect(snapshot.patchTail[0].revision).toBe(1);
   });
 
+  it("rejects a replay checkpoint owned by another session", async () => {
+    const { blobs, manager } = makeHarness();
+    blobs.set("checkpoint", () =>
+      jsonResponse({
+        schema_version: 1,
+        session_id: "another-session",
+        revision: 0,
+        document: { roots: [{ id: "root-1" }] },
+        buffers: [],
+      }),
+    );
+
+    await expect(
+      manager.openSession({ sessionId: "session-1", outputId: "output-1" }),
+    ).rejects.toThrow("another session");
+  });
+
   it("validates output ownership before applying a typed patch", async () => {
     const { manager, transport } = makeHarness();
 
@@ -178,6 +195,12 @@ describe("BokehSessionBridgeManager", () => {
         base_revision: 1,
         revision: 2,
         server_patch: { patch: { events: [] }, buffers: [] },
+        checkpoint: {
+          session_id: "session-1",
+          revision: 2,
+          document: { roots: [{ id: "root-1" }] },
+          buffers: [],
+        },
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -190,9 +213,63 @@ describe("BokehSessionBridgeManager", () => {
           sessionId: "session-1",
           transactionId: "transaction-2",
           revision: 2,
+          checkpoint: expect.objectContaining({ revision: 2 }),
         }),
       },
     });
+    manager.dispose();
+  });
+
+  it("rejects a live checkpoint whose identity does not match its event", async () => {
+    const { frame, manager, patchListener } = makeHarness();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(frame.send).mockClear();
+
+    patchListener()?.({
+      event: "bokeh_session_patch",
+      patch: {
+        session_id: "session-1",
+        transaction_id: "transaction-2",
+        base_revision: 1,
+        revision: 2,
+        checkpoint: {
+          session_id: "another-session",
+          revision: 2,
+          document: { roots: [{ id: "root-1" }] },
+          buffers: [],
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    patchListener()?.({
+      event: "bokeh_session_patch",
+      patch: {
+        session_id: "session-1",
+        transaction_id: "transaction-3",
+        base_revision: 1,
+        revision: 2,
+        checkpoint: {
+          session_id: "session-1",
+          revision: 3,
+          document: { roots: [{ id: "root-1" }] },
+          buffers: [],
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(frame.send).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenNthCalledWith(
+      1,
+      "[bokeh-session] Failed to deliver document patch:",
+      expect.objectContaining({ message: expect.stringContaining("another session") }),
+    );
+    expect(consoleError).toHaveBeenNthCalledWith(
+      2,
+      "[bokeh-session] Failed to deliver document patch:",
+      expect.objectContaining({ message: expect.stringContaining("revision") }),
+    );
     manager.dispose();
   });
 });

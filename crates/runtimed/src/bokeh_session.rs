@@ -118,6 +118,28 @@ pub(crate) async fn ingest_kernel_event(
         .filter(|value| !value.is_null())
         .map(|value| parse_serialization(value, "document", raw_buffers))
         .transpose()?;
+
+    // Reject known stale/gapped events before publishing content-addressed
+    // artifacts. The transactional checks below remain authoritative in case
+    // state advances between this read and the RuntimeStateDoc write.
+    let projected_session = state
+        .read(|state_doc| state_doc.get_bokeh_session(&session_id))?
+        .ok_or_else(|| anyhow::anyhow!("unknown Bokeh session {session_id}"))?;
+    anyhow::ensure!(
+        projected_session.kernel_id == kernel_id
+            && projected_session.status == BokehSessionStatus::Connected,
+        "Bokeh session {session_id} is not connected to kernel {kernel_id}"
+    );
+    if revision <= projected_session.head_revision {
+        return Ok(BokehEventIngest::Duplicate);
+    }
+    if checkpoint_serialization.is_none()
+        && (base_revision != projected_session.head_revision
+            || projected_session.patch_tail.len() >= BOKEH_PATCH_TAIL_HARD_LIMIT)
+    {
+        return Ok(BokehEventIngest::ResyncNeeded { session_id });
+    }
+
     let (checkpoint, checkpoint_ref) = store_event_checkpoint(
         checkpoint_serialization,
         &session_id,
@@ -358,6 +380,8 @@ async fn store_event_checkpoint(
     };
     let buffers = store_buffers(&serialization.buffers, blob_store, blob_publisher).await?;
     let payload = BokehSessionCheckpointPayload {
+        session_id: session_id.to_string(),
+        revision,
         document: serialization.content,
         buffers,
     };
@@ -1009,6 +1033,7 @@ mod tests {
             .expect("session");
         assert_eq!(session.head_revision, 0);
         assert!(session.patch_tail.is_empty());
+        assert!(!blob_store.root().exists());
         assert!(matches!(
             broadcast_rx.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)

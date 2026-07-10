@@ -33,6 +33,8 @@ export interface BokehSessionPatchPayload {
 }
 
 export interface BokehSessionCheckpointPayload {
+  session_id: string;
+  revision: number;
   document: Record<string, unknown>;
   buffers: BokehSessionBufferRef[];
 }

@@ -26,6 +26,7 @@ export interface BokehSessionOutputBinding {
 }
 
 interface CheckpointArtifact {
+  sessionId: string;
   revision: number;
   document: Record<string, unknown>;
   buffers: BokehSessionBufferRef[];
@@ -88,22 +89,35 @@ function patchEvent(value: unknown): BokehSessionPatchEvent {
   if (!isRecord(value)) {
     throw new Error("Bokeh session patch event must be an object");
   }
+  const sessionId = requiredString(value, "session_id");
+  const baseRevision = requiredRevision(value, "base_revision");
+  const revision = requiredRevision(value, "revision");
   const checkpointValue = value.checkpoint;
   let checkpoint: BokehSessionPatchEvent["checkpoint"];
   if (checkpointValue != null) {
     if (!isRecord(checkpointValue) || !isRecord(checkpointValue.document)) {
       throw new Error("Bokeh session event checkpoint is invalid");
     }
+    const checkpointSessionId = requiredString(checkpointValue, "session_id");
+    const checkpointRevision = requiredRevision(checkpointValue, "revision");
+    if (checkpointSessionId !== sessionId) {
+      throw new Error("Bokeh session event checkpoint belongs to another session");
+    }
+    if (checkpointRevision !== revision) {
+      throw new Error("Bokeh session event checkpoint revision does not match its event");
+    }
     checkpoint = {
+      session_id: checkpointSessionId,
+      revision: checkpointRevision,
       document: checkpointValue.document,
       buffers: bufferRefs(checkpointValue.buffers),
     };
   }
   return {
-    session_id: requiredString(value, "session_id"),
+    session_id: sessionId,
     transaction_id: requiredString(value, "transaction_id"),
-    base_revision: requiredRevision(value, "base_revision"),
-    revision: requiredRevision(value, "revision"),
+    base_revision: baseRevision,
+    revision,
     client_patch: patchPayload(value.client_patch),
     server_patch: patchPayload(value.server_patch),
     checkpoint,
@@ -302,9 +316,16 @@ export class BokehSessionBridgeManager {
   private async resolvePatchEvent(
     event: BokehSessionPatchEvent,
   ): Promise<NteractBokehResolvedPatchEvent> {
+    if (
+      event.checkpoint &&
+      (event.checkpoint.session_id !== event.session_id ||
+        event.checkpoint.revision !== event.revision)
+    ) {
+      throw new Error("Bokeh session event checkpoint identity does not match its event");
+    }
     const checkpoint = event.checkpoint
       ? {
-          revision: event.revision,
+          revision: event.checkpoint.revision,
           document: event.checkpoint.document,
           buffers: await this.resolveBuffers(event.checkpoint.buffers),
         }
@@ -333,10 +354,14 @@ export class BokehSessionBridgeManager {
       throw new Error("Bokeh checkpoint artifact is invalid");
     }
     const checkpoint: CheckpointArtifact = {
+      sessionId: requiredString(checkpointValue, "session_id"),
       revision: requiredRevision(checkpointValue, "revision"),
       document: checkpointValue.document,
       buffers: bufferRefs(checkpointValue.buffers),
     };
+    if (checkpoint.sessionId !== sessionId) {
+      throw new Error("Bokeh checkpoint belongs to another session");
+    }
     if (checkpoint.revision !== checkpointRef.revision) {
       throw new Error("Bokeh checkpoint revision does not match RuntimeStateDoc");
     }
@@ -384,7 +409,7 @@ export class BokehSessionBridgeManager {
         if (this.disposed) return;
         const binding = this.bindings.get(sessionId);
         if (!binding) return;
-        const event = await this.resolvePatchEvent(broadcast.patch);
+        const event = await this.resolvePatchEvent(patchEvent(broadcast.patch));
         if (this.disposed || !this.bindings.has(sessionId)) return;
         this.frame.send({
           type: "bokeh_session_patch",

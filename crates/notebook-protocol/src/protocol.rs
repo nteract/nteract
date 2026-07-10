@@ -531,6 +531,8 @@ pub struct BokehSessionPatchPayload {
 /// Full authoritative document replacement used after a partial patch error.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BokehSessionCheckpointPayload {
+    pub session_id: String,
+    pub revision: u64,
     pub document: serde_json::Value,
     #[serde(default)]
     pub buffers: Vec<BokehSessionBufferRef>,
@@ -1921,6 +1923,8 @@ mod tests {
                 }),
                 server_patch: None,
                 checkpoint: Some(BokehSessionCheckpointPayload {
+                    session_id: "session-1".to_string(),
+                    revision: 5,
                     document: serde_json::json!({"version": "3.9.1", "roots": []}),
                     buffers: Vec::new(),
                 }),

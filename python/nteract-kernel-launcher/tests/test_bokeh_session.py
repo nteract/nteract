@@ -65,6 +65,25 @@ def test_install_registers_panel_formatter_without_importing_panel():
     )
 
 
+def test_panel_bootstrap_filter_does_not_displace_buffer_hooks():
+    class FakePub:
+        def __init__(self):
+            self._hooks = []
+
+        def register_hook(self, hook):
+            self._hooks.append(hook)
+
+    ip = SimpleNamespace(display_pub=FakePub(), displayhook=FakePub())
+
+    _panel._install_bootstrap_filter(ip)
+    _buffer_hook.install(ip)
+
+    for publisher in (ip.display_pub, ip.displayhook):
+        assert len(publisher._hooks) == 2
+        assert getattr(publisher._hooks[0], "_nteract_panel_bootstrap_filter", False)
+        assert publisher._hooks[1] is _buffer_hook.buffer_hook
+
+
 def test_panel_bootstrap_filter_suppresses_legacy_autoloader():
     filter_bootstrap = _panel._PanelBootstrapFilter()
     code = r"const PN_RE = /^https:\/\/cdn\.holoviz\.org\/panel\/[^/]+\/dist\/panel/i;"

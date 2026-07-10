@@ -429,10 +429,14 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
   const controllerRef = useRef<BokehSessionController | null>(null);
   const [status, setStatus] = useState<NteractBokehSessionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hasMountedDocument, setHasMountedDocument] = useState(false);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    setStatus(null);
+    setError(null);
+    setHasMountedDocument(false);
     if (!isBokehSessionMimePayload(data)) {
       setStatus("error");
       setError("Invalid Bokeh document session payload");
@@ -450,8 +454,6 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
     }
 
     let cancelled = false;
-    setStatus(null);
-    setError(null);
     void (async () => {
       await loadNativeResources(data.resources);
       if (cancelled) return;
@@ -467,12 +469,17 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
           setStatus(nextStatus);
           setError(nextError ?? null);
         },
-        onLayout: requestHostResize,
+        onLayout: () => {
+          if (cancelled) return;
+          setHasMountedDocument(container.childNodes.length > 0);
+          requestHostResize();
+        },
       });
       controllerRef.current = controller;
       await controller.start();
     })().catch((renderError) => {
       if (!cancelled) {
+        setHasMountedDocument(container.childNodes.length > 0);
         setStatus("error");
         setError(renderError instanceof Error ? renderError.message : String(renderError));
       }
@@ -492,12 +499,12 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
   return (
     <div className="relative" data-slot="bokeh-session-output">
       <div ref={containerRef} />
-      {disconnected && containerRef.current?.childNodes.length ? (
+      {disconnected && hasMountedDocument ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background/60 text-sm font-medium text-foreground backdrop-blur-[1px]">
           <span title={error ?? undefined}>{statusLabel}</span>
         </div>
       ) : null}
-      {error && !containerRef.current?.childNodes.length ? (
+      {error && !hasMountedDocument ? (
         <pre className="whitespace-pre-wrap rounded border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
           {error}
         </pre>
