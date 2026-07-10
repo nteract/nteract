@@ -31,6 +31,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FORMATTED_CELL_ID_RE = re.compile(r"^⏺ ━━━ cell (\S+) \(", re.MULTILINE)
@@ -86,6 +87,22 @@ def connect_cell_ids(response: dict[str, Any]) -> tuple[list[str], str]:
     if isinstance(cells, str):
         return FORMATTED_CELL_ID_RE.findall(cells), "formatted"
     return [], "missing"
+
+
+def normalize_notebook_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(UUID(value))
+    except ValueError:
+        return None
+
+
+def notebook_id_arg(value: str) -> str:
+    normalized = normalize_notebook_id(value)
+    if normalized is None:
+        raise argparse.ArgumentTypeError("notebook ID must be a UUID")
+    return normalized
 
 
 class McpProcess:
@@ -256,19 +273,6 @@ def create_fixture(root: Path, cell_count: int) -> tuple[Path, list[str]]:
     return path, cell_ids
 
 
-def notebook_cell_ids(path: Path) -> list[str]:
-    try:
-        notebook = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    cells = notebook.get("cells") if isinstance(notebook, dict) else None
-    if not isinstance(cells, list):
-        return []
-    return [
-        cell["id"] for cell in cells if isinstance(cell, dict) and isinstance(cell.get("id"), str)
-    ]
-
-
 async def daemon_status(runt_exe: Path, env: dict[str, str]) -> dict[str, Any]:
     process = await asyncio.create_subprocess_exec(
         str(runt_exe),
@@ -310,7 +314,7 @@ def summarize_connect(
     elapsed_ms: float,
     result: dict[str, Any] | None,
     error: str | None,
-    expected_cell_ids: list[str],
+    fixture_cell_ids: list[str] | None,
 ) -> dict[str, Any]:
     if error is not None or result is None:
         return {"elapsed_ms": round(elapsed_ms, 1), "ok": False, "error": error}
@@ -321,7 +325,11 @@ def summarize_connect(
     cells_text = response_object.get("cells")
     response_cell_ids, response_kind = connect_cell_ids(response_object)
     response_cell_id_set = set(response_cell_ids)
-    present_ids = [cell_id for cell_id in expected_cell_ids if cell_id in response_cell_id_set]
+    present_fixture_ids = (
+        None
+        if fixture_cell_ids is None
+        else [cell_id for cell_id in fixture_cell_ids if cell_id in response_cell_id_set]
+    )
     if isinstance(cells_text, str):
         cells_bytes = len(cells_text.encode("utf-8"))
     elif isinstance(cells_text, list):
@@ -329,12 +337,8 @@ def summarize_connect(
     else:
         cells_bytes = 0
     is_error = bool(result.get("isError"))
-    notebook_id = response_object.get("notebook_id")
-    response_valid = (
-        isinstance(notebook_id, str)
-        and bool(notebook_id)
-        and response_kind in {"formatted", "structured"}
-    )
+    notebook_id = normalize_notebook_id(response_object.get("notebook_id"))
+    response_valid = notebook_id is not None and response_kind in {"formatted", "structured"}
     summary: dict[str, Any] = {
         "elapsed_ms": round(elapsed_ms, 1),
         "ok": not is_error and response_valid,
@@ -345,11 +349,13 @@ def summarize_connect(
         "response_cells_bytes": cells_bytes,
         "cell_count": len(response_cell_ids),
         "cell_ids": response_cell_ids,
-        "expected_cell_ids_returned": len(present_ids),
-        "expected_cell_ids_total": len(expected_cell_ids),
+        "fixture_cell_ids_returned": (
+            len(present_fixture_ids) if present_fixture_ids is not None else None
+        ),
+        "fixture_cell_ids_total": len(fixture_cell_ids) if fixture_cell_ids is not None else None,
         "returned_cell_id_sample": response_cell_ids[:5],
     }
-    if is_error or not response_object:
+    if is_error or not response_valid:
         summary["response_text"] = text[-4000:]
     return summary
 
@@ -383,16 +389,37 @@ def summarize_get_all(
     return summary
 
 
+def matching_active_rooms(value: Any, connect_args: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    target_notebook_id = normalize_notebook_id(connect_args.get("notebook_id"))
+    target_path = connect_args.get("path")
+    canonical_target_path = (
+        os.path.realpath(os.path.expanduser(target_path)) if isinstance(target_path, str) else None
+    )
+    return [
+        room
+        for room in value
+        if isinstance(room, dict)
+        and (
+            (
+                target_notebook_id is not None
+                and normalize_notebook_id(room.get("notebook_id")) == target_notebook_id
+            )
+            or (
+                canonical_target_path is not None
+                and isinstance(room.get("notebook_path"), str)
+                and os.path.realpath(room["notebook_path"]) == canonical_target_path
+            )
+        )
+    ]
+
+
 async def monitor_active_peers(
     client: McpProcess,
     stop: asyncio.Event,
     connect_args: dict[str, Any],
 ) -> dict[str, Any]:
-    target_notebook_id = connect_args.get("notebook_id")
-    target_path = connect_args.get("path")
-    canonical_target_path = (
-        os.path.realpath(os.path.expanduser(target_path)) if isinstance(target_path, str) else None
-    )
     peer_counts: list[int] = []
     errors: list[str] = []
     while True:
@@ -401,21 +428,11 @@ async def monitor_active_peers(
             errors.append(error)
         elif result is not None:
             value = parse_json_value(tool_text(result))
-            if isinstance(value, list):
-                peer_counts.extend(
-                    int(room["active_peers"])
-                    for room in value
-                    if isinstance(room, dict)
-                    and (
-                        room.get("notebook_id") == target_notebook_id
-                        or (
-                            canonical_target_path is not None
-                            and isinstance(room.get("notebook_path"), str)
-                            and os.path.realpath(room["notebook_path"]) == canonical_target_path
-                        )
-                    )
-                    and isinstance(room.get("active_peers"), (int, float))
-                )
+            peer_counts.extend(
+                int(room["active_peers"])
+                for room in matching_active_rooms(value, connect_args)
+                if isinstance(room.get("active_peers"), (int, float))
+            )
         if stop.is_set():
             break
         await asyncio.sleep(0.01)
@@ -433,7 +450,7 @@ async def run_sample(
     env: dict[str, str],
     timeout_secs: float,
     connect_args: dict[str, Any],
-    expected_cell_ids: list[str],
+    fixture_cell_ids: list[str] | None,
     parallel: int,
 ) -> dict[str, Any]:
     initialize_started = time.perf_counter()
@@ -459,23 +476,21 @@ async def run_sample(
             client, "list_active_notebooks", {}
         )
 
+        before_value = parse_json_value(tool_text(before_result)) if before_result else None
+        after_value = parse_json_value(tool_text(after_result)) if after_result else None
         sample_result = {
             "sample": sample,
             "initialize_ms": round(initialize_ms, 1),
             "active_notebooks_before_ms": round(before_ms, 1),
-            "active_notebooks_before": (
-                parse_json_value(tool_text(before_result)) if before_result else None
-            ),
+            "active_notebooks_before": before_value,
             "active_notebooks_before_error": before_error,
             "connects": [
-                summarize_connect(elapsed, result, error, expected_cell_ids)
+                summarize_connect(elapsed, result, error, fixture_cell_ids)
                 for elapsed, result, error in connect_measurements
             ],
             "immediate_get_all_cells": summarize_get_all(*get_all),
             "active_notebooks_after_ms": round(after_ms, 1),
-            "active_notebooks_after": (
-                parse_json_value(tool_text(after_result)) if after_result else None
-            ),
+            "active_notebooks_after": after_value,
             "active_notebooks_after_error": after_error,
             "parallel_peer_monitor": peer_monitor,
             "mcp_stderr_tail": client.stderr_lines[-80:],
@@ -487,21 +502,41 @@ async def run_sample(
             for connect in sample_result["connects"]
             if connect["ok"]
         )
-        requested_notebook_id = connect_args.get("notebook_id")
-        connect_notebook_ids_match_target = not isinstance(requested_notebook_id, str) or all(
-            connect.get("notebook_id") == requested_notebook_id
-            for connect in sample_result["connects"]
-            if connect["ok"]
+        connect_notebook_ids = [
+            connect["notebook_id"] for connect in sample_result["connects"] if connect["ok"]
+        ]
+        connect_notebook_ids_consistent = len(set(connect_notebook_ids)) == 1
+        active_room_ids = [
+            notebook_id
+            for room in matching_active_rooms(after_value, connect_args)
+            for notebook_id in (normalize_notebook_id(room.get("notebook_id")),)
+            if notebook_id is not None
+        ]
+        connect_notebook_ids_match_active_room = len(active_room_ids) == 1 and all(
+            notebook_id == active_room_ids[0] for notebook_id in connect_notebook_ids
         )
-        fixture_ids_match = not expected_cell_ids or actual_ids == expected_cell_ids
+        requested_notebook_id_value = connect_args.get("notebook_id")
+        requested_notebook_id = normalize_notebook_id(requested_notebook_id_value)
+        connect_notebook_ids_match_target = not isinstance(requested_notebook_id_value, str) or (
+            requested_notebook_id is not None
+            and all(notebook_id == requested_notebook_id for notebook_id in connect_notebook_ids)
+        )
+        fixture_ids_match = fixture_cell_ids is None or actual_ids == fixture_cell_ids
         sample_result["ok"] = (
             connects_ok
             and connect_ids_match_read
+            and connect_notebook_ids_consistent
+            and connect_notebook_ids_match_active_room
             and connect_notebook_ids_match_target
             and sample_result["immediate_get_all_cells"]["ok"]
             and fixture_ids_match
         )
         sample_result["connect_cell_ids_match_immediate_read"] = connect_ids_match_read
+        sample_result["connect_notebook_ids_consistent"] = connect_notebook_ids_consistent
+        sample_result["active_room_notebook_ids"] = active_room_ids
+        sample_result["connect_notebook_ids_match_active_room"] = (
+            connect_notebook_ids_match_active_room
+        )
         sample_result["connect_notebook_ids_match_target"] = connect_notebook_ids_match_target
         sample_result["fixture_cell_ids_match_immediate_read"] = fixture_ids_match
         return sample_result
@@ -528,15 +563,15 @@ async def run(args: argparse.Namespace) -> int:
     if args.notebook_id:
         connect_args = {"notebook_id": args.notebook_id}
         target = args.notebook_id
-        expected_cell_ids: list[str] = []
+        fixture_cell_ids: list[str] | None = None
     elif args.path:
         target_path = args.path.expanduser().resolve()
         connect_args = {"path": str(target_path)}
         target = str(target_path)
-        expected_cell_ids = notebook_cell_ids(target_path)
+        fixture_cell_ids = None
     else:
         fixture_root = Path(tempfile.mkdtemp(prefix="nteract-mcp-connect-"))
-        target_path, expected_cell_ids = create_fixture(fixture_root, args.fixture_cells)
+        target_path, fixture_cell_ids = create_fixture(fixture_root, args.fixture_cells)
         connect_args = {"path": str(target_path)}
         target = str(target_path)
         log(f"created {args.fixture_cells}-cell fixture at {target_path}")
@@ -544,7 +579,9 @@ async def run(args: argparse.Namespace) -> int:
     report: dict[str, Any] = {
         "target": target,
         "connect_args": connect_args,
-        "expected_cell_count": len(expected_cell_ids),
+        "fixture_expected_cell_count": (
+            len(fixture_cell_ids) if fixture_cell_ids is not None else None
+        ),
         "samples_requested": args.samples,
         "parallel_connects": args.parallel,
         "timeout_secs": args.timeout_secs,
@@ -566,7 +603,7 @@ async def run(args: argparse.Namespace) -> int:
                     env,
                     args.timeout_secs,
                     connect_args,
-                    expected_cell_ids,
+                    fixture_cell_ids,
                     args.parallel,
                 )
             )
@@ -598,7 +635,9 @@ def parse_args() -> argparse.Namespace:
     )
     target = parser.add_mutually_exclusive_group()
     target.add_argument("--path", type=Path, help="Existing .ipynb path to connect")
-    target.add_argument("--notebook-id", help="Existing daemon room UUID to connect")
+    target.add_argument(
+        "--notebook-id", type=notebook_id_arg, help="Existing daemon room UUID to connect"
+    )
     parser.add_argument(
         "--fixture-cells",
         type=int,
