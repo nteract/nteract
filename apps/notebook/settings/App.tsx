@@ -168,7 +168,7 @@ export function FontFamilyPicker({
 
   return (
     <div className="contents">
-      <span className="text-sm text-muted-foreground whitespace-nowrap self-start pt-1.5">
+      <span className="text-sm text-muted-foreground whitespace-nowrap self-start pt-1.5 text-right">
         {label}
       </span>
       <div className="space-y-1.5 min-w-0">
