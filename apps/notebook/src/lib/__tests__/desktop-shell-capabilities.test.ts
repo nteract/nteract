@@ -179,6 +179,33 @@ describe("desktopNotebookShellCapabilities", () => {
     });
   });
 
+  it("keeps owner-only daemon controls hidden from hosted editors", () => {
+    const capabilities = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:alice/desktop:window",
+      connectionScope: "editor",
+    });
+
+    expect(capabilities.canEditCells).toBe(true);
+    expect(capabilities.canExecute).toBe(false);
+    expect(capabilities.canManagePackages).toBe(false);
+    expect(capabilities.runtime.executionAvailable).toBe(false);
+  });
+
+  it("allows owner-scoped hosted sessions to submit owner-only daemon requests", () => {
+    const capabilities = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:alice/desktop:window",
+      connectionScope: "owner",
+    });
+
+    expect(capabilities.canExecute).toBe(true);
+    expect(capabilities.canManagePackages).toBe(true);
+    expect(capabilities.runtime.executionAvailable).toBe(true);
+  });
+
   it("maps local read-only files to viewer access without cloud source", () => {
     const capabilities = desktopNotebookShellCapabilities({
       canAcceptCellMutations: false,

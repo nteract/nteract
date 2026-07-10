@@ -39,6 +39,11 @@ export function desktopNotebookShellCapabilities({
   const accessLevel = desktopAccessLevelFromConnectionScope(connectionScope);
   const source = desktopAccessSourceFromActor(connectionScope, localActor);
   const isRuntimePeer = connectionScope === "runtime_peer";
+  // Daemon request admission reserves execution, environment, trust, and save
+  // operations for local sessions and hosted owners. An editor-scoped hosted
+  // desktop may mutate NotebookDoc, but it must not surface owner-only runtime
+  // or package controls that the daemon will reject.
+  const canSubmitOwnerRequests = connectionScope === null || connectionScope === "owner";
   const hasDocumentEditPermission = notebookRoomAccessLevelCanEditDocument(accessLevel);
   const interaction = projectNotebookRoomEditAccess({
     accessLevel,
@@ -68,7 +73,7 @@ export function desktopNotebookShellCapabilities({
     connected: sessionReady && (source === "local" || isRuntimePeer),
     // A ready daemon session is the local execution runtime. `canExecute` below
     // gates this further by document write authority.
-    executionAvailable: sessionReady,
+    executionAvailable: sessionReady && canSubmitOwnerRequests,
     source,
     actorLabel: desktopRuntimeActorLabel({
       canWriteRuntimeState,
@@ -102,13 +107,14 @@ export function desktopNotebookShellCapabilities({
       canToggleCode: true,
     },
     execution: {
-      available: sessionReady,
+      available: sessionReady && canSubmitOwnerRequests,
+      canSubmit: canSubmitOwnerRequests,
       requiresDocumentEditPermission: true,
       requiresDocumentMutationSupport: true,
     },
     packages: {
       canView: true,
-      canManage: true,
+      canManage: canSubmitOwnerRequests,
       manageRequiresDocumentMutationSupport: true,
     },
     sharing: {
