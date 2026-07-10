@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
-import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
+import {
+  BOKEHJS_EXEC_MIME_TYPE,
+  BOKEHJS_LOAD_MIME_TYPE,
+  NTERACT_BOKEH_SESSION_MIME_TYPE,
+} from "@/components/outputs/bokeh-mime";
 import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
 import {
   MARKDOWN_PROJECTION_MIME_TYPE,
@@ -246,6 +250,19 @@ describe("output lane policy", () => {
       "bokeh-root-html",
       "bokeh-exec-js",
     ]);
+  });
+
+  it("routes native Bokeh sessions through a click-to-engage document frame", () => {
+    const output = displayOutput("bokeh-session", {
+      [NTERACT_BOKEH_SESSION_MIME_TYPE]: { schema_version: 1 },
+      "text/plain": "fallback",
+    });
+
+    expect(selectedOutputMimeType(output)).toBe(NTERACT_BOKEH_SESSION_MIME_TYPE);
+    expect(outputUsesBokeh(output)).toBe(true);
+    expect(outputUsesWheelOwningFrame(output)).toBe(true);
+    expect(outputAllowsScrollPassthrough(output)).toBe(true);
+    expect(outputSegmentLane(output)).toBe("static-frame");
   });
 
   it("keeps Panel's HTML and JavaScript display outputs in one document lane", () => {

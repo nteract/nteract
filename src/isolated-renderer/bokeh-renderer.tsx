@@ -6,9 +6,19 @@
  * plugin; the nteract payload remaps the sibling data into one object.
  */
 
-import { useEffect, useRef, useState, type ComponentType } from "react";
-import type { RendererProps } from "@/lib/renderer-registry";
-import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
+import { useEffect, useRef, useState } from "react";
+import type { RendererInstallContext, RendererProps } from "@/lib/renderer-registry";
+import {
+  BOKEHJS_EXEC_MIME_TYPE,
+  BOKEHJS_LOAD_MIME_TYPE,
+  isBokehSessionMimePayload,
+  NTERACT_BOKEH_SESSION_MIME_TYPE,
+  type BokehSessionResourceInline,
+  type BokehSessionResourceUrl,
+  type BokehSessionResources,
+} from "@/components/outputs/bokeh-mime";
+import type { NteractBokehSessionStatus } from "@/components/isolated/rpc-methods";
+import { BokehSessionController, type BokehRuntime } from "./bokeh-session-controller";
 import { measureDocumentHeight } from "./layout-measure";
 
 type BokehPayload = {
@@ -21,6 +31,8 @@ type BokehPayload = {
 declare global {
   interface Window {
     Bokeh?: {
+      version?: string;
+      require?: (name: string) => Record<string, unknown>;
       embed?: {
         kernels?: Record<string, unknown>;
       };
@@ -30,8 +42,15 @@ declare global {
       };
     };
     __nteractBokehLoadPromise__?: Promise<void>;
+    __nteractBokehResourcePromises__?: Map<string, Promise<void>>;
+    __nteractBokehInlineResources__?: Set<string>;
+    __nteractBokehModulePromises__?: Map<string, Promise<unknown>>;
   }
 }
+
+let sessionHostBridge:
+  | Pick<RendererInstallContext, "requestHost" | "subscribeHostNotification">
+  | undefined;
 
 const BOKEH_RESOURCE_SUFFIXES = ["", "-gl", "-widgets", "-tables", "-mathjax"];
 
@@ -83,6 +102,143 @@ function loadScript(src: string, required: boolean): Promise<void> {
     script.src = src;
     document.head.appendChild(script);
   });
+}
+
+function nativeResourcePromises(): Map<string, Promise<void>> {
+  return (window.__nteractBokehResourcePromises__ ??= new Map());
+}
+
+function inlineResources(): Set<string> {
+  return (window.__nteractBokehInlineResources__ ??= new Set());
+}
+
+function loadNativeScript(resource: BokehSessionResourceUrl): Promise<void> {
+  const key = `script:${resource.url}`;
+  const existing = nativeResourcePromises().get(key);
+  if (existing) return existing;
+  const promise = new Promise<void>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.async = false;
+    script.dataset.nteractBokehResource = resource.url;
+    if (resource.integrity) {
+      script.integrity = resource.integrity;
+      script.crossOrigin = "anonymous";
+    }
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load Bokeh resource: ${resource.url}`));
+    script.src = resource.url;
+    document.head.appendChild(script);
+  }).catch((error) => {
+    nativeResourcePromises().delete(key);
+    throw error;
+  });
+  nativeResourcePromises().set(key, promise);
+  return promise;
+}
+
+function installInlineScript(resource: BokehSessionResourceInline): void {
+  const key = `script:${resource.code}`;
+  if (inlineResources().has(key)) return;
+  const script = document.createElement("script");
+  script.dataset.nteractBokehInline = "true";
+  script.textContent = resource.code;
+  document.head.appendChild(script);
+  inlineResources().add(key);
+}
+
+function loadNativeStylesheet(resource: BokehSessionResourceUrl): Promise<void> {
+  const key = `style:${resource.url}`;
+  const existing = nativeResourcePromises().get(key);
+  if (existing) return existing;
+  const promise = new Promise<void>((resolve, reject) => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.dataset.nteractBokehResource = resource.url;
+    if (resource.integrity) {
+      link.integrity = resource.integrity;
+      link.crossOrigin = "anonymous";
+    }
+    link.onload = () => resolve();
+    link.onerror = () => reject(new Error(`Failed to load Bokeh stylesheet: ${resource.url}`));
+    link.href = resource.url;
+    document.head.appendChild(link);
+  }).catch((error) => {
+    nativeResourcePromises().delete(key);
+    throw error;
+  });
+  nativeResourcePromises().set(key, promise);
+  return promise;
+}
+
+function installInlineStylesheet(resource: BokehSessionResourceInline): void {
+  const key = `style:${resource.code}`;
+  if (inlineResources().has(key)) return;
+  const style = document.createElement("style");
+  style.dataset.nteractBokehInline = "true";
+  style.textContent = resource.code;
+  document.head.appendChild(style);
+  inlineResources().add(key);
+}
+
+function importModule(url: string): Promise<unknown> {
+  const promises = (window.__nteractBokehModulePromises__ ??= new Map());
+  const existing = promises.get(url);
+  if (existing) return existing;
+  const promise = import(/* @vite-ignore */ url).catch((error) => {
+    promises.delete(url);
+    throw error;
+  });
+  promises.set(url, promise);
+  return promise;
+}
+
+async function loadNativeResources(resources: BokehSessionResources): Promise<void> {
+  for (const stylesheet of resources.stylesheets) {
+    if (stylesheet.kind === "url") await loadNativeStylesheet(stylesheet);
+    else installInlineStylesheet(stylesheet);
+  }
+  for (const javascript of resources.javascript) {
+    if (javascript.kind === "url") await loadNativeScript(javascript);
+    else installInlineScript(javascript);
+  }
+  for (const module of resources.javascript_modules) {
+    await importModule(module.url);
+  }
+  for (const [name, url] of Object.entries(resources.module_exports)) {
+    const exports = (await importModule(url)) as Record<string, unknown>;
+    (window as unknown as Record<string, unknown>)[name] = exports.default ?? exports;
+  }
+}
+
+function nativeBokehRuntime(expectedVersion: string): BokehRuntime {
+  const bokeh = window.Bokeh;
+  if (!bokeh?.require) {
+    throw new Error("Bokeh resources loaded without a module runtime");
+  }
+  if (bokeh.version !== expectedVersion) {
+    throw new Error(`BokehJS ${bokeh.version ?? "unknown"} cannot render Bokeh ${expectedVersion}`);
+  }
+  const documentModule = bokeh.require("document") as {
+    Document?: BokehRuntime["Document"];
+  };
+  const embedModule = bokeh.require("embed/standalone") as {
+    add_document_standalone?: BokehRuntime["addDocumentStandalone"];
+  };
+  const serializationModule = bokeh.require("core/serialization") as {
+    Buffer?: BokehRuntime["Buffer"];
+  };
+  if (
+    !documentModule.Document ||
+    !embedModule.add_document_standalone ||
+    !serializationModule.Buffer
+  ) {
+    throw new Error("BokehJS document modules are incomplete");
+  }
+  return {
+    Document: documentModule.Document,
+    Buffer: serializationModule.Buffer,
+    addDocumentStandalone: embedModule.add_document_standalone,
+  };
 }
 
 async function ensureBokeh(version: string | null): Promise<void> {
@@ -268,8 +424,93 @@ function BokehRenderer({ data: rawData, metadata, mimeType }: RendererProps) {
   );
 }
 
-export function install(ctx: {
-  register: (mimeTypes: string[], component: ComponentType<RendererProps>) => void;
-}) {
+function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const controllerRef = useRef<BokehSessionController | null>(null);
+  const [status, setStatus] = useState<NteractBokehSessionStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (!isBokehSessionMimePayload(data)) {
+      setStatus("error");
+      setError("Invalid Bokeh document session payload");
+      return;
+    }
+    if (!outputId) {
+      setStatus("error");
+      setError("Bokeh document session output is missing its stable output id");
+      return;
+    }
+    if (!sessionHostBridge) {
+      setStatus("error");
+      setError("Bokeh document session host bridge is unavailable");
+      return;
+    }
+
+    let cancelled = false;
+    setStatus(null);
+    setError(null);
+    void (async () => {
+      await loadNativeResources(data.resources);
+      if (cancelled) return;
+      const controller = new BokehSessionController({
+        outputId,
+        payload: data,
+        container,
+        runtime: nativeBokehRuntime(data.bokeh_version),
+        requestHost: sessionHostBridge.requestHost,
+        subscribeHostNotification: sessionHostBridge.subscribeHostNotification,
+        onStatus: (nextStatus, nextError) => {
+          if (cancelled) return;
+          setStatus(nextStatus);
+          setError(nextError ?? null);
+        },
+        onLayout: requestHostResize,
+      });
+      controllerRef.current = controller;
+      await controller.start();
+    })().catch((renderError) => {
+      if (!cancelled) {
+        setStatus("error");
+        setError(renderError instanceof Error ? renderError.message : String(renderError));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      controllerRef.current?.dispose();
+      controllerRef.current = null;
+    };
+  }, [data, outputId]);
+
+  const disconnected = status !== null && status !== "connected";
+  const statusLabel =
+    status === "closed" ? "Session closed" : status === "error" ? "Session error" : "Disconnected";
+
+  return (
+    <div className="relative" data-slot="bokeh-session-output">
+      <div ref={containerRef} />
+      {disconnected && containerRef.current?.childNodes.length ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/60 text-sm font-medium text-foreground backdrop-blur-[1px]">
+          <span title={error ?? undefined}>{statusLabel}</span>
+        </div>
+      ) : null}
+      {error && !containerRef.current?.childNodes.length ? (
+        <pre className="whitespace-pre-wrap rounded border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+          {error}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
+export function install(ctx: RendererInstallContext) {
+  sessionHostBridge = {
+    requestHost: ctx.requestHost,
+    subscribeHostNotification: ctx.subscribeHostNotification,
+  };
   ctx.register([BOKEHJS_LOAD_MIME_TYPE, BOKEHJS_EXEC_MIME_TYPE], BokehRenderer);
+  ctx.register([NTERACT_BOKEH_SESSION_MIME_TYPE], NativeBokehSessionRenderer);
 }

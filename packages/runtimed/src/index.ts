@@ -187,6 +187,11 @@ export {
 
 // Runtime state
 export {
+  type BokehSessionCheckpoint,
+  type BokehSessionContentRef,
+  type BokehSessionPatchRef,
+  type BokehSessionState,
+  type BokehSessionStatus,
   type CommDocEntry,
   DEFAULT_RUNTIME_STATE,
   type EnvState,
@@ -555,6 +560,7 @@ export {
   SaveNotebookError,
 } from "./notebook-client";
 export type {
+  BokehSessionPatchReply,
   BlobDurability,
   BlobUploadErrorKind,
   CommRequestMessage,

@@ -2,6 +2,7 @@ import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import {
   BOKEHJS_EXEC_MIME_TYPE,
   BOKEHJS_LOAD_MIME_TYPE,
+  NTERACT_BOKEH_SESSION_MIME_TYPE,
   isBokehMimeType,
 } from "@/components/outputs/bokeh-mime";
 import {
@@ -50,6 +51,7 @@ const SCROLL_PASSTHROUGH_MIME_TYPES = new Set([
   "application/javascript",
   BOKEHJS_LOAD_MIME_TYPE,
   BOKEHJS_EXEC_MIME_TYPE,
+  NTERACT_BOKEH_SESSION_MIME_TYPE,
   PANEL_LOAD_MIME_TYPE,
   PANEL_EXEC_MIME_TYPE,
   // Sift's interactive tables are also click-to-engage (see SIFT_MIME_TYPES).

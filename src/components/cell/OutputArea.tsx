@@ -12,6 +12,7 @@ import {
 } from "react";
 import {
   anyOutputNeedsIsolation,
+  BokehSessionBridgeManager,
   CommBridgeManager,
   hasWidgetOutputs,
   type IframeToParentMessage,
@@ -26,6 +27,7 @@ import {
   type RenderPayload,
   segmentedOutputLanes,
   useIsolatedRenderer,
+  useBokehSessionRuntime,
   useRegisterIsolatedOutput,
 } from "@/components/isolated";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
@@ -34,6 +36,10 @@ import {
   jupyterOutputsToRenderPayloads,
   type IdentifiedJupyterOutput,
 } from "@/components/isolated/output-payloads";
+import {
+  isBokehSessionMimePayload,
+  NTERACT_BOKEH_SESSION_MIME_TYPE,
+} from "@/components/outputs/bokeh-mime";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
 import {
@@ -615,6 +621,8 @@ function OutputAreaSingle({
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const bridgeRef = useRef<CommBridgeManager | null>(null);
+  const bokehBridgeRef = useRef<BokehSessionBridgeManager | null>(null);
+  const bokehBridgeTransportRef = useRef<unknown>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
   const staticFrameInteractionRef = useRef<HTMLDivElement>(null);
   const injectedLibsRef = useRef(new Set<string>());
@@ -641,6 +649,17 @@ function OutputAreaSingle({
   const widgetContext = useWidgetStore();
   const savedWidgetModels = useSavedWidgetModels();
   const rendererBundle = useIsolatedRenderer();
+  const bokehSessionRuntime = useBokehSessionRuntime();
+  const bokehSessionBindings = useMemo(() => {
+    return outputs.flatMap((output) => {
+      if (output.output_type !== "execute_result" && output.output_type !== "display_data") {
+        return [];
+      }
+      const payload = output.data[NTERACT_BOKEH_SESSION_MIME_TYPE];
+      if (!output.output_id || !isBokehSessionMimePayload(payload)) return [];
+      return [{ outputId: output.output_id, payload }];
+    });
+  }, [outputs]);
 
   // Determine if we should use isolation (when we have outputs)
   const shouldIsolate =
@@ -858,6 +877,54 @@ function OutputAreaSingle({
     [onWidgetUpdate, onSearchMatchCount, onNavigateToTracebackCell],
   );
 
+  const ensureBokehBridge = useCallback(() => {
+    const frame = frameRef.current;
+    const runtime = bokehSessionRuntime;
+    const transport = runtime?.transport ?? null;
+    if (!frame || !runtime || !transport || bokehSessionBindings.length === 0) {
+      bokehBridgeRef.current?.dispose();
+      bokehBridgeRef.current = null;
+      bokehBridgeTransportRef.current = null;
+      return null;
+    }
+
+    if (!bokehBridgeRef.current || bokehBridgeTransportRef.current !== transport) {
+      bokehBridgeRef.current?.dispose();
+      bokehBridgeRef.current = new BokehSessionBridgeManager({
+        frame,
+        transport,
+        bindings: bokehSessionBindings,
+      });
+      bokehBridgeTransportRef.current = transport;
+    } else {
+      bokehBridgeRef.current.setBindings(bokehSessionBindings);
+    }
+    bokehBridgeRef.current.updateRuntimeSessions(runtime.sessions);
+    return bokehBridgeRef.current;
+  }, [bokehSessionBindings, bokehSessionRuntime]);
+
+  const handleBokehSessionOpen = useCallback(
+    (params: Parameters<BokehSessionBridgeManager["openSession"]>[0]) => {
+      const bridge = ensureBokehBridge();
+      if (!bridge) {
+        return Promise.reject(new Error("Bokeh document session transport is unavailable"));
+      }
+      return bridge.openSession(params);
+    },
+    [ensureBokehBridge],
+  );
+
+  const handleBokehApplyPatch = useCallback(
+    (params: Parameters<BokehSessionBridgeManager["applyPatch"]>[0]) => {
+      const bridge = ensureBokehBridge();
+      if (!bridge) {
+        return Promise.reject(new Error("Bokeh document session transport is unavailable"));
+      }
+      return bridge.applyPatch(params);
+    },
+    [ensureBokehBridge],
+  );
+
   // Callback when frame is ready - set up bridge and render outputs
   const handleFrameReady = useCallback(
     async (options: { resetInjectedPlugins?: boolean } = {}) => {
@@ -866,6 +933,8 @@ function OutputAreaSingle({
       // Bump generation so any in-flight async handleFrameReady from a
       // previous outputs snapshot will bail out after it awaits.
       const gen = ++renderGenRef.current;
+
+      const bokehBridge = ensureBokehBridge();
 
       // Set up comm bridge if we have widgets and widget context
       if (shouldUseBridge && widgetContext && !bridgeRef.current) {
@@ -983,6 +1052,7 @@ function OutputAreaSingle({
       }
 
       frameRef.current.renderBatch(batch);
+      bokehBridge?.notifyCurrentState();
 
       // Re-apply search highlights after rendering new content
       if (searchQueryRef.current) {
@@ -991,6 +1061,7 @@ function OutputAreaSingle({
     },
     [
       cellId,
+      ensureBokehBridge,
       outputs,
       priority,
       resolveTracebackExecutionTarget,
@@ -1011,8 +1082,15 @@ function OutputAreaSingle({
         bridgeRef.current.dispose();
         bridgeRef.current = null;
       }
+      bokehBridgeRef.current?.dispose();
+      bokehBridgeRef.current = null;
+      bokehBridgeTransportRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    bokehBridgeRef.current?.updateRuntimeSessions(bokehSessionRuntime?.sessions ?? {});
+  }, [bokehSessionRuntime?.sessions]);
 
   // Re-render outputs when they change (after initial ready)
   useEffect(() => {
@@ -1129,6 +1207,8 @@ function OutputAreaSingle({
                     onMouseDown={activateStaticFrameInteraction}
                     onMouseUp={handleStaticFrameMouseUp}
                     onWidgetUpdate={onWidgetUpdate}
+                    onBokehSessionOpen={handleBokehSessionOpen}
+                    onBokehApplyPatch={handleBokehApplyPatch}
                     onMessage={handleIframeMessage}
                     onError={handleIframeError}
                     onDiagnostic={onDiagnostic}

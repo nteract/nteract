@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { IdentifiedJupyterOutput } from "../output-payloads";
 import { jupyterOutputToRenderPayload } from "../output-payloads";
-import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
+import {
+  BOKEHJS_EXEC_MIME_TYPE,
+  BOKEHJS_LOAD_MIME_TYPE,
+  NTERACT_BOKEH_SESSION_MIME_TYPE,
+} from "@/components/outputs/bokeh-mime";
 import { PANEL_EXEC_MIME_TYPE } from "@/components/outputs/panel-mime";
 
 describe("isolated output payload conversion", () => {
@@ -83,6 +87,32 @@ describe("isolated output payload conversion", () => {
         mimeType: PANEL_EXEC_MIME_TYPE,
         outputId: "panel-exec",
         outputIndex: 1,
+      }),
+    );
+  });
+
+  it("passes native Bokeh document sessions through without legacy sibling bundling", () => {
+    const session = {
+      schema_version: 1,
+      session_id: "session-1",
+      revision: 0,
+      document: { roots: [] },
+    };
+    const output: IdentifiedJupyterOutput = {
+      output_id: "bokeh-session",
+      output_type: "display_data",
+      data: {
+        [NTERACT_BOKEH_SESSION_MIME_TYPE]: session,
+        "text/plain": "fallback",
+      },
+      metadata: {},
+    };
+
+    expect(jupyterOutputToRenderPayload(output, 0)).toEqual(
+      expect.objectContaining({
+        data: session,
+        mimeType: NTERACT_BOKEH_SESSION_MIME_TYPE,
+        outputId: "bokeh-session",
       }),
     );
   });

@@ -1,5 +1,6 @@
 import type { NteractEmbedHostContextPatch } from "./host-context";
 import type { WidgetViewStateHint } from "@/components/widgets/widget-state";
+import type { NteractBokehSessionPatchParams, NteractBokehSessionStateParams } from "./rpc-methods";
 
 export interface EvalMessage {
   type: "eval";
@@ -216,6 +217,18 @@ export interface BridgeReadyMessage {
   type: "bridge_ready";
 }
 
+/** Deliver one canonical Bokeh document transaction to a mounted view. */
+export interface BokehSessionPatchMessage {
+  type: "bokeh_session_patch";
+  payload: NteractBokehSessionPatchParams;
+}
+
+/** Project durable Bokeh session connection/revision state into a mounted view. */
+export interface BokehSessionStateMessage {
+  type: "bokeh_session_state";
+  payload: NteractBokehSessionStateParams;
+}
+
 // --- Global Find: Parent → Iframe ---
 
 /**
@@ -283,6 +296,8 @@ export type ParentToIframeMessage =
   | CommCloseMessage
   | WidgetSnapshotMessage
   | BridgeReadyMessage
+  | BokehSessionPatchMessage
+  | BokehSessionStateMessage
   | SearchMessage
   | SearchNavigateMessage
   | InteractionStateMessage

@@ -137,6 +137,32 @@ describe("JsonRpcTransport", () => {
       expect(received[0]).toEqual({ x: 1 });
     });
 
+    it("supports independent notification subscribers and unsubscribe", () => {
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
+      const first = vi.fn();
+      const second = vi.fn();
+      const unsubscribeFirst = transport.onNotification("test/method", first);
+      transport.onNotification("test/method", second);
+      transport.start();
+
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { jsonrpc: "2.0", method: "test/method", params: { revision: 1 } },
+          source: mockTarget.window,
+        }),
+      );
+      unsubscribeFirst();
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { jsonrpc: "2.0", method: "test/method", params: { revision: 2 } },
+          source: mockTarget.window,
+        }),
+      );
+
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).toHaveBeenCalledTimes(2);
+    });
+
     it("resolves request promises on response", async () => {
       const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
       transport.start();
@@ -246,6 +272,23 @@ describe("JsonRpcTransport", () => {
           result: "[object Object]",
         },
       });
+    });
+
+    it("transfers ArrayBuffers returned by request handlers", async () => {
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
+      const buffer = new ArrayBuffer(12);
+      transport.onRequest("test/buffer", () => ({ buffer }));
+      transport.start();
+
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { jsonrpc: "2.0", id: 43, method: "test/buffer" },
+          source: mockTarget.window,
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockTarget.postMessageCalls[0].transfer).toEqual([buffer]);
     });
 
     it("sends error response when request handler throws synchronously", async () => {

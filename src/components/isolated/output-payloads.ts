@@ -1,6 +1,6 @@
 import type { RenderPayload } from "./frame-bridge";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
-import { isBokehMimeType } from "@/components/outputs/bokeh-mime";
+import { isLegacyBokehMimeType } from "@/components/outputs/bokeh-mime";
 import { isPanelMimeType } from "@/components/outputs/panel-mime";
 import { DEFAULT_PRIORITY, selectMimeType } from "@/components/outputs/mime-priority";
 
@@ -38,7 +38,7 @@ function requireOutputId(output: IdentifiedJupyterOutput): string {
 }
 
 function isJavascriptBundleMimeType(mimeType: string): boolean {
-  return isBokehMimeType(mimeType) || isPanelMimeType(mimeType);
+  return isLegacyBokehMimeType(mimeType) || isPanelMimeType(mimeType);
 }
 
 function dataForSelectedMime(output: DataJupyterOutput, mimeType: string): unknown {

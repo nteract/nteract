@@ -92,7 +92,7 @@ export class JsonRpcTransport {
   private listener: ((event: MessageEvent) => void) | null = null;
   private nextId = 1;
 
-  private notificationHandlers = new Map<string, NotificationHandler>();
+  private notificationHandlers = new Map<string, Set<NotificationHandler>>();
   private requestHandlers = new Map<string, RequestHandler>();
   private pendingRequests = new Map<
     number,
@@ -132,8 +132,20 @@ export class JsonRpcTransport {
   /**
    * Register a handler for incoming notifications of a given method.
    */
-  onNotification(method: string, handler: NotificationHandler): void {
-    this.notificationHandlers.set(method, handler);
+  onNotification(method: string, handler: NotificationHandler): () => void {
+    let handlers = this.notificationHandlers.get(method);
+    if (!handlers) {
+      handlers = new Set();
+      this.notificationHandlers.set(method, handlers);
+    }
+    handlers.add(handler);
+    return () => {
+      const current = this.notificationHandlers.get(method);
+      current?.delete(handler);
+      if (current?.size === 0) {
+        this.notificationHandlers.delete(method);
+      }
+    };
   }
 
   /**
@@ -186,7 +198,7 @@ export class JsonRpcTransport {
                 message: err instanceof Error ? err.message : String(err),
               },
             };
-            this.target.postMessage(response, "*");
+            this.send(response);
             return;
           }
           Promise.resolve(result).then(
@@ -196,7 +208,7 @@ export class JsonRpcTransport {
                 id: data.id,
                 result,
               };
-              this.target.postMessage(response, "*");
+              this.send(response);
             },
             (err) => {
               const response: JsonRpcResponse = {
@@ -207,7 +219,7 @@ export class JsonRpcTransport {
                   message: err instanceof Error ? err.message : String(err),
                 },
               };
-              this.target.postMessage(response, "*");
+              this.send(response);
             },
           );
         } else {
@@ -220,13 +232,15 @@ export class JsonRpcTransport {
               message: `Method not found: ${data.method}`,
             },
           };
-          this.target.postMessage(response, "*");
+          this.send(response);
         }
       } else {
         // Notification — dispatch to handler
-        const handler = this.notificationHandlers.get(data.method);
-        if (handler) {
-          handler(data.params);
+        const handlers = this.notificationHandlers.get(data.method);
+        if (handlers) {
+          for (const handler of handlers) {
+            handler(data.params);
+          }
         }
         // Unknown notifications are silently ignored
       }

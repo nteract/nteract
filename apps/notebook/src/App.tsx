@@ -8,6 +8,8 @@ import {
   resolveActorDisplay,
   splitNotebookActorPrincipalOperator,
   type ActorDisplayPeer,
+  type ApplyBokehSessionPatchOptions,
+  type BokehSessionPatchBroadcast,
   type CommentAnchor,
   type CommentThreadSnapshot,
   type CommentsProjection,
@@ -17,7 +19,7 @@ import {
   putBlob,
   type SessionStatus,
 } from "runtimed";
-import { IsolationTest } from "@/components/isolated";
+import { BokehSessionRuntimeProvider, IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import {
   applyWidgetCommBroadcastToStore,
@@ -109,7 +111,7 @@ import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
-import { getBlobResolver, useBlobPort } from "./lib/blob-port";
+import { getBlobResolver, useBlobPort, useBlobResolver } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
 import {
   outputCommentAnchorMatchesLiveState,
@@ -589,6 +591,30 @@ function AppContent() {
         },
       }),
     [host, getHandle, getEngine],
+  );
+
+  const bokehBlobResolver = useBlobResolver();
+  const bokehPatchSource = getEngine()?.bokehSessionPatchBroadcasts$ ?? null;
+  const bokehSessionTransport = useMemo(() => {
+    if (!bokehBlobResolver) return null;
+    return {
+      fetchBlob: (ref: { blob: string; size?: number; media_type?: string }) =>
+        bokehBlobResolver.fetch(ref),
+      applyPatch: (options: ApplyBokehSessionPatchOptions) =>
+        notebookClient.applyBokehSessionPatch(options),
+      subscribePatches: (listener: (broadcast: BokehSessionPatchBroadcast) => void) => {
+        if (!bokehPatchSource) return () => {};
+        const subscription = bokehPatchSource.subscribe(listener);
+        return () => subscription.unsubscribe();
+      },
+    };
+  }, [bokehBlobResolver, bokehPatchSource, notebookClient]);
+  const bokehSessionRuntime = useMemo(
+    () => ({
+      sessions: runtimeState.bokeh_sessions,
+      transport: bokehSessionTransport,
+    }),
+    [bokehSessionTransport, runtimeState.bokeh_sessions],
   );
 
   // Daemon-owned kernel execution
@@ -2158,33 +2184,35 @@ function AppContent() {
               onSyncNeeded={triggerSync}
               localActor={localActor}
             >
-              <NotebookView
-                cellIds={cellIds}
-                isLoading={isLoading}
-                capabilities={shellCapabilities}
-                canAcceptCellMutations={canAcceptCellMutations}
-                loadError={loadError}
-                runtime={runtime}
-                sessionRuntimeState={sessionStatus?.runtime_state ?? null}
-                onReconnectRuntime={reconnectRuntime}
-                onFocusCell={handleNotebookViewFocus}
-                onExecuteCell={handleExecuteCell}
-                onInterruptKernel={interruptKernel}
-                onDeleteCell={deleteCell}
-                onUpdateCellSource={updateCellSource}
-                onAddCell={handleAddCell}
-                onMoveCell={moveCell}
-                onChangeCellType={setCellType}
-                onReportOutputMatchCount={globalFind.reportOutputMatchCount}
-                onSetCellSourceHidden={setCellSourceHidden}
-                onSetCellOutputsHidden={setCellOutputsHidden}
-                onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
-                onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
-                onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
-                commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
-                pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
-                markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
-              />
+              <BokehSessionRuntimeProvider value={bokehSessionRuntime}>
+                <NotebookView
+                  cellIds={cellIds}
+                  isLoading={isLoading}
+                  capabilities={shellCapabilities}
+                  canAcceptCellMutations={canAcceptCellMutations}
+                  loadError={loadError}
+                  runtime={runtime}
+                  sessionRuntimeState={sessionStatus?.runtime_state ?? null}
+                  onReconnectRuntime={reconnectRuntime}
+                  onFocusCell={handleNotebookViewFocus}
+                  onExecuteCell={handleExecuteCell}
+                  onInterruptKernel={interruptKernel}
+                  onDeleteCell={deleteCell}
+                  onUpdateCellSource={updateCellSource}
+                  onAddCell={handleAddCell}
+                  onMoveCell={moveCell}
+                  onChangeCellType={setCellType}
+                  onReportOutputMatchCount={globalFind.reportOutputMatchCount}
+                  onSetCellSourceHidden={setCellSourceHidden}
+                  onSetCellOutputsHidden={setCellOutputsHidden}
+                  onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
+                  onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
+                  onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
+                  commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
+                  pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
+                  markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
+                />
+              </BokehSessionRuntimeProvider>
             </CrdtBridgeProvider>
           </div>
         </NotebookDocumentShell>

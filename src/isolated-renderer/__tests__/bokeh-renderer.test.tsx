@@ -1,23 +1,41 @@
 import { cleanup, render, waitFor } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
+import {
+  BOKEHJS_EXEC_MIME_TYPE,
+  BOKEHJS_LOAD_MIME_TYPE,
+  NTERACT_BOKEH_SESSION_MIME_TYPE,
+} from "@/components/outputs/bokeh-mime";
 import type { RendererProps } from "@/lib/renderer-registry";
 import { install } from "../bokeh-renderer";
 
-function installBokehRenderer() {
-  let Renderer: ComponentType<RendererProps> | undefined;
-  let registeredMimeTypes: string[] = [];
+function installBokehRenderer(
+  options: {
+    requestHost?: (method: string, params?: unknown) => Promise<unknown>;
+    subscribeHostNotification?: (method: string, listener: (params: unknown) => void) => () => void;
+  } = {},
+) {
+  const renderers = new Map<string, ComponentType<RendererProps>>();
 
   install({
     register: (mimeTypes, component) => {
-      registeredMimeTypes = mimeTypes;
-      Renderer = component;
+      for (const mimeType of mimeTypes) renderers.set(mimeType, component);
     },
+    registerPattern: () => {},
+    getHostContext: () => undefined,
+    subscribeHostContext: () => () => {},
+    requestHost: options.requestHost ?? (() => Promise.reject(new Error("not configured"))),
+    notifyHost: () => {},
+    subscribeHostNotification: options.subscribeHostNotification ?? (() => () => {}),
   });
 
+  const Renderer = renderers.get(BOKEHJS_EXEC_MIME_TYPE);
   expect(Renderer).toBeDefined();
-  return { Renderer: Renderer!, registeredMimeTypes };
+  return {
+    Renderer: Renderer!,
+    NativeRenderer: renderers.get(NTERACT_BOKEH_SESSION_MIME_TYPE)!,
+    registeredMimeTypes: [...renderers.keys()],
+  };
 }
 
 function stubAnimationFrames() {
@@ -70,7 +88,11 @@ describe("Bokeh renderer plugin", () => {
   it("registers Bokeh load and exec MIME types", () => {
     const { registeredMimeTypes } = installBokehRenderer();
 
-    expect(registeredMimeTypes).toEqual([BOKEHJS_LOAD_MIME_TYPE, BOKEHJS_EXEC_MIME_TYPE]);
+    expect(registeredMimeTypes).toEqual([
+      BOKEHJS_LOAD_MIME_TYPE,
+      BOKEHJS_EXEC_MIME_TYPE,
+      NTERACT_BOKEH_SESSION_MIME_TYPE,
+    ]);
   });
 
   it("loads matching BokehJS resources before appending standalone exec output", async () => {
@@ -213,6 +235,77 @@ describe("Bokeh renderer plugin", () => {
 
     await waitFor(() => {
       expect(renderedScripts(container).at(-1)?.textContent).toBe("window.Bokeh = {};");
+    });
+  });
+
+  it("mounts a native document session from the host snapshot", async () => {
+    const fakeDocument = {
+      all_roots: [{ id: "root-1" }],
+      on_change: vi.fn(),
+      remove_on_change: vi.fn(),
+      create_json_patch: vi.fn(),
+      apply_json_patch: vi.fn(),
+      clear: vi.fn(),
+    };
+    const addDocumentStandalone = vi.fn(async (_document: unknown, element: HTMLElement) => {
+      const root = document.createElement("div");
+      root.dataset.testid = "native-bokeh-root";
+      element.appendChild(root);
+      return { clear: vi.fn() };
+    });
+    class BufferValue {
+      constructor(readonly buffer: ArrayBuffer) {}
+    }
+    window.Bokeh = {
+      version: "3.9.1",
+      require: (name) => {
+        if (name === "document") return { Document: { from_json: () => fakeDocument } };
+        if (name === "embed/standalone") {
+          return { add_document_standalone: addDocumentStandalone };
+        }
+        if (name === "core/serialization") return { Buffer: BufferValue };
+        return {};
+      },
+    };
+    const requestHost = vi.fn(async () => ({
+      schemaVersion: 1,
+      sessionId: "session-1",
+      outputId: "output-1",
+      status: "connected",
+      headRevision: 0,
+      checkpoint: { revision: 0, document: { roots: [{ id: "root-1" }] }, buffers: [] },
+      patchTail: [],
+    }));
+    const { NativeRenderer } = installBokehRenderer({ requestHost });
+    const { container } = render(
+      <NativeRenderer
+        data={{
+          schema_version: 1,
+          session_id: "session-1",
+          revision: 0,
+          producer: { name: "panel", version: "1.9.3" },
+          bokeh_version: "3.9.1",
+          document: { roots: [{ id: "root-1" }] },
+          root_ids: ["root-1"],
+          resources: {
+            javascript: [],
+            stylesheets: [],
+            javascript_modules: [],
+            module_exports: {},
+          },
+          buffers: [],
+        }}
+        mimeType={NTERACT_BOKEH_SESSION_MIME_TYPE}
+        outputId="output-1"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="native-bokeh-root"]')).not.toBeNull();
+    });
+    expect(requestHost).toHaveBeenCalledWith("nteract/bokehSessionOpen", {
+      sessionId: "session-1",
+      outputId: "output-1",
     });
   });
 });
