@@ -32,7 +32,7 @@ export function uniqueSortedFontFamilies(fontFamilies: readonly string[]): strin
   const byKey = new Map<string, string>();
   for (const fontFamily of fontFamilies) {
     const trimmed = fontFamily.trim();
-    if (!trimmed || trimmed.startsWith(".")) continue;
+    if (!trimmed || trimmed.startsWith(".") || /[^\x00-\x7F]/.test(trimmed)) continue;
     const key = trimmed.toLocaleLowerCase();
     if (!byKey.has(key)) byKey.set(key, trimmed);
   }
