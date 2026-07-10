@@ -475,7 +475,8 @@ be carried across publish if every change is signed by its claimed author.
 
 - **Publish-time re-authoring:** Implement the fresh-document flow in
   `runt-publish` before relying on cross-space attribution closure (see threat
-  table row).
+  table row). Tracked as implementation and security work in
+  [#3900](https://github.com/nteract/nteract/issues/3900).
 
 ## Limitations
 
@@ -513,7 +514,7 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 6. **`runtime_peer` connection topology.** The hosted prototype now supports direct `runtime_peer` `RuntimeStateDoc` ingress into the room. Still open: whether the production kernel sidecar connects to the room directly with its own `runtime_peer` scope credential, or whether a separate runtime-coordination protocol relays writes. Tied to the future remote-runtime work.
 7. **Deployment topology.** How clients reach rooms (browser-direct WebSocket, local-daemon proxy, native client), where kernels run, TLS/CORS, credential keyring placement. Drafted in `docs/adr/deployment-topology.md`.
 8. **ACL mechanics beyond the Cloudflare v1 shape.** The hosted prototype covers flat D1 rows, public-read rows, and owner-only row mutation. Still open: owner transfer UX, group/org expansion, inherited ACLs, audit event retention, Zanzibar/Authzed-style evaluation, and product policy for anonymous public presence.
-9. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. Until then, publish produces a fresh document in the destination space (see Decision 6).
+9. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. This remains a possible future alternative. Current publish behavior and the accepted fresh-document target are recorded separately in Decision 6.
 10. **Bearer-token replay mitigation.** DPoP / proof-of-possession tokens, mTLS for system-to-system, short token lifetimes. v1 inherits the bearer-token threat model; tightening it is future work.
 11. **Lower-cost actor-label validator.** Replace the v1 clone-preview validator with parsing of `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred until we land a patch on our Automerge fork as part of the room-host crate extraction. Drafted in `docs/memos/automerge-fork-patches.md`. Pairs with the filters work above for full attribution integrity once both are in.
 
@@ -542,7 +543,10 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 - Anaconda validates, returns principal `user:anaconda:550e...` (same as quill), scope `editor` (as the ACL permits).
 - Claude's actor is `user:anaconda:550e.../agent:claude:s1`. Same principal as quill's desktop session, different operator. Attribution shows both clearly; the trust gate sees them as the same principal and authorizes both.
 
-### Publishing a local notebook to Anaconda
+### Target: publishing a local notebook to Anaconda
+
+Current publish still uploads the source Automerge document bytes. The target
+flow is:
 
 - quill triggers "publish to Anaconda" from desktop.
 - Desktop captures the current rendered state of the local `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`: cells, metadata, outputs, widget state, blob references.
