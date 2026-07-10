@@ -3056,8 +3056,6 @@ impl Daemon {
             NotebookConnectionInfo, ProtocolCapabilities,
         };
 
-        info!("[runtimed] OpenHostedNotebook requested for {}", url);
-
         let (room, bridge, _connection_reservation) = match self.prepare_hosted_room(&url).await {
             Ok(prepared) => prepared,
             Err(message) => {
@@ -3066,6 +3064,10 @@ impl Daemon {
                 return Ok(());
             }
         };
+        info!(
+            "[runtimed] OpenHostedNotebook attached for {}",
+            bridge.locator
+        );
 
         let Some(principal) = bridge
             .wait_for_principal(std::time::Duration::from_secs(30))

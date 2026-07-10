@@ -8,14 +8,14 @@ use std::time::Duration;
 use automerge::sync;
 use futures::{SinkExt, StreamExt};
 use notebook_doc::{NotebookDoc, TextEncoding};
-use notebook_sync::connect::connect_open_hosted;
-use notebook_wire::NotebookFrameType;
+use notebook_sync::connect::{connect_open_hosted, connect_open_hosted_relay_with_operator};
+use notebook_wire::{frame_types, NotebookFrameType};
 use runtime_doc::RuntimeStateDoc;
 use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::Message;
@@ -148,6 +148,7 @@ async fn serve_fake_cloud_room(
     listener: TcpListener,
     mut room: FakeCloudRoom,
     observed_cells: watch::Sender<Vec<String>>,
+    expected_path: &'static str,
 ) {
     let (stream, _) = listener.accept().await.unwrap();
     let handshake_seen = Arc::new(Mutex::new(None));
@@ -184,7 +185,7 @@ async fn serve_fake_cloud_room(
         let mut seen = handshake_seen.lock().unwrap();
         seen.take().expect("fake room should observe WS handshake")
     };
-    assert_eq!(handshake.path, "/n/e2e-test/sync");
+    assert_eq!(handshake.path, expected_path);
     assert_eq!(handshake.scope.as_deref(), Some("editor"));
     assert_eq!(handshake.token.as_deref(), Some("dev-secret"));
     assert_eq!(handshake.user.as_deref(), Some("kyle"));
@@ -286,6 +287,9 @@ async fn open_hosted_notebook_handshake_syncs_through_daemon_bridge() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let cloud_origin = format!("http://{addr}");
+    let second_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second_addr = second_listener.local_addr().unwrap();
+    let second_cloud_origin = format!("http://{second_addr}");
     let registry_path = temp_dir.path().join("cloud-domains.toml");
     std::fs::write(
         &registry_path,
@@ -295,6 +299,11 @@ default_domain = "{cloud_origin}"
 
 [[domains]]
 url = "{cloud_origin}"
+operator = "agent:e2e"
+credential = {{ kind = "dev-token-env", env = "NTERACT_E2E_HOSTED_DEV_TOKEN", user = "kyle" }}
+
+[[domains]]
+url = "{second_cloud_origin}"
 operator = "agent:e2e"
 credential = {{ kind = "dev-token-env", env = "NTERACT_E2E_HOSTED_DEV_TOKEN", user = "kyle" }}
 "#
@@ -310,6 +319,14 @@ credential = {{ kind = "dev-token-env", env = "NTERACT_E2E_HOSTED_DEV_TOKEN", us
         listener,
         FakeCloudRoom::new(),
         cells_tx,
+        "/n/e2e-test/sync",
+    ));
+    let (second_cells_tx, _second_cells_rx) = watch::channel(Vec::new());
+    let second_server = tokio::spawn(serve_fake_cloud_room(
+        second_listener,
+        FakeCloudRoom::new(),
+        second_cells_tx,
+        "/n/e2e-other/sync",
     ));
 
     let config = test_config(&temp_dir);
@@ -326,7 +343,7 @@ credential = {{ kind = "dev-token-env", env = "NTERACT_E2E_HOSTED_DEV_TOKEN", us
     );
 
     let result = connect_open_hosted(
-        socket_path,
+        socket_path.clone(),
         &format!("{cloud_origin}/n/e2e-test"),
         Some("desktop:e2e".to_string()),
     )
@@ -367,7 +384,80 @@ credential = {{ kind = "dev-token-env", env = "NTERACT_E2E_HOSTED_DEV_TOKEN", us
         cells_rx.borrow().clone()
     );
 
+    // The desktop uses a transparent relay rather than a second Rust-owned
+    // DocHandle. Opening the same canonical locator must reuse the daemon
+    // bridge while preserving this window's operator attribution.
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel();
+    let relay = connect_open_hosted_relay_with_operator(
+        socket_path.clone(),
+        &format!("{cloud_origin}/n/e2e-test?share=not-forwarded"),
+        frame_tx,
+        Some("desktop:relay".to_string()),
+    )
+    .await
+    .unwrap();
+    let relay_actor = relay
+        .info
+        .capabilities
+        .actor_label
+        .as_deref()
+        .expect("hosted relay should return actor label");
+    assert!(relay_actor.starts_with("user:anaconda:kyle/"));
+    assert!(relay_actor.contains("desktop:relay"));
+
+    let mut frontend_doc = NotebookDoc::bootstrap(TextEncoding::Utf16CodeUnit, relay_actor);
+    let mut frontend_state = sync::State::new();
+    let deadline = tokio::time::Instant::now() + SYNC_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        let cell_ids = frontend_doc.get_cell_ids();
+        if cell_ids.iter().any(|id| id == "remote-1") && cell_ids.iter().any(|id| id == "local-1") {
+            break;
+        }
+
+        let frame = tokio::time::timeout(Duration::from_secs(2), frame_rx.recv())
+            .await
+            .expect("hosted relay should receive daemon frames")
+            .expect("hosted relay frame stream should remain open");
+        let Some((&frame_type, payload)) = frame.split_first() else {
+            continue;
+        };
+        if frame_type != frame_types::AUTOMERGE_SYNC {
+            continue;
+        }
+
+        let message = sync::Message::decode(payload).expect("valid hosted relay sync frame");
+        frontend_doc
+            .receive_sync_message(&mut frontend_state, message)
+            .expect("frontend applies hosted relay sync frame");
+        if let Some(reply) = frontend_doc.generate_sync_message(&mut frontend_state) {
+            relay
+                .handle
+                .forward_frame(frame_types::AUTOMERGE_SYNC, reply.encode())
+                .await
+                .expect("frontend returns hosted relay sync frame");
+        }
+    }
+    let relay_cells = frontend_doc.get_cell_ids();
+    assert!(relay_cells.iter().any(|id| id == "remote-1"));
+    assert!(relay_cells.iter().any(|id| id == "local-1"));
+
+    // A distinct canonical locator gets its own bridge/local room and can stay
+    // attached concurrently with the first hosted room.
+    let (second_frame_tx, _second_frame_rx) = mpsc::unbounded_channel();
+    let second_relay = connect_open_hosted_relay_with_operator(
+        socket_path,
+        &format!("{second_cloud_origin}/n/e2e-other"),
+        second_frame_tx,
+        Some("desktop:second-room".to_string()),
+    )
+    .await
+    .unwrap();
+    assert_ne!(second_relay.info.notebook_id, relay.info.notebook_id);
+
     drop(result.handle);
+    drop(relay.handle);
+    drop(second_relay.handle);
     daemon_task.abort();
     server.abort();
+    second_server.abort();
 }

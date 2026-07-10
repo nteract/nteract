@@ -24,6 +24,7 @@ const mockSendRequest = vi.fn();
 const mockGetDefaultSaveDirectory = vi.fn<() => Promise<string>>();
 const mockSaveAs = vi.fn<(path: string) => Promise<void>>();
 const mockOpenInNewWindow = vi.fn<(path: string) => Promise<void>>();
+const mockOpenHostedInNewWindow = vi.fn<(url: string) => Promise<void>>();
 const mockCloneToEphemeral = vi.fn<() => Promise<string>>();
 const stubTransport = {
   sendRequest: (req: unknown) => mockSendRequest(req),
@@ -43,6 +44,7 @@ const stubHost = {
     getDefaultSaveDirectory: () => mockGetDefaultSaveDirectory(),
     saveAs: (path: string) => mockSaveAs(path),
     openInNewWindow: (path: string) => mockOpenInNewWindow(path),
+    openHostedInNewWindow: (url: string) => mockOpenHostedInNewWindow(url),
     cloneToEphemeral: () => mockCloneToEphemeral(),
   },
 } as unknown as NotebookHost;
@@ -51,6 +53,7 @@ beforeEach(() => {
   mockGetDefaultSaveDirectory.mockResolvedValue("/home/user/notebooks");
   mockSaveAs.mockResolvedValue(undefined);
   mockOpenInNewWindow.mockResolvedValue(undefined);
+  mockOpenHostedInNewWindow.mockResolvedValue(undefined);
   mockCloneToEphemeral.mockResolvedValue("new-uuid-1234");
 });
 
@@ -61,6 +64,7 @@ afterEach(() => {
   mockGetDefaultSaveDirectory.mockReset();
   mockSaveAs.mockReset();
   mockOpenInNewWindow.mockReset();
+  mockOpenHostedInNewWindow.mockReset();
   mockCloneToEphemeral.mockReset();
 });
 
@@ -132,6 +136,17 @@ describe("saveNotebook", () => {
     const result = await saveNotebook(stubHost, flushSync, true);
 
     expect(result).toBe(false);
+  });
+
+  it("flushes hosted notebooks without opening a local Save As flow", async () => {
+    const result = await saveNotebook(stubHost, flushSync, false, { hosted: true });
+
+    expect(result).toBe(true);
+    expect(flushSync).toHaveBeenCalledTimes(1);
+    expect(mockGetDefaultSaveDirectory).not.toHaveBeenCalled();
+    expect(mockSaveDialog).not.toHaveBeenCalled();
+    expect(mockSaveAs).not.toHaveBeenCalled();
+    expect(mockSendRequest).not.toHaveBeenCalled();
   });
 
   it("always flushes sync before saving", async () => {

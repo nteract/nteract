@@ -4772,6 +4772,7 @@ dependencies = [
  "log",
  "nbformat",
  "nix 0.31.2",
+ "notebook-cloud-transport",
  "notebook-doc",
  "notebook-protocol",
  "notebook-sync",

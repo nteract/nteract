@@ -577,6 +577,9 @@ export async function createBrowserHost(
       async openInNewWindow() {
         throw new Error("Open in new window is not available in the browser dev host");
       },
+      async openHostedInNewWindow() {
+        throw new Error("Opening hosted notebooks is not available in the browser dev host");
+      },
       async cloneToEphemeral() {
         throw new Error("Clone is not available in the browser dev host");
       },

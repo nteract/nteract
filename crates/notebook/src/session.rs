@@ -1,6 +1,6 @@
 //! Session state persistence for restoring windows across app restarts.
 //!
-//! Saves the list of open windows (with their notebook paths or env_ids) on shutdown,
+//! Saves the list of open windows (local paths, local room ids, or hosted locators) on shutdown,
 //! and restores them on startup. Works with the tauri-plugin-window-state for geometry.
 
 use crate::WindowNotebookRegistry;
@@ -19,6 +19,11 @@ pub struct WindowSession {
     /// env_id from notebook metadata for untitled notebooks.
     /// This allows the daemon to restore the correct Automerge doc.
     pub env_id: Option<String>,
+    /// Canonical hosted notebook locator for daemon-mediated cloud windows.
+    /// Kept distinct from `env_id` so restore uses OpenHostedNotebook rather
+    /// than creating an unrelated untitled local room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted_locator: Option<String>,
     /// Runtime type (python, deno)
     pub runtime: String,
     /// Scale factor of the monitor when this window was saved.
@@ -41,7 +46,7 @@ pub struct SessionState {
 
 impl SessionState {
     /// Current schema version
-    pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+    pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
     /// Maximum age in hours before a session is considered stale
     pub const MAX_AGE_HOURS: i64 = 24;
@@ -68,10 +73,11 @@ pub(crate) fn save_session_to<R: tauri::Runtime>(
         .filter_map(|(label, context)| {
             let path = context.path.lock().ok()?.clone();
             let notebook_id = context.notebook_id.lock().ok()?.clone();
+            let hosted_locator = context.hosted_locator.clone();
 
             // For untitled notebooks (no path), the notebook_id is the env_id (UUID).
             // The daemon uses this to find the persisted Automerge doc on restore.
-            let env_id = if path.is_none() && !notebook_id.is_empty() {
+            let env_id = if hosted_locator.is_none() && path.is_none() && !notebook_id.is_empty() {
                 Some(notebook_id)
             } else {
                 None
@@ -85,6 +91,7 @@ pub(crate) fn save_session_to<R: tauri::Runtime>(
                 label: label.clone(),
                 path,
                 env_id,
+                hosted_locator,
                 runtime: context.runtime.to_string(),
                 scale_factor,
             })
@@ -107,7 +114,8 @@ pub(crate) fn save_session_to_without_scale(
         .filter_map(|(label, context)| {
             let path = context.path.lock().ok()?.clone();
             let notebook_id = context.notebook_id.lock().ok()?.clone();
-            let env_id = if path.is_none() && !notebook_id.is_empty() {
+            let hosted_locator = context.hosted_locator.clone();
+            let env_id = if hosted_locator.is_none() && path.is_none() && !notebook_id.is_empty() {
                 Some(notebook_id)
             } else {
                 None
@@ -116,6 +124,7 @@ pub(crate) fn save_session_to_without_scale(
                 label: label.clone(),
                 path,
                 env_id,
+                hosted_locator,
                 runtime: context.runtime.to_string(),
                 scale_factor: None,
             })
@@ -237,7 +246,9 @@ pub(crate) fn clear_session_at(path: &std::path::Path) {
 ///
 /// Uses deterministic labels so window-state plugin can restore geometry.
 pub fn window_label_for_session(session: &WindowSession) -> String {
-    if let Some(path) = &session.path {
+    if let Some(locator) = &session.hosted_locator {
+        crate::hosted_notebook_window_label(locator)
+    } else if let Some(path) = &session.path {
         // Hash the path for a stable label
         let hash = runt_workspace::worktree_hash(path);
         format!("notebook-{}", &hash[..8])
@@ -266,8 +277,15 @@ mod tests {
             path: Arc::new(Mutex::new(path)),
             working_dir: None,
             notebook_id: Arc::new(Mutex::new(notebook_id.to_string())),
+            hosted_locator: None,
             runtime: Runtime::Python,
         }
+    }
+
+    fn test_hosted_context(locator: &str, notebook_id: &str) -> WindowNotebookContext {
+        let mut context = test_context(None, notebook_id);
+        context.hosted_locator = Some(locator.to_string());
+        context
     }
 
     fn test_registry(entries: Vec<(&str, WindowNotebookContext)>) -> crate::WindowNotebookRegistry {
@@ -295,6 +313,10 @@ mod tests {
                 test_context(Some(saved_path.clone()), ""),
             ),
             ("notebook-abc12345", test_context(None, "env-uuid-1234")),
+            (
+                "notebook-cloud-12345678",
+                test_hosted_context("https://app.runt.run/n/cloud-123", "daemon-room-id"),
+            ),
         ]);
 
         save_session_to_without_scale(&registry, &session_path).unwrap();
@@ -302,7 +324,7 @@ mod tests {
 
         let loaded = load_session_from(&session_path).unwrap();
         assert_eq!(loaded.schema_version, SessionState::CURRENT_SCHEMA_VERSION);
-        assert_eq!(loaded.windows.len(), 2);
+        assert_eq!(loaded.windows.len(), 3);
 
         let saved_win = loaded
             .windows
@@ -320,6 +342,18 @@ mod tests {
         assert!(untitled.path.is_none());
         assert_eq!(untitled.env_id.as_deref().unwrap(), "env-uuid-1234");
         assert_eq!(untitled.runtime, "python");
+
+        let hosted = loaded
+            .windows
+            .iter()
+            .find(|w| w.label == "notebook-cloud-12345678")
+            .unwrap();
+        assert!(hosted.path.is_none());
+        assert!(hosted.env_id.is_none());
+        assert_eq!(
+            hosted.hosted_locator.as_deref(),
+            Some("https://app.runt.run/n/cloud-123")
+        );
     }
 
     #[test]
@@ -350,6 +384,32 @@ mod tests {
     }
 
     #[test]
+    fn test_load_v1_session_defaults_hosted_locator_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session.json");
+        let saved_at = chrono::Utc::now().to_rfc3339();
+        let json = format!(
+            r#"{{
+  "schema_version": 1,
+  "saved_at": "{saved_at}",
+  "windows": [{{
+    "label": "notebook-legacy",
+    "path": null,
+    "env_id": "legacy-env",
+    "runtime": "python",
+    "scale_factor": null
+  }}]
+}}"#
+        );
+        std::fs::write(&session_path, json).unwrap();
+
+        let loaded = load_session_from(&session_path).expect("legacy session should load");
+        assert_eq!(loaded.schema_version, 1);
+        assert_eq!(loaded.windows.len(), 1);
+        assert!(loaded.windows[0].hosted_locator.is_none());
+    }
+
+    #[test]
     fn test_load_stale_session() {
         let dir = tempfile::tempdir().unwrap();
         let session_path = dir.path().join("session.json");
@@ -363,6 +423,7 @@ mod tests {
                 label: "notebook-test1234".to_string(),
                 path: None,
                 env_id: Some("test".to_string()),
+                hosted_locator: None,
                 runtime: "python".to_string(),
                 scale_factor: None,
             }],
@@ -392,6 +453,7 @@ mod tests {
             label: "notebook-12345678".to_string(),
             path: Some(PathBuf::from("/tmp/test.ipynb")),
             env_id: None,
+            hosted_locator: None,
             runtime: "python".to_string(),
             scale_factor: None,
         };
@@ -408,10 +470,27 @@ mod tests {
             label: "notebook-old".to_string(),
             path: None,
             env_id: Some("abcdef1234567890".to_string()),
+            hosted_locator: None,
             runtime: "python".to_string(),
             scale_factor: None,
         };
         assert_eq!(window_label_for_session(&session), "notebook-abcdef12");
+    }
+
+    #[test]
+    fn test_window_label_hosted_uses_canonical_locator() {
+        let session = WindowSession {
+            label: "notebook-old".to_string(),
+            path: None,
+            env_id: None,
+            hosted_locator: Some("https://app.runt.run/n/cloud-123".to_string()),
+            runtime: "python".to_string(),
+            scale_factor: None,
+        };
+        assert_eq!(
+            window_label_for_session(&session),
+            crate::hosted_notebook_window_label("https://app.runt.run/n/cloud-123")
+        );
     }
 
     /// Regression test for #848: ghost entries from destroyed windows must be
@@ -472,6 +551,7 @@ mod tests {
             label: "notebook-c79d8e59".to_string(),
             path: Some(path.clone()),
             env_id: None,
+            hosted_locator: None,
             runtime: "python".to_string(),
             scale_factor: None,
         };
@@ -479,6 +559,7 @@ mod tests {
             label: "notebook-c79d8e59-ab123456".to_string(),
             path: Some(path),
             env_id: None,
+            hosted_locator: None,
             runtime: "python".to_string(),
             scale_factor: None,
         };

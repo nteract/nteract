@@ -32,10 +32,16 @@ export async function saveNotebook(
   host: NotebookHost,
   flushSync: () => Promise<boolean | void>,
   hasPath: boolean,
+  options: { hosted?: boolean } = {},
 ): Promise<boolean> {
   try {
     const flushed = await flushSync();
     if (flushed === false) return false;
+
+    // A daemon-mediated hosted room is already persisted by its cloud host.
+    // Its daemon-local room is intentionally ephemeral, so `path == null`
+    // must not be interpreted as an untitled local notebook that needs Save As.
+    if (options.hosted) return true;
 
     if (hasPath) {
       const client = new NotebookClient({ transport: host.transport });

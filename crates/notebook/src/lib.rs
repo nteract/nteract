@@ -41,6 +41,10 @@ struct WindowNotebookContext {
     /// Notebook ID for daemon sync — derived from path (saved) or env_id (untitled).
     /// Updated on save_notebook_as when path changes.
     notebook_id: Arc<Mutex<String>>,
+    /// Canonical hosted notebook locator for daemon-mediated cloud windows.
+    /// Kept separate from `path`/`notebook_id` so reconnect and session restore
+    /// never reinterpret a hosted room as an untitled local notebook.
+    hosted_locator: Option<String>,
     /// Runtime type for this notebook (Python or Deno).
     /// Used by session save so it doesn't need to query the daemon.
     runtime: Runtime,
@@ -133,25 +137,65 @@ impl WindowNotebookRegistry {
         None
     }
 
-    /// Find the first live pathless window. Only use this for deferred
+    /// Find the first live, local pathless window. Only use this for deferred
     /// file-open events delivered during startup, before the user can
-    /// reasonably edit the default placeholder notebook.
+    /// reasonably edit the default placeholder notebook. Hosted windows are
+    /// pathless locally but already have a durable remote identity, so they
+    /// must never be retargeted by this flow.
     #[cfg(target_os = "macos")]
     fn find_pathless_window_label(&self, app: &tauri::AppHandle) -> Option<String> {
         let contexts = self.contexts.lock().ok()?;
         for (label, ctx) in contexts.iter() {
-            if app.get_webview_window(label).is_some() {
-                if let Ok(guard) = ctx.path.lock() {
-                    if guard.is_none() {
-                        log::info!("[registry] find_pathless_window_label: found '{}'", label);
-                        return Some(label.clone());
-                    }
-                }
+            if app.get_webview_window(label).is_some() && is_reusable_startup_placeholder(ctx) {
+                log::info!("[registry] find_pathless_window_label: found '{}'", label);
+                return Some(label.clone());
             }
         }
         log::debug!("[registry] find_pathless_window_label: no pathless window found");
         None
     }
+}
+
+fn is_reusable_startup_placeholder(context: &WindowNotebookContext) -> bool {
+    context.hosted_locator.is_none() && context.path.lock().is_ok_and(|path| path.is_none())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WindowContextReservation {
+    Reserved(String),
+    Existing(String),
+}
+
+/// Atomically reserve a window label in the registry.
+///
+/// Hosted locators are single-window identities: if another open already
+/// reserved the canonical label, reuse that reservation instead of applying
+/// the generic unique-suffix fallback. Other modes retain the fallback used by
+/// untitled and attach flows.
+fn reserve_window_context(
+    registry: &WindowNotebookRegistry,
+    label: String,
+    context: WindowNotebookContext,
+    deduplicate: bool,
+) -> Result<WindowContextReservation, String> {
+    let mut contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
+    if contexts.contains_key(&label) && deduplicate {
+        return Ok(WindowContextReservation::Existing(label));
+    }
+
+    let mut reserved_label = label.clone();
+    while contexts.contains_key(&reserved_label) {
+        reserved_label = format!("{}-{}", label, &uuid::Uuid::new_v4().to_string()[..8]);
+    }
+    let has_path = context.path.lock().is_ok_and(|path| path.is_some());
+    contexts.insert(reserved_label.clone(), context);
+    log::info!(
+        "[registry] Reserved context for '{}' (has_path={}, total={})",
+        reserved_label,
+        has_path,
+        contexts.len()
+    );
+    Ok(WindowContextReservation::Reserved(reserved_label))
 }
 
 /// Per-window reconnect guard (distinguishes from app-global restart state).
@@ -347,14 +391,26 @@ impl SyncReadyState {
         gate.tx.subscribe()
     }
 
-    /// Record the most-recent `daemon:ready` payload for this window, so
-    /// late-mounted JS listeners can pull it via `get_daemon_ready_info`.
-    fn record_ready(&self, label: &str, payload: DaemonReadyPayload) {
+    /// Record the most-recent `daemon:ready` payload only while the matching
+    /// window generation is still registered. Holding the gate lock through
+    /// the cache write makes this atomic with `clear_window` on destruction.
+    fn record_ready(&self, label: &str, generation: u64, payload: DaemonReadyPayload) -> bool {
+        let gates = match self.gates.lock() {
+            Ok(gates) => gates,
+            Err(error) => error.into_inner(),
+        };
+        if !gates
+            .get(label)
+            .is_some_and(|gate| gate.generation == generation)
+        {
+            return false;
+        }
         let mut cache = match self.last_ready.lock() {
             Ok(c) => c,
             Err(e) => e.into_inner(),
         };
         cache.insert(label.to_string(), payload);
+        true
     }
 
     /// Look up the cached payload on demand. Idempotent — multiple callers
@@ -393,6 +449,29 @@ impl SyncReadyState {
         };
         cache.remove(label);
     }
+
+    /// Drop every per-window readiness artifact when its webview is destroyed.
+    /// This also closes watch senders so an in-flight relay cannot repopulate
+    /// state for a deterministic label after the window is gone.
+    fn clear_window(&self, label: &str) {
+        match self.gates.lock() {
+            Ok(mut gates) => {
+                gates.remove(label);
+            }
+            Err(error) => {
+                error.into_inner().remove(label);
+            }
+        }
+        match self.frame_channels.lock() {
+            Ok(mut channels) => {
+                channels.remove(label);
+            }
+            Err(error) => {
+                error.into_inner().remove(label);
+            }
+        }
+        self.clear_cached_ready(label);
+    }
 }
 
 use std::path::{Path, PathBuf};
@@ -424,6 +503,11 @@ struct DaemonReadyPayload {
     /// `PathChanged` broadcast fires because the path was set before the
     /// room was reconnected).
     notebook_path: Option<String>,
+    /// Canonical hosted locator when this window is attached through the
+    /// daemon-mediated cloud bridge. Hosted rooms are daemon-local ephemeral
+    /// but remotely durable, so the frontend must not infer source from
+    /// `ephemeral`/`notebook_path` alone.
+    hosted_notebook_url: Option<String>,
     /// Runtime hint so the frontend can show the correct UI before metadata syncs.
     /// Only set for Create (where we know the exact runtime); None for Open
     /// (where the actual runtime is determined from the file's metadata).
@@ -461,6 +545,45 @@ enum OpenMode {
         working_dir: Option<PathBuf>,
         runtime: String,
     },
+    /// Open a hosted notebook through the daemon-mediated cloud bridge.
+    /// A caller-triggered open may carry a relay prepared before the new window
+    /// is created so connection/configuration failures return to the requesting
+    /// surface instead of stranding a loading window. Session restore and
+    /// reconnect create the relay after the window already exists.
+    Hosted {
+        locator: String,
+        prepared: Option<PreparedHostedRelay>,
+    },
+}
+
+struct PreparedHostedRelay {
+    result: notebook_sync::connect::RelayOpenResult,
+    raw_frame_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+}
+
+fn normalize_hosted_notebook_locator(value: &str) -> Result<String, String> {
+    let (domain, notebook_id) = notebook_cloud_transport::registry::parse_hosted_url(value.trim())?;
+    Ok(notebook_cloud_transport::registry::hosted_notebook_url(
+        &domain,
+        &notebook_id,
+    ))
+}
+
+fn hosted_notebook_window_label(locator: &str) -> String {
+    let room_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, locator.as_bytes());
+    format!("notebook-cloud-{}", &room_id.simple().to_string()[..8])
+}
+
+fn hosted_notebook_window_title(locator: &str) -> String {
+    match notebook_cloud_transport::registry::parse_hosted_url(locator) {
+        Ok((domain, notebook_id)) => {
+            let host = domain
+                .split_once("://")
+                .map_or(domain.as_str(), |(_, host)| host);
+            format!("{notebook_id} · {host}")
+        }
+        Err(_) => "Cloud Notebook".to_string(),
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -564,6 +687,21 @@ fn desktop_operator_label() -> String {
     format!("desktop:{}", &suffix[..8])
 }
 
+fn require_current_sync_generation(
+    sync_generation: &AtomicU64,
+    expected: u64,
+    operation: &str,
+) -> Result<(), String> {
+    let current = sync_generation.load(Ordering::SeqCst);
+    if current == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{operation} relay generation {expected} was superseded by generation {current}"
+        ))
+    }
+}
+
 /// Connect to the daemon by opening an existing notebook file.
 ///
 /// The daemon loads the file, derives notebook_id, creates the room, and populates
@@ -616,6 +754,8 @@ async fn initialize_notebook_sync_open(
     .await
     .map_err(|e| format!("sync connect (open): {}", e))?;
 
+    require_current_sync_generation(&sync_generation, current_generation, "open")?;
+
     let handle = result.handle;
     let info = result.info;
 
@@ -636,6 +776,7 @@ async fn initialize_notebook_sync_open(
         needs_trust_approval: info.needs_trust_approval,
         ephemeral: info.ephemeral,
         notebook_path: info.notebook_path.or(Some(caller_path)),
+        hosted_notebook_url: None,
         runtime: None,
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
@@ -698,6 +839,8 @@ async fn initialize_notebook_sync_create(
     .await
     .map_err(|e| format!("sync connect (create): {}", e))?;
 
+    require_current_sync_generation(&sync_generation, current_generation, "create")?;
+
     let handle = result.handle;
     let info = result.info;
 
@@ -718,6 +861,7 @@ async fn initialize_notebook_sync_create(
         needs_trust_approval: info.needs_trust_approval,
         ephemeral: info.ephemeral,
         notebook_path: info.notebook_path.clone(),
+        hosted_notebook_url: None,
         runtime: Some(runtime),
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
@@ -774,6 +918,8 @@ async fn initialize_notebook_sync_attach(
     .await
     .map_err(|e| format!("sync connect (attach): {}", e))?;
 
+    require_current_sync_generation(&sync_generation, current_generation, "attach")?;
+
     let handle = result.handle;
     let capabilities = result.capabilities;
 
@@ -792,6 +938,7 @@ async fn initialize_notebook_sync_attach(
         needs_trust_approval: false,
         ephemeral: true,
         notebook_path: None,
+        hosted_notebook_url: None,
         runtime: Some(runtime),
         actor_label: capabilities.actor_label.clone(),
         connection_scope: capabilities.connection_scope.clone(),
@@ -802,6 +949,98 @@ async fn initialize_notebook_sync_attach(
     setup_sync_receivers(
         window,
         notebook_id,
+        handle,
+        raw_frame_rx,
+        notebook_sync,
+        sync_generation,
+        current_generation,
+        ready_payload,
+    )
+    .await
+}
+
+async fn prepare_hosted_relay(locator: &str) -> Result<PreparedHostedRelay, String> {
+    let socket_path = runt_workspace::default_socket_path();
+    let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let operator = desktop_operator_label();
+    let result = notebook_sync::connect::connect_open_hosted_relay_with_operator(
+        socket_path,
+        locator,
+        frame_tx,
+        Some(operator),
+    )
+    .await
+    .map_err(|e| format!("sync connect (hosted): {e}"))?;
+
+    Ok(PreparedHostedRelay {
+        result,
+        raw_frame_rx,
+    })
+}
+
+/// Connect this desktop window to a hosted cloud notebook through the daemon.
+///
+/// The relay can be prepared by the caller before creating this window so
+/// registry, credential, and connectivity errors return to that caller.
+/// Session restore and reconnect call the same path without a prepared relay.
+async fn initialize_notebook_sync_hosted(
+    window: tauri::WebviewWindow,
+    locator: String,
+    prepared: Option<PreparedHostedRelay>,
+    notebook_sync: SharedNotebookSync,
+    sync_generation: Arc<AtomicU64>,
+    notebook_id: Arc<Mutex<String>>,
+) -> Result<(), String> {
+    let current_generation = sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let prepared = match prepared {
+        Some(prepared) => prepared,
+        None => prepare_hosted_relay(&locator).await?,
+    };
+    require_current_sync_generation(&sync_generation, current_generation, "hosted open")?;
+    if window
+        .app_handle()
+        .get_webview_window(window.label())
+        .is_none()
+    {
+        return Err(format!(
+            "hosted open for '{}' was canceled because the window closed",
+            window.label()
+        ));
+    }
+    let PreparedHostedRelay {
+        result,
+        raw_frame_rx,
+    } = prepared;
+    let handle = result.handle;
+    let info = result.info;
+
+    info!(
+        "[notebook-sync] Opened hosted notebook through daemon: locator={}, room_id={}, cells={}",
+        locator, info.notebook_id, info.cell_count
+    );
+
+    if let Ok(mut id) = notebook_id.lock() {
+        *id = info.notebook_id.clone();
+    }
+
+    let ready_payload = DaemonReadyPayload {
+        notebook_id: info.notebook_id.clone(),
+        relay_generation: current_generation,
+        cell_count: info.cell_count,
+        needs_trust_approval: info.needs_trust_approval,
+        ephemeral: info.ephemeral,
+        notebook_path: None,
+        hosted_notebook_url: Some(locator),
+        runtime: None,
+        actor_label: info.capabilities.actor_label.clone(),
+        connection_scope: info.capabilities.connection_scope.clone(),
+        comments_doc_id: info.capabilities.comments_doc_id.clone(),
+        comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
+    };
+
+    setup_sync_receivers(
+        window,
+        info.notebook_id,
         handle,
         raw_frame_rx,
         notebook_sync,
@@ -833,8 +1072,14 @@ async fn setup_sync_receivers(
     current_generation: u64,
     ready_payload: DaemonReadyPayload,
 ) -> Result<(), String> {
+    require_current_sync_generation(&sync_generation, current_generation, "relay activation")?;
+
     // Store the handle for commands to use
-    *notebook_sync.lock().await = Some(handle);
+    {
+        let mut sync_handle = notebook_sync.lock().await;
+        require_current_sync_generation(&sync_generation, current_generation, "relay activation")?;
+        *sync_handle = Some(handle);
+    }
     info!(
         "[notebook-sync] Handle stored for {} (gen {})",
         notebook_id, current_generation,
@@ -852,6 +1097,7 @@ async fn setup_sync_receivers(
     // Subscribe to the per-window readiness gate. Every relay generation starts
     // paused until the frontend has completed its matching WASM bootstrap.
     let sync_ready = window.app_handle().state::<SyncReadyState>();
+    require_current_sync_generation(&sync_generation, current_generation, "relay activation")?;
     sync_ready.reset_for_generation(window.label(), current_generation);
     let mut ready_rx = sync_ready.subscribe(window.label());
     let mut frame_channel_rx = sync_ready.subscribe_frame_channel(window.label());
@@ -1025,13 +1271,25 @@ async fn setup_sync_receivers(
         notebook_id,
     );
 
+    require_current_sync_generation(&sync_generation, current_generation, "ready notification")?;
+
     // Stash the payload so `notify_sync_ready` can re-emit it for late JS
     // listeners (Tauri webview events aren't sticky — if `daemon:ready` fires
     // before React has attached its `onReady` handler, the event is lost).
-    window_for_ready
+    let ready_recorded = window_for_ready
         .app_handle()
         .state::<SyncReadyState>()
-        .record_ready(window_for_ready.label(), ready_payload.clone());
+        .record_ready(
+            window_for_ready.label(),
+            current_generation,
+            ready_payload.clone(),
+        );
+    if !ready_recorded {
+        return Err(format!(
+            "ready notification for '{}' was canceled because the window closed or reconnected",
+            window_for_ready.label()
+        ));
+    }
 
     // Emit daemon:ready with connection info so frontend can show loading state / trust prompt
     if let Err(e) = emit_to_label::<_, _, _>(
@@ -1049,10 +1307,14 @@ async fn setup_sync_receivers(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_commit_hash, next_available_sample_path, normalize_font_families,
-        pathless_file_open_policy, reopen_action, PathlessFileOpenPolicy, ReopenAction,
-        SyncReadyState,
+        create_window_context_for_daemon, extract_commit_hash, hosted_notebook_window_label,
+        is_reusable_startup_placeholder, next_available_sample_path, normalize_font_families,
+        normalize_hosted_notebook_locator, pathless_file_open_policy, reopen_action,
+        require_current_sync_generation, reserve_window_context, PathlessFileOpenPolicy,
+        ReopenAction, Runtime, SyncReadyState, WindowContextReservation, WindowNotebookRegistry,
     };
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Barrier};
     use tempfile::TempDir;
 
     #[test]
@@ -1094,6 +1356,114 @@ mod tests {
             normalize_font_families(["  Ümlaut  ", "ümlaut", "Naïve", "naïve"]),
             vec!["Naïve", "Ümlaut"]
         );
+    }
+
+    #[test]
+    fn hosted_notebook_locator_is_canonical_and_secret_free() {
+        assert_eq!(
+            normalize_hosted_notebook_locator(
+                "  https://Preview.Runt.Run/n/cloud-123/edit?token=secret#cell-1  "
+            )
+            .expect("valid hosted notebook URL"),
+            "https://preview.runt.run/n/cloud-123"
+        );
+    }
+
+    #[test]
+    fn hosted_notebook_locator_rejects_non_cloud_targets() {
+        assert!(normalize_hosted_notebook_locator("file:///tmp/notebook.ipynb").is_err());
+        assert!(
+            normalize_hosted_notebook_locator("https://preview.runt.run/notebooks/123").is_err()
+        );
+    }
+
+    #[test]
+    fn hosted_notebook_window_label_is_stable_per_locator() {
+        let locator = "https://preview.runt.run/n/cloud-123";
+        assert_eq!(
+            hosted_notebook_window_label(locator),
+            hosted_notebook_window_label(locator)
+        );
+        assert_ne!(
+            hosted_notebook_window_label(locator),
+            hosted_notebook_window_label("https://preview.runt.run/n/cloud-456")
+        );
+    }
+
+    #[test]
+    fn stale_sync_generation_is_rejected_before_activation() {
+        let generation = AtomicU64::new(4);
+        assert!(require_current_sync_generation(&generation, 4, "hosted open").is_ok());
+
+        generation.store(5, Ordering::SeqCst);
+        let error = require_current_sync_generation(&generation, 4, "hosted open")
+            .expect_err("stale generation must not activate");
+        assert!(error.contains("superseded by generation 5"));
+    }
+
+    #[test]
+    fn concurrent_hosted_window_reservations_deduplicate_the_locator() {
+        let registry = WindowNotebookRegistry::default();
+        let barrier = Arc::new(Barrier::new(2));
+        let mut workers = Vec::new();
+
+        for _ in 0..2 {
+            let registry = registry.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                let context = create_window_context_for_daemon(
+                    None,
+                    None,
+                    String::new(),
+                    Some("https://preview.runt.run/n/cloud-123".to_string()),
+                    Runtime::Python,
+                );
+                barrier.wait();
+                reserve_window_context(
+                    &registry,
+                    "notebook-cloud-canonical".to_string(),
+                    context,
+                    true,
+                )
+                .expect("hosted reservation")
+            }));
+        }
+
+        let reservations: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("reservation worker"))
+            .collect();
+        assert_eq!(
+            reservations
+                .iter()
+                .filter(|result| matches!(result, WindowContextReservation::Reserved(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            reservations
+                .iter()
+                .filter(|result| matches!(result, WindowContextReservation::Existing(_)))
+                .count(),
+            1
+        );
+        assert_eq!(registry.contexts.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hosted_window_is_not_a_reusable_startup_placeholder() {
+        let hosted = create_window_context_for_daemon(
+            None,
+            None,
+            String::new(),
+            Some("https://preview.runt.run/n/cloud-123".to_string()),
+            Runtime::Python,
+        );
+        let local =
+            create_window_context_for_daemon(None, None, String::new(), None, Runtime::Python);
+
+        assert!(!is_reusable_startup_placeholder(&hosted));
+        assert!(is_reusable_startup_placeholder(&local));
     }
 
     #[test]
@@ -1203,6 +1573,21 @@ mod tests {
         assert!(
             !*rx.borrow(),
             "relay setup must reset any preseeded ready flag before subscribing"
+        );
+    }
+
+    #[test]
+    fn sync_ready_window_cleanup_drops_destroyed_window_state() {
+        let sync_ready = SyncReadyState::default();
+        sync_ready.reset_for_generation("notebook-closed", 1);
+        assert!(sync_ready.set_ready("notebook-closed", Some(1)));
+        assert!(*sync_ready.subscribe("notebook-closed").borrow());
+
+        sync_ready.clear_window("notebook-closed");
+
+        assert!(
+            !*sync_ready.subscribe("notebook-closed").borrow(),
+            "a reused deterministic label must start with a fresh readiness gate"
         );
     }
 }
@@ -2217,6 +2602,12 @@ async fn save_notebook_as(
     registry: tauri::State<'_, WindowNotebookRegistry>,
     sync_ready: tauri::State<'_, SyncReadyState>,
 ) -> Result<(), String> {
+    if registry.get(window.label())?.hosted_locator.is_some() {
+        return Err(
+            "Hosted notebooks sync to their cloud room automatically. Clone the notebook before saving a local copy."
+                .to_string(),
+        );
+    }
     info!(
         "[save] save_notebook_as command invoked by window {} with path {:?}",
         window.label(),
@@ -2362,6 +2753,42 @@ async fn open_notebook_in_new_window(
     open_notebook_window(&app, registry.inner(), Path::new(&path))
 }
 
+/// Open a hosted cloud notebook in a new desktop window through the local daemon.
+///
+/// Normalize before the handshake so query strings/fragments never reach logs,
+/// labels, or the daemon. Prepare the relay before creating the window so
+/// registry/credential/connectivity errors return to the requesting surface
+/// rather than leaving a new window in a permanent loading state.
+#[tauri::command]
+async fn open_hosted_notebook_in_new_window(
+    url: String,
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    let locator = normalize_hosted_notebook_locator(&url)?;
+    let label = hosted_notebook_window_label(&locator);
+
+    registry.prune_stale_entries(&app);
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.show();
+        let _ = existing.unminimize();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    let prepared = prepare_hosted_relay(&locator).await?;
+    create_notebook_window_for_daemon(
+        &app,
+        registry.inner(),
+        OpenMode::Hosted {
+            locator,
+            prepared: Some(prepared),
+        },
+        Some(label),
+    )?;
+    Ok(())
+}
+
 /// Create a notebook window using daemon-owned loading.
 ///
 /// The window is created immediately (with a loading state). The daemon connection
@@ -2410,6 +2837,12 @@ fn create_notebook_window_for_daemon(
                 runtime_enum,
             )
         }
+        OpenMode::Hosted { locator, .. } => (
+            hosted_notebook_window_title(locator),
+            None,
+            None,
+            settings::load_settings().default_runtime,
+        ),
     };
 
     // Generate a stable window label for the window-state plugin
@@ -2426,6 +2859,8 @@ fn create_notebook_window_for_daemon(
         } = &mode
         {
             format!("notebook-{}", &id[..8.min(id.len())])
+        } else if let OpenMode::Hosted { locator, .. } = &mode {
+            hosted_notebook_window_label(locator)
         } else if let Some(ref p) = path {
             let hash = runt_workspace::worktree_hash(p);
             format!("notebook-{}", &hash[..8])
@@ -2471,18 +2906,42 @@ fn create_notebook_window_for_daemon(
             notebook_id: None, ..
         } => String::new(),
         OpenMode::Attach { notebook_id, .. } => notebook_id.clone(),
+        OpenMode::Hosted {
+            prepared: Some(prepared),
+            ..
+        } => prepared.result.info.notebook_id.clone(),
+        OpenMode::Hosted { prepared: None, .. } => String::new(),
     };
 
-    let context =
-        create_window_context_for_daemon(path, working_dir.clone(), placeholder_id, runtime);
-    // If insert fails due to a label collision (race between window check and insert),
-    // retry with a unique suffix (#577).
-    let label = if registry.insert(label.clone(), context.clone()).is_err() {
-        let suffixed = format!("{}-{}", label, &uuid::Uuid::new_v4().to_string()[..8]);
-        registry.insert(suffixed.clone(), context.clone())?;
-        suffixed
-    } else {
-        label
+    let hosted_locator = match &mode {
+        OpenMode::Hosted { locator, .. } => Some(locator.clone()),
+        _ => None,
+    };
+    let context = create_window_context_for_daemon(
+        path,
+        working_dir.clone(),
+        placeholder_id,
+        hosted_locator,
+        runtime,
+    );
+    // Reserve atomically after the window lookup. Hosted locators are
+    // single-window identities, so a concurrent open reuses the reservation;
+    // other modes retain the unique-suffix collision fallback (#577).
+    let deduplicate = matches!(&mode, OpenMode::Hosted { .. });
+    let label = match reserve_window_context(registry, label, context.clone(), deduplicate)? {
+        WindowContextReservation::Reserved(label) => label,
+        WindowContextReservation::Existing(label) => {
+            info!(
+                "[window] Hosted window '{}' is already being opened; reusing reservation",
+                label
+            );
+            if let Some(existing) = app.get_webview_window(&label) {
+                let _ = existing.show();
+                let _ = existing.unminimize();
+                let _ = existing.set_focus();
+            }
+            return Ok(label);
+        }
     };
 
     let username = get_username();
@@ -2551,6 +3010,17 @@ fn create_notebook_window_for_daemon(
                     window,
                     notebook_id,
                     runtime,
+                    notebook_sync,
+                    sync_generation,
+                    notebook_id_arc,
+                )
+                .await
+            }
+            OpenMode::Hosted { locator, prepared } => {
+                initialize_notebook_sync_hosted(
+                    window,
+                    locator,
+                    prepared,
                     notebook_sync,
                     sync_generation,
                     notebook_id_arc,
@@ -2816,6 +3286,9 @@ async fn reconnect_to_daemon(
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
+    let context = registry.get(window.label())?;
+    let hosted_locator = context.hosted_locator.clone();
+    let runtime = context.runtime.to_string();
 
     let window_label = window.label().to_string();
 
@@ -2880,11 +3353,19 @@ async fn reconnect_to_daemon(
         .get_webview_window(window.label())
         .ok_or_else(|| "Current webview window not found".to_string())?;
 
-    let context = registry.get(window.label())?;
-    let runtime = context.runtime.to_string();
-
     // First attempt: try to connect (daemon might have restarted)
-    let result = if let Some(ref p) = path {
+    let result = if let Some(ref locator) = hosted_locator {
+        info!("[daemon-kernel] Reconnecting hosted notebook: {locator}");
+        initialize_notebook_sync_hosted(
+            webview_window.clone(),
+            locator.clone(),
+            None,
+            notebook_sync.clone(),
+            sync_generation.clone(),
+            context_notebook_id.clone(),
+        )
+        .await
+    } else if let Some(ref p) = path {
         info!(
             "[daemon-kernel] Reconnecting via OpenNotebook: {}",
             p.display()
@@ -2979,7 +3460,17 @@ async fn reconnect_to_daemon(
             }
 
             // Retry connection after restart
-            let retry_result = if let Some(p) = path {
+            let retry_result = if let Some(locator) = hosted_locator {
+                initialize_notebook_sync_hosted(
+                    webview_window,
+                    locator,
+                    None,
+                    notebook_sync,
+                    sync_generation,
+                    context_notebook_id,
+                )
+                .await
+            } else if let Some(p) = path {
                 initialize_notebook_sync_open(
                     webview_window,
                     p,
@@ -3415,6 +3906,9 @@ fn window_menu_display_name(
     window_label: &str,
 ) -> String {
     if let Ok(context) = registry.get(window_label) {
+        if let Some(locator) = context.hosted_locator.as_deref() {
+            return hosted_notebook_window_title(locator);
+        }
         if let Ok(path) = context.path.lock() {
             return path
                 .as_ref()
@@ -3618,6 +4112,7 @@ fn create_window_context_for_daemon(
     path: Option<PathBuf>,
     working_dir: Option<PathBuf>,
     placeholder_notebook_id: String,
+    hosted_locator: Option<String>,
     runtime: Runtime,
 ) -> WindowNotebookContext {
     WindowNotebookContext {
@@ -3626,6 +4121,7 @@ fn create_window_context_for_daemon(
         path: Arc::new(Mutex::new(path)),
         working_dir,
         notebook_id: Arc::new(Mutex::new(placeholder_notebook_id)),
+        hosted_locator,
         runtime,
     }
 }
@@ -3947,8 +4443,18 @@ pub fn run(
             .iter()
             .filter_map(|ws| {
                 let label = session::window_label_for_session(ws);
-                let (title, mode) = match (&ws.path, &ws.env_id) {
-                    (Some(path), _) if path.exists() => {
+                let (title, mode) = match (&ws.hosted_locator, &ws.path, &ws.env_id) {
+                    (Some(locator), _, _) => {
+                        info!("[session] Restoring hosted window: {locator}");
+                        (
+                            hosted_notebook_window_title(locator),
+                            OpenMode::Hosted {
+                                locator: locator.clone(),
+                                prepared: None,
+                            },
+                        )
+                    }
+                    (None, Some(path), _) if path.exists() => {
                         let title = path
                             .file_name()
                             .and_then(|n| n.to_str())
@@ -3957,7 +4463,7 @@ pub fn run(
                         info!("[session] Restoring window from path: {}", path.display());
                         (title, OpenMode::Open { path: path.clone() })
                     }
-                    (_, Some(env_id)) => {
+                    (None, _, Some(env_id)) => {
                         info!("[session] Restoring untitled window: {}", env_id);
                         (
                             "Untitled.ipynb".to_string(),
@@ -3969,7 +4475,9 @@ pub fn run(
                         )
                     }
                     _ => {
-                        warn!("[session] Skipping session entry with no path or env_id");
+                        warn!(
+                            "[session] Skipping session entry with no hosted locator, path, or env_id"
+                        );
                         return None;
                     }
                 };
@@ -4041,6 +4549,7 @@ pub fn run(
             // or UUID-identified untitled notebooks). Attach is strictly a
             // live-clone mode and is never serialized into session state.
             OpenMode::Attach { notebook_id, .. } => notebook_id.clone(),
+            OpenMode::Hosted { .. } => String::new(),
         };
         let context = create_window_context_for_daemon(
             match &sw.mode {
@@ -4049,6 +4558,10 @@ pub fn run(
             },
             working_dir.clone(),
             placeholder_id,
+            match &sw.mode {
+                OpenMode::Hosted { locator, .. } => Some(locator.clone()),
+                _ => None,
+            },
             runtime.clone(),
         );
         window_registry
@@ -4151,6 +4664,7 @@ pub fn run(
             get_default_save_directory,
             clone_notebook_to_ephemeral,
             open_notebook_in_new_window,
+            open_hosted_notebook_in_new_window,
             // Daemon connection state (kernel ops now go through
             // `send_frame(0x01)` + the channel-backed pending-map path,
             // not per-type Tauri commands).
@@ -4377,6 +4891,8 @@ pub fn run(
                                 OpenMode::Create { .. } => "create".into(),
                                 OpenMode::Attach { notebook_id, .. } =>
                                     format!("attach:{}", notebook_id),
+                                OpenMode::Hosted { locator, .. } =>
+                                    format!("hosted:{locator}"),
                             }
                         );
                         match (
@@ -4426,6 +4942,43 @@ pub fn run(
                                         )
                                         .await
                                     }
+                                    OpenMode::Hosted { locator, prepared } => {
+                                        // Hosted attachment can wait up to 30s for
+                                        // the cloud principal. It must not hold the
+                                        // app-global startup gate, delay local
+                                        // windows, or make the healthy local daemon
+                                        // look unavailable after the 10s startup
+                                        // timeout. The hosted window owns its own
+                                        // loading/error state while this continues.
+                                        let label = sw.label.clone();
+                                        tokio::spawn(async move {
+                                            match initialize_notebook_sync_hosted(
+                                                window,
+                                                locator,
+                                                prepared,
+                                                context.notebook_sync,
+                                                context.sync_generation,
+                                                context.notebook_id,
+                                            )
+                                            .await
+                                            {
+                                                Ok(()) => log::info!(
+                                                    "[startup] Hosted notebook sync initialized for '{}'",
+                                                    label
+                                                ),
+                                                Err(error) => log::warn!(
+                                                    "[startup] Hosted notebook sync failed for '{}': {}",
+                                                    label,
+                                                    error
+                                                ),
+                                            }
+                                        });
+                                        // Reaching this point proves the daemon is
+                                        // available; hosted cloud readiness is a
+                                        // per-window concern from here on.
+                                        any_success = true;
+                                        continue;
+                                    }
                                 };
                                 match result {
                                     Ok(()) => {
@@ -4468,12 +5021,13 @@ pub fn run(
                     log::info!("[startup] Skipping notebook sync during onboarding");
                     daemon_sync_success_for_init.store(true, Ordering::SeqCst);
                 }
-                // Signal that daemon sync attempt is complete (success or failure)
+                // Signal that startup-blocking daemon sync attempts are complete.
+                // Hosted cloud attachments may still be loading independently.
                 daemon_sync_complete_for_init.store(true, Ordering::SeqCst);
 
-                // Clear session file after all windows have been synced (or
-                // attempted). Keeping it until now allows a retry on next launch
-                // if the daemon was unavailable this time.
+                // Clear session after all windows have been started or scheduled.
+                // Keeping it until now allows a retry on next launch if the local
+                // daemon was unavailable before any attachment could begin.
                 if has_session_to_clear {
                     session::clear_session();
                 }
@@ -4914,6 +5468,10 @@ pub fn run(
                         "[window] Removed registry entry for closed window: {}",
                         label
                     );
+                    // Supersede any network-bound initialization before
+                    // dropping the current handle. Hosted session restore can
+                    // still be awaiting cloud principal attachment here.
+                    context.sync_generation.fetch_add(1, Ordering::SeqCst);
                     context.notebook_sync
                 });
 
@@ -4924,6 +5482,7 @@ pub fn run(
                     );
                 }
             }
+            app_handle.state::<SyncReadyState>().clear_window(label);
             if !app_quitting.load(Ordering::SeqCst) {
                 refresh_native_menu(app_handle, &registry_for_window_close);
             }

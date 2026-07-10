@@ -81,6 +81,8 @@ export interface DaemonReadyPayload {
   ephemeral?: boolean;
   /** On-disk path if the notebook is file-backed. Derives the titlebar filename. */
   notebook_path?: string | null;
+  /** Canonical hosted locator for daemon-mediated cloud notebook windows. */
+  hosted_notebook_url?: string | null;
   runtime?: string;
   /** Authenticated actor label to use for Automerge writes on this connection. */
   actor_label?: string;
@@ -234,6 +236,8 @@ export interface HostNotebook {
   saveAs(path: string): Promise<void>;
   /** Open an existing notebook path in a new host window. */
   openInNewWindow(path: string): Promise<void>;
+  /** Open a hosted notebook URL in a new window through the local daemon bridge. */
+  openHostedInNewWindow(url: string): Promise<void>;
   /** Fork the current notebook into a new in-memory room and open it in a new host window. */
   cloneToEphemeral(): Promise<string>;
 }

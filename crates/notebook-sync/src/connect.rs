@@ -677,6 +677,57 @@ pub async fn connect_open_relay_with_operator(
     Ok(RelayOpenResult { handle, info })
 }
 
+/// Open a hosted cloud notebook as a relay — transparent byte pipe, no local document.
+///
+/// The daemon resolves and owns the hosted credential/bridge. This client only
+/// carries the hosted locator in the connection handshake, then relays typed
+/// frames between the daemon-local room and the frontend WASM peer.
+pub async fn connect_open_hosted_relay(
+    socket_path: PathBuf,
+    url: &str,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+) -> Result<RelayOpenResult, SyncError> {
+    connect_open_hosted_relay_with_operator(socket_path, url, frame_tx, None).await
+}
+
+/// Open a hosted cloud notebook as a relay with a self-declared operator label.
+pub async fn connect_open_hosted_relay_with_operator(
+    socket_path: PathBuf,
+    url: &str,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+    operator: Option<String>,
+) -> Result<RelayOpenResult, SyncError> {
+    let stream = connect_stream!(&socket_path);
+    let (reader, writer) = tokio::io::split(stream);
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut writer = tokio::io::BufWriter::new(writer);
+
+    connection::send_preamble(&mut writer).await?;
+
+    let handshake = Handshake::OpenHostedNotebook {
+        url: url.to_string(),
+        typed_bootstrap: Some(true),
+        operator,
+    };
+    connection::send_json_frame(&mut writer, &handshake)
+        .await
+        .map_err(|e| SyncError::Protocol(format!("Send handshake: {e}")))?;
+
+    let info = recv_typed_connection_info(&mut reader).await?;
+    if let Some(ref error) = info.error {
+        return Err(SyncError::Protocol(error.clone()));
+    }
+
+    let notebook_id = info.notebook_id.clone();
+    info!(
+        "[relay] Connected to hosted room {} (relay mode, no initial sync)",
+        notebook_id
+    );
+
+    let handle = spawn_relay(notebook_id, frame_tx, reader, writer);
+    Ok(RelayOpenResult { handle, info })
+}
+
 /// Create a notebook as a relay — transparent byte pipe, no local document.
 ///
 /// Same as `connect_open_relay` but for new notebooks. Performs the

@@ -318,16 +318,19 @@ describe("createTauriHost()", () => {
     await expect(host.notebook.getDefaultSaveDirectory()).resolves.toBe("/tmp/notebooks");
     await host.notebook.saveAs("/tmp/notebooks/a.ipynb");
     await host.notebook.openInNewWindow("/tmp/notebooks/a.ipynb");
+    await host.notebook.openHostedInNewWindow("https://app.runt.run/n/cloud-123");
     await expect(host.notebook.cloneToEphemeral()).resolves.toBe("clone-1");
 
     expect(capturedInvokes.map((x) => x.cmd)).toEqual([
       "get_default_save_directory",
       "save_notebook_as",
       "open_notebook_in_new_window",
+      "open_hosted_notebook_in_new_window",
       "clone_notebook_to_ephemeral",
     ]);
     expect(capturedInvokes[1].args).toEqual({ path: "/tmp/notebooks/a.ipynb" });
     expect(capturedInvokes[2].args).toEqual({ path: "/tmp/notebooks/a.ipynb" });
+    expect(capturedInvokes[3].args).toEqual({ url: "https://app.runt.run/n/cloud-123" });
   });
 
   it("system methods route to the correct commands", async () => {
