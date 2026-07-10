@@ -27,4 +27,5 @@ dev = [
     "polars",
     "numpy>=2.2.6",
     "narwhals>=1.0",
+    "panel>=1.9,<2",
 ]
