@@ -32,7 +32,10 @@ function normalizeFontFamily(value: unknown, fallback = ""): string {
     })
     .join("");
   const [firstDeclaration] = withoutControlChars.split(/[;{}]/);
-  return (firstDeclaration ?? "").trim().slice(0, MAX_FONT_FAMILY_LENGTH);
+  // Keep internal/trailing spaces so live typing of stacks like "Foo, Bar" works.
+  // Collapse whitespace-only values to empty so clear/default still behaves.
+  const cleaned = (firstDeclaration ?? "").slice(0, MAX_FONT_FAMILY_LENGTH);
+  return cleaned.trim().length === 0 ? "" : cleaned;
 }
 
 function normalizeEditorSettings(

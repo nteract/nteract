@@ -19,10 +19,24 @@ describe("editor-settings-store", () => {
         line_numbers: true,
       }),
     ).toEqual({
-      codeFontFamily: '"Hack", monospace',
+      codeFontFamily: ' "Hack", monospace',
       markdownFontFamily: "Georgia, serif",
       lineNumbers: true,
     });
+  });
+
+  it("preserves spaces while typing a custom font stack", () => {
+    setNotebookEditorSettings({ codeFontFamily: "Fraunces, " });
+    expect(setNotebookEditorSettings({ codeFontFamily: "Fraunces, " }).codeFontFamily).toBe(
+      "Fraunces, ",
+    );
+    expect(
+      setNotebookEditorSettings({ codeFontFamily: "Fraunces, Georgia, serif" }).codeFontFamily,
+    ).toBe("Fraunces, Georgia, serif");
+  });
+
+  it("treats whitespace-only font families as empty", () => {
+    expect(setNotebookEditorSettings({ codeFontFamily: "   " }).codeFontFamily).toBe("");
   });
 
   it("applies font settings as notebook typography variables", () => {
