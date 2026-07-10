@@ -8092,8 +8092,8 @@ mod tests {
     // -- pinned fork load contract for the chunked store ------------------
     //
     // The chunk store's crash/recovery invariants lean on two
-    // fork-revision-sensitive behaviors of `Automerge::load` (pinned rev
-    // 992effbf): an incremental-only buffer with absent dependencies must
+    // fork-revision-sensitive behaviors of `Automerge::load` (workspace-pinned
+    // nteract fork): an incremental-only buffer with absent dependencies must
     // HARD-ERROR (the resolver treats it as corruption: clear +
     // bootstrap), while a snapshot-first buffer with a dep-orphaned
     // incremental must load SILENTLY without materializing the orphan. A
