@@ -47,9 +47,12 @@ The daemon already demonstrates the cheaper read in two places:
 - the notebook connection supports a read-only `GetDocBytes` request, including
   for viewer-scoped connections.
 
-Neither is the right final wire shape. `InspectNotebook` is a daemon-wide
-diagnostic API and `GetDocBytes` sends a full Automerge document. They show that
-no separate cache is needed and that the room can own a compact projection API.
+Neither is the right final response shape. `InspectNotebook` is a daemon-wide
+diagnostic API and `GetDocBytes` sends a full Automerge document over the same
+peer transport as NotebookDoc sync. They show that no separate cache is needed
+and that the room can own a compact projection API. The existing daemon control
+connection is the safer transport because it does not share the MCP peer's
+Automerge failure boundary.
 
 ## Proposed phases
 
@@ -74,9 +77,13 @@ An example response shape is:
   "cells": [
     { "id": "cell-...", "cell_type": "code", "source_preview": "..." }
   ],
+  "dependencies": ["pandas>=2"],
+  "runtime": { "kernel_status": "starting", "language": "python" },
+  "project_context": { "state": "Pending" },
   "projection": {
     "source": "daemon_room",
     "notebook_heads": ["..."],
+    "runtime_state_heads": ["..."],
     "captured_at": "2026-07-10T...Z"
   },
   "sync": {
@@ -89,29 +96,55 @@ An example response shape is:
 
 The response should use structured cells rather than the current formatted
 string. MCP text can still render the compact summaries, while structured
-content and notebook resources expose the exact IDs.
+content and notebook resources expose the exact IDs. Preserve the current
+top-level `runtime`, `dependencies`, and `project_context` fields so existing
+clients do not lose initial context. The daemon should derive those values
+directly from room-owned NotebookDoc and RuntimeStateDoc snapshots rather than
+waiting for the MCP replicas.
 
 ## Daemon API
 
-Add a read-only `NotebookRequest::GetNotebookProjection` handled by the room's
-request worker. Its response should contain:
+Add a read-only
+`runtimed_client::protocol::Request::GetNotebookProjection { notebook_id }` on
+the daemon control connection. Its response should contain:
 
 - notebook UUID and canonical path when file-backed;
 - ordered stable cell IDs, cell types, and bounded source previews;
 - dependency and lightweight notebook metadata required by the existing
   connect response;
+- a best-effort runtime and project-context summary from the room-owned
+  RuntimeStateDoc, preserving the current top-level response shapes;
 - current NotebookDoc heads;
+- current RuntimeStateDoc heads for the best-effort runtime summary;
 - a projection schema version.
 
-The request worker starts after `stream_initial_load_with_frame_drain`, so a
-cold path open naturally waits for the daemon's file load without waiting for
-the MCP peer to acknowledge full Automerge convergence. Resident UUID and path
-opens read the existing room immediately.
+Runtime readiness is not a prerequisite for the stable-cell projection. If the
+room's runtime or project context is still starting, pending, or unavailable,
+return that state explicitly using the existing response vocabulary instead of
+omitting the fields. The `sync.runtime_state` field separately tells the caller
+whether the MCP process's local RuntimeStateDoc replica is ready.
+
+The handler must wait on an explicit room-owned projection phase before reading
+the document. The current `is_loading` atomic is not enough: a contending open
+can lose `try_start_loading()`, enter its steady-state request worker, and read
+while the owning peer is still streaming cells. Promote load state to an
+observable room-level phase such as `NotNeeded`, `Loading { generation }`,
+`Ready`, or `Failed { reason }`. A successful or failed load publishes a
+terminal phase, and stale completions from an older generation cannot satisfy a
+new waiter. Once ready, the control handler can build the projection under one
+short document read.
+
+Do not route this request through `DocHandle` or `NotebookFrameType::Request`.
+Those requests are owned by the same notebook sync task that closes and
+disconnects pending requests after an unrecoverable Automerge error. The MCP
+process should learn the notebook UUID from the attach handshake, then request
+the projection over its independent daemon control connection. This lets the
+projection complete even if the new NotebookDoc peer fails during bootstrap.
 
 Do not put the projection in `NotebookConnectionInfo` initially. The daemon
 sends that handshake before it performs a cold file-backed streaming load, so
-the field would be complete for resident rooms and empty for cold rooms. A
-post-load request has one meaning for every target.
+the field would be complete for resident rooms and empty for cold rooms. The
+room-gated control request has one meaning for every target.
 
 ## Safety of later operations
 
@@ -126,6 +159,11 @@ Introduce operation-specific session guards:
   RuntimeState readiness;
 - every wait must capture an activation generation and re-check it after the
   await so a superseded connect cannot operate on or install the wrong session.
+
+Store the returned initial projection and its heads on the MCP session
+independently from the live `DocHandle`. That retained value is what keeps the
+one-call result inspectable if the peer sync task subsequently disconnects; it
+does not authorize local CRDT writes.
 
 For a cell ID from the connect projection that was deleted before the local
 peer became interactive, the later operation should return `Cell not found at
@@ -170,10 +208,12 @@ Record and surface:
 
 If room projection fails, `connect_notebook` fails because it cannot honor the
 one-call stable-ID contract. If the projection succeeds but local Automerge
-sync later fails, the session remains attached in a degraded read-only state:
-the connect result is still useful, daemon-projection reads may continue, and
-local-replica writes fail quickly with the explicit sync reason. A retry should
-start a fresh sync exchange rather than waiting out another opaque 120 seconds.
+sync later fails, the MCP session remains available in a degraded read-only
+state even if its live `DocHandle` disconnects: the retained connect projection
+is still useful, fresh daemon-projection reads may continue over the control
+connection, and local-replica writes fail quickly with the explicit sync
+reason. A retry should start a fresh sync exchange rather than waiting out
+another opaque 120 seconds.
 
 The `InvalidChanges(MissingOps)` diagnostic belongs in this second category.
 It should close or reset the broken local sync task, mark NotebookDoc sync as
@@ -235,10 +275,12 @@ An implementation is ready to ship when:
 
 ## Implementation slices
 
-1. Add the compact daemon-room projection request and focused protocol tests.
-2. Add MCP session activation generations and per-operation readiness guards.
-3. Return the daemon projection from connect and keep live sync in the
-   background.
+1. Add the room-level projection phase and daemon-control projection request,
+   including load-contention and failed-load tests.
+2. Add MCP session activation generations, retained projection state, and
+   per-operation readiness guards.
+3. Return the control-plane projection from connect and keep live sync in the
+   background, including a test where the NotebookDoc peer fails independently.
 4. Coalesce normalized same-target connects.
 5. Add fault injection for a stalled or failed NotebookDoc peer and turn the
    harness scenarios into integration coverage.
