@@ -140,6 +140,12 @@ pub enum ClientError {
 
     #[error("Connection timeout")]
     Timeout,
+
+    #[error("Notebook projection unavailable for {notebook_id}: {failure}")]
+    NotebookProjectionUnavailable {
+        notebook_id: String,
+        failure: crate::protocol::NotebookProjectionFailure,
+    },
 }
 
 /// Client for the pool daemon.
@@ -416,6 +422,40 @@ impl PoolClient {
         }
     }
 
+    /// Read the authoritative room projection after initial materialization.
+    ///
+    /// `response_timeout` bounds the potentially long cold-file load without
+    /// widening the socket connect timeout. Canceling this call only drops the
+    /// waiter; the daemon-owned materialization continues for other callers.
+    pub async fn get_notebook_projection(
+        &self,
+        notebook_id: &str,
+        response_timeout: Duration,
+    ) -> Result<crate::protocol::NotebookProjection, ClientError> {
+        let response = self
+            .send_request_with_response_timeout(
+                Request::GetNotebookProjection {
+                    notebook_id: notebook_id.to_string(),
+                },
+                response_timeout,
+            )
+            .await?;
+        match response {
+            Response::NotebookProjection { projection } => Ok(projection),
+            Response::NotebookProjectionUnavailable {
+                notebook_id,
+                failure,
+            } => Err(ClientError::NotebookProjectionUnavailable {
+                notebook_id,
+                failure,
+            }),
+            Response::Error { message } => Err(ClientError::DaemonError(message)),
+            _ => Err(ClientError::ProtocolError(
+                "Unexpected response".to_string(),
+            )),
+        }
+    }
+
     /// List all active notebook rooms.
     pub async fn list_rooms(&self) -> Result<Vec<crate::protocol::RoomInfo>, ClientError> {
         let response = self.send_request(Request::ListRooms).await?;
@@ -453,14 +493,27 @@ impl PoolClient {
     /// derived from `connect_timeout` so that a bound-but-not-yet-accepting
     /// socket cannot stall the caller indefinitely.
     async fn send_request(&self, request: Request) -> Result<Response, ClientError> {
-        // Overall timeout: connect_timeout + 3s for the request/response exchange.
-        let overall_timeout = self.connect_timeout + Duration::from_secs(3);
-        tokio::time::timeout(overall_timeout, self.send_request_inner(request))
+        self.send_request_with_response_timeout(request, Duration::from_secs(3))
             .await
-            .map_err(|_| ClientError::Timeout)?
     }
 
-    async fn send_request_inner(&self, request: Request) -> Result<Response, ClientError> {
+    /// Send a request while keeping socket-connect and response budgets
+    /// independent. Cold notebook projections can legitimately take much
+    /// longer than an ordinary pool request, but a missing daemon socket
+    /// should still fail on the short `connect_timeout`.
+    async fn send_request_with_response_timeout(
+        &self,
+        request: Request,
+        response_timeout: Duration,
+    ) -> Result<Response, ClientError> {
+        self.send_request_inner(request, response_timeout).await
+    }
+
+    async fn send_request_inner(
+        &self,
+        request: Request,
+        response_timeout: Duration,
+    ) -> Result<Response, ClientError> {
         #[cfg(unix)]
         let stream = {
             let connect_result =
@@ -490,7 +543,12 @@ impl PoolClient {
             }
         };
 
-        self.send_request_on_stream(stream, request).await
+        tokio::time::timeout(
+            response_timeout,
+            self.send_request_on_stream(stream, request),
+        )
+        .await
+        .map_err(|_| ClientError::Timeout)?
     }
 
     /// Send a request on an established stream.

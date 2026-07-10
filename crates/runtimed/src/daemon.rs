@@ -4262,6 +4262,61 @@ impl Daemon {
                 }
             }
 
+            Request::GetNotebookProjection { notebook_id } => {
+                use crate::notebook_sync_server::RoomInitialLoadState;
+                use runtimed_client::protocol::NotebookProjectionFailure;
+
+                info!(
+                    "[runtimed] Reading room-owned notebook projection: {}",
+                    notebook_id
+                );
+
+                let maybe_room = match uuid::Uuid::parse_str(&notebook_id) {
+                    Ok(uuid) => self.notebook_rooms.lookup_uuid(uuid).await,
+                    Err(_) => None,
+                };
+                let Some((room, _room_guard)) = maybe_room else {
+                    return Response::NotebookProjectionUnavailable {
+                        notebook_id,
+                        failure: NotebookProjectionFailure::RoomNotFound,
+                    };
+                };
+
+                let generation = loop {
+                    match room.initial_load.wait_until_settled().await {
+                        RoomInitialLoadState::NotNeeded { generation }
+                        | RoomInitialLoadState::Ready { generation, .. } => break generation,
+                        RoomInitialLoadState::Failed { generation, reason } => {
+                            return Response::NotebookProjectionUnavailable {
+                                notebook_id,
+                                failure: NotebookProjectionFailure::InitialLoadFailed {
+                                    generation,
+                                    reason,
+                                },
+                            };
+                        }
+                        // `wait_until_settled` normally cannot return Loading.
+                        // If its watch channel is ever replaced while the room
+                        // remains alive, resubscribe rather than exposing a
+                        // partial projection.
+                        RoomInitialLoadState::Loading { .. } => continue,
+                    }
+                };
+
+                match crate::notebook_sync_server::build_notebook_projection(
+                    &room,
+                    &notebook_id,
+                    generation,
+                )
+                .await
+                {
+                    Ok(projection) => Response::NotebookProjection { projection },
+                    Err(error) => Response::Error {
+                        message: format!("Failed to build notebook projection: {error:#}"),
+                    },
+                }
+            }
+
             Request::ListRooms => {
                 // Snapshot room references through the registry; the
                 // registry releases its lock before this call returns
