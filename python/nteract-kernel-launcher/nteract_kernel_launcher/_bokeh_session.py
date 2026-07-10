@@ -64,9 +64,12 @@ class BokehPatchResult:
 
 @dataclass(frozen=True)
 class BokehServerEvent:
+    session_id: str
     transaction_id: str
+    base_revision: int
     revision: int
-    patch: BokehSerialization
+    client_patch: BokehSerialization | None
+    server_patch: BokehSerialization | None
 
 
 class BokehSessionError(RuntimeError):
@@ -221,12 +224,23 @@ class BokehDocumentSession:
             self._transaction_events = []
             self._revision += 1
             derived = self._serialize_events_unlocked(derived_events)
-            return BokehPatchResult(
+            result = BokehPatchResult(
                 transaction_id=transaction_id,
                 base_revision=base_revision,
                 revision=self._revision,
                 derived=derived,
             )
+            self._deliver_event_unlocked(
+                BokehServerEvent(
+                    session_id=self.session_id,
+                    transaction_id=transaction_id,
+                    base_revision=base_revision,
+                    revision=self._revision,
+                    client_patch=BokehSerialization(content=patch, buffers=tuple(buffers)),
+                    server_patch=derived,
+                )
+            )
+            return result
 
     def pop_server_events(self) -> list[BokehServerEvent]:
         with self._lock:
@@ -281,9 +295,6 @@ class BokehDocumentSession:
 
     def _document_patched(self, event: Any) -> None:
         """Bokeh callback receiver used by ``on_change_dispatch_to``."""
-        sink: Callable[[BokehServerEvent], None] | None = None
-        server_event: BokehServerEvent | None = None
-
         with self._lock:
             if self._closed or (
                 self._active_setter is not None and event.setter == self._active_setter
@@ -298,22 +309,24 @@ class BokehDocumentSession:
                 return
             self._revision += 1
             server_event = BokehServerEvent(
+                session_id=self.session_id,
                 transaction_id=str(uuid.uuid4()),
+                base_revision=self._revision - 1,
                 revision=self._revision,
-                patch=patch,
+                client_patch=None,
+                server_patch=patch,
             )
-            sink = self._event_sink
-            if sink is None:
-                self._queued_server_events.append(server_event)
+            self._deliver_event_unlocked(server_event)
 
-        if sink is not None and server_event is not None:
-            try:
-                sink(server_event)
-            except Exception:  # noqa: BLE001
-                log.exception("Bokeh session event sink failed for %s", self.session_id)
-                with self._lock:
-                    if not self._closed:
-                        self._queued_server_events.append(server_event)
+    def _deliver_event_unlocked(self, event: BokehServerEvent) -> None:
+        if self._event_sink is None:
+            self._queued_server_events.append(event)
+            return
+        try:
+            self._event_sink(event)
+        except Exception:  # noqa: BLE001
+            log.exception("Bokeh session event sink failed for %s", self.session_id)
+            self._queued_server_events.append(event)
 
 
 class BokehSessionRegistry:
@@ -322,11 +335,20 @@ class BokehSessionRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._sessions: dict[str, BokehDocumentSession] = {}
+        self._event_sink: Callable[[BokehServerEvent], None] | None = None
+
+    def set_event_sink(self, sink: Callable[[BokehServerEvent], None] | None) -> None:
+        with self._lock:
+            self._event_sink = sink
+            sessions = list(self._sessions.values())
+        for session in sessions:
+            session.set_event_sink(sink)
 
     def register(self, session: BokehDocumentSession) -> None:
         with self._lock:
             if session.session_id in self._sessions:
                 raise BokehSessionError(f"duplicate Bokeh session id: {session.session_id}")
+            session.set_event_sink(self._event_sink)
             self._sessions[session.session_id] = session
 
     def get(self, session_id: str) -> BokehDocumentSession | None:

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import sys
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from IPython.core.formatters import DisplayFormatter
 from nteract_kernel_launcher import _buffer_hook, _panel
 from nteract_kernel_launcher._bokeh_session import (
     BOKEH_SESSION_MIME,
+    BokehBuffer,
+    BokehSerialization,
+    BokehServerEvent,
     StaleBokehRevisionError,
     session_registry,
 )
@@ -16,10 +20,12 @@ from nteract_kernel_launcher._refs import BLOB_REF_MIME
 
 @pytest.fixture(autouse=True)
 def clear_bokeh_sessions():
+    session_registry.set_event_sink(None)
     session_registry.clear()
     _buffer_hook.pending_buffers().clear()
     yield
     session_registry.clear()
+    session_registry.set_event_sink(None)
     _buffer_hook.pending_buffers().clear()
 
 
@@ -177,7 +183,9 @@ def test_python_change_queues_ordered_server_event():
     events = session.pop_server_events()
     assert len(events) == 1
     assert events[0].revision == 1
-    patch_event = events[0].patch.content["events"][0]
+    assert events[0].client_patch is None
+    assert events[0].server_patch is not None
+    patch_event = events[0].server_patch.content["events"][0]
     assert patch_event["model"]["id"] == slider_model.id
     assert patch_event["attr"] == "value"
     assert patch_event["new"] == 7
@@ -193,3 +201,144 @@ def test_uninstall_closes_live_sessions():
     assert session_registry.get(session_id) is not None
     _panel.uninstall(ip)
     assert session_registry.get(session_id) is None
+
+
+class _FakeKernel:
+    def __init__(self):
+        self.replies = []
+
+    def send_response(self, stream, msg_type, **kwargs):
+        self.replies.append({"stream": stream, "msg_type": msg_type, **kwargs})
+
+
+def test_patch_shell_handler_captures_output_and_queues_canonical_event():
+    pn = _load_panel()
+    from nteract_kernel_launcher.app import _BOKEH_PATCH_REPLY, NteractKernel
+
+    source = pn.widgets.FloatSlider(start=0, end=10, value=1)
+    target = pn.widgets.FloatSlider(start=0, end=20, value=2)
+
+    def callback(event):
+        print(f"source={event.new}")
+        target.value = event.new * 2
+
+    source.param.watch(callback, "value")
+    _ip, data, _metadata = _format_panel(pn.Row(source, target))
+    payload = data[BOKEH_SESSION_MIME]
+    session = session_registry.require(payload["session_id"])
+    source_model = source._models[payload["root_ids"][0]][0]
+    kernel = _FakeKernel()
+
+    NteractKernel.nteract_bokeh_patch_request(
+        cast(Any, kernel),
+        "SHELL",
+        [b"client"],
+        {
+            "content": {
+                "session_id": session.session_id,
+                "transaction_id": "tx-1",
+                "base_revision": 0,
+                "patch": {
+                    "events": [
+                        {
+                            "kind": "ModelChanged",
+                            "model": {"id": source_model.id},
+                            "attr": "value",
+                            "new": 6,
+                        }
+                    ]
+                },
+                "buffers": [],
+            },
+            "buffers": [],
+        },
+    )
+
+    assert len(kernel.replies) == 1
+    reply = kernel.replies[0]
+    assert reply["msg_type"] == _BOKEH_PATCH_REPLY
+    assert reply["content"]["status"] == "ok"
+    assert reply["content"]["transaction_id"] == "tx-1"
+    assert reply["content"]["revision"] == 1
+    assert reply["content"]["stdout"] == "source=6\n"
+    assert target.value == 12
+
+    events = session.pop_server_events()
+    assert len(events) == 1
+    assert events[0].transaction_id == "tx-1"
+    assert events[0].client_patch is not None
+    assert events[0].server_patch is not None
+
+
+def test_checkpoint_and_close_shell_handlers():
+    pn = _load_panel()
+    from nteract_kernel_launcher.app import (
+        _BOKEH_CHECKPOINT_REPLY,
+        _BOKEH_CLOSE_REPLY,
+        NteractKernel,
+    )
+
+    _ip, data, _metadata = _format_panel(pn.widgets.FloatSlider(value=3))
+    session_id = data[BOKEH_SESSION_MIME]["session_id"]
+    kernel = _FakeKernel()
+
+    NteractKernel.nteract_bokeh_checkpoint_request(
+        cast(Any, kernel),
+        "SHELL",
+        [],
+        {"content": {"session_id": session_id, "transaction_id": "checkpoint-1"}},
+    )
+    checkpoint_reply = kernel.replies.pop()
+    assert checkpoint_reply["msg_type"] == _BOKEH_CHECKPOINT_REPLY
+    assert checkpoint_reply["content"]["status"] == "ok"
+    assert checkpoint_reply["content"]["revision"] == 0
+    assert checkpoint_reply["content"]["checkpoint"]["document"]["roots"]
+
+    NteractKernel.nteract_bokeh_close_request(
+        cast(Any, kernel),
+        "SHELL",
+        [],
+        {"content": {"session_id": session_id, "transaction_id": "close-1"}},
+    )
+    close_reply = kernel.replies.pop()
+    assert close_reply["msg_type"] == _BOKEH_CLOSE_REPLY
+    assert close_reply["content"]["status"] == "ok"
+    assert session_registry.get(session_id) is None
+
+
+def test_wire_event_offsets_server_buffers_after_client_buffers():
+    from nteract_kernel_launcher.app import _wire_bokeh_event
+
+    event = BokehServerEvent(
+        session_id="session-1",
+        transaction_id="tx-1",
+        base_revision=4,
+        revision=5,
+        client_patch=BokehSerialization(
+            content={"events": [{"kind": "client"}]},
+            buffers=(BokehBuffer("client-buffer", b"client"),),
+        ),
+        server_patch=BokehSerialization(
+            content={"events": [{"kind": "server"}]},
+            buffers=(BokehBuffer("server-buffer", b"server"),),
+        ),
+    )
+
+    content, buffers = _wire_bokeh_event(event)
+
+    assert content["client_patch"]["buffers"][0]["buffer_index"] == 0
+    assert content["server_patch"]["buffers"][0]["buffer_index"] == 1
+    assert buffers == [b"client", b"server"]
+
+
+def test_nteract_kernel_registers_bokeh_shell_messages():
+    from nteract_kernel_launcher.app import (
+        _BOKEH_CHECKPOINT_REQUEST,
+        _BOKEH_CLOSE_REQUEST,
+        _BOKEH_PATCH_REQUEST,
+        NteractKernel,
+    )
+
+    assert _BOKEH_PATCH_REQUEST in NteractKernel.msg_types
+    assert _BOKEH_CHECKPOINT_REQUEST in NteractKernel.msg_types
+    assert _BOKEH_CLOSE_REQUEST in NteractKernel.msg_types
