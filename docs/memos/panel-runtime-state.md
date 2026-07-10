@@ -188,6 +188,13 @@ Asynchronous Python-origin changes publish a typed IOPub message:
 nteract_bokeh_event
 ```
 
+The shell handler does not publish canonical patches in its reply. It applies
+the request under the session lock, enqueues the resulting transaction, and
+returns only a correlated acknowledgement with status and revision. A single
+kernel-side event publisher drains both interaction results and asynchronous
+Python changes onto IOPub in revision order. This avoids trying to infer order
+between independent shell replies and IOPub events.
+
 `jupyter-protocol` preserves unknown message types as `UnknownMessage`, so the
 Rust runtime can parse these payloads without adding generic raw-message
 forwarding. ipykernel supports the request handlers through the kernel
@@ -225,13 +232,31 @@ caused by Panel callbacks normally carry a different setter and are included in
 the derived patch. Browser views use the same rule for kernel-origin patches so
 they do not send those changes back.
 
-The kernel session is the revision authority. Every accepted transaction or
-asynchronous server event increments a monotonically increasing revision.
+The kernel session is the revision authority. One per-session lock owns
+document mutation, event collection, revision allocation, and insertion into
+the ordered IOPub event queue. Both shell-request callbacks and asynchronous
+Python callbacks pass through that same critical section. Every accepted
+transaction or asynchronous server event increments a monotonically increasing
+revision exactly once.
+
+The daemon treats the IOPub event stream as canonical and uses revision to
+detect gaps or duplicates. A shell acknowledgement can cross its corresponding
+IOPub event in transit; it cannot advance projected document state. The runtime
+correlates the two with a transaction id and publishes only the ordered IOPub
+transaction to browser views.
+
 Requests include `base_revision`. A stale request is not generically merged:
 Bokeh patches can contain structural model changes, so last-writer-wins at the
 JSON envelope level would be unsafe. The runtime returns a stale-revision result
-and the browser resynchronizes from checkpoint plus tail before retrying an
-interaction that is safe to replay.
+and the browser resynchronizes from checkpoint plus tail.
+
+Each browser view permits at most one in-flight patch request per session.
+Additional local Bokeh events are combined into a bounded pending batch using
+Bokeh's event-combination semantics. On a stale response, the view discards
+that pending batch, restores authoritative state, and resumes accepting user
+input. It does not automatically replay an opaque structural patch. This
+single-flight rule moves backpressure to the source and prevents a slider flood
+from turning stale-resync into a retry loop.
 
 ## Runtime State
 
