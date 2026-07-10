@@ -677,6 +677,26 @@ impl RoomInitialLoad {
         Some(generation)
     }
 
+    /// Publish a coherent external recovery after a terminal source failure.
+    ///
+    /// File-watcher reconciliation and an explicit successful save establish a
+    /// new authoritative baseline without replaying the failed source task.
+    /// Advance the generation so waiters can distinguish that recovery from
+    /// the failed attempt it supersedes.
+    pub fn recover_failed(&self, cell_count: usize) -> Option<u64> {
+        let _guard = self.lock_transition();
+        let RoomInitialLoadState::Failed { generation, .. } = self.state() else {
+            return None;
+        };
+        let generation = generation.saturating_add(1);
+        self.task_claimed.store(false, Ordering::Release);
+        self.state_tx.send_replace(RoomInitialLoadState::Ready {
+            generation,
+            cell_count,
+        });
+        Some(generation)
+    }
+
     /// Wait for the current source generation to settle.
     ///
     /// Dropping this future only drops its watch receiver. It cannot cancel or
@@ -1361,6 +1381,12 @@ impl NotebookRoom {
     /// `RoomPersistence::clear_load_failed`.
     pub fn clear_load_failed(&self) {
         self.persistence.clear_load_failed();
+    }
+
+    /// Clear the persistence hazard and publish a recovered Ready generation.
+    pub fn mark_load_recovered(&self, cell_count: usize) {
+        self.persistence.clear_load_failed();
+        let _ = self.initial_load.recover_failed(cell_count);
     }
 
     /// Get kernel info if a kernel is running (runtime-agent-backed).

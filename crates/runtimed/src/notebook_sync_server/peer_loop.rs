@@ -83,11 +83,20 @@ where
 
     let mut notebook_doc_phase = notebook_protocol::protocol::NotebookDocPhaseWire::Pending;
     let mut runtime_state_phase = notebook_protocol::protocol::RuntimeStatePhaseWire::Pending;
-    let room_load_in_progress = room.is_loading();
-    let mut initial_load_phase = if needs_load.is_some() || room_load_in_progress {
-        notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
-    } else {
-        notebook_protocol::protocol::InitialLoadPhaseWire::NotNeeded
+    let room_load_state = room.initial_load.state();
+    let room_load_in_progress = room_load_state.is_loading();
+    let mut initial_load_phase = match &room_load_state {
+        RoomInitialLoadState::Loading { .. } | RoomInitialLoadState::Failed { .. } => {
+            notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
+        }
+        RoomInitialLoadState::NotNeeded { .. } | RoomInitialLoadState::Ready { .. }
+            if needs_load.is_some() =>
+        {
+            notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
+        }
+        RoomInitialLoadState::NotNeeded { .. } | RoomInitialLoadState::Ready { .. } => {
+            notebook_protocol::protocol::InitialLoadPhaseWire::NotNeeded
+        }
     };
 
     if client_protocol_version >= 3 {
@@ -160,7 +169,7 @@ where
         needs_load,
         &daemon.config.execution_store_dir,
         &mut peer_state,
-        notebook_doc_phase,
+        &mut notebook_doc_phase,
         runtime_state_phase,
         initial_load_phase,
         client_protocol_version,

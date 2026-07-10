@@ -16,7 +16,6 @@ const SOURCE_PREVIEW_CHARS: usize = 120;
 /// short document lock; callers must not infer a cross-document transaction.
 pub(crate) async fn build_notebook_projection(
     room: &NotebookRoom,
-    notebook_id: &str,
     load_generation: u64,
 ) -> anyhow::Result<NotebookProjection> {
     let notebook_path = room
@@ -100,7 +99,7 @@ pub(crate) async fn build_notebook_projection(
     Ok(NotebookProjection {
         schema_version: NOTEBOOK_PROJECTION_SCHEMA_VERSION,
         load_generation,
-        notebook_id: notebook_id.to_string(),
+        notebook_id: room.id.to_string(),
         notebook_path,
         cells: projected_cells,
         dependencies,

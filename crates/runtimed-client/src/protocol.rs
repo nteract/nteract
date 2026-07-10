@@ -189,7 +189,7 @@ pub enum Response {
     },
 
     /// A coherent room-owned notebook projection.
-    NotebookProjection { projection: NotebookProjection },
+    NotebookProjection { projection: Box<NotebookProjection> },
 
     /// Projection could not be produced from the authoritative room.
     NotebookProjectionUnavailable {
@@ -675,9 +675,9 @@ mod tests {
         };
 
         match roundtrip_response(&Response::NotebookProjection {
-            projection: projection.clone(),
+            projection: Box::new(projection.clone()),
         }) {
-            Response::NotebookProjection { projection: parsed } => assert_eq!(parsed, projection),
+            Response::NotebookProjection { projection: parsed } => assert_eq!(*parsed, projection),
             _ => panic!("unexpected response type"),
         }
     }

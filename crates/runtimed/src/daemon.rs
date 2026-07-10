@@ -4303,14 +4303,12 @@ impl Daemon {
                     }
                 };
 
-                match crate::notebook_sync_server::build_notebook_projection(
-                    &room,
-                    &notebook_id,
-                    generation,
-                )
-                .await
+                match crate::notebook_sync_server::build_notebook_projection(&room, generation)
+                    .await
                 {
-                    Ok(projection) => Response::NotebookProjection { projection },
+                    Ok(projection) => Response::NotebookProjection {
+                        projection: Box::new(projection),
+                    },
                     Err(error) => Response::Error {
                         message: format!("Failed to build notebook projection: {error:#}"),
                     },

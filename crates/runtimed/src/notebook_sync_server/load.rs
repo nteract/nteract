@@ -781,9 +781,8 @@ pub(crate) async fn materialize_initial_load(
     if let Some(meta) = metadata {
         {
             let mut doc = room.doc.write().await;
-            if let Err(e) = doc.set_metadata_snapshot(&meta) {
-                warn!("[streaming-load] Failed to set metadata: {}", e);
-            }
+            doc.set_metadata_snapshot(&meta)
+                .map_err(|e| format!("Failed to set notebook metadata: {e}"))?;
         }
         let _ = room.broadcasts.changed_tx.send(());
     }
@@ -861,7 +860,7 @@ pub(crate) fn start_room_initial_load(
                         .initial_load
                         .complete_ready(generation, cell_count)
                     {
-                        task_room.clear_load_failed();
+                        task_room.mark_load_recovered(cell_count);
                         info!(
                             "[notebook-sync] Initial materialization complete: {} cells from {} (generation {})",
                             cell_count,

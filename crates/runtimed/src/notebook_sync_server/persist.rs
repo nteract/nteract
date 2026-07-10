@@ -404,7 +404,7 @@ pub(crate) async fn save_notebook_to_disk(
             }
             // Disk already matches the room, so any failed-load hazard is
             // resolved — clear the flag so a later legitimate empty save writes.
-            room.clear_load_failed();
+            room.mark_load_recovered(cell_count);
             return Ok(notebook_path.to_string_lossy().to_string());
         }
     }
@@ -438,7 +438,7 @@ pub(crate) async fn save_notebook_to_disk(
     // (A still-failed empty room over existing content is skipped by the guard
     // above and never reaches here, so this only clears genuine recoveries:
     // Save As, or adding a cell to a failed-load room and saving.)
-    room.clear_load_failed();
+    room.mark_load_recovered(cell_count);
 
     // Update last_self_write timestamp so the file watcher skips our own write.
     // Applies to all rooms (including ephemeral that were just promoted to
@@ -1828,23 +1828,18 @@ pub(crate) fn spawn_notebook_file_watcher(
                             )
                             .await;
 
-                            // The file watcher is a recovery path that does not go
-                            // through `try_start_loading`. Clear the failed-load
-                            // hazard once the watcher has actually reconciled the
-                            // file into the doc — i.e. the doc now matches the
-                            // parsed file's cell count. This clears on a valid
-                            // reload whether the file is empty (`cells: []`) or
-                            // populated, but NOT when apply failed (e.g. on bad
-                            // attachments) and left the doc out of sync, which
-                            // keeps the on-disk file protected.
-                            if room.doc.read().await.cell_count() == external_cells.len() {
-                                room.clear_load_failed();
-                            }
+                            // Recovery is published only after cells and metadata
+                            // both reconcile successfully below. Until then the
+                            // Failed generation and persistence guard remain
+                            // authoritative.
+                            let cells_reconciled =
+                                room.doc.read().await.cell_count() == external_cells.len();
 
                             // Apply metadata changes to Automerge doc.
                             // Only update when the external file has a metadata
                             // object — a missing key means "no metadata info",
                             // not "clear metadata".
+                            let mut metadata_reconciled = true;
                             let metadata_changed = if let Some(ref meta) = external_metadata {
                                 let current = {
                                     let doc = room.doc.read().await;
@@ -1855,12 +1850,17 @@ pub(crate) fn spawn_notebook_file_watcher(
                                     let mut doc = room.doc.write().await;
                                     if let Err(e) = doc.set_metadata_snapshot(meta) {
                                         warn!("[notebook-watch] Failed to set metadata: {}", e);
+                                        metadata_reconciled = false;
                                     }
                                 }
                                 changed
                             } else {
                                 false
                             };
+
+                            if cells_reconciled && metadata_reconciled {
+                                room.mark_load_recovered(external_cells.len());
+                            }
 
                             if cells_changed || metadata_changed {
                                 info!(

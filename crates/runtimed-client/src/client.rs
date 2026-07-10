@@ -441,7 +441,7 @@ impl PoolClient {
             )
             .await?;
         match response {
-            Response::NotebookProjection { projection } => Ok(projection),
+            Response::NotebookProjection { projection } => Ok(*projection),
             Response::NotebookProjectionUnavailable {
                 notebook_id,
                 failure,

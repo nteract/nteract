@@ -79,6 +79,11 @@ pub async fn get_or_create_room_result(
     )?);
     if options.initial_load_required {
         room.initial_load.mark_required();
+        // If the handshake aborts before a peer joins, the room must still
+        // enter the ordinary peerless-room lifecycle once loading settles.
+        // A successful join clears this timestamp before the reaper can act,
+        // and the reservation guard protects concurrent handshakes.
+        room.connections.stamp_kernel_torn_down_now();
     }
 
     // Atomic insert across the registry's UUID map and path index.

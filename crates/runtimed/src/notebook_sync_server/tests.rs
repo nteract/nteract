@@ -462,6 +462,7 @@ async fn file_backed_initial_load_applies_buffered_replies_before_ready() {
     let mut observed_counts = Vec::new();
     let mut last_count = 0usize;
     let mut saw_ready = false;
+    let mut ready_notebook_doc_phase = None;
 
     while !saw_ready {
         let frame = recv_typed_frame_or_timeout(
@@ -504,10 +505,13 @@ async fn file_backed_initial_load_applies_buffered_replies_before_ready() {
                 }
             }
             NotebookFrameType::SessionControl => {
-                if decode_sync_status(&frame).is_some_and(|status| {
-                    status.initial_load == notebook_protocol::protocol::InitialLoadPhaseWire::Ready
-                }) {
-                    saw_ready = true;
+                if let Some(status) = decode_sync_status(&frame) {
+                    if status.initial_load
+                        == notebook_protocol::protocol::InitialLoadPhaseWire::Ready
+                    {
+                        ready_notebook_doc_phase = Some(status.notebook_doc);
+                        saw_ready = true;
+                    }
                 }
             }
             _ => {}
@@ -524,6 +528,16 @@ async fn file_backed_initial_load_applies_buffered_replies_before_ready() {
         Some(7),
         "client should converge before Ready when replies are already buffered"
     );
+    // Depending on scheduler order, the final acknowledgement is either
+    // drained inside initial loading (so Ready already carries Interactive)
+    // or arrives immediately afterward in the steady-state loop. Both paths
+    // must converge; the regression was a buffered ACK that left the session
+    // stuck in Syncing forever.
+    if ready_notebook_doc_phase
+        != Some(notebook_protocol::protocol::NotebookDocPhaseWire::Interactive)
+    {
+        recv_until_notebook_doc_interactive(&mut client_reader).await;
+    }
 
     drop(client_writer);
     drop(client_reader);
@@ -943,6 +957,10 @@ async fn file_load_is_pending_before_room_becomes_observable() {
         visible.initial_load.state(),
         RoomInitialLoadState::Loading { generation: 1 }
     ));
+    assert!(
+        visible.connections.last_kernel_torn_down_at().is_some(),
+        "a never-attached file room must enter the peerless reaper lifecycle"
+    );
 }
 
 #[tokio::test]
