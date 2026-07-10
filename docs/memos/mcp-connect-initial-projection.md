@@ -134,6 +134,18 @@ terminal phase, and stale completions from an older generation cannot satisfy a
 new waiter. Once ready, the control handler can build the projection under one
 short document read.
 
+The daemon room, not the first attaching peer, must own the cold load that
+drives this phase. Refactor the current streaming loader into a room task that
+reads and mutates NotebookDoc without taking a peer writer or peer sync state.
+It may publish room-change notifications after committed batches so peers can
+stream progress through their normal sync loops, but delivering a batch to any
+one peer is not part of load success. A send failure or peer Automerge failure
+ends that peer session only; it must not clear the loaded cells, mark the room
+load failed, or cancel the room loader. Only source-read, parse, or room-mutation
+failures publish `Failed` and roll back a partial load. This separation lets a
+cold room become projection-ready even when the peer that initiated the open
+disconnects during bootstrap.
+
 Do not route this request through `DocHandle` or `NotebookFrameType::Request`.
 Those requests are owned by the same notebook sync task that closes and
 disconnects pending requests after an unrecoverable Automerge error. The MCP
@@ -275,8 +287,9 @@ An implementation is ready to ship when:
 
 ## Implementation slices
 
-1. Add the room-level projection phase and daemon-control projection request,
-   including load-contention and failed-load tests.
+1. Move cold loading into a room-owned task independent of peer delivery, then
+   add the room-level projection phase and daemon-control projection request,
+   including load-contention, peer-send-failure, and source-load-failure tests.
 2. Add MCP session activation generations, retained projection state, and
    per-operation readiness guards.
 3. Return the control-plane projection from connect and keep live sync in the
