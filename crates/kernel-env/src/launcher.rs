@@ -46,6 +46,12 @@ pub const LAUNCHER_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "_bokeh_session.py",
+        include_str!(
+            "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_bokeh_session.py"
+        ),
+    ),
+    (
         "_buffer_hook.py",
         include_str!(
             "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_buffer_hook.py"
@@ -64,6 +70,10 @@ pub const LAUNCHER_FILES: &[(&str, &str)] = &[
         include_str!(
             "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_output_redaction.py"
         ),
+    ),
+    (
+        "_panel.py",
+        include_str!("../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_panel.py"),
     ),
     (
         "_progressive.py",
@@ -242,6 +252,14 @@ mod tests {
             LAUNCHER_FILES.iter().map(|(name, _)| *name).collect();
         assert!(names.contains("_redact.py"));
         assert!(names.contains("_output_redaction.py"));
+    }
+
+    #[test]
+    fn launcher_ships_bokeh_session_modules() {
+        let names: std::collections::HashSet<&str> =
+            LAUNCHER_FILES.iter().map(|(name, _)| *name).collect();
+        assert!(names.contains("_bokeh_session.py"));
+        assert!(names.contains("_panel.py"));
     }
 
     #[tokio::test]
