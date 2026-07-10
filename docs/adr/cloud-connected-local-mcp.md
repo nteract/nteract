@@ -46,6 +46,9 @@ Neighbors:
   credential transport and app-session/browser behavior.
 - `docs/adr/remote-workstation-doc-agents.md` defines workstation doc agents
   and room-scoped runtime peers.
+- `docs/memos/hosted-notebook-federation.md` explores the account-aware
+  registry above this origin-scoped V1 config and treats JupyterHub primarily
+  as a compute provider.
 
 ## Vocabulary
 
