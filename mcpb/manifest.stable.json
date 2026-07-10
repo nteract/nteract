@@ -135,6 +135,22 @@
     {
       "description": "Replace a regex match in a cell (fancy-regex). Fails if 0 or >1 matches. Replacement is literal text.",
       "name": "replace_regex"
+    },
+    {
+      "description": "Create a comment thread anchored to a cell or the notebook.",
+      "name": "create_comment"
+    },
+    {
+      "description": "Reply to an existing comment thread.",
+      "name": "reply_comment"
+    },
+    {
+      "description": "Mark a comment thread as resolved.",
+      "name": "resolve_comment"
+    },
+    {
+      "description": "Reopen a resolved comment thread.",
+      "name": "reopen_comment"
     }
   ],
   "tools_generated": false,
