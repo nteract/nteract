@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -32,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+FORMATTED_CELL_ID_RE = re.compile(r"^⏺ ━━━ cell (\S+) \(", re.MULTILINE)
 
 
 def log(message: str) -> None:
@@ -68,6 +70,22 @@ def tool_text(result: dict[str, Any]) -> str:
         for item in content
         if isinstance(item, dict) and isinstance(item.get("text"), str)
     )
+
+
+def connect_cell_ids(response: dict[str, Any]) -> tuple[list[str], str]:
+    cells = response.get("cells")
+    if isinstance(cells, list):
+        ids = [
+            cell_id
+            for cell in cells
+            if isinstance(cell, dict)
+            for cell_id in (cell.get("id") or cell.get("cell_id"),)
+            if isinstance(cell_id, str)
+        ]
+        return ids, "structured"
+    if isinstance(cells, str):
+        return FORMATTED_CELL_ID_RE.findall(cells), "formatted"
+    return [], "missing"
 
 
 class McpProcess:
@@ -301,18 +319,35 @@ def summarize_connect(
     response = parse_json_value(text)
     response_object = response if isinstance(response, dict) else {}
     cells_text = response_object.get("cells")
-    cells_text = cells_text if isinstance(cells_text, str) else ""
-    present_ids = [cell_id for cell_id in expected_cell_ids if cell_id in cells_text]
+    response_cell_ids, response_kind = connect_cell_ids(response_object)
+    response_cell_id_set = set(response_cell_ids)
+    present_ids = [cell_id for cell_id in expected_cell_ids if cell_id in response_cell_id_set]
+    if isinstance(cells_text, str):
+        cells_bytes = len(cells_text.encode("utf-8"))
+    elif isinstance(cells_text, list):
+        cells_bytes = len(json.dumps(cells_text, separators=(",", ":")).encode("utf-8"))
+    else:
+        cells_bytes = 0
     is_error = bool(result.get("isError"))
+    notebook_id = response_object.get("notebook_id")
+    response_valid = (
+        isinstance(notebook_id, str)
+        and bool(notebook_id)
+        and response_kind in {"formatted", "structured"}
+    )
     summary: dict[str, Any] = {
         "elapsed_ms": round(elapsed_ms, 1),
-        "ok": not is_error,
+        "ok": not is_error and response_valid,
         "tool_error": is_error,
-        "notebook_id": response_object.get("notebook_id"),
-        "response_cells_bytes": len(cells_text.encode("utf-8")),
+        "response_valid": response_valid,
+        "notebook_id": notebook_id,
+        "response_cells_kind": response_kind,
+        "response_cells_bytes": cells_bytes,
+        "cell_count": len(response_cell_ids),
+        "cell_ids": response_cell_ids,
         "expected_cell_ids_returned": len(present_ids),
         "expected_cell_ids_total": len(expected_cell_ids),
-        "returned_cell_id_sample": present_ids[:5],
+        "returned_cell_id_sample": response_cell_ids[:5],
     }
     if is_error or not response_object:
         summary["response_text"] = text[-4000:]
@@ -447,20 +482,28 @@ async def run_sample(
         }
         actual_ids = sample_result["immediate_get_all_cells"].get("cell_ids", [])
         connects_ok = all(connect["ok"] for connect in sample_result["connects"])
-        connect_ids_ok = not expected_cell_ids or all(
-            connect["expected_cell_ids_returned"] == len(expected_cell_ids)
+        connect_ids_match_read = all(
+            connect.get("cell_ids") == actual_ids
             for connect in sample_result["connects"]
             if connect["ok"]
         )
-        read_ids_ok = not expected_cell_ids or actual_ids == expected_cell_ids
+        requested_notebook_id = connect_args.get("notebook_id")
+        connect_notebook_ids_match_target = not isinstance(requested_notebook_id, str) or all(
+            connect.get("notebook_id") == requested_notebook_id
+            for connect in sample_result["connects"]
+            if connect["ok"]
+        )
+        fixture_ids_match = not expected_cell_ids or actual_ids == expected_cell_ids
         sample_result["ok"] = (
             connects_ok
-            and connect_ids_ok
+            and connect_ids_match_read
+            and connect_notebook_ids_match_target
             and sample_result["immediate_get_all_cells"]["ok"]
-            and read_ids_ok
+            and fixture_ids_match
         )
-        sample_result["connect_cell_ids_match"] = connect_ids_ok
-        sample_result["immediate_read_cell_ids_match"] = read_ids_ok
+        sample_result["connect_cell_ids_match_immediate_read"] = connect_ids_match_read
+        sample_result["connect_notebook_ids_match_target"] = connect_notebook_ids_match_target
+        sample_result["fixture_cell_ids_match_immediate_read"] = fixture_ids_match
         return sample_result
     finally:
         await client.close()
