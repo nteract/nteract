@@ -70,6 +70,8 @@ import {
   type NotebookRoomSummaryOccupant,
   type WorkstationAttachJobRow,
   type WorkstationAttachJobStatus,
+  type WorkstationAccelerator,
+  type WorkstationAcceleratorReadiness,
   type WorkstationRegistrationInput,
   type WorkstationRow,
   type WorkstationStatus,
@@ -1704,6 +1706,8 @@ const WORKSTATION_HEARTBEAT_STALE_MS = 3 * 60_000;
 const WORKSTATION_LEASE_TTL_MS = WORKSTATION_HEARTBEAT_STALE_MS;
 const MAX_WORKSTATION_ATTACH_JOBS_LIMIT = 25;
 const MISSING_WORKSTATION_RETRY_AFTER_SECONDS = 15 * 60;
+const MAX_WORKSTATION_ACCELERATORS = 16;
+const MAX_WORKSTATION_ACCELERATOR_COUNT = 1_024;
 
 interface WorkstationEventPresence {
   connected: boolean;
@@ -2921,6 +2925,10 @@ function parseWorkstationRegistrationPayload(
   if (memoryBytes instanceof Response) {
     return memoryBytes;
   }
+  const acceleratorsJson = normalizeWorkstationAcceleratorsJson(payload.accelerators);
+  if (acceleratorsJson instanceof Response) {
+    return acceleratorsJson;
+  }
   const environmentsJson = normalizeWorkstationEnvironmentsJson(payload.environments);
   if (environmentsJson instanceof Response) {
     return environmentsJson;
@@ -2939,8 +2947,86 @@ function parseWorkstationRegistrationPayload(
     workingDirectory,
     cpuCount,
     memoryBytes,
+    acceleratorsJson,
     environmentsJson,
   };
+}
+
+function normalizeWorkstationAcceleratorsJson(value: unknown): string | null | Response {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!Array.isArray(value)) {
+    return json({ error: "accelerators must be an array" }, 400);
+  }
+  if (value.length > MAX_WORKSTATION_ACCELERATORS) {
+    return json(
+      { error: `accelerators must contain at most ${MAX_WORKSTATION_ACCELERATORS} entries` },
+      400,
+    );
+  }
+
+  const normalized: WorkstationAccelerator[] = [];
+  for (const [index, rawAccelerator] of value.entries()) {
+    const field = `accelerators[${index}]`;
+    if (!isRecord(rawAccelerator)) {
+      return json({ error: `${field} must be a JSON object` }, 400);
+    }
+    const kind = boundedStringField(rawAccelerator.kind, `${field}.kind`, 40);
+    if (kind instanceof Response) {
+      return kind;
+    }
+    const vendor = optionalBoundedStringField(rawAccelerator.vendor, `${field}.vendor`, 120);
+    if (vendor instanceof Response) {
+      return vendor;
+    }
+    const model = optionalBoundedStringField(rawAccelerator.model, `${field}.model`, 160);
+    if (model instanceof Response) {
+      return model;
+    }
+    const count = boundedPositiveIntegerField(
+      rawAccelerator.count,
+      `${field}.count`,
+      MAX_WORKSTATION_ACCELERATOR_COUNT,
+    );
+    if (count instanceof Response) {
+      return count;
+    }
+    const memoryBytesPerDevice = optionalSafePositiveIntegerField(
+      rawAccelerator.memory_bytes_per_device ?? rawAccelerator.memoryBytesPerDevice,
+      `${field}.memory_bytes_per_device`,
+    );
+    if (memoryBytesPerDevice instanceof Response) {
+      return memoryBytesPerDevice;
+    }
+    const readinessValue = boundedStringField(rawAccelerator.readiness, `${field}.readiness`, 24);
+    if (readinessValue instanceof Response) {
+      return readinessValue;
+    }
+    const readiness = readinessValue.toLowerCase();
+    if (!isWorkstationAcceleratorReadiness(readiness)) {
+      return json({ error: `${field}.readiness must be ready, not_ready, or unknown` }, 400);
+    }
+    const diagnostic = optionalBoundedStringField(
+      rawAccelerator.diagnostic,
+      `${field}.diagnostic`,
+      240,
+    );
+    if (diagnostic instanceof Response) {
+      return diagnostic;
+    }
+
+    normalized.push({
+      kind: kind.toLowerCase(),
+      vendor,
+      model,
+      count,
+      memory_bytes_per_device: memoryBytesPerDevice,
+      readiness,
+      diagnostic,
+    });
+  }
+  return JSON.stringify(normalized);
 }
 
 function normalizeWorkstationEnvironmentsJson(value: unknown): string | null | Response {
@@ -3005,6 +3091,7 @@ function workstationResponseRow(
     options.lease,
   );
   const latestBuild = latestWorkstationBuildForChannel(options.latestBuilds, workstation.channel);
+  const accelerators = parseStoredWorkstationAccelerators(workstation.accelerators_json);
   return {
     workstation_id: workstation.workstation_id,
     display_name: workstation.display_name,
@@ -3028,12 +3115,52 @@ function workstationResponseRow(
     working_directory: workstation.working_directory,
     cpu_count: workstation.cpu_count,
     memory_bytes: workstation.memory_bytes,
+    ...(accelerators === null ? {} : { accelerators }),
     environments: parseStoredWorkstationEnvironments(workstation.environments_json),
     created_at: workstation.created_at,
     updated_at: workstation.updated_at,
     last_seen_at: workstation.last_seen_at,
     is_default: options.defaultWorkstationId === workstation.workstation_id,
   };
+}
+
+function parseStoredWorkstationAccelerators(value: string | null): WorkstationAccelerator[] | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every(isWorkstationAccelerator) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isWorkstationAccelerator(value: unknown): value is WorkstationAccelerator {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.kind === "string" &&
+    value.kind.length > 0 &&
+    (value.vendor === null || typeof value.vendor === "string") &&
+    (value.model === null || typeof value.model === "string") &&
+    typeof value.count === "number" &&
+    Number.isSafeInteger(value.count) &&
+    value.count > 0 &&
+    (value.memory_bytes_per_device === null ||
+      (typeof value.memory_bytes_per_device === "number" &&
+        Number.isSafeInteger(value.memory_bytes_per_device) &&
+        value.memory_bytes_per_device > 0)) &&
+    isWorkstationAcceleratorReadiness(value.readiness) &&
+    (value.diagnostic === null || typeof value.diagnostic === "string")
+  );
+}
+
+function isWorkstationAcceleratorReadiness(
+  value: unknown,
+): value is WorkstationAcceleratorReadiness {
+  return value === "ready" || value === "not_ready" || value === "unknown";
 }
 
 export function workstationStatusForResponse(
@@ -3231,6 +3358,7 @@ function workstationAttachmentStateForJob(
       environmentPolicy: workstation.environment_policy,
       cpuCount: workstation.cpu_count,
       memoryBytes: workstation.memory_bytes,
+      accelerators: parseStoredWorkstationAccelerators(workstation.accelerators_json),
       workingDirectory: workstation.working_directory,
     },
     claim: {
@@ -5315,6 +5443,30 @@ function optionalPositiveIntegerField(value: unknown, fieldName: string): number
   }
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     return json({ error: `${fieldName} must be a positive integer` }, 400);
+  }
+  return value;
+}
+
+function boundedPositiveIntegerField(
+  value: unknown,
+  fieldName: string,
+  max: number,
+): number | Response {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > max) {
+    return json({ error: `${fieldName} must be an integer from 1 to ${max}` }, 400);
+  }
+  return value;
+}
+
+function optionalSafePositiveIntegerField(
+  value: unknown,
+  fieldName: string,
+): number | null | Response {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    return json({ error: `${fieldName} must be a positive safe integer` }, 400);
   }
   return value;
 }

@@ -88,6 +88,7 @@ describe("cloud workstations client", () => {
       workingDirectory: "/home/ubuntu/project",
       cpuCount: 8,
       memoryBytes: 16000000000,
+      accelerators: null,
       updatedAt: null,
       environments: [
         {
@@ -102,6 +103,79 @@ describe("cloud workstations client", () => {
       ],
     });
     assert.equal(Object.hasOwn(state.workstations[0], "owner_principal"), false);
+  });
+
+  it("preserves usable, not-ready, known-none, and older-agent accelerator semantics", async (t) => {
+    t.mock.method(globalThis, "fetch", async () =>
+      jsonResponse({
+        workstations: [
+          {
+            workstation_id: "ws-gpu",
+            display_name: "GPU box",
+            accelerators: [
+              {
+                kind: "gpu",
+                vendor: "NVIDIA",
+                model: "A100",
+                count: 2,
+                memory_bytes_per_device: 80 * 1024 ** 3,
+                readiness: "ready",
+              },
+            ],
+          },
+          {
+            workstation_id: "ws-attention",
+            display_name: "Driver attention",
+            accelerators: [
+              {
+                kind: "gpu",
+                vendor: "AMD",
+                model: "MI300X",
+                count: 1,
+                readiness: "not_ready",
+                diagnostic: "ROCm runtime is not available to the workstation service.",
+              },
+            ],
+          },
+          {
+            workstation_id: "ws-cpu",
+            display_name: "CPU box",
+            accelerators: [],
+          },
+          {
+            workstation_id: "ws-legacy",
+            display_name: "Older agent",
+          },
+        ],
+      }),
+    );
+
+    const state = await fetchCloudWorkstations("/api/workstations", devAuth);
+
+    assert.deepEqual(state.workstations[0]?.accelerators, [
+      {
+        kind: "gpu",
+        vendor: "NVIDIA",
+        model: "A100",
+        count: 2,
+        memory_bytes_per_device: 80 * 1024 ** 3,
+        readiness: "ready",
+        diagnostic: null,
+      },
+    ]);
+    assert.deepEqual(state.workstations[1]?.accelerators, [
+      {
+        kind: "gpu",
+        vendor: "AMD",
+        model: "MI300X",
+        count: 1,
+        memory_bytes_per_device: null,
+        readiness: "not_ready",
+        diagnostic: "ROCm runtime is not available to the workstation service.",
+      },
+    ]);
+    assert.deepEqual(state.workstations[2]?.accelerators, []);
+    assert.equal(state.workstations[3]?.accelerators, null);
   });
 
   it("sends default workstation selection through the configured endpoint", async (t) => {

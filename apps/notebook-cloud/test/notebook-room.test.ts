@@ -936,6 +936,7 @@ describe("NotebookRoom peer lifecycle", () => {
       status_message: null,
       cpu_count: null,
       memory_bytes: null,
+      accelerators: null,
       working_directory: null,
       runtime_session_id: null,
       updated_at: runtimePeer.connectedAt,
@@ -943,6 +944,141 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.equal(checkpointed, 1, "changed attachments are checkpointed");
     assert.equal(viewerSocket.sent.length, 1);
     assert.deepEqual([...viewerSocket.sent[0]], [FrameType.RUNTIME_STATE_SYNC, 1, 2, 3]);
+  });
+
+  it("keeps host-owned accelerator facts when a selected runtime peer becomes ready", async () => {
+    const state = hibernatedState([]);
+    const accelerators = [
+      {
+        kind: "gpu",
+        vendor: "NVIDIA",
+        model: "A100",
+        count: 1,
+        memory_bytes_per_device: 80 * 1024 ** 3,
+        readiness: "ready",
+        diagnostic: null,
+      },
+    ] as const;
+    const db = new ResumeNotebookD1({
+      acceleratorsJson: JSON.stringify(accelerators),
+      cpuCount: 16,
+      memoryBytes: 64 * 1024 ** 3,
+    });
+    const room = new NotebookRoom(state.state, { DB: db } as unknown as Env);
+    const harness = roomHarness(room);
+    const runtimePeer = {
+      id: "runtime-gpu",
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:gpu&scope=runtime_peer",
+        ),
+      ),
+      connectedAt: "2026-07-09T00:00:01.000Z",
+      workstation: {
+        workstationId: "ws-lab2",
+        runtimeSessionId: "job-gpu",
+        displayName: "GPU workstation",
+        defaultEnvironmentLabel: "Current Python",
+        environmentPolicy: "current_python",
+        workingDirectory: "/srv/notebooks",
+      },
+    };
+    let publishedAttachment: unknown;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      setWorkstationAttachment: async (attachment: unknown) => {
+        publishedAttachment = attachment;
+        return noopMaterializedResult();
+      },
+    } as never);
+
+    await harness.publishRuntimePeerAttachment("demo", runtimePeer);
+
+    assert.deepEqual(publishedAttachment, {
+      workstation_id: "ws-lab2",
+      display_name: "GPU workstation",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: 16,
+      memory_bytes: 64 * 1024 ** 3,
+      accelerators,
+      working_directory: "/srv/notebooks",
+      updated_at: runtimePeer.connectedAt,
+      runtime_session_id: "job-gpu",
+    });
+  });
+
+  it("does not erase host-owned hardware facts when the registry lookup fails", async () => {
+    const state = hibernatedState([]);
+    const db = new ResumeNotebookD1({ workstationLookupFails: true });
+    const room = new NotebookRoom(state.state, { DB: db } as unknown as Env);
+    const harness = roomHarness(room);
+    const retainedAttachment = {
+      workstation_id: "ws-lab2",
+      display_name: "GPU workstation",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "connecting",
+      status_message: "Starting compute.",
+      cpu_count: 16,
+      memory_bytes: 64 * 1024 ** 3,
+      accelerators: [
+        {
+          kind: "gpu",
+          vendor: "NVIDIA",
+          model: "A100",
+          count: 1,
+          memory_bytes_per_device: 80 * 1024 ** 3,
+          readiness: "ready",
+          diagnostic: null,
+        },
+      ],
+      working_directory: "/srv/notebooks",
+      updated_at: "2026-07-09T00:00:00.000Z",
+      runtime_session_id: "job-old",
+    } as const;
+    const runtimePeer = {
+      id: "runtime-gpu",
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:gpu&scope=runtime_peer",
+        ),
+      ),
+      connectedAt: "2026-07-09T00:00:01.000Z",
+      workstation: {
+        workstationId: "ws-lab2",
+        runtimeSessionId: "job-new",
+        displayName: "GPU workstation",
+        defaultEnvironmentLabel: "Current Python",
+        environmentPolicy: "current_python",
+        workingDirectory: "/srv/notebooks",
+      },
+    };
+    let publishedAttachment: unknown;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      getWorkstationAttachment: async () => retainedAttachment,
+      setWorkstationAttachment: async (attachment: unknown) => {
+        publishedAttachment = attachment;
+        return noopMaterializedResult();
+      },
+    } as never);
+
+    await harness.publishRuntimePeerAttachment("demo", runtimePeer);
+
+    assert.deepEqual(publishedAttachment, {
+      ...retainedAttachment,
+      status: "ready",
+      status_message: null,
+      updated_at: runtimePeer.connectedAt,
+      runtime_session_id: "job-new",
+    });
   });
 
   it("does not cache selected runtime session for ignored stale runtime-peer publishes", async () => {
@@ -5140,6 +5276,15 @@ class ResumeNotebookD1 implements D1Database {
     error_message: string | null;
   }> = [];
 
+  constructor(
+    readonly workstationFacts: {
+      acceleratorsJson?: string | null;
+      cpuCount?: number | null;
+      memoryBytes?: number | null;
+      workstationLookupFails?: boolean;
+    } = {},
+  ) {}
+
   prepare(query: string): D1PreparedStatement {
     return new ResumeNotebookD1Statement(this, query);
   }
@@ -5183,6 +5328,9 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
       } as T;
     }
     if (this.query.includes("FROM workstations") && this.query.includes("workstation_id = ?")) {
+      if (this.db.workstationFacts.workstationLookupFails) {
+        throw new Error("workstation registry unavailable");
+      }
       return {
         owner_principal: "user:dev:alice",
         workstation_id: "ws-lab2",
@@ -5194,8 +5342,9 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
         default_environment_label: "Current Python",
         environment_policy: "current_python",
         working_directory: "/srv/project",
-        cpu_count: null,
-        memory_bytes: null,
+        cpu_count: this.db.workstationFacts.cpuCount ?? null,
+        memory_bytes: this.db.workstationFacts.memoryBytes ?? null,
+        accelerators_json: this.db.workstationFacts.acceleratorsJson ?? null,
         environments_json: null,
         created_at: "2026-06-23T00:00:00.000Z",
         updated_at: "2026-06-23T00:00:00.000Z",

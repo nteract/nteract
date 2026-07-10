@@ -210,6 +210,8 @@ export {
   type RuntimeState,
   type TrustState,
   type TrustStatus,
+  type WorkstationAcceleratorReadiness,
+  type WorkstationAcceleratorState,
   type WorkstationAttachmentState,
   diffExecutions,
 } from "./runtime-state";
@@ -329,6 +331,7 @@ export {
 export {
   notebookShellRuntimeTargetSummary,
   notebookShellWorkstationAttachmentCacheKey,
+  notebookShellWorkstationAcceleratorsCacheKey,
   projectNotebookShellCapabilities,
   projectNotebookRuntimeTargetFromWorkstationAttachment,
   readOnlyNotebookShellCapabilities,
@@ -368,15 +371,18 @@ export {
 // Notebook workstation selection projection
 export {
   clearNotebookWorkstationSelectionProjectionCacheForTests,
+  projectNotebookWorkstationAcceleratorSummary,
   projectNotebookWorkstationSelection,
   type NotebookRegisteredWorkstation,
   type NotebookRegisteredWorkstationEnvironment,
   type NotebookRegisteredWorkstationFactKind,
   type NotebookRegisteredWorkstationFactProjection,
+  type NotebookRegisteredWorkstationFactTone,
   type NotebookRegisteredWorkstationProjection,
   type NotebookRegisteredWorkstationStatus,
   type NotebookWorkstationEnvironmentPolicy,
   type NotebookWorkstationEnvironmentProjection,
+  type NotebookWorkstationAcceleratorSummary,
   type NotebookWorkstationSelectionProjection,
   type NotebookWorkstationSelectionState,
   type ProjectNotebookWorkstationSelectionOptions,

@@ -429,6 +429,16 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
       status_message: null,
       cpu_count: 8,
       memory_bytes: 32 * 1024 ** 3,
+      accelerators: [
+        {
+          kind: "gpu",
+          vendor: "NVIDIA",
+          model: "A100",
+          count: 1,
+          memory_bytes_per_device: 80 * 1024 ** 3,
+          readiness: "ready",
+        },
+      ],
       working_directory: "/home/ubuntu/notebooks",
       updated_at: "2026-06-07T21:00:00Z",
       runtime_session_id: "job-123",
@@ -453,6 +463,13 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
       runtimeSessionId: "job-123",
       cpuCount: 8,
       memoryBytes: 32 * 1024 ** 3,
+      accelerators: [
+        expect.objectContaining({
+          kind: "gpu",
+          model: "A100",
+          readiness: "ready",
+        }),
+      ],
       runtimePeerCount: 1,
       workingDirectoryLabel: "/home/ubuntu/notebooks",
     });
@@ -469,6 +486,43 @@ describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
     expect(first).not.toBe(second);
     expect(first?.runtimeSessionId).toBe("job-123");
     expect(second?.runtimeSessionId).toBe("job-456");
+  });
+
+  it("uses accelerator facts in target projection identity", () => {
+    const first = projectNotebookRuntimeTargetFromWorkstationAttachment(attachment());
+    const second = projectNotebookRuntimeTargetFromWorkstationAttachment(
+      attachment({
+        accelerators: attachment().accelerators?.map((accelerator) => ({
+          ...accelerator,
+          readiness: "not_ready" as const,
+          diagnostic: "Driver unavailable",
+        })),
+      }),
+    );
+
+    const interaction = projectNotebookRoomEditAccess({
+      accessLevel: "owner",
+      requestedScope: "owner",
+      selectedMode: "edit",
+      canAcceptDocumentMutations: true,
+      canRequestEdit: false,
+    });
+    const firstCapabilities = projectNotebookShellCapabilities({
+      interaction,
+      access: access({ level: "owner" }),
+      runtime: runtime({ connected: true, executionAvailable: true, target: first }),
+    });
+    const secondCapabilities = projectNotebookShellCapabilities({
+      interaction,
+      access: access({ level: "owner" }),
+      runtime: runtime({ connected: true, executionAvailable: true, target: second }),
+    });
+
+    expect(firstCapabilities.runtime.target).not.toBe(secondCapabilities.runtime.target);
+    expect(secondCapabilities.runtime.target?.accelerators?.[0]).toMatchObject({
+      readiness: "not_ready",
+      diagnostic: "Driver unavailable",
+    });
   });
 
   it("keeps connecting attachments connected but not executable", () => {

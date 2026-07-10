@@ -17,6 +17,7 @@
 //! (workstation registry, attach jobs) lives in `apps/notebook-cloud`; the
 //! operator path is `docs/runbooks/remote-workstation.md`.
 
+pub mod accelerators;
 pub mod agent_loop;
 pub mod allocate;
 pub mod cloud_agent_cli;

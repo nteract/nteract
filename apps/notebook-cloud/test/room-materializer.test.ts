@@ -1694,6 +1694,17 @@ describe("RoomMaterializer", () => {
       status_message: null,
       cpu_count: null,
       memory_bytes: null,
+      accelerators: [
+        {
+          kind: "gpu",
+          vendor: "NVIDIA",
+          model: "A100",
+          count: 1,
+          memory_bytes_per_device: 80 * 1024 ** 3,
+          readiness: "ready" as const,
+          diagnostic: null,
+        },
+      ],
       working_directory: null,
       updated_at: "2026-06-07T00:00:00.000Z",
     };
@@ -1711,10 +1722,25 @@ describe("RoomMaterializer", () => {
     );
     applyRuntimeOutboundToClient(result.outbound, viewerPeer.id, viewer);
     const runtimeState = viewer.get_runtime_state() as {
-      workstation?: { workstation_id?: string; status?: string } | null;
+      workstation?: {
+        workstation_id?: string;
+        status?: string;
+        accelerators?: Array<{ model?: string; count?: number }> | null;
+      } | null;
     };
     assert.equal(runtimeState.workstation?.workstation_id, "runtime-peer");
     assert.equal(runtimeState.workstation?.status, "ready");
+    assert.deepEqual(runtimeState.workstation?.accelerators, [
+      {
+        kind: "gpu",
+        vendor: "NVIDIA",
+        model: "A100",
+        count: 1,
+        memory_bytes_per_device: 80 * 1024 ** 3,
+        readiness: "ready",
+        diagnostic: null,
+      },
+    ]);
 
     const again = await materializer.setWorkstationAttachment(attachment);
     assert.equal(again.changed, false, "same attachment is idempotent");
@@ -1735,6 +1761,7 @@ describe("RoomMaterializer", () => {
       status_message: null,
       cpu_count: null,
       memory_bytes: null,
+      accelerators: null,
       working_directory: null,
       updated_at: "2026-06-07T00:00:02.000Z",
       runtime_session_id: "job-current",

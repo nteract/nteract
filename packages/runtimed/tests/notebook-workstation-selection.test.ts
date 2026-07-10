@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   clearNotebookWorkstationSelectionProjectionCacheForTests,
+  projectNotebookWorkstationAcceleratorSummary,
   projectNotebookWorkstationSelection,
   type NotebookRegisteredWorkstation,
 } from "../src";
@@ -20,6 +21,16 @@ const lab2Workstation: NotebookRegisteredWorkstation = {
   channel: "nightly",
   cpuCount: 8,
   memoryBytes: 32 * 1024 ** 3,
+  accelerators: [
+    {
+      kind: "gpu",
+      vendor: "NVIDIA",
+      model: "A100",
+      count: 1,
+      memory_bytes_per_device: 80 * 1024 ** 3,
+      readiness: "ready",
+    },
+  ],
   workingDirectory: "/home/ubuntu/codex/nteract",
   environments: [
     {
@@ -65,8 +76,145 @@ describe("notebook workstation selection projection", () => {
       isDefault: true,
       cpuCount: 8,
       memoryBytes: 32 * 1024 ** 3,
+      accelerators: [
+        expect.objectContaining({
+          kind: "gpu",
+          model: "A100",
+          count: 1,
+          readiness: "ready",
+        }),
+      ],
       workingDirectoryLabel: "/home/ubuntu/codex/nteract",
     });
+    expect(first.defaultWorkstation?.facts).toContainEqual({
+      detail: null,
+      kind: "accelerator",
+      label: "GPU",
+      tone: "positive",
+      value: "1× NVIDIA A100 · 80 GiB",
+    });
+  });
+
+  it("formats multiple GPUs and surfaces detected-but-not-ready diagnostics", () => {
+    const projection = projectNotebookWorkstationSelection({
+      registeredWorkstations: [
+        {
+          ...lab2Workstation,
+          accelerators: [
+            {
+              kind: "gpu",
+              vendor: "NVIDIA",
+              model: "A100",
+              count: 2,
+              memory_bytes_per_device: 80 * 1024 ** 3,
+              readiness: "not_ready",
+              diagnostic: "NVIDIA driver is not visible to the workstation service.",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(projection.registeredWorkstations[0]?.facts).toContainEqual({
+      detail: "NVIDIA driver is not visible to the workstation service.",
+      kind: "accelerator",
+      label: "GPU",
+      tone: "attention",
+      value: "2× NVIDIA A100 · 80 GiB each",
+    });
+    expect(projection.registeredWorkstations[0]?.canAttach).toBe(true);
+  });
+
+  it("bounds extensible accelerator kind labels for narrow rails", () => {
+    const summary = projectNotebookWorkstationAcceleratorSummary(
+      [
+        {
+          kind: "neural-processing-unit",
+          vendor: "Example",
+          model: "NPU-1",
+          count: 1,
+          readiness: "unknown",
+        },
+      ],
+      false,
+    );
+
+    expect(summary).toMatchObject({
+      label: "Accel",
+      tone: "attention",
+      value: "NEURAL-PROCESSING-UNIT 1× Example NPU-1",
+    });
+  });
+
+  it("preserves known-none versus unknown while omitting both GPU facts", () => {
+    const projection = projectNotebookWorkstationSelection({
+      registeredWorkstations: [
+        { ...lab2Workstation, id: "ws-known-none", accelerators: [] },
+        { ...lab2Workstation, id: "ws-legacy", accelerators: null },
+      ],
+    });
+
+    expect(projection.registeredWorkstations[0]?.accelerators).toEqual([]);
+    expect(projection.registeredWorkstations[1]?.accelerators).toBeNull();
+    expect(
+      projection.registeredWorkstations.flatMap((workstation) => workstation.facts),
+    ).not.toContainEqual(expect.objectContaining({ kind: "accelerator" }));
+  });
+
+  it("retains neutral GPU hardware facts when the workstation is offline", () => {
+    const projection = projectNotebookWorkstationSelection({
+      registeredWorkstations: [{ ...lab2Workstation, status: "offline" }],
+    });
+
+    expect(projection.registeredWorkstations[0]?.facts).toContainEqual({
+      detail: null,
+      kind: "accelerator",
+      label: "GPU",
+      tone: "neutral",
+      value: "1× NVIDIA A100 · 80 GiB",
+    });
+  });
+
+  it("retains accelerator attention while a non-offline workstation needs attention", () => {
+    const projection = projectNotebookWorkstationSelection({
+      registeredWorkstations: [
+        {
+          ...lab2Workstation,
+          status: "attention",
+          accelerators: lab2Workstation.accelerators?.map((accelerator) => ({
+            ...accelerator,
+            readiness: "not_ready" as const,
+          })),
+        },
+      ],
+    });
+
+    expect(
+      projection.registeredWorkstations[0]?.facts.find((fact) => fact.kind === "accelerator"),
+    ).toMatchObject({ tone: "attention" });
+  });
+
+  it("invalidates stable projections when only accelerator readiness changes", () => {
+    const first = projectNotebookWorkstationSelection({
+      registeredWorkstations: [lab2Workstation],
+    });
+    const second = projectNotebookWorkstationSelection({
+      registeredWorkstations: [
+        {
+          ...lab2Workstation,
+          accelerators: lab2Workstation.accelerators?.map((accelerator) => ({
+            ...accelerator,
+            readiness: "unknown" as const,
+          })),
+        },
+      ],
+    });
+
+    expect(second).not.toBe(first);
+    expect(second.registeredWorkstations[0]).not.toBe(first.registeredWorkstations[0]);
+    expect(
+      second.registeredWorkstations[0]?.facts.find((fact) => fact.kind === "accelerator"),
+    ).toMatchObject({ tone: "attention" });
   });
 
   it("keeps registered, selected, and attached workstation states distinct", () => {

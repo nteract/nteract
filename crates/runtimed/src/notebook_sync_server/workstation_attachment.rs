@@ -53,6 +53,7 @@ fn local_workstation_attachment(working_directory: Option<String>) -> Workstatio
             .ok()
             .map(|count| count.get() as u64),
         memory_bytes: None,
+        accelerators: None,
         working_directory,
         // Deliberately unset: local daemon attachment should not create head
         // churn merely because a constructor/bind path republished it.

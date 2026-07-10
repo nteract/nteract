@@ -60,6 +60,7 @@
 //!       extras: Str           (JSON-encoded ProjectFileExtras)
 //!   workstation/            Map|null (room-host-owned current compute attachment)
 //!     workstation_id: Str
+//!     accelerators: List[Map]|null (null/missing = unknown; [] = known none)
 //!     display_name: Str
 //!     provider: Str
 //!     default_environment_label: Str
@@ -345,6 +346,26 @@ fn default_empty_state() -> serde_json::Value {
 /// workstation registry/control plane can provide richer host-owned data, but
 /// this snapshot is what late joiners and collaborators read through
 /// RuntimeStateDoc while deciding whether the room can execute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkstationAcceleratorState {
+    /// Extensible accelerator class. The initial detector publishes `gpu`.
+    pub kind: String,
+    #[serde(default)]
+    pub vendor: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Number of identical devices represented by this entry.
+    pub count: u64,
+    /// Physical memory on each device, not currently free memory.
+    #[serde(default)]
+    pub memory_bytes_per_device: Option<u64>,
+    /// `ready` means the workstation runtime verified device access. It does
+    /// not claim the devices are idle, free, or schedulable.
+    pub readiness: String,
+    #[serde(default)]
+    pub diagnostic: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkstationAttachmentState {
     pub workstation_id: String,
@@ -359,6 +380,11 @@ pub struct WorkstationAttachmentState {
     pub cpu_count: Option<u64>,
     #[serde(default)]
     pub memory_bytes: Option<u64>,
+    /// `None` is an older/unknown inventory; `Some([])` means detection ran and
+    /// found no accelerators. Known facts remain attached while a workstation
+    /// is offline so late joiners can distinguish hardware from liveness.
+    #[serde(default)]
+    pub accelerators: Option<Vec<WorkstationAcceleratorState>>,
     #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]
@@ -1046,6 +1072,17 @@ impl RuntimeStateDoc {
             }
         }
         out
+    }
+
+    fn read_workstation_accelerators(
+        &self,
+        workstation: &automerge::ObjId,
+    ) -> Option<Vec<WorkstationAcceleratorState>> {
+        let value = automunge::read_json_value(&self.doc, workstation, "accelerators")?;
+        if !value.is_array() {
+            return None;
+        }
+        serde_json::from_value(value).ok()
     }
 
     // ── Granular setters (daemon calls these individually) ──────────
@@ -2508,6 +2545,7 @@ impl RuntimeStateDoc {
             status_message: self.read_opt_str(&workstation, "status_message"),
             cpu_count: self.read_opt_u64(&workstation, "cpu_count"),
             memory_bytes: self.read_opt_u64(&workstation, "memory_bytes"),
+            accelerators: self.read_workstation_accelerators(&workstation),
             working_directory: self.read_opt_str(&workstation, "working_directory"),
             updated_at: self.read_opt_str(&workstation, "updated_at"),
             runtime_session_id: self.read_opt_str(&workstation, "runtime_session_id"),
@@ -2562,6 +2600,26 @@ impl RuntimeStateDoc {
         )?;
         self.put_optional_u64_at(&workstation, "cpu_count", state.cpu_count)?;
         self.put_optional_u64_at(&workstation, "memory_bytes", state.memory_bytes)?;
+        let accelerators = match state.accelerators.as_ref() {
+            Some(accelerators) => serde_json::Value::Array(
+                accelerators
+                    .iter()
+                    .map(|accelerator| {
+                        serde_json::json!({
+                            "kind": accelerator.kind,
+                            "vendor": accelerator.vendor,
+                            "model": accelerator.model,
+                            "count": accelerator.count,
+                            "memory_bytes_per_device": accelerator.memory_bytes_per_device,
+                            "readiness": accelerator.readiness,
+                            "diagnostic": accelerator.diagnostic,
+                        })
+                    })
+                    .collect(),
+            ),
+            None => serde_json::Value::Null,
+        };
+        automunge::update_json_at_key(&mut self.doc, &workstation, "accelerators", &accelerators)?;
         self.put_optional_str_at(
             &workstation,
             "working_directory",
@@ -3965,6 +4023,15 @@ mod tests {
             status_message: Some("kernel attached".to_string()),
             cpu_count: Some(8),
             memory_bytes: Some(32 * 1024 * 1024 * 1024),
+            accelerators: Some(vec![WorkstationAcceleratorState {
+                kind: "gpu".to_string(),
+                vendor: Some("NVIDIA".to_string()),
+                model: Some("A100".to_string()),
+                count: 1,
+                memory_bytes_per_device: Some(80 * 1024 * 1024 * 1024),
+                readiness: "ready".to_string(),
+                diagnostic: None,
+            }]),
             working_directory: Some("/home/ubuntu/notebooks".to_string()),
             updated_at: Some("2026-06-07T21:00:00Z".to_string()),
             runtime_session_id: Some("job-123".to_string()),
@@ -4357,6 +4424,23 @@ mod tests {
         doc.set_workstation_attachment(None).unwrap();
         assert_eq!(doc.workstation_attachment(), None);
         assert_eq!(doc.read_state().workstation, None);
+    }
+
+    #[test]
+    fn workstation_accelerators_preserve_unknown_and_known_none() {
+        let mut doc = RuntimeStateDoc::new();
+        let mut attachment = workstation_attachment_fixture();
+
+        attachment.accelerators = None;
+        doc.set_workstation_attachment(Some(&attachment)).unwrap();
+        assert_eq!(doc.workstation_attachment().unwrap().accelerators, None);
+
+        attachment.accelerators = Some(Vec::new());
+        doc.set_workstation_attachment(Some(&attachment)).unwrap();
+        assert_eq!(
+            doc.workstation_attachment().unwrap().accelerators,
+            Some(Vec::new())
+        );
     }
 
     #[test]
