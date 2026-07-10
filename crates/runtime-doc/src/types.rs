@@ -6,6 +6,67 @@ pub struct StreamOutputState {
     pub blob_hash: String,
 }
 
+/// Connection state for a kernel-owned Bokeh document session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BokehSessionStatus {
+    #[default]
+    Connected,
+    Disconnected,
+    Closed,
+    Error,
+}
+
+/// Content-addressed artifact referenced by a Bokeh session replay record.
+///
+/// The bytes live in the daemon blob store. RuntimeStateDoc carries only the
+/// immutable address and enough metadata for a client to fetch it safely.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BokehSessionContentRef {
+    pub blob: String,
+    pub size: u64,
+    pub media_type: String,
+}
+
+/// Full-document checkpoint for a Bokeh session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BokehSessionCheckpoint {
+    pub revision: u64,
+    pub content_ref: BokehSessionContentRef,
+}
+
+/// One canonical patch transaction after the current checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BokehSessionPatchRef {
+    pub base_revision: u64,
+    pub revision: u64,
+    pub content_ref: BokehSessionContentRef,
+}
+
+/// Durable topology and replay coordinates for one Bokeh document session.
+///
+/// The kernel owns the live Bokeh `Document`. This record associates it with
+/// notebook output topology and points to the blob-backed checkpoint and
+/// bounded patch tail needed by remounting or late-joining clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BokehSessionState {
+    pub output_id: String,
+    pub cell_id: String,
+    pub execution_id: String,
+    pub kernel_id: String,
+    pub status: BokehSessionStatus,
+    pub head_revision: u64,
+    pub producer_name: String,
+    pub producer_version: String,
+    pub bokeh_version: String,
+    #[serde(default)]
+    pub root_ids: Vec<String>,
+    #[serde(default)]
+    pub checkpoint: Option<BokehSessionCheckpoint>,
+    #[serde(default)]
+    pub patch_tail: Vec<BokehSessionPatchRef>,
+}
+
 /// Project file the daemon picked for a notebook, identified by location
 /// and kind. The parsed contents live under [`ProjectFileParsed`], carried
 /// in the same [`ProjectContext::Detected`] state so every sync'd client

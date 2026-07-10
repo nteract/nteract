@@ -8,6 +8,8 @@ pub enum RuntimeStateError {
     MissingOutputId,
     #[error("env progress phase must serialize as an object")]
     InvalidProgressShape,
+    #[error("invalid Bokeh session: {0}")]
+    InvalidBokehSession(String),
     #[error("automerge: {0}")]
     Automerge(#[from] AutomergeError),
     #[error("automerge recovery: {0}")]

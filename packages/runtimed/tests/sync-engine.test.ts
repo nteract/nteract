@@ -167,6 +167,7 @@ function makeRuntimeState(
     last_saved: null,
     executions: executions as RuntimeState["executions"],
     comms: {},
+    bokeh_sessions: {},
   };
 }
 
@@ -821,6 +822,7 @@ describe("SyncEngine", () => {
         last_saved: null,
         executions: {},
         comms: {},
+        bokeh_sessions: {},
       };
 
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
@@ -920,6 +922,7 @@ describe("SyncEngine", () => {
           },
         },
         comms: {},
+        bokeh_sessions: {},
       };
 
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
