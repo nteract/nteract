@@ -185,6 +185,7 @@ export function FontFamilyPicker({
                 id={inputId}
                 type="button"
                 role="combobox"
+                aria-label={label}
                 aria-controls={listId}
                 aria-expanded={open}
                 className={cn(
@@ -262,7 +263,7 @@ export function FontFamilyPicker({
                         );
                       })}
                     </CommandGroup>
-                  ) : (
+                  ) : searchValue.trim() ? null : (
                     <CommandEmpty>No fonts found.</CommandEmpty>
                   )}
                 </CommandList>
