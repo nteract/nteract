@@ -102,19 +102,23 @@ class McpProcess:
             stderr=asyncio.subprocess.PIPE,
         )
         client = cls(process, timeout_secs)
-        await client.request(
-            "initialize",
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "nteract-mcp-connect-harness",
-                    "version": "0.1.0",
+        try:
+            await client.request(
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "nteract-mcp-connect-harness",
+                        "version": "0.1.0",
+                    },
                 },
-            },
-        )
-        await client.notify("notifications/initialized", {})
-        return client
+            )
+            await client.notify("notifications/initialized", {})
+            return client
+        except BaseException:
+            await client.close()
+            raise
 
     async def _read_stdout(self) -> None:
         assert self.process.stdout is not None
@@ -165,13 +169,18 @@ class McpProcess:
             "method": method,
             "params": params,
         }
-        self.process.stdin.write((json.dumps(message) + "\n").encode())
-        await self.process.stdin.drain()
         try:
+            self.process.stdin.write((json.dumps(message) + "\n").encode())
+            await self.process.stdin.drain()
             return await asyncio.wait_for(future, timeout=self.timeout_secs)
         except TimeoutError:
             self.pending.pop(request_id, None)
             raise TimeoutError(f"MCP request {method} exceeded {self.timeout_secs:.1f}s") from None
+        except BaseException:
+            self.pending.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+            raise
 
     async def notify(self, method: str, params: Any) -> None:
         assert self.process.stdin is not None
@@ -342,7 +351,13 @@ def summarize_get_all(
 async def monitor_active_peers(
     client: McpProcess,
     stop: asyncio.Event,
+    connect_args: dict[str, Any],
 ) -> dict[str, Any]:
+    target_notebook_id = connect_args.get("notebook_id")
+    target_path = connect_args.get("path")
+    canonical_target_path = (
+        os.path.realpath(os.path.expanduser(target_path)) if isinstance(target_path, str) else None
+    )
     peer_counts: list[int] = []
     errors: list[str] = []
     while True:
@@ -355,7 +370,16 @@ async def monitor_active_peers(
                 peer_counts.extend(
                     int(room["active_peers"])
                     for room in value
-                    if isinstance(room, dict) and isinstance(room.get("active_peers"), (int, float))
+                    if isinstance(room, dict)
+                    and (
+                        room.get("notebook_id") == target_notebook_id
+                        or (
+                            canonical_target_path is not None
+                            and isinstance(room.get("notebook_path"), str)
+                            and os.path.realpath(room["notebook_path"]) == canonical_target_path
+                        )
+                    )
+                    and isinstance(room.get("active_peers"), (int, float))
                 )
         if stop.is_set():
             break
@@ -386,7 +410,7 @@ async def run_sample(
         )
         monitor_stop = asyncio.Event()
         monitor_task = (
-            asyncio.create_task(monitor_active_peers(client, monitor_stop))
+            asyncio.create_task(monitor_active_peers(client, monitor_stop, connect_args))
             if parallel > 1
             else None
         )
