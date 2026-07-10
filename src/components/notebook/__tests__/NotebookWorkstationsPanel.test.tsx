@@ -287,6 +287,111 @@ describe("NotebookWorkstationsPanel", () => {
     expect(attachButtons[1]).toBeDisabled();
   });
 
+  it("renders accelerator capability, attention diagnostics, known-none, unknown, and offline facts", () => {
+    const gpu = {
+      kind: "gpu",
+      vendor: "NVIDIA",
+      model: "A100",
+      count: 1,
+      memory_bytes_per_device: 80 * 1024 ** 3,
+      readiness: "ready" as const,
+    };
+    const selection = projectNotebookWorkstationSelection({
+      canSelectWorkstation: true,
+      registeredWorkstations: [
+        {
+          id: "ws-gpu-ready",
+          displayName: "Usable GPU",
+          status: "online",
+          defaultEnvironmentLabel: "Current Python",
+          workingDirectory: "/workspace/ready",
+          accelerators: [gpu],
+        },
+        {
+          id: "ws-gpu-attention",
+          displayName: "GPU attention",
+          status: "online",
+          defaultEnvironmentLabel: "Current Python",
+          workingDirectory: "/workspace/attention",
+          accelerators: [
+            {
+              ...gpu,
+              readiness: "not_ready",
+              diagnostic: "NVIDIA driver is not visible to the workstation service.",
+            },
+          ],
+        },
+        {
+          id: "ws-known-none",
+          displayName: "CPU workstation",
+          status: "online",
+          defaultEnvironmentLabel: "Current Python",
+          workingDirectory: "/workspace/cpu",
+          accelerators: [],
+        },
+        {
+          id: "ws-legacy",
+          displayName: "Older agent",
+          status: "online",
+          defaultEnvironmentLabel: "Current Python",
+          workingDirectory: "/workspace/legacy",
+          accelerators: null,
+        },
+        {
+          id: "ws-offline-gpu",
+          displayName: "Offline GPU",
+          status: "offline",
+          accelerators: [gpu],
+        },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selection}
+      />,
+    );
+
+    const readyRow = screen
+      .getByRole("heading", { name: "Usable GPU" })
+      .closest('[data-testid="registered-workstation"]');
+    const attentionRow = screen
+      .getByRole("heading", { name: "GPU attention" })
+      .closest('[data-testid="registered-workstation"]');
+    const knownNoneRow = screen
+      .getByRole("heading", { name: "CPU workstation" })
+      .closest('[data-testid="registered-workstation"]');
+    const legacyRow = screen
+      .getByRole("heading", { name: "Older agent" })
+      .closest('[data-testid="registered-workstation"]');
+    const offlineRow = screen
+      .getByRole("heading", { name: "Offline GPU" })
+      .closest('[data-testid="registered-workstation"]');
+
+    expect(readyRow).not.toBeNull();
+    expect(
+      within(readyRow!).getByText("1× NVIDIA A100 · 80 GiB").closest("[data-tone]"),
+    ).toHaveAttribute("data-tone", "positive");
+    expect(attentionRow).not.toBeNull();
+    expect(
+      within(attentionRow!).getByText("NVIDIA driver is not visible to the workstation service."),
+    ).toBeVisible();
+    expect(
+      within(attentionRow!).getByText("1× NVIDIA A100 · 80 GiB").closest("[data-tone]"),
+    ).toHaveAttribute("data-tone", "attention");
+    expect(knownNoneRow).not.toBeNull();
+    expect(within(knownNoneRow!).queryByText("GPU")).not.toBeInTheDocument();
+    expect(legacyRow).not.toBeNull();
+    expect(within(legacyRow!).queryByText("GPU")).not.toBeInTheDocument();
+    expect(screen.queryByText("No GPU")).not.toBeInTheDocument();
+    expect(offlineRow).not.toBeNull();
+    expect(
+      within(offlineRow!).getByText("1× NVIDIA A100 · 80 GiB").closest("[data-tone]"),
+    ).toHaveAttribute("data-tone", "neutral");
+    expect(within(offlineRow!).queryByText(/available/i)).not.toBeInTheDocument();
+  });
+
   it("keeps the detached cloud target compact when registered workstations are listed", () => {
     const capabilities: NotebookShellCapabilities = {
       ...readOnlyNotebookShellCapabilities,

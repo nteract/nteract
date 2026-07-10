@@ -208,14 +208,38 @@ describe("CloudWorkstationsStore registry gate", () => {
           return loadCalls === 1
             ? registry({
                 workstations: [
-                  workstation("ws-b", "Beta", { status: "online" }),
+                  workstation("ws-b", "Beta", {
+                    status: "online",
+                    accelerators: [
+                      {
+                        kind: "gpu",
+                        vendor: "NVIDIA",
+                        model: "A100",
+                        count: 1,
+                        memory_bytes_per_device: 80 * 1024 ** 3,
+                        readiness: "ready",
+                      },
+                    ],
+                  }),
                   workstation("ws-a", "Alpha", { status: "offline" }),
                 ],
               })
             : registry({
                 workstations: [
                   workstation("ws-a", "Alpha", { status: "online" }),
-                  workstation("ws-b", "Beta", { status: "offline" }),
+                  workstation("ws-b", "Beta", {
+                    status: "offline",
+                    accelerators: [
+                      {
+                        kind: "gpu",
+                        vendor: "NVIDIA",
+                        model: "A100",
+                        count: 1,
+                        memory_bytes_per_device: 80 * 1024 ** 3,
+                        readiness: "ready",
+                      },
+                    ],
+                  }),
                 ],
               });
         },
@@ -227,6 +251,7 @@ describe("CloudWorkstationsStore registry gate", () => {
       store.snapshot.registry.workstations.map((workstation) => workstation.id),
       ["ws-a", "ws-b"],
     );
+    assert.equal(store.snapshot.registry.workstations[1]?.accelerators?.[0]?.model, "A100");
 
     await store.refreshNow();
     await drainMicrotasks();

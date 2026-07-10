@@ -115,6 +115,24 @@ export interface PrincipalAccountLinkRow {
 
 export type WorkstationStatus = "online" | "offline" | "connecting" | "attention" | "unknown";
 
+export type WorkstationAcceleratorReadiness = "ready" | "not_ready" | "unknown";
+
+/**
+ * Host-owned accelerator capability reported by a workstation heartbeat.
+ *
+ * `ready` means the workstation runtime detected and can use the devices; it
+ * does not claim that any device is currently idle, free, or schedulable.
+ */
+export interface WorkstationAccelerator {
+  kind: string;
+  vendor: string | null;
+  model: string | null;
+  count: number;
+  memory_bytes_per_device: number | null;
+  readiness: WorkstationAcceleratorReadiness;
+  diagnostic: string | null;
+}
+
 export type WorkstationAttachJobStatus =
   | "pending"
   | "accepted"
@@ -145,6 +163,7 @@ export interface WorkstationRow {
   working_directory: string | null;
   cpu_count: number | null;
   memory_bytes: number | null;
+  accelerators_json: string | null;
   environments_json: string | null;
   created_at: string;
   updated_at: string;
@@ -164,6 +183,7 @@ export interface WorkstationRegistrationInput {
   workingDirectory?: string | null;
   cpuCount?: number | null;
   memoryBytes?: number | null;
+  acceleratorsJson?: string | null;
   environmentsJson?: string | null;
 }
 
@@ -359,6 +379,7 @@ const SCHEMA_STATEMENTS = [
     working_directory TEXT,
     cpu_count INTEGER,
     memory_bytes INTEGER,
+    accelerators_json TEXT,
     environments_json TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -475,6 +496,11 @@ const SCHEMA_MIGRATIONS = [
     table: "workstations",
     column: "channel",
     statement: `ALTER TABLE workstations ADD COLUMN channel TEXT`,
+  },
+  {
+    table: "workstations",
+    column: "accelerators_json",
+    statement: `ALTER TABLE workstations ADD COLUMN accelerators_json TEXT`,
   },
   {
     table: "notebooks",
@@ -1035,11 +1061,12 @@ export async function registerWorkstation(
        working_directory,
        cpu_count,
        memory_bytes,
+       accelerators_json,
        environments_json,
        created_at,
        updated_at,
        last_seen_at
-     ) VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(owner_principal, workstation_id) DO UPDATE SET
        display_name = excluded.display_name,
        provider = excluded.provider,
@@ -1053,6 +1080,7 @@ export async function registerWorkstation(
        working_directory = excluded.working_directory,
        cpu_count = excluded.cpu_count,
        memory_bytes = excluded.memory_bytes,
+       accelerators_json = excluded.accelerators_json,
        environments_json = excluded.environments_json,
        updated_at = excluded.updated_at,
        last_seen_at = excluded.last_seen_at`,
@@ -1071,6 +1099,7 @@ export async function registerWorkstation(
       input.workingDirectory ?? null,
       input.cpuCount ?? null,
       input.memoryBytes ?? null,
+      input.acceleratorsJson ?? null,
       input.environmentsJson ?? null,
       now,
       now,
@@ -1105,6 +1134,7 @@ export async function getWorkstationRow(
             working_directory,
             cpu_count,
             memory_bytes,
+            accelerators_json,
             environments_json,
             created_at,
             updated_at,
@@ -1141,13 +1171,14 @@ export async function listWorkstationsForPrincipal(
             working_directory,
             cpu_count,
             memory_bytes,
+            accelerators_json,
             environments_json,
             created_at,
             updated_at,
             last_seen_at
-       FROM workstations
+      FROM workstations
       WHERE owner_principal = ?
-      ORDER BY last_seen_at DESC, updated_at DESC, workstation_id`,
+      ORDER BY workstation_id`,
   )
     .bind(ownerPrincipal)
     .all<WorkstationRow>();

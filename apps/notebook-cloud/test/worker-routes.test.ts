@@ -2517,6 +2517,173 @@ describe("Worker artifact routes", () => {
     assert.equal(body.workstations[0]?.is_default, true);
   });
 
+  it("round-trips structured accelerators, known-none, and stable identity order", async () => {
+    const env = fakeEnv();
+    const gpuAccelerators = [
+      {
+        kind: "GPU",
+        vendor: "NVIDIA",
+        model: "A100",
+        count: 1,
+        memory_bytes_per_device: 80 * 1024 ** 3,
+        readiness: "READY",
+        diagnostic: null,
+      },
+      {
+        kind: "gpu",
+        vendor: "AMD",
+        model: "MI300X",
+        count: 2,
+        readiness: "unknown",
+      },
+    ];
+
+    const gpuRegistration = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:gpu",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({
+          workstation_id: "ws-z-gpu",
+          display_name: "GPU host",
+          provider: "runtime_peer",
+          accelerators: gpuAccelerators,
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(gpuRegistration.status, 201);
+    const gpuBody = (await gpuRegistration.json()) as {
+      workstation: { accelerators?: unknown };
+    };
+    assert.deepEqual(gpuBody.workstation.accelerators, [
+      {
+        kind: "gpu",
+        vendor: "NVIDIA",
+        model: "A100",
+        count: 1,
+        memory_bytes_per_device: 80 * 1024 ** 3,
+        readiness: "ready",
+        diagnostic: null,
+      },
+      {
+        kind: "gpu",
+        vendor: "AMD",
+        model: "MI300X",
+        count: 2,
+        memory_bytes_per_device: null,
+        readiness: "unknown",
+        diagnostic: null,
+      },
+    ]);
+
+    const noGpuRegistration = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:cpu",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({
+          workstation_id: "ws-a-cpu",
+          display_name: "CPU host",
+          provider: "runtime_peer",
+          accelerators: [],
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(noGpuRegistration.status, 201);
+    const noGpuBody = (await noGpuRegistration.json()) as {
+      workstation: { accelerators?: unknown };
+    };
+    assert.deepEqual(noGpuBody.workstation.accelerators, []);
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(list.status, 200);
+    const listBody = (await list.json()) as {
+      workstations: Array<{ workstation_id: string; accelerators?: unknown }>;
+    };
+    assert.deepEqual(
+      listBody.workstations.map((workstation) => workstation.workstation_id),
+      ["ws-a-cpu", "ws-z-gpu"],
+    );
+    assert.deepEqual(listBody.workstations[0]?.accelerators, []);
+    assert.deepEqual(listBody.workstations[1]?.accelerators, gpuBody.workstation.accelerators);
+  });
+
+  it("rejects malformed or unbounded accelerator registrations", async () => {
+    const env = fakeEnv();
+    const validAccelerator = {
+      kind: "gpu",
+      vendor: "NVIDIA",
+      model: "A100",
+      count: 1,
+      readiness: "ready",
+    };
+    const cases = [
+      {
+        accelerators: {},
+        error: "accelerators must be an array",
+      },
+      {
+        accelerators: Array.from({ length: 17 }, () => validAccelerator),
+        error: "accelerators must contain at most 16 entries",
+      },
+      {
+        accelerators: [{ ...validAccelerator, count: 0 }],
+        error: "accelerators[0].count must be an integer from 1 to 1024",
+      },
+      {
+        accelerators: [{ ...validAccelerator, readiness: "free" }],
+        error: "accelerators[0].readiness must be ready, not_ready, or unknown",
+      },
+    ];
+
+    for (const [index, testCase] of cases.entries()) {
+      const response = await worker.fetch(
+        new Request("http://localhost/api/workstations", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Operator": `workstation:invalid-${index}`,
+            "X-Scope": "owner",
+            "X-User": "alice",
+          },
+          body: JSON.stringify({
+            workstation_id: `ws-invalid-${index}`,
+            display_name: "Invalid accelerator host",
+            provider: "runtime_peer",
+            accelerators: testCase.accelerators,
+          }),
+        }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), { error: testCase.error });
+    }
+    assert.equal(env.DB.workstations.size, 0);
+  });
+
   it("advertises latest workstation builds and marks outdated rows", async (t) => {
     clearLatestWorkstationBuildCacheForTests();
     const latestNightly = "2.6.2-nightly.202607091009";
@@ -2673,6 +2840,33 @@ describe("Worker artifact routes", () => {
     assert.equal(body.workstation.workstation_id, "ws-old-agent");
     assert.equal(body.workstation.installed_build, null);
     assert.equal(body.workstation.channel, null);
+    assert.equal(Object.hasOwn(body.workstation, "accelerators"), false);
+  });
+
+  it("omits malformed stored accelerator data as unknown", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-corrupt",
+      acceleratorsJson: "{not-json",
+    });
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as { workstations: Array<Record<string, unknown>> };
+    assert.equal(body.workstations[0]?.workstation_id, "ws-corrupt");
+    assert.equal(Object.hasOwn(body.workstations[0] ?? {}, "accelerators"), false);
   });
 
   it("deregisters an owned workstation, deletes its lease, and pushes went_offline once", async () => {
@@ -2857,6 +3051,17 @@ describe("Worker artifact routes", () => {
       ownerPrincipal: "user:dev:alice",
       workstationId: "ws-lab2",
       lastSeenAt,
+      acceleratorsJson: JSON.stringify([
+        {
+          kind: "gpu",
+          vendor: "NVIDIA",
+          model: "A100",
+          count: 1,
+          memory_bytes_per_device: 80 * 1024 ** 3,
+          readiness: "not_ready",
+          diagnostic: "NVIDIA driver is not available to the workstation service.",
+        },
+      ]),
     });
     seedWorkstationLease(compute, {
       ownerPrincipal: "user:dev:alice",
@@ -2882,10 +3087,22 @@ describe("Worker artifact routes", () => {
       workstations: Array<{
         workstation_id: string;
         status: string;
+        accelerators?: unknown;
       }>;
     };
     assert.equal(body.workstations[0]?.workstation_id, "ws-lab2");
     assert.equal(body.workstations[0]?.status, "offline");
+    assert.deepEqual(body.workstations[0]?.accelerators, [
+      {
+        kind: "gpu",
+        vendor: "NVIDIA",
+        model: "A100",
+        count: 1,
+        memory_bytes_per_device: 80 * 1024 ** 3,
+        readiness: "not_ready",
+        diagnostic: "NVIDIA driver is not available to the workstation service.",
+      },
+    ]);
     assert.ok(!events.requests.some((entry) => new URL(entry.url).pathname === "/status"));
   });
 
@@ -4068,7 +4285,21 @@ describe("Worker artifact routes", () => {
         }),
       } satisfies DurableObjectNamespace,
     });
-    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      acceleratorsJson: JSON.stringify([
+        {
+          kind: "gpu",
+          vendor: "NVIDIA",
+          model: "A100",
+          count: 1,
+          memory_bytes_per_device: 80 * 1024 ** 3,
+          readiness: "ready",
+          diagnostic: null,
+        },
+      ]),
+    });
     seedWorkstationAttachJob(env, {
       id: "job-1",
       notebookId: "nb-1",
@@ -4124,6 +4355,7 @@ describe("Worker artifact routes", () => {
         display_name?: string;
         status?: string;
         runtime_session_id?: string | null;
+        accelerators?: unknown;
       };
     };
     assert.deepEqual(runtimeStatePayload.attachment, {
@@ -4137,6 +4369,17 @@ describe("Worker artifact routes", () => {
       status_message: null,
       cpu_count: 8,
       memory_bytes: 16_000_000_000,
+      accelerators: [
+        {
+          kind: "gpu",
+          vendor: "NVIDIA",
+          model: "A100",
+          count: 1,
+          memory_bytes_per_device: 80 * 1024 ** 3,
+          readiness: "ready",
+          diagnostic: null,
+        },
+      ],
       working_directory: "/home/ubuntu/project",
       updated_at: env.DB.workstationAttachJobs.get("job-1")?.updated_at,
     });
@@ -7747,6 +7990,7 @@ describe("catalog schema migrations", () => {
     assert.ok(workstationColumns);
     workstationColumns.delete("installed_build");
     workstationColumns.delete("channel");
+    workstationColumns.delete("accelerators_json");
 
     const env = fakeEnv({ DB: db });
     await runCatalogMigrations(env);
@@ -7763,6 +8007,10 @@ describe("catalog schema migrations", () => {
     const migratedWorkstations = db.tableColumns.get("workstations");
     assert.ok(migratedWorkstations?.has("installed_build"), "installed_build added by migration");
     assert.ok(migratedWorkstations?.has("channel"), "channel added by migration");
+    assert.ok(
+      migratedWorkstations?.has("accelerators_json"),
+      "accelerators_json added by migration",
+    );
   });
 });
 
@@ -8610,6 +8858,7 @@ function seedWorkstation(
     status?: WorkstationRow["status"];
     installedBuild?: string | null;
     channel?: string | null;
+    acceleratorsJson?: string | null;
     lastSeenAt?: string;
   },
 ): void {
@@ -8628,6 +8877,7 @@ function seedWorkstation(
     working_directory: "/home/ubuntu/project",
     cpu_count: 8,
     memory_bytes: 16_000_000_000,
+    accelerators_json: input.acceleratorsJson ?? null,
     environments_json: null,
     created_at: "2026-05-22T00:00:00.000Z",
     updated_at: "2026-05-22T00:00:00.000Z",
@@ -9119,6 +9369,7 @@ interface WorkstationRow {
   working_directory: string | null;
   cpu_count: number | null;
   memory_bytes: number | null;
+  accelerators_json: string | null;
   environments_json: string | null;
   created_at: string;
   updated_at: string;
@@ -9209,6 +9460,7 @@ class FakeD1 implements D1Database {
         "working_directory",
         "cpu_count",
         "memory_bytes",
+        "accelerators_json",
         "environments_json",
         "created_at",
         "updated_at",
@@ -9771,6 +10023,7 @@ class FakeD1Statement implements D1PreparedStatement {
         workingDirectory,
         cpuCount,
         memoryBytes,
+        acceleratorsJson,
         environmentsJson,
         createdAt,
         updatedAt,
@@ -9789,6 +10042,7 @@ class FakeD1Statement implements D1PreparedStatement {
         string | null,
         number | null,
         number | null,
+        string | null,
         string | null,
         string,
         string,
@@ -9811,6 +10065,7 @@ class FakeD1Statement implements D1PreparedStatement {
         working_directory: workingDirectory,
         cpu_count: cpuCount,
         memory_bytes: memoryBytes,
+        accelerators_json: acceleratorsJson,
         environments_json: environmentsJson,
         created_at: existing?.created_at ?? createdAt,
         updated_at: updatedAt,
@@ -10738,12 +10993,7 @@ class FakeD1Statement implements D1PreparedStatement {
       return okResult(
         [...this.db.workstations.values()]
           .filter((workstation) => workstation.owner_principal === ownerPrincipal)
-          .sort(
-            (left, right) =>
-              (right.last_seen_at ?? right.updated_at).localeCompare(
-                left.last_seen_at ?? left.updated_at,
-              ) || right.workstation_id.localeCompare(left.workstation_id),
-          ) as T[],
+          .sort((left, right) => left.workstation_id.localeCompare(right.workstation_id)) as T[],
       );
     }
     if (this.query.includes("FROM workstation_attach_jobs")) {

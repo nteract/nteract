@@ -98,14 +98,47 @@ describe("RuntimeStateStore", () => {
       default_environment_label: "py311",
       environment_policy: "current_python",
       status: "connected",
+      accelerators: [
+        {
+          kind: "gpu",
+          vendor: "NVIDIA",
+          model: "A100",
+          count: 1,
+          readiness: "ready" as const,
+        },
+      ],
     };
     const seen = collect(store.workstation$);
     store.set(stateWith({ workstation: attachment }));
     // New object, same facts — a runtime tick that didn't change attachment.
-    store.set(stateWith({ workstation: { ...attachment } }));
+    store.set(
+      stateWith({
+        workstation: {
+          ...attachment,
+          accelerators: attachment.accelerators.map((accelerator) => ({ ...accelerator })),
+        },
+      }),
+    );
+    store.set(
+      stateWith({
+        workstation: {
+          ...attachment,
+          accelerators: attachment.accelerators.map((accelerator) => ({
+            ...accelerator,
+            readiness: "unknown" as const,
+          })),
+        },
+      }),
+    );
     store.set(stateWith({ workstation: { ...attachment, status: "disconnected" } }));
     store.set(stateWith({ workstation: undefined }));
-    expect(seen.map((w) => w?.status ?? null)).toEqual([null, "connected", "disconnected", null]);
+    expect(
+      seen.map((workstation) =>
+        workstation
+          ? `${workstation.status}:${workstation.accelerators?.[0]?.readiness ?? "none"}`
+          : null,
+      ),
+    ).toEqual([null, "connected:ready", "connected:unknown", "disconnected:ready", null]);
   });
 });
 

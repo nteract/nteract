@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
+use runtime_doc::WorkstationAcceleratorState;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -57,6 +58,8 @@ pub const DEFAULT_POLL_MS: u64 = 60_000;
 /// path, but registration heartbeat remains the durable online-presence
 /// fallback for missed or wedged sockets.
 pub const DEFAULT_HEARTBEAT_MS: u64 = 60_000;
+/// Refresh hardware/runtime-usability inventory without probing on every heartbeat.
+const ACCELERATOR_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// Cooldown applied to 429/503 responses without a usable `Retry-After`.
 const DEFAULT_RETRY_AFTER_MS: u64 = 60_000;
@@ -135,11 +138,13 @@ pub struct AttachJobSpawnPlan {
 }
 
 /// Build the registration/heartbeat payload for `POST /api/workstations`.
-/// Field set mirrors `buildWorkstationRegistrationPayload` in
-/// `hosted-workstation-agent-core.mjs`; `cpu_count`/`memory_bytes` are
-/// omitted (the route treats them as optional) where the platform cannot
-/// report them. The build/channel fields identify the installed agent binary
-/// that owns the heartbeat.
+/// The core field set mirrors `buildWorkstationRegistrationPayload` in
+/// `hosted-workstation-agent-core.mjs`; `cpu_count`, `memory_bytes`, and
+/// `accelerators` are omitted where the platform cannot report them. A present
+/// empty accelerator list means detection ran and found none. Accelerator
+/// readiness describes runtime device access, never free or schedulable
+/// capacity. The build/channel fields identify the installed agent binary that
+/// owns the heartbeat.
 pub fn registration_payload(
     workstation_id: &str,
     display_name: &str,
@@ -147,6 +152,7 @@ pub fn registration_payload(
     python_path: &str,
     cpu_count: Option<u64>,
     memory_bytes: Option<u64>,
+    accelerators: Option<&[WorkstationAcceleratorState]>,
 ) -> Value {
     let mut payload = json!({
         "workstation_id": workstation_id,
@@ -170,6 +176,9 @@ pub fn registration_payload(
     }
     if let Some(mem) = memory_bytes {
         payload["memory_bytes"] = mem.into();
+    }
+    if let Some(accelerators) = accelerators {
+        payload["accelerators"] = json!(accelerators);
     }
     payload
 }
@@ -904,6 +913,11 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
         )
     })?;
     let _agent_lock = WorkstationAgentLock::try_acquire(&opts.agent_root, &opts.workstation_id)?;
+    // Reuse one bounded probe result across ordinary heartbeats, but refresh it
+    // periodically so driver/device-access loss or repair is reflected without
+    // requiring a workstation service restart.
+    let mut accelerators = super::accelerators::detect_accelerators().await;
+    let mut last_accelerator_detection = Instant::now();
 
     info!(
         "[workstation-agent] starting cloud_url={} workstation_id={} display_name={:?} working_dir={} python_path={} poll_ms={} heartbeat_ms={} agent_root={}",
@@ -941,7 +955,11 @@ pub async fn run_workstation_agent(opts: WorkstationAgentOptions, token: String)
         // the durable fallback that keeps a locally-running workstation visible
         // if that socket is missed, half-open, or blocked by an intermediary.
         if should_register_workstation(last_registration, opts.heartbeat_interval) {
-            let result = heartbeat(&api, &opts).await;
+            if should_refresh_accelerators(last_accelerator_detection) {
+                accelerators = super::accelerators::detect_accelerators().await;
+                last_accelerator_detection = Instant::now();
+            }
+            let result = heartbeat(&api, &opts, accelerators.as_deref()).await;
             if result.is_ok() {
                 last_registration = Some(Instant::now());
             }
@@ -1106,7 +1124,11 @@ fn workstation_agent_lock_dir(agent_root: &Path) -> &Path {
     agent_root
 }
 
-async fn heartbeat(api: &CloudApi, opts: &WorkstationAgentOptions) -> Result<(), AgentHttpError> {
+async fn heartbeat(
+    api: &CloudApi,
+    opts: &WorkstationAgentOptions,
+    accelerators: Option<&[WorkstationAcceleratorState]>,
+) -> Result<(), AgentHttpError> {
     let payload = registration_payload(
         &opts.workstation_id,
         &opts.display_name,
@@ -1114,6 +1136,7 @@ async fn heartbeat(api: &CloudApi, opts: &WorkstationAgentOptions) -> Result<(),
         &opts.python_path.to_string_lossy(),
         cpu_count(),
         total_memory_bytes(),
+        accelerators,
     );
     api.register_workstation(&payload).await
 }
@@ -1126,6 +1149,10 @@ fn should_register_workstation(
         return true;
     }
     last_registration.is_some_and(|at| at.elapsed() >= heartbeat_interval)
+}
+
+fn should_refresh_accelerators(last_detection: Instant) -> bool {
+    last_detection.elapsed() >= ACCELERATOR_REFRESH_INTERVAL
 }
 
 fn next_registration_deadline(
@@ -1820,9 +1847,18 @@ mod tests {
         );
     }
 
-    /// (c) Heartbeat payload field set matches the `.mjs` agent exactly.
+    /// Heartbeats retain the shared launcher fields and add native inventory.
     #[test]
-    fn registration_payload_matches_mjs_field_set() {
+    fn registration_payload_includes_detected_hardware() {
+        let accelerators = vec![WorkstationAcceleratorState {
+            kind: "gpu".to_string(),
+            vendor: Some("NVIDIA".to_string()),
+            model: Some("A100-SXM4-80GB".to_string()),
+            count: 1,
+            memory_bytes_per_device: Some(80 * 1024 * 1024 * 1024),
+            readiness: "ready".to_string(),
+            diagnostic: None,
+        }];
         let payload = registration_payload(
             "ws-lab2",
             "lab2 workstation",
@@ -1830,6 +1866,7 @@ mod tests {
             "/opt/k/bin/python",
             Some(8),
             Some(16_000_000_000),
+            Some(&accelerators),
         );
         let expected_shape = serde_json::json!({
             "workstation_id": "ws-lab2",
@@ -1840,6 +1877,15 @@ mod tests {
             "working_directory": "/home/ubuntu/project",
             "cpu_count": 8,
             "memory_bytes": 16_000_000_000u64,
+            "accelerators": [{
+                "kind": "gpu",
+                "vendor": "NVIDIA",
+                "model": "A100-SXM4-80GB",
+                "count": 1,
+                "memory_bytes_per_device": (80u64 * 1024 * 1024 * 1024),
+                "readiness": "ready",
+                "diagnostic": null,
+            }],
             "capabilities": {
                 "launch_current_python": true,
             },
@@ -1869,9 +1915,17 @@ mod tests {
 
     #[test]
     fn registration_payload_omits_unknown_hardware_facts() {
-        let payload = registration_payload("ws", "ws", "/w", "/usr/bin/python3", None, None);
+        let payload = registration_payload("ws", "ws", "/w", "/usr/bin/python3", None, None, None);
         assert!(payload.get("cpu_count").is_none());
         assert!(payload.get("memory_bytes").is_none());
+        assert!(payload.get("accelerators").is_none());
+    }
+
+    #[test]
+    fn registration_payload_preserves_known_no_accelerators() {
+        let payload =
+            registration_payload("ws", "ws", "/w", "/usr/bin/python3", None, None, Some(&[]));
+        assert_eq!(payload.get("accelerators"), Some(&serde_json::json!([])));
     }
 
     #[test]
@@ -1889,6 +1943,15 @@ mod tests {
             heartbeat_interval
         ));
         assert!(should_register_workstation(None, heartbeat_interval));
+    }
+
+    #[test]
+    fn accelerator_inventory_refreshes_on_a_bounded_cadence() {
+        let stale_detection = Instant::now() - ACCELERATOR_REFRESH_INTERVAL;
+        let fresh_detection = Instant::now();
+
+        assert!(should_refresh_accelerators(stale_detection));
+        assert!(!should_refresh_accelerators(fresh_detection));
     }
 
     #[test]

@@ -6,6 +6,7 @@ import {
   CircleCheck,
   Cloud,
   Copy,
+  Cpu,
   FolderOpen,
   Gauge,
   MemoryStick,
@@ -643,13 +644,31 @@ function WorkstationFact({
   icon: LucideIcon;
 }) {
   return (
-    <span className={cn("inline-flex min-w-0 items-center gap-1.5", fact.subtle && "opacity-75")}>
+    <span
+      className={cn(
+        "inline-grid min-w-0 grid-cols-[auto_auto_minmax(0,1fr)] gap-x-1.5",
+        fact.subtle && "opacity-75",
+      )}
+      data-tone={fact.tone}
+    >
       <Icon
-        className={cn("size-3.5 shrink-0", workstationFactIconClassName(fact.tone))}
+        className={cn("mt-px size-3.5 shrink-0", workstationFactIconClassName(fact.tone))}
         aria-hidden="true"
       />
       <span className="shrink-0 text-muted-foreground">{fact.label}</span>
-      <span className="min-w-0 truncate font-medium text-foreground">{fact.value}</span>
+      <span
+        className={cn(
+          "min-w-0 font-medium text-foreground",
+          fact.kind === "accelerator" ? "break-words" : "truncate",
+        )}
+      >
+        {fact.value}
+      </span>
+      {fact.detail ? (
+        <span className="col-span-2 col-start-2 min-w-0 text-[11px] leading-4 text-muted-foreground">
+          {fact.detail}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -660,9 +679,25 @@ function RegisteredWorkstationFact({
   fact: NotebookRegisteredWorkstationFactProjection;
 }) {
   return (
-    <span className="grid min-w-0 grid-cols-[2.25rem_minmax(0,1fr)] items-baseline gap-1 text-muted-foreground">
+    <span
+      className="grid min-w-0 grid-cols-[2.25rem_minmax(0,1fr)] items-baseline gap-x-1 gap-y-0.5 text-muted-foreground"
+      data-tone={fact.tone}
+    >
       <span className="text-[11px]">{fact.label}</span>
-      <span className="min-w-0 truncate font-medium text-foreground">{fact.value}</span>
+      <span
+        className={cn(
+          "min-w-0 font-medium",
+          fact.kind === "accelerator" ? "break-words" : "truncate",
+          fact.tone === "attention" ? "text-[var(--sev-warn)]" : "text-foreground",
+        )}
+      >
+        {fact.value}
+      </span>
+      {fact.detail ? (
+        <span className="col-start-2 min-w-0 text-[11px] leading-4 text-muted-foreground">
+          {fact.detail}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -768,6 +803,8 @@ function workstationFactIcon(
       return Gauge;
     case "memory":
       return MemoryStick;
+    case "accelerator":
+      return Cpu;
     case "working_directory":
       return FolderOpen;
     case "runtime_peers":

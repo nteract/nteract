@@ -1,4 +1,4 @@
-import type { WorkstationAttachmentState } from "./runtime-state";
+import type { WorkstationAcceleratorState, WorkstationAttachmentState } from "./runtime-state";
 
 export type NotebookWorkstationAttachmentClaimStatus =
   | "pending"
@@ -16,6 +16,8 @@ export interface NotebookWorkstationAttachmentClaim {
 }
 
 export interface NotebookWorkstationAttachmentTarget {
+  /** Missing/null is unknown; [] means detection found no accelerators. */
+  accelerators?: readonly WorkstationAcceleratorState[] | null;
   cpuCount?: number | null;
   defaultEnvironmentLabel?: string | null;
   displayName: string;
@@ -45,6 +47,7 @@ export function projectNotebookWorkstationAttachmentFromClaim({
     status_message: workstationAttachmentStatusMessageForClaim(claim, workstation),
     cpu_count: workstation.cpuCount ?? null,
     memory_bytes: workstation.memoryBytes ?? null,
+    accelerators: workstation.accelerators ?? null,
     working_directory: workstation.workingDirectory ?? null,
     updated_at: claim.updatedAt ?? null,
     runtime_session_id: claim.runtimeSessionId ?? null,

@@ -1,0 +1,23 @@
+---
+title: Workstation accelerators
+description: GPU capability facts in the notebook-first Workstations rail.
+---
+
+import { WorkstationAcceleratorsExample } from "@/components/workstation-accelerators-example";
+
+The Workstations rail presents accelerator inventory reported by the host-owned
+workstation registry. A `ready` accelerator means the workstation runtime
+detected the device and can use it. It does not mean the device is idle, free,
+or schedulable for a new kernel.
+
+Accelerator data is optional for backward compatibility. Missing data from an
+older agent stays unknown and is omitted, as is a known-empty inventory. An
+offline workstation retains its last-known hardware facts, without presenting
+them as currently usable. Detected hardware whose runtime is not ready gets an
+attention state and an actionable diagnostic while the workstation is online.
+
+These deterministic fixtures cover a usable GPU, multiple GPUs, detected but
+not ready hardware, a known-empty inventory, an older agent with unknown data,
+an offline workstation retaining known GPU facts, and constrained rail copy.
+
+<WorkstationAcceleratorsExample />

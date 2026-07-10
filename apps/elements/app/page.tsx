@@ -53,6 +53,12 @@ const catalogGroups = [
         icon: ToggleLeft,
       },
       {
+        title: "Workstation accelerators",
+        description: "GPU capability and readiness facts in the notebook rail.",
+        href: "/docs/workstation-accelerators",
+        icon: Server,
+      },
+      {
         title: "Cloud notebook shell",
         description: "Presence, sync, workstations, sharing, mode, and auth.",
         href: "/docs/cloud-notebook-shell",

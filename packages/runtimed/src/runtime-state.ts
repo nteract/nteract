@@ -289,6 +289,25 @@ export type ProjectContext =
  * room. The daemon/room host writes this into RuntimeStateDoc so late joiners
  * can see compute attachment state without polling a separate registry.
  */
+export type WorkstationAcceleratorReadiness = "ready" | "not_ready" | "unknown";
+
+export interface WorkstationAcceleratorState {
+  /** Extensible accelerator class. The initial native detector publishes `gpu`. */
+  kind: string;
+  vendor?: string | null;
+  model?: string | null;
+  /** Number of identical devices represented by this entry. */
+  count: number;
+  /** Physical memory on each device, never a claim about currently free memory. */
+  memory_bytes_per_device?: number | null;
+  /**
+   * `ready` means the workstation runtime verified device access. It does not
+   * mean the device is idle, free, or schedulable.
+   */
+  readiness: WorkstationAcceleratorReadiness;
+  diagnostic?: string | null;
+}
+
 export interface WorkstationAttachmentState {
   workstation_id: string;
   display_name: string;
@@ -299,6 +318,8 @@ export interface WorkstationAttachmentState {
   status_message?: string | null;
   cpu_count?: number | null;
   memory_bytes?: number | null;
+  /** Missing/null is unknown (for example an older agent); [] is known none. */
+  accelerators?: readonly WorkstationAcceleratorState[] | null;
   working_directory?: string | null;
   updated_at?: string | null;
   runtime_session_id?: string | null;

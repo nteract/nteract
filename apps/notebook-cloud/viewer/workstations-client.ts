@@ -1,4 +1,4 @@
-import type { NotebookRegisteredWorkstation } from "runtimed";
+import type { NotebookRegisteredWorkstation, WorkstationAcceleratorState } from "runtimed";
 
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 
@@ -305,9 +305,49 @@ function normalizeCloudWorkstation(value: unknown): NotebookRegisteredWorkstatio
     workingDirectory: scalarString(raw.working_directory),
     cpuCount: scalarNumber(raw.cpu_count),
     memoryBytes: scalarNumber(raw.memory_bytes),
+    accelerators: normalizeCloudAccelerators(raw.accelerators),
     updatedAt: scalarString(raw.updated_at) ?? scalarString(raw.last_seen_at),
     environments: normalizeCloudEnvironments(raw.environments),
   };
+}
+
+function normalizeCloudAccelerators(value: unknown): readonly WorkstationAcceleratorState[] | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const accelerators: WorkstationAcceleratorState[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") return null;
+    const item = raw as Record<string, unknown>;
+    const kind = scalarString(item.kind);
+    const count = positiveInteger(item.count);
+    const readiness = item.readiness;
+    if (
+      !kind ||
+      count === null ||
+      (readiness !== "ready" && readiness !== "not_ready" && readiness !== "unknown")
+    ) {
+      return null;
+    }
+    const memoryBytesPerDevice = positiveInteger(
+      item.memory_bytes_per_device ?? item.memoryBytesPerDevice,
+    );
+    accelerators.push(
+      Object.freeze({
+        kind,
+        vendor: scalarString(item.vendor),
+        model: scalarString(item.model),
+        count,
+        memory_bytes_per_device: memoryBytesPerDevice,
+        readiness,
+        diagnostic: scalarString(item.diagnostic),
+      }),
+    );
+  }
+  return Object.freeze(accelerators);
 }
 
 function normalizeCloudEnvironments(value: unknown): NotebookRegisteredWorkstation["environments"] {
@@ -356,6 +396,10 @@ function scalarString(value: unknown): string | null {
 
 function scalarNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function positiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 async function responseErrorMessage(response: Response, fallback: string): Promise<string> {

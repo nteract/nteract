@@ -5,7 +5,7 @@ import type {
 } from "./notebook-edit-access";
 import type { NotebookActorProjection } from "./notebook-actor-projection";
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
-import type { WorkstationAttachmentState } from "./runtime-state";
+import type { WorkstationAcceleratorState, WorkstationAttachmentState } from "./runtime-state";
 
 export type {
   NotebookActorOperator,
@@ -104,6 +104,12 @@ export interface NotebookShellRuntimeTargetProjection {
   kernelStatusLabel?: string | null;
   cpuCount?: number | null;
   memoryBytes?: number | null;
+  /**
+   * Last host-reported accelerator inventory. Missing/null means an older host
+   * did not report it; an empty array means detection found none. Readiness is
+   * runtime usability, never currently free or schedulable capacity.
+   */
+  accelerators?: readonly WorkstationAcceleratorState[] | null;
   resourceLabel?: string | null;
   /**
    * Room-observed runtime peer count for hosted workstation attachments. This
@@ -294,10 +300,31 @@ export function notebookShellWorkstationAttachmentCacheKey(
     attachment.status_message ?? null,
     attachment.cpu_count ?? null,
     attachment.memory_bytes ?? null,
+    notebookShellWorkstationAcceleratorsCacheKey(attachment.accelerators),
     attachment.working_directory ?? null,
     attachment.updated_at ?? null,
     attachment.runtime_session_id ?? null,
   ]);
+}
+
+export function notebookShellWorkstationAcceleratorsCacheKey(
+  accelerators: readonly WorkstationAcceleratorState[] | null | undefined,
+): string {
+  if (accelerators === undefined) return "undefined";
+  if (accelerators === null) return "null";
+  return stableCacheKey(
+    accelerators.map((accelerator) =>
+      stableCacheKey([
+        accelerator.kind,
+        accelerator.vendor ?? null,
+        accelerator.model ?? null,
+        accelerator.count,
+        accelerator.memory_bytes_per_device ?? null,
+        accelerator.readiness,
+        accelerator.diagnostic ?? null,
+      ]),
+    ),
+  );
 }
 
 export function projectNotebookRuntimeTargetFromWorkstationAttachment(
@@ -338,6 +365,7 @@ export function projectNotebookRuntimeTargetFromWorkstationAttachment(
     kernelStatusLabel: options.kernelStatusLabel ?? null,
     cpuCount: normalizePositiveInteger(attachment.cpu_count),
     memoryBytes: normalizePositiveInteger(attachment.memory_bytes),
+    accelerators: stableWorkstationAccelerators(attachment.accelerators),
     runtimePeerCount,
     roomLink: projectRuntimeRoomLink({
       attachmentStatus: attachment.status,
@@ -577,6 +605,7 @@ const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   kernelStatusLabel: (target) => target.kernelStatusLabel ?? null,
   cpuCount: (target) => target.cpuCount ?? null,
   memoryBytes: (target) => target.memoryBytes ?? null,
+  accelerators: (target) => notebookShellWorkstationAcceleratorsCacheKey(target.accelerators),
   resourceLabel: (target) => target.resourceLabel ?? null,
   runtimePeerCount: (target) => target.runtimePeerCount ?? null,
   roomLink: (target) =>
@@ -879,6 +908,7 @@ function stableNotebookShellRuntimeTarget(
     kernelStatusLabel: target.kernelStatusLabel ?? null,
     cpuCount: target.cpuCount ?? null,
     memoryBytes: target.memoryBytes ?? null,
+    accelerators: stableWorkstationAccelerators(target.accelerators),
     resourceLabel: target.resourceLabel ?? null,
     runtimePeerCount: target.runtimePeerCount ?? null,
     roomLink: target.roomLink
@@ -892,6 +922,25 @@ function stableNotebookShellRuntimeTarget(
   });
   setBoundedCacheValue(SHELL_RUNTIME_TARGET_CACHE, cacheKey, stableTarget, SHELL_PART_CACHE_LIMIT);
   return stableTarget;
+}
+
+function stableWorkstationAccelerators(
+  accelerators: readonly WorkstationAcceleratorState[] | null | undefined,
+): readonly WorkstationAcceleratorState[] | null {
+  if (accelerators === null || accelerators === undefined) return null;
+  return Object.freeze(
+    accelerators.map((accelerator) =>
+      Object.freeze({
+        kind: accelerator.kind,
+        vendor: accelerator.vendor ?? null,
+        model: accelerator.model ?? null,
+        count: accelerator.count,
+        memory_bytes_per_device: accelerator.memory_bytes_per_device ?? null,
+        readiness: accelerator.readiness,
+        diagnostic: accelerator.diagnostic ?? null,
+      }),
+    ),
+  );
 }
 
 function notebookShellCapabilitiesCacheKey(capabilities: NotebookShellCapabilities): string {

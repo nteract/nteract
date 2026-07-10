@@ -1,9 +1,10 @@
 import {
+  notebookShellWorkstationAcceleratorsCacheKey,
   projectNotebookRuntimeTargetFromWorkstationAttachment,
   type NotebookShellRuntimeTargetProjection,
 } from "./notebook-shell-capabilities";
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
-import type { WorkstationAttachmentState } from "./runtime-state";
+import type { WorkstationAcceleratorState, WorkstationAttachmentState } from "./runtime-state";
 
 export type NotebookRegisteredWorkstationStatus =
   | "online"
@@ -29,6 +30,8 @@ export interface NotebookRegisteredWorkstationEnvironment {
 }
 
 export interface NotebookRegisteredWorkstation {
+  /** Missing/null is unknown (older agent); [] means detection found none. */
+  accelerators?: readonly WorkstationAcceleratorState[] | null;
   cpuCount?: number | null;
   defaultEnvironmentLabel?: string | null;
   displayName: string;
@@ -62,15 +65,28 @@ export type NotebookRegisteredWorkstationFactKind =
   | "default_environment"
   | "cpu"
   | "memory"
+  | "accelerator"
   | "working_directory";
 
+export type NotebookRegisteredWorkstationFactTone = "neutral" | "positive" | "attention";
+
 export interface NotebookRegisteredWorkstationFactProjection {
+  detail: string | null;
   kind: NotebookRegisteredWorkstationFactKind;
   label: string;
+  tone: NotebookRegisteredWorkstationFactTone;
+  value: string;
+}
+
+export interface NotebookWorkstationAcceleratorSummary {
+  detail: string | null;
+  label: string;
+  tone: NotebookRegisteredWorkstationFactTone;
   value: string;
 }
 
 export interface NotebookRegisteredWorkstationProjection {
+  accelerators: readonly WorkstationAcceleratorState[] | null;
   canAttach: boolean;
   cpuCount: number | null;
   defaultEnvironmentLabel: string | null;
@@ -132,9 +148,15 @@ export interface ProjectNotebookWorkstationSelectionOptions {
 const WORKSTATION_SELECTION_CACHE = new Map<string, NotebookWorkstationSelectionProjection>();
 const WORKSTATION_ENTRY_CACHE = new Map<string, NotebookRegisteredWorkstationProjection>();
 const WORKSTATION_ENVIRONMENT_CACHE = new Map<string, NotebookWorkstationEnvironmentProjection>();
+const WORKSTATION_ACCELERATOR_LIST_CACHE = new Map<
+  string,
+  readonly WorkstationAcceleratorState[]
+>();
 const WORKSTATION_SELECTION_CACHE_LIMIT = 256;
 const WORKSTATION_ENTRY_CACHE_LIMIT = 512;
 const WORKSTATION_ENVIRONMENT_CACHE_LIMIT = 1024;
+const WORKSTATION_ACCELERATOR_LIST_CACHE_LIMIT = 512;
+const EMPTY_ACCELERATORS = Object.freeze([]) as readonly WorkstationAcceleratorState[];
 
 export function projectNotebookWorkstationSelection({
   activeAttachment = null,
@@ -217,6 +239,7 @@ export function clearNotebookWorkstationSelectionProjectionCacheForTests(): void
   WORKSTATION_SELECTION_CACHE.clear();
   WORKSTATION_ENTRY_CACHE.clear();
   WORKSTATION_ENVIRONMENT_CACHE.clear();
+  WORKSTATION_ACCELERATOR_LIST_CACHE.clear();
 }
 
 function activeTargetCountsAsAttached(
@@ -269,6 +292,7 @@ function projectRegisteredWorkstation(
   },
 ): NotebookRegisteredWorkstationProjection {
   const status = normalizeWorkstationStatus(workstation.status);
+  const accelerators = normalizeWorkstationAccelerators(workstation.accelerators);
   const environments = normalizeWorkstationEnvironments(workstation.environments);
   const cpuCount = normalizePositiveInteger(workstation.cpuCount);
   const defaultEnvironmentLabel = trimToNull(workstation.defaultEnvironmentLabel);
@@ -280,10 +304,12 @@ function projectRegisteredWorkstation(
   const memoryBytes = normalizePositiveInteger(workstation.memoryBytes);
   const workingDirectoryLabel = trimToNull(workstation.workingDirectory);
   const facts = projectRegisteredWorkstationFacts({
+    accelerators,
     cpuCount,
     defaultEnvironmentLabel,
     environments,
     memoryBytes,
+    status,
     workingDirectoryLabel,
   });
   const cacheKey = stableCacheKey([
@@ -296,6 +322,7 @@ function projectRegisteredWorkstation(
   if (cached) return cached;
 
   const projection = Object.freeze({
+    accelerators,
     canAttach:
       status === "online" &&
       Boolean(workingDirectoryLabel) &&
@@ -335,16 +362,20 @@ function projectRegisteredWorkstation(
 }
 
 function projectRegisteredWorkstationFacts({
+  accelerators,
   cpuCount,
   defaultEnvironmentLabel,
   environments,
   memoryBytes,
+  status,
   workingDirectoryLabel,
 }: {
+  accelerators: readonly WorkstationAcceleratorState[] | null;
   cpuCount: number | null;
   defaultEnvironmentLabel: string | null;
   environments: readonly NotebookWorkstationEnvironmentProjection[];
   memoryBytes: number | null;
+  status: NotebookRegisteredWorkstationStatus;
   workingDirectoryLabel: string | null;
 }): readonly NotebookRegisteredWorkstationFactProjection[] {
   const facts: NotebookRegisteredWorkstationFactProjection[] = [];
@@ -363,6 +394,21 @@ function projectRegisteredWorkstationFacts({
   if (memoryLabel) {
     facts.push(registeredWorkstationFact("memory", "RAM", memoryLabel));
   }
+  const acceleratorSummary = projectNotebookWorkstationAcceleratorSummary(
+    accelerators,
+    status === "offline",
+  );
+  if (acceleratorSummary) {
+    facts.push(
+      registeredWorkstationFact(
+        "accelerator",
+        acceleratorSummary.label,
+        acceleratorSummary.value,
+        acceleratorSummary.tone,
+        acceleratorSummary.detail,
+      ),
+    );
+  }
   if (workingDirectoryLabel) {
     facts.push(registeredWorkstationFact("working_directory", "CWD", workingDirectoryLabel));
   }
@@ -373,8 +419,117 @@ function registeredWorkstationFact(
   kind: NotebookRegisteredWorkstationFactKind,
   label: string,
   value: string,
+  tone: NotebookRegisteredWorkstationFactTone = "neutral",
+  detail: string | null = null,
 ): NotebookRegisteredWorkstationFactProjection {
-  return Object.freeze({ kind, label, value });
+  return Object.freeze({ detail, kind, label, tone, value });
+}
+
+export function projectNotebookWorkstationAcceleratorSummary(
+  accelerators: readonly WorkstationAcceleratorState[] | null | undefined,
+  hardwareOffline: boolean,
+): NotebookWorkstationAcceleratorSummary | null {
+  if (!accelerators || accelerators.length === 0) return null;
+
+  const kinds = new Set(accelerators.map((accelerator) => acceleratorKindLabel(accelerator.kind)));
+  const singleKind = kinds.size === 1 ? [...kinds][0]! : null;
+  const useGenericLabel = !singleKind || singleKind.length > 6;
+  const label = useGenericLabel ? "Accel" : singleKind;
+  const includeKindInValue = useGenericLabel;
+  const value = accelerators
+    .map((accelerator) => acceleratorValue(accelerator, includeKindInValue))
+    .join("; ");
+  const attentionAccelerators = accelerators.filter(
+    (accelerator) => accelerator.readiness !== "ready",
+  );
+  const detail = acceleratorDiagnostic(attentionAccelerators);
+  const tone: NotebookRegisteredWorkstationFactTone = hardwareOffline
+    ? "neutral"
+    : attentionAccelerators.length > 0
+      ? "attention"
+      : "positive";
+  return Object.freeze({ detail, label, tone, value });
+}
+
+function acceleratorValue(accelerator: WorkstationAcceleratorState, includeKind: boolean): string {
+  const kindLabel = acceleratorKindLabel(accelerator.kind);
+  const vendor = trimToNull(accelerator.vendor);
+  const model = trimToNull(accelerator.model);
+  const normalizedVendor = vendor?.toLowerCase();
+  const normalizedModel = model?.toLowerCase();
+  const modelIncludesVendor = Boolean(
+    normalizedVendor &&
+    normalizedModel &&
+    (normalizedModel === normalizedVendor ||
+      normalizedModel.startsWith(`${normalizedVendor} `) ||
+      normalizedModel.startsWith(`${normalizedVendor}-`)),
+  );
+  const deviceLabel = model
+    ? vendor && !modelIncludesVendor
+      ? `${vendor} ${model}`
+      : model
+    : vendor;
+  const namedDevice = deviceLabel || kindLabel;
+  const memoryLabel = formatMemoryBytes(accelerator.memory_bytes_per_device);
+  const memorySuffix = memoryLabel
+    ? ` · ${memoryLabel}${accelerator.count > 1 ? " each" : ""}`
+    : "";
+  const kindPrefix = includeKind ? `${kindLabel} ` : "";
+  return `${kindPrefix}${accelerator.count}× ${namedDevice}${memorySuffix}`;
+}
+
+function acceleratorDiagnostic(
+  accelerators: readonly WorkstationAcceleratorState[],
+): string | null {
+  if (accelerators.length === 0) return null;
+  return accelerators
+    .map((accelerator) => {
+      const diagnostic = trimToNull(accelerator.diagnostic);
+      if (diagnostic) return diagnostic;
+      const kindLabel = acceleratorKindLabel(accelerator.kind);
+      return accelerator.readiness === "not_ready"
+        ? `${kindLabel} detected, but this workstation runtime cannot use it.`
+        : `${kindLabel} detected, but runtime usability has not been verified.`;
+    })
+    .join(" ");
+}
+
+function acceleratorKindLabel(kind: string): string {
+  const normalized = trimToNull(kind)?.toUpperCase();
+  return normalized ?? "Accelerator";
+}
+
+function normalizeWorkstationAccelerators(
+  accelerators: readonly WorkstationAcceleratorState[] | null | undefined,
+): readonly WorkstationAcceleratorState[] | null {
+  if (accelerators === null || accelerators === undefined) return null;
+  if (accelerators.length === 0) return EMPTY_ACCELERATORS;
+  const cacheKey = notebookShellWorkstationAcceleratorsCacheKey(accelerators);
+  const cached = getBoundedCacheValue(WORKSTATION_ACCELERATOR_LIST_CACHE, cacheKey);
+  if (cached) return cached;
+  const normalized = Object.freeze(
+    accelerators.map((accelerator) =>
+      Object.freeze({
+        kind: trimToNull(accelerator.kind) ?? "accelerator",
+        vendor: trimToNull(accelerator.vendor),
+        model: trimToNull(accelerator.model),
+        count: normalizePositiveInteger(accelerator.count) ?? 1,
+        memory_bytes_per_device: normalizePositiveInteger(accelerator.memory_bytes_per_device),
+        readiness:
+          accelerator.readiness === "ready" || accelerator.readiness === "not_ready"
+            ? accelerator.readiness
+            : "unknown",
+        diagnostic: trimToNull(accelerator.diagnostic),
+      }),
+    ),
+  );
+  setBoundedCacheValue(
+    WORKSTATION_ACCELERATOR_LIST_CACHE,
+    cacheKey,
+    normalized,
+    WORKSTATION_ACCELERATOR_LIST_CACHE_LIMIT,
+  );
+  return normalized;
 }
 
 function normalizeRegisteredWorkstations(
@@ -458,6 +613,7 @@ function registeredWorkstationCacheKey(workstation: NotebookRegisteredWorkstatio
     workstation.statusMessage ?? null,
     workstation.cpuCount ?? null,
     workstation.memoryBytes ?? null,
+    notebookShellWorkstationAcceleratorsCacheKey(workstation.accelerators),
     workstation.workingDirectory ?? null,
     workstation.updatedAt ?? null,
     ...(workstation.environments ?? []).map((environment) =>
@@ -490,6 +646,7 @@ function activeTargetCacheKey(target: NotebookShellRuntimeTargetProjection | nul
     target.kernelStatusLabel ?? null,
     target.cpuCount ?? null,
     target.memoryBytes ?? null,
+    notebookShellWorkstationAcceleratorsCacheKey(target.accelerators),
     target.resourceLabel ?? null,
     target.runtimePeerCount ?? null,
     target.workingDirectoryLabel ?? null,

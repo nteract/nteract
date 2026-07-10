@@ -61,6 +61,7 @@ import {
   type NotebookRoomSummary,
   type NotebookRoomSummaryOccupant,
   type WorkstationAttachJobRow,
+  type WorkstationAccelerator,
   type WorkstationRow,
 } from "./storage.ts";
 import {
@@ -113,6 +114,11 @@ interface PeerCloseOptions {
 
 interface PublishComputeSessionSummaryOptions {
   onlyIfQueueDepthChanged?: boolean;
+}
+
+interface WorkstationRegistryLookupResult {
+  failed: boolean;
+  workstation: WorkstationRow | null;
 }
 
 type RuntimePeerForwardedRequestAction = "interrupt_execution" | "send_comm";
@@ -1422,7 +1428,15 @@ export class NotebookRoom {
     const startedAt = Date.now();
     try {
       const materializer = this.materializerFor(notebookId);
-      const attachment = runtimePeerWorkstationAttachment(peer);
+      const registryLookup = await this.registeredWorkstationForRuntimePeer(notebookId, peer);
+      const retainedAttachment = registryLookup.failed
+        ? await materializer.getWorkstationAttachment()
+        : null;
+      const attachment = runtimePeerWorkstationAttachment(
+        peer,
+        registryLookup.workstation,
+        retainedAttachment,
+      );
       const result = await materializer.setWorkstationAttachment(attachment);
       if (result.ignored_stale) {
         cloudLog("warn", "room.workstation_attachment.stale_publish_ignored", {
@@ -1463,6 +1477,35 @@ export class NotebookRoom {
         counter: "workstation_attachment_publish_failed",
         counter_delta: 1,
       });
+    }
+  }
+
+  private async registeredWorkstationForRuntimePeer(
+    notebookId: string,
+    peer: Peer,
+  ): Promise<WorkstationRegistryLookupResult> {
+    const workstationId = peer.workstation?.workstationId?.trim();
+    if (!this.env.DB || !workstationId) {
+      return { failed: false, workstation: null };
+    }
+    try {
+      const notebook = await getNotebookRow(this.env, notebookId);
+      if (!notebook) {
+        return { failed: false, workstation: null };
+      }
+      return {
+        failed: false,
+        workstation: await getWorkstationRow(this.env, notebook.owner_principal, workstationId),
+      };
+    } catch (error) {
+      cloudLog("warn", "room.workstation_attachment.registry_lookup_failed", {
+        notebook_id: notebookId,
+        workstation_id: workstationId,
+        error: errorMessage(error),
+        counter: "workstation_attachment_registry_lookup_failures",
+        counter_delta: 1,
+      });
+      return { failed: true, workstation: null };
     }
   }
 
@@ -2918,22 +2961,89 @@ export function presencePeerLabel(identity: AuthenticatedConnection): string {
   });
 }
 
-function runtimePeerWorkstationAttachment(peer: Peer): WorkstationAttachmentState {
+function runtimePeerWorkstationAttachment(
+  peer: Peer,
+  registered: WorkstationRow | null = null,
+  retained: WorkstationAttachmentState | null = null,
+): WorkstationAttachmentState {
   const workstation = peer.workstation;
+  const workstationId = workstation?.workstationId ?? "runtime-peer";
+  const runtimeSessionId = workstation?.runtimeSessionId ?? null;
+  const registeredFacts = registered?.workstation_id === workstationId ? registered : null;
+  const retainedFacts = retained?.workstation_id === workstationId ? retained : null;
   return {
-    workstation_id: workstation?.workstationId ?? "runtime-peer",
-    display_name: workstation?.displayName ?? "Attached workstation",
-    provider: "runtime_peer",
-    default_environment_label: workstation?.defaultEnvironmentLabel ?? "Current Python",
-    environment_policy: workstation?.environmentPolicy ?? "runtime_peer",
+    workstation_id: workstationId,
+    display_name:
+      workstation?.displayName ??
+      registeredFacts?.display_name ??
+      retainedFacts?.display_name ??
+      "Attached workstation",
+    provider: registeredFacts?.provider ?? retainedFacts?.provider ?? "runtime_peer",
+    default_environment_label:
+      workstation?.defaultEnvironmentLabel ??
+      registeredFacts?.default_environment_label ??
+      retainedFacts?.default_environment_label ??
+      "Current Python",
+    environment_policy:
+      workstation?.environmentPolicy ??
+      registeredFacts?.environment_policy ??
+      retainedFacts?.environment_policy ??
+      "runtime_peer",
     status: "ready",
     status_message: null,
-    cpu_count: null,
-    memory_bytes: null,
-    working_directory: workstation?.workingDirectory ?? null,
+    cpu_count: registeredFacts ? registeredFacts.cpu_count : (retainedFacts?.cpu_count ?? null),
+    memory_bytes: registeredFacts
+      ? registeredFacts.memory_bytes
+      : (retainedFacts?.memory_bytes ?? null),
+    accelerators: registeredFacts
+      ? parseStoredWorkstationAccelerators(registeredFacts.accelerators_json)
+      : (retainedFacts?.accelerators ?? null),
+    working_directory:
+      workstation?.workingDirectory ??
+      registeredFacts?.working_directory ??
+      retainedFacts?.working_directory ??
+      null,
     updated_at: peer.connectedAt,
-    runtime_session_id: workstation?.runtimeSessionId ?? null,
+    runtime_session_id: runtimeSessionId,
   };
+}
+
+function parseStoredWorkstationAccelerators(
+  value: string | null,
+): WorkstationAttachmentState["accelerators"] {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every(isStoredWorkstationAccelerator) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isStoredWorkstationAccelerator(value: unknown): value is WorkstationAccelerator {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const accelerator = value as Record<string, unknown>;
+  return (
+    typeof accelerator.kind === "string" &&
+    accelerator.kind.length > 0 &&
+    (accelerator.vendor === null || typeof accelerator.vendor === "string") &&
+    (accelerator.model === null || typeof accelerator.model === "string") &&
+    typeof accelerator.count === "number" &&
+    Number.isSafeInteger(accelerator.count) &&
+    accelerator.count > 0 &&
+    (accelerator.memory_bytes_per_device === null ||
+      (typeof accelerator.memory_bytes_per_device === "number" &&
+        Number.isSafeInteger(accelerator.memory_bytes_per_device) &&
+        accelerator.memory_bytes_per_device > 0)) &&
+    (accelerator.readiness === "ready" ||
+      accelerator.readiness === "not_ready" ||
+      accelerator.readiness === "unknown") &&
+    (accelerator.diagnostic === null || typeof accelerator.diagnostic === "string")
+  );
 }
 
 function runtimePeerWorkstationId(workstation: RuntimePeerWorkstationMetadata | null): string {
@@ -2987,6 +3097,7 @@ function workstationAttachmentTargetFromRow(workstation: WorkstationRow) {
     environmentPolicy: workstation.environment_policy,
     cpuCount: workstation.cpu_count,
     memoryBytes: workstation.memory_bytes,
+    accelerators: parseStoredWorkstationAccelerators(workstation.accelerators_json),
     workingDirectory: workstation.working_directory,
   };
 }

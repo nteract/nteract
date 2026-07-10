@@ -1,10 +1,12 @@
 import {
+  notebookShellWorkstationAcceleratorsCacheKey,
   notebookShellRuntimeTargetSummary,
   resolveNotebookShellRuntimeTarget,
   type NotebookShellAccessSource,
   type NotebookShellCapabilities,
   type NotebookShellRuntimeTargetKind,
 } from "./notebook-shell-capabilities";
+import { projectNotebookWorkstationAcceleratorSummary } from "./notebook-workstation-selection";
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 
 export type NotebookWorkstationPanelTone = "ready" | "available" | "offline";
@@ -16,6 +18,7 @@ export type NotebookWorkstationFactKind =
   | "kernel"
   | "cpu"
   | "memory"
+  | "accelerator"
   | "resource"
   | "room_link"
   | "runtime_peers"
@@ -24,6 +27,7 @@ export type NotebookWorkstationFactKind =
   | "remote_hint";
 
 export interface NotebookWorkstationFactProjection {
+  detail: string | null;
   kind: NotebookWorkstationFactKind;
   label: string;
   subtle: boolean;
@@ -73,6 +77,7 @@ export function projectNotebookWorkstationPanel(
     target.kernelStatusLabel ?? null,
     target.cpuCount ?? null,
     target.memoryBytes ?? null,
+    notebookShellWorkstationAcceleratorsCacheKey(target.accelerators),
     target.resourceLabel ?? null,
     target.runtimePeerCount ?? null,
     target.roomLink?.status ?? null,
@@ -106,6 +111,22 @@ export function projectNotebookWorkstationPanel(
   }
   if (memoryLabel) {
     facts.push(workstationFact("memory", "RAM", memoryLabel));
+  }
+  const acceleratorSummary = projectNotebookWorkstationAcceleratorSummary(
+    target.accelerators,
+    target.status === "offline",
+  );
+  if (acceleratorSummary) {
+    facts.push(
+      workstationFact(
+        "accelerator",
+        acceleratorSummary.label,
+        acceleratorSummary.value,
+        false,
+        acceleratorSummary.tone,
+        acceleratorSummary.detail,
+      ),
+    );
   }
   if (!hasCpuCount && !memoryLabel && target.resourceLabel) {
     facts.push(workstationFact("resource", "Resources", target.resourceLabel));
@@ -340,6 +361,7 @@ function workstationFact(
   value: string,
   subtle = false,
   tone: NotebookWorkstationFactTone = "neutral",
+  detail: string | null = null,
 ): NotebookWorkstationFactProjection {
-  return Object.freeze({ kind, label, subtle, tone, value });
+  return Object.freeze({ detail, kind, label, subtle, tone, value });
 }
