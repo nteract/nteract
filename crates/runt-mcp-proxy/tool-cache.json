@@ -706,5 +706,137 @@
       "type": "object"
     },
     "name": "replace_regex"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "description": "Create a comment thread anchored to a cell or the notebook.",
+    "inputSchema": {
+      "$defs": {
+        "AnchorParam": {
+          "anyOf": [
+            {
+              "properties": {
+                "cell_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "cell_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "notebook": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "notebook"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/AnchorParam",
+          "description": "Anchor: either { \"cell_id\": \"...\" } for cell comment, or { \"notebook\": true } for notebook comment."
+        },
+        "body": {
+          "description": "Comment text (markdown supported).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "anchor",
+        "body"
+      ],
+      "title": "CreateCommentParams",
+      "type": "object"
+    },
+    "name": "create_comment"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "description": "Reply to an existing comment thread.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "Reply text (markdown supported).",
+          "type": "string"
+        },
+        "thread_id": {
+          "description": "Thread ID to reply to.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id",
+        "body"
+      ],
+      "title": "ReplyCommentParams",
+      "type": "object"
+    },
+    "name": "reply_comment"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Mark a comment thread as resolved.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "thread_id": {
+          "description": "Thread ID to resolve.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id"
+      ],
+      "title": "ResolveCommentParams",
+      "type": "object"
+    },
+    "name": "resolve_comment"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Reopen a resolved comment thread.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "thread_id": {
+          "description": "Thread ID to reopen.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id"
+      ],
+      "title": "ReopenCommentParams",
+      "type": "object"
+    },
+    "name": "reopen_comment"
   }
 ]
