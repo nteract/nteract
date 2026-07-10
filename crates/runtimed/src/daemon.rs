@@ -2612,6 +2612,7 @@ impl Daemon {
                             parsed,
                             crate::notebook_sync_server::RoomCreationOptions {
                                 path: None,
+                                initial_load_required: false,
                                 docs_dir: &docs_dir,
                                 blob_store: self.blob_store.clone(),
                                 ephemeral: false, // NotebookSync handshake is always persistent
@@ -2665,6 +2666,7 @@ impl Daemon {
                             stable_id,
                             crate::notebook_sync_server::RoomCreationOptions {
                                 path: Some(canonical),
+                                initial_load_required: false,
                                 docs_dir: &docs_dir,
                                 blob_store: self.blob_store.clone(),
                                 ephemeral: false,
@@ -2981,6 +2983,7 @@ impl Daemon {
             room_uuid,
             crate::notebook_sync_server::RoomCreationOptions {
                 path: None,
+                initial_load_required: false,
                 docs_dir: &docs_dir,
                 blob_store: self.blob_store.clone(),
                 ephemeral: true,
@@ -3382,6 +3385,7 @@ impl Daemon {
                 uuid,
                 crate::notebook_sync_server::RoomCreationOptions {
                     path,
+                    initial_load_required: file_exists,
                     docs_dir: &docs_dir,
                     blob_store: self.blob_store.clone(),
                     ephemeral: false, // OpenNotebook handshake is always persistent
@@ -3444,28 +3448,44 @@ impl Daemon {
         } else {
             let doc = room.doc.read().await;
             let existing_count = doc.cell_count();
-            if existing_count == 0 && !room.is_loading() {
-                // Room is empty and nobody is loading yet — this connection
-                // will do the streaming load inside the sync loop.
+            let load_state = room.initial_load.state();
+            let should_observe_load = match load_state {
+                crate::notebook_sync_server::RoomInitialLoadState::Loading { .. }
+                | crate::notebook_sync_server::RoomInitialLoadState::Failed { .. } => true,
+                crate::notebook_sync_server::RoomInitialLoadState::Ready { .. } => false,
+                crate::notebook_sync_server::RoomInitialLoadState::NotNeeded { .. } => {
+                    existing_count == 0
+                }
+            };
+            if should_observe_load {
+                // Publish Loading before the handshake response is observable.
+                // New file-backed rooms are already marked before registry
+                // insertion; this also covers a legacy/resident empty room.
+                room.initial_load.mark_required();
                 info!(
-                    "[runtimed] Room for {} is empty, deferring streaming load",
+                    "[runtimed] Room for {} is observing initial materialization",
                     path
                 );
-                (0, Some(path_buf.clone()))
+                (existing_count, Some(path_buf.clone()))
             } else {
                 info!(
-                    "[runtimed] Room for {} has {} cells (joining existing{})",
-                    path,
-                    existing_count,
-                    if room.is_loading() {
-                        ", load in progress"
-                    } else {
-                        ""
-                    }
+                    "[runtimed] Room for {} has {} cells (joining existing)",
+                    path, existing_count,
                 );
                 (existing_count, None)
             }
         };
+
+        // Start the room-owned source before NotebookConnectionInfo is sent.
+        // A concurrent control-plane projection can now observe Loading and
+        // wait instead of treating the room's pristine document as complete.
+        if let Some(load_path) = needs_load.as_ref() {
+            let _load_state_rx = crate::notebook_sync_server::start_room_initial_load(
+                &room,
+                load_path.clone(),
+                self.config.execution_store_dir.clone(),
+            );
+        }
 
         // Get trust state (already verified during room creation).
         // Scope the read guard so it's dropped before the .await on send_json_frame.
@@ -3601,6 +3621,7 @@ impl Daemon {
             uuid,
             crate::notebook_sync_server::RoomCreationOptions {
                 path: None, // CreateNotebook creates untitled rooms with no file path
+                initial_load_required: false,
                 docs_dir: &docs_dir,
                 blob_store: self.blob_store.clone(),
                 ephemeral,
@@ -4643,6 +4664,7 @@ impl Daemon {
                     .active_peers
                     .load(std::sync::atomic::Ordering::Relaxed)
                     > 0
+                    || room.is_loading()
                 {
                     return None;
                 }
@@ -4739,7 +4761,8 @@ impl Daemon {
                     let no_reservations = r.connections.reservations() == 0;
                     let same_gen = r.connections.connection_generation() == gen_at_sample;
                     let still_stamped = r.connections.last_kernel_torn_down_at().is_some();
-                    no_peers && no_reservations && same_gen && still_stamped
+                    let source_settled = !r.is_loading();
+                    no_peers && no_reservations && same_gen && still_stamped && source_settled
                 })
                 .await;
 
@@ -6713,6 +6736,52 @@ mod tests {
             settings_json_path: Some(temp_dir.path().join("settings.json")),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn resident_room_reaper_waits_for_initial_materialization() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        let docs_dir = config.notebook_docs_dir.clone();
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let uuid = uuid::Uuid::new_v4();
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid,
+            None,
+            &docs_dir,
+            daemon.blob_store.clone(),
+            true,
+        ));
+        room.initial_load.mark_required();
+        room.connections
+            .last_kernel_torn_down_at
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        let outcome = daemon
+            .notebook_rooms
+            .insert_or_get(uuid, room.clone(), None)
+            .await
+            .unwrap();
+        let (_, reservation) = outcome.into_parts();
+        drop(reservation);
+
+        daemon.ghost_room_reaper_sweep_with_cap(0, 0).await;
+        assert!(
+            daemon.notebook_rooms.peek_uuid(uuid).await.is_some(),
+            "peerless room must remain resident while its source is active"
+        );
+
+        let (start, _) = room.initial_load.begin();
+        let crate::notebook_sync_server::RoomInitialLoadStart::Started { generation } = start
+        else {
+            panic!("pending source should be claimable");
+        };
+        assert!(room.initial_load.complete_ready(generation, 0));
+
+        daemon.ghost_room_reaper_sweep_with_cap(0, 0).await;
+        assert!(
+            daemon.notebook_rooms.peek_uuid(uuid).await.is_none(),
+            "settled peerless room should become eligible for eviction"
+        );
     }
 
     #[test]

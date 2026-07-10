@@ -12,6 +12,10 @@ pub type NotebookRooms = Arc<RoomRegistry>;
 
 pub(crate) struct RoomCreationOptions<'a> {
     pub path: Option<PathBuf>,
+    /// Publish a pending room-owned file load before registry insertion.
+    /// OpenNotebook sets this for existing `.ipynb` files; attach/create paths
+    /// that seed or sync their own document leave it false.
+    pub initial_load_required: bool,
     pub docs_dir: &'a Path,
     pub blob_store: Arc<BlobStore>,
     pub ephemeral: bool,
@@ -73,6 +77,9 @@ pub async fn get_or_create_room_result(
         options.ephemeral,
         options.trusted_packages,
     )?);
+    if options.initial_load_required {
+        room.initial_load.mark_required();
+    }
 
     // Atomic insert across the registry's UUID map and path index.
     // If we lose a race to a concurrent caller (same UUID or same
