@@ -60,6 +60,7 @@ pub(crate) fn publish_startup_queue_from_queued_executions(room: &NotebookRoom) 
     }
 }
 
+pub(crate) mod apply_bokeh_session_patch;
 pub(crate) mod approve_project_environment;
 pub(crate) mod approve_trust;
 pub(crate) mod clone_notebook;
@@ -140,6 +141,7 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::RunAllCells { .. } => "RunAllCells",
         NotebookRequest::RunAllCellsGuarded { .. } => "RunAllCellsGuarded",
         NotebookRequest::SendComm { .. } => "SendComm",
+        NotebookRequest::ApplyBokehSessionPatch { .. } => "ApplyBokehSessionPatch",
         NotebookRequest::GetHistory { .. } => "GetHistory",
         NotebookRequest::Complete { .. } => "Complete",
         NotebookRequest::SaveNotebook { .. } => "SaveNotebook",
@@ -444,7 +446,8 @@ pub(crate) async fn handle_notebook_request(
             | NotebookRequest::ShutdownKernel {}
             | NotebookRequest::SyncEnvironment { .. }
             | NotebookRequest::SaveNotebook { .. }
-            | NotebookRequest::GetHistory { .. } => {
+            | NotebookRequest::GetHistory { .. }
+            | NotebookRequest::ApplyBokehSessionPatch { .. } => {
                 return NotebookResponse::Error {
                     error: format!(
                         "{} is not supported on a daemon-bridged hosted notebook yet; \
@@ -528,6 +531,10 @@ pub(crate) async fn handle_notebook_request(
         }
 
         NotebookRequest::SendComm { message } => send_comm::handle(room, message).await,
+
+        NotebookRequest::ApplyBokehSessionPatch { request } => {
+            apply_bokeh_session_patch::handle(room, request).await
+        }
 
         NotebookRequest::GetHistory { pattern, n, unique } => {
             get_history::handle(room, pattern, n, unique).await

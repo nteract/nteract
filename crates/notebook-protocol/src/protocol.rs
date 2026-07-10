@@ -463,6 +463,94 @@ pub struct CommRequestMessage {
     pub channel: String,
 }
 
+/// One raw Bokeh serialization buffer carried to the runtime agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BokehSessionBuffer {
+    pub id: String,
+    pub data: Vec<u8>,
+}
+
+/// Blob-backed Bokeh buffer supplied by a browser or published in a patch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BokehSessionBufferRef {
+    pub id: String,
+    pub blob: String,
+    pub size: u64,
+    #[serde(default = "default_binary_media_type")]
+    pub media_type: String,
+}
+
+fn default_binary_media_type() -> String {
+    "application/octet-stream".to_string()
+}
+
+/// Browser-origin mutation for one kernel-owned Bokeh document session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BokehSessionPatchRequest {
+    pub session_id: String,
+    pub transaction_id: String,
+    pub base_revision: u64,
+    pub patch: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buffers: Vec<BokehSessionBuffer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buffer_refs: Vec<BokehSessionBufferRef>,
+}
+
+/// Correlated shell acknowledgement for a Bokeh patch request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BokehSessionPatchReply {
+    Accepted {
+        session_id: String,
+        transaction_id: String,
+        revision: u64,
+    },
+    Stale {
+        session_id: String,
+        transaction_id: String,
+        revision: u64,
+    },
+    Error {
+        session_id: String,
+        transaction_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<u64>,
+        error: String,
+    },
+}
+
+/// One JSON patch and its content-addressed binary buffers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BokehSessionPatchPayload {
+    pub patch: serde_json::Value,
+    #[serde(default)]
+    pub buffers: Vec<BokehSessionBufferRef>,
+}
+
+/// Full authoritative document replacement used after a partial patch error.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BokehSessionCheckpointPayload {
+    pub document: serde_json::Value,
+    #[serde(default)]
+    pub buffers: Vec<BokehSessionBufferRef>,
+}
+
+/// Canonical ordered transaction emitted by the kernel on IOPub.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BokehSessionPatchEvent {
+    pub session_id: String,
+    pub transaction_id: String,
+    pub base_revision: u64,
+    pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_patch: Option<BokehSessionPatchPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_patch: Option<BokehSessionPatchPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<BokehSessionCheckpointPayload>,
+}
+
 fn empty_json_object() -> serde_json::Value {
     serde_json::Value::Object(serde_json::Map::new())
 }
@@ -534,6 +622,9 @@ pub enum NotebookRequest {
         /// Preserves frontend session/msg_id for proper widget protocol.
         message: Box<CommRequestMessage>,
     },
+
+    /// Apply a typed Bokeh document patch through the owning kernel session.
+    ApplyBokehSessionPatch { request: BokehSessionPatchRequest },
 
     /// Search the kernel's input history.
     /// Returns matching history entries via HistoryResult response.
@@ -728,6 +819,9 @@ pub enum NotebookResponse {
         cursor_end: usize,
     },
 
+    /// Correlated acknowledgement for a Bokeh document patch request.
+    BokehSessionPatch { reply: BokehSessionPatchReply },
+
     /// Environment sync completed successfully.
     SyncEnvironmentComplete {
         /// Packages that were installed
@@ -799,6 +893,9 @@ pub enum NotebookBroadcast {
         #[serde(default)]
         buffers: Vec<Vec<u8>>,
     },
+
+    /// Canonical ordered Bokeh document transaction from the kernel.
+    BokehSessionPatch { patch: BokehSessionPatchEvent },
 }
 
 // ── Runtime agent protocol types ──────────────────────────────────────────
@@ -869,6 +966,9 @@ pub enum RuntimeAgentRequest {
     /// Send a comm message to the kernel (widget interactions).
     SendComm { message: Box<CommRequestMessage> },
 
+    /// Apply a typed patch to a kernel-owned Bokeh document session.
+    ApplyBokehSessionPatch { request: BokehSessionPatchRequest },
+
     /// Request code completions from the kernel.
     Complete { code: String, cursor_pos: usize },
 
@@ -906,6 +1006,9 @@ pub enum RuntimeAgentResponse {
         cursor_start: usize,
         cursor_end: usize,
     },
+
+    /// Correlated acknowledgement for a Bokeh document patch request.
+    BokehSessionPatch { reply: BokehSessionPatchReply },
 
     /// History search result.
     HistoryResult { entries: Vec<HistoryEntry> },
@@ -1474,6 +1577,18 @@ mod tests {
                     },
                 }),
             ),
+            (
+                "apply_bokeh_session_patch",
+                serde_json::json!({
+                    "action": "apply_bokeh_session_patch",
+                    "request": {
+                        "session_id": "session-1",
+                        "transaction_id": "tx-1",
+                        "base_revision": 4,
+                        "patch": {"events": []},
+                    },
+                }),
+            ),
         ];
 
         let request_actions = cases
@@ -1770,6 +1885,69 @@ mod tests {
             packages: vec!["numpy".into()]
         })
         .is_command());
+        assert!(!RuntimeAgentRequest::ApplyBokehSessionPatch {
+            request: BokehSessionPatchRequest {
+                session_id: "session-1".to_string(),
+                transaction_id: "tx-1".to_string(),
+                base_revision: 0,
+                patch: serde_json::json!({"events": []}),
+                buffers: Vec::new(),
+                buffer_refs: Vec::new(),
+            },
+        }
+        .is_command());
+    }
+
+    #[test]
+    fn bokeh_patch_broadcast_round_trip_preserves_checkpoint_and_buffers() {
+        let broadcast = NotebookBroadcast::BokehSessionPatch {
+            patch: BokehSessionPatchEvent {
+                session_id: "session-1".to_string(),
+                transaction_id: "tx-1".to_string(),
+                base_revision: 4,
+                revision: 5,
+                client_patch: Some(BokehSessionPatchPayload {
+                    patch: serde_json::json!({"events": [{"kind": "ModelChanged"}]}),
+                    buffers: vec![BokehSessionBufferRef {
+                        id: "buffer-1".to_string(),
+                        blob: "abc123".to_string(),
+                        size: 3,
+                        media_type: "application/octet-stream".to_string(),
+                    }],
+                }),
+                server_patch: None,
+                checkpoint: Some(BokehSessionCheckpointPayload {
+                    document: serde_json::json!({"version": "3.9.1", "roots": []}),
+                    buffers: Vec::new(),
+                }),
+            },
+        };
+
+        let json = serde_json::to_value(&broadcast).expect("serialize Bokeh broadcast");
+        assert_eq!(json["event"], "bokeh_session_patch");
+        assert_eq!(json["patch"]["revision"], 5);
+        assert_eq!(
+            json["patch"]["client_patch"]["buffers"][0]["blob"],
+            "abc123"
+        );
+        let parsed: NotebookBroadcast =
+            serde_json::from_value(json).expect("deserialize Bokeh broadcast");
+        let NotebookBroadcast::BokehSessionPatch { patch } = parsed else {
+            panic!("expected Bokeh patch broadcast");
+        };
+        assert_eq!(patch.session_id, "session-1");
+        assert_eq!(patch.revision, 5);
+        assert_eq!(
+            patch
+                .client_patch
+                .expect("client patch")
+                .buffers
+                .first()
+                .expect("buffer")
+                .blob,
+            "abc123"
+        );
+        assert!(patch.checkpoint.is_some());
     }
 
     #[test]

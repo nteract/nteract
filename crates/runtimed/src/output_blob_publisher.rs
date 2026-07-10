@@ -50,6 +50,29 @@ impl OutputBlobPublisher {
         }
         Ok(())
     }
+
+    /// Publish one non-manifest artifact before RuntimeStateDoc references it.
+    pub(crate) async fn publish_artifact(
+        &self,
+        hash: String,
+        size: u64,
+        media_type: String,
+        blob_store: &BlobStore,
+    ) -> Result<(), BlobPublishError> {
+        let Some(cloud) = &self.cloud else {
+            return Ok(());
+        };
+        cloud
+            .publish_blob(
+                OutputBlobRef {
+                    hash,
+                    size,
+                    media_type,
+                },
+                blob_store,
+            )
+            .await
+    }
 }
 
 impl fmt::Debug for OutputBlobPublisher {

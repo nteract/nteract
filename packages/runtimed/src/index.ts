@@ -220,7 +220,17 @@ export {
 export { type PoolState, type RuntimePoolState, DEFAULT_POOL_STATE } from "./pool-state";
 
 // Broadcast types
-export { type CommBroadcast, isCommBroadcast, type KnownBroadcast } from "./broadcast-types";
+export {
+  type BokehSessionBufferRef,
+  type BokehSessionCheckpointPayload,
+  type BokehSessionPatchBroadcast,
+  type BokehSessionPatchEvent,
+  type BokehSessionPatchPayload,
+  type CommBroadcast,
+  isBokehSessionPatchBroadcast,
+  isCommBroadcast,
+  type KnownBroadcast,
+} from "./broadcast-types";
 
 // Env progress projection
 export {
@@ -536,6 +546,8 @@ export {
 
 // Notebook client
 export {
+  type ApplyBokehSessionPatchOptions,
+  type BokehPatchBuffer,
   NotebookClient,
   type ExecuteCellOptions,
   type NotebookClientOptions,

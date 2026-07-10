@@ -20,8 +20,40 @@ export interface CommBroadcast {
   buffers: number[][];
 }
 
+export interface BokehSessionBufferRef {
+  id: string;
+  blob: string;
+  size: number;
+  media_type: string;
+}
+
+export interface BokehSessionPatchPayload {
+  patch: Record<string, unknown>;
+  buffers: BokehSessionBufferRef[];
+}
+
+export interface BokehSessionCheckpointPayload {
+  document: Record<string, unknown>;
+  buffers: BokehSessionBufferRef[];
+}
+
+export interface BokehSessionPatchEvent {
+  session_id: string;
+  transaction_id: string;
+  base_revision: number;
+  revision: number;
+  client_patch?: BokehSessionPatchPayload;
+  server_patch?: BokehSessionPatchPayload;
+  checkpoint?: BokehSessionCheckpointPayload;
+}
+
+export interface BokehSessionPatchBroadcast {
+  event: "bokeh_session_patch";
+  patch: BokehSessionPatchEvent;
+}
+
 /** Union of all known broadcast types with an `event` field. */
-export type KnownBroadcast = CommBroadcast;
+export type KnownBroadcast = CommBroadcast | BokehSessionPatchBroadcast;
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -36,4 +68,10 @@ function hasBroadcastEvent(payload: unknown): payload is { event: string } {
 
 export function isCommBroadcast(payload: unknown): payload is CommBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "comm";
+}
+
+export function isBokehSessionPatchBroadcast(
+  payload: unknown,
+): payload is BokehSessionPatchBroadcast {
+  return hasBroadcastEvent(payload) && payload.event === "bokeh_session_patch";
 }

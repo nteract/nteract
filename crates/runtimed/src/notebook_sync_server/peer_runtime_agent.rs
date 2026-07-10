@@ -593,6 +593,23 @@ fn validate_runtime_agent_broadcast(broadcast: &NotebookBroadcast) -> anyhow::Re
             );
             Ok(())
         }
+        NotebookBroadcast::BokehSessionPatch { patch } => {
+            anyhow::ensure!(
+                !patch.session_id.is_empty() && !patch.transaction_id.is_empty(),
+                "runtime agent Bokeh patch is missing session or transaction identity"
+            );
+            anyhow::ensure!(
+                patch.revision == patch.base_revision + 1,
+                "runtime agent Bokeh patch revision is not contiguous"
+            );
+            anyhow::ensure!(
+                patch.client_patch.is_some()
+                    || patch.server_patch.is_some()
+                    || patch.checkpoint.is_some(),
+                "runtime agent Bokeh patch has no patch or checkpoint payload"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -630,6 +647,9 @@ mod tests {
                 assert_eq!(content["comm_id"], "comm-1");
                 assert_eq!(content["data"]["content"]["type"], "draw");
                 assert_eq!(buffers, vec![vec![1, 2, 3]]);
+            }
+            NotebookBroadcast::BokehSessionPatch { .. } => {
+                panic!("expected comm broadcast")
             }
         }
     }

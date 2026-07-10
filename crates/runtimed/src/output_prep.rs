@@ -498,6 +498,12 @@ pub enum WorkCommand {
     },
 }
 
+/// Bounded visualization-state maintenance kept separate from widget replay.
+#[derive(Debug)]
+pub enum VisualizationStateCommand {
+    CheckpointBokehSession { session_id: String, force: bool },
+}
+
 /// Receivers for kernel task commands.
 ///
 /// Lifecycle events are control-plane signals: they must not share bounded
@@ -506,6 +512,7 @@ pub enum WorkCommand {
 /// ([`LifecycleSignal`] vs [`WorkCommand`]) rather than by a runtime check.
 pub struct QueueCommandReceivers {
     pub lifecycle_rx: mpsc::UnboundedReceiver<LifecycleSignal>,
+    pub visualization_rx: mpsc::Receiver<VisualizationStateCommand>,
     pub work_rx: mpsc::Receiver<WorkCommand>,
 }
 
@@ -539,16 +546,20 @@ pub fn queue_command_channels(
     work_capacity: usize,
 ) -> (
     mpsc::UnboundedSender<LifecycleSignal>,
+    NonBlockingSender<VisualizationStateCommand>,
     NonBlockingSender<WorkCommand>,
     QueueCommandReceivers,
 ) {
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
+    let (visualization_tx, visualization_rx) = mpsc::channel(16);
     let (work_tx, work_rx) = mpsc::channel(work_capacity);
     (
         lifecycle_tx,
+        NonBlockingSender(visualization_tx),
         NonBlockingSender(work_tx),
         QueueCommandReceivers {
             lifecycle_rx,
+            visualization_rx,
             work_rx,
         },
     )
@@ -635,7 +646,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_channel_is_not_backpressured_by_full_work_channel() {
-        let (lifecycle_tx, work_tx, mut receivers) = queue_command_channels(1);
+        let (lifecycle_tx, _visualization_tx, work_tx, mut receivers) = queue_command_channels(1);
 
         work_tx
             .try_send(WorkCommand::SendCommUpdate {

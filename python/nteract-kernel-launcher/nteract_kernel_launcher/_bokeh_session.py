@@ -70,6 +70,7 @@ class BokehServerEvent:
     revision: int
     client_patch: BokehSerialization | None
     server_patch: BokehSerialization | None
+    checkpoint: BokehSerialization | None = None
 
 
 class BokehSessionError(RuntimeError):
@@ -210,8 +211,20 @@ class BokehDocumentSession:
             except Exception as exc:
                 self._active_setter = None
                 self._transaction_events = []
+                base_revision = self._revision
                 self._revision += 1
                 checkpoint = self._snapshot_unlocked()
+                self._deliver_event_unlocked(
+                    BokehServerEvent(
+                        session_id=self.session_id,
+                        transaction_id=transaction_id,
+                        base_revision=base_revision,
+                        revision=self._revision,
+                        client_patch=None,
+                        server_patch=None,
+                        checkpoint=checkpoint,
+                    )
+                )
                 raise BokehPatchApplyError(
                     str(exc),
                     transaction_id=transaction_id,
@@ -238,6 +251,7 @@ class BokehDocumentSession:
                     revision=self._revision,
                     client_patch=BokehSerialization(content=patch, buffers=tuple(buffers)),
                     server_patch=derived,
+                    checkpoint=None,
                 )
             )
             return result
@@ -315,6 +329,7 @@ class BokehDocumentSession:
                 revision=self._revision,
                 client_patch=None,
                 server_patch=patch,
+                checkpoint=None,
             )
             self._deliver_event_unlocked(server_event)
 

@@ -10,6 +10,7 @@ from nteract_kernel_launcher import _buffer_hook, _panel
 from nteract_kernel_launcher._bokeh_session import (
     BOKEH_SESSION_MIME,
     BokehBuffer,
+    BokehPatchApplyError,
     BokehSerialization,
     BokehServerEvent,
     StaleBokehRevisionError,
@@ -192,6 +193,50 @@ def test_python_change_queues_ordered_server_event():
     assert session.pop_server_events() == []
 
 
+def test_failed_patch_advances_revision_with_authoritative_checkpoint():
+    pn = _load_panel()
+
+    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+
+    def fail_after_update(event):
+        raise RuntimeError(f"rejected {event.new}")
+
+    slider.param.watch(fail_after_update, "value")
+    _ip, data, _metadata = _format_panel(slider)
+    payload = data[BOKEH_SESSION_MIME]
+    session = session_registry.require(payload["session_id"])
+    slider_model = slider._models[payload["root_ids"][0]][0]
+
+    with pytest.raises(BokehPatchApplyError) as error:
+        session.apply_patch(
+            base_revision=0,
+            transaction_id="failing-interaction",
+            patch={
+                "events": [
+                    {
+                        "kind": "ModelChanged",
+                        "model": {"id": slider_model.id},
+                        "attr": "value",
+                        "new": 6,
+                    }
+                ]
+            },
+        )
+
+    assert slider.value == 6
+    assert session.revision == 1
+    assert error.value.revision == 1
+    assert error.value.checkpoint.content["roots"][0]
+    events = session.pop_server_events()
+    assert len(events) == 1
+    assert events[0].transaction_id == "failing-interaction"
+    assert events[0].base_revision == 0
+    assert events[0].revision == 1
+    assert events[0].client_patch is None
+    assert events[0].server_patch is None
+    assert events[0].checkpoint == error.value.checkpoint
+
+
 def test_uninstall_closes_live_sessions():
     pn = _load_panel()
     slider = pn.widgets.FloatSlider(value=3)
@@ -235,6 +280,7 @@ def test_patch_shell_handler_captures_output_and_queues_canonical_event():
         [b"client"],
         {
             "content": {
+                "schema_version": 1,
                 "session_id": session.session_id,
                 "transaction_id": "tx-1",
                 "base_revision": 0,
@@ -268,6 +314,74 @@ def test_patch_shell_handler_captures_output_and_queues_canonical_event():
     assert events[0].transaction_id == "tx-1"
     assert events[0].client_patch is not None
     assert events[0].server_patch is not None
+
+
+def test_patch_shell_error_reply_is_ack_only_and_event_carries_checkpoint():
+    pn = _load_panel()
+    from nteract_kernel_launcher.app import _BOKEH_PATCH_REPLY, NteractKernel
+
+    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+
+    def fail(event):
+        raise RuntimeError(f"callback rejected {event.new}")
+
+    slider.param.watch(fail, "value")
+    _ip, data, _metadata = _format_panel(slider)
+    payload = data[BOKEH_SESSION_MIME]
+    session = session_registry.require(payload["session_id"])
+    slider_model = slider._models[payload["root_ids"][0]][0]
+    kernel = _FakeKernel()
+
+    NteractKernel.nteract_bokeh_patch_request(
+        cast(Any, kernel),
+        "SHELL",
+        [b"client"],
+        {
+            "content": {
+                "schema_version": 1,
+                "session_id": session.session_id,
+                "transaction_id": "tx-error",
+                "base_revision": 0,
+                "patch": {
+                    "events": [
+                        {
+                            "kind": "ModelChanged",
+                            "model": {"id": slider_model.id},
+                            "attr": "value",
+                            "new": 8,
+                        }
+                    ]
+                },
+                "buffers": [],
+            },
+            "buffers": [],
+        },
+    )
+
+    reply = kernel.replies[0]
+    assert reply["msg_type"] == _BOKEH_PATCH_REPLY
+    assert reply["content"]["status"] == "error"
+    assert reply["content"]["revision"] == 1
+    assert "checkpoint" not in reply["content"]
+    assert reply["buffers"] == []
+    events = session.pop_server_events()
+    assert len(events) == 1
+    assert events[0].revision == 1
+    assert events[0].checkpoint is not None
+
+
+def test_patch_request_buffers_reject_negative_index_and_hash_mismatch():
+    from nteract_kernel_launcher.app import _request_buffers
+
+    descriptor = BokehBuffer("buffer-1", b"payload").descriptor(0)
+    descriptor["buffer_index"] = -1
+    with pytest.raises(TypeError, match="descriptor"):
+        _request_buffers({"buffers": [b"payload"]}, {"buffers": [descriptor]})
+
+    descriptor = BokehBuffer("buffer-1", b"payload").descriptor(0)
+    descriptor["hash"] = "0" * 64
+    with pytest.raises(ValueError, match="hash mismatch"):
+        _request_buffers({"buffers": [b"payload"]}, {"buffers": [descriptor]})
 
 
 def test_checkpoint_and_close_shell_handlers():
@@ -306,7 +420,7 @@ def test_checkpoint_and_close_shell_handlers():
     assert session_registry.get(session_id) is None
 
 
-def test_wire_event_offsets_server_buffers_after_client_buffers():
+def test_wire_event_offsets_server_and_checkpoint_buffers():
     from nteract_kernel_launcher.app import _wire_bokeh_event
 
     event = BokehServerEvent(
@@ -322,13 +436,18 @@ def test_wire_event_offsets_server_buffers_after_client_buffers():
             content={"events": [{"kind": "server"}]},
             buffers=(BokehBuffer("server-buffer", b"server"),),
         ),
+        checkpoint=BokehSerialization(
+            content={"roots": []},
+            buffers=(BokehBuffer("checkpoint-buffer", b"checkpoint"),),
+        ),
     )
 
     content, buffers = _wire_bokeh_event(event)
 
     assert content["client_patch"]["buffers"][0]["buffer_index"] == 0
     assert content["server_patch"]["buffers"][0]["buffer_index"] == 1
-    assert buffers == [b"client", b"server"]
+    assert content["checkpoint"]["buffers"][0]["buffer_index"] == 2
+    assert buffers == [b"client", b"server", b"checkpoint"]
 
 
 def test_nteract_kernel_registers_bokeh_shell_messages():

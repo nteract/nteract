@@ -17,6 +17,7 @@ dx's ``install()`` uses today to route bare last-expressions through
 
 from __future__ import annotations
 
+import hashlib
 import sys
 import threading
 import traceback
@@ -78,6 +79,11 @@ def _wire_bokeh_event(event: BokehServerEvent) -> tuple[dict[str, Any], list[byt
         content_key="patch",
         buffer_offset=len(client_buffers),
     )
+    checkpoint, checkpoint_buffers = _wire_serialization(
+        event.checkpoint,
+        content_key="document",
+        buffer_offset=len(client_buffers) + len(server_buffers),
+    )
     return (
         {
             "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
@@ -87,8 +93,9 @@ def _wire_bokeh_event(event: BokehServerEvent) -> tuple[dict[str, Any], list[byt
             "revision": event.revision,
             "client_patch": client_patch,
             "server_patch": server_patch,
+            "checkpoint": checkpoint,
         },
-        [*client_buffers, *server_buffers],
+        [*client_buffers, *server_buffers, *checkpoint_buffers],
     )
 
 
@@ -99,17 +106,42 @@ def _request_buffers(parent: dict[str, Any], content: dict[str, Any]) -> list[Bo
         raise TypeError("Bokeh patch buffers must be arrays")
 
     buffers: list[BokehBuffer] = []
+    seen_ids: set[str] = set()
+    seen_indexes: set[int] = set()
     for descriptor in descriptors:
         if not isinstance(descriptor, dict):
             raise TypeError("Bokeh buffer descriptor must be an object")
         buffer_id = descriptor.get("id")
         buffer_index = descriptor.get("buffer_index")
-        if not isinstance(buffer_id, str) or not isinstance(buffer_index, int):
+        size = descriptor.get("size")
+        expected_hash = descriptor.get("hash")
+        if (
+            not isinstance(buffer_id, str)
+            or type(buffer_index) is not int
+            or buffer_index < 0
+            or type(size) is not int
+            or size < 0
+            or not isinstance(expected_hash, str)
+        ):
             raise TypeError("Bokeh buffer descriptor requires string id and integer buffer_index")
+        if buffer_id in seen_ids or buffer_index in seen_indexes:
+            raise ValueError("Bokeh buffer descriptors require unique ids and indexes")
         try:
             data = bytes(raw_buffers[buffer_index])
         except IndexError as exc:
             raise ValueError(f"Bokeh buffer index {buffer_index} is out of range") from exc
+        if len(data) != size:
+            raise ValueError(
+                f"Bokeh buffer {buffer_id} size mismatch: expected {size}, got {len(data)}"
+            )
+        actual_hash = hashlib.sha256(data).hexdigest()
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"Bokeh buffer {buffer_id} hash mismatch: "
+                f"expected {expected_hash}, got {actual_hash}"
+            )
+        seen_ids.add(buffer_id)
+        seen_indexes.add(buffer_index)
         buffers.append(BokehBuffer(id=buffer_id, data=data))
     return buffers
 
@@ -264,14 +296,17 @@ class NteractKernel(IPythonKernel):
         transaction_id = content.get("transaction_id") or str(uuid.uuid4())
         stdout = StringIO()
         stderr = StringIO()
-        reply_buffers: list[bytes] = []
 
         try:
+            if content.get("schema_version") != BOKEH_SESSION_SCHEMA_VERSION:
+                raise ValueError("Unsupported Bokeh patch schema version")
             if not isinstance(session_id, str):
                 raise TypeError("Bokeh patch request requires session_id")
+            if not isinstance(transaction_id, str):
+                raise TypeError("Bokeh patch request requires transaction_id")
             base_revision = content.get("base_revision")
             patch = content.get("patch")
-            if not isinstance(base_revision, int) or not isinstance(patch, dict):
+            if type(base_revision) is not int or not isinstance(patch, dict):
                 raise TypeError(
                     "Bokeh patch request requires integer base_revision and object patch"
                 )
@@ -304,10 +339,6 @@ class NteractKernel(IPythonKernel):
                 "stderr": stderr.getvalue(),
             }
         except BokehPatchApplyError as exc:
-            checkpoint, reply_buffers = _wire_serialization(
-                exc.checkpoint,
-                content_key="document",
-            )
             reply = {
                 "status": "error",
                 "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
@@ -317,7 +348,6 @@ class NteractKernel(IPythonKernel):
                 "stdout": stdout.getvalue(),
                 "stderr": stderr.getvalue(),
                 "error": _error_payload(exc.__cause__ or exc),
-                "checkpoint": checkpoint,
             }
         except Exception as exc:  # noqa: BLE001
             reply = {
@@ -336,7 +366,6 @@ class NteractKernel(IPythonKernel):
             ident,
             _BOKEH_PATCH_REPLY,
             reply,
-            reply_buffers,
         )
 
     def nteract_bokeh_checkpoint_request(self, stream, ident, parent):

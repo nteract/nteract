@@ -148,4 +148,70 @@ describe("NotebookClient", () => {
       { required_heads: ["head-a", "head-b"] },
     );
   });
+
+  it("sends small Bokeh buffers inline with stable buffer ids", async () => {
+    const { client, sendRequest } = stubClient();
+    sendRequest.mockResolvedValueOnce({
+      result: "bokeh_session_patch",
+      reply: {
+        status: "accepted",
+        session_id: "session-1",
+        transaction_id: "tx-1",
+        revision: 5,
+      },
+    });
+
+    await expect(
+      client.applyBokehSessionPatch({
+        sessionId: "session-1",
+        transactionId: "tx-1",
+        baseRevision: 4,
+        patch: { events: [] },
+        buffers: [{ id: "buffer-1", data: new Uint8Array([1, 2, 3]) }],
+      }),
+    ).resolves.toEqual({
+      status: "accepted",
+      session_id: "session-1",
+      transaction_id: "tx-1",
+      revision: 5,
+    });
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "apply_bokeh_session_patch",
+      request: {
+        session_id: "session-1",
+        transaction_id: "tx-1",
+        base_revision: 4,
+        patch: { events: [] },
+        buffers: [{ id: "buffer-1", data: [1, 2, 3] }],
+        buffer_refs: [],
+      },
+    });
+  });
+
+  it("surfaces stale Bokeh revisions as typed replies", async () => {
+    const { client, sendRequest } = stubClient();
+    sendRequest.mockResolvedValueOnce({
+      result: "bokeh_session_patch",
+      reply: {
+        status: "stale",
+        session_id: "session-1",
+        transaction_id: "tx-stale",
+        revision: 9,
+      },
+    });
+
+    await expect(
+      client.applyBokehSessionPatch({
+        sessionId: "session-1",
+        transactionId: "tx-stale",
+        baseRevision: 8,
+        patch: { events: [] },
+      }),
+    ).resolves.toEqual({
+      status: "stale",
+      session_id: "session-1",
+      transaction_id: "tx-stale",
+      revision: 9,
+    });
+  });
 });

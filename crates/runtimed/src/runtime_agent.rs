@@ -50,7 +50,9 @@ use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelShare
 use crate::kernel_dispatch::Kernel;
 use crate::kernel_state::KernelState;
 use crate::output_blob_publisher::OutputBlobPublisher;
-use crate::output_prep::{LifecycleSignal, QueueCommandReceivers, WorkCommand};
+use crate::output_prep::{
+    LifecycleSignal, QueueCommandReceivers, VisualizationStateCommand, WorkCommand,
+};
 use crate::protocol::QueueEntry;
 
 mod echo_suppression;
@@ -477,6 +479,8 @@ struct KernelSession {
     /// RuntimeStateDoc syncs do not re-queue the same entry.
     seen_execution_ids: HashSet<String>,
     lifecycle_rx: Option<mpsc::UnboundedReceiver<LifecycleSignal>>,
+    visualization_rx: Option<mpsc::Receiver<VisualizationStateCommand>>,
+    visualization_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
     work_rx: Option<mpsc::Receiver<WorkCommand>>,
     interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle>,
 }
@@ -488,6 +492,8 @@ impl KernelSession {
             kernel_state,
             seen_execution_ids: HashSet::new(),
             lifecycle_rx: None,
+            visualization_rx: None,
+            visualization_tasks: HashMap::new(),
             work_rx: None,
             interrupt_handle: None,
         }
@@ -495,7 +501,7 @@ impl KernelSession {
 
     /// Adopt the outcome of a request that may have launched, restarted, or
     /// shut down the kernel. A successful launch/restart hands back
-    /// [`QueueCommandReceivers`]; the pair is indivisible, so both receivers
+    /// [`QueueCommandReceivers`]; the set is indivisible, so all receivers
     /// install in one step, and the interrupt handle re-derives from the
     /// current kernel slot in the same call. Runs after *every*
     /// `handle_runtime_agent_request`, so the handle also clears when a
@@ -504,7 +510,11 @@ impl KernelSession {
     /// drain through them.
     fn install_kernel_channels(&mut self, receivers: Option<QueueCommandReceivers>) {
         if let Some(rx) = receivers {
+            for (_, task) in self.visualization_tasks.drain() {
+                task.abort();
+            }
             self.lifecycle_rx = Some(rx.lifecycle_rx);
+            self.visualization_rx = Some(rx.visualization_rx);
             self.work_rx = Some(rx.work_rx);
         }
         self.interrupt_handle = self.kernel.as_ref().and_then(|k| k.interrupt_handle());
@@ -1398,6 +1408,34 @@ where
                 }
             }
 
+            // Bounded Bokeh checkpoint work has its own lane. Drain reliable
+            // lifecycle signals before awaiting a kernel snapshot.
+            Some(command) = async {
+                match session.visualization_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some(rx) = session.lifecycle_rx.as_mut() {
+                    if let Err(error) = drain_lifecycle_commands(
+                        rx,
+                        &ctx,
+                        &mut session.kernel,
+                        &mut session.kernel_state,
+                    ).await {
+                        warn!("[runtime-agent] Error draining lifecycle commands: {error}");
+                    }
+                }
+                if let Err(error) = start_visualization_state_command(
+                    command,
+                    &ctx,
+                    session.kernel.as_ref(),
+                    &mut session.visualization_tasks,
+                ) {
+                    warn!("[runtime-agent] Error handling visualization state: {error}");
+                }
+            }
+
             // Process bounded output/work commands from kernel tasks.
             Some(command) = async {
                 match session.work_rx.as_mut() {
@@ -1678,6 +1716,9 @@ where
     // -- 5. Cleanup ---------------------------------------------------------
 
     info!("[runtime-agent] Shutting down");
+    for (_, task) in session.visualization_tasks.drain() {
+        task.abort();
+    }
     if let Some(ref mut k) = session.kernel {
         k.shutdown().await.ok();
     }
@@ -2022,6 +2063,7 @@ async fn handle_runtime_agent_request(
                 .iter()
                 .map(|e| e.execution_id.clone())
                 .collect();
+            let restarting_kernel_id = kernel.as_ref().map(|kernel| kernel.kernel_id().to_string());
 
             // Shut down existing kernel
             if let Some(ref mut k) = kernel {
@@ -2104,6 +2146,9 @@ async fn handle_runtime_agent_request(
                     _ => {}
                 }
                 sd.set_queue(None, &[])?;
+                if let Some(kernel_id) = restarting_kernel_id.as_deref() {
+                    sd.disconnect_bokeh_sessions_for_kernel(kernel_id)?;
+                }
                 Ok(())
             }) {
                 warn!("[runtime-state] {}", e);
@@ -2198,10 +2243,19 @@ async fn handle_runtime_agent_request(
         }
 
         RuntimeAgentRequest::ShutdownKernel => {
+            let shutdown_kernel_id = kernel.as_ref().map(|kernel| kernel.kernel_id().to_string());
             if let Some(ref mut k) = kernel {
                 k.shutdown().await.ok();
             }
             *kernel = None;
+            if let Some(kernel_id) = shutdown_kernel_id {
+                if let Err(error) = ctx.state.with_doc(|state_doc| {
+                    state_doc.disconnect_bokeh_sessions_for_kernel(&kernel_id)?;
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] Failed to disconnect Bokeh sessions: {error}");
+                }
+            }
             (RuntimeAgentResponse::Ok, None)
         }
 
@@ -2212,6 +2266,82 @@ async fn handle_runtime_agent_request(
                     Err(e) => (
                         RuntimeAgentResponse::Error {
                             error: format!("Failed to send comm: {}", e),
+                        },
+                        None,
+                    ),
+                }
+            } else {
+                (
+                    RuntimeAgentResponse::Error {
+                        error: "No kernel running".to_string(),
+                    },
+                    None,
+                )
+            }
+        }
+
+        RuntimeAgentRequest::ApplyBokehSessionPatch { request } => {
+            if let Some(ref mut kernel) = kernel {
+                let owns_session = ctx
+                    .state
+                    .read(|state_doc| {
+                        state_doc
+                            .get_bokeh_session(&request.session_id)
+                            .is_some_and(|session| {
+                                session.kernel_id == kernel.kernel_id()
+                                    && session.status == runtime_doc::BokehSessionStatus::Connected
+                            })
+                    })
+                    .unwrap_or(false);
+                if !owns_session {
+                    return (
+                        RuntimeAgentResponse::Error {
+                            error: format!(
+                                "Bokeh session {} is not owned by the active kernel",
+                                request.session_id
+                            ),
+                        },
+                        None,
+                    );
+                }
+
+                match kernel.apply_bokeh_session_patch(request).await {
+                    Ok(response) => {
+                        let session_id = match &response.reply {
+                            notebook_protocol::protocol::BokehSessionPatchReply::Accepted {
+                                session_id,
+                                ..
+                            }
+                            | notebook_protocol::protocol::BokehSessionPatchReply::Stale {
+                                session_id,
+                                ..
+                            }
+                            | notebook_protocol::protocol::BokehSessionPatchReply::Error {
+                                session_id,
+                                ..
+                            } => session_id.clone(),
+                        };
+                        if let Err(error) = crate::bokeh_session::append_callback_outputs(
+                            &session_id,
+                            &response,
+                            &ctx.state,
+                            &ctx.blob_store,
+                            &ctx.output_blob_publisher,
+                        )
+                        .await
+                        {
+                            warn!("[bokeh-session] Failed to append callback output: {error}");
+                        }
+                        (
+                            RuntimeAgentResponse::BokehSessionPatch {
+                                reply: response.reply,
+                            },
+                            None,
+                        )
+                    }
+                    Err(error) => (
+                        RuntimeAgentResponse::Error {
+                            error: format!("Failed to apply Bokeh patch: {error}"),
                         },
                         None,
                     ),
@@ -2503,6 +2633,7 @@ async fn handle_lifecycle_signal(
 
         LifecycleSignal::KernelDied => {
             warn!("[runtime-agent] Kernel died");
+            let dead_kernel_id = kernel.as_ref().map(|kernel| kernel.kernel_id().to_string());
             if let Some(ref mut k) = kernel {
                 k.shutdown().await.ok();
             }
@@ -2523,6 +2654,9 @@ async fn handle_lifecycle_signal(
                 // missing_ipykernel incident.
                 sd.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)?;
                 sd.set_queue(None, &[])?;
+                if let Some(kernel_id) = dead_kernel_id.as_deref() {
+                    sd.disconnect_bokeh_sessions_for_kernel(kernel_id)?;
+                }
                 Ok(())
             }) {
                 warn!("[runtime-state] {}", e);
@@ -2530,6 +2664,91 @@ async fn handle_lifecycle_signal(
         }
     }
 
+    Ok(())
+}
+
+fn start_visualization_state_command(
+    command: VisualizationStateCommand,
+    ctx: &RuntimeAgentContext,
+    kernel: Option<&Kernel>,
+    tasks: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+) -> anyhow::Result<()> {
+    let VisualizationStateCommand::CheckpointBokehSession { session_id, force } = command;
+    let Some(kernel) = kernel else {
+        return Ok(());
+    };
+    if tasks
+        .get(&session_id)
+        .is_some_and(|task| !task.is_finished())
+    {
+        return Ok(());
+    }
+    tasks.remove(&session_id);
+
+    let should_checkpoint = ctx
+        .state
+        .read(|state_doc| {
+            state_doc
+                .get_bokeh_session(&session_id)
+                .is_some_and(|session| {
+                    session.kernel_id == kernel.kernel_id()
+                        && session.status == runtime_doc::BokehSessionStatus::Connected
+                        && (force
+                            || session.patch_tail.len()
+                                >= crate::bokeh_session::BOKEH_PATCH_CHECKPOINT_THRESHOLD)
+                })
+        })
+        .unwrap_or(false);
+    if !should_checkpoint {
+        return Ok(());
+    }
+
+    let Some(checkpoint_request) = kernel.bokeh_session_checkpoint_request(session_id.clone())
+    else {
+        return Ok(());
+    };
+    let expected_kernel_id = kernel.kernel_id().to_string();
+    let state = ctx.state.clone();
+    let blob_store = ctx.blob_store.clone();
+    let blob_publisher = ctx.output_blob_publisher.clone();
+    let task_session_id = session_id.clone();
+    let task = crate::task_supervisor::spawn_best_effort("bokeh-checkpoint-persist", async move {
+        let result = async {
+            let checkpoint = checkpoint_request.await?;
+            if !force {
+                for _ in 0..40 {
+                    let caught_up = state
+                        .read(|state_doc| {
+                            state_doc
+                                .get_bokeh_session(&task_session_id)
+                                .is_some_and(|session| session.head_revision >= checkpoint.revision)
+                        })
+                        .unwrap_or(false);
+                    if caught_up {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+            }
+            crate::bokeh_session::persist_checkpoint(
+                &checkpoint,
+                &expected_kernel_id,
+                force,
+                &state,
+                &blob_store,
+                &blob_publisher,
+            )
+            .await
+        }
+        .await;
+        if let Err(error) = result {
+            warn!(
+                "[bokeh-session] Failed to checkpoint session {}: {error}",
+                task_session_id
+            );
+        }
+    });
+    tasks.insert(session_id, task);
     Ok(())
 }
 
@@ -3982,7 +4201,7 @@ mod tests {
     async fn lifecycle_drain_runs_before_queued_work() {
         let (ctx, mut state, handle) = test_fixtures();
         state.set_idle();
-        let (lifecycle_tx, work_tx, mut receivers) = queue_command_channels(1);
+        let (lifecycle_tx, _visualization_tx, work_tx, mut receivers) = queue_command_channels(1);
 
         work_tx
             .try_send(WorkCommand::SendCommUpdate {

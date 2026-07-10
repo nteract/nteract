@@ -10,11 +10,17 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use notebook_protocol::protocol::{CommRequestMessage, LaunchedEnvConfig};
+use notebook_protocol::protocol::{
+    BokehSessionPatchReply, BokehSessionPatchRequest, CommRequestMessage, LaunchedEnvConfig,
+};
 use runtime_doc::{KernelActivity, RuntimeLifecycle, RuntimeStateHandle};
 use tokio::sync::mpsc;
 use tracing::debug;
 
+use crate::bokeh_session::{
+    BokehCheckpointFuture, BokehKernelCheckpoint, BokehKernelPatchResponse,
+    BokehKernelSerialization,
+};
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::output_prep::{queue_command_channels, LifecycleSignal, QueueCommandReceivers};
 use crate::protocol::{CompletionItem, HistoryEntry};
@@ -26,6 +32,7 @@ pub struct TestKernel {
     env_source: String,
     launched_config: LaunchedEnvConfig,
     execution_counter: u64,
+    kernel_id: String,
 }
 
 impl KernelConnection for TestKernel {
@@ -33,7 +40,7 @@ impl KernelConnection for TestKernel {
         config: KernelLaunchConfig,
         shared: KernelSharedRefs,
     ) -> Result<(Self, QueueCommandReceivers)> {
-        let (lifecycle_tx, _work_tx, receivers) = queue_command_channels(1);
+        let (lifecycle_tx, _visualization_tx, _work_tx, receivers) = queue_command_channels(1);
 
         if let Err(e) = shared
             .state
@@ -49,6 +56,7 @@ impl KernelConnection for TestKernel {
             env_source: config.env_source,
             launched_config: config.launched_config,
             execution_counter: 0,
+            kernel_id: "test-kernel".to_string(),
         };
 
         Ok((kernel, receivers))
@@ -111,6 +119,38 @@ impl KernelConnection for TestKernel {
         Ok(())
     }
 
+    async fn apply_bokeh_session_patch(
+        &mut self,
+        request: BokehSessionPatchRequest,
+    ) -> Result<BokehKernelPatchResponse> {
+        Ok(BokehKernelPatchResponse {
+            reply: BokehSessionPatchReply::Accepted {
+                session_id: request.session_id,
+                transaction_id: request.transaction_id,
+                revision: request.base_revision + 1,
+            },
+            stdout: String::new(),
+            stderr: String::new(),
+            error_output: None,
+        })
+    }
+
+    fn bokeh_session_checkpoint_request(
+        &self,
+        session_id: String,
+    ) -> Option<BokehCheckpointFuture> {
+        Some(Box::pin(async move {
+            Ok(BokehKernelCheckpoint {
+                session_id,
+                revision: 0,
+                document: BokehKernelSerialization {
+                    content: serde_json::json!({}),
+                    buffers: Vec::new(),
+                },
+            })
+        }))
+    }
+
     async fn complete(&mut self, _: &str, _: usize) -> Result<(Vec<CompletionItem>, usize, usize)> {
         Ok((vec![], 0, 0))
     }
@@ -121,6 +161,10 @@ impl KernelConnection for TestKernel {
 
     fn kernel_type(&self) -> &str {
         &self.kernel_type
+    }
+
+    fn kernel_id(&self) -> &str {
+        &self.kernel_id
     }
 
     fn env_source(&self) -> &str {
