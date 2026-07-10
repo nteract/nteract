@@ -203,7 +203,7 @@ export function FontFamilyPicker({
                   onValueChange={setSearchValue}
                   placeholder="Search fonts"
                 />
-                <CommandList className="max-h-72">
+                <CommandList className="h-72 max-h-72">
                   <CommandGroup>
                     <CommandItem value="__default__" onSelect={selectDefault}>
                       <Check
