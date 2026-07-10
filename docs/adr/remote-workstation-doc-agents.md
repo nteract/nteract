@@ -1,7 +1,9 @@
 # Remote Workstation Doc Agents
 
-**Status:** In progress, 2026-06-04. Core CRDT and validator paths landed;
-workstation UI and lifecycle surfaces remain open. Trimmed 2026-06-29.
+**Status:** Accepted, 2026-07-10. The provider-neutral registration and
+room-scoped `runtime_peer` foundation tracked in
+[#3381](https://github.com/nteract/nteract/issues/3381) is shipped; focused
+follow-ups remain.
 
 This ADR records the hosted workstation architecture. Earlier API sketches,
 prototype UI notes, and landed implementation ledgers were removed to keep the
@@ -99,15 +101,19 @@ models must stay distinct.
 
 ## Current Implementation Shape
 
-The current hosted path has:
+The core objective in
+[#3381](https://github.com/nteract/nteract/issues/3381) is present on `main`:
+provider-neutral workstation records, pairing and registration, attach jobs, a
+Rust workstation connector, and per-job cloud runtime agents that join selected
+rooms with explicit `runtime_peer` authority. Runtime session ids are projected
+through `RuntimeStateDoc.workstation`; the room host fences stale peers and
+retains authority over execution intent and accepted runtime/output state.
 
-- D1-backed workstation registration, defaults, and attach-job records;
-- a Rust `runtimed workstation-agent` connector;
-- hosted attach-job APIs and event/poll wakeups;
-- `runtimed cloud-runtime-agent` spawned per accepted job;
-- runtime session ids mirrored into `RuntimeStateDoc.workstation`;
-- room-host fencing for stale runtime peers;
-- owner-authorized execution and runtime-agent command forwarding.
+Liveness and idle handling, version reporting, structured CPU, memory, and
+accelerator capability projection, and owner-authorized execution and runtime
+command forwarding are also shipped. These establish the shared control-plane
+foundation without making provider setup, credentials, environments, or update
+lifecycle part of the room protocol.
 
 Implementation details live in source and tests, especially the hosted cloud
 app, `notebook-cloud-transport`, `runtime-doc`, `runtimed-wasm`, and
@@ -115,9 +121,21 @@ app, `notebook-cloud-transport`, `runtime-doc`, `runtimed-wasm`, and
 
 ## Open Boundaries
 
-- Provider-specific packaging and install flows should stay outside the room
-  protocol.
-- Workstation catalogs may feed host-owned rails, but shared notebook components
-  should consume normalized host facts.
+- Notebook-first setup, recovery, compute-source selection, and accelerator UX
+  belong to host-owned notebook chrome; shared notebook components should
+  consume normalized host facts
+  ([#3990](https://github.com/nteract/nteract/issues/3990)).
+- Persistent pairing remains the registration bootstrap. Short-lived,
+  room- and session-scoped attachment credentials are focused security work and
+  do not change room-mediated runtime authority
+  ([#3991](https://github.com/nteract/nteract/issues/3991)).
+- Provider-specific packaging, environment selection, and validation stay
+  outside the room protocol. The Outerbounds current-Python smoke is tracked in
+  [#3992](https://github.com/nteract/nteract/issues/3992); the JupyterHub
+  kernelspec and working-directory adapter remains in
+  [#3608](https://github.com/nteract/nteract/issues/3608).
+- Compatibility notices and safe idle self-update remain connector lifecycle
+  work and must not interrupt active execution
+  ([#3975](https://github.com/nteract/nteract/issues/3975)).
 - Public sharing does not imply compute access.
 - Runtime peer attachment does not imply notebook edit authority.
