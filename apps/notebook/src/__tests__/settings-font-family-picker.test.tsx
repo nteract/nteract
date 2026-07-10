@@ -1,6 +1,7 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { fontFamilyNameToCssValue, uniqueSortedFontFamilies } from "@nteract/notebook-host";
+import { useState } from "react";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { FontFamilyPicker } from "../../settings/App";
 
@@ -20,16 +21,23 @@ beforeAll(() => {
 });
 
 function renderPicker(value = "", onChange = vi.fn()) {
-  render(
-    <FontFamilyPicker
-      label="Markdown font"
-      value={value}
-      onChange={onChange}
-      placeholder="system-ui, sans-serif"
-      description="Rendered Markdown and Markdown input"
-      fontFamilies={fontFamilies}
-    />,
-  );
+  function Harness() {
+    const [currentValue, setCurrentValue] = useState(value);
+    return (
+      <FontFamilyPicker
+        label="Markdown font"
+        value={currentValue}
+        onChange={(next) => {
+          onChange(next);
+          setCurrentValue(next);
+        }}
+        placeholder="system-ui, sans-serif"
+        description="Rendered Markdown and Markdown input"
+        fontFamilies={fontFamilies}
+      />
+    );
+  }
+  render(<Harness />);
   return { onChange };
 }
 
@@ -39,7 +47,7 @@ describe("FontFamilyPicker", () => {
     const { onChange } = renderPicker();
 
     await user.click(screen.getByRole("combobox", { name: "Markdown font" }));
-    await user.type(screen.getByPlaceholderText("Search fonts or enter a CSS stack"), "frau");
+    await user.type(screen.getByPlaceholderText("Search fonts"), "frau");
     await user.click(screen.getByText("Fraunces"));
 
     expect(onChange).toHaveBeenCalledWith("Fraunces");
@@ -50,24 +58,26 @@ describe("FontFamilyPicker", () => {
     const { onChange } = renderPicker();
 
     await user.click(screen.getByRole("combobox", { name: "Markdown font" }));
-    await user.type(screen.getByPlaceholderText("Search fonts or enter a CSS stack"), "sf mono");
+    await user.type(screen.getByPlaceholderText("Search fonts"), "sf mono");
     await user.click(screen.getByText("SF Mono"));
 
     expect(onChange).toHaveBeenCalledWith('"SF Mono"');
   });
 
-  it("allows a custom CSS font stack", async () => {
+  it("allows a custom CSS font stack via Custom mode", async () => {
     const user = userEvent.setup();
     const { onChange } = renderPicker();
 
     await user.click(screen.getByRole("combobox", { name: "Markdown font" }));
+    await user.type(screen.getByPlaceholderText("Search fonts"), "Fraunces, Georgia, serif");
+    expect(screen.queryByText("Use custom value")).not.toBeInTheDocument();
+
+    await user.clear(screen.getByPlaceholderText("Search fonts"));
+    await user.click(screen.getByText("Custom"));
     await user.type(
-      screen.getByPlaceholderText("Search fonts or enter a CSS stack"),
+      screen.getByPlaceholderText("e.g. Helvetica, Arial, sans-serif"),
       "Fraunces, Georgia, serif",
     );
-    const option = screen.getByText("Use custom value").closest("[cmdk-item]");
-    expect(option).not.toBeNull();
-    await user.click(within(option!).getByText("Use custom value"));
 
     expect(onChange).toHaveBeenCalledWith("Fraunces, Georgia, serif");
   });
