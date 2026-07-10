@@ -309,7 +309,12 @@ where
             load_path.to_path_buf(),
             execution_store_dir.to_path_buf(),
         )
-    } else if room.is_loading() {
+    } else if room.is_loading()
+        || matches!(
+            initial_load_phase,
+            notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
+        )
+    {
         room.initial_load.subscribe()
     } else {
         return Ok(initial_load_phase);
@@ -613,6 +618,38 @@ mod tests {
             }
         );
         assert_eq!(room.doc.read().await.cell_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn late_waiter_observes_ready_generation_after_loading_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = test_room(&tmp);
+        room.initial_load.mark_required();
+        let (start, _) = room.initial_load.begin();
+        let RoomInitialLoadStart::Started { generation } = start else {
+            panic!("pending load should be claimable");
+        };
+        assert!(room.initial_load.complete_ready(generation, 0));
+
+        let mut reader = tokio::io::empty();
+        let mut writer = CaptureWriter::default();
+        let mut peer_state = sync::State::new();
+        let phase = stream_initial_load(
+            &mut reader,
+            &mut writer,
+            &room,
+            None,
+            tmp.path(),
+            &mut peer_state,
+            NotebookDocPhaseWire::Syncing,
+            RuntimeStatePhaseWire::Syncing,
+            InitialLoadPhaseWire::Streaming,
+            4,
+        )
+        .await
+        .expect("late waiter should consume the sticky terminal state");
+
+        assert_eq!(phase, InitialLoadPhaseWire::Ready);
     }
 
     #[tokio::test]
