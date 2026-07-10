@@ -624,7 +624,9 @@ pub enum NotebookRequest {
     },
 
     /// Apply a typed Bokeh document patch through the owning kernel session.
-    ApplyBokehSessionPatch { request: BokehSessionPatchRequest },
+    ApplyBokehSessionPatch {
+        request: Box<BokehSessionPatchRequest>,
+    },
 
     /// Search the kernel's input history.
     /// Returns matching history entries via HistoryResult response.
@@ -873,12 +875,12 @@ pub enum NotebookResponse {
 /// Broadcast messages from daemon to all peers in a room.
 ///
 /// Ephemeral, room-wide events. Custom comm messages (ipywidgets model
-/// updates, button clicks) are the only traffic that still flows here.
-/// Kernel state, execution lifecycle, queue, outputs, the notebook's
-/// `path`, `last_saved` timestamp, and environment-preparation progress
-/// all live in `RuntimeStateDoc` (frame type `0x05`) — they used to flow
-/// as broadcasts and the dead variants were removed once the doc became
-/// authoritative.
+/// updates, button clicks) and the low-latency Bokeh document patch path flow
+/// here. Kernel state, execution lifecycle, queue, outputs, the notebook's
+/// `path`, `last_saved` timestamp, and environment-preparation progress all
+/// live in `RuntimeStateDoc` (frame type `0x05`). Bokeh session topology and
+/// replay pointers also live there; the broadcast only accelerates delivery
+/// of an already canonical revision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum NotebookBroadcast {
@@ -895,7 +897,7 @@ pub enum NotebookBroadcast {
     },
 
     /// Canonical ordered Bokeh document transaction from the kernel.
-    BokehSessionPatch { patch: BokehSessionPatchEvent },
+    BokehSessionPatch { patch: Box<BokehSessionPatchEvent> },
 }
 
 // ── Runtime agent protocol types ──────────────────────────────────────────
@@ -967,7 +969,9 @@ pub enum RuntimeAgentRequest {
     SendComm { message: Box<CommRequestMessage> },
 
     /// Apply a typed patch to a kernel-owned Bokeh document session.
-    ApplyBokehSessionPatch { request: BokehSessionPatchRequest },
+    ApplyBokehSessionPatch {
+        request: Box<BokehSessionPatchRequest>,
+    },
 
     /// Request code completions from the kernel.
     Complete { code: String, cursor_pos: usize },
@@ -1886,14 +1890,14 @@ mod tests {
         })
         .is_command());
         assert!(!RuntimeAgentRequest::ApplyBokehSessionPatch {
-            request: BokehSessionPatchRequest {
+            request: Box::new(BokehSessionPatchRequest {
                 session_id: "session-1".to_string(),
                 transaction_id: "tx-1".to_string(),
                 base_revision: 0,
                 patch: serde_json::json!({"events": []}),
                 buffers: Vec::new(),
                 buffer_refs: Vec::new(),
-            },
+            }),
         }
         .is_command());
     }
@@ -1901,7 +1905,7 @@ mod tests {
     #[test]
     fn bokeh_patch_broadcast_round_trip_preserves_checkpoint_and_buffers() {
         let broadcast = NotebookBroadcast::BokehSessionPatch {
-            patch: BokehSessionPatchEvent {
+            patch: Box::new(BokehSessionPatchEvent {
                 session_id: "session-1".to_string(),
                 transaction_id: "tx-1".to_string(),
                 base_revision: 4,
@@ -1920,7 +1924,7 @@ mod tests {
                     document: serde_json::json!({"version": "3.9.1", "roots": []}),
                     buffers: Vec::new(),
                 }),
-            },
+            }),
         };
 
         let json = serde_json::to_value(&broadcast).expect("serialize Bokeh broadcast");

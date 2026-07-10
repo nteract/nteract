@@ -118,13 +118,6 @@ pub(crate) async fn ingest_kernel_event(
         .filter(|value| !value.is_null())
         .map(|value| parse_serialization(value, "document", raw_buffers))
         .transpose()?;
-    anyhow::ensure!(
-        client_serialization.is_some()
-            || server_serialization.is_some()
-            || checkpoint_serialization.is_some(),
-        "Bokeh event has no patch or checkpoint payload"
-    );
-
     let (checkpoint, checkpoint_ref) = store_event_checkpoint(
         checkpoint_serialization,
         &session_id,
@@ -209,7 +202,9 @@ pub(crate) async fn ingest_kernel_event(
     })?;
 
     if matches!(update, BokehEventIngest::Applied { .. }) {
-        let _ = broadcast_tx.send(NotebookBroadcast::BokehSessionPatch { patch: event });
+        let _ = broadcast_tx.send(NotebookBroadcast::BokehSessionPatch {
+            patch: Box::new(event),
+        });
     }
     Ok(update)
 }
@@ -923,6 +918,60 @@ mod tests {
             NotebookBroadcast::BokehSessionPatch { patch } => {
                 assert_eq!(patch.session_id, "session-1");
                 assert_eq!(patch.revision, 1);
+            }
+            NotebookBroadcast::Comm { .. } => panic!("expected Bokeh patch broadcast"),
+        }
+    }
+
+    #[tokio::test]
+    async fn canonical_noop_event_advances_revision_and_broadcasts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blob_store = BlobStore::new(dir.path().join("blobs"));
+        let publisher = OutputBlobPublisher::none();
+        let state = runtime_state(0);
+        let (broadcast_tx, mut broadcast_rx) = tokio::sync::broadcast::channel(4);
+        let event = json!({
+            "schema_version": 1,
+            "session_id": "session-1",
+            "transaction_id": "tx-button-click",
+            "base_revision": 0,
+            "revision": 1,
+            "client_patch": null,
+            "server_patch": null,
+            "checkpoint": null,
+        });
+
+        let result = ingest_kernel_event(
+            &event,
+            &[],
+            "kernel-1",
+            &state,
+            &blob_store,
+            &publisher,
+            &broadcast_tx,
+        )
+        .await
+        .expect("ingest no-op revision");
+
+        assert_eq!(
+            result,
+            BokehEventIngest::Applied {
+                checkpoint_needed: false,
+            }
+        );
+        let session = state
+            .read(|doc| doc.get_bokeh_session("session-1"))
+            .expect("read state")
+            .expect("session");
+        assert_eq!(session.head_revision, 1);
+        assert_eq!(session.patch_tail.len(), 1);
+        match broadcast_rx.recv().await.expect("broadcast") {
+            NotebookBroadcast::BokehSessionPatch { patch } => {
+                assert_eq!(patch.transaction_id, "tx-button-click");
+                assert_eq!(patch.revision, 1);
+                assert!(patch.client_patch.is_none());
+                assert!(patch.server_patch.is_none());
+                assert!(patch.checkpoint.is_none());
             }
             NotebookBroadcast::Comm { .. } => panic!("expected Bokeh patch broadcast"),
         }

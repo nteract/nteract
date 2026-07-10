@@ -68,7 +68,9 @@ pub(crate) async fn handle(
     }
     match send_runtime_agent_request(
         room,
-        RuntimeAgentRequest::ApplyBokehSessionPatch { request },
+        RuntimeAgentRequest::ApplyBokehSessionPatch {
+            request: Box::new(request),
+        },
     )
     .await
     {

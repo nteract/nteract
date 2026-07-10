@@ -269,11 +269,13 @@ async fn run_bokeh_checkpoint_requester(
             }
         }
 
-        let result = request_bokeh_checkpoint(
-            shell.as_mut().expect("checkpoint shell was initialized"),
-            &command.session_id,
-        )
-        .await;
+        let Some(checkpoint_shell) = shell.as_mut() else {
+            let _ = command
+                .reply
+                .send(Err(anyhow::anyhow!("checkpoint shell was not initialized")));
+            continue;
+        };
+        let result = request_bokeh_checkpoint(checkpoint_shell, &command.session_id).await;
         if result.is_err() {
             shell = None;
         }

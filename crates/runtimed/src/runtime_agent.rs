@@ -2305,7 +2305,7 @@ async fn handle_runtime_agent_request(
                     );
                 }
 
-                match kernel.apply_bokeh_session_patch(request).await {
+                match kernel.apply_bokeh_session_patch(*request).await {
                     Ok(response) => {
                         let session_id = match &response.reply {
                             notebook_protocol::protocol::BokehSessionPatchReply::Accepted {

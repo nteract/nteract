@@ -533,7 +533,7 @@ pub(crate) async fn handle_notebook_request(
         NotebookRequest::SendComm { message } => send_comm::handle(room, message).await,
 
         NotebookRequest::ApplyBokehSessionPatch { request } => {
-            apply_bokeh_session_patch::handle(room, request).await
+            apply_bokeh_session_patch::handle(room, *request).await
         }
 
         NotebookRequest::GetHistory { pattern, n, unique } => {

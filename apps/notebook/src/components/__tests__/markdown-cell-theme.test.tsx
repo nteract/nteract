@@ -82,6 +82,7 @@ vi.mock("@/components/isolated", async () => {
 
   return {
     IsolatedFrame: MockIsolatedFrame,
+    useBokehSessionRuntime: () => null,
   };
 });
 

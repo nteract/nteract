@@ -602,12 +602,6 @@ fn validate_runtime_agent_broadcast(broadcast: &NotebookBroadcast) -> anyhow::Re
                 patch.revision == patch.base_revision + 1,
                 "runtime agent Bokeh patch revision is not contiguous"
             );
-            anyhow::ensure!(
-                patch.client_patch.is_some()
-                    || patch.server_patch.is_some()
-                    || patch.checkpoint.is_some(),
-                "runtime agent Bokeh patch has no patch or checkpoint payload"
-            );
             Ok(())
         }
     }
@@ -694,5 +688,22 @@ mod tests {
         let payload = serde_json::to_vec(&broadcast).expect("serialize broadcast");
 
         forward_runtime_agent_broadcast(&tx, &payload).expect_err("missing comm_id must fail");
+    }
+
+    #[test]
+    fn accepts_runtime_agent_bokeh_noop_revision() {
+        let broadcast = NotebookBroadcast::BokehSessionPatch {
+            patch: Box::new(notebook_protocol::protocol::BokehSessionPatchEvent {
+                session_id: "session-1".to_string(),
+                transaction_id: "tx-button-click".to_string(),
+                base_revision: 0,
+                revision: 1,
+                client_patch: None,
+                server_patch: None,
+                checkpoint: None,
+            }),
+        };
+
+        validate_runtime_agent_broadcast(&broadcast).expect("valid no-op revision");
     }
 }

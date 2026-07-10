@@ -204,6 +204,50 @@ describe("BokehSessionController", () => {
     controller.dispose();
   });
 
+  it("does not publish Bokeh document-ready lifecycle events", async () => {
+    const { controller, documents, patchRequests } = harness();
+    await controller.start();
+
+    documents[0].emit({
+      kind: "MessageSent",
+      sync: true,
+      msg_type: "bokeh_event",
+      msg_data: { event_name: "document_ready" },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(patchRequests).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it("cancels state-triggered resync when the canonical event catches up", async () => {
+    const { controller, documents, notify, requestHost } = harness();
+    await controller.start();
+
+    notify(NTERACT_BOKEH_SESSION_STATE, {
+      sessionId: "session-1",
+      outputId: "output-1",
+      status: "connected",
+      headRevision: 1,
+    });
+    notify(NTERACT_BOKEH_SESSION_PATCH, {
+      outputId: "output-1",
+      event: {
+        sessionId: "session-1",
+        transactionId: "server-change-1",
+        baseRevision: 0,
+        revision: 1,
+        serverPatch: { patch: { events: [{ kind: "ModelChanged", new: 3 }] }, buffers: [] },
+      },
+    });
+    await settle();
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(requestHost).toHaveBeenCalledTimes(1);
+    expect(documents).toHaveLength(1);
+    controller.dispose();
+  });
+
   it("freezes the current document when RuntimeState marks the session disconnected", async () => {
     const { controller, documents, notify, onStatus, patchRequests } = harness();
     await controller.start();

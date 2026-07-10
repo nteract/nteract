@@ -14,6 +14,7 @@ from nteract_kernel_launcher._bokeh_session import (
     BokehSerialization,
     BokehServerEvent,
     StaleBokehRevisionError,
+    _replayable_client_patch,
     session_registry,
 )
 from nteract_kernel_launcher._refs import BLOB_REF_MIME
@@ -62,6 +63,184 @@ def test_install_registers_panel_formatter_without_importing_panel():
     assert ("panel.viewable", "Viewable") not in (
         display_formatter.mimebundle_formatter.deferred_printers
     )
+
+
+def test_panel_bootstrap_filter_suppresses_legacy_autoloader():
+    filter_bootstrap = _panel._PanelBootstrapFilter()
+    code = r"const PN_RE = /^https:\/\/cdn\.holoviz\.org\/panel\/[^/]+\/dist\/panel/i;"
+    msg = {
+        "content": {
+            "data": {
+                "application/javascript": code,
+                "application/vnd.holoviews_load.v0+json": code,
+            },
+            "metadata": {},
+        }
+    }
+
+    assert filter_bootstrap(msg) is None
+
+
+def test_panel_bootstrap_filter_suppresses_following_pyviz_manager_only():
+    filter_bootstrap = _panel._PanelBootstrapFilter()
+    panel_code = r"const PN_RE = /^https:\/\/cdn\.holoviz\.org\/panel\/[^/]+\/dist\/panel/i;"
+    panel_msg = {
+        "content": {
+            "data": {
+                "application/javascript": panel_code,
+                "application/vnd.holoviews_load.v0+json": panel_code,
+            },
+            "metadata": {},
+        }
+    }
+    manager_code = 'get_client_comm("hv-extension-comm")'
+    manager_msg = {
+        "content": {
+            "data": {
+                "application/javascript": manager_code,
+                "application/vnd.holoviews_load.v0+json": manager_code,
+            },
+            "metadata": {},
+        }
+    }
+
+    assert filter_bootstrap(panel_msg) is None
+    assert filter_bootstrap(manager_msg) is None
+    assert filter_bootstrap(manager_msg) == manager_msg
+
+
+def test_panel_bootstrap_filter_suppresses_browser_info_output(monkeypatch):
+    browser_info = object()
+    panel_state = SimpleNamespace(
+        _browser=browser_info,
+        _views={"browser-root": (browser_info, object(), object(), object())},
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "panel.io.state",
+        SimpleNamespace(state=panel_state),
+    )
+    msg = {
+        "content": {
+            "data": {
+                "application/vnd.holoviews_exec.v0+json": "",
+                "application/javascript": "window.PyViz = {};",
+                "text/html": '<div id="legacy-panel-root"></div>',
+            },
+            "metadata": {"application/vnd.holoviews_exec.v0+json": {"id": "browser-root"}},
+        }
+    }
+
+    assert _panel._PanelBootstrapFilter()(msg) is None
+
+
+def test_panel_bootstrap_filter_preserves_unrelated_holoviews_outputs():
+    filter_bootstrap = _panel._PanelBootstrapFilter()
+    load_msg = {
+        "content": {
+            "data": {
+                "application/javascript": "window.HoloViews = {};",
+                "application/vnd.holoviews_load.v0+json": "window.HoloViews = {};",
+            },
+            "metadata": {},
+        }
+    }
+    exec_msg = {
+        "content": {
+            "data": {
+                "application/vnd.holoviews_exec.v0+json": "",
+                "text/html": '<div id="holoviews-root"></div>',
+            },
+            "metadata": {"application/vnd.holoviews_exec.v0+json": {"id": "holoviews-root"}},
+        }
+    }
+
+    assert filter_bootstrap(load_msg) == load_msg
+    assert filter_bootstrap(exec_msg) == exec_msg
+
+
+def test_panel_bootstrap_filter_allows_marked_formatter_fallback():
+    filter_bootstrap = _panel._PanelBootstrapFilter()
+    msg = {
+        "content": {
+            "data": {
+                "application/vnd.holoviews_exec.v0+json": "",
+                "text/html": '<div id="legacy-panel-root"></div>',
+            },
+            "metadata": {
+                "application/vnd.nteract.panel-fallback.v1+json": True,
+            },
+        }
+    }
+
+    filtered = filter_bootstrap(msg)
+
+    assert filtered is not None
+    assert filtered["content"]["data"] == msg["content"]["data"]
+    assert "application/vnd.nteract.panel-fallback.v1+json" not in filtered["content"]["metadata"]
+
+
+def test_panel_bootstrap_filter_strips_marker_from_non_exec_fallback():
+    msg = {
+        "content": {
+            "data": {"text/html": '<div id="legacy-panel-root"></div>'},
+            "metadata": {"application/vnd.nteract.panel-fallback.v1+json": True},
+        }
+    }
+
+    filtered = _panel._PanelBootstrapFilter()(msg)
+
+    assert filtered == {
+        "content": {
+            "data": msg["content"]["data"],
+            "metadata": {},
+        }
+    }
+
+
+def test_native_formatter_failure_marks_legacy_fallback(monkeypatch):
+    def fail_native_formatter(_viewable):
+        raise RuntimeError("native failed")
+
+    monkeypatch.setattr(
+        _panel,
+        "_native_panel_mimebundle",
+        fail_native_formatter,
+    )
+    fallback_data = {
+        "application/vnd.holoviews_exec.v0+json": "",
+        "text/html": '<div id="legacy-panel-root"></div>',
+    }
+
+    data, metadata = _panel._format_panel(object(), lambda _viewable: fallback_data)
+
+    assert data == fallback_data
+    assert metadata["application/vnd.nteract.panel-fallback.v1+json"] is True
+
+
+def test_panel_bootstrap_filter_preserves_unrelated_mime_data():
+    filter_bootstrap = _panel._PanelBootstrapFilter()
+    code = r"const PN_RE = /^https:\/\/cdn\.holoviz\.org\/panel\/[^/]+\/dist\/panel/i;"
+    msg = {
+        "content": {
+            "data": {
+                "application/javascript": code,
+                "application/vnd.holoviews_load.v0+json": code,
+                "text/plain": "extension loaded",
+            },
+            "metadata": {
+                "application/vnd.holoviews_load.v0+json": {"isolated": True},
+                "text/plain": {"expanded": False},
+            },
+        }
+    }
+
+    filtered = filter_bootstrap(msg)
+
+    assert filtered is not None
+    assert filtered["content"]["data"] == {"text/plain": "extension loaded"}
+    assert filtered["content"]["metadata"] == {"text/plain": {"expanded": False}}
+    assert "application/vnd.holoviews_load.v0+json" in msg["content"]["data"]
 
 
 def test_panel_formatter_emits_document_session_without_pyviz_comms():
@@ -123,6 +302,30 @@ def test_panel_formatter_stashes_bokeh_binary_buffers():
     assert [ref["buffer_index"] for ref in refs] == [0, 1]
     assert refs[0]["hash"] == refs[1]["hash"]
     assert refs[0]["hash"] in _buffer_hook.pending_buffers()
+
+
+def test_replayable_client_patch_excludes_ephemeral_messages():
+    model_event = {
+        "kind": "ModelChanged",
+        "model": {"id": "p1001"},
+        "attr": "value",
+        "new": 5,
+    }
+    message_event = {
+        "kind": "MessageSent",
+        "msg_type": "bokeh_event",
+        "msg_data": {"type": "event", "name": "button_click", "values": {}},
+    }
+
+    replayable = _replayable_client_patch(
+        {"events": [message_event, model_event]},
+        [BokehBuffer(id="buffer-1", data=b"payload")],
+    )
+
+    assert replayable is not None
+    assert replayable.content == {"events": [model_event]}
+    assert [buffer.id for buffer in replayable.buffers] == ["buffer-1"]
+    assert _replayable_client_patch({"events": [message_event]}, []) is None
 
 
 def test_panel_patch_runs_python_callback_and_returns_only_derived_events():

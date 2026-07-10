@@ -18,6 +18,10 @@ interface BokehDocumentEvent {
   sync?: boolean;
   kind?: string;
   attr?: string;
+  msg_type?: string;
+  msg_data?: {
+    event_name?: string;
+  };
   model?: {
     properties?: Record<string, { syncable?: boolean }>;
   };
@@ -117,6 +121,13 @@ function bufferMap(buffers: NteractBokehResolvedBuffer[]): Map<string, ArrayBuff
 
 function shouldSyncEvent(event: BokehDocumentEvent): boolean {
   if (event.sync === false) return false;
+  if (
+    event.kind === "MessageSent" &&
+    event.msg_type === "bokeh_event" &&
+    event.msg_data?.event_name === "document_ready"
+  ) {
+    return false;
+  }
   if (event.kind !== "ModelChanged" || !event.attr) return true;
   return event.model?.properties?.[event.attr]?.syncable !== false;
 }
@@ -165,6 +176,7 @@ export class BokehSessionController {
   private document: BokehDocument | null = null;
   private views: BokehViewManager | null = null;
   private revision = -1;
+  private announcedHeadRevision = -1;
   private status: NteractBokehSessionStatus = "disconnected";
   private applyingRemote = false;
   private disposed = false;
@@ -209,6 +221,7 @@ export class BokehSessionController {
           return;
         }
         this.setStatus(params.status);
+        this.announcedHeadRevision = params.headRevision;
         if (params.status === "connected" && params.headRevision > this.revision) {
           this.scheduleResync();
         }
@@ -378,6 +391,8 @@ export class BokehSessionController {
       throw new Error("Bokeh snapshot does not reach its advertised head revision");
     }
     this.setStatus(snapshot.status);
+    this.announcedHeadRevision = snapshot.headRevision;
+    this.cancelSatisfiedResync();
     for (const revision of this.canonicalEvents.keys()) {
       if (revision <= this.revision) this.canonicalEvents.delete(revision);
     }
@@ -447,6 +462,7 @@ export class BokehSessionController {
         this.applyingRemote = false;
       }
     }
+    this.cancelSatisfiedResync();
     this.finishTransaction(event.transactionId);
     this.options.onLayout();
   }
@@ -454,6 +470,12 @@ export class BokehSessionController {
   private applyPatchPayload(payload: NteractBokehResolvedPatchPayload): void {
     if (!this.document) throw new Error("Bokeh document is not mounted");
     this.document.apply_json_patch(payload.patch, bufferMap(payload.buffers));
+  }
+
+  private cancelSatisfiedResync(): void {
+    if (this.revision < this.announcedHeadRevision || this.resyncTimer === null) return;
+    window.clearTimeout(this.resyncTimer);
+    this.resyncTimer = null;
   }
 
   private destroyDocument(): void {

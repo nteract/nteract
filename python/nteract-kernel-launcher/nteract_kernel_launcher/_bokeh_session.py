@@ -126,6 +126,30 @@ def _serialize_bokeh_value(value: Any) -> BokehSerialization:
     return BokehSerialization(content=encoded, buffers=buffers)
 
 
+def _replayable_client_patch(
+    patch: dict[str, Any], buffers: Sequence[BokehBuffer]
+) -> BokehSerialization | None:
+    """Keep client document mutations while excluding ephemeral messages.
+
+    Bokeh sends user and lifecycle events as ``MessageSent`` patch events so
+    the Python document can run callbacks. Replaying those ephemeral events can
+    run callbacks again and must not enter the durable replay log. Model, root,
+    title, and column-data mutations remain replayable.
+    """
+    events = patch.get("events")
+    if not isinstance(events, list):
+        return BokehSerialization(content=patch, buffers=tuple(buffers))
+    replayable = [
+        event
+        for event in events
+        if not (isinstance(event, dict) and event.get("kind") == "MessageSent")
+    ]
+    if not replayable:
+        return None
+    content = patch if len(replayable) == len(events) else {**patch, "events": replayable}
+    return BokehSerialization(content=content, buffers=tuple(buffers))
+
+
 class BokehDocumentSession:
     """A live Bokeh document with one serialized revision authority."""
 
@@ -249,7 +273,7 @@ class BokehDocumentSession:
                     transaction_id=transaction_id,
                     base_revision=base_revision,
                     revision=self._revision,
-                    client_patch=BokehSerialization(content=patch, buffers=tuple(buffers)),
+                    client_patch=_replayable_client_patch(patch, buffers),
                     server_patch=derived,
                     checkpoint=None,
                 )

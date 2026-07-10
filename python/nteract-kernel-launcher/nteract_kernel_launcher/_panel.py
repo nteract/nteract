@@ -25,9 +25,136 @@ from nteract_kernel_launcher._refs import BLOB_REF_MIME
 log = logging.getLogger("nteract_kernel_launcher")
 
 _PANEL_VIEWABLE_TYPE = "panel.viewable.Viewable"
+_PANEL_LOAD_MIME = "application/vnd.holoviews_load.v0+json"
+_PANEL_EXEC_MIME = "application/vnd.holoviews_exec.v0+json"
+_PANEL_FALLBACK_METADATA = "application/vnd.nteract.panel-fallback.v1+json"
+_PANEL_AUTOLOAD_MARKER = r"const PN_RE = /^https:\/\/cdn\.holoviz\.org\/panel"
+_PYVIZ_MANAGER_MARKER = "hv-extension-comm"
 _installed_formatters: weakref.WeakKeyDictionary[Any, tuple[Callable[..., Any], Any]] = (
     weakref.WeakKeyDictionary()
 )
+
+
+def _strip_marked_panel_fallback(
+    msg: dict[str, Any], content: dict[str, Any]
+) -> dict[str, Any] | None:
+    metadata = content.get("metadata")
+    if not isinstance(metadata, dict) or not metadata.get(_PANEL_FALLBACK_METADATA):
+        return None
+    filtered_metadata = dict(metadata)
+    filtered_metadata.pop(_PANEL_FALLBACK_METADATA, None)
+    return {**msg, "content": {**content, "metadata": filtered_metadata}}
+
+
+def _is_panel_browser_info_output(content: dict[str, Any]) -> bool:
+    metadata = content.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    exec_metadata = metadata.get(_PANEL_EXEC_MIME)
+    if not isinstance(exec_metadata, dict):
+        return False
+    root_id = exec_metadata.get("id")
+    if not isinstance(root_id, str):
+        return False
+
+    state_module = sys.modules.get("panel.io.state")
+    panel_state = getattr(state_module, "state", None)
+    views = getattr(panel_state, "_views", None)
+    if not isinstance(views, dict):
+        return False
+    view = views.get(root_id)
+    return (
+        isinstance(view, tuple)
+        and len(view) > 0
+        and view[0] is getattr(panel_state, "_browser", None)
+    )
+
+
+def _without_legacy_panel_load(
+    msg: dict[str, Any], content: dict[str, Any], data: dict[str, Any]
+) -> dict[str, Any] | None:
+    filtered_data = dict(data)
+    bootstrap = filtered_data.pop(_PANEL_LOAD_MIME)
+    if filtered_data.get("application/javascript") == bootstrap:
+        filtered_data.pop("application/javascript")
+    if not filtered_data:
+        return None
+
+    filtered_content = dict(content)
+    filtered_content["data"] = filtered_data
+    metadata = content.get("metadata")
+    if isinstance(metadata, dict) and _PANEL_LOAD_MIME in metadata:
+        filtered_metadata = dict(metadata)
+        filtered_metadata.pop(_PANEL_LOAD_MIME, None)
+        filtered_content["metadata"] = filtered_metadata
+    return {**msg, "content": filtered_content}
+
+
+class _PanelBootstrapFilter:
+    """Suppress only the bootstrap outputs emitted by ``pn.extension()``.
+
+    HoloViews shares Panel's legacy load/exec MIME names. The filter therefore
+    recognizes Panel's autoloader, suppresses only the immediately following
+    PyViz manager payload, and resolves the hidden browser-info output through
+    Panel's own view registry. Other HoloViews and Panel outputs pass through.
+    """
+
+    _nteract_installed = True
+    _nteract_panel_bootstrap_filter = True
+
+    def __init__(self) -> None:
+        self._awaiting_pyviz_manager = False
+
+    def __call__(self, msg: dict[str, Any]) -> dict[str, Any] | None:
+        content = msg.get("content")
+        if not isinstance(content, dict):
+            return msg
+        data = content.get("data")
+        if not isinstance(data, dict):
+            return msg
+        fallback = _strip_marked_panel_fallback(msg, content)
+        if fallback is not None:
+            return fallback
+        if _PANEL_EXEC_MIME in data:
+            if _is_panel_browser_info_output(content):
+                return None
+            return msg
+        if _PANEL_LOAD_MIME not in data:
+            return msg
+
+        code = data.get(_PANEL_LOAD_MIME)
+        is_panel_autoload = isinstance(code, str) and _PANEL_AUTOLOAD_MARKER in code
+        is_panel_manager = (
+            self._awaiting_pyviz_manager and isinstance(code, str) and _PYVIZ_MANAGER_MARKER in code
+        )
+        self._awaiting_pyviz_manager = is_panel_autoload
+        if not is_panel_autoload and not is_panel_manager:
+            return msg
+        return _without_legacy_panel_load(msg, content, data)
+
+
+def _install_bootstrap_filter(ip: Any) -> None:
+    for publisher in (getattr(ip, "display_pub", None), getattr(ip, "displayhook", None)):
+        if publisher is None:
+            continue
+        hooks = list(getattr(publisher, "_hooks", []))
+        if any(getattr(hook, "_nteract_panel_bootstrap_filter", False) for hook in hooks):
+            continue
+        register = getattr(publisher, "register_hook", None)
+        if register is not None:
+            register(_PanelBootstrapFilter())
+
+
+def _uninstall_bootstrap_filter(ip: Any) -> None:
+    for publisher in (getattr(ip, "display_pub", None), getattr(ip, "displayhook", None)):
+        if publisher is None:
+            continue
+        unregister = getattr(publisher, "unregister_hook", None)
+        if unregister is None:
+            continue
+        for hook in list(getattr(publisher, "_hooks", [])):
+            if getattr(hook, "_nteract_panel_bootstrap_filter", False):
+                unregister(hook)
 
 
 def _panel_extension_loaded() -> bool:
@@ -211,15 +338,28 @@ def _fallback_mimebundle(viewable: Any, fallback: Callable[[Any], Any] | None) -
     return method() if method is not None else None
 
 
+def _mark_panel_fallback(bundle: Any) -> Any:
+    if bundle is None:
+        return None
+    if isinstance(bundle, tuple):
+        data, metadata = bundle
+    else:
+        data, metadata = bundle, {}
+    marked_metadata = dict(metadata or {})
+    marked_metadata[_PANEL_FALLBACK_METADATA] = True
+    return data, marked_metadata
+
+
 def _format_panel(viewable: Any, fallback: Callable[[Any], Any] | None) -> Any:
     try:
         return _native_panel_mimebundle(viewable)
     except Exception as exc:  # noqa: BLE001
         log.warning("native Panel document session failed; using Panel fallback: %s", exc)
-        return _fallback_mimebundle(viewable, fallback)
+        return _mark_panel_fallback(_fallback_mimebundle(viewable, fallback))
 
 
 def install(ip: Any) -> None:
+    _install_bootstrap_filter(ip)
     formatter = ip.display_formatter.mimebundle_formatter
     if formatter in _installed_formatters:
         return
@@ -235,6 +375,7 @@ def install(ip: Any) -> None:
 
 
 def uninstall(ip: Any) -> None:
+    _uninstall_bootstrap_filter(ip)
     formatter = ip.display_formatter.mimebundle_formatter
     installed = _installed_formatters.pop(formatter, None)
     if installed is not None:

@@ -616,7 +616,9 @@ mod tests {
         assert!(json.contains("comm_id"));
 
         let parsed: NotebookBroadcast = serde_json::from_str(&json).unwrap();
-        let NotebookBroadcast::Comm { msg_type, .. } = parsed;
+        let NotebookBroadcast::Comm { msg_type, .. } = parsed else {
+            panic!("expected comm broadcast");
+        };
         assert_eq!(msg_type, "comm_msg");
     }
 }
