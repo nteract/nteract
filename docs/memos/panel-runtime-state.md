@@ -1,8 +1,9 @@
 # Bokeh Document Sessions for Panel
 
-Status: Active design memo. The target is a generic Bokeh document-session
-runtime with a thin Panel formatter adapter. The existing static Panel renderer
-remains the compatibility path until the session runtime is complete.
+Status: Implemented architecture with follow-up validation work. The runtime is
+a generic Bokeh document-session system with a thin Panel formatter adapter.
+Panel's static notebook representation remains available only as a marked
+formatter fallback; it is not the live-session transport.
 
 ## Goal
 
@@ -119,22 +120,28 @@ The structured payload is:
   "root_ids": ["p1001"],
   "resources": {
     "javascript": [],
-    "stylesheets": []
+    "stylesheets": [],
+    "javascript_modules": [],
+    "module_exports": {}
   },
   "buffers": []
 }
 ```
 
 `document` is Bokeh document JSON, not generated HTML. `root_ids` identifies
-which document roots should mount. Resource entries are explicit URLs or blob
-references with optional hashes; they are not script tags hidden in an HTML
-string. Buffer entries map Bokeh buffer ids to Jupyter buffer indexes for the
-initial hop and to content references after daemon ingestion.
+which document roots should mount. Classic JavaScript and stylesheet entries
+are explicit URLs or typed inline source; JavaScript modules and module exports
+are separate typed fields. They are not script tags hidden in an HTML string.
+Buffer entries map Bokeh buffer ids to Jupyter buffer indexes for the initial
+hop and to content references after daemon ingestion.
 
-The formatter should return no Panel `text/html`, `application/javascript`, or
-HoloViews exec/load markers on this path. A rendering failure falls back to
-Panel's existing MIME representation rather than publishing a half-open
-session.
+The formatter returns no Panel `text/html`, `application/javascript`, or
+HoloViews exec/load markers on the native path. The launcher also filters the
+legacy HoloViews load/exec outputs that `pn.extension()` publishes, because the
+session manifest is the resource authority and a second PyViz bootstrap can
+replace the frame's Bokeh runtime. If native session construction fails, the
+formatter marks Panel's existing MIME representation as an authorized fallback;
+the filter removes that internal marker and lets the legacy output through.
 
 The kernel mints `session_id` because it owns the live document. The daemon
 associates that id with `output_id`, `cell_id`, and `execution_id` when the
@@ -216,15 +223,25 @@ BokehJS view
   -> launcher applies patch with an origin setter
   -> Panel updates Parameters and runs Python callbacks
   -> launcher collects derived Bokeh events and callback output
-  -> launcher returns accepted + derived patches and the new revision
-  -> daemon publishes a typed BokehSessionPatch event
+  -> launcher returns a correlated status/revision/output acknowledgement
+  -> launcher publishes the canonical revision as nteract_bokeh_event
+  -> daemon persists and broadcasts a typed BokehSessionPatch event
   -> mounted peers apply the ordered patch transaction
 ```
 
-The transaction contains the original client patch and any derived kernel
-patches in order. The origin browser skips the original patch because its local
-document already contains that mutation, then applies the derived patch. Other
-browsers apply both.
+The canonical transaction can contain a replayable client patch, a derived
+kernel patch, or a replacement checkpoint. The origin browser skips the client
+patch because its local document already contains that mutation, then applies
+the derived patch. Other browsers apply both.
+
+Bokeh sends browser events and lifecycle signals as `MessageSent` patch events.
+The launcher applies the full inbound patch to the Python document so Panel and
+Bokeh callbacks still run, but removes `MessageSent` events from the replayable
+client patch before persistence and broadcast. A button click that runs a
+callback without mutating the document therefore produces a canonical no-op
+revision: it has identity and ordering but no patch payload. The browser filters
+the Bokeh `document_ready` lifecycle event before transport because replaying it
+after every remount would create an endless sequence of new revisions.
 
 Python applies the client patch with a transaction-specific setter token. The
 session's document-change receiver ignores events carrying that setter. Changes
@@ -250,13 +267,14 @@ Bokeh patches can contain structural model changes, so last-writer-wins at the
 JSON envelope level would be unsafe. The runtime returns a stale-revision result
 and the browser resynchronizes from checkpoint plus tail.
 
-Each browser view permits at most one in-flight patch request per session.
-Additional local Bokeh events are combined into a bounded pending batch using
-Bokeh's event-combination semantics. On a stale response, the view discards
-that pending batch, restores authoritative state, and resumes accepting user
-input. It does not automatically replay an opaque structural patch. This
-single-flight rule moves backpressure to the source and prevents a slider flood
-from turning stale-resync into a retry loop.
+Each browser view permits at most one in-flight patch request per session and
+debounces local document events for 50 milliseconds before serializing one
+Bokeh patch. Events arriving during the request remain pending for the next
+transaction. On a stale response, the view restores authoritative state rather
+than automatically replaying an opaque structural patch. The current local
+pending list has no independent count or byte limit; sustained-input
+benchmarking must establish whether Bokeh-side event combination or an explicit
+bound is required.
 
 ## Runtime State
 
@@ -279,6 +297,7 @@ bokeh_sessions/{session_id}/
     revision
     content_ref
   patch_tail[]
+    base_revision
     revision
     content_ref
 ```
@@ -303,22 +322,20 @@ The daemon stores each checkpoint and patch payload in the content-addressed
 blob store. RuntimeStateDoc contains only typed metadata, hashes, sizes, media
 types, revisions, and ordered references.
 
-The initial policy is:
+The implemented policy is:
 
-1. Broadcast an accepted patch immediately after kernel validation.
-2. Blob-store the canonical transaction and append its small reference to a
-   coalesced patch-tail write.
-3. Ask the kernel for a checkpoint after a short quiescence window, or earlier
-   when the tail crosses a count or byte threshold.
-4. Atomically advance the checkpoint ref and remove covered tail refs in one
+1. Blob-store every canonical revision, including an event-only no-op revision,
+   and append its reference to RuntimeStateDoc before broadcasting it.
+2. Ask the kernel for a checkpoint when the tail reaches 32 revisions.
+3. Atomically advance the checkpoint ref and remove covered tail refs in one
    RuntimeStateDoc transaction.
-5. Keep both tail count and total referenced bytes bounded. Backpressure new
-   interactions rather than growing an unbounded replay log.
+4. Stop accepting another patch and force resynchronization if the tail reaches
+   the hard limit of 128 revisions before compaction catches up.
 
-The concrete quiescence and compaction thresholds should be benchmarked and
-kept configurable. Correctness does not depend on a particular number: a
-checkpoint at revision C plus the ordered tail C+1 through R reconstructs
-revision R.
+There is no byte threshold, quiescence checkpoint, or coalesced RuntimeStateDoc
+write yet. Those are possible performance refinements, not current guarantees.
+Correctness does not depend on a particular count: a checkpoint at revision C
+plus the ordered tail C+1 through R reconstructs revision R.
 
 Patch persistence and checkpoint work use a bounded visualization-state lane.
 Kernel lifecycle and execution completion remain on the separate reliable
@@ -338,10 +355,11 @@ not create a fake cell execution. RuntimeStateDoc permits output append after an
 execution reaches a terminal state, which is required because an interaction
 can happen long after the original display call completed.
 
-For asynchronous Python callbacks, the session registry preserves the same
-session and execution ownership when it emits `nteract_bokeh_event`. The daemon
-uses the RuntimeStateDoc association, not the event's Jupyter parent header, to
-route output.
+Asynchronous Python-origin document changes preserve session ordering through
+`nteract_bokeh_event`. Capturing and routing stdout, stderr, and exceptions from
+callbacks that run outside a browser patch shell request is not implemented
+yet. That follow-up must use the RuntimeStateDoc session-to-execution
+association rather than relying on a possibly unrelated Jupyter parent header.
 
 ## Frontend Renderer
 
@@ -387,12 +405,15 @@ include BokehJS core/widget bundles plus Panel custom-model assets needed by the
 rendered roots. Resource identity includes enough version and hash information
 to cache safely across outputs.
 
-The resource manifest admits:
+The current resource manifest admits:
 
-- HTTPS URLs allowed by the iframe CSP;
-- content-addressed blob references served by nteract;
-- explicitly typed inline package resources only when no URL or blob form is
-  available.
+- URLs allowed by the iframe CSP;
+- explicitly typed inline package resources;
+- JavaScript module URLs and their exported global names.
+
+Content-addressed resource blobs are a compatible future extension, but the
+implemented resource schema does not expose them yet. Document and patch binary
+buffers already use the blob store.
 
 It does not admit an opaque generated HTML document. Inline code remains kernel
 output and therefore runs only inside the existing isolated, non-same-origin
@@ -481,8 +502,8 @@ kernel loss. Checkpoint plus bounded tail is the replay record.
 ### Serialize the full document on every slider event
 
 Rejected as the steady-state path. It is simple but scales with document size
-per interaction. Live patches stay incremental; checkpoints are coalesced and
-compacted.
+per interaction. Live patches stay incremental; count-triggered checkpoints
+compact the replay tail.
 
 ## Guardrails
 
@@ -496,38 +517,59 @@ compacted.
 - No session reconnection across a kernel-id change.
 - No frontend-authored RuntimeStateDoc session mutation.
 
-## Implementation Slices
+## Implementation Status
 
-1. Add the launcher `BokehDocumentSession` registry, lazy Panel formatter, and
-   structured MIME with real Panel/Bokeh integration tests.
-2. Render the initial document JSON through BokehJS from explicit resources,
-   while retaining the existing static renderer as fallback.
-3. Add custom launcher shell handlers, typed runtime-agent requests/replies,
-   and a typed Bokeh session broadcast. Prove a slider and a linked callback
-   round trip without a Jupyter comm.
-4. Add RuntimeStateDoc session topology, blob-backed checkpoint plus bounded
-   tail, remount replay, and disconnected-state projection.
-5. Route callback stdout, stderr, and errors to the owning execution; add
-   browser tests for interaction, remount, restart, multi-view convergence,
-   and resource cleanup.
-6. Benchmark patch latency, checkpoint compaction, CRDT write rate, and large
-   binary documents. Use the results to set default coalescing thresholds.
-7. Draft the smallest upstream Panel or Bokeh API proposal supported by the
-   implementation evidence.
+Implemented and covered by focused tests:
 
-## Completion Criteria
+- launcher-owned `BokehDocumentSession` registry and lazy Panel formatter;
+- typed initial MIME, Bokeh resource closure, and binary buffer handoff;
+- isolated BokehJS document renderer without a PyViz comm manager;
+- custom shell request/reply handlers and canonical typed IOPub events;
+- RuntimeStateDoc session topology, blob-backed checkpoint and patch tail;
+- one in-flight browser transaction, ordered revision replay, and gap resync;
+- synchronous callback stdout, stderr, and errors routed to the owning
+  execution;
+- frozen state plus a disconnected overlay after kernel replacement.
 
-- `pn.widgets.FloatSlider()` renders from the structured session MIME.
-- Moving the slider updates its Python parameter without any comm message.
-- A Python callback can update another Panel object and every mounted browser
-  view receives the derived patch.
-- Callback stdout and exceptions appear on the owning cell.
-- Two browser views converge through ordered revisions.
-- An iframe remount restores the latest checkpoint plus tail without rerunning
-  user code.
-- Kernel restart freezes the latest state and shows disconnected status.
-- Patch tail and blob usage remain bounded under a sustained slider workload.
-- Existing ipywidget and static Bokeh/Panel output behavior is unchanged.
+Verified in the development browser with a Panel slider and linked callback:
+
+- initial native rendering;
+- a Python-side change producing a live derived browser patch and ordinary
+  notebook stdout;
+- full-page remount restoring the latest state without rerunning the cell;
+- kernel restart preserving the last state with a disconnected overlay;
+- rerunning the cell creating a new connected session.
+
+Remaining validation and follow-up work:
+
+- automate a real pointer-origin slider or button interaction through the
+  nested isolated frame and Bokeh shadow DOM;
+- prove two simultaneously mounted browser views converge;
+- capture output from asynchronous callbacks outside the patch shell request;
+- benchmark sustained event load, checkpoint latency, CRDT write rate, and
+  large binary documents;
+- use those measurements to decide on local event combination and byte-based
+  backpressure;
+- draft the smallest upstream Panel or Bokeh API proposal supported by the
+  implementation evidence.
+
+## Acceptance Criteria
+
+The initial implementation is acceptable when:
+
+- `pn.widgets.FloatSlider()` renders from the structured session MIME;
+- a browser patch updates its Python parameter without any comm message;
+- a Python callback can update another Panel object and the mounted browser
+  receives the derived patch;
+- synchronous callback stdout and exceptions appear on the owning cell;
+- an iframe remount restores the latest checkpoint plus tail without rerunning
+  user code;
+- kernel restart freezes the latest state and shows disconnected status;
+- RuntimeStateDoc enforces a finite patch-tail limit;
+- existing ipywidget and static Bokeh/Panel fallback behavior remains intact.
+
+Multi-view convergence, asynchronous callback output, and sustained-load
+measurements remain required before calling the runtime production-complete.
 
 ## Source Map
 
@@ -539,8 +581,18 @@ compacted.
 - PyViz comm callback capture and ACK behavior: `pyviz_comms/__init__.py`
 - nteract launcher formatter registration:
   `python/nteract-kernel-launcher/nteract_kernel_launcher/_bootstrap.py`
+- nteract Panel producer adapter and legacy-bootstrap filter:
+  `python/nteract-kernel-launcher/nteract_kernel_launcher/_panel.py`
+- nteract kernel-owned Bokeh document registry:
+  `python/nteract-kernel-launcher/nteract_kernel_launcher/_bokeh_session.py`
 - nteract kernel subclass:
   `python/nteract-kernel-launcher/nteract_kernel_launcher/app.py`
 - Jupyter message ingestion: `crates/runtimed/src/jupyter_kernel.rs`
+- typed persistence and canonical event ingestion:
+  `crates/runtimed/src/bokeh_session.rs`
 - runtime document schema and policy: `crates/runtime-doc/src/`
+- iframe host bridge:
+  `src/components/isolated/bokeh-session-bridge-manager.ts`
+- isolated BokehJS revision controller:
+  `src/isolated-renderer/bokeh-session-controller.ts`
 - isolated renderer plugin contract: `src/components/isolated/AGENTS.md`
