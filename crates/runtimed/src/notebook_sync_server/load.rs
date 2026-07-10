@@ -763,6 +763,11 @@ pub(crate) async fn materialize_initial_load(
         let _ = room.broadcasts.changed_tx.send(());
         // RuntimeStateDoc notification is automatic via with_doc heads check
 
+        // Give woken peer loops a scheduling turn to snapshot this batch before
+        // the source authors the next one. This preserves progressive delivery
+        // without waiting for, or becoming owned by, any particular peer.
+        tokio::task::yield_now().await;
+
         batch_num += 1;
         debug!(
             "[streaming-load] Batch {} ({} cells) in {:?}",
