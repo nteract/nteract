@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn detects_usable_nvidia_a100_with_per_device_memory() {
         let temp = tempfile::TempDir::new().unwrap();
-        add_pci_device(temp.path(), "0000:01:00.0", "0x030200", "0x10de");
+        add_pci_device(temp.path(), "0000-01-00.0", "0x030200", "0x10de");
 
         let devices = scan_linux_gpu_devices(temp.path()).unwrap();
         let accelerators = project_linux_accelerators(
@@ -364,8 +364,8 @@ mod tests {
     #[test]
     fn groups_identical_nvidia_gpus() {
         let temp = tempfile::TempDir::new().unwrap();
-        add_pci_device(temp.path(), "0000:01:00.0", "0x030200", "0x10de");
-        add_pci_device(temp.path(), "0000:02:00.0", "0x030200", "0x10de");
+        add_pci_device(temp.path(), "0000-01-00.0", "0x030200", "0x10de");
+        add_pci_device(temp.path(), "0000-02-00.0", "0x030200", "0x10de");
 
         let devices = scan_linux_gpu_devices(temp.path()).unwrap();
         let accelerators = project_linux_accelerators(
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn detected_nvidia_probe_failure_is_not_ready_with_actionable_diagnostic() {
         let temp = tempfile::TempDir::new().unwrap();
-        add_pci_device(temp.path(), "0000:01:00.0", "0x030200", "0x10de");
+        add_pci_device(temp.path(), "0000-01-00.0", "0x030200", "0x10de");
 
         let devices = scan_linux_gpu_devices(temp.path()).unwrap();
         let accelerators = project_linux_accelerators(&devices, NvidiaProbe::Failed);
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn successful_linux_scan_without_gpu_is_known_none() {
         let temp = tempfile::TempDir::new().unwrap();
-        add_pci_device(temp.path(), "0000:00:1f.6", "0x020000", "0x8086");
+        add_pci_device(temp.path(), "0000-00-1f.6", "0x020000", "0x8086");
 
         let devices = scan_linux_gpu_devices(temp.path()).unwrap();
 
@@ -416,7 +416,7 @@ mod tests {
             None
         );
 
-        let unreadable_device = temp.path().join("0000:01:00.0");
+        let unreadable_device = temp.path().join("0000-01-00.0");
         std::fs::create_dir_all(unreadable_device).unwrap();
         assert_eq!(scan_linux_gpu_devices(temp.path()), None);
     }
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn non_nvidia_gpu_stays_structured_with_unknown_readiness() {
         let temp = tempfile::TempDir::new().unwrap();
-        add_pci_device(temp.path(), "0000:03:00.0", "0x030000", "0x1002");
+        add_pci_device(temp.path(), "0000-03-00.0", "0x030000", "0x1002");
 
         let devices = scan_linux_gpu_devices(temp.path()).unwrap();
         let accelerators = project_linux_accelerators(&devices, NvidiaProbe::NotRun);
