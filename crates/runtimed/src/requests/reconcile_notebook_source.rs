@@ -4,7 +4,6 @@
 //! This handler is the only request surface that may name a winner and restore
 //! interactive capabilities.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use notebook_protocol::protocol::{
@@ -90,6 +89,7 @@ async fn save_recovered_as(
         false,
         Some(target.to_string_lossy().into_owned()),
         source_generation,
+        None,
     )
     .await
     {
@@ -103,7 +103,6 @@ async fn save_recovered_as(
             exported_heads,
             save_sequence,
         } => {
-            refresh_primary_disk_baseline(room, Path::new(&path)).await;
             finish_reconciliation(
                 room,
                 operation,
@@ -143,10 +142,33 @@ async fn keep_recovered(
     source_generation: u64,
 ) -> NotebookResponse {
     let operation = SourceReconciliationOperation::KeepRecoveredAndOverwriteSource;
-    if room.file_binding.path().await.is_none() {
+    let Some(bound_path) = room.file_binding.path().await else {
         return blocked(operation, SourceReconciliationBlockedReason::NoBoundSource);
-    }
-    match save_notebook::handle_reconciled(room, daemon, false, None, source_generation).await {
+    };
+    let conflict_revision = match tokio::fs::read(&bound_path).await {
+        Ok(bytes) => source_fingerprint(&bytes),
+        Err(error) => {
+            return blocked(
+                operation,
+                SourceReconciliationBlockedReason::Io {
+                    message: format!(
+                        "failed to read source revision selected for overwrite {}: {error}",
+                        bound_path.display()
+                    ),
+                },
+            );
+        }
+    };
+    match save_notebook::handle_reconciled(
+        room,
+        daemon,
+        false,
+        None,
+        source_generation,
+        Some(conflict_revision),
+    )
+    .await
+    {
         NotebookResponse::NotebookSaved {
             path,
             exported_heads,
@@ -339,8 +361,15 @@ async fn archive_and_reload_source(
             room.id, warning
         );
     }
-    room.persistence.note_disk_content(&applied.source_content);
-    *room.persistence.last_save_sources.write().await = applied.loaded_sources.clone();
+    let _ = room
+        .persistence
+        .note_primary_save_baseline(
+            save_sequence,
+            applied.loaded_sources.clone(),
+            &applied.source_content,
+            false,
+        )
+        .await;
     let exported_heads = applied
         .heads
         .iter()
@@ -495,20 +524,6 @@ async fn finish_reconciliation(
         save_sequence,
         source_generation,
     }
-}
-
-async fn refresh_primary_disk_baseline(room: &NotebookRoom, path: &Path) {
-    if let Ok(bytes) = tokio::fs::read(path).await {
-        room.persistence.note_disk_content(&bytes);
-    }
-    let sources = {
-        let doc = room.doc.read().await;
-        doc.get_cells()
-            .into_iter()
-            .map(|cell| (cell.id, cell.source))
-            .collect()
-    };
-    *room.persistence.last_save_sources.write().await = sources;
 }
 
 fn map_save_block(reason: SaveBlockedReason) -> SourceReconciliationBlockedReason {

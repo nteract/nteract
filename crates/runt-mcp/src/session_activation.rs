@@ -34,6 +34,11 @@ struct InFlightActivation {
 struct ActivationState {
     generation: u64,
     current_target: Option<CanonicalNotebookTarget>,
+    /// Identity of the session actually installed in the active slot. This is
+    /// deliberately independent from `current_target`: a failed or cancelled
+    /// attempt must not invalidate the healthy session it was trying to
+    /// replace.
+    installed: Option<(u64, CanonicalNotebookTarget)>,
     in_flight: HashMap<CanonicalNotebookTarget, InFlightActivation>,
 }
 
@@ -111,11 +116,12 @@ impl SessionActivation {
 
     pub fn is_current_identity(&self, generation: u64, target: &str) -> bool {
         let state = self.lock_state();
-        state.generation == generation
-            && state
-                .current_target
-                .as_ref()
-                .is_some_and(|current| current.as_str() == target)
+        state
+            .installed
+            .as_ref()
+            .is_some_and(|(installed_generation, installed_target)| {
+                *installed_generation == generation && installed_target.as_str() == target
+            })
     }
 
     pub fn has_current_local_path_flight(&self) -> bool {
@@ -141,6 +147,19 @@ impl ActivationLease {
 
     pub fn is_current(&self) -> bool {
         self.owner.is_current(self.generation, &self.target)
+    }
+
+    /// Commit this activation identity as the session currently installed in
+    /// the MCP slot. The attempt must still be current at this exact point.
+    pub fn mark_installed(&self) -> bool {
+        let mut state = self.owner.lock_state();
+        if state.generation != self.generation
+            || state.current_target.as_ref() != Some(&self.target)
+        {
+            return false;
+        }
+        state.installed = Some((self.generation, self.target.clone()));
+        true
     }
 
     /// Add another canonical locator for this same in-flight room.
@@ -311,6 +330,23 @@ mod tests {
         assert_eq!(second_a.generation(), 3);
         assert!(!first_a.is_current());
         assert!(second_a.is_current());
+    }
+
+    #[test]
+    fn failed_replacement_attempt_does_not_supersede_installed_identity() {
+        let owner = Arc::new(SessionActivation::default());
+        let ActivationTicket::Leader(mut installed) = owner.begin(target("local:id:a")) else {
+            panic!("first activation must lead");
+        };
+        assert!(installed.mark_installed());
+        installed.complete(&success("connected a"));
+
+        let ActivationTicket::Leader(replacement) = owner.begin(target("local:id:b")) else {
+            panic!("replacement activation must lead");
+        };
+        drop(replacement);
+
+        assert!(owner.is_current_identity(installed.generation(), installed.target().as_str()));
     }
 
     #[tokio::test]

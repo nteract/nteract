@@ -633,45 +633,27 @@ async fn install_activated_session(
     }
 
     let session_key = session.session_key();
-    let mut previous = {
+    let previous = {
         let mut guard = server.session.write().await;
         if !lease.is_current() {
             return Err(superseded_result(lease));
         }
-        guard.replace(session)
+        let previous = guard.replace(session);
+        if !lease.mark_installed() {
+            let stale = guard.take();
+            *guard = previous;
+            drop(stale);
+            return Err(superseded_result(lease));
+        }
+        previous
     };
 
-    // A different target may advance immediately after publication. If our
-    // session is still active, restore the prior active session. If a newer
-    // activation already installed, leave it alone and park the prior session.
+    // A different target may begin immediately after publication. This
+    // session remains the installed, usable identity until that newer attempt
+    // actually publishes; failed attempts never poison the active slot.
     if !lease.is_current() {
-        let restored_previous = {
-            let mut guard = server.session.write().await;
-            if guard
-                .as_ref()
-                .is_some_and(|current| current.activation_generation == lease.generation())
-            {
-                let stale = guard.take();
-                *guard = previous.take();
-                drop(stale);
-                true
-            } else {
-                false
-            }
-        };
-        if !restored_previous {
-            if let Some(old) = previous.take() {
-                let old_key = old.session_key();
-                let active_key = server
-                    .session
-                    .read()
-                    .await
-                    .as_ref()
-                    .map(NotebookSession::session_key);
-                if active_key.as_deref() != Some(old_key.as_str()) {
-                    park_session(server, old).await;
-                }
-            }
+        if let Some(old) = previous {
+            park_session(server, old).await;
         }
         return Err(superseded_result(lease));
     }
@@ -848,26 +830,49 @@ pub async fn disconnect_notebook(
                 ));
             }
 
-            // Check if it's the active session.
-            let is_active = {
-                let guard = server.session.read().await;
-                guard.as_ref().is_some_and(|s| s.notebook_id == id)
+            let matches_pending_rejoin = server
+                .last_session_drop
+                .read()
+                .await
+                .as_ref()
+                .is_some_and(|drop| {
+                    drop.notebook_id == id && matches!(drop.reason, SessionDropReason::Disconnected)
+                });
+            let (old, cancelled_pending_rejoin) = {
+                let mut guard = server.session.write().await;
+                let is_active = guard
+                    .as_ref()
+                    .is_some_and(|session| session.notebook_id == id);
+                if is_active {
+                    server.advance_session_intent_epoch();
+                    (guard.take(), false)
+                } else if guard.is_none() && matches_pending_rejoin {
+                    server.advance_session_intent_epoch();
+                    (None, true)
+                } else {
+                    (None, false)
+                }
             };
 
-            if is_active {
-                let old = server.session.write().await.take();
-                if let Some(session) = old {
-                    *server.last_session_drop.write().await = Some(SessionDropInfo {
-                        reason: SessionDropReason::Disconnected,
-                        notebook_id: session.notebook_id.clone(),
-                        notebook_path: session.notebook_path.clone(),
-                        rejoin_target: Some(session.rejoin_target()),
-                    });
-                    tracing::info!("[mcp] Disconnecting active session {}", id);
-                    drop(session);
-                }
+            if let Some(session) = old {
+                *server.last_session_drop.write().await = Some(SessionDropInfo {
+                    reason: SessionDropReason::Disconnected,
+                    notebook_id: session.notebook_id.clone(),
+                    notebook_path: session.notebook_path.clone(),
+                    rejoin_target: Some(session.rejoin_target()),
+                });
+                tracing::info!("[mcp] Disconnecting active session {}", id);
+                drop(session);
                 return tool_success(&format!(
                     "Disconnected active session {}. No active session now; \
+                     use connect_notebook or create_notebook to start a new one.",
+                    id
+                ));
+            }
+            if cancelled_pending_rejoin {
+                tracing::info!("[mcp] Cancelled automatic rejoin for session {}", id);
+                return tool_success(&format!(
+                    "Cancelled automatic reconnect for session {}. No active session now; \
                      use connect_notebook or create_notebook to start a new one.",
                     id
                 ));
@@ -881,7 +886,11 @@ pub async fn disconnect_notebook(
         }
         None => {
             // No ID specified — disconnect the active session.
-            let old = server.session.write().await.take();
+            let old = {
+                let mut guard = server.session.write().await;
+                server.advance_session_intent_epoch();
+                guard.take()
+            };
             match old {
                 Some(session) => {
                     let notebook_id = session.notebook_id.clone();
@@ -899,10 +908,25 @@ pub async fn disconnect_notebook(
                         notebook_id
                     ))
                 }
-                None => tool_error(
-                    "No active session to disconnect. \
-                     Pass notebook_id to disconnect a specific parked session.",
-                ),
+                None => {
+                    let pending_rejoin = server
+                        .last_session_drop
+                        .read()
+                        .await
+                        .as_ref()
+                        .is_some_and(|drop| matches!(drop.reason, SessionDropReason::Disconnected));
+                    if pending_rejoin {
+                        tool_success(
+                            "Cancelled automatic reconnect. No active session now; \
+                             use connect_notebook or create_notebook to start a new one.",
+                        )
+                    } else {
+                        tool_error(
+                            "No active session to disconnect. \
+                             Pass notebook_id to disconnect a specific parked session.",
+                        )
+                    }
+                }
             }
         }
     }
@@ -1562,8 +1586,8 @@ pub async fn save_notebook(
     let path = arg_str(request, "path").map(resolve_path);
 
     let access = require_session_access!(server, DocumentMutation);
-    let handle = access.handle;
-    let notebook_id = access.notebook_id;
+    let handle = access.handle.clone();
+    let notebook_id = access.notebook_id.clone();
 
     // The daemon decides whether a path is required (untitled rooms with
     // no existing path field return SaveError with a clear message). We no
@@ -1575,13 +1599,25 @@ pub async fn save_notebook(
         tracing::warn!("confirm_sync failed before save: {e}");
     }
 
-    match handle
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
+
+    let response = handle
         .send_request(NotebookRequest::SaveNotebook {
             format_cells: false,
             path: path.clone(),
         })
-        .await
-    {
+        .await;
+
+    // The daemon may have committed the old room's file while this request
+    // was in flight, but a later activation must never let that completion
+    // rewrite the new active session's rejoin path or masquerade as its save.
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
+
+    match response {
         Ok(response @ (NotebookResponse::NotebookSaved { .. }
         | NotebookResponse::NotebookAlreadyCurrent { .. })) => {
             let (saved_path, outcome, exported_heads, save_sequence) = match response {
@@ -1597,12 +1633,14 @@ pub async fn save_notebook(
                 } => (path, "already_current", exported_heads, save_sequence),
                 _ => unreachable!(),
             };
-            // Update session's notebook_path so auto-rejoin uses connect_open
+            // Update the rejoin path only if this exact session still owns the
+            // active slot. Validation and mutation share one write lock so a
+            // newer activation cannot slip between them.
+            if let Err(error) = server
+                .update_session_path_if_current(&access, saved_path.clone())
+                .await
             {
-                let mut guard = server.session.write().await;
-                if let Some(ref mut s) = *guard {
-                    s.notebook_path = Some(saved_path.clone());
-                }
+                return super::session_access_error(error);
             }
 
             let result = serde_json::json!({
@@ -1899,6 +1937,41 @@ mod tests {
             serde_json::from_str(text).expect("session response should be JSON");
         assert_eq!(response["notebook_id"], "daemon-only");
         assert!(response.get("resources").is_none());
+    }
+
+    #[tokio::test]
+    async fn explicit_disconnect_cancels_pending_automatic_rejoin() {
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
+        let notebook_id = uuid::Uuid::new_v4().to_string();
+        *server.last_session_drop.write().await = Some(SessionDropInfo {
+            reason: SessionDropReason::Disconnected,
+            notebook_id: notebook_id.clone(),
+            notebook_path: Some("/tmp/rejoin.ipynb".to_string()),
+            rejoin_target: Some("/tmp/rejoin.ipynb".to_string()),
+        });
+        let before = server
+            .session_intent_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
+
+        let result = disconnect_notebook(
+            &server,
+            &make_request(
+                "disconnect_notebook",
+                serde_json::json!({"notebook_id": notebook_id}),
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.is_error, Some(false));
+        assert!(first_text(&result).contains("Cancelled automatic reconnect"));
+        assert!(
+            server
+                .session_intent_epoch
+                .load(std::sync::atomic::Ordering::Acquire)
+                > before
+        );
+        assert!(server.session.read().await.is_none());
     }
 
     #[tokio::test]

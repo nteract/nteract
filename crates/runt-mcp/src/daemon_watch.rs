@@ -17,6 +17,7 @@
 //! call. See #2000.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -174,6 +175,7 @@ pub async fn watch(
     peer_label: Arc<RwLock<String>>,
     last_session_drop: Arc<RwLock<Option<SessionDropInfo>>>,
     parked_sessions: Arc<RwLock<HashMap<String, NotebookSession>>>,
+    session_intent_epoch: Arc<AtomicU64>,
 ) -> i32 {
     let mut rx = daemon_conn.subscribe();
     let mut initial_target: Option<String> = std::env::var(REJOIN_ENV_VAR).ok();
@@ -192,6 +194,7 @@ pub async fn watch(
     // the next Connected/Upgraded event can rejoin without requiring an
     // initial_target from the proxy.
     let mut disconnect_target: Option<String> = None;
+    let mut observed_intent_epoch = session_intent_epoch.load(Ordering::Acquire);
 
     loop {
         let event = match rx.recv().await {
@@ -213,6 +216,19 @@ pub async fn watch(
                 guard.as_ref().is_some_and(|session| !session.is_hosted()),
             )
         };
+
+        let current_intent_epoch = session_intent_epoch.load(Ordering::Acquire);
+        if current_intent_epoch != observed_intent_epoch {
+            info!(
+                previous_epoch = observed_intent_epoch,
+                current_epoch = current_intent_epoch,
+                "Clearing automatic rejoin state after explicit session intent"
+            );
+            observed_intent_epoch = current_intent_epoch;
+            initial_target = None;
+            disconnect_target = None;
+            was_disconnected = false;
+        }
 
         // Once a tool call (connect_notebook / create_notebook) has
         // established a live session, the proxy's initial handoff target
@@ -261,6 +277,8 @@ pub async fn watch(
                     &peer_label,
                     &last_session_drop,
                     Some(target),
+                    &session_intent_epoch,
+                    observed_intent_epoch,
                 )
                 .await;
                 // Only clear the disconnect flag and consume the initial
@@ -282,6 +300,8 @@ pub async fn watch(
                     &peer_label,
                     &last_session_drop,
                     None,
+                    &session_intent_epoch,
+                    observed_intent_epoch,
                 )
                 .await;
                 if ok {
@@ -296,14 +316,14 @@ pub async fn watch(
                 // to come back. Save the notebook target so we can rejoin
                 // when the daemon reconnects.
                 let old_session = {
-                    let guard = session.read().await;
-                    guard.as_ref().and_then(|s| {
-                        if s.is_hosted() {
-                            None
-                        } else {
-                            Some((s.notebook_id.clone(), s.notebook_path.clone()))
-                        }
-                    })
+                    let mut guard = session.write().await;
+                    if guard.as_ref().is_some_and(NotebookSession::is_hosted) {
+                        None
+                    } else {
+                        guard.take().map(|session| {
+                            (session.notebook_id.clone(), session.notebook_path.clone())
+                        })
+                    }
                 };
                 if let Some((notebook_id, notebook_path)) = old_session {
                     info!(
@@ -320,7 +340,6 @@ pub async fn watch(
                         notebook_path: notebook_path.clone(),
                         rejoin_target: disconnect_target.clone(),
                     });
-                    *session.write().await = None;
                 }
                 // Also clear parked local sessions — their DocHandles are dead
                 // too. Hosted parked sessions do not depend on this daemon.
@@ -378,7 +397,12 @@ async fn rejoin(
     peer_label: &Arc<RwLock<String>>,
     last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
     override_target: Option<String>,
+    session_intent_epoch: &Arc<AtomicU64>,
+    expected_intent_epoch: u64,
 ) -> bool {
+    if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
+        return true;
+    }
     if let Some(target) = override_target.as_deref() {
         match cloud::parse_connect_target(Some(target), None, None, None) {
             Ok(NotebookTarget::Hosted {
@@ -386,8 +410,16 @@ async fn rejoin(
                 notebook_id,
                 ..
             }) => {
-                return rejoin_hosted(session, peer_label, last_session_drop, domain, notebook_id)
-                    .await;
+                return rejoin_hosted(
+                    session,
+                    peer_label,
+                    last_session_drop,
+                    domain,
+                    notebook_id,
+                    session_intent_epoch,
+                    expected_intent_epoch,
+                )
+                .await;
             }
             Ok(NotebookTarget::LocalPath(_)) | Ok(NotebookTarget::LocalNotebookId(_)) => {}
             Err(e) if target.starts_with("http://") || target.starts_with("https://") => {
@@ -398,7 +430,6 @@ async fn rejoin(
                     notebook_path: None,
                     rejoin_target: Some(target.to_string()),
                 });
-                *session.write().await = None;
                 return false;
             }
             Err(_) => {}
@@ -432,6 +463,10 @@ async fn rejoin(
     let label = peer_label.read().await.clone();
 
     for attempt in 0..=REJOIN_MAX_RETRIES {
+        if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
+            info!("Automatic notebook rejoin cancelled by explicit session intent");
+            return true;
+        }
         let use_path = notebook_path
             .as_ref()
             .filter(|p| std::path::Path::new(p.as_str()).exists());
@@ -499,6 +534,10 @@ async fn rejoin(
                 // an explicit tool activation may carry retained projection
                 // heads/generation that a background rejoin must not erase.
                 let mut guard = session.write().await;
+                if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
+                    info!("Dropping automatic rejoin superseded by explicit disconnect");
+                    return true;
+                }
                 if let Some(existing) = guard.as_ref() {
                     info!(
                         "Rejoin target {} superseded by active session {}; \
@@ -512,6 +551,10 @@ async fn rejoin(
                 return true;
             }
             Err(e) => {
+                if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
+                    info!("Automatic notebook rejoin cancelled by explicit session intent");
+                    return true;
+                }
                 // A daemon refusal (the notebook is gone) is definitive — the
                 // handshake completed and the daemon said no. Don't burn retries
                 // on it; clear the session as Evicted with a recovery hint. This
@@ -529,7 +572,6 @@ async fn rejoin(
                             notebook_path.clone().unwrap_or_else(|| notebook_id.clone()),
                         ),
                     });
-                    *session.write().await = None;
                     return true;
                 }
                 if attempt < REJOIN_MAX_RETRIES {
@@ -551,7 +593,6 @@ async fn rejoin(
                             notebook_path.clone().unwrap_or_else(|| notebook_id.clone()),
                         ),
                     });
-                    *session.write().await = None;
                 }
             }
         }
@@ -566,6 +607,8 @@ async fn rejoin_hosted(
     last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
     domain: String,
     notebook_id: String,
+    session_intent_epoch: &Arc<AtomicU64>,
+    expected_intent_epoch: u64,
 ) -> bool {
     let target = cloud::hosted_notebook_url(&domain, &notebook_id);
     let registry = match cloud::CloudRegistry::load_default() {
@@ -595,6 +638,10 @@ async fn rejoin_hosted(
     };
 
     for attempt in 0..=REJOIN_MAX_RETRIES {
+        if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
+            info!("Automatic hosted rejoin cancelled by explicit session intent");
+            return true;
+        }
         match cloud::connect_hosted_notebook(&domain_config, &notebook_id).await {
             Ok(result) => {
                 let label = peer_label.read().await.clone();
@@ -607,6 +654,10 @@ async fn rejoin_hosted(
                     domain_config.base_url.clone(),
                 );
                 let mut guard = session.write().await;
+                if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
+                    info!("Dropping hosted rejoin superseded by explicit disconnect");
+                    return true;
+                }
                 if let Some(existing) = guard.as_ref() {
                     info!(
                         "Hosted rejoin target {target} superseded by active session {}; \
@@ -620,6 +671,10 @@ async fn rejoin_hosted(
                 return true;
             }
             Err(e) => {
+                if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
+                    info!("Automatic hosted rejoin cancelled by explicit session intent");
+                    return true;
+                }
                 if attempt < REJOIN_MAX_RETRIES {
                     warn!(
                         "Hosted rejoin attempt {} failed (retrying in {}s): {e}",
@@ -635,7 +690,6 @@ async fn rejoin_hosted(
                         notebook_path: None,
                         rejoin_target: Some(target.clone()),
                     });
-                    *session.write().await = None;
                 }
             }
         }

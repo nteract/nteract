@@ -8,9 +8,9 @@ use tracing::warn;
 use crate::daemon::Daemon;
 use crate::notebook_sync_server::{
     canonical_target_path, finalize_untitled_promotion, format_notebook_cells,
-    persist_notebook_bytes, release_autosave_owner_marker_for_path,
-    save_notebook_to_disk_with_claim_and_intent, FileSaveIntent, FileSaveOutcome,
-    NotebookFileBinding, NotebookRoom, SaveError,
+    persist_notebook_bytes, refresh_primary_baseline_from_checkpoint,
+    release_autosave_owner_marker_for_path, save_notebook_to_disk_with_claim_and_intent,
+    FileSaveIntent, FileSaveOutcome, NotebookFileBinding, NotebookRoom, SaveError,
 };
 use crate::protocol::NotebookResponse;
 
@@ -29,13 +29,17 @@ pub(crate) async fn handle_reconciled(
     format_cells: bool,
     path: Option<String>,
     source_generation: u64,
+    expected_source_fingerprint: Option<crate::notebook_sync_server::recovery::SourceFingerprint>,
 ) -> NotebookResponse {
     handle_with_intent(
         room,
         daemon,
         format_cells,
         path,
-        FileSaveIntent::Reconcile { source_generation },
+        FileSaveIntent::Reconcile {
+            source_generation,
+            expected_source_fingerprint,
+        },
     )
     .await
 }
@@ -47,9 +51,9 @@ async fn handle_with_intent(
     path: Option<String>,
     intent: FileSaveIntent,
 ) -> NotebookResponse {
-    // Reserve causal save order before formatting or serialization can yield.
-    // A later request supersedes this one even if blocking workers start in a
-    // different order.
+    // Reserve a monotonic identity before formatting or serialization can
+    // yield. A later request supersedes this one only after reaching a real
+    // checkpoint barrier; failed preparation cannot burn an older viable save.
     let save_claim = match room.persistence.claim_file_checkpoint() {
         Ok(claim) => claim,
         Err(_) => {
@@ -185,6 +189,29 @@ async fn handle_with_intent(
     };
     let written = save_outcome.path().to_string();
 
+    // The blocking checkpoint was current when it committed, but a newer save
+    // may have crossed its own barrier before this async continuation resumed.
+    // Never let the older continuation rebind the room, move registry entries,
+    // or install watcher baselines for the wrong file.
+    let latest_barrier = room.persistence.latest_file_checkpoint_barrier_sequence();
+    if latest_barrier > save_sequence {
+        if let Some(ref canonical_pre) = pre_claim {
+            NotebookFileBinding::release_path(&daemon.notebook_rooms, canonical_pre).await;
+        }
+        return NotebookResponse::NotebookSaveBlocked {
+            path: Some(written),
+            save_sequence: Some(save_sequence),
+            reason: notebook_protocol::protocol::SaveBlockedReason::Superseded {
+                latest_sequence: latest_barrier,
+            },
+        };
+    }
+
+    let (checkpoint_sequence, wrote_file) = match &save_outcome {
+        FileSaveOutcome::Saved { save_sequence, .. } => (*save_sequence, true),
+        FileSaveOutcome::AlreadyCurrent { save_sequence, .. } => (*save_sequence, false),
+    };
+
     // Post-write canonicalize. Usually matches the pre-write key. If it
     // differs (uncommon — only when parent-canonicalize disagreed with
     // full canonicalize), swap the path_index entry.
@@ -210,6 +237,20 @@ async fn handle_with_intent(
             )
             .await;
         }
+    }
+
+    // Promotion and Save As install a watcher for a path that was not primary
+    // while the lower-level save ran. Seed it from the exact committed file
+    // before starting that watcher; the helper refuses a newer checkpoint or
+    // an external edit that raced this continuation.
+    if was_untitled || pre_claim.is_some() {
+        let _ = refresh_primary_baseline_from_checkpoint(
+            room,
+            std::path::Path::new(&written),
+            checkpoint_sequence,
+            wrote_file,
+        )
+        .await;
     }
 
     let registry_now = chrono::Utc::now().to_rfc3339();

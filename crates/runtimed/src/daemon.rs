@@ -1609,15 +1609,39 @@ impl Daemon {
     async fn await_room_durability_on_shutdown(
         room: &Arc<crate::notebook_sync_server::NotebookRoom>,
     ) -> Result<(), crate::notebook_sync_server::durability::RoomDurabilityError> {
+        Self::await_room_durability_on_shutdown_with_source_timeout(
+            room,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    }
+
+    async fn await_room_durability_on_shutdown_with_source_timeout(
+        room: &Arc<crate::notebook_sync_server::NotebookRoom>,
+        source_timeout: std::time::Duration,
+    ) -> Result<(), crate::notebook_sync_server::durability::RoomDurabilityError> {
         use crate::notebook_sync_server::durability::DurableMutation;
 
-        let (required_heads, needs_barrier) = {
+        if room.is_loading() {
+            let settled = room
+                .lifecycle
+                .wait_for_source_settled(source_timeout)
+                .await
+                .into_current();
+            if settled.is_in_progress() {
+                // Leave both source publication and journal commits live. A
+                // shutdown retry can claim the causal cut after the room-owned
+                // task settles; freezing here would manufacture a false
+                // durability failure in an otherwise healthy import.
+                return Err(crate::notebook_sync_server::durability::RoomDurabilityError::TimedOut);
+            }
+        }
+
+        let required_heads = {
             let mut doc = room.doc.write().await;
-            let heads = doc.get_heads();
-            let required_heads = heads.iter().map(ToString::to_string).collect::<Vec<_>>();
-            let durability_status = room.durability.status();
-            let needs_barrier = durability_status.has_durable_record;
-            if !room.is_loading() {
+            crate::notebook_sync_server::durability::run_blocking_durability_boundary(|| {
+                let heads = doc.get_heads();
+                let required_heads = heads.iter().map(ToString::to_string).collect::<Vec<_>>();
                 // Commit synchronously while the live document lock is held,
                 // then freeze the journal before releasing that lock. Every
                 // later peer/daemon mutation will fail its commit and roll
@@ -1628,28 +1652,25 @@ impl Daemon {
                     heads.iter().map(|head| head.0).collect::<Vec<_>>(),
                     DurableMutation::Daemon,
                 )?;
-            }
-            room.durability.freeze_commits();
-            (required_heads, needs_barrier || !room.is_loading())
+                room.durability.freeze_commits();
+                Ok::<_, crate::notebook_sync_server::durability::RoomDurabilityError>(
+                    required_heads,
+                )
+            })?
         };
 
-        if needs_barrier {
-            room.durability
-                .await_durable(&required_heads, std::time::Duration::from_secs(5))
-                .await?;
-        }
+        room.durability
+            .await_durable(&required_heads, std::time::Duration::from_secs(5))
+            .await?;
         Ok(())
     }
 
-    /// A degraded room is recovery evidence, not reaper capacity. Keep it in
-    /// the registry until an explicit reconciliation clears both the journal
-    /// and lifecycle failure state.
+    /// Only a failed durability boundary requires resident repair. A source
+    /// failure/conflict with a healthy recovery journal is itself durable
+    /// recovery evidence and may be reaped or cleanly shut down; reopening
+    /// reconstructs the same Degraded lifecycle from disk plus journal.
     fn room_requires_durability_repair(room: &crate::notebook_sync_server::NotebookRoom) -> bool {
         room.durability.status().is_degraded()
-            || matches!(
-                room.lifecycle.availability(),
-                crate::notebook_sync_server::RoomAvailability::Degraded(_)
-            )
     }
 
     fn mark_room_durability_degraded(
@@ -1748,6 +1769,20 @@ impl Daemon {
             }
 
             if let Err(error) = Self::await_room_durability_on_shutdown(room).await {
+                if matches!(
+                    error,
+                    crate::notebook_sync_server::durability::RoomDurabilityError::TimedOut
+                ) && room.is_loading()
+                {
+                    warn!(
+                        "[runtimed] clean shutdown retained active source task for {}; retry after it settles",
+                        notebook_uuid
+                    );
+                    durability_failures.push(format!(
+                        "{notebook_uuid}: source publication is still active"
+                    ));
+                    continue;
+                }
                 let reason = format!("clean-shutdown durability barrier failed: {error}");
                 let heads = {
                     let mut doc = room.doc.write().await;
@@ -3728,7 +3763,7 @@ impl Daemon {
             let doc = room.doc.read().await;
             let existing_count = doc.cell_count();
             let load_state = room.initial_load.state();
-            let should_observe_load = match load_state {
+            let should_observe_load = match &load_state {
                 crate::notebook_sync_server::RoomInitialLoadState::Loading { .. }
                 | crate::notebook_sync_server::RoomInitialLoadState::Failed { .. } => true,
                 crate::notebook_sync_server::RoomInitialLoadState::Ready { .. } => false,
@@ -3737,10 +3772,16 @@ impl Daemon {
                 }
             };
             if should_observe_load {
-                // Publish Loading before the handshake response is observable.
-                // New file-backed rooms are already marked before registry
-                // insertion; this also covers a legacy/resident empty room.
-                room.initial_load.mark_required();
+                // Publish Loading only for a pristine legacy/resident room.
+                // Loading is already owned by its task, while Failed is
+                // sticky and may advance only through the safe retry path
+                // below or explicit reconciliation.
+                if matches!(
+                    load_state,
+                    crate::notebook_sync_server::RoomInitialLoadState::NotNeeded { .. }
+                ) {
+                    room.initial_load.mark_required();
+                }
                 info!(
                     "[runtimed] Room for {} is observing initial materialization",
                     path
@@ -7413,6 +7454,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clean_shutdown_timeout_leaves_active_source_and_journal_commits_live() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        let docs_dir = config.notebook_docs_dir.clone();
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            &docs_dir,
+            daemon.blob_store.clone(),
+            true,
+        ));
+        room.initial_load.mark_required();
+        let (start, _) = room.initial_load.begin();
+        assert!(matches!(
+            start,
+            crate::notebook_sync_server::RoomInitialLoadStart::Started { .. }
+        ));
+
+        let error = Daemon::await_room_durability_on_shutdown_with_source_timeout(
+            &room,
+            std::time::Duration::from_millis(1),
+        )
+        .await
+        .expect_err("an active source generation must block the shutdown cut");
+        assert!(matches!(
+            error,
+            crate::notebook_sync_server::durability::RoomDurabilityError::TimedOut
+        ));
+        assert!(room.is_loading());
+        assert!(!room.durability.status().is_degraded());
+        assert!(!matches!(
+            room.lifecycle.availability(),
+            crate::notebook_sync_server::RoomAvailability::Degraded(_)
+        ));
+
+        let (snapshot, heads) = {
+            let mut doc = room.doc.write().await;
+            let heads = doc.get_heads();
+            (doc.save(), heads.into_iter().map(|head| head.0).collect())
+        };
+        room.durability
+            .commit_snapshot(
+                &snapshot,
+                heads,
+                crate::notebook_sync_server::durability::DurableMutation::Daemon,
+            )
+            .expect("timed-out shutdown must not freeze later journal commits");
+    }
+
+    #[tokio::test]
     async fn resident_room_reaper_durable_wait_failure_degrades_and_never_evicts() {
         let temp_dir = TempDir::new().unwrap();
         let config = lease_test_config(&temp_dir);
@@ -7479,7 +7571,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resident_room_reaper_excludes_lifecycle_only_degradation() {
+    async fn resident_room_reaper_allows_durable_lifecycle_only_degradation() {
         let temp_dir = TempDir::new().unwrap();
         let config = lease_test_config(&temp_dir);
         let docs_dir = config.notebook_docs_dir.clone();
@@ -7510,7 +7602,7 @@ mod tests {
             .store(1, std::sync::atomic::Ordering::Relaxed);
         let outcome = daemon
             .notebook_rooms
-            .insert_or_get(uuid, room, None)
+            .insert_or_get(uuid, room.clone(), None)
             .await
             .unwrap();
         let (_, reservation) = outcome.into_parts();
@@ -7518,9 +7610,10 @@ mod tests {
 
         daemon.ghost_room_reaper_sweep_with_cap(0, 0).await;
         assert!(
-            daemon.notebook_rooms.peek_uuid(uuid).await.is_some(),
-            "lifecycle-degraded recovery state must not become reaper capacity"
+            daemon.notebook_rooms.peek_uuid(uuid).await.is_none(),
+            "a lifecycle-only failure with durable heads can be reconstructed after reaping"
         );
+        assert!(!room.durability.status().is_degraded());
     }
 
     #[tokio::test]

@@ -2617,11 +2617,17 @@ impl RuntimeStateDoc {
         &mut self,
         exported_heads: &[String],
         save_sequence: u64,
-    ) -> Result<(), RuntimeStateError> {
+    ) -> Result<bool, RuntimeStateError> {
         let current = self.file_checkpoint();
-        if current.exported_heads == exported_heads && current.save_sequence == Some(save_sequence)
+        if current
+            .save_sequence
+            .is_some_and(|current_sequence| current_sequence >= save_sequence)
         {
-            return Ok(());
+            // Async save completion can arrive after a newer checkpoint has
+            // already committed. RuntimeStateDoc is a causal projection, so a
+            // stale completion must not regress exported heads (or let its
+            // caller regress last_saved metadata).
+            return Ok(false);
         }
 
         let checkpoint = self.get_or_create_root_map("file_checkpoint")?;
@@ -2642,7 +2648,7 @@ impl RuntimeStateDoc {
             "save_sequence",
             ScalarValue::Uint(save_sequence),
         )?;
-        Ok(())
+        Ok(true)
     }
 
     /// Clear committed checkpoint metadata without changing source health.
@@ -4646,6 +4652,25 @@ mod tests {
         assert_eq!(
             doc.read_state().file_checkpoint,
             FileCheckpointState::default()
+        );
+    }
+
+    #[test]
+    fn file_checkpoint_rejects_stale_async_completion() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc
+            .set_file_checkpoint(&["new-head".to_string()], 9)
+            .unwrap());
+        assert!(!doc
+            .set_file_checkpoint(&["old-head".to_string()], 8)
+            .unwrap());
+        assert_eq!(
+            doc.file_checkpoint(),
+            FileCheckpointState {
+                exported_heads: vec!["new-head".to_string()],
+                save_sequence: Some(9),
+                source_issue: None,
+            }
         );
     }
 

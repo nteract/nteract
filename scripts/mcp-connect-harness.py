@@ -45,6 +45,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FORMATTED_CELL_ID_RE = re.compile(r"^⏺ ━━━ cell (\S+) \(", re.MULTILINE)
 AUTOMERGE_HEAD_RE = re.compile(r"^[0-9a-f]{64}$")
 TRANSIENT_READINESS_CODES = {"notebook_not_ready"}
+# asyncio's subprocess streams otherwise inherit a 64 KiB line limit. MCP
+# stdio frames are newline-delimited JSON and a legitimate notebook response
+# can exceed that even when the progressive projection itself stays bounded.
+MCP_STDIO_LIMIT_BYTES = 16 * 1024 * 1024
 
 
 def log(message: str) -> None:
@@ -181,6 +185,7 @@ class McpProcess:
         self.next_id = 1
         self.pending: dict[int, asyncio.Future[Any]] = {}
         self.stderr_lines: list[str] = []
+        self.stdout_reader_error: RuntimeError | None = None
         self.stdout_task = asyncio.create_task(self._read_stdout())
         self.stderr_task = asyncio.create_task(self._read_stderr())
 
@@ -200,6 +205,7 @@ class McpProcess:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=MCP_STDIO_LIMIT_BYTES,
         )
         client = cls(process, timeout_secs)
         try:
@@ -222,29 +228,39 @@ class McpProcess:
 
     async def _read_stdout(self) -> None:
         assert self.process.stdout is not None
-        while line := await self.process.stdout.readline():
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            request_id = message.get("id")
-            if not isinstance(request_id, int):
-                continue
-            future = self.pending.pop(request_id, None)
-            if future is None or future.done():
-                continue
-            if isinstance(message.get("error"), dict):
-                error = message["error"]
-                future.set_exception(
-                    RuntimeError(
-                        f"MCP error {error.get('code', '')}: "
-                        f"{error.get('message', 'unknown error')}"
+        try:
+            while line := await self.process.stdout.readline():
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                request_id = message.get("id")
+                if not isinstance(request_id, int):
+                    continue
+                future = self.pending.pop(request_id, None)
+                if future is None or future.done():
+                    continue
+                if isinstance(message.get("error"), dict):
+                    error = message["error"]
+                    future.set_exception(
+                        RuntimeError(
+                            f"MCP error {error.get('code', '')}: "
+                            f"{error.get('message', 'unknown error')}"
+                        )
                     )
-                )
-            else:
-                future.set_result(message.get("result"))
+                else:
+                    future.set_result(message.get("result"))
+        except BaseException as error:
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            self.stdout_reader_error = RuntimeError(
+                "MCP stdout reader failed before a response was decoded: "
+                f"{type(error).__name__}: {error}"
+            )
 
-        error = RuntimeError(f"MCP process exited before replying (exit={self.process.returncode})")
+        error = self.stdout_reader_error or RuntimeError(
+            f"MCP process exited before replying (exit={self.process.returncode})"
+        )
         for future in self.pending.values():
             if not future.done():
                 future.set_exception(error)
@@ -275,6 +291,8 @@ class McpProcess:
             return await asyncio.wait_for(future, timeout=self.timeout_secs)
         except TimeoutError:
             self.pending.pop(request_id, None)
+            if self.stdout_reader_error is not None:
+                raise self.stdout_reader_error from None
             raise TimeoutError(f"MCP request {method} exceeded {self.timeout_secs:.1f}s") from None
         except BaseException:
             self.pending.pop(request_id, None)

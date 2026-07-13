@@ -58,6 +58,7 @@ pub(crate) enum FileSaveIntent {
     /// generation is committed in the same journal record as the checkpoint.
     Reconcile {
         source_generation: u64,
+        expected_source_fingerprint: Option<super::recovery::SourceFingerprint>,
     },
 }
 
@@ -75,32 +76,98 @@ fn commit_file_checkpoint_for_intent(
             checkpoint.exported_heads.clone(),
             checkpoint.save_sequence,
         ),
-        FileSaveIntent::Reconcile { source_generation } => durability
-            .commit_reconciled_file_checkpoint(
-                checkpoint.path.clone(),
-                checkpoint.file_fingerprint,
-                checkpoint.exported_heads.clone(),
-                checkpoint.save_sequence,
-                source_generation,
-            ),
+        FileSaveIntent::Reconcile {
+            source_generation, ..
+        } => durability.commit_reconciled_file_checkpoint(
+            checkpoint.path.clone(),
+            checkpoint.file_fingerprint,
+            checkpoint.exported_heads.clone(),
+            checkpoint.save_sequence,
+            source_generation,
+        ),
     };
 
     commit.map(|_| ()).map_err(|error| {
         let reason =
             format!("file replacement completed but recovery journal checkpoint failed: {error}");
-        durability.mark_degraded(reason.clone());
-        lifecycle.mark_degraded(
-            reason.clone(),
-            checkpoint_heads_hex(&checkpoint.exported_heads),
-            true,
-        );
-        let _ = runtime_state.with_doc(|state| {
-            state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
-                reason: reason.clone(),
-            }))
-        });
-        reason
+        degrade_file_checkpoint(
+            durability,
+            lifecycle,
+            runtime_state,
+            &checkpoint.exported_heads,
+            reason,
+        )
     })
+}
+
+fn prepare_file_checkpoint_for_intent(
+    durability: &super::durability::RoomDurability,
+    lifecycle: &super::lifecycle::RoomLifecycle,
+    runtime_state: &runtime_doc::RuntimeStateHandle,
+    preparation: &super::file_checkpoint::FileCheckpointPreparation,
+    intent: FileSaveIntent,
+) -> Result<(), String> {
+    let source_generation = match intent {
+        FileSaveIntent::Ordinary => None,
+        FileSaveIntent::Reconcile {
+            source_generation, ..
+        } => Some(source_generation),
+    };
+    durability
+        .prepare_file_checkpoint(
+            preparation.path.clone(),
+            preparation.file_fingerprint,
+            preparation.exported_heads.clone(),
+            preparation.save_sequence,
+            source_generation,
+        )
+        .map(|_| ())
+        .map_err(|error| {
+            degrade_file_checkpoint(
+                durability,
+                lifecycle,
+                runtime_state,
+                &preparation.exported_heads,
+                format!("recovery journal checkpoint intent failed before replacement: {error}"),
+            )
+        })
+}
+
+fn abort_file_checkpoint_intent(
+    durability: &super::durability::RoomDurability,
+    lifecycle: &super::lifecycle::RoomLifecycle,
+    runtime_state: &runtime_doc::RuntimeStateHandle,
+    preparation: &super::file_checkpoint::FileCheckpointPreparation,
+) -> Result<(), String> {
+    durability
+        .abort_file_checkpoint(preparation.save_sequence)
+        .map(|_| ())
+        .map_err(|error| {
+            degrade_file_checkpoint(
+                durability,
+                lifecycle,
+                runtime_state,
+                &preparation.exported_heads,
+                format!("recovery journal checkpoint intent abort failed: {error}"),
+            )
+        })
+}
+
+fn degrade_file_checkpoint(
+    durability: &super::durability::RoomDurability,
+    lifecycle: &super::lifecycle::RoomLifecycle,
+    runtime_state: &runtime_doc::RuntimeStateHandle,
+    exported_heads: &[[u8; 32]],
+    reason: String,
+) -> String {
+    durability.mark_degraded(reason.clone());
+    lifecycle.mark_degraded(reason.clone(), checkpoint_heads_hex(exported_heads), true);
+    let _ = runtime_state.with_doc(|state| {
+        state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
+            reason: reason.clone(),
+        }))
+    });
+    reason
 }
 
 impl FileSaveOutcome {
@@ -549,20 +616,52 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
 
     let content_bytes = content_with_newline.into_bytes();
     let checkpoint_heads: Vec<[u8; 32]> = exported_heads.iter().map(|head| head.0).collect();
-    let checkpoint_target = super::file_checkpoint::FileCheckpointTarget::for_content(
+    let mut checkpoint_target = super::file_checkpoint::FileCheckpointTarget::for_content(
         notebook_path.clone(),
         checkpoint_heads,
         &content_bytes,
     );
+    if is_in_place_save {
+        if let FileSaveIntent::Reconcile {
+            expected_source_fingerprint: Some(expected),
+            ..
+        } = intent
+        {
+            checkpoint_target = checkpoint_target.requiring_existing_fingerprint(expected);
+        }
+    }
     let checkpoint_coordinator = room.persistence.file_checkpoint_coordinator();
     let durability = Arc::clone(&room.durability);
+    let prepare_durability = Arc::clone(&durability);
+    let abort_durability = Arc::clone(&durability);
     let lifecycle = Arc::clone(&room.lifecycle);
+    let prepare_lifecycle = Arc::clone(&lifecycle);
+    let abort_lifecycle = Arc::clone(&lifecycle);
     let runtime_state = room.state.clone();
+    let prepare_runtime_state = runtime_state.clone();
+    let abort_runtime_state = runtime_state.clone();
     let (checkpoint_outcome, content_bytes) = tokio::task::spawn_blocking(move || {
-        let outcome = checkpoint_coordinator.complete_reserved_with_commit(
+        let outcome = checkpoint_coordinator.complete_reserved_with_durable_intent(
             save_claim,
             checkpoint_target,
             &content_bytes,
+            |preparation| {
+                prepare_file_checkpoint_for_intent(
+                    &prepare_durability,
+                    &prepare_lifecycle,
+                    &prepare_runtime_state,
+                    preparation,
+                    intent,
+                )
+            },
+            |preparation| {
+                abort_file_checkpoint_intent(
+                    &abort_durability,
+                    &abort_lifecycle,
+                    &abort_runtime_state,
+                    preparation,
+                )
+            },
             |checkpoint| {
                 commit_file_checkpoint_for_intent(
                     &durability,
@@ -654,18 +753,6 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         }
     }
 
-    // Update last_self_write timestamp so the file watcher skips our own write.
-    // Applies to all rooms (including ephemeral that were just promoted to
-    // file-backed via this save) - a watcher may start up right after
-    // `finalize_untitled_promotion` and will consult this baseline.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    room.persistence
-        .last_self_write
-        .store(now, Ordering::Relaxed);
-
     // Snapshot cell sources at save time so the file watcher can distinguish
     // our own writes from genuine external changes. Only update when saving
     // to the primary path - saving to an alternate path (Save As) must not
@@ -675,15 +762,25 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         for cell in &cells {
             saved.insert(cell.id.clone(), cell.source.clone());
         }
-        *room.persistence.last_save_sources.write().await = saved;
-        room.persistence.note_disk_content(&content_bytes);
+        if !room
+            .persistence
+            .note_primary_save_baseline(checkpoint.save_sequence, saved, &content_bytes, true)
+            .await
+        {
+            debug!(
+                "[notebook-sync] Skipping stale primary-path baseline for checkpoint {}",
+                checkpoint.save_sequence
+            );
+        }
     }
 
     let exported_heads = checkpoint_heads_hex(&checkpoint.exported_heads);
     let saved_at = chrono::DateTime::<chrono::Utc>::from(checkpoint.saved_at).to_rfc3339();
     if let Err(error) = room.state.with_doc(|state_doc| {
-        state_doc.set_file_checkpoint(&exported_heads, checkpoint.save_sequence)?;
-        state_doc.set_last_saved(Some(&saved_at))
+        if state_doc.set_file_checkpoint(&exported_heads, checkpoint.save_sequence)? {
+            state_doc.set_last_saved(Some(&saved_at))?;
+        }
+        Ok(())
     }) {
         warn!(
             "[notebook-sync] File checkpoint committed for {:?}, but runtime-state projection failed: {}",
@@ -701,6 +798,67 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         exported_heads,
         save_sequence: checkpoint.save_sequence,
     })
+}
+
+/// Rebuild the exact primary-path watcher baseline from a committed file
+/// checkpoint before a new watcher is installed for promotion or Save As.
+///
+/// A later checkpoint or an external edit may land while the async save
+/// continuation is resuming. In either case the manifest/fingerprint check
+/// refuses to relabel those bytes as this save's baseline.
+pub(crate) async fn refresh_primary_baseline_from_checkpoint(
+    room: &NotebookRoom,
+    path: &Path,
+    save_sequence: u64,
+    self_write: bool,
+) -> bool {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            warn!(
+                "[notebook-sync] Could not refresh file watcher baseline from {}: {}",
+                path.display(),
+                error
+            );
+            return false;
+        }
+    };
+    let manifest = room.durability.manifest();
+    if manifest.file_save_sequence != Some(save_sequence)
+        || manifest.source_fingerprint != super::recovery::source_fingerprint(&bytes)
+        || manifest.canonical_path.as_deref() != Some(path)
+    {
+        debug!(
+            "[notebook-sync] Skipping stale or externally changed watcher baseline for checkpoint {}",
+            save_sequence
+        );
+        return false;
+    }
+    let json: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(json) => json,
+        Err(error) => {
+            warn!(
+                "[notebook-sync] Committed checkpoint {} could not rebuild its watcher baseline: {}",
+                save_sequence, error
+            );
+            return false;
+        }
+    };
+    let Some(parsed) = parse_cells_from_ipynb_for_notebook(&json, room.id) else {
+        warn!(
+            "[notebook-sync] Committed checkpoint {} has no valid cells baseline",
+            save_sequence
+        );
+        return false;
+    };
+    let sources = parsed
+        .cells
+        .into_iter()
+        .map(|cell| (cell.id, cell.source))
+        .collect();
+    room.persistence
+        .note_primary_save_baseline(save_sequence, sources, &bytes, self_write)
+        .await
 }
 
 fn checkpoint_heads_hex(heads: &[[u8; 32]]) -> Vec<String> {
@@ -728,6 +886,17 @@ fn checkpoint_blocked_reason(
                 actual.to_hex()
             ),
         },
+        CheckpointReason::ExistingContentChanged { expected, actual } => {
+            ProtocolReason::SourceConflict {
+                message: format!(
+                    "source changed during reconciliation (expected {}, observed {}); retry against the new disk revision",
+                    expected.to_hex(),
+                    actual
+                        .map(super::recovery::SourceFingerprint::to_hex)
+                        .unwrap_or_else(|| "missing".to_string())
+                ),
+            }
+        }
         CheckpointReason::Io { stage, message } => ProtocolReason::Io {
             message: format!("checkpoint {stage:?} failed: {message}"),
         },
@@ -2224,10 +2393,11 @@ pub(crate) fn spawn_notebook_file_watcher(
                                     continue;
                                 }
                             };
+                            let source_save_sequence = source_claim.sequence();
                             let source_revision = ExternalSourceRevision {
                                 fingerprint: observed_fingerprint,
                                 canonical_path: notebook_path.clone(),
-                                save_sequence: source_claim.sequence(),
+                                save_sequence: source_save_sequence,
                                 saved_at: std::fs::metadata(&notebook_path)
                                     .and_then(|metadata| metadata.modified())
                                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
@@ -2247,6 +2417,18 @@ pub(crate) fn spawn_notebook_file_watcher(
                             .await;
                             let cells_changed = applied.cells_changed;
                             let metadata_changed = applied.metadata_changed;
+
+                            // Close the remaining window between the
+                            // pre-document revision check and baseline
+                            // publication. If a newer edit landed, leave the
+                            // prior baseline intact so it cannot be mistaken
+                            // for exported content.
+                            match tokio::fs::read(&notebook_path).await {
+                                Ok(current)
+                                    if super::recovery::source_fingerprint(&current)
+                                        == observed_fingerprint => {}
+                                Ok(_) | Err(_) => continue,
+                            }
 
                             if room.durability.status().is_degraded() {
                                 // `apply_ipynb_changes` rolls the NotebookDoc
@@ -2270,7 +2452,19 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 // baseline. Failed or partial application keeps
                                 // the prior baseline so a later save cannot
                                 // silently overwrite unobserved disk truth.
-                                room.persistence.note_disk_content(contents.as_bytes());
+                                let sources = external_cells
+                                    .iter()
+                                    .map(|cell| (cell.id.clone(), cell.source.clone()))
+                                    .collect();
+                                let _ = room
+                                    .persistence
+                                    .note_primary_save_baseline(
+                                        source_save_sequence,
+                                        sources,
+                                        contents.as_bytes(),
+                                        false,
+                                    )
+                                    .await;
                             }
 
                             if cells_changed || metadata_changed {

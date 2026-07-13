@@ -1182,6 +1182,71 @@ async fn idless_durably_staged_recovery_rebuilds_sidecars_with_stable_identities
 }
 
 #[tokio::test]
+async fn fresh_projection_captures_imported_runtime_sidecar_heads() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let path = tmp.path().join("fresh-projection-sidecars.ipynb");
+    let source = br#"{
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [{
+            "id": "projected-sidecar",
+            "cell_type": "code",
+            "metadata": {},
+            "execution_count": 7,
+            "outputs": [{"output_type":"stream","name":"stdout","text":["hello\n"]}],
+            "source": ["print('hello')\n"]
+        }]
+    }"#;
+    tokio::fs::write(&path, source).await.unwrap();
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let (room, _guard) = get_or_create_room(
+        &rooms,
+        Uuid::new_v4(),
+        RoomCreationOptions {
+            path: Some(path),
+            initial_load_execution_store_dir: Some(tmp.path()),
+            docs_dir: &docs_dir,
+            blob_store: test_blob_store(&tmp),
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
+    )
+    .await;
+    let settled = room
+        .lifecycle
+        .wait_for_source_settled(std::time::Duration::from_secs(5))
+        .await
+        .into_current();
+    assert!(matches!(settled, RoomSourceState::Ready(_)));
+
+    let projection = room
+        .lifecycle
+        .projection(1)
+        .expect("Ready generation must retain its prepared projection");
+    let runtime_heads = room
+        .state
+        .with_doc(|state| {
+            Ok(state
+                .get_heads()
+                .into_iter()
+                .map(|head| head.to_string())
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+    assert_eq!(projection.runtime_state_heads, runtime_heads);
+    let cell = projection
+        .cells
+        .iter()
+        .find(|cell| cell.id == "projected-sidecar")
+        .expect("projection should retain the imported cell");
+    assert!(cell.execution_id.is_some());
+    assert_eq!(cell.execution_count, Some(7));
+}
+
+#[tokio::test]
 async fn peer_only_pending_recovery_never_regenerates_or_reports_ready() {
     let tmp = tempfile::TempDir::new().unwrap();
     let docs_dir = tmp.path().join("docs");
@@ -1347,6 +1412,183 @@ async fn recovery_source_fingerprint_mismatch_preserves_both_and_degrades() {
     ));
     assert_eq!(tokio::fs::read(&path).await.unwrap(), external_revision);
     assert_eq!(std::fs::read(&journal_path).unwrap(), journal_before);
+}
+
+#[tokio::test]
+async fn room_restart_finalizes_checkpoint_when_intended_file_replacement_landed() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let path = tmp.path().join("checkpoint-replacement-landed.ipynb");
+    write_numbered_notebook(&path, 1).await;
+    let id = Uuid::new_v4();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    commit_test_room_source(&room).await;
+
+    let mut intended_bytes = tokio::fs::read(&path).await.unwrap();
+    intended_bytes.extend_from_slice(b"\n ");
+    let intended_fingerprint = super::recovery::source_fingerprint(&intended_bytes);
+    let manifest = room.durability.manifest();
+    room.durability
+        .prepare_file_checkpoint(
+            path.clone(),
+            intended_fingerprint,
+            manifest.durable_heads,
+            manifest.file_save_sequence.unwrap_or_default() + 1,
+            None,
+        )
+        .unwrap();
+    tokio::fs::write(&path, &intended_bytes).await.unwrap();
+    drop(room);
+
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let (recovered, _guard) = get_or_create_room(
+        &rooms,
+        id,
+        RoomCreationOptions {
+            path: Some(path),
+            initial_load_execution_store_dir: Some(tmp.path()),
+            docs_dir: &docs_dir,
+            blob_store,
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
+    )
+    .await;
+    let recovered_manifest = recovered.durability.manifest();
+    assert_eq!(recovered_manifest.source_fingerprint, intended_fingerprint);
+    assert!(recovered_manifest.pending_file_checkpoint.is_none());
+    assert!(!recovered.durability.status().is_degraded());
+    let recovered_source = recovered
+        .lifecycle
+        .wait_for_source_settled(std::time::Duration::from_secs(5))
+        .await
+        .into_current();
+    assert!(
+        matches!(recovered_source, RoomSourceState::Ready(_)),
+        "finalized checkpoint should restore Ready, got {recovered_source:?}"
+    );
+    assert!(recovered
+        .state
+        .read(|state| state.read_state().file_checkpoint.source_issue)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn room_restart_preserves_third_revision_as_source_conflict_not_journal_failure() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let path = tmp.path().join("checkpoint-third-revision.ipynb");
+    write_numbered_notebook(&path, 1).await;
+    let id = Uuid::new_v4();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    commit_test_room_source(&room).await;
+
+    let old_bytes = tokio::fs::read(&path).await.unwrap();
+    let mut intended_bytes = old_bytes.clone();
+    intended_bytes.extend_from_slice(b"\n ");
+    let mut third_revision = old_bytes;
+    third_revision.extend_from_slice(b"\n  ");
+    let intended_fingerprint = super::recovery::source_fingerprint(&intended_bytes);
+    let manifest = room.durability.manifest();
+    room.durability
+        .prepare_file_checkpoint(
+            path.clone(),
+            intended_fingerprint,
+            manifest.durable_heads,
+            manifest.file_save_sequence.unwrap_or_default() + 1,
+            None,
+        )
+        .unwrap();
+    tokio::fs::write(&path, &third_revision).await.unwrap();
+    drop(room);
+
+    let recovered = NotebookRoom::new_fresh(id, Some(path), &docs_dir, blob_store, false);
+    assert!(matches!(
+        recovered.lifecycle.source_state(),
+        RoomSourceState::Failed(ref status)
+            if status.error.as_ref().is_some_and(|error| error.code == "source_conflict")
+    ));
+    assert!(matches!(
+        recovered.lifecycle.availability(),
+        RoomAvailability::Degraded(_)
+    ));
+    assert!(recovered
+        .durability
+        .manifest()
+        .pending_file_checkpoint
+        .is_some());
+    assert!(
+        !recovered.durability.status().is_degraded(),
+        "a third source revision is a reconciliation conflict, not failed journal durability"
+    );
+}
+
+#[tokio::test]
+async fn uuid_only_restart_attach_recovers_manifest_path_without_false_conflict() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let path = tmp.path().join("uuid-recovery.ipynb");
+    write_numbered_notebook(&path, 1).await;
+    let id = Uuid::new_v4();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    commit_test_room_source(&room).await;
+    drop(room);
+
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let (recovered, _guard) = get_or_create_room(
+        &rooms,
+        id,
+        RoomCreationOptions {
+            path: None,
+            initial_load_execution_store_dir: Some(tmp.path()),
+            docs_dir: &docs_dir,
+            blob_store,
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        recovered.file_binding.path().await.as_deref(),
+        Some(path.as_path())
+    );
+    let settled = recovered
+        .lifecycle
+        .wait_for_source_settled(std::time::Duration::from_secs(5))
+        .await
+        .into_current();
+    assert!(matches!(settled, RoomSourceState::Ready(_)));
+    assert!(!matches!(
+        recovered.lifecycle.source_state(),
+        RoomSourceState::Failed(ref status)
+            if status.error.as_ref().is_some_and(|error| error.code == "source_conflict")
+    ));
 }
 
 #[tokio::test]
@@ -6176,7 +6418,10 @@ async fn atomic_writes_leave_no_temp_files() {
 ///
 /// This test calls the production helper directly, so it validates the real
 /// code path rather than an inline copy of the transition logic.
-#[tokio::test(start_paused = true)]
+// The durable save path uses `spawn_blocking` for file replacement and journal
+// fsync. Keep real time here: a paused Tokio clock can advance the entire
+// timeout while that intentionally blocking worker is still committing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_promote_untitled_starts_autosave() {
     use std::time::Duration;
 
@@ -6262,15 +6507,27 @@ async fn test_promote_untitled_starts_autosave() {
     // 5. Add a new cell AFTER promotion (simulates MCP create_cell).
     {
         let mut doc = room.doc.write().await;
+        let rollback_snapshot = doc.save();
+        let rollback_actor = doc.get_actor_id();
+        let baseline_heads = doc.get_heads();
         doc.add_cell(1, "cell-2", "code").unwrap();
         doc.update_source("cell-2", "y = 2").unwrap();
+        super::durability::commit_daemon_notebook_mutation(
+            &room,
+            &mut doc,
+            &baseline_heads,
+            &rollback_snapshot,
+            &rollback_actor,
+            "test post-promotion cell creation",
+        )
+        .unwrap();
     }
     let _ = room.broadcasts.changed_tx.send(());
 
     // 6. Poll until the autosave debouncer flushes both cells to disk.
-    //    Each sleep(100ms) advances the paused clock and yields to the
-    //    runtime, letting the debouncer make progress. Timeout after 10s
-    //    (well beyond the 2s debounce + 500ms check interval defaults).
+    //    Each sleep yields to the debouncer and its durable checkpoint worker.
+    //    Timeout after 10s (well beyond the 2s debounce + 500ms check interval
+    //    defaults).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let nb = loop {
         tokio::time::sleep(Duration::from_millis(100)).await;

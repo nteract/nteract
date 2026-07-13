@@ -362,6 +362,12 @@ pub struct RoomPersistence {
     /// live CRDT) to distinguish our own autosave writes from genuine external
     /// changes (git pull, external editor).
     pub last_save_sources: RwLock<HashMap<String, String>>,
+    /// Highest committed save sequence allowed to update the primary-path
+    /// watcher baselines. Post-`spawn_blocking` save continuations may resume
+    /// out of order, so the sources, disk hash, and self-write timestamp are
+    /// advanced together under `last_save_sources` only when this sequence is
+    /// not stale.
+    primary_save_baseline_sequence: AtomicU64,
     /// Previous visible execution_id per cell, captured just before a new
     /// execution pointer replaces it. This is intentionally daemon-local
     /// persistence bookkeeping, not RuntimeStateDoc schema: it lets Save keep
@@ -409,6 +415,7 @@ impl RoomPersistence {
             file_checkpoint: Arc::new(super::file_checkpoint::FileCheckpointCoordinator::default()),
             debouncer: std::sync::Mutex::new(None),
             last_save_sources: RwLock::new(HashMap::new()),
+            primary_save_baseline_sequence: AtomicU64::new(0),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             last_known_disk_hash: std::sync::Mutex::new(None),
@@ -428,6 +435,7 @@ impl RoomPersistence {
                 flush_request_tx,
             })),
             last_save_sources: RwLock::new(HashMap::new()),
+            primary_save_baseline_sequence: AtomicU64::new(0),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             last_known_disk_hash: std::sync::Mutex::new(None),
@@ -443,6 +451,37 @@ impl RoomPersistence {
         if let Ok(mut hash) = self.last_known_disk_hash.lock() {
             *hash = Some(digest);
         }
+    }
+
+    /// Advance the primary-path file watcher baselines monotonically.
+    ///
+    /// The async sources lock serializes post-save continuations. Checking the
+    /// sequence after acquiring it prevents an older completion from
+    /// overwriting both the source snapshot and disk fingerprint installed by
+    /// a newer committed save.
+    pub async fn note_primary_save_baseline(
+        &self,
+        save_sequence: u64,
+        sources: HashMap<String, String>,
+        bytes: &[u8],
+        self_write: bool,
+    ) -> bool {
+        let mut saved = self.last_save_sources.write().await;
+        if self.primary_save_baseline_sequence.load(Ordering::Acquire) > save_sequence {
+            return false;
+        }
+        *saved = sources;
+        self.note_disk_content(bytes);
+        if self_write {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            self.last_self_write.store(now, Ordering::Release);
+        }
+        self.primary_save_baseline_sequence
+            .store(save_sequence, Ordering::Release);
+        true
     }
 
     /// The baseline recorded by [`Self::note_disk_content`], if any.
@@ -491,10 +530,17 @@ impl RoomPersistence {
         Arc::clone(&self.file_checkpoint)
     }
 
+    /// Newest save sequence that reached a committed ordering barrier.
+    pub(crate) fn latest_file_checkpoint_barrier_sequence(&self) -> u64 {
+        self.file_checkpoint.latest_barrier_sequence()
+    }
+
     pub(crate) fn restore_file_checkpoint(
         &self,
         checkpoint: super::file_checkpoint::FileCheckpoint,
     ) {
+        self.primary_save_baseline_sequence
+            .fetch_max(checkpoint.save_sequence, Ordering::AcqRel);
         self.file_checkpoint.restore(checkpoint);
     }
 
@@ -631,7 +677,7 @@ impl RoomInitialLoad {
         }
     }
 
-    fn project_state(source: &RoomSourceState) -> RoomInitialLoadState {
+    pub(crate) fn project_state(source: &RoomSourceState) -> RoomInitialLoadState {
         let status = source.status();
         match source {
             RoomSourceState::Preparing(_) | RoomSourceState::Publishing(_) => {
@@ -669,6 +715,14 @@ impl RoomInitialLoad {
 
     pub fn subscribe(&self) -> watch::Receiver<RoomInitialLoadState> {
         self.state_tx.subscribe()
+    }
+
+    /// Subscribe to the authoritative source axis rather than the temporary
+    /// legacy projection channel. Durability failures and source conflicts
+    /// transition the lifecycle directly, so long-lived waiters must observe
+    /// this channel to avoid missing a terminal state.
+    pub(crate) fn subscribe_authoritative(&self) -> watch::Receiver<RoomSourceState> {
+        self.lifecycle.subscribe_source()
     }
 
     pub fn state(&self) -> RoomInitialLoadState {
@@ -1109,7 +1163,7 @@ impl NotebookRoom {
     #[allow(private_interfaces)]
     pub fn new_fresh_with_trusted_packages(
         uuid: uuid::Uuid,
-        path: Option<PathBuf>,
+        mut path: Option<PathBuf>,
         docs_dir: &Path,
         blob_store: Arc<BlobStore>,
         ephemeral: bool,
@@ -1128,13 +1182,40 @@ impl NotebookRoom {
         let runtimed_actor = "runtimed";
         let recovery_journal =
             super::recovery::RecoveryJournal::new(persist_path.with_extension("recovery"));
-        let source_bytes = path
-            .as_ref()
-            .and_then(|source_path| std::fs::read(source_path).ok())
-            .unwrap_or_default();
+        // UUID-only attach after restart still represents the same file-backed
+        // room. Recover its canonical source path from the authoritative
+        // journal before fingerprinting disk; treating a missing caller path
+        // as empty bytes invents a false source conflict.
+        if !ephemeral && path.is_none() {
+            match recovery_journal.latest_record() {
+                Ok(super::recovery::RecoveryLatestOutcome::Recovered(recovery)) => {
+                    path = recovery.record.manifest.canonical_path.clone();
+                }
+                Ok(super::recovery::RecoveryLatestOutcome::Unavailable { .. }) => {}
+                Err(error) => warn!(
+                    "[notebook-sync] Could not recover canonical source path for {}: {}",
+                    id, error
+                ),
+            }
+        }
+        let (source_bytes, source_read_error) = match path.as_ref() {
+            Some(source_path) => match std::fs::read(source_path) {
+                Ok(bytes) => (bytes, None),
+                Err(error) => (
+                    Vec::new(),
+                    Some(format!(
+                        "source_conflict: journal source {} could not be read: {}; recovered state was preserved",
+                        source_path.display(),
+                        error
+                    )),
+                ),
+            },
+            None => (Vec::new(), None),
+        };
         let source_fingerprint = super::recovery::source_fingerprint(&source_bytes);
         let mut recovered_record = None;
         let mut startup_source_conflict = None;
+        let mut startup_durability_degraded = None;
         let mut recovered_doc = None;
         if !ephemeral {
             match recovery_journal.load(source_fingerprint) {
@@ -1168,6 +1249,10 @@ impl NotebookRoom {
                         "[notebook-sync] Restored journal generation {} for {}",
                         recovery.record.manifest.source_generation, id
                     );
+                    // An unreadable source is not evidence that its bytes match
+                    // the journal, even in the rare case where the recorded
+                    // fingerprint is the empty-content digest.
+                    startup_source_conflict = source_read_error.clone();
                     recovered_doc = Some(loaded);
                     recovered_record = Some(recovery);
                 }
@@ -1200,11 +1285,13 @@ impl NotebookRoom {
                             id
                         );
                     }
-                    let reason = format!(
-                        "source_conflict: disk fingerprint {} differs from recovery fingerprint {}; both were preserved",
-                        current_source_fingerprint.to_hex(),
-                        recovery.record.manifest.source_fingerprint.to_hex()
-                    );
+                    let reason = source_read_error.clone().unwrap_or_else(|| {
+                        format!(
+                            "source_conflict: disk fingerprint {} differs from recovery fingerprint {}; both were preserved",
+                            current_source_fingerprint.to_hex(),
+                            recovery.record.manifest.source_fingerprint.to_hex()
+                        )
+                    });
                     warn!("[notebook-sync] {reason}");
                     startup_source_conflict = Some(reason);
                     recovered_doc = Some(loaded);
@@ -1397,6 +1484,50 @@ impl NotebookRoom {
                 document_head_hashes.iter().map(|head| head.0).collect(),
             ))
         };
+        if durability.manifest().pending_file_checkpoint.is_some() {
+            if let Some(reason) = source_read_error.clone() {
+                // Missing/unreadable bytes prove neither side of the pending
+                // replacement. Preserve the intent and recovered snapshot as
+                // a source conflict; the journal itself remains healthy.
+                startup_source_conflict = Some(reason);
+            } else {
+                match durability.resolve_recovered_file_checkpoint(source_fingerprint) {
+                    Ok(_) => {
+                        // `RecoveryJournal::load` compares disk with the
+                        // pre-replacement fingerprint and may provisionally
+                        // classify the intended new bytes as a conflict. The
+                        // durable intent proves that exact replacement, so its
+                        // successful finalization clears only that provisional
+                        // classification.
+                        if durability.status().source_fingerprint == source_fingerprint {
+                            startup_source_conflict = None;
+                        }
+                    }
+                    Err(super::durability::RoomDurabilityError::SourceConflict { .. }) => {
+                        // Disk matches neither the old checkpoint nor the
+                        // intended replacement. Preserve all three facts and
+                        // require explicit source reconciliation, but do not
+                        // misclassify a healthy journal as failed storage.
+                        startup_source_conflict.get_or_insert_with(|| {
+                            format!(
+                                "source_conflict: disk fingerprint {} matches neither the recovery checkpoint nor its pending replacement; all versions were preserved",
+                                source_fingerprint.to_hex()
+                            )
+                        });
+                    }
+                    Err(error) => {
+                        let reason = format!(
+                            "source_degraded: could not resolve interrupted file checkpoint: {error}"
+                        );
+                        durability.mark_degraded(reason.clone());
+                        startup_durability_degraded = Some(reason);
+                    }
+                }
+            }
+        }
+        if startup_durability_degraded.is_none() {
+            startup_durability_degraded = durability.status().degraded_reason;
+        }
         let lifecycle = RoomLifecycle::new(genesis_snapshot, document_heads);
         if durability.status().has_durable_record {
             let manifest = durability.manifest();
@@ -1440,6 +1571,19 @@ impl NotebookRoom {
                     }))
                 })?;
                 lifecycle.restore_source_conflict(
+                    manifest.source_generation,
+                    manifest.source_fingerprint,
+                    cell_count,
+                    recovered_heads,
+                    reason,
+                );
+            } else if let Some(reason) = startup_durability_degraded {
+                state.with_doc(|runtime| {
+                    runtime.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
+                        reason: reason.clone(),
+                    }))
+                })?;
+                lifecycle.restore_incomplete_source(
                     manifest.source_generation,
                     manifest.source_fingerprint,
                     cell_count,

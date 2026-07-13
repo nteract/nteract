@@ -75,7 +75,7 @@ pub async fn get_or_create_room_result(
     }
 
     info!("[notebook-sync] Creating room for {}", uuid);
-    let path_for_room = options.path.clone();
+    let mut path_for_room = options.path.clone();
     let room = Arc::new(NotebookRoom::new_fresh_with_trusted_packages(
         uuid,
         path_for_room.clone(),
@@ -84,6 +84,9 @@ pub async fn get_or_create_room_result(
         options.ephemeral,
         options.trusted_packages,
     )?);
+    if path_for_room.is_none() {
+        path_for_room = room.file_binding.path().await;
+    }
     let durability = room.durability.status();
     let mut initial_source_task = if room.initial_load.is_loading()
         && matches!(
@@ -189,9 +192,10 @@ pub async fn get_or_create_room_result(
         // doc. Single-writer invariant: only the daemon writes this key.
         // Also re-runs after untitled promotion and save-as rename; see
         // `project_context::refresh_project_context` callers.
-        super::project_context::refresh_project_context_async(&room, options.path.as_deref()).await;
+        super::project_context::refresh_project_context_async(&room, path_for_room.as_deref())
+            .await;
 
-        if let Some(ref notebook_path) = options.path {
+        if let Some(ref notebook_path) = path_for_room {
             NotebookFileBinding::bind_existing(&room, notebook_path).await;
         }
     }

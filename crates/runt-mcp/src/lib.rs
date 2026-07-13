@@ -7,6 +7,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -47,6 +48,11 @@ pub struct NteractMcp {
     blob_store_path: Option<PathBuf>,
     execution_store_path: PathBuf,
     session: Arc<RwLock<Option<NotebookSession>>>,
+    /// Explicit tool intent epoch used to invalidate daemon auto-rejoin work.
+    /// The epoch is advanced while holding the active-session write lock so a
+    /// completed background connection cannot resurrect a session after the
+    /// user deliberately disconnected it.
+    session_intent_epoch: Arc<AtomicU64>,
     /// Owns monotonically ordered notebook activation generations and
     /// coalesces concurrent connections to the same canonical target.
     session_activation: Arc<SessionActivation>,
@@ -87,6 +93,7 @@ impl NteractMcp {
             blob_store_path,
             execution_store_path: runtimed_client::default_execution_store_dir(),
             session: Arc::new(RwLock::new(None)),
+            session_intent_epoch: Arc::new(AtomicU64::new(0)),
             session_activation: Arc::new(SessionActivation::default()),
             parked_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             last_session_drop: Arc::new(RwLock::new(None)),
@@ -135,6 +142,18 @@ impl NteractMcp {
     /// Get the shared session (for the daemon watcher).
     pub fn session(&self) -> &Arc<RwLock<Option<NotebookSession>>> {
         &self.session
+    }
+
+    /// Get the explicit session-intent epoch shared with the daemon watcher.
+    pub fn session_intent_epoch(&self) -> &Arc<AtomicU64> {
+        &self.session_intent_epoch
+    }
+
+    /// Invalidate automatic rejoin work after an explicit tool action.
+    /// Callers must hold the active-session write lock while advancing this
+    /// epoch so installation and cancellation have one total order.
+    pub(crate) fn advance_session_intent_epoch(&self) -> u64 {
+        self.session_intent_epoch.fetch_add(1, Ordering::AcqRel) + 1
     }
 
     /// Get the shared parked sessions map.
@@ -201,11 +220,45 @@ impl NteractMcp {
         if activation_current && slot_current {
             return Ok(());
         }
-        Err(SessionAccessError {
+        Err(Self::superseded_access_error(access))
+    }
+
+    /// Update active-session metadata only while the exact access identity is
+    /// still installed. Holding the slot write lock across validation and the
+    /// mutation closes the final race between a post-request check and a newer
+    /// activation publishing its session.
+    pub(crate) async fn update_session_path_if_current(
+        &self,
+        access: &SessionAccess,
+        path: String,
+    ) -> Result<(), SessionAccessError> {
+        let generation = access.readiness.session_generation;
+        let target = &access.readiness.target;
+        let mut guard = self.session.write().await;
+        let activation_current = generation == 0
+            || self
+                .session_activation
+                .is_current_identity(generation, target);
+        let Some(session) = guard.as_mut().filter(|session| {
+            session.activation_generation == generation
+                && session.activation_target == *target
+                && session.notebook_id == access.notebook_id
+        }) else {
+            return Err(Self::superseded_access_error(access));
+        };
+        if !activation_current {
+            return Err(Self::superseded_access_error(access));
+        }
+        session.notebook_path = Some(path);
+        Ok(())
+    }
+
+    fn superseded_access_error(access: &SessionAccess) -> SessionAccessError {
+        SessionAccessError {
             code: "session_superseded",
             message: "A newer notebook target superseded this operation".to_string(),
             readiness: Box::new(access.readiness.clone()),
-        })
+        }
     }
 
     /// Disconnect this MCP process's peer from the active notebook session.

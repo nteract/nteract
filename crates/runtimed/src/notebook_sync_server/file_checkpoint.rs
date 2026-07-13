@@ -26,6 +26,10 @@ pub(crate) struct FileCheckpointTarget {
     pub(crate) path: PathBuf,
     pub(crate) exported_heads: Vec<[u8; 32]>,
     pub(crate) file_fingerprint: SourceFingerprint,
+    /// Optional fingerprint of the existing target revision the caller
+    /// explicitly consented to replace. Rechecked immediately before atomic
+    /// replacement so reconciliation cannot discard a later external edit.
+    pub(crate) expected_existing_fingerprint: Option<SourceFingerprint>,
 }
 
 impl FileCheckpointTarget {
@@ -38,7 +42,13 @@ impl FileCheckpointTarget {
             path: path.into(),
             exported_heads,
             file_fingerprint,
+            expected_existing_fingerprint: None,
         }
+    }
+
+    pub(crate) fn requiring_existing_fingerprint(mut self, fingerprint: SourceFingerprint) -> Self {
+        self.expected_existing_fingerprint = Some(fingerprint);
+        self
     }
 
     pub(crate) fn for_content(
@@ -67,6 +77,16 @@ pub(crate) struct FileCheckpoint {
     pub(crate) saved_at: SystemTime,
 }
 
+/// Causal file metadata journaled after the temporary file is durable but
+/// before atomic replacement makes it visible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileCheckpointPreparation {
+    pub(crate) path: PathBuf,
+    pub(crate) exported_heads: Vec<[u8; 32]>,
+    pub(crate) file_fingerprint: SourceFingerprint,
+    pub(crate) save_sequence: u64,
+}
+
 /// Emitted only after both file replacement and checkpoint advancement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FileCheckpointEvent {
@@ -87,6 +107,10 @@ pub(crate) enum SaveBlockedReason {
     ContentFingerprintMismatch {
         declared: SourceFingerprint,
         actual: SourceFingerprint,
+    },
+    ExistingContentChanged {
+        expected: SourceFingerprint,
+        actual: Option<SourceFingerprint>,
     },
     Superseded {
         latest_sequence: u64,
@@ -126,8 +150,9 @@ pub(crate) struct SaveClaimError;
 /// A monotonic save sequence reserved before any asynchronous preparation.
 ///
 /// The exact file target is bound only after notebook formatting, blob
-/// resolution, and serialization finish. Reserving first makes request order,
-/// rather than blocking-worker scheduling order, authoritative.
+/// resolution, and serialization finish. Reserving first gives every request
+/// a stable identity; only a later committed ordering barrier supersedes it,
+/// so failed asynchronous preparation cannot burn an older viable save.
 #[derive(Debug)]
 pub(crate) struct SaveSequenceClaim {
     sequence: u64,
@@ -160,7 +185,12 @@ impl SaveClaim {
 
 #[derive(Debug)]
 struct CheckpointState {
-    latest_claimed_sequence: u64,
+    latest_reserved_sequence: u64,
+    /// Highest sequence that reached a real ordering boundary: a committed
+    /// checkpoint, a validated AlreadyCurrent result, or a file replacement
+    /// whose journal commit then failed. Merely reserving a sequence during
+    /// async preparation does not supersede an older viable save.
+    latest_barrier_sequence: u64,
     checkpoint: Option<FileCheckpoint>,
 }
 
@@ -179,13 +209,14 @@ impl Default for FileCheckpointCoordinator {
 
 impl FileCheckpointCoordinator {
     pub(crate) fn new(initial_checkpoint: Option<FileCheckpoint>) -> Self {
-        let latest_claimed_sequence = initial_checkpoint
+        let initial_sequence = initial_checkpoint
             .as_ref()
             .map_or(0, |checkpoint| checkpoint.save_sequence);
         let (events, _) = broadcast::channel(CHECKPOINT_EVENT_CAPACITY);
         Self {
             state: Mutex::new(CheckpointState {
-                latest_claimed_sequence,
+                latest_reserved_sequence: initial_sequence,
+                latest_barrier_sequence: initial_sequence,
                 checkpoint: initial_checkpoint,
             }),
             events,
@@ -198,10 +229,10 @@ impl FileCheckpointCoordinator {
     /// supersede an older in-flight write to a different revision.
     pub(crate) fn reserve(&self) -> Result<SaveSequenceClaim, SaveClaimError> {
         let mut state = self.lock_state();
-        let Some(sequence) = state.latest_claimed_sequence.checked_add(1) else {
+        let Some(sequence) = state.latest_reserved_sequence.checked_add(1) else {
             return Err(SaveClaimError);
         };
-        state.latest_claimed_sequence = sequence;
+        state.latest_reserved_sequence = sequence;
         Ok(SaveSequenceClaim { sequence })
     }
 
@@ -245,12 +276,23 @@ impl FileCheckpointCoordinator {
         {
             return;
         }
-        state.latest_claimed_sequence = state.latest_claimed_sequence.max(checkpoint.save_sequence);
+        state.latest_reserved_sequence =
+            state.latest_reserved_sequence.max(checkpoint.save_sequence);
+        state.latest_barrier_sequence = state.latest_barrier_sequence.max(checkpoint.save_sequence);
         state.checkpoint = Some(checkpoint);
     }
 
     pub(crate) fn latest_claimed_sequence(&self) -> u64 {
-        self.lock_state().latest_claimed_sequence
+        self.lock_state().latest_reserved_sequence
+    }
+
+    /// Return the newest save sequence that crossed a real ordering barrier.
+    ///
+    /// Async request continuations use this after the blocking file/journal
+    /// boundary so an older completion cannot later rebind the room path or
+    /// overwrite file-watcher bookkeeping installed by a newer save.
+    pub(crate) fn latest_barrier_sequence(&self) -> u64 {
+        self.lock_state().latest_barrier_sequence
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<FileCheckpointEvent> {
@@ -303,6 +345,31 @@ impl FileCheckpointCoordinator {
         )
     }
 
+    /// Complete a save with a durable pre-replacement intent and an abort
+    /// marker for definitive replacement failures. A crash after replacement
+    /// but before `commit` leaves enough journal evidence for restart to
+    /// finalize the exact checkpoint instead of manufacturing a conflict.
+    pub(crate) fn complete_reserved_with_durable_intent(
+        &self,
+        reservation: SaveSequenceClaim,
+        target: FileCheckpointTarget,
+        content: &[u8],
+        prepare: impl FnOnce(&FileCheckpointPreparation) -> Result<(), String>,
+        abort: impl FnOnce(&FileCheckpointPreparation) -> Result<(), String>,
+        commit: impl FnOnce(&FileCheckpoint) -> Result<(), String>,
+    ) -> SaveOutcome {
+        let claim = self.bind(reservation, target);
+        self.complete_with_callbacks(
+            claim,
+            content,
+            &RealCheckpointIo,
+            &SystemCheckpointClock,
+            prepare,
+            abort,
+            commit,
+        )
+    }
+
     /// Select an already-existing disk revision as the causal checkpoint for
     /// an explicit source reconciliation.
     ///
@@ -318,13 +385,14 @@ impl FileCheckpointCoordinator {
     ) -> Result<T, SaveBlockedReason> {
         debug_assert_eq!(reservation.sequence, checkpoint.save_sequence);
         let mut state = self.lock_state();
-        if state.latest_claimed_sequence != reservation.sequence {
+        if state.latest_barrier_sequence > reservation.sequence {
             return Err(SaveBlockedReason::Superseded {
-                latest_sequence: state.latest_claimed_sequence,
+                latest_sequence: state.latest_barrier_sequence,
             });
         }
         let committed =
             commit(&checkpoint).map_err(|message| SaveBlockedReason::Commit { message })?;
+        state.latest_barrier_sequence = reservation.sequence;
         state.checkpoint = Some(checkpoint);
         Ok(committed)
     }
@@ -366,6 +434,19 @@ impl FileCheckpointCoordinator {
         clock: &dyn CheckpointClock,
         commit: impl FnOnce(&FileCheckpoint) -> Result<(), String>,
     ) -> SaveOutcome {
+        self.complete_with_callbacks(claim, content, io, clock, |_| Ok(()), |_| Ok(()), commit)
+    }
+
+    fn complete_with_callbacks(
+        &self,
+        claim: SaveClaim,
+        content: &[u8],
+        io: &dyn CheckpointIo,
+        clock: &dyn CheckpointClock,
+        prepare: impl FnOnce(&FileCheckpointPreparation) -> Result<(), String>,
+        abort: impl FnOnce(&FileCheckpointPreparation) -> Result<(), String>,
+        commit: impl FnOnce(&FileCheckpoint) -> Result<(), String>,
+    ) -> SaveOutcome {
         let actual_fingerprint = source_fingerprint(content);
         if actual_fingerprint != claim.target.file_fingerprint {
             return SaveOutcome::Blocked {
@@ -377,21 +458,26 @@ impl FileCheckpointCoordinator {
             };
         }
 
-        if let Some(checkpoint) = claim.already_current {
-            let state = self.lock_state();
-            if state.latest_claimed_sequence != claim.sequence {
+        if let Err(outcome) = verify_expected_existing(&claim, io) {
+            return outcome;
+        }
+
+        if let Some(ref checkpoint) = claim.already_current {
+            let mut state = self.lock_state();
+            if state.latest_barrier_sequence > claim.sequence {
                 return SaveOutcome::Blocked {
                     save_sequence: Some(claim.sequence),
                     reason: SaveBlockedReason::Superseded {
-                        latest_sequence: state.latest_claimed_sequence,
+                        latest_sequence: state.latest_barrier_sequence,
                     },
                 };
             }
             if state.checkpoint.as_ref() == Some(&checkpoint)
                 && claim.target.matches_checkpoint(&checkpoint)
             {
+                state.latest_barrier_sequence = claim.sequence;
                 return SaveOutcome::AlreadyCurrent {
-                    checkpoint,
+                    checkpoint: checkpoint.clone(),
                     claim_sequence: claim.sequence,
                 };
             }
@@ -420,8 +506,8 @@ impl FileCheckpointCoordinator {
         // serialized. Hold the same lock used by `claim` from this sequence
         // check through synchronous replacement and checkpoint publication.
         let mut state = self.lock_state();
-        if state.latest_claimed_sequence != claim.sequence {
-            let latest_sequence = state.latest_claimed_sequence;
+        if state.latest_barrier_sequence > claim.sequence {
+            let latest_sequence = state.latest_barrier_sequence;
             drop(state);
             io.remove_temp(&temporary_path);
             return SaveOutcome::Blocked {
@@ -430,9 +516,41 @@ impl FileCheckpointCoordinator {
             };
         }
 
+        // Close the external-edit race between async serialization/temp-file
+        // preparation and atomic replacement.
+        if let Err(outcome) = verify_expected_existing(&claim, io) {
+            drop(state);
+            io.remove_temp(&temporary_path);
+            return outcome;
+        }
+
+        let preparation = FileCheckpointPreparation {
+            path: claim.target.path.clone(),
+            exported_heads: claim.target.exported_heads.clone(),
+            file_fingerprint: claim.target.file_fingerprint,
+            save_sequence: claim.sequence,
+        };
+        if let Err(message) = prepare(&preparation) {
+            drop(state);
+            io.remove_temp(&temporary_path);
+            return SaveOutcome::Blocked {
+                save_sequence: Some(claim.sequence),
+                reason: SaveBlockedReason::Commit { message },
+            };
+        }
         if let Err(error) = io.replace_temp(&temporary_path, &claim.target.path) {
             drop(state);
             io.remove_temp(&temporary_path);
+            if let Err(abort_error) = abort(&preparation) {
+                return SaveOutcome::Blocked {
+                    save_sequence: Some(claim.sequence),
+                    reason: SaveBlockedReason::Commit {
+                        message: format!(
+                            "file replacement failed ({error}); checkpoint intent abort failed: {abort_error}"
+                        ),
+                    },
+                };
+            }
             return blocked_io(claim.sequence, SaveIoStage::Replace, error);
         }
 
@@ -444,11 +562,16 @@ impl FileCheckpointCoordinator {
             saved_at: clock.now(),
         };
         if let Err(message) = commit(&checkpoint) {
+            // Atomic replacement is already visible. Even though its journal
+            // marker failed, an older in-flight save must not overwrite that
+            // evidence while the room transitions to Degraded.
+            state.latest_barrier_sequence = claim.sequence;
             return SaveOutcome::Blocked {
                 save_sequence: Some(claim.sequence),
                 reason: SaveBlockedReason::Commit { message },
             };
         }
+        state.latest_barrier_sequence = claim.sequence;
         state.checkpoint = Some(checkpoint.clone());
         let _ = self.events.send(FileCheckpointEvent {
             checkpoint: checkpoint.clone(),
@@ -461,6 +584,22 @@ impl FileCheckpointCoordinator {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+fn verify_expected_existing(claim: &SaveClaim, io: &dyn CheckpointIo) -> Result<(), SaveOutcome> {
+    let Some(expected) = claim.target.expected_existing_fingerprint else {
+        return Ok(());
+    };
+    let actual = io
+        .target_fingerprint(&claim.target.path)
+        .map_err(|error| blocked_io(claim.sequence, SaveIoStage::Replace, error))?;
+    if actual == Some(expected) {
+        return Ok(());
+    }
+    Err(SaveOutcome::Blocked {
+        save_sequence: Some(claim.sequence),
+        reason: SaveBlockedReason::ExistingContentChanged { expected, actual },
+    })
 }
 
 fn blocked_io(sequence: u64, stage: SaveIoStage, error: io::Error) -> SaveOutcome {
@@ -490,6 +629,13 @@ trait CheckpointIo: Send + Sync {
     fn write_temp(&self, temporary: &mut File, content: &[u8]) -> io::Result<()>;
     fn flush_temp(&self, temporary: &File) -> io::Result<()>;
     fn replace_temp(&self, temporary_path: &Path, target_path: &Path) -> io::Result<()>;
+    fn target_fingerprint(&self, target_path: &Path) -> io::Result<Option<SourceFingerprint>> {
+        match std::fs::read(target_path) {
+            Ok(bytes) => Ok(Some(source_fingerprint(&bytes))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
     fn remove_temp(&self, temporary_path: &Path);
 }
 
@@ -519,6 +665,14 @@ impl CheckpointIo for RealCheckpointIo {
     fn replace_temp(&self, temporary_path: &Path, target_path: &Path) -> io::Result<()> {
         replace_file(temporary_path, target_path)?;
         sync_parent_directory(target_path)
+    }
+
+    fn target_fingerprint(&self, target_path: &Path) -> io::Result<Option<SourceFingerprint>> {
+        match std::fs::read(target_path) {
+            Ok(bytes) => Ok(Some(source_fingerprint(&bytes))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn remove_temp(&self, temporary_path: &Path) {
@@ -976,7 +1130,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_source_checkpoint_rejects_a_superseded_reservation_before_commit() {
+    fn unsettled_newer_reservation_does_not_supersede_existing_checkpoint() {
         let coordinator = FileCheckpointCoordinator::default();
         let old_reservation = coordinator.reserve().unwrap();
         let _new_reservation = coordinator.reserve().unwrap();
@@ -994,11 +1148,73 @@ mod tests {
             Ok(())
         });
 
-        assert_eq!(
-            result,
-            Err(SaveBlockedReason::Superseded { latest_sequence: 2 })
+        assert_eq!(result, Ok(()));
+        assert!(commit_called);
+        assert!(coordinator.checkpoint().is_some());
+    }
+
+    #[test]
+    fn failed_newer_preparation_does_not_burn_older_viable_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notebook.ipynb");
+        let coordinator = FileCheckpointCoordinator::default();
+        let clock = CountingClock::default();
+        let old_content = b"older viable content";
+        let new_content = b"newer declared content";
+        let old_claim = coordinator.claim(target(&path, 1, old_content)).unwrap();
+        let new_claim = coordinator.claim(target(&path, 2, new_content)).unwrap();
+
+        assert!(matches!(
+            coordinator.complete_with(
+                new_claim,
+                b"different prepared bytes",
+                &RealCheckpointIo,
+                &clock,
+            ),
+            SaveOutcome::Blocked {
+                save_sequence: Some(2),
+                reason: SaveBlockedReason::ContentFingerprintMismatch { .. },
+            }
+        ));
+
+        let old = coordinator.complete_with(old_claim, old_content, &RealCheckpointIo, &clock);
+        assert!(matches!(old, SaveOutcome::Saved { .. }));
+        assert_eq!(std::fs::read(&path).unwrap(), old_content);
+    }
+
+    #[test]
+    fn reconciliation_refuses_to_replace_a_newer_external_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notebook.ipynb");
+        let selected_revision = b"revision user selected";
+        let later_revision = b"later external edit";
+        let recovered_content = b"recovered notebook";
+        std::fs::write(&path, selected_revision).unwrap();
+        let coordinator = FileCheckpointCoordinator::default();
+        let target = target(&path, 3, recovered_content)
+            .requiring_existing_fingerprint(source_fingerprint(selected_revision));
+        let claim = coordinator.claim(target).unwrap();
+
+        std::fs::write(&path, later_revision).unwrap();
+        let outcome = coordinator.complete_with(
+            claim,
+            recovered_content,
+            &RealCheckpointIo,
+            &CountingClock::default(),
         );
-        assert!(!commit_called);
+
+        assert!(matches!(
+            outcome,
+            SaveOutcome::Blocked {
+                save_sequence: Some(1),
+                reason: SaveBlockedReason::ExistingContentChanged {
+                    expected,
+                    actual: Some(actual),
+                },
+            } if expected == source_fingerprint(selected_revision)
+                && actual == source_fingerprint(later_revision)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), later_revision);
         assert!(coordinator.checkpoint().is_none());
     }
 

@@ -361,12 +361,13 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
-    let mut load_state_rx = if let Some(load_path) = needs_load {
-        start_room_initial_load(
+    let mut source_state_rx = if let Some(load_path) = needs_load {
+        let _legacy_load_rx = start_room_initial_load(
             room,
             load_path.to_path_buf(),
             execution_store_dir.to_path_buf(),
-        )
+        );
+        room.initial_load.subscribe_authoritative()
     } else if room.is_loading()
         || matches!(
             initial_load_phase,
@@ -374,7 +375,7 @@ where
                 | notebook_protocol::protocol::InitialLoadPhaseWire::Failed { .. }
         )
     {
-        room.initial_load.subscribe()
+        room.initial_load.subscribe_authoritative()
     } else {
         return Ok(InitialLoadSyncOutcome {
             initial_load_phase,
@@ -382,10 +383,11 @@ where
         });
     };
 
-    let mut generation = load_state_rx.borrow().generation();
+    let mut generation = source_state_rx.borrow().generation();
     let mut notebook_doc_converged = false;
     loop {
-        let state = load_state_rx.borrow().clone();
+        let source_state = source_state_rx.borrow().clone();
+        let state = crate::notebook_sync_server::RoomInitialLoad::project_state(&source_state);
         match state {
             RoomInitialLoadState::Ready {
                 generation: settled_generation,
@@ -473,7 +475,7 @@ where
         }
 
         tokio::select! {
-            changed = load_state_rx.changed() => {
+            changed = source_state_rx.changed() => {
                 if changed.is_err() {
                     return Err(anyhow::anyhow!("Initial materialization state channel closed"));
                 }

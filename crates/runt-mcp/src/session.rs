@@ -347,18 +347,20 @@ impl NotebookSession {
             }
             SessionReadinessEvidence::HostedLegacy => {
                 // Hosted sync does not yet carry the daemon's room lifecycle
-                // control frame. A readable local replica is useful, but it is
-                // not evidence that the host granted mutation or execution.
+                // control frame. Preserve the established hosted capability
+                // contract once its replica is connected; otherwise routing
+                // hosted sessions through the new centralized gate disables
+                // every read and mutation despite a successful connection.
                 let document_ready = connected && self.handle.current_heads_hex().is_ok();
                 (
                     serde_json::json!({
                         "phase": "legacy_hosted",
-                        "warning": "hosted room lifecycle readiness is unavailable",
+                        "warning": "hosted room lifecycle readiness is unavailable; using connected-replica readiness",
                     }),
                     false,
                     document_ready,
                     runtime_doc_ready && runtime_running,
-                    false,
+                    document_ready,
                     Vec::new(),
                     Vec::new(),
                     None,

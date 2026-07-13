@@ -956,14 +956,11 @@ async fn stage_initial_import(
     Ok((artifact, projection))
 }
 
-async fn journal_and_publish_staged_import(
+async fn journal_staged_import(
     room: &NotebookRoom,
     artifact: Arc<StagedImportArtifact>,
-    projection: Arc<runtimed_client::protocol::NotebookProjection>,
-    document_heads: Vec<String>,
 ) -> Result<(), String> {
     let durability = Arc::clone(&room.durability);
-    let lifecycle = Arc::clone(&room.lifecycle);
     let generation = artifact.generation;
     let fingerprint = artifact.fingerprint;
     let change_hashes = artifact.change_hashes.iter().map(|hash| hash.0).collect();
@@ -979,16 +976,27 @@ async fn journal_and_publish_staged_import(
                 change_hashes,
             )
             .map_err(|error| format!("Failed to commit staged recovery record: {error}"))?;
-        if !lifecycle.publish_projection_ready(generation, artifact, projection, document_heads) {
-            return Err(
-                "session_superseded: source generation changed before projection publish"
-                    .to_string(),
-            );
-        }
         Ok(())
     })
     .await
     .map_err(|error| format!("Recovery journal task failed: {error}"))?
+}
+
+async fn rebuild_staged_projection_after_sidecars(
+    room: &NotebookRoom,
+    artifact: &StagedImportArtifact,
+) -> Result<Arc<runtimed_client::protocol::NotebookProjection>, String> {
+    let actor = format!(
+        "runtimed:source-projection:{}:{}",
+        room.id, artifact.generation
+    );
+    let mut staged = NotebookDoc::load_with_actor(artifact.snapshot.as_ref(), &actor)
+        .map_err(|error| format!("Failed to reload staged projection document: {error}"))?;
+    Ok(Arc::new(
+        build_staged_notebook_projection(room, &mut staged, artifact.generation)
+            .await
+            .map_err(|error| format!("Failed to rebuild staged projection: {error:#}"))?,
+    ))
 }
 
 fn publish_initial_file_checkpoint(
@@ -1149,13 +1157,6 @@ async fn publish_staged_import(
         );
     }
 
-    if room.file_binding.path().await.as_deref() == Some(path) {
-        *room.persistence.last_save_sources.write().await = artifact.loaded_sources.clone();
-        room.persistence
-            .note_disk_content(artifact.source_content.as_ref());
-    }
-    apply_staged_runtime_sidecars(room, artifact)?;
-
     let mut document_heads = room
         .lifecycle
         .availability()
@@ -1273,15 +1274,14 @@ pub(crate) async fn materialize_initial_load(
     execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
 ) -> Result<(usize, Vec<String>), String> {
     let start = std::time::Instant::now();
-    let (artifact, projection) = if let Some(staged) = room.lifecycle.staged_import(generation) {
-        let projection = room
-            .lifecycle
+    let artifact = if let Some(staged) = room.lifecycle.staged_import(generation) {
+        room.lifecycle
             .prepared_projection(generation)
             .or_else(|| room.lifecycle.projection(generation))
             .ok_or_else(|| {
                 "source_degraded: staged source projection is unavailable for retry".to_string()
             })?;
-        (staged, projection)
+        staged
     } else {
         let prepared = prepare_initial_import(room, path, execution_store).await?;
         let total_cells = prepared.cells.len();
@@ -1302,7 +1302,7 @@ pub(crate) async fn materialize_initial_load(
                     .to_string(),
             );
         }
-        (artifact, projection)
+        artifact
     };
 
     // Capture the current live prefix before the journal await. Peer changes
@@ -1318,16 +1318,34 @@ pub(crate) async fn materialize_initial_load(
     if !room.lifecycle.note_journaling(generation) {
         return Err("session_superseded: source generation changed before journal".to_string());
     }
-    // The blocking worker owns both the durable marker and projection publish.
-    // If this async task is cancelled, the worker still finishes that ordered
-    // pair while the task lease terminalizes the room generation.
-    journal_and_publish_staged_import(room, Arc::clone(&artifact), projection, document_heads)
-        .await?;
+    // The blocking worker owns the durable marker. If this async task is
+    // cancelled, the journal still finishes and the task lease terminalizes
+    // the generation; a retry resumes the exact immutable artifact.
+    journal_staged_import(room, Arc::clone(&artifact)).await?;
 
-    // A resumed immutable artifact already owns ProjectionReady; reassert the
-    // causal file checkpoint in case its earlier RuntimeState projection was
-    // interrupted after the journal marker.
+    // Runtime sidecars and the causal file checkpoint both advance
+    // RuntimeStateDoc. Apply them only after the source artifact is durable,
+    // then capture the retained projection from those exact resulting heads.
+    // This prevents ProjectionReady from advertising runtime heads that were
+    // stale before the first peer could even receive them.
     publish_initial_file_checkpoint(room, path, &artifact)?;
+    apply_staged_runtime_sidecars(room, &artifact)?;
+    if room.file_binding.path().await.as_deref() == Some(path) {
+        *room.persistence.last_save_sources.write().await = artifact.loaded_sources.clone();
+        room.persistence
+            .note_disk_content(artifact.source_content.as_ref());
+    }
+    let projection = rebuild_staged_projection_after_sidecars(room, &artifact).await?;
+    if !room.lifecycle.publish_projection_ready(
+        generation,
+        Arc::clone(&artifact),
+        projection,
+        document_heads,
+    ) {
+        return Err(
+            "session_superseded: source generation changed before projection publish".to_string(),
+        );
+    }
 
     let document_heads = publish_staged_import(room, path, &artifact).await?;
     room.durability
@@ -2101,88 +2119,90 @@ pub(crate) fn commit_file_watcher_changes(
     rollback_actor: &str,
     source_revision: Option<&ExternalSourceRevision>,
 ) -> bool {
-    let changes = doc
-        .doc_mut()
-        .get_changes(baseline_heads)
-        .into_iter()
-        .collect::<Vec<_>>();
-    if changes.is_empty() && source_revision.is_none() {
-        return true;
-    }
-    let commit = match source_revision {
-        Some(revision) => room.durability.commit_external_source_revision(
-            changes,
-            revision.fingerprint,
-            revision.canonical_path.clone(),
-            revision.save_sequence,
-        ),
-        None => room.durability.commit_peer_changes(changes),
-    };
-    let committed_status = match commit {
-        Ok(super::durability::DurableCommitOutcome::Committed(status))
-        | Ok(super::durability::DurableCommitOutcome::AlreadyDurable(status)) => status,
-        Err(error) => {
-            let document_readable =
-                match NotebookDoc::load_with_actor(rollback_snapshot, rollback_actor) {
-                    Ok(restored) => {
-                        *doc = restored;
-                        true
-                    }
-                    Err(_) => false,
-                };
-            let document_heads = doc.get_heads_hex();
-            let source_conflict = matches!(
-                &error,
-                super::durability::RoomDurabilityError::SourceConflict { .. }
-            );
-            let reason = if source_conflict {
-                format!(
-                "source_conflict: external source changed while journal heads were not exported; both versions were preserved: {error}"
-            )
-            } else {
-                format!(
-                "file watcher journal commit failed before external changes became visible: {error}"
-            )
-            };
-            room.durability.mark_degraded(reason.clone());
-            if source_conflict {
-                room.lifecycle
-                    .mark_source_conflict(reason.clone(), document_heads);
-            } else {
-                room.lifecycle
-                    .mark_degraded(reason.clone(), document_heads, document_readable);
-            }
-            let _ = room.state.with_doc(|state| {
-                let issue = if source_conflict {
-                    runtime_doc::FileSourceIssue::Conflict {
-                        reason: reason.clone(),
-                    }
-                } else {
-                    runtime_doc::FileSourceIssue::Degraded {
-                        reason: reason.clone(),
-                    }
-                };
-                state.set_file_source_issue(Some(&issue))
-            });
-            warn!("[notebook-watch] {reason}");
-            return false;
+    super::durability::run_blocking_durability_boundary(|| {
+        let changes = doc
+            .doc_mut()
+            .get_changes(baseline_heads)
+            .into_iter()
+            .collect::<Vec<_>>();
+        if changes.is_empty() && source_revision.is_none() {
+            return true;
         }
-    };
-    if let Some(revision) = source_revision {
-        room.persistence
-            .restore_file_checkpoint(super::file_checkpoint::FileCheckpoint {
-                path: revision.canonical_path.clone(),
-                exported_heads: room.durability.manifest().exported_heads,
-                file_fingerprint: revision.fingerprint,
-                save_sequence: revision.save_sequence,
-                saved_at: revision.saved_at,
-            });
-        debug_assert_eq!(
-            committed_status.source_phase,
-            super::recovery::RecoverySourcePhase::DurablyStaged
-        );
-    }
-    true
+        let commit = match source_revision {
+            Some(revision) => room.durability.commit_external_source_revision(
+                changes,
+                revision.fingerprint,
+                revision.canonical_path.clone(),
+                revision.save_sequence,
+            ),
+            None => room.durability.commit_peer_changes(changes),
+        };
+        let committed_status = match commit {
+            Ok(super::durability::DurableCommitOutcome::Committed(status))
+            | Ok(super::durability::DurableCommitOutcome::AlreadyDurable(status)) => status,
+            Err(error) => {
+                let document_readable =
+                    match NotebookDoc::load_with_actor(rollback_snapshot, rollback_actor) {
+                        Ok(restored) => {
+                            *doc = restored;
+                            true
+                        }
+                        Err(_) => false,
+                    };
+                let document_heads = doc.get_heads_hex();
+                let source_conflict = matches!(
+                    &error,
+                    super::durability::RoomDurabilityError::SourceConflict { .. }
+                );
+                let reason = if source_conflict {
+                    format!(
+                        "source_conflict: external source changed while journal heads were not exported; both versions were preserved: {error}"
+                    )
+                } else {
+                    format!(
+                        "file watcher journal commit failed before external changes became visible: {error}"
+                    )
+                };
+                room.durability.mark_degraded(reason.clone());
+                if source_conflict {
+                    room.lifecycle
+                        .mark_source_conflict(reason.clone(), document_heads);
+                } else {
+                    room.lifecycle
+                        .mark_degraded(reason.clone(), document_heads, document_readable);
+                }
+                let _ = room.state.with_doc(|state| {
+                    let issue = if source_conflict {
+                        runtime_doc::FileSourceIssue::Conflict {
+                            reason: reason.clone(),
+                        }
+                    } else {
+                        runtime_doc::FileSourceIssue::Degraded {
+                            reason: reason.clone(),
+                        }
+                    };
+                    state.set_file_source_issue(Some(&issue))
+                });
+                warn!("[notebook-watch] {reason}");
+                return false;
+            }
+        };
+        if let Some(revision) = source_revision {
+            room.persistence
+                .restore_file_checkpoint(super::file_checkpoint::FileCheckpoint {
+                    path: revision.canonical_path.clone(),
+                    exported_heads: room.durability.manifest().exported_heads,
+                    file_fingerprint: revision.fingerprint,
+                    save_sequence: revision.save_sequence,
+                    saved_at: revision.saved_at,
+                });
+            debug_assert_eq!(
+                committed_status.source_phase,
+                super::recovery::RecoverySourcePhase::DurablyStaged
+            );
+        }
+        true
+    })
 }
 
 async fn complete_external_source_revision(
@@ -2408,6 +2428,30 @@ async fn apply_ipynb_changes_inner(
         }
         map
     };
+
+    // Asset/output preparation above is intentionally outside the document
+    // lock and may be slow. Recheck the exact source revision immediately
+    // before authoring it so stale prepared bytes never enter NotebookDoc.
+    if let Some(revision) = source_revision {
+        match tokio::fs::read(&revision.canonical_path).await {
+            Ok(current)
+                if super::recovery::source_fingerprint(&current) == revision.fingerprint => {}
+            Ok(_) => {
+                debug!(
+                    "[notebook-watch] Source changed again while {:?} was being prepared",
+                    revision.canonical_path
+                );
+                return AppliedIpynbChanges::default();
+            }
+            Err(error) => {
+                debug!(
+                    "[notebook-watch] Cannot re-read {:?} before commit: {}",
+                    revision.canonical_path, error
+                );
+                return AppliedIpynbChanges::default();
+            }
+        }
+    }
 
     // Build maps for comparison
     let current_map: HashMap<&str, &CellSnapshot> =
@@ -2951,7 +2995,7 @@ async fn apply_ipynb_changes_inner(
     // Update saved_sources baseline after applying external changes so
     // that subsequent external edits are detected correctly (P2-a) and
     // externally-added cells become deletable if later removed (P2-b).
-    if applied.cells_changed {
+    if applied.cells_changed && source_revision.is_none() {
         let mut saved = room.persistence.last_save_sources.write().await;
         for ext_cell in external_cells {
             saved.insert(ext_cell.id.clone(), ext_cell.source.clone());

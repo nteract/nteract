@@ -31,56 +31,59 @@ async fn apply_runtime_agent_notebook_doc_frame(
 
     let (persist_bytes, reply_encoded) = {
         let mut doc = room.doc.write().await;
-        let rollback_state = has_agent_changes.then(|| (doc.save(), doc.get_actor_id()));
-        let heads_before = doc.get_heads();
+        super::durability::run_blocking_durability_boundary(|| -> anyhow::Result<_> {
+            let rollback_state = has_agent_changes.then(|| (doc.save(), doc.get_actor_id()));
+            let heads_before = doc.get_heads();
 
-        doc.receive_sync_message_recovering(sync_state, message, "peer-runtime-agent-doc")
-            .map_err(|error| anyhow::anyhow!("runtime-agent doc receive failed: {error}"))?;
+            doc.receive_sync_message_recovering(sync_state, message, "peer-runtime-agent-doc")
+                .map_err(|error| anyhow::anyhow!("runtime-agent doc receive failed: {error}"))?;
 
-        let changed = heads_before != doc.get_heads();
-        if changed && has_agent_changes {
-            let agent_changes = doc
-                .doc_mut()
-                .get_changes(&heads_before)
-                .into_iter()
-                .collect::<Vec<_>>();
-            if let Err(error) = room.durability.commit_peer_changes(agent_changes) {
-                let restored = rollback_state.as_ref().and_then(|(snapshot, actor)| {
-                    notebook_doc::NotebookDoc::load_with_actor(snapshot, actor).ok()
-                });
-                let document_readable = restored.is_some();
-                if let Some(restored) = restored {
-                    *doc = restored;
+            let changed = heads_before != doc.get_heads();
+            if changed && has_agent_changes {
+                let agent_changes = doc
+                    .doc_mut()
+                    .get_changes(&heads_before)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                if let Err(error) = room.durability.commit_peer_changes(agent_changes) {
+                    let restored = rollback_state.as_ref().and_then(|(snapshot, actor)| {
+                        notebook_doc::NotebookDoc::load_with_actor(snapshot, actor).ok()
+                    });
+                    let document_readable = restored.is_some();
+                    if let Some(restored) = restored {
+                        *doc = restored;
+                    }
+                    *sync_state = sync_state_before;
+                    let document_heads = doc.get_heads_hex();
+                    let reason = format!(
+                        "journal commit failed before runtime-agent acknowledgement: {error}"
+                    );
+                    room.durability.mark_degraded(reason.clone());
+                    room.lifecycle
+                        .mark_degraded(reason.clone(), document_heads, document_readable);
+                    let _ = room.state.with_doc(|state| {
+                        state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
+                            reason: reason.clone(),
+                        }))
+                    });
+                    warn!("[notebook-sync] {reason}");
+                    return Err(anyhow::anyhow!(reason));
                 }
-                *sync_state = sync_state_before;
-                let document_heads = doc.get_heads_hex();
-                let reason =
-                    format!("journal commit failed before runtime-agent acknowledgement: {error}");
-                room.durability.mark_degraded(reason.clone());
-                room.lifecycle
-                    .mark_degraded(reason.clone(), document_heads, document_readable);
-                let _ = room.state.with_doc(|state| {
-                    state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
-                        reason: reason.clone(),
-                    }))
-                });
-                warn!("[notebook-sync] {reason}");
-                return Err(anyhow::anyhow!(reason));
             }
-        }
 
-        if changed {
-            // The append above is the visibility boundary for runtime-agent
-            // changes. Other peers are notified only after it is durable.
-            let _ = room.broadcasts.changed_tx.send(());
-        }
+            if changed {
+                // The append above is the visibility boundary for runtime-agent
+                // changes. Other peers are notified only after it is durable.
+                let _ = room.broadcasts.changed_tx.send(());
+            }
 
-        let persist_bytes = changed.then(|| doc.save());
-        let reply_encoded = doc
-            .generate_sync_message_recovering(sync_state, "peer-runtime-agent-doc-reply")
-            .map_err(|error| anyhow::anyhow!("runtime-agent doc reply failed: {error}"))?
-            .map(|reply| reply.encode());
-        (persist_bytes, reply_encoded)
+            let persist_bytes = changed.then(|| doc.save());
+            let reply_encoded = doc
+                .generate_sync_message_recovering(sync_state, "peer-runtime-agent-doc-reply")
+                .map_err(|error| anyhow::anyhow!("runtime-agent doc reply failed: {error}"))?
+                .map(|reply| reply.encode());
+            Ok((persist_bytes, reply_encoded))
+        })?
     };
 
     if let Some(bytes) = persist_bytes {

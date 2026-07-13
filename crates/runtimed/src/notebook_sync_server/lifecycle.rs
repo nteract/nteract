@@ -344,12 +344,21 @@ impl RoomLifecycle {
     }
 
     /// Enter source preparation before the room is published.
-    pub fn mark_source_required(&self) {
+    pub fn mark_source_required(&self) -> bool {
         let _guard = self.lock_transition();
-        if self.source_state().is_in_progress() {
-            return;
+        let current = self.source_state();
+        match &current {
+            RoomSourceState::Preparing(_) | RoomSourceState::Publishing(_) => return true,
+            RoomSourceState::Ready(status)
+                if status.generation == 0
+                    && matches!(status.fingerprint, RoomSourceFingerprint::NotApplicable) => {}
+            // Ready generations are sticky for the room lifetime. Failed
+            // generations may advance only through a claimed safe retry or an
+            // explicit reconciliation; a generic open/attach path must never
+            // erase their retry policy or retained recovery evidence.
+            RoomSourceState::Ready(_) | RoomSourceState::Failed(_) => return false,
         }
-        let generation = self.source_state().generation().saturating_add(1);
+        let generation = current.generation().saturating_add(1);
         self.task_claimed.store(false, Ordering::Release);
         *self
             .staged
@@ -380,6 +389,7 @@ impl RoomLifecycle {
                 capabilities: RoomCapabilities::attached(),
                 reason: None,
             }));
+        true
     }
 
     pub fn begin_source(&self) -> RoomSourceStart {
@@ -1314,6 +1324,33 @@ mod tests {
             result,
             RoomWaitResult::Current(RoomAvailability::Attached(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_generation_is_sticky_and_notifies_authoritative_waiters() {
+        let lifecycle = RoomLifecycle::test_default();
+        assert!(lifecycle.mark_source_required());
+        let generation = match lifecycle.begin_source() {
+            RoomSourceStart::Started { generation } => generation,
+            other => panic!("source generation should be claimable, got {other:?}"),
+        };
+        let mut waiter = lifecycle.subscribe_source();
+        assert!(lifecycle.complete_failed(
+            generation,
+            "source_degraded",
+            "injected journal failure".to_string(),
+        ));
+        waiter.changed().await.unwrap();
+        let failed = waiter.borrow().clone();
+        assert!(matches!(
+            failed,
+            RoomSourceState::Failed(ref status)
+                if status.generation == generation
+                    && status.error.as_ref().is_some_and(|error| error.code == "source_degraded")
+        ));
+
+        assert!(!lifecycle.mark_source_required());
+        assert_eq!(lifecycle.source_state(), failed);
     }
 
     #[test]

@@ -18,9 +18,8 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 use super::recovery::{
-    RecoveredJournalRecord, RecoveryArchiveDurability, RecoveryArchiveOutcome, RecoveryJournal,
-    RecoveryJournalError, RecoveryManifest, RecoverySourcePhase, RecoveryUnavailableReason,
-    SourceFingerprint,
+    PendingFileCheckpoint, RecoveredJournalRecord, RecoveryJournal, RecoveryJournalError,
+    RecoveryManifest, RecoverySourcePhase, RecoveryUnavailableReason, SourceFingerprint,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +119,25 @@ pub(crate) enum RoomDurabilityError {
     },
 }
 
+/// Run one synchronous document serialization/journal boundary without
+/// starving unrelated tasks on runtimed's multi-thread executor.
+///
+/// The operation deliberately stays on the current task so callers can retain
+/// a borrowed NotebookDoc guard across the causal durability boundary. Tokio
+/// replaces the occupied worker while the closure performs blocking disk I/O.
+/// Current-thread test runtimes execute inline because `block_in_place` is not
+/// available there.
+pub(crate) fn run_blocking_durability_boundary<T>(operation: impl FnOnce() -> T) -> T {
+    let multi_thread_runtime = tokio::runtime::Handle::try_current()
+        .map(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+        .unwrap_or(false);
+    if multi_thread_runtime {
+        tokio::task::block_in_place(operation)
+    } else {
+        operation()
+    }
+}
+
 /// Commit a daemon-authored NotebookDoc mutation before it is acknowledged or
 /// advertised to another peer.
 ///
@@ -136,37 +154,41 @@ pub(crate) fn commit_daemon_notebook_mutation(
     rollback_actor: &str,
     operation: &str,
 ) -> Result<(), String> {
-    let heads = doc.get_heads();
-    if heads == baseline_heads {
-        return Ok(());
-    }
-    let snapshot = doc.save();
-    let raw_heads = heads.iter().map(|head| head.0).collect::<Vec<_>>();
-    if let Err(error) =
-        room.durability
-            .commit_snapshot(&snapshot, raw_heads, DurableMutation::Daemon)
-    {
-        let document_readable =
-            match notebook_doc::NotebookDoc::load_with_actor(rollback_snapshot, rollback_actor) {
-                Ok(restored) => {
-                    *doc = restored;
-                    true
-                }
-                Err(_) => false,
-            };
-        let document_heads = doc.get_heads_hex();
-        let reason = format!("{operation} journal commit failed before acknowledgement: {error}");
-        room.durability.mark_degraded(reason.clone());
-        room.lifecycle
-            .mark_degraded(reason.clone(), document_heads, document_readable);
-        let _ = room.state.with_doc(|state| {
-            state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
-                reason: reason.clone(),
-            }))
-        });
-        return Err(reason);
-    }
-    Ok(())
+    run_blocking_durability_boundary(|| {
+        let heads = doc.get_heads();
+        if heads == baseline_heads {
+            return Ok(());
+        }
+        let snapshot = doc.save();
+        let raw_heads = heads.iter().map(|head| head.0).collect::<Vec<_>>();
+        if let Err(error) =
+            room.durability
+                .commit_snapshot(&snapshot, raw_heads, DurableMutation::Daemon)
+        {
+            let document_readable =
+                match notebook_doc::NotebookDoc::load_with_actor(rollback_snapshot, rollback_actor)
+                {
+                    Ok(restored) => {
+                        *doc = restored;
+                        true
+                    }
+                    Err(_) => false,
+                };
+            let document_heads = doc.get_heads_hex();
+            let reason =
+                format!("{operation} journal commit failed before acknowledgement: {error}");
+            room.durability.mark_degraded(reason.clone());
+            room.lifecycle
+                .mark_degraded(reason.clone(), document_heads, document_readable);
+            let _ = room.state.with_doc(|state| {
+                state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
+                    reason: reason.clone(),
+                }))
+            });
+            return Err(reason);
+        }
+        Ok(())
+    })
 }
 
 struct DurabilityState {
@@ -207,12 +229,17 @@ impl RoomDurability {
 
     /// Restore the exact latest complete record selected by recovery scanning.
     pub(crate) fn recovered(journal: RecoveryJournal, recovered: RecoveredJournalRecord) -> Self {
+        let degraded_reason = recovered
+            .ignored_tail
+            .as_ref()
+            .filter(|tail| !tail.is_repairable_torn_suffix())
+            .map(|tail| format!("recovery journal has preserved corrupt data: {tail:?}"));
         Self::from_state(
             Some(journal),
             recovered.record.manifest,
             recovered.record.automerge_snapshot,
             true,
-            None,
+            degraded_reason,
         )
     }
 
@@ -598,6 +625,159 @@ impl RoomDurability {
     /// The durable snapshot may contain peer changes newer than the captured
     /// heads exported to `.ipynb`. Verify those heads are ancestors of the
     /// recovery snapshot, then advance only manifest checkpoint metadata.
+    pub(crate) fn prepare_file_checkpoint(
+        &self,
+        canonical_path: PathBuf,
+        file_fingerprint: SourceFingerprint,
+        exported_heads: Vec<[u8; 32]>,
+        save_sequence: u64,
+        source_generation: Option<u64>,
+    ) -> Result<DurableCommitOutcome, RoomDurabilityError> {
+        self.ensure_accepting_commits()?;
+        let required_heads = exported_heads
+            .iter()
+            .copied()
+            .map(ChangeHash)
+            .collect::<Vec<_>>();
+        let mut state = self.lock_state();
+        if !snapshot_contains_heads(&state.durable_snapshot, &required_heads)? {
+            return Err(RoomDurabilityError::FileCheckpointHeadsNotDurable);
+        }
+        let pending = PendingFileCheckpoint {
+            canonical_path,
+            file_fingerprint,
+            exported_heads,
+            save_sequence,
+            source_generation,
+        };
+        if state.manifest.pending_file_checkpoint.as_ref() == Some(&pending) {
+            return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
+                &state,
+            )));
+        }
+        if let Some(existing) = &state.manifest.pending_file_checkpoint {
+            return Err(RoomDurabilityError::InvalidSnapshot(format!(
+                "file checkpoint {} is still pending before sequence {} can prepare",
+                existing.save_sequence, save_sequence
+            )));
+        }
+
+        let mut manifest = state.manifest.clone();
+        manifest.sequence = manifest
+            .sequence
+            .checked_add(1)
+            .ok_or(RoomDurabilityError::SequenceExhausted)?;
+        manifest.pending_file_checkpoint = Some(pending);
+        if let Some(journal) = self.journal() {
+            if let Err(error) = journal.append(&manifest, &state.durable_snapshot) {
+                let reason = error.to_string();
+                state.degraded_reason = Some(reason.clone());
+                self.status_tx.send_replace(status_from_state(&state));
+                return Err(RoomDurabilityError::Journal(error));
+            }
+        }
+        state.manifest = manifest;
+        state.has_durable_record = true;
+        let status = status_from_state(&state);
+        self.status_tx.send_replace(status.clone());
+        Ok(DurableCommitOutcome::Committed(status))
+    }
+
+    /// Clear a prepared checkpoint after atomic replacement definitively did
+    /// not occur. A crash before this marker is harmless: restart observes
+    /// the old source fingerprint and appends the same abort transition.
+    pub(crate) fn abort_file_checkpoint(
+        &self,
+        save_sequence: u64,
+    ) -> Result<DurableCommitOutcome, RoomDurabilityError> {
+        self.ensure_accepting_commits()?;
+        let mut state = self.lock_state();
+        let Some(pending) = state.manifest.pending_file_checkpoint.as_ref() else {
+            return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
+                &state,
+            )));
+        };
+        if pending.save_sequence != save_sequence {
+            return Err(RoomDurabilityError::InvalidSnapshot(format!(
+                "cannot abort checkpoint sequence {save_sequence}; sequence {} is pending",
+                pending.save_sequence
+            )));
+        }
+        let mut manifest = state.manifest.clone();
+        manifest.sequence = manifest
+            .sequence
+            .checked_add(1)
+            .ok_or(RoomDurabilityError::SequenceExhausted)?;
+        manifest.pending_file_checkpoint = None;
+        if let Some(journal) = self.journal() {
+            if let Err(error) = journal.append(&manifest, &state.durable_snapshot) {
+                let reason = error.to_string();
+                state.degraded_reason = Some(reason.clone());
+                self.status_tx.send_replace(status_from_state(&state));
+                return Err(RoomDurabilityError::Journal(error));
+            }
+        }
+        state.manifest = manifest;
+        let status = status_from_state(&state);
+        self.status_tx.send_replace(status.clone());
+        Ok(DurableCommitOutcome::Committed(status))
+    }
+
+    /// Resolve a checkpoint intent discovered during restart. Disk matching
+    /// the intended bytes proves replacement happened; matching the previous
+    /// source proves it did not. Any third fingerprint remains a real source
+    /// conflict and is never selected silently.
+    pub(crate) fn resolve_recovered_file_checkpoint(
+        &self,
+        current_source_fingerprint: SourceFingerprint,
+    ) -> Result<DurableCommitOutcome, RoomDurabilityError> {
+        self.ensure_accepting_commits()?;
+        let mut state = self.lock_state();
+        let Some(pending) = state.manifest.pending_file_checkpoint.clone() else {
+            return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
+                &state,
+            )));
+        };
+        let mut manifest = state.manifest.clone();
+        if current_source_fingerprint == pending.file_fingerprint {
+            apply_mutation_to_manifest(
+                &mut manifest,
+                DurableMutation::FileCheckpoint {
+                    canonical_path: pending.canonical_path,
+                    file_fingerprint: pending.file_fingerprint,
+                    exported_heads: pending.exported_heads,
+                    save_sequence: pending.save_sequence,
+                    source_generation: pending.source_generation,
+                },
+            );
+        } else if current_source_fingerprint == manifest.source_fingerprint {
+            manifest.pending_file_checkpoint = None;
+        } else {
+            return Err(RoomDurabilityError::SourceConflict {
+                journal_source: manifest.source_fingerprint,
+                observed_source: current_source_fingerprint,
+            });
+        }
+        manifest.sequence = manifest
+            .sequence
+            .checked_add(1)
+            .ok_or(RoomDurabilityError::SequenceExhausted)?;
+        if let Some(journal) = self.journal() {
+            if let Err(error) = journal.append(&manifest, &state.durable_snapshot) {
+                let reason = error.to_string();
+                state.degraded_reason = Some(reason.clone());
+                self.status_tx.send_replace(status_from_state(&state));
+                return Err(RoomDurabilityError::Journal(error));
+            }
+        }
+        state.manifest = manifest;
+        state.has_durable_record = true;
+        state.degraded_reason = None;
+        let status = status_from_state(&state);
+        self.status_tx.send_replace(status.clone());
+        Ok(DurableCommitOutcome::Committed(status))
+    }
+
     pub(crate) fn commit_file_checkpoint(
         &self,
         canonical_path: PathBuf,
@@ -654,6 +834,13 @@ impl RoomDurability {
             return Err(RoomDurabilityError::FileCheckpointHeadsNotDurable);
         }
 
+        let expected_pending = PendingFileCheckpoint {
+            canonical_path: canonical_path.clone(),
+            file_fingerprint,
+            exported_heads: exported_heads.clone(),
+            save_sequence,
+            source_generation,
+        };
         let mutation = DurableMutation::FileCheckpoint {
             canonical_path,
             file_fingerprint,
@@ -661,6 +848,14 @@ impl RoomDurability {
             save_sequence,
             source_generation,
         };
+        if let Some(pending) = &state.manifest.pending_file_checkpoint {
+            if pending != &expected_pending {
+                return Err(RoomDurabilityError::InvalidSnapshot(format!(
+                    "file checkpoint sequence {save_sequence} does not match prepared intent {}",
+                    pending.save_sequence
+                )));
+            }
+        }
         if state.has_durable_record && mutation_is_already_reflected(&state.manifest, &mutation) {
             return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
                 &state,
@@ -734,17 +929,6 @@ impl RoomDurability {
         let journal = self
             .journal()
             .ok_or(RoomDurabilityError::JournalUnavailable)?;
-        let archive = match journal.archive()? {
-            RecoveryArchiveOutcome::JournalRetired {
-                archive,
-                durability,
-                ..
-            } => (archive, durability),
-            RecoveryArchiveOutcome::Unavailable { reason } => {
-                return Err(RoomDurabilityError::ArchiveUnavailable(reason));
-            }
-        };
-
         let sequence = state
             .manifest
             .sequence
@@ -764,18 +948,7 @@ impl RoomDurability {
         manifest.exported_heads = durable_heads;
         manifest.file_save_sequence = Some(save_sequence);
 
-        if let Err(source) = journal.append(&manifest, snapshot) {
-            let reason = format!(
-                "reconciled source journal append failed after archive {}: {source}",
-                archive.0.directory.display()
-            );
-            state.degraded_reason = Some(reason);
-            self.status_tx.send_replace(status_from_state(&state));
-            return Err(RoomDurabilityError::ReconciledSourceAfterArchive {
-                archive: archive.0.directory,
-                source: Box::new(source),
-            });
-        }
+        let replacement = journal.archive_and_replace(&manifest, snapshot)?;
 
         state.manifest = manifest;
         state.durable_snapshot = Arc::from(snapshot);
@@ -783,14 +956,10 @@ impl RoomDurability {
         state.degraded_reason = None;
         let status = status_from_state(&state);
         self.status_tx.send_replace(status.clone());
-        let archive_durability_warning = match archive.1 {
-            RecoveryArchiveDurability::Durable => None,
-            RecoveryArchiveDurability::Uncertain { reason } => Some(reason),
-        };
         Ok(ReconciledSourceCommit {
             status,
-            archived_directory: archive.0.directory,
-            archive_durability_warning,
+            archived_directory: replacement.archive.directory,
+            archive_durability_warning: replacement.durability_warning,
         })
     }
 
@@ -1075,6 +1244,7 @@ fn apply_mutation_to_manifest(manifest: &mut RecoveryManifest, mutation: Durable
                 manifest.source_generation = source_generation;
                 manifest.source_phase = RecoverySourcePhase::DurablyStaged;
             }
+            manifest.pending_file_checkpoint = None;
         }
     }
 }
@@ -1111,6 +1281,7 @@ fn mutation_is_already_reflected(manifest: &RecoveryManifest, mutation: &Durable
                 && manifest.file_save_sequence == Some(*save_sequence)
                 && source_generation
                     .is_none_or(|generation| manifest.source_generation == generation)
+                && manifest.pending_file_checkpoint.is_none()
         }
     }
 }
@@ -1148,6 +1319,16 @@ mod tests {
 
     use super::*;
     use crate::notebook_sync_server::recovery::{source_fingerprint, RecoveryLoadOutcome};
+
+    #[tokio::test]
+    async fn blocking_boundary_runs_on_current_thread_test_runtime() {
+        assert_eq!(run_blocking_durability_boundary(|| 42), 42);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocking_boundary_runs_on_multithread_runtime() {
+        assert_eq!(run_blocking_durability_boundary(|| 42), 42);
+    }
 
     fn snapshot_with_change(value: i64) -> (Vec<u8>, Vec<[u8; 32]>, Vec<String>, [u8; 32]) {
         let mut doc = AutoCommit::new();
@@ -1343,6 +1524,116 @@ mod tests {
             RoomDurabilityError::FileCheckpointHeadsNotDurable
         ));
         assert!(durability.manifest().exported_heads.is_empty());
+    }
+
+    #[test]
+    fn restart_finalizes_file_replacement_from_durable_intent() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let old_source = source_fingerprint(b"old source");
+        let new_source = source_fingerprint(b"new source");
+        let (snapshot, heads, _, change_hash) = snapshot_with_change(1);
+        let durability = RoomDurability::journaled(
+            journal.clone(),
+            Uuid::nil(),
+            Some(PathBuf::from("/tmp/notebook.ipynb")),
+            old_source,
+            1,
+            snapshot.clone(),
+        );
+        durability
+            .commit_snapshot(
+                &snapshot,
+                heads.clone(),
+                DurableMutation::Source {
+                    generation: 1,
+                    fingerprint: old_source,
+                    staged_change_hashes: vec![change_hash],
+                },
+            )
+            .unwrap();
+        durability.commit_source_ready(1).unwrap();
+        durability
+            .prepare_file_checkpoint(
+                PathBuf::from("/tmp/notebook.ipynb"),
+                new_source,
+                heads.clone(),
+                2,
+                None,
+            )
+            .unwrap();
+        drop(durability);
+
+        let recovered = match journal.load(new_source).unwrap() {
+            RecoveryLoadOutcome::Match(recovered) => recovered,
+            other => panic!("pending replacement should be recoverable, got {other:?}"),
+        };
+        assert!(recovered.record.manifest.pending_file_checkpoint.is_some());
+        let restarted = RoomDurability::recovered(journal.clone(), recovered);
+        restarted
+            .resolve_recovered_file_checkpoint(new_source)
+            .unwrap();
+
+        let manifest = restarted.manifest();
+        assert_eq!(manifest.source_fingerprint, new_source);
+        assert_eq!(manifest.exported_heads, heads);
+        assert_eq!(manifest.file_save_sequence, Some(2));
+        assert!(manifest.pending_file_checkpoint.is_none());
+        let latest = match journal.load(new_source).unwrap() {
+            RecoveryLoadOutcome::Match(recovered) => recovered,
+            other => panic!("finalized checkpoint should match disk, got {other:?}"),
+        };
+        assert!(latest.record.manifest.pending_file_checkpoint.is_none());
+    }
+
+    #[test]
+    fn restart_aborts_checkpoint_intent_when_old_file_remains() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let old_source = source_fingerprint(b"old source");
+        let new_source = source_fingerprint(b"new source");
+        let (snapshot, heads, _, change_hash) = snapshot_with_change(1);
+        let durability = RoomDurability::journaled(
+            journal.clone(),
+            Uuid::nil(),
+            Some(PathBuf::from("/tmp/notebook.ipynb")),
+            old_source,
+            1,
+            snapshot.clone(),
+        );
+        durability
+            .commit_snapshot(
+                &snapshot,
+                heads.clone(),
+                DurableMutation::Source {
+                    generation: 1,
+                    fingerprint: old_source,
+                    staged_change_hashes: vec![change_hash],
+                },
+            )
+            .unwrap();
+        durability
+            .prepare_file_checkpoint(
+                PathBuf::from("/tmp/notebook.ipynb"),
+                new_source,
+                heads,
+                2,
+                None,
+            )
+            .unwrap();
+        drop(durability);
+
+        let recovered = match journal.load(old_source).unwrap() {
+            RecoveryLoadOutcome::Match(recovered) => recovered,
+            other => panic!("old source should prove replacement did not occur, got {other:?}"),
+        };
+        let restarted = RoomDurability::recovered(journal.clone(), recovered);
+        restarted
+            .resolve_recovered_file_checkpoint(old_source)
+            .unwrap();
+        let manifest = restarted.manifest();
+        assert_eq!(manifest.source_fingerprint, old_source);
+        assert!(manifest.pending_file_checkpoint.is_none());
     }
 
     #[test]
