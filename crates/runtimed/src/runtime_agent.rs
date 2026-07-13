@@ -2730,6 +2730,10 @@ fn start_visualization_state_command(
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                 }
             }
+            // If the catch-up wait expires, persist_checkpoint rejects a
+            // still-ahead revision after publishing its content-addressed
+            // artifact. It remains unreferenced and the normal blob GC grace
+            // reclaims it while the prior checkpoint stays canonical.
             crate::bokeh_session::persist_checkpoint(
                 &checkpoint,
                 &expected_kernel_id,

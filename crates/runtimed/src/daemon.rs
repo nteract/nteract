@@ -4872,6 +4872,75 @@ async fn collect_arrow_manifest_blob_hashes(
     collect_arrow_manifest_hashes(&parsed, hashes);
 }
 
+/// Walk one daemon-authored Bokeh checkpoint or patch artifact and collect
+/// its content-addressed binary buffers.
+async fn collect_bokeh_artifact_blob_hashes(
+    artifact_hash: &str,
+    media_type: &str,
+    hashes: &mut std::collections::HashSet<String>,
+    blob_store: &BlobStore,
+) {
+    let bytes = match blob_store.get(artifact_hash).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return,
+        Err(error) => {
+            warn!(
+                "[runtimed] GC: failed to read Bokeh session artifact {}: {}",
+                artifact_hash, error
+            );
+            return;
+        }
+    };
+    match media_type {
+        crate::bokeh_session::BOKEH_CHECKPOINT_MEDIA_TYPE => {
+            let checkpoint = match serde_json::from_slice::<
+                notebook_protocol::protocol::BokehSessionCheckpointPayload,
+            >(&bytes)
+            {
+                Ok(checkpoint) => checkpoint,
+                Err(error) => {
+                    warn!(
+                        "[runtimed] GC: failed to parse Bokeh checkpoint artifact {}: {}",
+                        artifact_hash, error
+                    );
+                    return;
+                }
+            };
+            hashes.extend(checkpoint.buffers.into_iter().map(|buffer| buffer.blob));
+        }
+        crate::bokeh_session::BOKEH_PATCH_MEDIA_TYPE => {
+            let event = match serde_json::from_slice::<
+                notebook_protocol::protocol::BokehSessionPatchEvent,
+            >(&bytes)
+            {
+                Ok(event) => event,
+                Err(error) => {
+                    warn!(
+                        "[runtimed] GC: failed to parse Bokeh patch artifact {}: {}",
+                        artifact_hash, error
+                    );
+                    return;
+                }
+            };
+            for payload in [event.client_patch, event.server_patch]
+                .into_iter()
+                .flatten()
+            {
+                hashes.extend(payload.buffers.into_iter().map(|buffer| buffer.blob));
+            }
+            if let Some(checkpoint) = event.checkpoint {
+                hashes.extend(checkpoint.buffers.into_iter().map(|buffer| buffer.blob));
+            }
+        }
+        other => {
+            warn!(
+                "[runtimed] GC: Bokeh session artifact {} has unsupported media type {}",
+                artifact_hash, other
+            );
+        }
+    }
+}
+
 fn arrow_manifest_blob_hash(manifest: &serde_json::Value) -> Option<String> {
     manifest
         .get("data")
@@ -5131,8 +5200,8 @@ impl Daemon {
     /// Collect every blob hash referenced by active rooms **and** persisted
     /// notebook-doc files the daemon owns.
     ///
-    /// Scans three sources per active room (RuntimeStateDoc executions,
-    /// RuntimeStateDoc comms, notebook doc resolved assets), then walks
+    /// Scans RuntimeStateDoc executions, comms, and Bokeh sessions plus
+    /// notebook doc resolved assets for each active room, then walks
     /// `notebook_docs_dir/*.automerge` for closed notebooks to protect their
     /// refs through the close/reopen window. Persisted docs already
     /// represented by an active room are skipped — their refs are covered
@@ -5160,6 +5229,7 @@ impl Daemon {
                 let mut comm_output_hashes = std::collections::HashSet::new();
                 let mut comm_state_hashes = std::collections::HashSet::new();
                 let mut arrow_manifest_blob_hashes = Vec::new();
+                let mut bokeh_artifacts = std::collections::HashMap::new();
                 let _ = room.state.read(|sd| {
                     let state = sd.read_state();
                     for exec in state.executions.values() {
@@ -5179,10 +5249,29 @@ impl Daemon {
                         }
                         collect_blob_hashes_recursive(&comm.state, &mut comm_state_hashes);
                     }
+                    for session in state.bokeh_sessions.values() {
+                        if let Some(checkpoint) = &session.checkpoint {
+                            bokeh_artifacts.insert(
+                                checkpoint.content_ref.blob.clone(),
+                                checkpoint.content_ref.media_type.clone(),
+                            );
+                        }
+                        for patch in &session.patch_tail {
+                            bokeh_artifacts.insert(
+                                patch.content_ref.blob.clone(),
+                                patch.content_ref.media_type.clone(),
+                            );
+                        }
+                    }
                 });
                 mark.extend_with_source("execution-outputs", &detail, execution_output_hashes);
                 mark.extend_with_source("comm-outputs", &detail, comm_output_hashes);
                 mark.extend_with_source("comm-state", &detail, comm_state_hashes);
+                mark.extend_with_source(
+                    "bokeh-session-artifacts",
+                    &detail,
+                    bokeh_artifacts.keys().cloned(),
+                );
 
                 let mut arrow_child_hashes = std::collections::HashSet::new();
                 for hash in arrow_manifest_blob_hashes {
@@ -5190,6 +5279,18 @@ impl Daemon {
                         .await;
                 }
                 mark.extend_with_source("arrow-manifest-children", &detail, arrow_child_hashes);
+
+                let mut bokeh_buffer_hashes = std::collections::HashSet::new();
+                for (hash, media_type) in bokeh_artifacts {
+                    collect_bokeh_artifact_blob_hashes(
+                        &hash,
+                        &media_type,
+                        &mut bokeh_buffer_hashes,
+                        blob_store,
+                    )
+                    .await;
+                }
+                mark.extend_with_source("bokeh-session-buffers", &detail, bokeh_buffer_hashes);
 
                 {
                     let mut resolved_asset_hashes = std::collections::HashSet::new();
@@ -8521,6 +8622,166 @@ mod tests {
             "provenance should attribute the persisted-doc walk, got {marker:?}"
         );
         assert_eq!(mark.summary(), "persisted-doc=2");
+    }
+
+    #[tokio::test]
+    async fn blob_gc_preserves_active_bokeh_session_artifact_closure() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let docs_dir = tmp.path().join("notebook-docs");
+        let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
+
+        let checkpoint_buffer = blob_store
+            .put(b"checkpoint-buffer", "application/octet-stream")
+            .await
+            .unwrap();
+        let patch_buffer = blob_store
+            .put(b"patch-buffer", "application/octet-stream")
+            .await
+            .unwrap();
+        let checkpoint_artifact = serde_json::json!({
+            "schema_version": 1,
+            "session_id": "session-gc",
+            "revision": 0,
+            "document": {"roots": []},
+            "buffers": [{
+                "id": "checkpoint-buffer",
+                "blob": checkpoint_buffer,
+                "size": 17,
+                "media_type": "application/octet-stream",
+            }],
+        });
+        let checkpoint_bytes = serde_json::to_vec(&checkpoint_artifact).unwrap();
+        let checkpoint_hash = blob_store
+            .put(
+                &checkpoint_bytes,
+                crate::bokeh_session::BOKEH_CHECKPOINT_MEDIA_TYPE,
+            )
+            .await
+            .unwrap();
+        let patch_artifact = serde_json::json!({
+            "session_id": "session-gc",
+            "transaction_id": "transaction-gc",
+            "base_revision": 0,
+            "revision": 1,
+            "client_patch": {
+                "patch": {"events": []},
+                "buffers": [{
+                    "id": "patch-buffer",
+                    "blob": patch_buffer,
+                    "size": 12,
+                    "media_type": "application/octet-stream",
+                }],
+            },
+            "server_patch": null,
+            "checkpoint": null,
+        });
+        let patch_bytes = serde_json::to_vec(&patch_artifact).unwrap();
+        let patch_hash = blob_store
+            .put(&patch_bytes, crate::bokeh_session::BOKEH_PATCH_MEDIA_TYPE)
+            .await
+            .unwrap();
+        let orphan_hash = blob_store
+            .put(
+                br#"{"transaction_id":"orphan-bokeh-artifact"}"#,
+                crate::bokeh_session::BOKEH_PATCH_MEDIA_TYPE,
+            )
+            .await
+            .unwrap();
+
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            &docs_dir,
+            blob_store.clone(),
+            true,
+        ));
+        room.state
+            .with_doc(|state_doc| {
+                state_doc.put_bokeh_session(
+                    "session-gc",
+                    &runtime_doc::BokehSessionState {
+                        output_id: "output-gc".to_string(),
+                        cell_id: "cell-gc".to_string(),
+                        execution_id: "execution-gc".to_string(),
+                        kernel_id: "kernel-gc".to_string(),
+                        status: runtime_doc::BokehSessionStatus::Connected,
+                        head_revision: 1,
+                        producer_name: "panel".to_string(),
+                        producer_version: "1.9.3".to_string(),
+                        bokeh_version: "3.9.1".to_string(),
+                        root_ids: vec!["root-gc".to_string()],
+                        checkpoint: Some(runtime_doc::BokehSessionCheckpoint {
+                            revision: 0,
+                            content_ref: runtime_doc::BokehSessionContentRef {
+                                blob: checkpoint_hash.clone(),
+                                size: checkpoint_bytes.len() as u64,
+                                media_type: crate::bokeh_session::BOKEH_CHECKPOINT_MEDIA_TYPE
+                                    .to_string(),
+                            },
+                        }),
+                        patch_tail: vec![runtime_doc::BokehSessionPatchRef {
+                            base_revision: 0,
+                            revision: 1,
+                            content_ref: runtime_doc::BokehSessionContentRef {
+                                blob: patch_hash.clone(),
+                                size: patch_bytes.len() as u64,
+                                media_type: crate::bokeh_session::BOKEH_PATCH_MEDIA_TYPE
+                                    .to_string(),
+                            },
+                        }],
+                    },
+                )
+            })
+            .unwrap();
+
+        let room_id = room.id.to_string();
+        let rooms = vec![(room_id.clone(), room)];
+        let mark = Daemon::collect_blob_refs_for_gc(&rooms, &docs_dir, &blob_store).await;
+
+        for hash in [
+            &checkpoint_hash,
+            &patch_hash,
+            &checkpoint_buffer,
+            &patch_buffer,
+        ] {
+            assert!(
+                mark.hashes().contains(hash),
+                "live Bokeh blob {hash} was not marked"
+            );
+        }
+        assert_eq!(
+            mark.first_marker(&checkpoint_hash),
+            Some(format!("bokeh-session-artifacts room:{room_id}").as_str())
+        );
+        assert_eq!(
+            mark.first_marker(&checkpoint_buffer),
+            Some(format!("bokeh-session-buffers room:{room_id}").as_str())
+        );
+        assert!(!mark.hashes().contains(&orphan_hash));
+
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        Daemon::sweep_orphaned_blobs(
+            &blob_store,
+            mark.hashes(),
+            std::time::Duration::from_secs(0),
+        )
+        .await;
+
+        for hash in [
+            &checkpoint_hash,
+            &patch_hash,
+            &checkpoint_buffer,
+            &patch_buffer,
+        ] {
+            assert!(
+                blob_store.get(hash).await.unwrap().is_some(),
+                "live Bokeh blob {hash} was swept"
+            );
+        }
+        assert!(
+            blob_store.get(&orphan_hash).await.unwrap().is_none(),
+            "unreferenced Bokeh artifact should be swept"
+        );
     }
 
     #[test]

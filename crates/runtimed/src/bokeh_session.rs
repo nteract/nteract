@@ -199,6 +199,9 @@ pub(crate) async fn ingest_kernel_event(
             session.patch_tail.clear();
         } else {
             if session.patch_tail.len() >= BOKEH_PATCH_TAIL_HARD_LIMIT {
+                // Another event may have filled the tail after the pre-flight
+                // read. The artifact published above remains unreferenced and
+                // the blob GC reclaims it after the normal orphan grace period.
                 return Ok(BokehEventIngest::ResyncNeeded {
                     session_id: session_id.clone(),
                 });

@@ -220,6 +220,50 @@ describe("BokehSessionBridgeManager", () => {
     manager.dispose();
   });
 
+  it("does not deliver an in-flight broadcast after disposal", async () => {
+    const { frame, manager, patchListener, transport } = makeHarness();
+    vi.mocked(frame.send).mockClear();
+    let markFetchStarted: (() => void) | undefined;
+    let resolveFetch: ((response: Response) => void) | undefined;
+    const fetchStarted = new Promise<void>((resolve) => {
+      markFetchStarted = resolve;
+    });
+    const delayedResponse = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    vi.mocked(transport.fetchBlob).mockImplementationOnce(async () => {
+      markFetchStarted?.();
+      return delayedResponse;
+    });
+
+    patchListener()?.({
+      event: "bokeh_session_patch",
+      patch: {
+        session_id: "session-1",
+        transaction_id: "transaction-delayed",
+        base_revision: 1,
+        revision: 2,
+        server_patch: {
+          patch: { events: [] },
+          buffers: [
+            {
+              id: "buffer-delayed",
+              blob: "buffer-delayed",
+              size: 3,
+              media_type: "application/octet-stream",
+            },
+          ],
+        },
+      },
+    });
+    await fetchStarted;
+    manager.dispose();
+    resolveFetch?.(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(frame.send).not.toHaveBeenCalled();
+  });
+
   it("rejects a live checkpoint whose identity does not match its event", async () => {
     const { frame, manager, patchListener } = makeHarness();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});

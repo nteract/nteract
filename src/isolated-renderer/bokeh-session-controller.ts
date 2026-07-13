@@ -280,6 +280,9 @@ export class BokehSessionController {
     ) {
       return;
     }
+    // A stale/error reply resyncs from the kernel-owned document. Do not retry
+    // these optimistic events against a newer revision: replaying them would
+    // change Bokeh's transaction semantics and can duplicate callbacks.
     const events = this.localEvents;
     this.localEvents = [];
     let patch: Record<string, unknown>;
