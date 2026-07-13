@@ -8,14 +8,21 @@ use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use runtimed_client::client::PoolClient;
+use runtimed_client::client::{ClientError, PoolClient};
+use runtimed_client::protocol::{NotebookCellProjection, NotebookProjection};
 
 use crate::cloud::{self, CloudRegistry, NotebookTarget};
 use crate::formatting;
 use crate::session::{NotebookSession, SessionDropInfo, SessionDropReason};
+use crate::session_activation::{
+    activation_error, ActivationLease, ActivationTicket, CanonicalNotebookTarget,
+};
 use crate::NteractMcp;
 
-const MCP_SESSION_READY_TIMEOUT: Duration = Duration::from_secs(120);
+// The daemon's bounded projection wait is 120 seconds. The transport deadline
+// must be longer so the daemon can return its typed current state instead of
+// the client racing it with an unclassified timeout.
+const MCP_SESSION_READY_TIMEOUT: Duration = Duration::from_secs(125);
 
 /// Read the current session's notebook_id (if any) before replacing it.
 async fn previous_notebook_id(server: &NteractMcp) -> Option<String> {
@@ -53,7 +60,7 @@ async fn resolve_room_notebook_path(server: &NteractMcp, notebook_id: &str) -> O
 /// peer connection and kernel alive indefinitely.
 const MAX_PARKED_SESSIONS: usize = 8;
 
-/// Park the previous session before switching to a new one.
+/// Park a replaced active session after an atomic activation publication.
 ///
 /// Instead of dropping the old session (which would decrement the daemon's
 /// peer count and start the eviction timer), we move it into a parked
@@ -61,65 +68,38 @@ const MAX_PARKED_SESSIONS: usize = 8;
 /// kernel survive. When the agent switches back, the parked session is
 /// resumed without a new connection.
 ///
-/// When `new_session_key` is `Some`, the parking is skipped if we're
-/// reconnecting to the same notebook (no-op switch). When `None` (e.g.
-/// `create_notebook`), the old session is always parked.
-///
-/// If parking would exceed [`MAX_PARKED_SESSIONS`], the oldest parked
-/// session is evicted (LRU). HashMap iteration order is arbitrary, so we
-/// use insertion order tracking via a separate `parked_order` Vec.
-async fn park_previous_session(server: &NteractMcp, new_session_key: Option<&str>) {
-    // Take the old session under a short-lived write lock.
-    let old_session = {
-        let mut guard = server.session.write().await;
-        match guard.as_ref() {
-            Some(s) => {
-                // Skip if reconnecting to the same notebook.
-                if let Some(new_key) = new_session_key {
-                    if s.session_key() == new_key {
-                        return;
-                    }
-                }
-                guard.take()
-            }
-            None => return,
+/// If parking would exceed [`MAX_PARKED_SESSIONS`], one existing parked
+/// session is evicted to keep the cache bounded.
+async fn park_session(server: &NteractMcp, old: NotebookSession) {
+    tracing::info!(
+        "[mcp] Parking session {} before notebook switch",
+        old.notebook_id
+    );
+    let session_key = old.session_key();
+    // Record the switch so "no session" errors can point agents back
+    // if the parked session is later evicted.
+    *server.last_session_drop.write().await = Some(SessionDropInfo {
+        reason: SessionDropReason::Switched,
+        notebook_id: old.notebook_id.clone(),
+        notebook_path: old.notebook_path.clone(),
+        rejoin_target: Some(old.rejoin_target()),
+    });
+    // Park the session — peer connection stays alive, no eviction.
+    let mut parked = server.parked_sessions.write().await;
+
+    // LRU eviction: if at capacity, drop an existing parked session.
+    if parked.len() >= MAX_PARKED_SESSIONS {
+        if let Some(oldest_key) = parked.keys().next().cloned() {
+            tracing::info!(
+                "[mcp] Parked sessions at capacity ({}), evicting {}",
+                MAX_PARKED_SESSIONS,
+                oldest_key
+            );
+            parked.remove(&oldest_key);
         }
-    };
-
-    if let Some(old) = old_session {
-        tracing::info!(
-            "[mcp] Parking session {} before notebook switch",
-            old.notebook_id
-        );
-        let session_key = old.session_key();
-        // Record the switch so "no session" errors can point agents back
-        // if the parked session is later evicted.
-        *server.last_session_drop.write().await = Some(SessionDropInfo {
-            reason: SessionDropReason::Switched,
-            notebook_id: old.notebook_id.clone(),
-            notebook_path: old.notebook_path.clone(),
-            rejoin_target: Some(old.rejoin_target()),
-        });
-        // Park the session — peer connection stays alive, no eviction.
-        let mut parked = server.parked_sessions.write().await;
-
-        // LRU eviction: if at capacity, drop the oldest parked session.
-        // HashMap doesn't track insertion order, so we evict the first key
-        // returned by the iterator (effectively arbitrary but stable within
-        // a single HashMap instance — good enough for a bounded cache).
-        if parked.len() >= MAX_PARKED_SESSIONS {
-            if let Some(oldest_key) = parked.keys().next().cloned() {
-                tracing::info!(
-                    "[mcp] Parked sessions at capacity ({}), evicting {}",
-                    MAX_PARKED_SESSIONS,
-                    oldest_key
-                );
-                parked.remove(&oldest_key);
-            }
-        }
-
-        parked.insert(session_key, old);
     }
+
+    parked.insert(session_key, old);
 }
 
 /// Try to resume a parked session for the given notebook_id.
@@ -166,7 +146,85 @@ fn resolve_path(path: &str) -> String {
     }
 }
 
-use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveErrorKind};
+fn canonicalize_local_path(path: &str) -> String {
+    let resolved = PathBuf::from(resolve_path(path));
+    std::fs::canonicalize(&resolved)
+        .unwrap_or(resolved)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn canonical_local_path_target(path: &str) -> CanonicalNotebookTarget {
+    let canonical_path = canonicalize_local_path(path);
+    CanonicalNotebookTarget::new(format!("local:path:{canonical_path}"))
+}
+
+fn canonical_local_id_target(notebook_id: &str) -> Result<CanonicalNotebookTarget, McpError> {
+    let notebook_id = uuid::Uuid::parse_str(notebook_id).map_err(|_| {
+        McpError::invalid_params(
+            format!(
+                "Invalid notebook_id '{}': must be a UUID (e.g. from list_active_notebooks). \
+                 To open a file, use the 'path' parameter instead.",
+                notebook_id
+            ),
+            None,
+        )
+    })?;
+    Ok(CanonicalNotebookTarget::new(format!(
+        "local:id:{}",
+        notebook_id.hyphenated()
+    )))
+}
+
+async fn canonical_local_id_target_for_server(
+    server: &NteractMcp,
+    notebook_id: &str,
+) -> Result<CanonicalNotebookTarget, McpError> {
+    let id_target = canonical_local_id_target(notebook_id)?;
+    let normalized_id = id_target
+        .as_str()
+        .strip_prefix("local:id:")
+        .unwrap_or(notebook_id);
+
+    // A path-owned activation learns its UUID only after the daemon publishes
+    // the room. While that narrow window is open, wait for publication (or
+    // for the leader to register the UUID alias) instead of treating the UUID
+    // as a competing target generation.
+    let mut attempts = if server.session_activation.has_current_local_path_flight() {
+        40
+    } else {
+        1
+    };
+    loop {
+        let rooms = PoolClient::new(server.socket_path.clone())
+            .list_rooms()
+            .await
+            .map_err(|error| {
+                McpError::internal_error(
+                    format!("sync_failed: could not canonicalize notebook target: {error}"),
+                    None,
+                )
+            })?;
+        if let Some(room) = rooms
+            .into_iter()
+            .find(|room| room.notebook_id == normalized_id)
+        {
+            if let Some(path) = room.notebook_path {
+                return Ok(canonical_local_path_target(&path));
+            }
+            return Ok(id_target);
+        }
+        attempts -= 1;
+        if attempts == 0 || !server.session_activation.has_current_local_path_flight() {
+            return Ok(id_target);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+use notebook_protocol::protocol::{
+    NotebookRequest, NotebookResponse, SaveBlockedReason, SaveErrorKind,
+};
 
 use super::{arg_bool, arg_str, arg_string_array, tool_error, tool_success};
 
@@ -376,6 +434,47 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
     serde_json::Value::Object(info)
 }
 
+fn projected_runtime_info(projection: &NotebookProjection) -> serde_json::Value {
+    let runtime = &projection.runtime;
+    let (kernel_status, _phase) = runtime.kernel.lifecycle.to_legacy();
+    let mut info = serde_json::Map::new();
+    info.insert("kernel_status".into(), serde_json::json!(kernel_status));
+    if !runtime.kernel.language.is_empty() {
+        info.insert(
+            "language".into(),
+            serde_json::json!(runtime.kernel.language),
+        );
+    }
+    if !runtime.kernel.name.is_empty() {
+        info.insert("kernel_name".into(), serde_json::json!(runtime.kernel.name));
+    }
+    if !runtime.kernel.env_source.is_empty() {
+        info.insert(
+            "env_source".into(),
+            serde_json::json!(runtime.kernel.env_source),
+        );
+    }
+    if !runtime.env.in_sync {
+        info.insert("env_in_sync".into(), serde_json::json!(false));
+    }
+    if !runtime.env.prewarmed_packages.is_empty() {
+        info.insert(
+            "prewarmed_packages".into(),
+            serde_json::json!(runtime.env.prewarmed_packages),
+        );
+    }
+    if !runtime.trust.status.is_empty() {
+        info.insert(
+            "trust".into(),
+            serde_json::json!({
+                "status": runtime.trust.status,
+                "needs_approval": runtime.trust.needs_approval,
+            }),
+        );
+    }
+    serde_json::Value::Object(info)
+}
+
 /// Snapshot `RuntimeState.project_context` for MCP responses.
 ///
 /// Returns the tagged-union shape verbatim so agents (and developers
@@ -435,6 +534,141 @@ fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
         .join("\n\n")
 }
 
+fn format_projected_cell_summaries(cells: &[NotebookCellProjection]) -> String {
+    cells
+        .iter()
+        .map(|cell| {
+            let display_status = cell.execution_status.as_deref().or_else(|| {
+                if cell.cell_type == "code" && cell.execution_id.is_none() {
+                    Some("never_run")
+                } else {
+                    None
+                }
+            });
+            let execution_count = cell.execution_count.map(|count| count.to_string());
+            formatting::format_cell_summary(
+                &cell.id,
+                &cell.cell_type,
+                &cell.source_preview,
+                formatting::CellSummaryContext {
+                    execution_count: execution_count.as_deref(),
+                    status: display_status,
+                    execution_id: cell.execution_id.as_deref(),
+                },
+                60,
+                &[],
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn add_progressive_session_fields(response: &mut serde_json::Value, session: &NotebookSession) {
+    let readiness = session.readiness();
+    response["session_generation"] = serde_json::json!(readiness.session_generation);
+    response["source_state"] = readiness.source_state.clone();
+    response["readiness"] = serde_json::json!({
+        "projection": readiness.projection_ready,
+        "document": readiness.document_ready,
+        "runtime": readiness.runtime_ready,
+        "interactive": readiness.interactive,
+    });
+    response["projection"] = serde_json::json!({
+        "heads": readiness.projection_heads,
+        "runtime_state_heads": readiness.runtime_state_heads,
+        "completeness": readiness.projection_completeness,
+    });
+    response["capabilities"] = serde_json::json!(readiness.capabilities);
+}
+
+fn projection_failure_result(error: &ClientError, lease: &ActivationLease) -> CallToolResult {
+    let code = match error {
+        ClientError::NotebookProjectionUnavailable {
+            failure: runtimed_client::protocol::NotebookProjectionFailure::InitialLoadFailed { .. },
+            ..
+        } => "source_degraded",
+        ClientError::DaemonError(message) if message.starts_with("notebook_not_ready:") => {
+            "notebook_not_ready"
+        }
+        _ => "sync_failed",
+    };
+    activation_error(
+        code,
+        &format!("Failed to prepare notebook projection: {error}"),
+        lease.generation(),
+        lease.target(),
+    )
+}
+
+async fn get_room_projection(
+    server: &NteractMcp,
+    notebook_id: &str,
+    lease: &ActivationLease,
+) -> Result<NotebookProjection, CallToolResult> {
+    let result = PoolClient::new(server.socket_path.clone())
+        .get_notebook_projection(notebook_id, MCP_SESSION_READY_TIMEOUT)
+        .await;
+    if !lease.is_current() {
+        return Err(superseded_result(lease));
+    }
+    result.map_err(|error| projection_failure_result(&error, lease))
+}
+
+fn superseded_result(lease: &ActivationLease) -> CallToolResult {
+    activation_error(
+        "session_superseded",
+        "A newer notebook target superseded this connection",
+        lease.generation(),
+        lease.target(),
+    )
+}
+
+async fn install_activated_session(
+    server: &NteractMcp,
+    lease: &ActivationLease,
+    session: NotebookSession,
+) -> Result<(), CallToolResult> {
+    if !lease.is_current() {
+        return Err(superseded_result(lease));
+    }
+
+    let session_key = session.session_key();
+    let previous = {
+        let mut guard = server.session.write().await;
+        if !lease.is_current() {
+            return Err(superseded_result(lease));
+        }
+        let previous = guard.replace(session);
+        if !lease.mark_installed() {
+            let stale = guard.take();
+            *guard = previous;
+            drop(stale);
+            return Err(superseded_result(lease));
+        }
+        previous
+    };
+
+    // A different target may begin immediately after publication. This
+    // session remains the installed, usable identity until that newer attempt
+    // actually publishes; failed attempts never poison the active slot.
+    if !lease.is_current() {
+        if let Some(old) = previous {
+            park_session(server, old).await;
+        }
+        return Err(superseded_result(lease));
+    }
+
+    if let Some(old) = previous {
+        if old.session_key() != session_key {
+            park_session(server, old).await;
+        }
+    }
+    // A fresh activated connection supersedes any parked peer for the same
+    // room. Remove it only after successful generation publication.
+    server.parked_sessions.write().await.remove(&session_key);
+    Ok(())
+}
+
 fn notebook_session_response(mut response: serde_json::Value, notebook_id: &str) -> CallToolResult {
     response["resources"] = crate::resources::notebook_resources_json(notebook_id);
     CallToolResult::success(vec![
@@ -450,21 +684,24 @@ fn notebook_json_response(response: serde_json::Value) -> CallToolResult {
 }
 
 async fn session_resource_is_readable(server: &NteractMcp, notebook_id: &str) -> bool {
-    if server
-        .session
-        .read()
-        .await
-        .as_ref()
-        .is_some_and(|session| session.notebook_id == notebook_id)
-    {
-        return true;
+    if let Some(session) = server.session.read().await.as_ref() {
+        if session.notebook_id == notebook_id {
+            return session
+                .access(crate::session::SessionRequirement::DocumentRead)
+                .is_ok();
+        }
     }
 
     server
         .parked_sessions
         .read()
         .await
-        .contains_key(notebook_id)
+        .get(notebook_id)
+        .is_some_and(|session| {
+            session
+                .access(crate::session::SessionRequirement::DocumentRead)
+                .is_ok()
+        })
 }
 
 async fn readable_notebook_session_response(
@@ -593,26 +830,49 @@ pub async fn disconnect_notebook(
                 ));
             }
 
-            // Check if it's the active session.
-            let is_active = {
-                let guard = server.session.read().await;
-                guard.as_ref().is_some_and(|s| s.notebook_id == id)
+            let matches_pending_rejoin = server
+                .last_session_drop
+                .read()
+                .await
+                .as_ref()
+                .is_some_and(|drop| {
+                    drop.notebook_id == id && matches!(drop.reason, SessionDropReason::Disconnected)
+                });
+            let (old, cancelled_pending_rejoin) = {
+                let mut guard = server.session.write().await;
+                let is_active = guard
+                    .as_ref()
+                    .is_some_and(|session| session.notebook_id == id);
+                if is_active {
+                    server.advance_session_intent_epoch();
+                    (guard.take(), false)
+                } else if guard.is_none() && matches_pending_rejoin {
+                    server.advance_session_intent_epoch();
+                    (None, true)
+                } else {
+                    (None, false)
+                }
             };
 
-            if is_active {
-                let old = server.session.write().await.take();
-                if let Some(session) = old {
-                    *server.last_session_drop.write().await = Some(SessionDropInfo {
-                        reason: SessionDropReason::Disconnected,
-                        notebook_id: session.notebook_id.clone(),
-                        notebook_path: session.notebook_path.clone(),
-                        rejoin_target: Some(session.rejoin_target()),
-                    });
-                    tracing::info!("[mcp] Disconnecting active session {}", id);
-                    drop(session);
-                }
+            if let Some(session) = old {
+                *server.last_session_drop.write().await = Some(SessionDropInfo {
+                    reason: SessionDropReason::Disconnected,
+                    notebook_id: session.notebook_id.clone(),
+                    notebook_path: session.notebook_path.clone(),
+                    rejoin_target: Some(session.rejoin_target()),
+                });
+                tracing::info!("[mcp] Disconnecting active session {}", id);
+                drop(session);
                 return tool_success(&format!(
                     "Disconnected active session {}. No active session now; \
+                     use connect_notebook or create_notebook to start a new one.",
+                    id
+                ));
+            }
+            if cancelled_pending_rejoin {
+                tracing::info!("[mcp] Cancelled automatic rejoin for session {}", id);
+                return tool_success(&format!(
+                    "Cancelled automatic reconnect for session {}. No active session now; \
                      use connect_notebook or create_notebook to start a new one.",
                     id
                 ));
@@ -626,7 +886,11 @@ pub async fn disconnect_notebook(
         }
         None => {
             // No ID specified — disconnect the active session.
-            let old = server.session.write().await.take();
+            let old = {
+                let mut guard = server.session.write().await;
+                server.advance_session_intent_epoch();
+                guard.take()
+            };
             match old {
                 Some(session) => {
                     let notebook_id = session.notebook_id.clone();
@@ -644,10 +908,25 @@ pub async fn disconnect_notebook(
                         notebook_id
                     ))
                 }
-                None => tool_error(
-                    "No active session to disconnect. \
-                     Pass notebook_id to disconnect a specific parked session.",
-                ),
+                None => {
+                    let pending_rejoin = server
+                        .last_session_drop
+                        .read()
+                        .await
+                        .as_ref()
+                        .is_some_and(|drop| matches!(drop.reason, SessionDropReason::Disconnected));
+                    if pending_rejoin {
+                        tool_success(
+                            "Cancelled automatic reconnect. No active session now; \
+                             use connect_notebook or create_notebook to start a new one.",
+                        )
+                    } else {
+                        tool_error(
+                            "No active session to disconnect. \
+                             Pass notebook_id to disconnect a specific parked session.",
+                        )
+                    }
+                }
             }
         }
     }
@@ -767,6 +1046,7 @@ async fn connect_hosted_notebook(
     domain: String,
     notebook_id: String,
     prev: Option<String>,
+    lease: &ActivationLease,
 ) -> Result<CallToolResult, McpError> {
     let registry = match load_cloud_registry_for_tools() {
         Ok(registry) => registry,
@@ -778,12 +1058,24 @@ async fn connect_hosted_notebook(
     };
     let session_key = cloud::hosted_notebook_url(&domain_config.base_url, &notebook_id);
 
-    park_previous_session(server, Some(&session_key)).await;
-
-    if let Some(parked) = take_parked_session(server, &session_key).await {
+    if !lease.is_current() {
+        return Ok(superseded_result(lease));
+    }
+    if let Some(mut parked) = take_parked_session(server, &session_key).await {
+        if !lease.is_current() {
+            // Put the peer back instead of dropping a healthy parked session
+            // merely because another target won during the map lookup.
+            server
+                .parked_sessions
+                .write()
+                .await
+                .insert(session_key.clone(), parked);
+            return Ok(superseded_result(lease));
+        }
         tracing::info!("[mcp] Resuming parked hosted session {}", session_key);
+        parked.reactivate(lease.generation(), lease.target());
         let handle = &parked.handle;
-        let runtime_info = collect_runtime_info(handle).await;
+        let runtime_info = read_runtime_info(handle);
         let deps = get_dependencies(handle);
         let cells_summary = format_cell_summaries(handle);
         let project_context = read_project_context(handle);
@@ -807,7 +1099,10 @@ async fn connect_hosted_notebook(
             }
         }
 
-        *server.session.write().await = Some(parked);
+        add_progressive_session_fields(&mut response, &parked);
+        if let Err(result) = install_activated_session(server, lease, parked).await {
+            return Ok(result);
+        }
         return Ok(notebook_session_response(response, &notebook_id));
     }
 
@@ -821,8 +1116,11 @@ async fn connect_hosted_notebook(
             // control frame. Give the first sync exchange a short opportunity
             // to populate snapshots before formatting the connect response.
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if !lease.is_current() {
+                return Ok(superseded_result(lease));
+            }
 
-            let runtime_info = collect_runtime_info(handle).await;
+            let runtime_info = read_runtime_info(handle);
             let deps = get_dependencies(handle);
             let cells_summary = format_cell_summaries(handle);
             let project_context = read_project_context(handle);
@@ -845,319 +1143,277 @@ async fn connect_hosted_notebook(
                 }
             }
 
-            let call_result = notebook_session_response(response, handle.notebook_id());
-            let session = NotebookSession::hosted(
+            let session = NotebookSession::hosted_activated(
                 result.handle,
                 result.broadcast_rx,
-                notebook_id,
+                notebook_id.clone(),
                 domain_config.base_url,
+                lease.generation(),
+                lease.target().clone(),
             );
-            *server.session.write().await = Some(session);
+            add_progressive_session_fields(&mut response, &session);
+            let call_result = notebook_session_response(response, &notebook_id);
+            if let Err(result) = install_activated_session(server, lease, session).await {
+                return Ok(result);
+            }
 
             Ok(call_result)
         }
-        Err(e) => tool_error(&e),
+        Err(e) => {
+            if !lease.is_current() {
+                Ok(superseded_result(lease))
+            } else {
+                tool_error(&e)
+            }
+        }
     }
 }
 
-/// Open a notebook — either from a file path on disk or by connecting to an
-/// existing daemon session by UUID.
-///
-/// Requires exactly one of `target`, `path`, or `notebook_id` — not more.
+async fn connect_local_path_progressive(
+    server: &NteractMcp,
+    path: String,
+    prev: Option<String>,
+    lease: &ActivationLease,
+) -> Result<CallToolResult, McpError> {
+    let abs_path = PathBuf::from(canonicalize_local_path(&path));
+    let result = match notebook_sync::connect::connect_open(
+        server.socket_path.clone(),
+        abs_path.clone(),
+        &server.get_peer_label().await,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            if !lease.is_current() {
+                return Ok(superseded_result(lease));
+            }
+            return tool_error(&format!("Failed to open notebook '{path}': {error}"));
+        }
+    };
+    let notebook_id = result.handle.notebook_id().to_string();
+    let uuid_alias = canonical_local_id_target(&notebook_id)?;
+    if !lease.add_alias(uuid_alias) {
+        return Ok(superseded_result(lease));
+    }
+    let projection = match get_room_projection(server, &notebook_id, lease).await {
+        Ok(projection) => projection,
+        Err(result) => return Ok(result),
+    };
+    if !lease.is_current() {
+        return Ok(superseded_result(lease));
+    }
+
+    let mut session = NotebookSession::local_with_projection(
+        result.handle,
+        result.broadcast_rx,
+        notebook_id.clone(),
+        Some(abs_path.to_string_lossy().into_owned()),
+        lease.generation(),
+        lease.target().clone(),
+        projection.clone(),
+    );
+
+    if session.notebook_path.is_none() {
+        session.notebook_path = Some(abs_path.to_string_lossy().into_owned());
+    }
+    let peer_label = server.get_peer_label().await;
+    crate::presence::announce(&session.handle, &peer_label).await;
+
+    let mut response = serde_json::json!({
+        "notebook_id": notebook_id,
+        "path": abs_path.to_string_lossy(),
+        "notebook_path": abs_path.to_string_lossy(),
+        "runtime": projected_runtime_info(&projection),
+        "dependencies": projection.dependencies.clone(),
+        "project_context": projection.runtime.project_context.clone(),
+        "cells": format_projected_cell_summaries(&projection.cells),
+    });
+    if let Some(ref prev_id) = prev {
+        if *prev_id != notebook_id {
+            response["switched_from"] = serde_json::json!(prev_id);
+        }
+    }
+    add_progressive_session_fields(&mut response, &session);
+    if let Err(result) = install_activated_session(server, lease, session).await {
+        return Ok(result);
+    }
+    Ok(notebook_session_response(response, &notebook_id))
+}
+
+async fn connect_local_id_progressive(
+    server: &NteractMcp,
+    notebook_id: String,
+    prev: Option<String>,
+    lease: &ActivationLease,
+) -> Result<CallToolResult, McpError> {
+    let result = match notebook_sync::connect::connect(
+        server.socket_path.clone(),
+        notebook_id.clone(),
+        &server.get_peer_label().await,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            if !lease.is_current() {
+                return Ok(superseded_result(lease));
+            }
+            return tool_error(&format!("Failed to join notebook: {error}"));
+        }
+    };
+    let projection = match get_room_projection(server, &notebook_id, lease).await {
+        Ok(projection) => projection,
+        Err(result) => return Ok(result),
+    };
+    if !lease.is_current() {
+        return Ok(superseded_result(lease));
+    }
+
+    let notebook_path = projection
+        .notebook_path
+        .clone()
+        .or(resolve_room_notebook_path(server, &notebook_id).await);
+    if !lease.is_current() {
+        return Ok(superseded_result(lease));
+    }
+    let mut session = NotebookSession::local_with_projection(
+        result.handle,
+        result.broadcast_rx,
+        notebook_id.clone(),
+        notebook_path.clone(),
+        lease.generation(),
+        lease.target().clone(),
+        projection.clone(),
+    );
+    if session.notebook_path.is_none() {
+        session.notebook_path = notebook_path.clone();
+    }
+
+    let peer_label = server.get_peer_label().await;
+    crate::presence::announce(&session.handle, &peer_label).await;
+    let mut response = serde_json::json!({
+        "notebook_id": notebook_id,
+        "connected": true,
+        "runtime": projected_runtime_info(&projection),
+        "dependencies": projection.dependencies.clone(),
+        "project_context": projection.runtime.project_context.clone(),
+        "cells": format_projected_cell_summaries(&projection.cells),
+    });
+    if let Some(ref path) = notebook_path {
+        response["notebook_path"] = serde_json::json!(path);
+    }
+    if let Some(ref prev_id) = prev {
+        if *prev_id != notebook_id {
+            response["switched_from"] = serde_json::json!(prev_id);
+        }
+    }
+    add_progressive_session_fields(&mut response, &session);
+    if let Err(result) = install_activated_session(server, lease, session).await {
+        return Ok(result);
+    }
+    Ok(notebook_session_response(response, &notebook_id))
+}
+
+/// Open a notebook through a monotonic, same-target-coalescing activation.
 pub async fn open_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let mut path_arg = arg_str(request, "path").map(str::to_string);
-    let mut id_arg = arg_str(request, "notebook_id").map(str::to_string);
+    let path_arg = arg_str(request, "path").map(str::to_string);
+    let id_arg = arg_str(request, "notebook_id").map(str::to_string);
     let target_arg = arg_str(request, "target").map(str::to_string);
     let domain_arg = arg_str(request, "domain").map(str::to_string);
 
-    if target_arg.is_some() || domain_arg.is_some() {
-        let parsed = cloud::parse_connect_target(
+    let target = if target_arg.is_some() || domain_arg.is_some() {
+        cloud::parse_connect_target(
             target_arg.as_deref(),
             path_arg.as_deref(),
             id_arg.as_deref(),
             domain_arg.as_deref(),
         )
-        .map_err(|message| McpError::invalid_params(message, None))?;
-
-        match parsed {
-            NotebookTarget::LocalPath(path) => {
-                path_arg = Some(path);
-                id_arg = None;
-            }
-            NotebookTarget::LocalNotebookId(id) => {
-                path_arg = None;
-                id_arg = Some(id);
-            }
-            NotebookTarget::Hosted {
-                domain,
-                notebook_id,
-                ..
-            } => {
-                let prev = previous_notebook_id(server).await;
-                return connect_hosted_notebook(server, domain, notebook_id, prev).await;
-            }
-        }
-    }
-
-    // Exactly one must be provided.
-    match (&path_arg, &id_arg) {
-        (None, None) => {
-            return Err(McpError::invalid_params(
-                "Missing required parameter: provide one of 'target', 'path', or \
-                 'notebook_id'.",
-                None,
-            ));
-        }
-        (Some(_), Some(_)) => {
-            return Err(McpError::invalid_params(
-                "Ambiguous parameters: provide only one of 'target', 'path', or 'notebook_id'.",
-                None,
-            ));
-        }
-        _ => {}
-    }
-
-    let prev = previous_notebook_id(server).await;
-
-    // Park the previous session before opening the new one. For path-based
-    // opens we don't know the target notebook_id yet, so pass None (always
-    // park). For UUID-based opens we can skip if reconnecting to the same notebook.
-    let target_id = id_arg.as_deref();
-    park_previous_session(server, target_id).await;
-
-    if let Some(path) = path_arg {
-        // File path — resolve and open from disk via the daemon's OpenNotebook handshake.
-        let abs_path = PathBuf::from(resolve_path(&path));
-
-        match notebook_sync::connect::connect_open(
-            server.socket_path.clone(),
-            abs_path.clone(),
-            &server.get_peer_label().await,
-        )
-        .await
-        {
-            Ok(result) => {
-                let handle = &result.handle;
-                let notebook_id = handle.notebook_id().to_string();
-
-                // Check if we already have a parked session for this notebook.
-                // If so, drop the new connection and resume the parked one —
-                // the parked session has the live peer that's been keeping the
-                // room alive.
-                if let Some(parked) = take_parked_session(server, &notebook_id).await {
-                    tracing::info!(
-                        "[mcp] Resuming parked session for {} (path: {})",
-                        notebook_id,
-                        abs_path.display()
-                    );
-                    // Drop the freshly opened connection — we don't need two.
-                    drop(result);
-
-                    let handle = &parked.handle;
-                    let runtime_info = collect_runtime_info(handle).await;
-                    let deps = get_dependencies(handle);
-                    let cells_summary = format_cell_summaries(handle);
-                    let project_context = read_project_context(handle);
-
-                    let mut response = serde_json::json!({
-                        "notebook_id": notebook_id,
-                        "path": abs_path.to_string_lossy(),
-                        // Absolute path under the key the proxy reads, so a
-                        // respawn after a daemon swap seeds an existence-checkable
-                        // path rather than a raw (possibly ~-prefixed) arg.
-                        "notebook_path": abs_path.to_string_lossy(),
-                        "resumed": true,
-                        "runtime": runtime_info,
-                        "dependencies": deps,
-                        "project_context": project_context,
-                        "cells": cells_summary,
-                    });
-
-                    if let Some(ref prev_id) = prev {
-                        if *prev_id != notebook_id {
-                            response["switched_from"] = serde_json::json!(prev_id);
-                        }
-                    }
-
-                    *server.session.write().await = Some(parked);
-                    return Ok(notebook_session_response(response, &notebook_id));
-                }
-
-                if let Err(e) = handle
-                    .await_session_ready_timeout(MCP_SESSION_READY_TIMEOUT)
-                    .await
-                {
-                    return tool_error(&format!("Notebook opened but did not become ready: {}", e));
-                }
-
-                let runtime_info = collect_runtime_info(handle).await;
-                let deps = get_dependencies(handle);
-                let cells_summary = format_cell_summaries(handle);
-                let project_context = read_project_context(handle);
-
-                let mut response = serde_json::json!({
-                    "notebook_id": notebook_id,
-                    "path": abs_path.to_string_lossy(),
-                    // Absolute path under the key the proxy reads, so a respawn
-                    // after a daemon swap seeds an existence-checkable path
-                    // rather than a raw (possibly ~-prefixed) arg.
-                    "notebook_path": abs_path.to_string_lossy(),
-                    "runtime": runtime_info,
-                    "dependencies": deps,
-                    "project_context": project_context,
-                    "cells": cells_summary,
-                });
-
-                if let Some(ref prev_id) = prev {
-                    if *prev_id != notebook_id {
-                        response["switched_from"] = serde_json::json!(prev_id);
-                    }
-                }
-
-                let peer_label = server.get_peer_label().await;
-                crate::presence::announce(handle, &peer_label).await;
-
-                let call_result = notebook_session_response(response, &notebook_id);
-                let session = NotebookSession::local(
-                    result.handle,
-                    result.broadcast_rx,
-                    notebook_id,
-                    Some(abs_path.to_string_lossy().into_owned()),
-                );
-                *server.session.write().await = Some(session);
-
-                Ok(call_result)
-            }
-            Err(e) => tool_error(&format!("Failed to open notebook '{}': {}", path, e)),
-        }
+        .map_err(|message| McpError::invalid_params(message, None))?
     } else {
-        // UUID notebook_id — connect to an existing daemon room.
-        let notebook_id = match id_arg {
-            Some(id) => id,
-            None => unreachable!("id_arg is Some when path_arg is None — validated above"),
-        };
-
-        // Validate that the provided value is a UUID.
-        if uuid::Uuid::parse_str(&notebook_id).is_err() {
-            return Err(McpError::invalid_params(
-                format!(
-                    "Invalid notebook_id '{}': must be a UUID (e.g. from list_active_notebooks). \
-                     To open a file, use the 'path' parameter instead.",
-                    notebook_id
-                ),
-                None,
-            ));
+        match (path_arg, id_arg) {
+            (Some(path), None) => NotebookTarget::LocalPath(path),
+            (None, Some(notebook_id)) => NotebookTarget::LocalNotebookId(notebook_id),
+            (None, None) => {
+                return Err(McpError::invalid_params(
+                    "Missing required parameter: provide one of 'target', 'path', or 'notebook_id'.",
+                    None,
+                ));
+            }
+            (Some(_), Some(_)) => {
+                return Err(McpError::invalid_params(
+                    "Ambiguous parameters: provide only one of 'target', 'path', or 'notebook_id'.",
+                    None,
+                ));
+            }
         }
+    };
 
-        // Check if we have a parked session for this notebook — resume it
-        // instead of opening a new connection.
-        if let Some(mut parked) = take_parked_session(server, &notebook_id).await {
-            tracing::info!("[mcp] Resuming parked session for {}", notebook_id);
-            let handle = &parked.handle;
-            let runtime_info = collect_runtime_info(handle).await;
-            let deps = get_dependencies(handle);
-            let cells_summary = format_cell_summaries(handle);
-            let project_context = read_project_context(handle);
-
-            // A session parked after a connect-by-id has no path; backfill it so
-            // resume keeps the rejoin-by-path invariant (ADR mcp-session-lifecycle,
-            // Decision 8).
-            if parked.notebook_path.is_none() {
-                parked.notebook_path = resolve_room_notebook_path(server, &notebook_id).await;
-            }
-
-            let mut response = serde_json::json!({
-                "notebook_id": handle.notebook_id(),
-                "connected": true,
-                "resumed": true,
-                "runtime": runtime_info,
-                "dependencies": deps,
-                "project_context": project_context,
-                "cells": cells_summary,
-            });
-            if let Some(ref path) = parked.notebook_path {
-                response["notebook_path"] = serde_json::json!(path);
-            }
-
-            if let Some(ref prev_id) = prev {
-                if *prev_id != notebook_id {
-                    response["switched_from"] = serde_json::json!(prev_id);
-                }
-            }
-
-            *server.session.write().await = Some(parked);
-            return Ok(notebook_session_response(response, &notebook_id));
+    let (target, canonical_target) = match target {
+        NotebookTarget::LocalPath(path) => {
+            let canonical = canonical_local_path_target(&path);
+            (NotebookTarget::LocalPath(path), canonical)
         }
-
-        match notebook_sync::connect::connect(
-            server.socket_path.clone(),
-            notebook_id.clone(),
-            &server.get_peer_label().await,
-        )
-        .await
-        {
-            Ok(result) => {
-                let handle = &result.handle;
-                if let Err(e) = handle
-                    .await_session_ready_timeout(MCP_SESSION_READY_TIMEOUT)
-                    .await
-                {
-                    return tool_error(&format!(
-                        "Notebook connected but did not become ready: {}",
-                        e
-                    ));
-                }
-
-                let runtime_info = collect_runtime_info(handle).await;
-                let deps = get_dependencies(handle);
-                let cells_summary = format_cell_summaries(handle);
-                let project_context = read_project_context(handle);
-
-                // File-backed rooms must carry their path so auto-rejoin reloads
-                // by path after a daemon swap rather than connecting to a stale
-                // UUID (ADR mcp-session-lifecycle, Decision 8). Surface it in the
-                // response too so the proxy seeds the path, not the UUID, into
-                // the respawned child's rejoin target.
-                let notebook_path = resolve_room_notebook_path(server, &notebook_id).await;
-
-                let mut response = serde_json::json!({
-                    "notebook_id": handle.notebook_id(),
-                    "connected": true,
-                    "runtime": runtime_info,
-                    "dependencies": deps,
-                    "project_context": project_context,
-                    "cells": cells_summary,
-                });
-                if let Some(ref path) = notebook_path {
-                    response["notebook_path"] = serde_json::json!(path);
-                }
-
-                if let Some(ref prev_id) = prev {
-                    if *prev_id != notebook_id {
-                        response["switched_from"] = serde_json::json!(prev_id);
-                    }
-                }
-
-                let peer_label = server.get_peer_label().await;
-                crate::presence::announce(handle, &peer_label).await;
-
-                let call_result = notebook_session_response(response, &notebook_id);
-                let session = NotebookSession::local(
-                    result.handle,
-                    result.broadcast_rx,
+        NotebookTarget::LocalNotebookId(notebook_id) => {
+            let canonical = canonical_local_id_target_for_server(server, &notebook_id).await?;
+            let normalized = uuid::Uuid::parse_str(&notebook_id)
+                .map_err(|_| McpError::invalid_params("Invalid notebook_id", None))?
+                .hyphenated()
+                .to_string();
+            (NotebookTarget::LocalNotebookId(normalized), canonical)
+        }
+        NotebookTarget::Hosted {
+            domain,
+            notebook_id,
+            source,
+        } => {
+            let notebook_url = cloud::hosted_notebook_url(&domain, &notebook_id);
+            let canonical = CanonicalNotebookTarget::new(format!("hosted:{notebook_url}"));
+            (
+                NotebookTarget::Hosted {
+                    domain,
                     notebook_id,
-                    notebook_path,
-                );
-                *server.session.write().await = Some(session);
+                    source,
+                },
+                canonical,
+            )
+        }
+    };
 
-                Ok(call_result)
-            }
-            Err(e) => tool_error(&format!("Failed to join notebook: {}", e)),
+    let mut lease = match server.session_activation.begin(canonical_target) {
+        ActivationTicket::Follower(follower) => return Ok(follower.wait().await),
+        ActivationTicket::Leader(lease) => lease,
+    };
+    let prev = previous_notebook_id(server).await;
+    let outcome = match target {
+        NotebookTarget::LocalPath(path) => {
+            connect_local_path_progressive(server, path, prev, &lease).await
+        }
+        NotebookTarget::LocalNotebookId(notebook_id) => {
+            connect_local_id_progressive(server, notebook_id, prev, &lease).await
+        }
+        NotebookTarget::Hosted {
+            domain,
+            notebook_id,
+            ..
+        } => connect_hosted_notebook(server, domain, notebook_id, prev, &lease).await,
+    };
+    match &outcome {
+        Ok(result) => lease.complete(result),
+        Err(error) => {
+            let result = activation_error(
+                "sync_failed",
+                &format!("Notebook activation failed: {error:?}"),
+                lease.generation(),
+                lease.target(),
+            );
+            lease.complete(&result);
         }
     }
+    outcome
 }
 
 /// Create a new notebook with optional dependencies.
@@ -1194,116 +1450,132 @@ pub async fn create_notebook(
         None => None,
     };
 
+    let create_target = CanonicalNotebookTarget::new(format!(
+        "local:create:{}",
+        uuid::Uuid::new_v4().hyphenated()
+    ));
+    let mut activation_lease = match server.session_activation.begin(create_target) {
+        ActivationTicket::Follower(follower) => return Ok(follower.wait().await),
+        ActivationTicket::Leader(lease) => lease,
+    };
     let prev = previous_notebook_id(server).await;
 
-    // Every create_notebook is a new notebook, so park the old session
-    // (keeps peer connection alive, preventing eviction).
-    park_previous_session(server, None).await;
-
-    match notebook_sync::connect::connect_create_with_environment_mode(
-        server.socket_path.clone(),
-        runtime,
-        working_dir,
-        &server.get_peer_label().await,
-        ephemeral,
-        explicit_pkg_manager.clone(),
-        deps.clone(),
-        environment_mode,
-    )
-    .await
-    {
-        Ok(result) => {
-            if let Err(e) = result
-                .handle
-                .await_session_ready_timeout(MCP_SESSION_READY_TIMEOUT)
-                .await
-            {
-                return tool_error(&format!("Notebook created but did not become ready: {}", e));
-            }
-
-            let notebook_id = result.handle.notebook_id().to_string();
-
-            let peer_label = server.get_peer_label().await;
-            crate::presence::announce(&result.handle, &peer_label).await;
-
-            // For Deno notebooks, there's no Python package manager — deps use
-            // Deno-native imports (npm: specifiers, URL imports). We skip
-            // detect_package_manager() which would fall back to "uv" since the
-            // Deno env_source hasn't propagated to the CRDT yet at this point.
-            let is_deno = runtime.eq_ignore_ascii_case("deno");
-            let pkg_manager: Option<notebook_protocol::connection::PackageManager> = if is_deno {
-                None
-            } else {
-                Some(
-                    explicit_pkg_manager
-                        .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle)),
-                )
-            };
-
-            let session = NotebookSession::local(
-                result.handle,
-                result.broadcast_rx,
-                notebook_id.clone(),
-                None,
-            );
-            *server.session.write().await = Some(session);
-
-            let runtime_info_handle = {
-                let guard = server.session.read().await;
-                guard.as_ref().map(|s| s.handle.clone())
-            };
-            let runtime_info = if let Some(handle) = runtime_info_handle {
-                collect_runtime_info(&handle).await
-            } else {
-                serde_json::json!({ "language": runtime })
-            };
-
-            let all_deps = {
-                let guard = server.session.read().await;
-                guard.as_ref().map_or_else(Vec::new, |s| {
-                    if let Some(ref pm) = pkg_manager {
-                        super::deps::get_deps_for_manager_pub(&s.handle, pm)
-                    } else {
-                        Vec::new() // Deno: no Python deps
-                    }
-                })
-            };
-
-            let project_context = {
-                let guard = server.session.read().await;
-                guard
-                    .as_ref()
-                    .map_or(serde_json::Value::Null, |s| read_project_context(&s.handle))
-            };
-
-            let mut info = serde_json::json!({
-                "notebook_id": notebook_id,
-                "runtime": runtime_info,
-                "dependencies": all_deps,
-                "added_dependencies": deps,
-                "package_manager": match pkg_manager {
-                    Some(ref pm) => pm.as_str(),
-                    None => "deno",
-                },
-                "ephemeral": ephemeral,
-                "environment_mode": environment_mode.unwrap_or_default().as_str(),
-                "project_context": project_context,
-            });
-
-            if let Some(ref prev_id) = prev {
-                if *prev_id != notebook_id {
-                    info["switched_from"] = serde_json::json!(prev_id);
+    let outcome = async {
+        match notebook_sync::connect::connect_create_with_environment_mode(
+            server.socket_path.clone(),
+            runtime,
+            working_dir,
+            &server.get_peer_label().await,
+            ephemeral,
+            explicit_pkg_manager.clone(),
+            deps.clone(),
+            environment_mode,
+        )
+        .await
+        {
+            Ok(result) => {
+                if let Err(e) = result
+                    .handle
+                    .await_session_ready_timeout(MCP_SESSION_READY_TIMEOUT)
+                    .await
+                {
+                    return tool_error(&format!(
+                        "Notebook created but did not become ready: {}",
+                        e
+                    ));
                 }
-            }
 
-            if used_kernel_alias {
-                info["info"] = serde_json::json!("Used 'kernel' parameter (alias for 'runtime')");
-            }
+                let notebook_id = result.handle.notebook_id().to_string();
 
-            Ok(notebook_session_response(info, &notebook_id))
+                if !activation_lease.is_current() {
+                    return Ok(superseded_result(&activation_lease));
+                }
+
+                let peer_label = server.get_peer_label().await;
+                crate::presence::announce(&result.handle, &peer_label).await;
+
+                // For Deno notebooks, there's no Python package manager — deps use
+                // Deno-native imports (npm: specifiers, URL imports). We skip
+                // detect_package_manager() which would fall back to "uv" since the
+                // Deno env_source hasn't propagated to the CRDT yet at this point.
+                let is_deno = runtime.eq_ignore_ascii_case("deno");
+                let pkg_manager: Option<notebook_protocol::connection::PackageManager> = if is_deno
+                {
+                    None
+                } else {
+                    Some(
+                        explicit_pkg_manager
+                            .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle)),
+                    )
+                };
+
+                let mut session = NotebookSession::local(
+                    result.handle,
+                    result.broadcast_rx,
+                    notebook_id.clone(),
+                    None,
+                );
+                session.reactivate(activation_lease.generation(), activation_lease.target());
+
+                let runtime_info = collect_runtime_info(&session.handle).await;
+                let all_deps = if let Some(ref pm) = pkg_manager {
+                    super::deps::get_deps_for_manager_pub(&session.handle, pm)
+                } else {
+                    Vec::new() // Deno: no Python deps
+                };
+                let project_context = read_project_context(&session.handle);
+
+                let mut info = serde_json::json!({
+                    "notebook_id": notebook_id,
+                    "runtime": runtime_info,
+                    "dependencies": all_deps,
+                    "added_dependencies": deps,
+                    "package_manager": match pkg_manager {
+                        Some(ref pm) => pm.as_str(),
+                        None => "deno",
+                    },
+                    "ephemeral": ephemeral,
+                    "environment_mode": environment_mode.unwrap_or_default().as_str(),
+                    "project_context": project_context,
+                });
+
+                if let Some(ref prev_id) = prev {
+                    if *prev_id != notebook_id {
+                        info["switched_from"] = serde_json::json!(prev_id);
+                    }
+                }
+
+                if used_kernel_alias {
+                    info["info"] =
+                        serde_json::json!("Used 'kernel' parameter (alias for 'runtime')");
+                }
+
+                add_progressive_session_fields(&mut info, &session);
+                if let Err(result) =
+                    install_activated_session(server, &activation_lease, session).await
+                {
+                    return Ok(result);
+                }
+
+                Ok(notebook_session_response(info, &notebook_id))
+            }
+            Err(e) => tool_error(&format!("Failed to create notebook: {}", e)),
         }
-        Err(e) => tool_error(&format!("Failed to create notebook: {}", e)),
     }
+    .await;
+    match &outcome {
+        Ok(result) => activation_lease.complete(result),
+        Err(error) => {
+            let result = activation_error(
+                "sync_failed",
+                &format!("Notebook creation failed: {error:?}"),
+                activation_lease.generation(),
+                activation_lease.target(),
+            );
+            activation_lease.complete(&result);
+        }
+    }
+    outcome
 }
 
 /// Save notebook to disk.
@@ -1313,17 +1585,9 @@ pub async fn save_notebook(
 ) -> Result<CallToolResult, McpError> {
     let path = arg_str(request, "path").map(resolve_path);
 
-    // Need both handle and the notebook_id from the session.
-    let (handle, notebook_id) = {
-        let guard = server.session.read().await;
-        match guard.as_ref() {
-            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
-            None => {
-                drop(guard);
-                return super::no_session_error(server).await;
-            }
-        }
-    };
+    let access = require_session_access!(server, DocumentMutation);
+    let handle = access.handle.clone();
+    let notebook_id = access.notebook_id.clone();
 
     // The daemon decides whether a path is required (untitled rooms with
     // no existing path field return SaveError with a clear message). We no
@@ -1335,31 +1599,96 @@ pub async fn save_notebook(
         tracing::warn!("confirm_sync failed before save: {e}");
     }
 
-    match handle
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
+
+    let response = handle
         .send_request(NotebookRequest::SaveNotebook {
             format_cells: false,
             path: path.clone(),
         })
-        .await
-    {
-        Ok(NotebookResponse::NotebookSaved {
-            path: saved_path, ..
-        }) => {
-            // Update session's notebook_path so auto-rejoin uses connect_open
+        .await;
+
+    // The daemon may have committed the old room's file while this request
+    // was in flight, but a later activation must never let that completion
+    // rewrite the new active session's rejoin path or masquerade as its save.
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
+
+    match response {
+        Ok(response @ (NotebookResponse::NotebookSaved { .. }
+        | NotebookResponse::NotebookAlreadyCurrent { .. })) => {
+            let (saved_path, outcome, exported_heads, save_sequence) = match response {
+                NotebookResponse::NotebookSaved {
+                    path,
+                    exported_heads,
+                    save_sequence,
+                } => (path, "saved", exported_heads, save_sequence),
+                NotebookResponse::NotebookAlreadyCurrent {
+                    path,
+                    exported_heads,
+                    save_sequence,
+                } => (path, "already_current", exported_heads, save_sequence),
+                _ => unreachable!(),
+            };
+            // Update the rejoin path only if this exact session still owns the
+            // active slot. Validation and mutation share one write lock so a
+            // newer activation cannot slip between them.
+            if let Err(error) = server
+                .update_session_path_if_current(&access, saved_path.clone())
+                .await
             {
-                let mut guard = server.session.write().await;
-                if let Some(ref mut s) = *guard {
-                    s.notebook_path = Some(saved_path.clone());
-                }
+                return super::session_access_error(error);
             }
 
             let result = serde_json::json!({
                 "path": saved_path,
                 "notebook_id": notebook_id,
+                "outcome": outcome,
+                "exported_heads": exported_heads,
+                "save_sequence": save_sequence,
             });
 
             Ok(notebook_session_response(result, &notebook_id))
         }
+        Ok(NotebookResponse::NotebookSaveBlocked {
+            save_sequence,
+            reason,
+            ..
+        }) => match reason {
+            SaveBlockedReason::PathAlreadyOpen {
+                uuid,
+                path: conflict,
+            } => tool_error(&format!(
+                "Cannot save: {conflict} is already open in session {uuid}. Close that session first, then retry."
+            )),
+            SaveBlockedReason::SequenceExhausted => {
+                tool_error("Cannot save because the file checkpoint sequence is exhausted")
+            }
+            SaveBlockedReason::Superseded { latest_sequence } => tool_error(&format!(
+                "Save sequence {} was superseded by newer sequence {latest_sequence}",
+                save_sequence
+                    .map(|sequence| sequence.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            )),
+            SaveBlockedReason::SourceConflict { message } => tool_error(&format!(
+                "Source conflict requires explicit reconciliation: {message}"
+            )),
+            SaveBlockedReason::SourceDegraded { message } => {
+                tool_error(&format!("Notebook source is degraded: {message}"))
+            }
+            SaveBlockedReason::Io { message } => {
+                if path.is_none() && message.contains("untitled") {
+                    tool_error(
+                        "No path specified. For notebooks created with create_notebook(), you must provide a path (e.g., save_notebook(path='/path/to/file.ipynb'))",
+                    )
+                } else {
+                    tool_error(&format!("Failed to save notebook: {message}"))
+                }
+            }
+        },
         Ok(NotebookResponse::SaveError { error }) => match error {
             SaveErrorKind::PathAlreadyOpen {
                 uuid,
@@ -1608,6 +1937,41 @@ mod tests {
             serde_json::from_str(text).expect("session response should be JSON");
         assert_eq!(response["notebook_id"], "daemon-only");
         assert!(response.get("resources").is_none());
+    }
+
+    #[tokio::test]
+    async fn explicit_disconnect_cancels_pending_automatic_rejoin() {
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
+        let notebook_id = uuid::Uuid::new_v4().to_string();
+        *server.last_session_drop.write().await = Some(SessionDropInfo {
+            reason: SessionDropReason::Disconnected,
+            notebook_id: notebook_id.clone(),
+            notebook_path: Some("/tmp/rejoin.ipynb".to_string()),
+            rejoin_target: Some("/tmp/rejoin.ipynb".to_string()),
+        });
+        let before = server
+            .session_intent_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
+
+        let result = disconnect_notebook(
+            &server,
+            &make_request(
+                "disconnect_notebook",
+                serde_json::json!({"notebook_id": notebook_id}),
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.is_error, Some(false));
+        assert!(first_text(&result).contains("Cancelled automatic reconnect"));
+        assert!(
+            server
+                .session_intent_epoch
+                .load(std::sync::atomic::Ordering::Acquire)
+                > before
+        );
+        assert!(server.session.read().await.is_none());
     }
 
     #[tokio::test]

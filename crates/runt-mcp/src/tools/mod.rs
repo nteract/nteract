@@ -15,16 +15,22 @@ use crate::NteractMcp;
 /// When the session was previously active but dropped, the error includes
 /// the *reason* (evicted, disconnected, switched) and the *notebook_id*
 /// so agents can recover in one turn via `connect_notebook`.
-macro_rules! require_handle {
-    ($server:expr) => {{
-        let guard = $server.session.read().await;
-        match guard.as_ref() {
-            Some(s) => s.handle.clone(),
-            None => {
-                drop(guard);
-                return $crate::tools::no_session_error($server).await;
-            }
+macro_rules! require_session_access {
+    ($server:expr, $requirement:ident) => {{
+        match $server
+            .session_access($crate::session::SessionRequirement::$requirement)
+            .await
+        {
+            Ok(Some(access)) => access,
+            Ok(None) => return $crate::tools::no_session_error($server).await,
+            Err(error) => return $crate::tools::session_access_error(error),
         }
+    }};
+}
+
+macro_rules! require_handle {
+    ($server:expr, $requirement:ident) => {{
+        require_session_access!($server, $requirement).handle
     }};
 }
 
@@ -589,6 +595,37 @@ pub fn assert_cell_exists(
 /// Helper: create a text error result.
 pub fn tool_error(msg: &str) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::error(vec![Content::text(msg.to_string())]))
+}
+
+/// Convert a centralized session capability failure into a structured tool
+/// result instead of an opaque timeout or cached-success response.
+pub fn session_access_error(
+    error: crate::session::SessionAccessError,
+) -> Result<CallToolResult, McpError> {
+    let details = serde_json::json!({
+        "error": {
+            "code": error.code,
+            "message": error.message,
+        },
+        "session": error.readiness,
+    });
+    let mut result = CallToolResult::error(vec![Content::text(details.to_string())]);
+    result.structured_content = Some(details);
+    Ok(result)
+}
+
+pub fn execution_dispatch_error(
+    error: crate::execution::ExecutionDispatchError,
+) -> Result<CallToolResult, McpError> {
+    let details = serde_json::json!({
+        "error": {
+            "code": error.code,
+            "message": error.message,
+        }
+    });
+    let mut result = CallToolResult::error(vec![Content::text(details.to_string())]);
+    result.structured_content = Some(details);
+    Ok(result)
 }
 
 /// Helper: create a text success result.

@@ -72,7 +72,7 @@ pub async fn create_comment(
 ) -> Result<CallToolResult, McpError> {
     reject_unknown_args(request, &["anchor", "body"])?;
 
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
     let params: CreateCommentParams = serde_json::from_value(serde_json::Value::Object(
         request
             .arguments
@@ -99,7 +99,7 @@ pub async fn reply_comment(
 ) -> Result<CallToolResult, McpError> {
     reject_unknown_args(request, &["thread_id", "body"])?;
 
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
     let params: ReplyCommentParams = serde_json::from_value(serde_json::Value::Object(
         request
             .arguments
@@ -129,7 +129,7 @@ pub async fn resolve_comment(
 ) -> Result<CallToolResult, McpError> {
     reject_unknown_args(request, &["thread_id"])?;
 
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
     let params: ResolveCommentParams = serde_json::from_value(serde_json::Value::Object(
         request
             .arguments
@@ -156,7 +156,7 @@ pub async fn reopen_comment(
 ) -> Result<CallToolResult, McpError> {
     reject_unknown_args(request, &["thread_id"])?;
 
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
     let params: ReopenCommentParams = serde_json::from_value(serde_json::Value::Object(
         request
             .arguments

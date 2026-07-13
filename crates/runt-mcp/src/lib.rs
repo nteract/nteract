@@ -7,6 +7,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,10 +30,14 @@ pub mod presence;
 pub mod project_file;
 mod resources;
 mod session;
+mod session_activation;
 mod structured;
 pub mod tools;
 
-use session::{NotebookSession, SessionDropInfo};
+use session::{
+    NotebookSession, SessionAccess, SessionAccessError, SessionDropInfo, SessionRequirement,
+};
+use session_activation::SessionActivation;
 
 const SLOW_MCP_TOOL_CALL: Duration = Duration::from_secs(30);
 
@@ -43,6 +48,14 @@ pub struct NteractMcp {
     blob_store_path: Option<PathBuf>,
     execution_store_path: PathBuf,
     session: Arc<RwLock<Option<NotebookSession>>>,
+    /// Explicit tool intent epoch used to invalidate daemon auto-rejoin work.
+    /// The epoch is advanced while holding the active-session write lock so a
+    /// completed background connection cannot resurrect a session after the
+    /// user deliberately disconnected it.
+    session_intent_epoch: Arc<AtomicU64>,
+    /// Owns monotonically ordered notebook activation generations and
+    /// coalesces concurrent connections to the same canonical target.
+    session_activation: Arc<SessionActivation>,
     /// Parked sessions from previous `connect_notebook` / `create_notebook`
     /// calls. When an agent switches notebooks, the old session is moved here
     /// instead of being dropped, keeping the daemon peer connection alive so
@@ -80,6 +93,8 @@ impl NteractMcp {
             blob_store_path,
             execution_store_path: runtimed_client::default_execution_store_dir(),
             session: Arc::new(RwLock::new(None)),
+            session_intent_epoch: Arc::new(AtomicU64::new(0)),
+            session_activation: Arc::new(SessionActivation::default()),
             parked_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             last_session_drop: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
@@ -129,6 +144,18 @@ impl NteractMcp {
         &self.session
     }
 
+    /// Get the explicit session-intent epoch shared with the daemon watcher.
+    pub fn session_intent_epoch(&self) -> &Arc<AtomicU64> {
+        &self.session_intent_epoch
+    }
+
+    /// Invalidate automatic rejoin work after an explicit tool action.
+    /// Callers must hold the active-session write lock while advancing this
+    /// epoch so installation and cancellation have one total order.
+    pub(crate) fn advance_session_intent_epoch(&self) -> u64 {
+        self.session_intent_epoch.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
     /// Get the shared parked sessions map.
     pub fn parked_sessions(
         &self,
@@ -144,6 +171,94 @@ impl NteractMcp {
     /// Get the shared session drop info (for the daemon watcher).
     pub fn last_session_drop(&self) -> &Arc<RwLock<Option<SessionDropInfo>>> {
         &self.last_session_drop
+    }
+
+    /// Acquire the active session through the centralized readiness gate.
+    /// `None` means there is no active session; a typed error means a session
+    /// exists but does not currently expose the requested capability.
+    pub(crate) async fn session_access(
+        &self,
+        requirement: SessionRequirement,
+    ) -> Result<Option<SessionAccess>, SessionAccessError> {
+        let guard = self.session.read().await;
+        let Some(session) = guard.as_ref() else {
+            return Ok(None);
+        };
+        if session.activation_generation != 0
+            && !self
+                .session_activation
+                .is_current_identity(session.activation_generation, &session.activation_target)
+        {
+            let readiness = session.readiness();
+            return Err(SessionAccessError {
+                code: "session_superseded",
+                message: "A newer notebook target superseded this session".to_string(),
+                readiness: Box::new(readiness),
+            });
+        }
+        session.access(requirement).map(Some)
+    }
+
+    /// Revalidate an access token after an await point. Both the activation
+    /// owner and the published session slot must still name the exact target
+    /// captured before the operation began.
+    pub(crate) async fn ensure_session_access_current(
+        &self,
+        access: &SessionAccess,
+    ) -> Result<(), SessionAccessError> {
+        let generation = access.readiness.session_generation;
+        let target = &access.readiness.target;
+        let activation_current = generation == 0
+            || self
+                .session_activation
+                .is_current_identity(generation, target);
+        let slot_current = self.session.read().await.as_ref().is_some_and(|session| {
+            session.activation_generation == generation
+                && session.activation_target == *target
+                && session.notebook_id == access.notebook_id
+        });
+        if activation_current && slot_current {
+            return Ok(());
+        }
+        Err(Self::superseded_access_error(access))
+    }
+
+    /// Update active-session metadata only while the exact access identity is
+    /// still installed. Holding the slot write lock across validation and the
+    /// mutation closes the final race between a post-request check and a newer
+    /// activation publishing its session.
+    pub(crate) async fn update_session_path_if_current(
+        &self,
+        access: &SessionAccess,
+        path: String,
+    ) -> Result<(), SessionAccessError> {
+        let generation = access.readiness.session_generation;
+        let target = &access.readiness.target;
+        let mut guard = self.session.write().await;
+        let activation_current = generation == 0
+            || self
+                .session_activation
+                .is_current_identity(generation, target);
+        let Some(session) = guard.as_mut().filter(|session| {
+            session.activation_generation == generation
+                && session.activation_target == *target
+                && session.notebook_id == access.notebook_id
+        }) else {
+            return Err(Self::superseded_access_error(access));
+        };
+        if !activation_current {
+            return Err(Self::superseded_access_error(access));
+        }
+        session.notebook_path = Some(path);
+        Ok(())
+    }
+
+    fn superseded_access_error(access: &SessionAccess) -> SessionAccessError {
+        SessionAccessError {
+            code: "session_superseded",
+            message: "A newer notebook target superseded this operation".to_string(),
+            readiness: Box::new(access.readiness.clone()),
+        }
     }
 
     /// Disconnect this MCP process's peer from the active notebook session.

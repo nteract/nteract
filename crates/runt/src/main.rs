@@ -746,6 +746,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     // Grab shared state handles before serving (serve consumes the server)
     let session = server.session().clone();
     let session_for_shutdown = session.clone();
+    let session_intent_epoch = server.session_intent_epoch().clone();
     let peer_label = server.peer_label_shared().clone();
     let last_session_drop = server.last_session_drop().clone();
     let parked_sessions = server.parked_sessions().clone();
@@ -773,6 +774,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
             peer_label,
             last_session_drop,
             parked_sessions,
+            session_intent_epoch,
         )
         .await
     });
