@@ -11,18 +11,21 @@ local `runtimed` daemon over a Unix socket, holds one active
 local notebooks because the agent edits the same Automerge document set the
 desktop app sees.
 
-Hosted notebooks at `preview.runt.run` now use the same document split:
-`NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` travel over typed-frame v4
-WebSockets. The browser viewer and workstation/runtime peers already prove that
-native clients can speak the hosted room protocol with explicit credentials,
-connection scope, principal, and operator attribution.
+Hosted notebooks at configured nteract cloud origins now use the same document
+split: `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` travel over typed-frame
+v4 WebSockets. The browser viewer and workstation/runtime peers already prove
+that native clients can speak the hosted room protocol with explicit
+credentials, connection scope, principal, and operator attribution.
+
+`preview.runt.run` is one staging deployment and useful development target. It
+is not a built-in Desktop remote or a default in stable distributions.
 
 The next agent workflow should not require registering one MCP server per
 notebook. A local MCP client should be able to call:
 
 ```json
 {
-  "target": "https://preview.runt.run/n/01KT..."
+  "target": "https://notebooks.example.com/n/01KT..."
 }
 ```
 
@@ -53,12 +56,14 @@ Neighbors:
 ## Vocabulary
 
 - **Room locator**: an address used to reach a notebook room host, such as a
-  local path, a local room id, or `https://preview.runt.run/n/<id>/<slug>`.
+  local path, a local room id, or `https://notebooks.example.com/n/<id>/<slug>`.
 - **MCP resource URI**: a local resource name exposed by an MCP server, such as
   `nteract://notebooks/<id>/cells`. It is not a room locator.
 - **Cloud domain registry**: machine-local configuration that maps hosted
-  nteract origins such as `https://preview.runt.run` to credential references
-  and a default operator.
+  nteract origins such as `https://notebooks.example.com` to credential
+  references and an optional fallback operator for headless clients. The
+  registry may contain zero, one, or many origins; its default origin is
+  optional.
 - **Principal**: the authenticated entity proven by a credential, such as a
   user account or service account.
 - **Operator**: the local process/persona acting under that principal, such as
@@ -109,7 +114,7 @@ can therefore distinguish them structurally, but v1 should still avoid treating
 a bare hosted ULID as a default-remote notebook. Requiring a hosted URL or
 `domain` is a chosen guardrail, not a technical limitation.
 
-## Decision 2: Cloud remote config is separate from synced settings
+## Decision 2: Cloud host configuration is a machine-local, multi-host registry
 
 Do not store hosted remote credentials in `SyncedSettings` or the synced
 settings Automerge document.
@@ -121,26 +126,42 @@ designed to sync across windows on the same daemon and to tolerate external JSON
 edits. It is not a credential store, and cloud API keys must not become part of
 that live settings document.
 
-Introduce a separate machine-local cloud domain registry near the existing
-config namespace, for example:
+Use the separate machine-local `cloud-domains.toml` registry in the existing
+config namespace. For example:
 
 ```toml
-default_domain = "https://preview.runt.run"
+# Optional, and present only after an explicit user choice:
+# default_domain = "https://notebooks.example.com"
 
 [[domains]]
-url = "https://preview.runt.run"
-auth = { kind = "anaconda-key", env = "NTERACT_PREVIEW_ANACONDA_API_KEY" }
+base_url = "https://notebooks.example.com"
+# Optional fallback when a headless client does not declare its operator:
 operator = "agent:codex:lab2"
+credential = { kind = "oidc-bearer-env", env = "NTERACT_NOTEBOOKS_TOKEN" }
+
+[[domains]]
+base_url = "https://research.example.net"
+credential = { kind = "anaconda-api-key-env", env = "NTERACT_RESEARCH_API_KEY" }
 ```
 
-The exact path and encoding can be settled in implementation, but the
-properties are load-bearing:
+The following properties are load-bearing:
 
+- the registry may contain zero, one, or many normalized hosted origins;
+- a missing file or empty registry means no cloud hosts are configured;
+- the stable Desktop/MCP registry starts empty and those clients synthesize no
+  host or default, specifically not an implicit `preview.runt.run` entry;
+- `default_domain` is optional, must name an existing registry entry, and may
+  be consulted only after the caller has explicitly chosen a cloud operation;
+  it never reinterprets a bare notebook id as remote;
 - non-secret routing and domain data may live in the registry;
 - bearer values are read from environment variables, OS keychain, or a future
   secret helper, not persisted as plaintext by `runt config`;
 - the registry is machine-local and may differ between Desktop, Codex, CI,
   workstation hosts, and user laptops;
+- the registry is consumer-neutral and shared by daemon bridges, MCP, CLI, and
+  the Desktop host adapter;
+- secrets are resolved in the native process; webviews receive host metadata
+  and catalog results, not bearer values;
 - `runt config` remains for synced daemon preferences unless we intentionally
   add a separate `runt cloud ...` or `runt remote ...` command group.
 
@@ -166,7 +187,7 @@ The local MCP server is still the active client:
 MCP client
   -> local runt mcp
     -> local target: runtimed Unix socket
-    -> hosted target: typed-frame v4 WebSocket to preview.runt.run
+    -> hosted target: typed-frame v4 WebSocket to configured host
 ```
 
 This is deliberately different from a remote MCP service. A remote MCP service
@@ -218,15 +239,21 @@ Both paths resolve the same machine-local `cloud-domains.toml` (shared via
 `notebook-cloud-transport::registry`) and produce the same principal/operator
 actor labels.
 
-## Decision 4: Principal comes from the credential; operator comes from local config
+## Decision 4: Principal comes from the credential; operator comes from the initiating client
 
 Hosted room auth still decides the principal. If the configured credential is
 an Anaconda API key, the principal is the Anaconda-scoped principal returned by
 the hosted identity layer. If it is a service-account key such as
 `quilldaemon`, that service account is the principal.
 
-The local MCP config supplies the operator suffix. The operator is attribution
-metadata, not authorization. Examples:
+The initiating client supplies an operator descriptor per connection. Desktop
+declares a Desktop operator in its hosted-open handshake; Codex and other agents
+declare their agent operator through their MCP connection. The registry's
+optional `operator` field is only a fallback for headless clients that do not
+declare one. It must not replace an explicit per-connection operator or cause a
+Desktop-initiated action to be attributed to an agent.
+
+The operator is attribution metadata, not authorization. Examples:
 
 ```text
 user:anaconda:<sub>/agent:codex:lab2
@@ -255,10 +282,17 @@ implementation introduces a persisted actor store with a single-writer lease.
 Persisted actor reuse across process restarts is unsafe if the prior connection
 may still be alive.
 
-## Decision 5: `list_notebooks` uses an optional domain parameter
+## Decision 5: Hosted catalogs are explicit, host-qualified, and headless
 
 Local `list_active_notebooks` should remain a daemon-local view. It lists active
 local daemon rooms and should not surprise callers with network traffic.
+
+Hosted catalog access must be a local cloud capability, not a React or
+browser-dashboard store. It accepts an explicitly resolved registry entry,
+authenticates process-side against the host-owned catalog API, and returns typed
+notebook summaries qualified by both normalized origin and notebook id. MCP
+tools, CLI commands, and the Desktop host adapter should consume the same
+boundary.
 
 Do not add a separate hosted-listing tool. The cloud-aware listing surface
 should be one `list_notebooks` tool with an optional `domain` parameter. While
@@ -281,6 +315,13 @@ The important distinction is:
 A unified UI response may group those sources, but the source must stay visible
 in the structured response so agents do not mistake a hosted catalog row for a
 warm local daemon room.
+
+The first Desktop slice may expose tested host-adapter operations to list
+configured hosts, list notebooks for one explicitly selected host, and open a
+hosted locator without registering a visible page, menu item, or stable feature
+flag. Landing this headless capability does not commit the product to a
+dashboard layout or to opening hosted notebooks in a browser versus a Desktop
+notebook window.
 
 ## Decision 6: Execution and workstation attachment stay separate
 
@@ -323,13 +364,32 @@ id, because the same id may be meaningful only within a remote origin. For
 example:
 
 ```text
-remote:https://preview.runt.run:01KT...
-https://preview.runt.run/n/01KT...
+remote:https://notebooks.example.com:01KT...
+https://notebooks.example.com/n/01KT...
 ```
 
 The MCP proxy's `NTERACT_MCP_REJOIN_NOTEBOOK` handoff may need to evolve from a
 bare notebook id into an encoded session target. That should be a compatibility
 change: old values keep meaning local notebook ids.
+
+## Open Follow-ups
+
+- **Shared typed catalog client:** Extract the MCP-private hosted catalog request
+  into a process-side client used by MCP, CLI, and the Desktop host adapter.
+  Current MCP code still returns untyped JSON, and Desktop has no cloud catalog
+  namespace yet.
+- **Machine-local registry management:** Add normalized, atomic list/upsert/
+  remove/default operations and a headless CLI or equivalent native management
+  surface before exposing stable host-configuration UI.
+- **Per-connection operator precedence:** Ensure an explicit Desktop or MCP
+  operator descriptor wins over the registry fallback, with coverage showing
+  that Desktop and Codex using the same host credential retain distinct
+  attribution.
+- **Explicit stable publish target:** `runt-publish` currently defaults to
+  `preview.runt.run`. Remove that product default, or confine it to explicit
+  development tooling, before publishing is exposed through stable Desktop.
+  Stable publishing should require an explicit URL or an explicitly selected
+  registry default.
 
 ## Non-Goals
 
@@ -341,3 +401,6 @@ change: old values keep meaning local notebook ids.
 - Building a remote MCP service before local stdio MCP can sync directly with
   hosted rooms.
 - Migrating legacy hosted notebooks from other services or storage formats.
+- Choosing a built-in or vendor-specific stable cloud service.
+- Defining the final Desktop notebook-home layout or discoverability.
+- Treating a hosted browser dashboard store as the Desktop catalog client.

@@ -77,6 +77,35 @@ The shell must stay free of platform side effects. It should not import Tauri,
 Cloudflare, OIDC, generated WASM transport, room-host APIs, local filesystem
 commands, or catalog routing. Those remain host adapters.
 
+## Application-Level Notebook Catalogs
+
+A notebook catalog exists before a notebook document is selected, so it is not
+part of `NotebookDocumentShell`, its rail, or its toolbar. Local notebook
+discovery, hosted catalog queries, cloud host configuration, credentials, and
+the choice of where to open a hosted locator are application-level host chrome.
+
+Desktop may eventually expose a separate singleton window, provisionally
+called Notebook Home, that composes local recent or open-notebook facts with
+hosted catalog rows grouped by configured origin. The exact product name,
+filesystem discovery model, layout, discoverability, and default open action
+remain product decisions. In particular, this ADR does not imply a
+filesystem-wide notebook index or choose between opening a hosted notebook on
+the web and opening it in a Desktop notebook window.
+
+The Desktop capability may land headlessly before that UI. Its host adapter can
+offer typed operations to list configured hosts, list notebooks for one
+explicitly selected host, and open a hosted locator without a visible page or
+menu entry. Hosted notebook identity at this boundary is the pair
+`(normalized origin, notebook id)`, never the notebook id alone.
+
+The hosted browser `/n` page and a future Desktop Notebook Home are separate
+host adapters over common catalog concepts. Desktop must not depend on the
+browser page's routing, cookies, `localStorage`, `window.location`, or
+module-singleton stores. The two hosts may share typed DTOs, pure projections,
+and host-neutral presentation components. Catalog, authentication, routing,
+and host-configuration facts remain host-owned API state, not Automerge
+document state or notebook-shell state.
+
 The shared view model owns host-neutral projections:
 
 - cell order, cell types, source text, outputs, and execution counts;
@@ -243,6 +272,12 @@ when shared shell controls are still coupled to desktop or cloud specifics.
 
 - New cloud notebook UI should be justified as host adapter UI, not as another
   cell/editor/output implementation.
+- Desktop cloud operations enter through `@nteract/notebook-host` and its Tauri
+  implementation rather than direct platform imports in React.
+- Visible Notebook Home work is app chrome and should be reviewed independently
+  from shared notebook presentation.
+- Catalog projections preserve normalized host origin as part of notebook
+  identity even when a UI groups local and hosted rows together.
 - Shared components should receive host capabilities and callbacks instead of
   importing host state directly.
 - Desktop should adopt the same capability vocabulary for local read/write,
@@ -265,6 +300,18 @@ then has to be rediscovered or reimplemented.
 Rejected. The shell becomes impossible to reuse in elements, desktop, and hosted
 flows if it owns Tauri commands, OIDC refresh, Cloudflare routing, or local
 daemon side effects.
+
+### Put notebook discovery and catalogs in NotebookDocumentShell
+
+Rejected. Catalogs precede document selection and combine host-owned local and
+remote sources. They belong to application chrome, not the open document's
+rail, toolbar, or capability model.
+
+### Reuse the hosted browser dashboard as the Desktop portal
+
+Rejected. The hosted dashboard's authentication, routing, storage, and
+lifecycle assumptions belong to its browser host. Desktop should reuse only
+host-neutral contracts, projections, and presentation components.
 
 ### Treat ACLs as hosted-only
 
