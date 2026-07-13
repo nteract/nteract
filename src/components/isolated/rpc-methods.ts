@@ -22,6 +22,8 @@ export const NTERACT_EVAL = "nteract/eval" as const;
 export const NTERACT_INSTALL_RENDERER = "nteract/installRenderer" as const;
 export const NTERACT_SEARCH = "nteract/search" as const;
 export const NTERACT_MEASURE_ELEMENT = "nteract/measureElement" as const;
+export const NTERACT_BOKEH_SESSION_OPEN = "nteract/bokehSessionOpen" as const;
+export const NTERACT_BOKEH_APPLY_PATCH = "nteract/bokehApplyPatch" as const;
 
 // Host → Iframe (Notifications — fire-and-forget)
 export const NTERACT_RENDER_OUTPUT = "nteract/renderOutput" as const;
@@ -34,6 +36,8 @@ export const NTERACT_COMM_CLOSE = "nteract/commClose" as const;
 export const NTERACT_WIDGET_SNAPSHOT = "nteract/widgetSnapshot" as const;
 export const NTERACT_BRIDGE_READY = "nteract/bridgeReady" as const;
 export const NTERACT_WIDGET_STATE = "nteract/widgetState" as const;
+export const NTERACT_BOKEH_SESSION_PATCH = "nteract/bokehSessionPatch" as const;
+export const NTERACT_BOKEH_SESSION_STATE = "nteract/bokehSessionState" as const;
 
 // Host → Iframe (Notifications) — additional
 export const NTERACT_THEME = "nteract/theme" as const;
@@ -104,6 +108,73 @@ export interface NteractMeasureElementResult {
   height?: number;
 }
 
+export type NteractBokehSessionStatus = "connected" | "disconnected" | "closed" | "error";
+
+export interface NteractBokehResolvedBuffer {
+  id: string;
+  data: ArrayBuffer;
+}
+
+export interface NteractBokehResolvedPatchPayload {
+  patch: Record<string, unknown>;
+  buffers: NteractBokehResolvedBuffer[];
+}
+
+export interface NteractBokehResolvedCheckpoint {
+  revision: number;
+  document: Record<string, unknown>;
+  buffers: NteractBokehResolvedBuffer[];
+}
+
+export interface NteractBokehResolvedPatchEvent {
+  sessionId: string;
+  transactionId: string;
+  baseRevision: number;
+  revision: number;
+  clientPatch?: NteractBokehResolvedPatchPayload;
+  serverPatch?: NteractBokehResolvedPatchPayload;
+  checkpoint?: NteractBokehResolvedCheckpoint;
+}
+
+export interface NteractBokehSessionOpenParams {
+  sessionId: string;
+  outputId: string;
+}
+
+export interface NteractBokehSessionSnapshot {
+  schemaVersion: 1;
+  sessionId: string;
+  outputId: string;
+  status: NteractBokehSessionStatus;
+  headRevision: number;
+  checkpoint: NteractBokehResolvedCheckpoint;
+  patchTail: NteractBokehResolvedPatchEvent[];
+}
+
+export interface NteractBokehApplyPatchParams {
+  sessionId: string;
+  outputId: string;
+  transactionId: string;
+  baseRevision: number;
+  patch: Record<string, unknown>;
+  buffers: NteractBokehResolvedBuffer[];
+}
+
+export type NteractBokehApplyPatchResult =
+  | {
+      status: "accepted" | "stale";
+      sessionId: string;
+      transactionId: string;
+      revision: number;
+    }
+  | {
+      status: "error";
+      sessionId: string;
+      transactionId: string;
+      revision?: number | null;
+      error: string;
+    };
+
 // ── Host → Iframe: Notification Params ──────────────────────────────
 
 export interface NteractRenderOutputParams {
@@ -157,6 +228,18 @@ export interface NteractWidgetStateParams {
   commId: string;
   state: Record<string, unknown>;
   buffers?: string[];
+}
+
+export interface NteractBokehSessionPatchParams {
+  outputId: string;
+  event: NteractBokehResolvedPatchEvent;
+}
+
+export interface NteractBokehSessionStateParams {
+  sessionId: string;
+  outputId: string;
+  status: NteractBokehSessionStatus;
+  headRevision: number;
 }
 
 // ── Iframe → Host: Notification Params ──────────────────────────────

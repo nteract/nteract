@@ -485,6 +485,7 @@ fn request_required_scope(
         | NotebookRequest::ApproveTrust { .. }
         | NotebookRequest::ApproveProjectEnvironment { .. } => RequestRequiredScope::Owner,
         NotebookRequest::SendComm { .. }
+        | NotebookRequest::ApplyBokehSessionPatch { .. }
         | NotebookRequest::CloneAsEphemeral { .. }
         | NotebookRequest::GetDocBytes {} => RequestRequiredScope::NotebookWrite,
         NotebookRequest::CreateBlobUpload { .. }

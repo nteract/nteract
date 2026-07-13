@@ -114,7 +114,12 @@ def buffer_hook(msg: dict) -> dict | None:
             # Pass through unchanged; the daemon can still resolve via the
             # blob store if it already has the hash.
             return msg
-        buffers = [pending.pop(h) for h in hashes if isinstance(h, str)]
+        # Multiple logical buffers may contain identical bytes and therefore
+        # share a content hash. Read all frames before deleting unique hashes.
+        buffers = [pending[h] for h in hashes if isinstance(h, str)]
+        for h in set(hashes):
+            if isinstance(h, str):
+                pending.pop(h, None)
         for index, entry in enumerate(entries):
             entry["buffer_index"] = index
 

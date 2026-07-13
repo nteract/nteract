@@ -21,6 +21,7 @@ pub(crate) struct OutputCommitContext {
     pub(crate) blob_store: Arc<BlobStore>,
     pub(crate) blob_publisher: OutputBlobPublisher,
     pub(crate) kernel_actor_id: String,
+    pub(crate) kernel_id: String,
     pub(crate) lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
     pub(crate) redactor: Arc<OutputRedactor>,
 }
@@ -31,6 +32,7 @@ impl OutputCommitContext {
         blob_store: Arc<BlobStore>,
         blob_publisher: OutputBlobPublisher,
         kernel_actor_id: String,
+        kernel_id: String,
         lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
         redactor: Arc<OutputRedactor>,
     ) -> Self {
@@ -39,6 +41,7 @@ impl OutputCommitContext {
             blob_store,
             blob_publisher,
             kernel_actor_id,
+            kernel_id,
             lifecycle_tx,
             redactor,
         }

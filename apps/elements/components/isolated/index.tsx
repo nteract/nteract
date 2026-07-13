@@ -38,9 +38,16 @@ import type {
   ParentToIframeMessage,
   RenderPayload,
 } from "../../../../src/components/isolated/frame-bridge";
+import type { BokehSessionRuntime } from "../../../../src/components/isolated/bokeh-session-context";
 import type { IsolatedDiagnosticHandler } from "../../../../src/components/isolated/diagnostics";
 import type { NteractEmbedHostContextPatch } from "../../../../src/components/isolated/host-context";
-import type { NteractMeasureElementResult } from "../../../../src/components/isolated/rpc-methods";
+import type {
+  NteractBokehApplyPatchParams,
+  NteractBokehApplyPatchResult,
+  NteractBokehSessionOpenParams,
+  NteractBokehSessionSnapshot,
+  NteractMeasureElementResult,
+} from "../../../../src/components/isolated/rpc-methods";
 
 export {
   anyOutputNeedsIsolation,
@@ -74,6 +81,10 @@ export {
   useRegisterIsolatedOutput,
 } from "../../../../src/components/isolated/isolated-renderer-context";
 
+export function useBokehSessionRuntime(): BokehSessionRuntime | null {
+  return null;
+}
+
 export interface IsolatedFrameProps {
   id?: string;
   name?: string;
@@ -98,6 +109,12 @@ export interface IsolatedFrameProps {
   onMouseUp?: (params: { hasSelection?: boolean }) => void;
   onDoubleClick?: () => void;
   onWidgetUpdate?: (commId: string, state: Record<string, unknown>) => void;
+  onBokehSessionOpen?: (
+    params: NteractBokehSessionOpenParams,
+  ) => Promise<NteractBokehSessionSnapshot>;
+  onBokehApplyPatch?: (
+    params: NteractBokehApplyPatchParams,
+  ) => Promise<NteractBokehApplyPatchResult>;
   onError?: (error: { message: string; stack?: string }) => void;
   onMessage?: (message: IframeToParentMessage) => void;
   onDiagnostic?: IsolatedDiagnosticHandler;
@@ -123,6 +140,26 @@ export class CommBridgeManager {
   constructor(_options: unknown) {}
 
   handleIframeMessage(_message: IframeToParentMessage): void {}
+
+  dispose(): void {}
+}
+
+export class BokehSessionBridgeManager {
+  constructor(_options: unknown) {}
+
+  openSession(_params: NteractBokehSessionOpenParams): Promise<NteractBokehSessionSnapshot> {
+    return Promise.reject(new Error("Bokeh document sessions are unavailable in Elements"));
+  }
+
+  applyPatch(_params: NteractBokehApplyPatchParams): Promise<NteractBokehApplyPatchResult> {
+    return Promise.reject(new Error("Bokeh document sessions are unavailable in Elements"));
+  }
+
+  setBindings(_bindings: unknown): void {}
+
+  updateRuntimeSessions(_sessions: unknown): void {}
+
+  notifyCurrentState(): void {}
 
   dispose(): void {}
 }

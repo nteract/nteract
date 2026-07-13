@@ -34,7 +34,12 @@ import {
   Subscription,
 } from "rxjs";
 
-import { type CommBroadcast, isCommBroadcast } from "./broadcast-types";
+import {
+  type BokehSessionPatchBroadcast,
+  type CommBroadcast,
+  isBokehSessionPatchBroadcast,
+  isCommBroadcast,
+} from "./broadcast-types";
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
 import {
   type CommChanges,
@@ -337,9 +342,9 @@ export class SyncEngine {
   readonly cellChanges$: Observable<CellChangeset | null>;
 
   /**
-   * Daemon broadcast payloads. Only Comm traffic (ipywidget messages,
-   * custom widget events) flows here — kernel status, execution, outputs,
-   * env progress, and text attributions all live in RuntimeStateDoc now.
+   * Daemon broadcast payloads. Ephemeral Comm traffic and low-latency Bokeh
+   * document transactions flow here. Durable runtime topology and replay
+   * coordinates live in RuntimeStateDoc.
    */
   readonly broadcasts$: Observable<unknown>;
 
@@ -391,6 +396,9 @@ export class SyncEngine {
 
   /** Custom comm messages (buttons, model.send()). */
   readonly commBroadcasts$: Observable<CommBroadcast>;
+
+  /** Ordered Bokeh document transactions projected by the runtime. */
+  readonly bokehSessionPatchBroadcasts$: Observable<BokehSessionPatchBroadcast>;
 
   /**
    * Comm state projection from RuntimeStateDoc topology + CommsDoc state.
@@ -520,6 +528,7 @@ export class SyncEngine {
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
+    this.bokehSessionPatchBroadcasts$ = this.broadcasts$.pipe(filter(isBokehSessionPatchBroadcast));
 
     // Queue-only projection derived from the execution view changeset.
     this.executionQueue$ = this.executionViewChanges$.pipe(

@@ -12,6 +12,8 @@ import type { SyncEngineLogger } from "./sync-engine";
 import type { NotebookRequestOptions, NotebookTransport } from "./transport";
 import { putBlob } from "./blob-upload";
 import type {
+  BokehSessionBufferRef,
+  BokehSessionPatchReply,
   CommBufferRef,
   CommRequestMessage,
   CompletionItem,
@@ -59,6 +61,7 @@ const nullLogger: SyncEngineLogger = {
 };
 
 const SEND_COMM_INLINE_BUFFER_LIMIT_BYTES = 64 * 1024;
+const BOKEH_INLINE_BUFFER_LIMIT_BYTES = 64 * 1024;
 
 export interface NotebookClientOptions {
   transport: NotebookTransport;
@@ -73,6 +76,19 @@ export interface ExecuteCellOptions {
 
 export interface RunAllCellsOptions {
   cellExecutionIds?: Record<string, string> | null;
+}
+
+export interface BokehPatchBuffer {
+  id: string;
+  data: Uint8Array;
+}
+
+export interface ApplyBokehSessionPatchOptions {
+  sessionId: string;
+  transactionId: string;
+  baseRevision: number;
+  patch: Record<string, unknown>;
+  buffers?: BokehPatchBuffer[];
 }
 
 export class NotebookClient {
@@ -457,6 +473,72 @@ export class NotebookClient {
       return response;
     } catch (e) {
       this.log.error("[notebook-client] Send comm failed:", e);
+      throw e;
+    }
+  }
+
+  /** Apply one typed mutation to a kernel-owned Bokeh document session. */
+  async applyBokehSessionPatch(
+    options: ApplyBokehSessionPatchOptions,
+  ): Promise<BokehSessionPatchReply> {
+    this.log.debug(
+      "[notebook-client] Applying Bokeh session patch:",
+      options.sessionId,
+      options.baseRevision,
+    );
+    try {
+      const encoded = await Promise.all(
+        (options.buffers ?? []).map(async (buffer) => {
+          if (buffer.data.byteLength <= BOKEH_INLINE_BUFFER_LIMIT_BYTES) {
+            return {
+              inline: {
+                id: buffer.id,
+                data: Array.from(buffer.data),
+              },
+            };
+          }
+          const uploaded = await putBlob(
+            this.transport,
+            buffer.data,
+            "application/octet-stream",
+            "ephemeral",
+          );
+          return {
+            ref: {
+              id: buffer.id,
+              blob: uploaded.blob,
+              size: uploaded.size,
+              media_type: uploaded.media_type,
+            } satisfies BokehSessionBufferRef,
+          };
+        }),
+      );
+      const response = await this.sendRequest({
+        type: "apply_bokeh_session_patch",
+        request: {
+          session_id: options.sessionId,
+          transaction_id: options.transactionId,
+          base_revision: options.baseRevision,
+          patch: options.patch,
+          buffers: encoded.flatMap((buffer) => (buffer.inline ? [buffer.inline] : [])),
+          buffer_refs: encoded.flatMap((buffer) => (buffer.ref ? [buffer.ref] : [])),
+        },
+      });
+
+      switch (response.result) {
+        case "bokeh_session_patch":
+          return response.reply;
+        case "no_kernel":
+          throw new Error("No kernel running");
+        case "error":
+          throw new Error(response.error);
+        default:
+          throw new Error(
+            `Unexpected apply_bokeh_session_patch response: ${JSON.stringify(response)}`,
+          );
+      }
+    } catch (e) {
+      this.log.error("[notebook-client] Bokeh session patch failed:", e);
       throw e;
     }
   }

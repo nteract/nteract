@@ -79,6 +79,7 @@ dev = [
     "plotly>=6.0",
     "nbformat>=5.0",
     "datasets>=2.0",
+    "panel>=1.9,<2",
     # yarl 1.24.x has been published without cp312 wheels or an sdist.
     "yarl<1.24.0",
 ]

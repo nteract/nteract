@@ -1,5 +1,9 @@
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
-import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
+import {
+  BOKEHJS_EXEC_MIME_TYPE,
+  BOKEHJS_LOAD_MIME_TYPE,
+  NTERACT_BOKEH_SESSION_MIME_TYPE,
+} from "@/components/outputs/bokeh-mime";
 import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
 
 export type RendererPluginName =
@@ -22,6 +26,7 @@ const MIME_TO_PLUGIN: Record<string, RendererPluginInfo> = {
   "application/vnd.plotly.v1+json": { name: "plotly", hasCss: false },
   [BOKEHJS_LOAD_MIME_TYPE]: { name: "bokeh", hasCss: false },
   [BOKEHJS_EXEC_MIME_TYPE]: { name: "bokeh", hasCss: false },
+  [NTERACT_BOKEH_SESSION_MIME_TYPE]: { name: "bokeh", hasCss: false },
   [PANEL_LOAD_MIME_TYPE]: { name: "panel", hasCss: false },
   [PANEL_EXEC_MIME_TYPE]: { name: "panel", hasCss: false },
   "application/geo+json": { name: "leaflet", hasCss: true },

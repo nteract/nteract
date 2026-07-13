@@ -9,6 +9,7 @@
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
+use crate::bokeh_session::{prepare_initial_session, PreparedInitialBokehSession};
 use crate::output_blob_publisher::publish_or_warn;
 use crate::output_commit_context::OutputCommitContext;
 use crate::output_prep::LifecycleSignal;
@@ -56,6 +57,11 @@ pub(crate) struct OrdinaryOutputCommit {
 struct TimedOrdinaryOutputCommit {
     output: OrdinaryOutputCommit,
     enqueued_at: std::time::Instant,
+}
+
+struct PreparedOrdinaryOutput {
+    manifest: serde_json::Value,
+    bokeh_session: Option<PreparedInitialBokehSession>,
 }
 
 #[derive(Debug)]
@@ -257,10 +263,14 @@ async fn commit_output_batch(
         }
     }
 
-    let mut manifests = Vec::with_capacity(outputs.len());
+    let mut prepared_outputs = Vec::with_capacity(outputs.len());
     for output in &outputs {
-        manifests.push(create_manifest_json(&output.output, context).await);
+        prepared_outputs.push(prepare_output(&output.output, context).await);
     }
+    let manifests = prepared_outputs
+        .iter()
+        .map(|prepared| prepared.manifest.clone())
+        .collect::<Vec<_>>();
 
     if let Err(e) = context.state.transact_at_current_heads(
         Some(&context.kernel_actor_id),
@@ -273,8 +283,11 @@ async fn commit_output_batch(
                 while index < outputs.len() && outputs[index].output.execution_id == execution_id {
                     index += 1;
                 }
-                if let Err(e) = sd.append_outputs(execution_id, &manifests[start..index]) {
-                    warn!("[output-committer] Failed to append output batch to state doc: {e}");
+                sd.append_outputs(execution_id, &manifests[start..index])?;
+            }
+            for prepared in &prepared_outputs {
+                if let Some(session) = &prepared.bokeh_session {
+                    sd.put_bokeh_session(&session.session_id, &session.state)?;
                 }
             }
             Ok(())
@@ -293,10 +306,10 @@ async fn commit_output_batch(
     );
 }
 
-async fn create_manifest_json(
+async fn prepare_output(
     output: &OrdinaryOutputCommit,
     context: &OutputCommitContext,
-) -> serde_json::Value {
+) -> PreparedOrdinaryOutput {
     if output.kind.uses_buffer_preflight() {
         output_store::preflight_ref_buffers(
             &output.nbformat_value,
@@ -330,9 +343,29 @@ async fn create_manifest_json(
             )
             .await
             {
-                return blob_publish_failure_output(output.kind.label(), &error);
+                return PreparedOrdinaryOutput {
+                    manifest: blob_publish_failure_output(output.kind.label(), &error),
+                    bokeh_session: None,
+                };
             }
-            manifest.to_json()
+            let bokeh_session = match prepare_initial_session(
+                &output.execution_id,
+                &output.nbformat_value,
+                &manifest,
+                context,
+            )
+            .await
+            {
+                Ok(session) => session,
+                Err(error) => {
+                    warn!("[output-committer] Failed to prepare Bokeh document session: {error}");
+                    None
+                }
+            };
+            PreparedOrdinaryOutput {
+                manifest: manifest.to_json(),
+                bokeh_session,
+            }
         }
         Err(e) => {
             warn!(
@@ -341,7 +374,10 @@ async fn create_manifest_json(
                 e
             );
             let redacted = context.redactor.redact_output_value(&output.nbformat_value);
-            crate::notebook_sync_server::fallback_output_with_id(&redacted)
+            PreparedOrdinaryOutput {
+                manifest: crate::notebook_sync_server::fallback_output_with_id(&redacted),
+                bokeh_session: None,
+            }
         }
     }
 }
@@ -394,6 +430,7 @@ mod tests {
             blob_store,
             OutputBlobPublisher::none(),
             "rt:kernel:test".to_string(),
+            "kernel-test".to_string(),
             lifecycle_tx,
             Arc::new(OutputRedactor::disabled()),
         )
@@ -522,6 +559,83 @@ mod tests {
         assert_eq!(outputs.len(), 2);
         assert_eq!(outputs[0]["data"]["text/plain"]["inline"], "first");
         assert_eq!(outputs[1]["data"]["text/plain"]["inline"], "second");
+    }
+
+    #[tokio::test]
+    async fn initial_bokeh_output_records_document_session_atomically() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let blob_store = Arc::new(BlobStore::new(dir.path().to_path_buf()));
+        let state = runtime_state();
+        state
+            .with_doc(|doc| {
+                doc.create_execution_with_source_provenance(
+                    "exec-1",
+                    "panel_output",
+                    0,
+                    None,
+                    Some("cell-1"),
+                )?;
+                Ok(())
+            })
+            .expect("execution entry");
+        let (lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel();
+        let handle = start_output_committer_with_capacity(
+            commit_context(state.clone(), blob_store.clone(), lifecycle_tx),
+            8,
+        );
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                crate::bokeh_session::BOKEH_SESSION_MIME: {
+                    "schema_version": 1,
+                    "session_id": "session-1",
+                    "revision": 0,
+                    "producer": {"name": "panel", "version": "1.9.3"},
+                    "bokeh_version": "3.9.1",
+                    "document": {"version": "3.9.1", "roots": [{"id": "p1001"}]},
+                    "root_ids": ["p1001"],
+                    "resources": {"javascript": [], "stylesheets": []},
+                    "buffers": [],
+                },
+                "text/plain": "FloatSlider(value=4)",
+            },
+            "metadata": {},
+        });
+
+        handle
+            .enqueue_output(OrdinaryOutputCommit {
+                execution_id: "exec-1".to_string(),
+                nbformat_value: output,
+                buffers: Vec::new(),
+                kind: OrdinaryOutputKind::DisplayData,
+            })
+            .await;
+        handle.flush_for_ordering().await;
+
+        let session = state
+            .read(|doc| doc.get_bokeh_session("session-1"))
+            .expect("read state")
+            .expect("Bokeh session");
+        assert_eq!(session.cell_id, "cell-1");
+        assert_eq!(session.execution_id, "exec-1");
+        assert_eq!(session.kernel_id, "kernel-test");
+        assert_eq!(session.head_revision, 0);
+        let checkpoint = session.checkpoint.expect("checkpoint");
+        assert_eq!(checkpoint.revision, 0);
+        let bytes = blob_store
+            .get(&checkpoint.content_ref.blob)
+            .await
+            .expect("read checkpoint")
+            .expect("checkpoint bytes");
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).expect("checkpoint JSON");
+        assert_eq!(payload["session_id"], "session-1");
+        assert_eq!(payload["document"]["roots"][0]["id"], "p1001");
+
+        let outputs = state
+            .read(|doc| doc.get_outputs("exec-1"))
+            .expect("read outputs");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0]["output_id"], session.output_id);
     }
 
     #[tokio::test]

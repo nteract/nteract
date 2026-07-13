@@ -218,6 +218,41 @@ export interface CommDocEntry {
   seq: number;
 }
 
+export type BokehSessionStatus = "connected" | "disconnected" | "closed" | "error";
+
+export interface BokehSessionContentRef {
+  blob: string;
+  size: number;
+  media_type: string;
+}
+
+export interface BokehSessionCheckpoint {
+  revision: number;
+  content_ref: BokehSessionContentRef;
+}
+
+export interface BokehSessionPatchRef {
+  base_revision: number;
+  revision: number;
+  content_ref: BokehSessionContentRef;
+}
+
+/** Durable topology and replay coordinates for a live Bokeh document. */
+export interface BokehSessionState {
+  output_id: string;
+  cell_id: string;
+  execution_id: string;
+  kernel_id: string;
+  status: BokehSessionStatus;
+  head_revision: number;
+  producer_name: string;
+  producer_version: string;
+  bokeh_version: string;
+  root_ids: string[];
+  checkpoint: BokehSessionCheckpoint | null;
+  patch_tail: BokehSessionPatchRef[];
+}
+
 /** A detected status transition for a single execution. */
 export interface ExecutionTransition {
   execution_id: string;
@@ -343,6 +378,7 @@ export interface RuntimeState {
   path: string | null;
   executions: Record<string, ExecutionState>;
   comms: Record<string, CommDocEntry>;
+  bokeh_sessions: Record<string, BokehSessionState>;
   /**
    * Daemon-observed project file context. Clients read this instead of
    * walking the filesystem themselves.
@@ -394,6 +430,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   path: null,
   executions: {},
   comms: {},
+  bokeh_sessions: {},
   project_context: { state: "Pending" },
   workstation: null,
 };

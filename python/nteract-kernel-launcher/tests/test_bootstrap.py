@@ -232,6 +232,31 @@ def test_buffer_hook_attaches_multiple_ref_buffers(monkeypatch):
     assert refs[1]["buffer_index"] == 1
 
 
+def test_buffer_hook_attaches_duplicate_content_hashes(monkeypatch):
+    from nteract_kernel_launcher import _buffer_hook
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    ip, sent, _pub, _dh = _fake_ip_with_pubs()
+    monkeypatch.setattr(_buffer_hook, "_get_ipython", lambda: ip)
+
+    data = b"same-content"
+    h = hashlib.sha256(data).hexdigest()
+    _buffer_hook.pending_buffers()[h] = data
+    refs = [
+        {"hash": h, "size": len(data), "content_type": "application/octet-stream"},
+        {"hash": h, "size": len(data), "content_type": "application/octet-stream"},
+    ]
+    msg = {
+        "header": {"msg_type": "display_data"},
+        "content": {"data": {BLOB_REF_MIME: {"refs": refs}}},
+    }
+
+    assert _buffer_hook.buffer_hook(msg) is None
+    assert sent[0]["buffers"] == [data, data]
+    assert [ref["buffer_index"] for ref in refs] == [0, 1]
+    assert h not in _buffer_hook.pending_buffers()
+
+
 def test_buffer_hook_passthrough_when_no_pending_bytes(monkeypatch):
     from nteract_kernel_launcher import _buffer_hook
     from nteract_kernel_launcher._refs import BLOB_REF_MIME

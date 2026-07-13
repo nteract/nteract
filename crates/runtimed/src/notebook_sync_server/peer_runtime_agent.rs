@@ -593,6 +593,17 @@ fn validate_runtime_agent_broadcast(broadcast: &NotebookBroadcast) -> anyhow::Re
             );
             Ok(())
         }
+        NotebookBroadcast::BokehSessionPatch { patch } => {
+            anyhow::ensure!(
+                !patch.session_id.is_empty() && !patch.transaction_id.is_empty(),
+                "runtime agent Bokeh patch is missing session or transaction identity"
+            );
+            anyhow::ensure!(
+                patch.revision == patch.base_revision + 1,
+                "runtime agent Bokeh patch revision is not contiguous"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -630,6 +641,9 @@ mod tests {
                 assert_eq!(content["comm_id"], "comm-1");
                 assert_eq!(content["data"]["content"]["type"], "draw");
                 assert_eq!(buffers, vec![vec![1, 2, 3]]);
+            }
+            NotebookBroadcast::BokehSessionPatch { .. } => {
+                panic!("expected comm broadcast")
             }
         }
     }
@@ -674,5 +688,22 @@ mod tests {
         let payload = serde_json::to_vec(&broadcast).expect("serialize broadcast");
 
         forward_runtime_agent_broadcast(&tx, &payload).expect_err("missing comm_id must fail");
+    }
+
+    #[test]
+    fn accepts_runtime_agent_bokeh_noop_revision() {
+        let broadcast = NotebookBroadcast::BokehSessionPatch {
+            patch: Box::new(notebook_protocol::protocol::BokehSessionPatchEvent {
+                session_id: "session-1".to_string(),
+                transaction_id: "tx-button-click".to_string(),
+                base_revision: 0,
+                revision: 1,
+                client_patch: None,
+                server_patch: None,
+                checkpoint: None,
+            }),
+        };
+
+        validate_runtime_agent_broadcast(&broadcast).expect("valid no-op revision");
     }
 }

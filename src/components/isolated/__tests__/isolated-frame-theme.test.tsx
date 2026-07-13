@@ -20,6 +20,7 @@ const { MockJsonRpcTransport } = vi.hoisted(() => {
     start = vi.fn();
     stop = vi.fn();
     notificationHandlers = new Map<string, (params: unknown) => void>();
+    requestHandlers = new Map<string, (params: unknown) => unknown>();
 
     constructor(
       public target: Window,
@@ -30,6 +31,10 @@ const { MockJsonRpcTransport } = vi.hoisted(() => {
 
     onNotification(method: string, handler: (params: unknown) => void) {
       this.notificationHandlers.set(method, handler);
+    }
+
+    onRequest(method: string, handler: (params: unknown) => unknown) {
+      this.requestHandlers.set(method, handler);
     }
   }
 

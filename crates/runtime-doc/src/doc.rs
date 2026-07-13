@@ -87,6 +87,16 @@
 //!       outputs: List[Map] (inline manifests, OutputModel only)
 //!       seq: Int           (insertion order)
 //!       capture_msg_id: Str (Output widget capture routing, "" if not capturing)
+//!   bokeh_sessions/        Map (keyed by session_id; additive after v2 genesis)
+//!     {session_id}/        Map
+//!       output_id: Str
+//!       cell_id: Str
+//!       execution_id: Str
+//!       kernel_id: Str
+//!       status: Str         ("connected" | "disconnected" | "closed" | "error")
+//!       head_revision: Uint
+//!       checkpoint: Map|null (blob-backed full document checkpoint)
+//!       patch_tail: List[Map] (bounded blob-backed transactions after checkpoint)
 //!   runtime_state_doc_id: Str|null
 //!   last_saved: Str|null   (ISO timestamp of last save)
 //! ```
@@ -107,9 +117,12 @@ use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
+#[cfg(test)]
+use crate::{BokehSessionCheckpoint, BokehSessionContentRef, BokehSessionPatchRef};
 use crate::{
-    KernelActivity, KernelErrorReason, ProjectContext, ProjectFile, ProjectFileExtras,
-    ProjectFileKind, ProjectFileParsed, RuntimeLifecycle, StreamOutputState,
+    BokehSessionState, BokehSessionStatus, KernelActivity, KernelErrorReason, ProjectContext,
+    ProjectFile, ProjectFileExtras, ProjectFileKind, ProjectFileParsed, RuntimeLifecycle,
+    StreamOutputState,
 };
 
 #[cfg(test)]
@@ -417,6 +430,9 @@ pub struct RuntimeState {
     /// Active comm channels keyed by comm_id.
     #[serde(default)]
     pub comms: HashMap<String, CommDocEntry>,
+    /// Kernel-owned Bokeh document sessions keyed by session_id.
+    #[serde(default)]
+    pub bokeh_sessions: HashMap<String, BokehSessionState>,
     /// Daemon-observed project file context (see [`ProjectContext`]).
     /// Flows through the normal sync path so WASM / Python / MCP
     /// consumers read it alongside the rest of runtime state.
@@ -688,6 +704,8 @@ impl RuntimeStateDoc {
     /// The closure is invoked exactly once. Prepare non-deterministic values
     /// before calling this method if they need to be reused outside the
     /// transaction; the helper does not retry conflicts by re-running `f`.
+    /// Mutations and derived output-order cache entries are rolled back when
+    /// the closure returns an error.
     pub fn transact_at_heads_recovering<F, T>(
         &mut self,
         heads: &[automerge::ChangeHash],
@@ -701,6 +719,7 @@ impl RuntimeStateDoc {
         use std::cell::Cell;
 
         let original_actor = self.doc.get_actor().clone();
+        let output_order_cache_before = self.output_order_cache.clone();
         let isolated = Cell::new(false);
         let mut recovery_panic = None;
 
@@ -711,6 +730,11 @@ impl RuntimeStateDoc {
             self.doc.isolate(heads);
             isolated.set(true);
             let result = f(self);
+            if result.is_err() {
+                self.doc.rollback();
+                self.output_order_cache
+                    .clone_from(&output_order_cache_before);
+            }
             self.doc.integrate();
             isolated.set(false);
             result
@@ -718,6 +742,8 @@ impl RuntimeStateDoc {
 
         if isolated.get() {
             if let Err(err) = catch_automerge_panic(format!("{label}:integrate"), || {
+                self.doc.rollback();
+                self.output_order_cache.clear();
                 self.doc.integrate();
             }) {
                 recovery_panic = Some(err);
@@ -3052,6 +3078,72 @@ impl RuntimeStateDoc {
         comms
     }
 
+    // ── Bokeh document sessions ─────────────────────────────────────
+
+    /// Insert or atomically replace one Bokeh document session record.
+    ///
+    /// Large document and patch bytes must already be in blob storage. This
+    /// method writes only topology and replay references into RuntimeStateDoc.
+    pub fn put_bokeh_session(
+        &mut self,
+        session_id: &str,
+        session: &BokehSessionState,
+    ) -> Result<(), RuntimeStateError> {
+        let sessions = self.get_or_create_root_map("bokeh_sessions")?;
+        let value = serde_json::to_value(session).map_err(|error| {
+            RuntimeStateError::InvalidBokehSession(format!(
+                "failed to serialize Bokeh session {session_id}: {error}"
+            ))
+        })?;
+        automunge::put_json_at_key_batched(&mut self.doc, &sessions, session_id, &value)?;
+        Ok(())
+    }
+
+    /// Read one Bokeh document session record.
+    pub fn get_bokeh_session(&self, session_id: &str) -> Option<BokehSessionState> {
+        let sessions = self.get_map("bokeh_sessions")?;
+        let value = automunge::read_json_value(&self.doc, &sessions, session_id)?;
+        serde_json::from_value(value).ok()
+    }
+
+    /// Read all Bokeh document session records without projecting other state.
+    pub fn get_bokeh_sessions(&self) -> HashMap<String, BokehSessionState> {
+        let Some(sessions) = self.get_map("bokeh_sessions") else {
+            return HashMap::new();
+        };
+
+        self.doc
+            .keys(&sessions)
+            .filter_map(|session_id| {
+                self.get_bokeh_session(&session_id)
+                    .map(|session| (session_id, session))
+            })
+            .collect()
+    }
+
+    /// Freeze every connected session owned by a kernel that has gone away.
+    ///
+    /// Checkpoint and patch references are retained so mounted and remounting
+    /// clients can continue to display the last authoritative document state.
+    pub fn disconnect_bokeh_sessions_for_kernel(
+        &mut self,
+        kernel_id: &str,
+    ) -> Result<usize, RuntimeStateError> {
+        let sessions: Vec<(String, BokehSessionState)> = self
+            .get_bokeh_sessions()
+            .into_iter()
+            .filter(|(_, session)| {
+                session.kernel_id == kernel_id && session.status == BokehSessionStatus::Connected
+            })
+            .collect();
+        let count = sessions.len();
+        for (session_id, mut session) in sessions {
+            session.status = BokehSessionStatus::Disconnected;
+            self.put_bokeh_session(&session_id, &session)?;
+        }
+        Ok(count)
+    }
+
     /// Append an output manifest to a comm's outputs list (OutputModel widgets).
     ///
     /// Returns `false` if the comm doesn't exist.
@@ -3232,6 +3324,7 @@ impl RuntimeStateDoc {
             .unwrap_or_default();
 
         let comms = self.get_comms();
+        let bokeh_sessions = self.get_bokeh_sessions();
 
         RuntimeState {
             runtime_state_doc_id,
@@ -3243,6 +3336,7 @@ impl RuntimeStateDoc {
             path,
             executions,
             comms,
+            bokeh_sessions,
             project_context: self.project_context(),
             workstation,
         }
@@ -4004,6 +4098,30 @@ mod tests {
             "output_id": format!("display-{blob}"),
             "data": {"text/plain": {"blob": blob, "size": blob.len()}}
         })
+    }
+
+    fn test_bokeh_session(status: BokehSessionStatus) -> BokehSessionState {
+        BokehSessionState {
+            output_id: "output-bokeh-1".to_string(),
+            cell_id: "cell-1".to_string(),
+            execution_id: "exec-1".to_string(),
+            kernel_id: "kernel-1".to_string(),
+            status,
+            head_revision: 0,
+            producer_name: "panel".to_string(),
+            producer_version: "1.9.3".to_string(),
+            bokeh_version: "3.9.1".to_string(),
+            root_ids: vec!["p1001".to_string()],
+            checkpoint: Some(BokehSessionCheckpoint {
+                revision: 0,
+                content_ref: BokehSessionContentRef {
+                    blob: "checkpoint-0".to_string(),
+                    size: 512,
+                    media_type: "application/vnd.nteract.bokeh-checkpoint.v1+json".to_string(),
+                },
+            }),
+            patch_tail: Vec::new(),
+        }
     }
 
     fn actor_label_from_id(actor: &ActorId) -> String {
@@ -5696,6 +5814,50 @@ mod tests {
     }
 
     #[test]
+    fn isolated_transaction_error_rolls_back_document_and_output_cache() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1").unwrap();
+        doc.append_output("exec-1", &test_display("h1")).unwrap();
+        let heads = doc.get_heads();
+
+        let result: Result<(), RuntimeStateError> = doc.transact_at_heads_recovering(
+            &heads,
+            Some("rt:kernel:shared"),
+            "test-runtime-transaction-rollback",
+            |doc| {
+                doc.append_output("exec-1", &test_display("h2"))?;
+                doc.put_bokeh_session(
+                    "session-1",
+                    &test_bokeh_session(BokehSessionStatus::Connected),
+                )?;
+                Err(RuntimeStateError::InvalidBokehSession(
+                    "injected failure".to_string(),
+                ))
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(RuntimeStateError::InvalidBokehSession(_))
+        ));
+        assert_eq!(doc.get_outputs("exec-1"), vec![test_display("h1")]);
+        assert!(doc.get_bokeh_session("session-1").is_none());
+        assert_eq!(
+            doc.output_order_cache
+                .get("exec-1")
+                .expect("output order cache")
+                .next_seq,
+            1
+        );
+
+        doc.append_output("exec-1", &test_display("h3")).unwrap();
+        assert_eq!(
+            doc.get_outputs("exec-1"),
+            vec![test_display("h1"), test_display("h3")]
+        );
+    }
+
+    #[test]
     fn isolated_transaction_panic_restores_actor_and_keeps_doc_usable() {
         let mut doc = RuntimeStateDoc::new();
         doc.set_actor("runtime:original");
@@ -6214,6 +6376,98 @@ mod tests {
         let doc = RuntimeStateDoc::new();
         // No execution entry → empty outputs
         assert!(doc.get_outputs("nope").is_empty());
+    }
+
+    // ── Bokeh document session tests ─────────────────────────────
+
+    #[test]
+    fn bokeh_session_roundtrips_through_runtime_state() {
+        let mut doc = RuntimeStateDoc::new();
+        let session = test_bokeh_session(BokehSessionStatus::Connected);
+        doc.put_bokeh_session("session-1", &session).unwrap();
+
+        assert_eq!(doc.get_bokeh_session("session-1"), Some(session.clone()));
+        assert_eq!(
+            doc.read_state().bokeh_sessions.get("session-1"),
+            Some(&session)
+        );
+    }
+
+    #[test]
+    fn bokeh_session_replay_update_replaces_one_atomic_record() {
+        let mut doc = RuntimeStateDoc::new();
+        let mut session = test_bokeh_session(BokehSessionStatus::Connected);
+        doc.put_bokeh_session("session-1", &session).unwrap();
+
+        session.head_revision = 1;
+        session.patch_tail.push(BokehSessionPatchRef {
+            base_revision: 0,
+            revision: 1,
+            content_ref: BokehSessionContentRef {
+                blob: "patch-1".to_string(),
+                size: 128,
+                media_type: "application/vnd.nteract.bokeh-patch.v1+json".to_string(),
+            },
+        });
+        doc.put_bokeh_session("session-1", &session).unwrap();
+
+        assert_eq!(doc.get_bokeh_session("session-1"), Some(session));
+        assert_eq!(doc.get_bokeh_sessions().len(), 1);
+    }
+
+    #[test]
+    fn disconnect_bokeh_sessions_preserves_replay_state() {
+        let mut doc = RuntimeStateDoc::new();
+        let session = test_bokeh_session(BokehSessionStatus::Connected);
+        doc.put_bokeh_session("session-1", &session).unwrap();
+        doc.put_bokeh_session(
+            "session-other",
+            &BokehSessionState {
+                kernel_id: "kernel-2".to_string(),
+                ..session.clone()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            doc.disconnect_bokeh_sessions_for_kernel("kernel-1")
+                .unwrap(),
+            1
+        );
+        let disconnected = doc.get_bokeh_session("session-1").unwrap();
+        assert_eq!(disconnected.status, BokehSessionStatus::Disconnected);
+        assert_eq!(disconnected.checkpoint, session.checkpoint);
+        assert_eq!(disconnected.patch_tail, session.patch_tail);
+        assert_eq!(
+            doc.get_bokeh_session("session-other").unwrap().status,
+            BokehSessionStatus::Connected
+        );
+    }
+
+    #[test]
+    fn bokeh_sessions_sync_to_a_late_peer() {
+        let mut daemon = RuntimeStateDoc::new();
+        let session = test_bokeh_session(BokehSessionStatus::Connected);
+        daemon.put_bokeh_session("session-1", &session).unwrap();
+
+        let mut peer = RuntimeStateDoc::new_empty();
+        let mut daemon_sync = sync::State::new();
+        let mut peer_sync = sync::State::new();
+        for _ in 0..10 {
+            if let Some(message) = daemon.generate_sync_message(&mut daemon_sync) {
+                peer.doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut peer_sync, message)
+                    .unwrap();
+            }
+            if let Some(message) = peer.generate_sync_message(&mut peer_sync) {
+                daemon
+                    .receive_sync_message(&mut daemon_sync, message)
+                    .unwrap();
+            }
+        }
+
+        assert_eq!(peer.get_bokeh_session("session-1"), Some(session));
     }
 
     // ── Comm tests ────────────────────────────────────────────────

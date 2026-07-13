@@ -401,6 +401,7 @@ mod tests {
             blob_store,
             OutputBlobPublisher::none(),
             "rt:kernel:test".to_string(),
+            "kernel-test".to_string(),
             lifecycle_tx,
             Arc::new(OutputRedactor::disabled()),
         )

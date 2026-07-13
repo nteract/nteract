@@ -9,6 +9,10 @@ import {
   MCP_UI_RESOURCE_TEARDOWN,
   MCP_UI_SIZE_CHANGED,
   NTERACT_BRIDGE_READY,
+  NTERACT_BOKEH_APPLY_PATCH,
+  NTERACT_BOKEH_SESSION_OPEN,
+  NTERACT_BOKEH_SESSION_PATCH,
+  NTERACT_BOKEH_SESSION_STATE,
   NTERACT_CLEAR_OUTPUTS,
   NTERACT_COMM_CLOSE,
   NTERACT_COMM_MSG,
@@ -41,6 +45,10 @@ import {
   NTERACT_WIDGET_UPDATE,
   NTERACT_WHEEL_BOUNDARY,
   type NteractMeasureElementResult,
+  type NteractBokehApplyPatchParams,
+  type NteractBokehApplyPatchResult,
+  type NteractBokehSessionOpenParams,
+  type NteractBokehSessionSnapshot,
 } from "./rpc-methods";
 
 export const TYPE_TO_METHOD: Record<string, string> = {
@@ -59,6 +67,8 @@ export const TYPE_TO_METHOD: Record<string, string> = {
   widget_snapshot: NTERACT_WIDGET_SNAPSHOT,
   bridge_ready: NTERACT_BRIDGE_READY,
   widget_state: NTERACT_WIDGET_STATE,
+  bokeh_session_patch: NTERACT_BOKEH_SESSION_PATCH,
+  bokeh_session_state: NTERACT_BOKEH_SESSION_STATE,
 };
 
 export type IsolatedFrameRuntimeDiagnosticLevel = "debug" | "info" | "warn" | "error";
@@ -75,6 +85,12 @@ export interface IsolatedFrameRuntimeCallbacks {
   onDoubleClick: () => void;
   onWheelBoundary: (params: { deltaY?: number }) => void;
   onWidgetUpdate: (commId: string, state: Record<string, unknown>) => void;
+  onBokehSessionOpen?: (
+    params: NteractBokehSessionOpenParams,
+  ) => Promise<NteractBokehSessionSnapshot>;
+  onBokehApplyPatch?: (
+    params: NteractBokehApplyPatchParams,
+  ) => Promise<NteractBokehApplyPatchResult>;
   onError: (error: { message: string; stack?: string }) => void;
   onMessage: (message: IframeToParentMessage) => void;
   onDiagnostic: (
@@ -569,6 +585,18 @@ export class IsolatedFrameRuntime {
   }
 
   private registerTransportHandlers(transport: JsonRpcTransport): void {
+    transport.onRequest(NTERACT_BOKEH_SESSION_OPEN, (params) => {
+      if (!this.callbacks.onBokehSessionOpen) {
+        throw new Error("Bokeh document sessions are not available in this host");
+      }
+      return this.callbacks.onBokehSessionOpen(params as NteractBokehSessionOpenParams);
+    });
+    transport.onRequest(NTERACT_BOKEH_APPLY_PATCH, (params) => {
+      if (!this.callbacks.onBokehApplyPatch) {
+        throw new Error("Bokeh document sessions are read-only in this host");
+      }
+      return this.callbacks.onBokehApplyPatch(params as NteractBokehApplyPatchParams);
+    });
     transport.onNotification(NTERACT_RENDERER_READY, () => {
       this.handleRendererReady("rpc", transport);
     });

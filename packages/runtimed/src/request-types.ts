@@ -70,6 +70,33 @@ export interface CommRequestMessage {
   channel: string;
 }
 
+export interface BokehSessionBufferRef {
+  id: string;
+  blob: string;
+  size: number;
+  media_type: string;
+}
+
+export interface BokehSessionPatchRequest {
+  session_id: string;
+  transaction_id: string;
+  base_revision: number;
+  patch: Record<string, unknown>;
+  buffers?: Array<{ id: string; data: number[] }>;
+  buffer_refs?: BokehSessionBufferRef[];
+}
+
+export type BokehSessionPatchReply =
+  | { status: "accepted"; session_id: string; transaction_id: string; revision: number }
+  | { status: "stale"; session_id: string; transaction_id: string; revision: number }
+  | {
+      status: "error";
+      session_id: string;
+      transaction_id: string;
+      revision?: number | null;
+      error: string;
+    };
+
 export interface BlobUploadPart {
   part_number: number;
   sha256: string;
@@ -99,6 +126,7 @@ export type NotebookRequest =
       observed_heads: string[];
     }
   | { type: "send_comm"; message: CommRequestMessage }
+  | { type: "apply_bokeh_session_patch"; request: BokehSessionPatchRequest }
   | {
       type: "get_history";
       /** Glob-style pattern to match. null for no filter. */
@@ -185,6 +213,7 @@ export type NotebookResponse =
       cursor_start: number;
       cursor_end: number;
     }
+  | { result: "bokeh_session_patch"; reply: BokehSessionPatchReply }
   | { result: "sync_environment_complete"; synced_packages: string[] }
   | { result: "sync_environment_failed"; error: string; needs_restart: boolean }
   | { result: "doc_bytes"; bytes: number[] }

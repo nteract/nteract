@@ -28,6 +28,8 @@ describe("TYPE_TO_METHOD mapping", () => {
       "widget_snapshot",
       "bridge_ready",
       "widget_state",
+      "bokeh_session_patch",
+      "bokeh_session_state",
     ];
 
     for (const type of requiredTypes) {
@@ -56,6 +58,8 @@ describe("TYPE_TO_METHOD mapping", () => {
     expect(TYPE_TO_METHOD.widget_snapshot).toBe("nteract/widgetSnapshot");
     expect(TYPE_TO_METHOD.bridge_ready).toBe("nteract/bridgeReady");
     expect(TYPE_TO_METHOD.widget_state).toBe("nteract/widgetState");
+    expect(TYPE_TO_METHOD.bokeh_session_patch).toBe("nteract/bokehSessionPatch");
+    expect(TYPE_TO_METHOD.bokeh_session_state).toBe("nteract/bokehSessionState");
   });
 
   it("has no duplicate method values", () => {

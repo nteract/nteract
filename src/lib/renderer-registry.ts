@@ -15,6 +15,7 @@ export interface RendererProps {
   data: unknown;
   metadata?: Record<string, unknown>;
   mimeType: string;
+  outputId?: string;
   interactionActive?: boolean;
 }
 
@@ -36,6 +37,9 @@ export interface RendererInstallContext {
   registerPattern: (test: (mime: string) => boolean, component: ComponentType<RendererProps>) => void;
   getHostContext: () => RendererHostContext | undefined;
   subscribeHostContext: (listener: (context: RendererHostContext) => void) => () => void;
+  requestHost: (method: string, params?: unknown) => Promise<unknown>;
+  notifyHost: (method: string, params?: unknown) => void;
+  subscribeHostNotification: (method: string, listener: (params: unknown) => void) => () => void;
 }
 
 const exactMatches = new Map<string, ComponentType<RendererProps>>();

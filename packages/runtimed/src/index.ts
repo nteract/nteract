@@ -187,6 +187,11 @@ export {
 
 // Runtime state
 export {
+  type BokehSessionCheckpoint,
+  type BokehSessionContentRef,
+  type BokehSessionPatchRef,
+  type BokehSessionState,
+  type BokehSessionStatus,
   type CommDocEntry,
   DEFAULT_RUNTIME_STATE,
   type EnvState,
@@ -220,7 +225,17 @@ export {
 export { type PoolState, type RuntimePoolState, DEFAULT_POOL_STATE } from "./pool-state";
 
 // Broadcast types
-export { type CommBroadcast, isCommBroadcast, type KnownBroadcast } from "./broadcast-types";
+export {
+  type BokehSessionBufferRef,
+  type BokehSessionCheckpointPayload,
+  type BokehSessionPatchBroadcast,
+  type BokehSessionPatchEvent,
+  type BokehSessionPatchPayload,
+  type CommBroadcast,
+  isBokehSessionPatchBroadcast,
+  isCommBroadcast,
+  type KnownBroadcast,
+} from "./broadcast-types";
 
 // Env progress projection
 export {
@@ -536,6 +551,8 @@ export {
 
 // Notebook client
 export {
+  type ApplyBokehSessionPatchOptions,
+  type BokehPatchBuffer,
   NotebookClient,
   type ExecuteCellOptions,
   type NotebookClientOptions,
@@ -543,6 +560,7 @@ export {
   SaveNotebookError,
 } from "./notebook-client";
 export type {
+  BokehSessionPatchReply,
   BlobDurability,
   BlobUploadErrorKind,
   CommRequestMessage,

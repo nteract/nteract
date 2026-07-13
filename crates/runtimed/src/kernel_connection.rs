@@ -19,11 +19,14 @@ use runtime_doc::{CommsDocHandle, RuntimeStateHandle};
 use tokio::sync::{broadcast, RwLock};
 
 use crate::blob_store::BlobStore;
+use crate::bokeh_session::{BokehCheckpointFuture, BokehKernelPatchResponse};
 use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::QueueCommandReceivers;
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::PooledEnv;
-use notebook_protocol::protocol::{CommRequestMessage, KernelPorts, LaunchedEnvConfig};
+use notebook_protocol::protocol::{
+    BokehSessionPatchRequest, CommRequestMessage, KernelPorts, LaunchedEnvConfig,
+};
 
 /// Configuration for launching a kernel.
 ///
@@ -133,6 +136,26 @@ pub trait KernelConnection: Send {
         buffers: Vec<Vec<u8>>,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
+    /// Apply a typed patch to a kernel-owned Bokeh document session.
+    fn apply_bokeh_session_patch(
+        &mut self,
+        _request: BokehSessionPatchRequest,
+    ) -> impl std::future::Future<Output = Result<BokehKernelPatchResponse>> + Send {
+        async {
+            Err(anyhow::anyhow!(
+                "kernel does not support Bokeh document sessions"
+            ))
+        }
+    }
+
+    /// Build an owned checkpoint request that does not borrow the main agent loop.
+    fn bokeh_session_checkpoint_request(
+        &self,
+        _session_id: String,
+    ) -> Option<BokehCheckpointFuture> {
+        None
+    }
+
     /// Request code completions from the kernel.
     ///
     /// Takes `&mut self` because it sends via the primary shell connection.
@@ -158,6 +181,11 @@ pub trait KernelConnection: Send {
 
     /// Kernel type identifier (e.g., "python", "deno").
     fn kernel_type(&self) -> &str;
+
+    /// Unique identity for this kernel process generation.
+    fn kernel_id(&self) -> &str {
+        "unsupported-kernel"
+    }
 
     /// Environment source label (e.g., "uv:inline", "conda:prewarmed").
     fn env_source(&self) -> &str;
