@@ -797,15 +797,22 @@ async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
             // Signal registration failure is a fundamental OS issue with no recovery
             let mut sigint = signal(SignalKind::interrupt()).expect("failed to register SIGINT");
 
-            tokio::select! {
-                _ = sigterm.recv() => {
-                    early_log("Received SIGTERM, initiating shutdown");
+            loop {
+                tokio::select! {
+                    _ = sigterm.recv() => {
+                        early_log("Received SIGTERM, initiating shutdown");
+                    }
+                    _ = sigint.recv() => {
+                        early_log("Received SIGINT, initiating shutdown");
+                    }
                 }
-                _ = sigint.recv() => {
-                    early_log("Received SIGINT, initiating shutdown");
+                match shutdown_daemon.trigger_shutdown().await {
+                    Ok(()) => break,
+                    Err(error) => early_log(&format!(
+                        "Clean shutdown blocked; daemon remains available for recovery: {error}"
+                    )),
                 }
             }
-            shutdown_daemon.trigger_shutdown().await;
         });
     }
 

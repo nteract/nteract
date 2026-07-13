@@ -68,7 +68,7 @@ pub(crate) async fn handle_inner(
         clone_uuid,
         crate::notebook_sync_server::RoomCreationOptions {
             path: None, // ephemeral, no file path
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir,
             blob_store,
             ephemeral: true,

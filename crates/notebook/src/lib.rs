@@ -15,7 +15,9 @@ pub mod typosquat;
 extern crate runtimed_client as runtimed;
 pub use runtimed::runtime::Runtime;
 
-use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveErrorKind};
+use notebook_protocol::protocol::{
+    NotebookRequest, NotebookResponse, SaveBlockedReason, SaveErrorKind,
+};
 use notebook_sync::RelayHandle;
 
 use log::{debug, info, warn};
@@ -2586,6 +2588,28 @@ fn format_save_error(error: &SaveErrorKind) -> String {
     }
 }
 
+fn format_save_blocked(reason: &SaveBlockedReason) -> String {
+    match reason {
+        SaveBlockedReason::PathAlreadyOpen { path, .. } => format!(
+            "Cannot save: {} is already open in another notebook window. Close that window first, or choose a different path.",
+            path
+        ),
+        SaveBlockedReason::SequenceExhausted => {
+            "Cannot save because the file checkpoint sequence is exhausted.".to_string()
+        }
+        SaveBlockedReason::Superseded { .. } => {
+            "Save was superseded by a newer save request.".to_string()
+        }
+        SaveBlockedReason::SourceConflict { message } => format!(
+            "Cannot overwrite the source because recovered notebook state conflicts with the file on disk: {message}"
+        ),
+        SaveBlockedReason::SourceDegraded { message } => {
+            format!("Cannot save in place while the notebook source is degraded: {message}")
+        }
+        SaveBlockedReason::Io { message } => format!("Failed to save notebook: {message}"),
+    }
+}
+
 /// Save notebook to a specific path (Save As).
 ///
 /// The daemon handles both formatting and disk persistence:
@@ -2627,9 +2651,17 @@ async fn save_notebook_as(
         })
         .await
     {
-        Ok(NotebookResponse::NotebookSaved { path: daemon_path }) => {
+        Ok(NotebookResponse::NotebookSaved {
+            path: daemon_path, ..
+        })
+        | Ok(NotebookResponse::NotebookAlreadyCurrent {
+            path: daemon_path, ..
+        }) => {
             info!("[save-as] Notebook saved via daemon to: {}", daemon_path);
             PathBuf::from(daemon_path)
+        }
+        Ok(NotebookResponse::NotebookSaveBlocked { reason, .. }) => {
+            return Err(format_save_blocked(&reason));
         }
         Ok(NotebookResponse::SaveError { error }) => {
             return Err(format_save_error(&error));

@@ -83,13 +83,27 @@ where
 
     // Seed initial metadata into the Automerge doc if provided and doc has no metadata yet.
     // This ensures the kernelspec is available before auto-launch decides which kernel to use.
+    let mut metadata_seeded = false;
     if let Some(ref metadata_json) = initial_metadata {
         match serde_json::from_str::<NotebookMetadataSnapshot>(metadata_json) {
             Ok(snapshot) => {
                 let mut doc = room.doc.write().await;
                 if doc.get_metadata_snapshot().is_none() {
+                    let rollback_actor = doc.get_actor_id();
+                    let rollback_snapshot = doc.save();
+                    let baseline_heads = doc.get_heads();
                     match doc.set_metadata_snapshot(&snapshot) {
                         Ok(()) => {
+                            super::durability::commit_daemon_notebook_mutation(
+                                &room,
+                                &mut doc,
+                                &baseline_heads,
+                                &rollback_snapshot,
+                                &rollback_actor,
+                                "handshake initial metadata",
+                            )
+                            .map_err(anyhow::Error::msg)?;
+                            metadata_seeded = true;
                             info!(
                                 "[notebook-sync] Seeded initial metadata from handshake for {}",
                                 notebook_id
@@ -108,6 +122,12 @@ where
                 );
             }
         }
+    }
+    if metadata_seeded {
+        // Notify only after the journal commit succeeded and the document
+        // guard was released, so existing peers cannot observe an
+        // uncommitted handshake mutation.
+        let _ = room.broadcasts.changed_tx.send(());
     }
 
     // Write trust state to RuntimeStateDoc so frontend can read it reactively.

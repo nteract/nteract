@@ -5,15 +5,13 @@
 //! Most entries are re-exports of helpers that live in upstream crates
 //! (`runt-workspace`, `runtimed-client`, `notebook-doc`) — the point is
 //! discoverability, not duplication. Genuinely local helpers
-//! (e.g. [`snapshot_before_delete`], [`normalize_save_target`]) live here in
+//! (e.g. [`normalize_save_target`]) live here in
 //! full.
 //!
 //! Keep this module behaviour-preserving. New path logic is fine; silently
 //! drifting from the upstream helpers is not.
 
 use std::path::{Path, PathBuf};
-
-use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
 // Re-exports from upstream crates — single entry point for runtimed callers.
@@ -45,77 +43,6 @@ pub use notebook_doc::notebook_doc_filename;
 // ---------------------------------------------------------------------------
 // Local helpers — moved from daemon.rs / notebook_sync_server.rs.
 // ---------------------------------------------------------------------------
-
-/// Maximum number of snapshots to keep per notebook hash.
-const MAX_SNAPSHOTS_PER_NOTEBOOK: usize = 5;
-
-/// Snapshot a persisted automerge doc before deleting it.
-///
-/// Copies the file to `{docs_dir}/snapshots/{stem}-{millis}.automerge`
-/// and prunes old snapshots beyond `MAX_SNAPSHOTS_PER_NOTEBOOK`.
-///
-/// Returns `true` if the snapshot was created successfully. The caller
-/// should only delete the original file when this returns `true`.
-pub(crate) fn snapshot_before_delete(persist_path: &Path, docs_dir: &Path) -> bool {
-    let Some(stem) = persist_path.file_stem().and_then(|s| s.to_str()) else {
-        return false;
-    };
-
-    let snapshots_dir = docs_dir.join("snapshots");
-    if let Err(e) = std::fs::create_dir_all(&snapshots_dir) {
-        warn!(
-            "[notebook-sync] Failed to create snapshots dir {:?}: {}",
-            snapshots_dir, e
-        );
-        return false;
-    }
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let snapshot_name = format!("{}-{}.automerge", stem, timestamp);
-    let snapshot_path = snapshots_dir.join(&snapshot_name);
-
-    match std::fs::copy(persist_path, &snapshot_path) {
-        Ok(_) => {
-            info!(
-                "[notebook-sync] Snapshotted persisted doc before refresh: {:?}",
-                snapshot_path
-            );
-        }
-        Err(e) => {
-            warn!(
-                "[notebook-sync] Failed to snapshot {:?}: {}",
-                persist_path, e
-            );
-            return false;
-        }
-    }
-
-    // Prune old snapshots for this hash (keep most recent MAX_SNAPSHOTS_PER_NOTEBOOK)
-    let prefix = format!("{}-", stem);
-    let mut snapshots: Vec<_> = std::fs::read_dir(&snapshots_dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".automerge"))
-        })
-        .collect();
-
-    if snapshots.len() > MAX_SNAPSHOTS_PER_NOTEBOOK {
-        // Sort by filename (which embeds timestamp) — ascending order
-        snapshots.sort_by_key(|e| e.file_name());
-        for entry in &snapshots[..snapshots.len() - MAX_SNAPSHOTS_PER_NOTEBOOK] {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-
-    true
-}
 
 /// Normalize a user-supplied save target: append `.ipynb` if missing, reject
 /// relative paths, and return the path that `save_notebook_to_disk` will use.

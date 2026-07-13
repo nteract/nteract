@@ -758,7 +758,11 @@ impl Session {
             .await
             .map_err(to_napi_err)?;
         match response {
-            NotebookResponse::NotebookSaved { .. } => Ok(()),
+            NotebookResponse::NotebookSaved { .. }
+            | NotebookResponse::NotebookAlreadyCurrent { .. } => Ok(()),
+            NotebookResponse::NotebookSaveBlocked { reason, .. } => {
+                Err(Error::from_reason(format!("Save blocked: {reason:?}")))
+            }
             NotebookResponse::Error { error } => Err(Error::from_reason(error)),
             other => Err(Error::from_reason(format!(
                 "Unexpected response: {other:?}"

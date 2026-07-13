@@ -44,6 +44,12 @@ const CONFIRM_SYNC_RETRY: Duration = Duration::from_millis(200);
 const STATE_SYNC_QUIET_TIMEOUT: Duration = Duration::from_millis(200);
 const STATE_SYNC_MAX_TIMEOUT: Duration = Duration::from_secs(2);
 const MAINTENANCE_TICK: Duration = Duration::from_millis(50);
+/// Explicit harness-only fault used to prove that room projections remain
+/// useful while this peer's NotebookDoc replica cannot converge. The sync
+/// reactor continues processing control, runtime, command, and heartbeat
+/// frames; only NotebookDoc Automerge frames are withheld.
+const NOTEBOOK_SYNC_FAULT_ENV: &str = "NTERACT_NOTEBOOK_SYNC_FAULT";
+const STALL_NOTEBOOK_CONVERGENCE_FAULT: &str = "stall-notebook-convergence";
 /// Idle presence heartbeat sent by full-peer clients (runt-mcp, runtimed-py,
 /// integration tests) so the daemon's idle-peer timeout never fires on a
 /// quiet but live session. Matches `presence::DEFAULT_HEARTBEAT_MS`.
@@ -166,6 +172,7 @@ struct ReactorState {
     next_confirm_sync_attempt: Instant,
     sync_generation: u64,
     acked_sync_generation: u64,
+    stall_notebook_convergence: bool,
 }
 
 impl ReactorState {
@@ -179,6 +186,8 @@ impl ReactorState {
             next_confirm_sync_attempt: Instant::now(),
             sync_generation: 0,
             acked_sync_generation: 0,
+            stall_notebook_convergence: std::env::var(NOTEBOOK_SYNC_FAULT_ENV)
+                .is_ok_and(|value| value == STALL_NOTEBOOK_CONVERGENCE_FAULT),
         }
     }
 }
@@ -415,6 +424,15 @@ impl SyncReactor {
         writer: &mut W,
     ) -> Result<(), SyncError> {
         self.note_frame_activity();
+        if self.state.stall_notebook_convergence
+            && frame.frame_type == NotebookFrameType::AutomergeSync
+        {
+            debug!(
+                "[notebook-sync] Harness fault withheld NotebookDoc sync frame for {}",
+                self.io.notebook_id
+            );
+            return Ok(());
+        }
         self.handle_task_frame(frame, writer).await?;
         if frame.frame_type == NotebookFrameType::AutomergeSync {
             self.state.acked_sync_generation = self.state.sync_generation;

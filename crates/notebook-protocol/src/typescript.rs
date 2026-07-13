@@ -25,6 +25,7 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "get_history",
     "complete",
     "save_notebook",
+    "reconcile_notebook_source",
     "clone_as_ephemeral",
     "sync_environment",
     "approve_trust",
@@ -46,6 +47,10 @@ pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
     "guard_rejected",
     "all_cells_queued",
     "notebook_saved",
+    "notebook_already_current",
+    "notebook_save_blocked",
+    "notebook_source_reconciled",
+    "notebook_source_reconciliation_blocked",
     "save_error",
     "notebook_cloned",
     "ok",
@@ -307,6 +312,7 @@ export type NotebookRequest =
       /** Target path. Omit or null to save in place. */
       path?: string | null;
     }}
+  | {{ type: "reconcile_notebook_source"; operation: SourceReconciliation }}
   | {{ type: "clone_as_ephemeral"; source_notebook_id: string }}
   | {{ type: "sync_environment"; guard?: DependencyGuard | null }}
   | {{ type: "approve_trust"; observed_heads?: string[] | null }}
@@ -364,7 +370,38 @@ export type NotebookResponse =
   | {{ result: "no_kernel" }}
   | {{ result: "guard_rejected"; reason: string }}
   | {{ result: "all_cells_queued"; queued: QueueEntry[] }}
-  | {{ result: "notebook_saved"; path: string }}
+  | {{
+      result: "notebook_saved";
+      path: string;
+      exported_heads: string[];
+      save_sequence: number;
+    }}
+  | {{
+      result: "notebook_already_current";
+      path: string;
+      exported_heads: string[];
+      save_sequence: number;
+    }}
+  | {{
+      result: "notebook_save_blocked";
+      path?: string | null;
+      save_sequence?: number | null;
+      reason: SaveBlockedReason;
+    }}
+  | {{
+      result: "notebook_source_reconciled";
+      operation: SourceReconciliationOperation;
+      path: string;
+      archived_journal?: string | null;
+      exported_heads: string[];
+      save_sequence: number;
+      source_generation: number;
+    }}
+  | {{
+      result: "notebook_source_reconciliation_blocked";
+      operation: SourceReconciliationOperation;
+      reason: SourceReconciliationBlockedReason;
+    }}
   | {{ result: "save_error"; error: SaveErrorKind }}
   | {{ result: "notebook_cloned"; notebook_id: string; working_dir?: string | null }}
   | {{ result: "ok" }}
@@ -399,6 +436,36 @@ export type SaveErrorKind =
       path: string;
     }}
   | {{ type: "io"; message: string }};
+
+/** A save request that did not commit a file checkpoint. */
+export type SaveBlockedReason =
+  | {{ type: "path_already_open"; uuid: string; path: string }}
+  | {{ type: "sequence_exhausted" }}
+  | {{ type: "superseded"; latest_sequence: number }}
+  | {{ type: "source_conflict"; message: string }}
+  | {{ type: "source_degraded"; message: string }}
+  | {{ type: "io"; message: string }};
+
+/** A deliberate policy for resolving recovered state against its disk source. */
+export type SourceReconciliation =
+  | {{ type: "save_recovered_as"; path: string }}
+  | {{ type: "keep_recovered_and_overwrite_source" }}
+  | {{ type: "archive_recovery_and_reload_source" }};
+
+export type SourceReconciliationOperation =
+  | "save_recovered_as"
+  | "keep_recovered_and_overwrite_source"
+  | "archive_recovery_and_reload_source";
+
+export type SourceReconciliationBlockedReason =
+  | {{ type: "not_required"; message: string }}
+  | {{ type: "busy" }}
+  | {{ type: "no_bound_source" }}
+  | {{ type: "target_must_differ"; bound_path: string; requested_path: string }}
+  | {{ type: "path_already_open"; uuid: string; path: string }}
+  | {{ type: "invalid_source"; message: string }}
+  | {{ type: "io"; message: string }}
+  | {{ type: "save"; reason: SaveBlockedReason }};
 
 export type BlobUploadErrorKind =
   | {{ kind: "size_mismatch" }}
