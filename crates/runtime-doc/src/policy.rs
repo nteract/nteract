@@ -222,6 +222,13 @@ fn validate_runtime_peer_room_host_owned_delta(
             "room-host/daemon-owned",
         ));
     }
+    if before.state.file_checkpoint != after.state.file_checkpoint {
+        return Err(runtime_state_policy_error(
+            scope,
+            "file_checkpoint",
+            "room-host/daemon-owned",
+        ));
+    }
     if before.state.path != after.state.path {
         return Err(runtime_state_policy_error(
             scope,
@@ -697,8 +704,8 @@ fn runtime_state_policy_error(
 mod tests {
     use super::*;
     use crate::{
-        BokehSessionCheckpoint, BokehSessionPatchRef, KernelActivity, ProjectContext, QueueEntry,
-        RuntimeLifecycle, WorkstationAttachmentState,
+        BokehSessionCheckpoint, BokehSessionPatchRef, FileSourceIssue, KernelActivity,
+        ProjectContext, QueueEntry, RuntimeLifecycle, WorkstationAttachmentState,
     };
     use automerge::transaction::Transactable;
     use serde_json::json;
@@ -1285,6 +1292,32 @@ mod tests {
         assert!(
             err.to_string().contains("workstation"),
             "error should identify workstation writes: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_file_checkpoint_changes() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .set_file_checkpoint(&["head-1".to_string()], 1)
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        after_doc
+            .set_file_source_issue(Some(&FileSourceIssue::Degraded {
+                reason: "forged journal failure".to_string(),
+            }))
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let err =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+
+        assert!(
+            err.to_string().contains("file_checkpoint"),
+            "error should identify daemon-owned file checkpoint writes: {err}"
         );
     }
 
