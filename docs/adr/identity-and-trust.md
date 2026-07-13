@@ -29,7 +29,13 @@ Every Automerge actor label is a string of the form:
 ```
 
 - **Principal**: the authenticated entity. Format: `<scheme>:<scheme-specific-id>`. Examples: `local:quill`, `user:anaconda:550e8400-e29b-41d4-a716-446655440000`, `hub:hub.2i2c.mybinder.org:rgbkrk-notebooks-i28hqg97`, `system`.
-- **Operator**: the actor doing the work right now, under the principal. Self-declared by the connecting client. Convention: `<kind>:<vendor?>:<session-uuid>`. Examples: `desktop:7f3a`, `tui:9d2b`, `agent:claude:s1`, `agent:codex:s2`, `runtime:py-3.12-s4`.
+- **Operator**: connection- or import-scoped attribution for what acted under
+  the principal. Self-declared by the initiating client. Convention:
+  `<kind>[:<declared-label>]:<nonce>`. The optional label is opaque and may
+  describe an application, agent, model family, harness, runtime, or other
+  operator; it is not a closed product taxonomy. Examples: `desktop:7f3a`,
+  `tui:9d2b`, `agent:claude:s1`, `agent:codex:s2`,
+  `runtime:python:s4`.
 
 Slash is the delimiter, taken on the first occurrence. If a principal ever contains a literal `/` it is percent-encoded; in practice this does not arise (UUIDs, hostnames, and usernames don't contain slashes).
 
@@ -42,6 +48,16 @@ may syntax-check it and may constrain accepted operator kinds for a credential
 class, but an operator string is not proof that the process is really Desktop,
 Codex, Claude, Python, or any other runtime. UI can display operator kind as an
 attribution hint; authorization must use the authenticated principal and scope.
+
+`agent` is an open operator kind, not a product-specific identity class. Any
+agent product, model-serving client, orchestration harness, MCP client, or
+bespoke integration may supply an agent operator descriptor under the same
+contract. Its declared label may identify whichever agent, model family,
+harness, or product is useful for attribution. Exact model ids, providers,
+versions, and richer provenance may remain separate non-authorizing
+audit/display metadata. Those claims are client-declared and advisory unless
+independently attested. None of those details becomes the principal or creates a
+special connection topology.
 
 Worked examples are at the end of this document.
 
@@ -215,9 +231,9 @@ interface PresenceActorProjection {
 `actorLabel` remains the exact `<principal>/<operator>` label used for CRDT
 attribution and color matching. The nested `principal` is verified host state.
 The nested `operator` is accepted attribution for this connection. Display text
-such as "Codex for Kyle Kelley" is derived from `operator` plus `principal`; it
-does not require a separate `on_behalf_of` field unless a future feature models
-delegation chains between multiple principals.
+such as "Codex for Kyle Kelley" is one rendering of a generic agent operator
+plus a principal. It does not require a separate `on_behalf_of` field unless a
+future feature models delegation chains between multiple principals.
 
 Projection scope does not make a viewer less of a sync participant. A `viewer`
 or read-only peer still receives room changes, sends empty sync negotiation
@@ -424,59 +440,123 @@ authority and still enforces scope at frame ingress, request dispatch, and ACL
 mutation boundaries. A `viewer` connection remains a full sync, presence, and
 projection peer; only its changes and mutating requests are denied.
 
-## Decision 6: Publish preserves source actor history; re-authoring is planned
+## Decision 6: Publish re-authenticates and re-authors at the destination boundary
 
-**Current:** Publish uploads the saved source Automerge document bytes
-directly. Historical actor labels from the source space are preserved in the
-destination room. The destination records who published the snapshot (via ACL
-enforcement and catalog metadata), but the ingested `NotebookDoc` and
-`RuntimeStateDoc` carry the source document's full Automerge change history and
-actor labels, including any `local:*` actors from a desktop source.
+**Current implementation gap:** Publish uploads the saved source Automerge
+document bytes directly. Historical actor labels from the source space are
+preserved in the destination room. The destination records who published the
+snapshot (via ACL enforcement and catalog metadata), but the ingested
+`NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` carry the source documents'
+full Automerge change histories and actor labels, including any `local:*`
+actors from a desktop source.
 
 Concretely: `crates/runt-publish/src/lib.rs` uploads
 `source_snapshot.snapshot.notebook_bytes` and
-`source_snapshot.snapshot.runtime_state_bytes` as raw Automerge save payloads
-(`:297`, `:250`), and `apps/notebook-cloud/src/index.ts` stores the uploaded
-body in R2 (`:3041`) before creating a catalog revision row (`:3054-3101`).
+`source_snapshot.snapshot.runtime_state_bytes` and
+`source_snapshot.snapshot.comms_doc_bytes` as raw Automerge save payloads.
+`apps/notebook-cloud/src/index.ts` stores those uploaded bodies before creating
+a catalog revision row.
 
-**Target:** The target decision remains fresh-document re-authoring at the
-publish boundary. Actor labels in Automerge are self-attested; if we accept
-`local:quill/desktop:abc` historical changes into an Anaconda-hosted room, the
-room vouches for authorship it cannot verify. Anyone can fabricate a local doc
-claiming any attribution and publish it. The publish boundary should be
-explicit: history-of-edits stops at the boundary, and the destination records
-who *published* the snapshot, not who authored each historical edit.
+Publishing between identity spaces is an authenticated import, not an
+actor-history migration. Actor labels in Automerge are self-attested; if a host
+accepts `local:quill/desktop:abc` historical changes, it appears to vouch for
+authorship it cannot verify. Anyone can fabricate a local document claiming any
+attribution and publish it.
 
-The target publish flow:
+The local filesystem/OS identity provider establishes authority only in the
+source space. At publish time, the destination validates the presented
+credential with its configured identity provider and derives the immutable,
+namespace-qualified destination principal. Neither Desktop nor an agent may
+assert that `local:kylekelley` maps to a particular hosted account. A hosted
+email or username such as `rgbkrk@gmail.com` is display metadata; the actor
+label uses the host's stable principal identifier.
 
-1. Desktop captures the current rendered state of `NotebookDoc` and
-   `RuntimeStateDoc`: cells, metadata, outputs, blob references (the
-   `.ipynb`-equivalent plus output blobs).
-2. The destination creates a **new** Automerge document in its own identity
-   space. A fresh publisher actor (`user:anaconda:550e.../publisher:<timestamp>`)
-   authors all imported cells, metadata, and outputs as a single round of
-   changes. The schema seed actor establishes the schema; future schema bumps
-   should move the seed actor toward the `system/schema:*` target naming.
-3. Blob references are uploaded by SHA-256 hash (R2 dedupes); the destination
-   room references them by the same hashes.
-4. The destination registers the room in its catalog (D1 row, latest revision
-   pointer).
-5. Future edits in the destination room author under destination-space
-   principals normally. No `local:*` actors remain in the doc.
+The publish request declares an initiating operator descriptor separately from
+the source history, such as `desktop` or `agent:<declared-label>`. The protocol
+does not decide whether that label names an agent, model family, harness, or
+product. Codex, Claude, OpenCode, and bespoke agents are illustrative values
+under the same open contract, not separate publish paths. The descriptor does
+not preserve a source session identifier. Exact model, provider, or version
+details may accompany it as non-authorizing audit metadata; those claims are
+client-declared and advisory unless independently attested. The destination may
+syntax-check the descriptor and constrain accepted operator kinds as described
+in Decision 1, but the operator remains attribution metadata rather than an
+authentication claim. The destination combines the verified principal, the
+descriptor, and a fresh per-publish nonce. For example:
 
-Attribution after re-authoring reflects what the destination can vouch for:
-"this snapshot was published by `user:anaconda:550e...` on `<timestamp>`."
-Per-edit history of the source notebook is not preserved in the destination
-room. When Automerge gains signed-change support (keyhive direction; see
+```text
+user:anaconda:550e.../desktop:<fresh-publish-uuid>
+user:anaconda:550e.../agent:<declared-label>:<fresh-publish-uuid>
+```
+
+The fresh nonce belongs to the destination import. It is not copied from a
+source session or inferred from a source actor label.
+
+The publish flow is:
+
+1. The publisher captures a content projection of the current rendered state
+   of `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`: cells, metadata,
+   completed outputs, published widget state, and blob references. Source
+   structural document ids are not content and are excluded. Identity-bearing
+   values inside the projection are also untrusted source claims: for example,
+   `RuntimeStateDoc.executions[*].submitted_by_actor_label` is dropped rather
+   than copied or relabeled. Any future identity-bearing field needs an explicit
+   import rule backed by destination-verifiable evidence before it can survive
+   this boundary.
+2. The destination authenticates the publish credential, derives the hosted
+   principal, validates the declared initiating operator descriptor, mints a
+   fresh destination notebook id and its corresponding runtime-state and comms
+   document ids, and mints a fresh import actor before creating a discoverable
+   room.
+3. The destination creates fresh Automerge documents with those destination
+   structural ids in its own identity space. Canonical schema-seed actors
+   establish the schemas; the fresh import actor authors the imported state.
+   Non-canonical source history is neither copied nor relabeled actor by actor;
+   matching canonical genesis changes are independently established in the
+   destination.
+4. Blob references retain their SHA-256 identities. The destination verifies
+   and stores the transitive closure of referenced blob bytes.
+5. After the imported documents and blob closure validate, the destination
+   registers the room and its initial revision in the catalog. Durable revision,
+   ACL, and audit attribution either uses the same destination-minted import
+   actor or stores the authenticated principal, validated operator descriptor,
+   and destination import id in separate typed fields that reconstruct that
+   actor exactly; it never persists a client-supplied source actor or source
+   session suffix as destination truth.
+6. Future edits author under normal destination-space principals and operators.
+   No source-space user/operator actor, including any `local:*` actor, or
+   non-canonical source-history change remains in the destination documents.
+
+The import actor describes who performed the publish operation and how; it does
+not claim authorship of each historical edit. UI may therefore render
+"published by rgbkrk@gmail.com via Desktop" or generically "<agent label> on
+behalf of rgbkrk@gmail.com"; "Codex on behalf of rgbkrk@gmail.com" is one
+example. The durable actor label remains the verified hosted principal plus
+operator. The original source notebook and its history remain unchanged.
+
+When Automerge gains signed-change support (keyhive direction; see
 `https://www.inkandswitch.com/keyhive/notebook/`), historical authorship could
 be carried across publish if every change is signed by its claimed author.
 
 ## Open Follow-ups
 
-- **Publish-time re-authoring:** Implement the fresh-document flow in
-  `runt-publish` before relying on cross-space attribution closure (see threat
-  table row). Tracked as implementation and security work in
-  [#3900](https://github.com/nteract/nteract/issues/3900).
+- **Publish-time destination authentication and re-authoring
+  ([#3900](https://github.com/nteract/nteract/issues/3900)):** Replace raw source
+  save-byte upload with import into fresh destination documents. Tests must
+  prove that the destination principal came from destination authentication,
+  the import actor retains the initiating operator descriptor with a fresh
+  destination-controlled nonce, no source-space user/operator actors or
+  non-canonical source-history changes remain, and the rendered state plus blob
+  closure preserve the publish contract. Coverage must include a malicious
+  embedded `local:*` submitter label that is removed, two publishes of the same
+  source producing distinct and internally consistent notebook/runtime/comms
+  ids, and catalog/revision/ACL audit rows bound to destination-authenticated
+  import attribution. If audit attribution is decomposed into typed fields, a
+  reconstruction test must prove equality with the destination import actor,
+  including its fresh import id. Independently established canonical schema
+  genesis is the only shared history exception. An unknown future operator label
+  must round-trip through import attribution without changing the authenticated
+  principal, effective scope, or authorization result.
 
 ## Limitations
 
@@ -489,7 +569,7 @@ The threat surface this leaves:
 | Unauthorized read | ACL check at connect | closed |
 | Unauthorized write at all | Bearer auth + ACL at connect | closed |
 | Scope escalation (viewer authoring, runtime_peer editing NotebookDoc) | Scope-based frame rejection | closed |
-| Import-time cross-IdP forgery (publishing a doc with historical foreign actor labels) | Publish-time re-authoring (Decision 6 target) | open — current publish preserves source actor history |
+| Import-time cross-IdP forgery (publishing a doc with historical foreign actor labels) | Destination authentication plus fresh-document re-authoring under a verified principal and fresh initiating-operator actor (Decision 6) | open — current publish copies source Automerge history |
 | **Live actor-principal spoofing** (an authenticated peer authors a new change under a different principal) | Clone-preview actor validation before apply | closed in v1 |
 | Bearer-token replay (stolen JWT opens a new socket) | DPoP / mTLS / short token lifetimes | deferred |
 | Clone-preview validator cost on large/high-churn docs | `sync_message_new_changes` Automerge fork patch | deferred performance hardening |
@@ -548,12 +628,27 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 Current publish still uploads the source Automerge document bytes. The target
 flow is:
 
-- quill triggers "publish to Anaconda" from desktop.
-- Desktop captures the current rendered state of the local `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`: cells, metadata, outputs, widget state, blob references.
-- The destination (Anaconda) creates a **new** Automerge document in its space: schema-seed actor for the genesis, then a fresh publisher actor (`user:anaconda:550e.../publisher:<timestamp>`) authoring all imported cells/metadata/outputs in one round.
-- Output blobs upload by SHA-256 hash; R2 dedupes.
-- A new room appears at `runtimed.com/n/<id>` with an ACL containing quill as `owner`. Opening it follows the previous example. New edits author under `user:anaconda:550e.../*`; the destination doc contains no `local:*` actors.
-- The original local notebook is unchanged. Pre-publish authorship history lives only in the source space.
+- quill triggers "publish to Anaconda" from Desktop. The local daemon knows
+  quill as `local:quill`, but that principal has no authority at Anaconda.
+- Anaconda validates the publish credential and derives the stable principal
+  `user:anaconda:550e...`. It may project `rgbkrk@gmail.com` as display metadata;
+  it does not trust a client assertion that `local:quill` maps to that account.
+- Desktop captures the current rendered state of the local `NotebookDoc`,
+  `RuntimeStateDoc`, and `CommsDoc`: cells, metadata, outputs, published widget
+  state, and blob references.
+- The destination creates fresh Automerge documents. A Desktop publish imports
+  state under `user:anaconda:550e.../desktop:<fresh-publish-uuid>`; any
+  agent-capable client or harness uses the same
+  `user:anaconda:550e.../agent:<declared-label>:<fresh-publish-uuid>` shape.
+  Codex is one example and may display as "Codex on behalf of
+  rgbkrk@gmail.com."
+- The source change DAGs are not copied. Output blobs retain their SHA-256
+  hashes, and the imported state preserves the publish contract.
+- A new room appears at `runtimed.com/n/<id>` with the hosted principal as
+  owner. New edits author under `user:anaconda:550e.../*`; the destination
+  documents contain no `local:*` actors.
+- The original local notebook is unchanged. Pre-publish authorship history
+  lives only in the source space.
 
 ## Compatibility with Automerge semantics
 
