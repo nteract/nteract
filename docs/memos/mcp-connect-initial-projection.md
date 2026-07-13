@@ -1,6 +1,14 @@
 # MCP connect initial projection
 
-Status: recommendation for [issue #3907](https://github.com/nteract/nteract/issues/3907)
+Status: adopted on 2026-07-13 by
+[Room Source Lifecycle and File-Backed Recovery](../adr/room-source-lifecycle-and-file-recovery.md)
+and [MCP Session Lifecycle and Daemon Supervision](../adr/mcp-session-lifecycle.md)
+for [issue #3907](https://github.com/nteract/nteract/issues/3907).
+
+This memo preserves the investigation, benchmark, and original API sketch. The
+ADRs are authoritative where the original recommendation assumed a disposable
+file-backed Automerge mirror, rollback after partial loading, or one combined
+readiness state.
 
 ## Summary
 
@@ -12,10 +20,12 @@ can return those IDs.
 The recommended contract is:
 
 1. resolve the target and reserve or open the daemon room;
-2. obtain a compact projection directly from that room after any initial file
-   load completes;
-3. install the MCP session and return the projection, including its document
-   heads, while the MCP peer continues converging in the background;
+2. obtain a compact projection directly from the room when room availability
+   reaches `ProjectionReady`, even if its source generation is still
+   `Publishing`;
+3. install a generation-guarded MCP session and return the projection,
+   including its document heads and completeness, while the MCP peer continues
+   converging in the background;
 4. gate later local-replica reads and writes on the specific readiness they
    require, with an explicit degraded-sync error if convergence fails.
 
@@ -56,14 +66,21 @@ Automerge failure boundary.
 
 ## Proposed phases
 
-Treat connect as four observable milestones rather than one boolean:
+Treat source lifecycle, room availability, and client readiness as separate
+observable facts rather than one boolean:
 
-| Milestone | Owner | Meaning |
+| Milestone | Durable state | Meaning |
 | --- | --- | --- |
-| Room attached | daemon handshake | Target resolved, room identity and canonical path known, peer connection alive |
-| Projection ready | daemon room | Initial file load, if any, is complete and stable cell IDs can be read from the authoritative room |
-| Notebook interactive | MCP Automerge peer | The local NotebookDoc replica has completed a sync exchange and is safe for local-replica operations |
-| Runtime ready | MCP RuntimeState peer | Runtime summaries and execution state are available locally |
+| Room attached | `RoomAvailability::Attached` | Target resolved and room identity and canonical path known |
+| Projection ready | `RoomAvailability::ProjectionReady` | A bounded, heads-qualified stable-cell projection is available |
+| Room interactive | `RoomAvailability::Interactive` | The daemon room permits normal user-facing mutation |
+| Notebook peer interactive | MCP NotebookDoc readiness | The local replica covers the required heads and is safe for local-replica operations |
+| Runtime ready | MCP RuntimeState/runtime readiness | Runtime summaries and execution state are available locally |
+
+The daemon also reports the independent `RoomSourceState` generation as
+`Preparing`, `Publishing`, `Ready`, or `Failed`. Source failure can leave a
+durable projection in `Degraded` availability; source state is not a synonym
+for room or peer readiness.
 
 `connect_notebook` should return after **Projection ready**. It should include
 the later milestones in a `sync` object rather than waiting for both.
@@ -74,6 +91,7 @@ An example response shape is:
 {
   "notebook_id": "...",
   "notebook_path": "/abs/path/notebook.ipynb",
+  "session_generation": 7,
   "cells": [
     { "id": "cell-...", "cell_type": "code", "source_preview": "..." }
   ],
@@ -83,13 +101,17 @@ An example response shape is:
   "projection": {
     "source": "daemon_room",
     "notebook_heads": ["..."],
+    "complete": true,
     "runtime_state_heads": ["..."],
     "captured_at": "2026-07-10T...Z"
   },
+  "source_state": { "state": "publishing", "generation": 3 },
+  "availability": "projection_ready",
+  "capabilities": { "read": true, "mutate": false, "execute": false },
   "sync": {
     "notebook_doc": "syncing",
     "runtime_state": "ready",
-    "initial_load": "ready"
+    "runtime": "starting"
   }
 }
 ```
@@ -116,6 +138,8 @@ the daemon control connection. Its response should contain:
   RuntimeStateDoc, preserving the current top-level response shapes;
 - current NotebookDoc heads;
 - current RuntimeStateDoc heads for the best-effort runtime summary;
+- source generation and `RoomSourceState`;
+- `RoomAvailability`, projection completeness, and explicit capabilities;
 - a projection schema version.
 
 Runtime readiness is not a prerequisite for the stable-cell projection. If the
@@ -124,27 +148,29 @@ return that state explicitly using the existing response vocabulary instead of
 omitting the fields. The `sync.runtime_state` field separately tells the caller
 whether the MCP process's local RuntimeStateDoc replica is ready.
 
-The handler must wait on an explicit room-owned projection phase before reading
-the document. The current `is_loading` atomic is not enough: a contending open
-can lose `try_start_loading()`, enter its steady-state request worker, and read
-while the owning peer is still streaming cells. Promote load state to an
-observable room-level phase such as `NotNeeded`, `Loading { generation }`,
-`Ready`, or `Failed { reason }`. A successful or failed load publishes a
-terminal phase, and stale completions from an older generation cannot satisfy a
-new waiter. Once ready, the control handler can build the projection under one
-short document read.
+The handler waits on room-owned `RoomAvailability`, not a loading atomic. The
+source controller publishes its separate generation state and owns a bounded,
+heads-qualified projection. Stale completions from an older source or session
+generation cannot satisfy a new waiter. The projection uses narrow bounded
+NotebookDoc accessors; it must not clone full sources or assets merely to
+truncate them.
 
-The daemon room, not the first attaching peer, must own the cold load that
-drives this phase. Refactor the current streaming loader into a room task that
-reads and mutates NotebookDoc without taking a peer writer or peer sync state.
-It may publish room-change notifications after committed batches so peers can
-stream progress through their normal sync loops, but delivering a batch to any
-one peer is not part of load success. A send failure or peer Automerge failure
-ends that peer session only; it must not clear the loaded cells, mark the room
-load failed, or cancel the room loader. Only source-read, parse, or room-mutation
-failures publish `Failed` and roll back a partial load. This separation lets a
-cold room become projection-ready even when the peer that initiated the open
-disconnects during bootstrap.
+`ProjectionReady` is published only after the immutable staged changes, their
+hashes, and the matching projection are durable. The projection may describe
+the staged target heads while source state remains `Publishing`; local
+operations wait until the room and MCP peer cover those required heads.
+
+The daemon room, not the first attaching peer, owns the cold load. A room is not
+published in a non-terminal source state until a task lease owns that
+generation; cancellation or panic publishes `Failed` and wakes waiters. The
+task prepares parsing and fallible asset work before live publication, authors
+an immutable staged Automerge change stream from canonical genesis, persists
+its hashes, and applies those exact changes in bounded batches. A peer send or
+sync failure ends only that peer session. A source failure preserves any
+durable partial publication and concurrent peer changes in a degraded room;
+retry resumes recorded change hashes instead of rolling the document back.
+This separation lets a cold room become projection-ready even when the peer
+that initiated the open disconnects during bootstrap.
 
 Do not route this request through `DocHandle` or `NotebookFrameType::Request`.
 Those requests are owned by the same notebook sync task that closes and
@@ -158,6 +184,25 @@ sends that handshake before it performs a cold file-backed streaming load, so
 the field would be complete for resident rooms and empty for cold rooms. The
 room-gated control request has one meaning for every target.
 
+### Durability and source conflicts
+
+Progressive return depends on an honest durability boundary. File-backed rooms
+keep an append-only Automerge recovery journal with source fingerprint,
+generation, staged hashes, `durable_heads`, and `.ipynb` `exported_heads`.
+Journal batches become visible atomically, acknowledgements wait for their
+durable marker, and room reaping waits for the current required heads.
+
+A matching file/journal fingerprint restores the journal and resumes staged
+publication. Divergence preserves both versions and reports
+`source_conflict`; it never silently picks disk or recovered state. A file save
+advances `exported_heads` only after temporary-file flush and atomic replace.
+`last_saved` remains display metadata, not evidence of durability.
+
+These semantics are informed by automerge-repo's draft Subduction work on
+source lifecycle, causal saved heads, concurrent storage merge, and surfaced
+flush failure. Nteract encodes the behavior in its own interfaces and tests; it
+does not take a production dependency on the draft branch.
+
 ## Safety of later operations
 
 Returning early is safe only if MCP tools stop treating `session: Some` as
@@ -166,7 +211,8 @@ equivalent to a ready local replica.
 Introduce operation-specific session guards:
 
 - daemon-projection reads may run after **Projection ready**;
-- NotebookDoc reads and cell CRUD must wait for **Notebook interactive**;
+- NotebookDoc reads and cell CRUD must wait for room **Interactive** and local
+  NotebookDoc readiness at the required heads;
 - execution and runtime summaries must additionally wait for the relevant
   RuntimeState readiness;
 - every wait must capture an activation generation and re-check it after the
@@ -204,7 +250,8 @@ Same-target callers should share one in-flight attach and projection result.
 Different-target callers should increment the activation generation; the last
 user-initiated target wins, matching the existing rejoin invariant. Do not hold
 the session lock across socket connection, file load, projection request, or
-sync waits.
+sync waits. Once the daemon resolves identity, a path and UUID alias for the
+same file-backed room use the same coalescing key.
 
 ## Failure semantics and diagnostics
 
@@ -219,13 +266,14 @@ Record and surface:
 - a terminal local sync state with its reason when the sync task exits.
 
 If room projection fails, `connect_notebook` fails because it cannot honor the
-one-call stable-ID contract. If the projection succeeds but local Automerge
-sync later fails, the MCP session remains available in a degraded read-only
-state even if its live `DocHandle` disconnects: the retained connect projection
-is still useful, fresh daemon-projection reads may continue over the control
-connection, and local-replica writes fail quickly with the explicit sync
-reason. A retry should start a fresh sync exchange rather than waiting out
-another opaque 120 seconds.
+one-call stable-ID contract. If a durable projection exists while source or
+local Automerge sync is degraded, the MCP session remains available with only
+the capabilities its availability reports, even if its live `DocHandle`
+disconnects. The retained connect projection is still useful, fresh
+daemon-projection reads may continue over the control connection, and
+local-replica writes fail quickly with the explicit source, conflict, or sync
+reason. A retry starts a fresh activation or sync exchange rather than waiting
+out another opaque 120 seconds.
 
 The `InvalidChanges(MissingOps)` diagnostic belongs in this second category.
 It should close or reset the broken local sync task, mark NotebookDoc sync as
@@ -285,18 +333,18 @@ An implementation is ready to ship when:
 6. no path returns cached source as authoritative after the projection revision
    has been superseded.
 
-## Implementation slices
+## Adopted implementation sequence
 
-1. Move cold loading into a room-owned task independent of peer delivery, then
-   add the room-level projection phase and daemon-control projection request,
-   including load-contention, peer-send-failure, and source-load-failure tests.
-2. Add MCP session activation generations, retained projection state, and
-   per-operation readiness guards.
-3. Return the control-plane projection from connect and keep live sync in the
-   background, including a test where the NotebookDoc peer fails independently.
-4. Coalesce normalized same-target connects.
-5. Add fault injection for a stalled or failed NotebookDoc peer and turn the
+1. Land room-owned source state, task leases, staged immutable imports, and
+   bounded projections while preserving existing MCP waiting behavior.
+2. Land the recovery journal, causal file checkpoints, conflict reconciliation,
+   reaper barrier, and fault-injection coverage.
+3. Add MCP activation generations, retained projection state, per-operation
+   readiness guards, and UI/MCP mutation gating.
+4. Return the control-plane projection from connect while live sync continues,
+   then coalesce normalized same-target connects.
+5. Turn stalled-peer, source-failure, conflict, target-switch, and shutdown
    harness scenarios into integration coverage.
 
-Keep these slices separate. The first is useful independently, while the third
-must not land before the safety guard in the second.
+Keep these slices separate. Progressive return must not land before durable
+room recovery and operation-specific safety guards.
