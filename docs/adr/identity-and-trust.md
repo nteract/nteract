@@ -473,21 +473,35 @@ source session or inferred from a source actor label.
 
 The publish flow is:
 
-1. The publisher captures the current rendered state of `NotebookDoc`,
-   `RuntimeStateDoc`, and `CommsDoc`: cells, metadata, completed outputs,
-   published widget state, and blob references.
+1. The publisher captures a content projection of the current rendered state
+   of `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`: cells, metadata,
+   completed outputs, published widget state, and blob references. Source
+   structural document ids are not content and are excluded. Identity-bearing
+   values inside the projection are also untrusted source claims: for example,
+   `RuntimeStateDoc.executions[*].submitted_by_actor_label` is dropped rather
+   than copied or relabeled. Any future identity-bearing field needs an explicit
+   import rule backed by destination-verifiable evidence before it can survive
+   this boundary.
 2. The destination authenticates the publish credential, derives the hosted
-   principal, validates the declared initiating operator descriptor, and mints
-   a fresh import actor before creating a discoverable room.
-3. The destination creates fresh Automerge documents in its own identity
-   space. Canonical schema-seed actors establish the schemas; the fresh import
-   actor authors the imported state. Non-canonical source history is neither
-   copied nor relabeled actor by actor; matching canonical genesis changes are
-   independently established in the destination.
+   principal, validates the declared initiating operator descriptor, mints a
+   fresh destination notebook id and its corresponding runtime-state and comms
+   document ids, and mints a fresh import actor before creating a discoverable
+   room.
+3. The destination creates fresh Automerge documents with those destination
+   structural ids in its own identity space. Canonical schema-seed actors
+   establish the schemas; the fresh import actor authors the imported state.
+   Non-canonical source history is neither copied nor relabeled actor by actor;
+   matching canonical genesis changes are independently established in the
+   destination.
 4. Blob references retain their SHA-256 identities. The destination verifies
    and stores the transitive closure of referenced blob bytes.
 5. After the imported documents and blob closure validate, the destination
-   registers the room and its initial revision in the catalog.
+   registers the room and its initial revision in the catalog. Durable revision,
+   ACL, and audit attribution either uses the same destination-minted import
+   actor or stores the authenticated principal, validated operator descriptor,
+   and destination import id in separate typed fields that reconstruct that
+   actor exactly; it never persists a client-supplied source actor or source
+   session suffix as destination truth.
 6. Future edits author under normal destination-space principals and operators.
    No source-space user/operator actor, including any `local:*` actor, or
    non-canonical source-history change remains in the destination documents.
@@ -512,8 +526,14 @@ be carried across publish if every change is signed by its claimed author.
   the import actor retains the initiating operator descriptor with a fresh
   destination-controlled nonce, no source-space user/operator actors or
   non-canonical source-history changes remain, and the rendered state plus blob
-  closure preserve the publish contract. Independently established canonical
-  schema genesis is the only shared history exception.
+  closure preserve the publish contract. Coverage must include a malicious
+  embedded `local:*` submitter label that is removed, two publishes of the same
+  source producing distinct and internally consistent notebook/runtime/comms
+  ids, and catalog/revision/ACL audit rows bound to destination-authenticated
+  import attribution. If audit attribution is decomposed into typed fields, a
+  reconstruction test must prove equality with the destination import actor,
+  including its fresh import id. Independently established canonical schema
+  genesis is the only shared history exception.
 
 ## Limitations
 

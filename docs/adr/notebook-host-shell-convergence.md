@@ -86,17 +86,28 @@ the choice of where to open a hosted locator are application-level host chrome.
 
 Desktop may eventually expose a separate singleton window, provisionally
 called Notebook Home, that composes local recent or open-notebook facts with
-hosted catalog rows grouped by configured origin. The exact product name,
-filesystem discovery model, layout, discoverability, and default open action
-remain product decisions. In particular, this ADR does not imply a
-filesystem-wide notebook index or choose between opening a hosted notebook on
-the web and opening it in a Desktop notebook window.
+hosted catalog rows grouped by configured account or deployment. The exact
+product name, filesystem discovery model, layout, discoverability, and default
+open action remain product decisions. In particular, this ADR does not imply a
+filesystem-wide notebook index or choose whether a Notebook Home action opens a
+hosted notebook on the web or in a Desktop notebook window.
 
-The Desktop capability may land headlessly before that UI. Its host adapter can
-offer typed operations to list configured hosts, list notebooks for one
-explicitly selected host, and open a hosted locator without a visible page or
-menu entry. Hosted notebook identity at this boundary is the pair
-`(normalized origin, notebook id)`, never the notebook id alone.
+Desktop already has a hidden hosted-open primitive: `@nteract/notebook-host`
+can request a hosted window, the daemon uses an explicit hosted open mode and
+deterministic window reuse, and session restore stores the hosted locator
+separately from a local path or environment id. That primitive is not yet the
+account and catalog product model. A daemon-owned account/catalog capability
+may land headlessly before Notebook Home, with typed host-adapter operations to
+list configured accounts, list notebooks for one selected account, and invoke
+the existing hosted-open path without adding a visible page or menu entry.
+
+Hosted source identity must remain explicit in window context, deterministic
+labels, deduplication, daemon bridges, reconnect state, and session restore. The
+origin-scoped V1 registry may use `(normalized origin, notebook id)` only while
+it enforces one account per origin. Before multiple accounts can share an
+origin, these boundaries must use the account-qualified
+`(account_id, provider_resource_id)` identity described in the hosted notebook
+federation memo; a notebook id or origin-plus-id is not a durable federated key.
 
 The hosted browser `/n` page and a future Desktop Notebook Home are separate
 host adapters over common catalog concepts. Desktop must not depend on the
@@ -276,8 +287,9 @@ when shared shell controls are still coupled to desktop or cloud specifics.
   implementation rather than direct platform imports in React.
 - Visible Notebook Home work is app chrome and should be reviewed independently
   from shared notebook presentation.
-- Catalog projections preserve normalized host origin as part of notebook
-  identity even when a UI groups local and hosted rows together.
+- Catalog projections preserve account-qualified source identity even when a UI
+  groups local and hosted rows together; normalized origin remains deployment
+  and routing metadata, not the durable federated key.
 - Shared components should receive host capabilities and callbacks instead of
   importing host state directly.
 - Desktop should adopt the same capability vocabulary for local read/write,
