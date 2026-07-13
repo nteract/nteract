@@ -704,6 +704,8 @@ impl RuntimeStateDoc {
     /// The closure is invoked exactly once. Prepare non-deterministic values
     /// before calling this method if they need to be reused outside the
     /// transaction; the helper does not retry conflicts by re-running `f`.
+    /// Mutations and derived output-order cache entries are rolled back when
+    /// the closure returns an error.
     pub fn transact_at_heads_recovering<F, T>(
         &mut self,
         heads: &[automerge::ChangeHash],
@@ -717,6 +719,7 @@ impl RuntimeStateDoc {
         use std::cell::Cell;
 
         let original_actor = self.doc.get_actor().clone();
+        let output_order_cache_before = self.output_order_cache.clone();
         let isolated = Cell::new(false);
         let mut recovery_panic = None;
 
@@ -727,6 +730,11 @@ impl RuntimeStateDoc {
             self.doc.isolate(heads);
             isolated.set(true);
             let result = f(self);
+            if result.is_err() {
+                self.doc.rollback();
+                self.output_order_cache
+                    .clone_from(&output_order_cache_before);
+            }
             self.doc.integrate();
             isolated.set(false);
             result
@@ -734,6 +742,8 @@ impl RuntimeStateDoc {
 
         if isolated.get() {
             if let Err(err) = catch_automerge_panic(format!("{label}:integrate"), || {
+                self.doc.rollback();
+                self.output_order_cache.clear();
                 self.doc.integrate();
             }) {
                 recovery_panic = Some(err);
@@ -5801,6 +5811,50 @@ mod tests {
             RuntimeLifecycle::Running(KernelActivity::Busy)
         );
         assert!(state.executions.contains_key("exec-1"));
+    }
+
+    #[test]
+    fn isolated_transaction_error_rolls_back_document_and_output_cache() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1").unwrap();
+        doc.append_output("exec-1", &test_display("h1")).unwrap();
+        let heads = doc.get_heads();
+
+        let result: Result<(), RuntimeStateError> = doc.transact_at_heads_recovering(
+            &heads,
+            Some("rt:kernel:shared"),
+            "test-runtime-transaction-rollback",
+            |doc| {
+                doc.append_output("exec-1", &test_display("h2"))?;
+                doc.put_bokeh_session(
+                    "session-1",
+                    &test_bokeh_session(BokehSessionStatus::Connected),
+                )?;
+                Err(RuntimeStateError::InvalidBokehSession(
+                    "injected failure".to_string(),
+                ))
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(RuntimeStateError::InvalidBokehSession(_))
+        ));
+        assert_eq!(doc.get_outputs("exec-1"), vec![test_display("h1")]);
+        assert!(doc.get_bokeh_session("session-1").is_none());
+        assert_eq!(
+            doc.output_order_cache
+                .get("exec-1")
+                .expect("output order cache")
+                .next_seq,
+            1
+        );
+
+        doc.append_output("exec-1", &test_display("h3")).unwrap();
+        assert_eq!(
+            doc.get_outputs("exec-1"),
+            vec![test_display("h1"), test_display("h3")]
+        );
     }
 
     #[test]

@@ -272,8 +272,14 @@ class NteractKernel(IPythonKernel):
                     return
                 event = self._bokeh_event_queue.popleft()
 
-            content, buffers = _wire_bokeh_event(event)
-            wire_buffers: list[bytes | memoryview[bytes]] = list(buffers)
+            try:
+                content, buffers = _wire_bokeh_event(event)
+                wire_buffers: list[bytes | memoryview[bytes]] = list(buffers)
+            except Exception:
+                # Serialization failures are deterministic for this event. Drop
+                # it so one malformed payload cannot wedge the publication loop.
+                self.log.exception("Could not serialize Bokeh session event; dropping event")
+                continue
             try:
                 self.session.send(
                     self.iopub_socket,

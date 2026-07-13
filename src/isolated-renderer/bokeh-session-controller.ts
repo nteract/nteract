@@ -426,6 +426,10 @@ export class BokehSessionController {
       );
       document.on_change(this.onDocumentChange);
       this.revision = checkpoint.revision;
+    } catch (error) {
+      this.destroyDocument();
+      this.options.container.replaceChildren();
+      throw error;
     } finally {
       this.applyingRemote = false;
     }
@@ -445,6 +449,11 @@ export class BokehSessionController {
       const nextRevision = Math.min(...this.canonicalEvents.keys());
       if (Number.isFinite(nextRevision) && nextRevision > this.revision + 1) {
         this.scheduleResync();
+      }
+    } catch (error) {
+      if (!this.disposed) {
+        this.setStatus("error", error instanceof Error ? error.message : String(error));
+        this.scheduleResync(0);
       }
     } finally {
       this.drainingCanonicalEvents = false;

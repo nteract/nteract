@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sys
+import threading
+from collections import deque
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 from IPython.core.formatters import DisplayFormatter
@@ -670,6 +673,57 @@ def test_wire_event_offsets_server_and_checkpoint_buffers():
     assert content["server_patch"]["buffers"][0]["buffer_index"] == 1
     assert content["checkpoint"]["buffers"][0]["buffer_index"] == 2
     assert buffers == [b"client", b"server", b"checkpoint"]
+
+
+def test_bokeh_event_drain_discards_unserializable_event_and_continues(
+    monkeypatch,
+):
+    import nteract_kernel_launcher.app as app
+
+    bad_event = BokehServerEvent(
+        session_id="session-bad",
+        transaction_id="tx-bad",
+        base_revision=0,
+        revision=1,
+        client_patch=None,
+        server_patch=None,
+    )
+    good_event = BokehServerEvent(
+        session_id="session-good",
+        transaction_id="tx-good",
+        base_revision=1,
+        revision=2,
+        client_patch=None,
+        server_patch=None,
+    )
+    wire_event = app._wire_bokeh_event
+
+    def fail_one_event(event):
+        if event is bad_event:
+            raise ValueError("malformed event")
+        return wire_event(event)
+
+    monkeypatch.setattr(app, "_wire_bokeh_event", fail_one_event)
+    send = Mock()
+    log = Mock()
+    kernel = SimpleNamespace(
+        _bokeh_event_lock=threading.Lock(),
+        _bokeh_event_queue=deque([bad_event, good_event]),
+        _bokeh_event_drain_scheduled=True,
+        session=SimpleNamespace(send=send),
+        iopub_socket=object(),
+        log=log,
+        _topic=lambda msg_type: msg_type,
+    )
+
+    app.NteractKernel._drain_bokeh_events(cast(Any, kernel))
+
+    assert list(kernel._bokeh_event_queue) == []
+    assert kernel._bokeh_event_drain_scheduled is False
+    log.exception.assert_called_once_with("Could not serialize Bokeh session event; dropping event")
+    send.assert_called_once()
+    assert send.call_args.args[1] == app._BOKEH_EVENT
+    assert send.call_args.args[2]["session_id"] == "session-good"
 
 
 def test_nteract_kernel_registers_bokeh_shell_messages():

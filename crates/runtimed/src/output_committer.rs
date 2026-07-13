@@ -283,18 +283,11 @@ async fn commit_output_batch(
                 while index < outputs.len() && outputs[index].output.execution_id == execution_id {
                     index += 1;
                 }
-                if let Err(e) = sd.append_outputs(execution_id, &manifests[start..index]) {
-                    warn!("[output-committer] Failed to append output batch to state doc: {e}");
-                }
+                sd.append_outputs(execution_id, &manifests[start..index])?;
             }
             for prepared in &prepared_outputs {
                 if let Some(session) = &prepared.bokeh_session {
-                    if let Err(error) = sd.put_bokeh_session(&session.session_id, &session.state) {
-                        warn!(
-                            "[output-committer] Failed to record Bokeh session {}: {error}",
-                            session.session_id
-                        );
-                    }
+                    sd.put_bokeh_session(&session.session_id, &session.state)?;
                 }
             }
             Ok(())

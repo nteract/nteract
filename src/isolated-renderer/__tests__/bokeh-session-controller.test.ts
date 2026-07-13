@@ -306,6 +306,63 @@ describe("BokehSessionController", () => {
     controller.dispose();
   });
 
+  it("cleans up and resyncs when a checkpoint document fails to mount", async () => {
+    const { container, controller, documents, notify, onStatus, requestHost, runtime } = harness();
+    await controller.start();
+    const mountDocument = runtime.addDocumentStandalone;
+    let failNextMount = true;
+    runtime.addDocumentStandalone = async (document, element) => {
+      if (failNextMount) {
+        failNextMount = false;
+        element.appendChild(window.document.createElement("div"));
+        throw new Error("mount failed");
+      }
+      return mountDocument(document, element);
+    };
+    requestHost.mockResolvedValueOnce({
+      schemaVersion: 1,
+      sessionId: "session-1",
+      outputId: "output-1",
+      status: "connected",
+      headRevision: 1,
+      checkpoint: {
+        revision: 1,
+        document: { roots: [{ id: "root-1" }] },
+        buffers: [],
+      },
+      patchTail: [],
+    });
+
+    notify(NTERACT_BOKEH_SESSION_PATCH, {
+      outputId: "output-1",
+      event: {
+        sessionId: "session-1",
+        transactionId: "checkpoint-1",
+        baseRevision: 0,
+        revision: 1,
+        checkpoint: {
+          revision: 1,
+          document: { roots: [{ id: "root-1" }] },
+          buffers: [],
+        },
+      },
+    });
+    await settle();
+
+    expect(documents[1].cleared).toBe(true);
+    expect(onStatus).toHaveBeenLastCalledWith("error", "mount failed");
+    expect(container.querySelectorAll("div")).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(0);
+    await settle();
+
+    expect(requestHost).toHaveBeenCalledTimes(2);
+    expect(documents).toHaveLength(3);
+    expect(documents[2].cleared).toBe(false);
+    expect(onStatus).toHaveBeenLastCalledWith("connected", undefined);
+    controller.dispose();
+  });
+
   it("freezes the current document when RuntimeState marks the session disconnected", async () => {
     const { controller, documents, notify, onStatus, patchRequests } = harness();
     await controller.start();
