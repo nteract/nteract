@@ -112,7 +112,7 @@ pub struct SessionAccess {
 pub struct SessionAccessError {
     pub code: &'static str,
     pub message: String,
-    pub readiness: SessionReadiness,
+    pub readiness: Box<SessionReadiness>,
 }
 
 /// An active notebook session connected via the daemon.
@@ -483,7 +483,7 @@ impl NotebookSession {
             return Err(SessionAccessError {
                 code,
                 message,
-                readiness,
+                readiness: Box::new(readiness),
             });
         }
 

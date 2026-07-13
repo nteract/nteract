@@ -78,7 +78,7 @@ pub async fn get_cell(
             return super::session_access_error(crate::session::SessionAccessError {
                 code: "notebook_not_ready",
                 message: "The notebook projection is not available yet".to_string(),
-                readiness: access.readiness,
+                readiness: Box::new(access.readiness),
             });
         };
         let Some(cell) = projection.cells.iter().find(|cell| cell.id == cell_id) else {
@@ -254,7 +254,7 @@ pub async fn get_all_cells(
             return super::session_access_error(crate::session::SessionAccessError {
                 code: "notebook_not_ready",
                 message: "The notebook projection is not available yet".to_string(),
-                readiness: access.readiness,
+                readiness: Box::new(access.readiness),
             });
         };
         let end = match count {

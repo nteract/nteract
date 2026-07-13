@@ -220,7 +220,7 @@ pub(crate) enum RecoveryLoadOutcome {
 /// path registry is missing or unavailable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RecoveryLatestOutcome {
-    Recovered(RecoveredJournalRecord),
+    Recovered(Box<RecoveredJournalRecord>),
     Unavailable { reason: RecoveryUnavailableReason },
 }
 
@@ -246,7 +246,7 @@ pub(crate) enum RecoveryJournalDiscoveryError {
     Journal {
         journal: PathBuf,
         #[source]
-        source: RecoveryJournalError,
+        source: Box<RecoveryJournalError>,
     },
     #[error(
         "recovery journal {journal} claims notebook {notebook_id}, but that identity belongs at {expected}"
@@ -522,10 +522,12 @@ impl RecoveryJournal {
             return Ok(RecoveryLatestOutcome::Unavailable { reason });
         };
 
-        Ok(RecoveryLatestOutcome::Recovered(RecoveredJournalRecord {
-            record,
-            ignored_tail: scan.ignored_tail,
-        }))
+        Ok(RecoveryLatestOutcome::Recovered(Box::new(
+            RecoveredJournalRecord {
+                record,
+                ignored_tail: scan.ignored_tail,
+            },
+        )))
     }
 
     /// Load the last complete valid record and compare its source fingerprint
@@ -535,7 +537,7 @@ impl RecoveryJournal {
         current_source_fingerprint: SourceFingerprint,
     ) -> Result<RecoveryLoadOutcome, RecoveryJournalError> {
         let recovery = match self.latest_record()? {
-            RecoveryLatestOutcome::Recovered(recovery) => recovery,
+            RecoveryLatestOutcome::Recovered(recovery) => *recovery,
             RecoveryLatestOutcome::Unavailable { reason } => {
                 return Ok(RecoveryLoadOutcome::Unavailable { reason });
             }
@@ -787,13 +789,13 @@ pub(crate) fn discover_journal_by_canonical_path(
             }) => {
                 return Err(RecoveryJournalDiscoveryError::Journal {
                     journal: journal_path,
-                    source: RecoveryJournalError::NoValidRecord { tail },
+                    source: Box::new(RecoveryJournalError::NoValidRecord { tail }),
                 });
             }
             Err(source) => {
                 return Err(RecoveryJournalDiscoveryError::Journal {
                     journal: journal_path,
-                    source,
+                    source: Box::new(source),
                 });
             }
         };

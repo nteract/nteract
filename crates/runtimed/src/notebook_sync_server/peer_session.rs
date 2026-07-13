@@ -1134,7 +1134,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_generation_applies_deferred_peer_changes_before_terminal_status() {
+    async fn failed_generation_preserves_journaled_peer_changes_before_terminal_status() {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         {
@@ -1249,10 +1249,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(convergence, Some(false));
-        assert_eq!(deferred_frames.len(), 2);
-        assert_eq!(deferred_frames[0].payload, edit_payload);
-        assert_eq!(deferred_frames[1].payload, ack_payload);
+        assert_eq!(convergence, Some(true));
+        assert!(
+            deferred_frames.is_empty(),
+            "NotebookDoc frames must be accepted and journaled during loading"
+        );
         assert_eq!(
             room.doc
                 .read()
@@ -1260,8 +1261,8 @@ mod tests {
                 .get_cell("progressive-cell")
                 .unwrap()
                 .source,
-            "source batch",
-            "the later ACK must not advance peer state ahead of the deferred edit"
+            "edited before source failure",
+            "the later ACK must causally follow the accepted peer edit"
         );
 
         room.initial_load.mark_required();
@@ -1437,7 +1438,10 @@ mod tests {
             .expect_err("failed-source persistence guard must reject in-place save");
         assert!(matches!(
             save_error,
-            crate::notebook_sync_server::SaveError::Retryable(_)
+            crate::notebook_sync_server::SaveError::CheckpointBlocked {
+                reason: notebook_protocol::protocol::SaveBlockedReason::SourceDegraded { .. },
+                ..
+            }
         ));
         assert_eq!(tokio::fs::read(&load_path).await.unwrap(), source_bytes);
     }

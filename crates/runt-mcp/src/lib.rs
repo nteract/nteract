@@ -174,7 +174,7 @@ impl NteractMcp {
             return Err(SessionAccessError {
                 code: "session_superseded",
                 message: "A newer notebook target superseded this session".to_string(),
-                readiness,
+                readiness: Box::new(readiness),
             });
         }
         session.access(requirement).map(Some)
@@ -204,7 +204,7 @@ impl NteractMcp {
         Err(SessionAccessError {
             code: "session_superseded",
             message: "A newer notebook target superseded this operation".to_string(),
-            readiness: access.readiness.clone(),
+            readiness: Box::new(access.readiness.clone()),
         })
     }
 

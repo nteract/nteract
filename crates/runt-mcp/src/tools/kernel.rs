@@ -119,7 +119,7 @@ pub async fn restart_kernel(
         return super::session_access_error(crate::session::SessionAccessError {
             code: "session_superseded",
             message: "Notebook target changed during kernel restart".to_string(),
-            readiness: access.readiness.clone(),
+            readiness: Box::new(access.readiness.clone()),
         });
     }
     let handle = refreshed_access.handle.clone();
@@ -221,7 +221,7 @@ pub async fn restart_kernel(
                             code: "session_superseded",
                             message: "Notebook target changed while retrying kernel restart"
                                 .to_string(),
-                            readiness: refreshed_access.readiness.clone(),
+                            readiness: Box::new(refreshed_access.readiness.clone()),
                         });
                     }
                     let fresh_handle = access.handle;
@@ -281,7 +281,7 @@ pub async fn restart_kernel(
                         code: "session_superseded",
                         message: "Notebook target changed while waiting for kernel restart"
                             .to_string(),
-                        readiness: refreshed_access.readiness.clone(),
+                        readiness: Box::new(refreshed_access.readiness.clone()),
                     });
                 }
                 let h = current_access.handle;

@@ -116,7 +116,7 @@ pub(crate) enum RoomDurabilityError {
     ReconciledSourceAfterArchive {
         archive: PathBuf,
         #[source]
-        source: RecoveryJournalError,
+        source: Box<RecoveryJournalError>,
     },
 }
 
@@ -773,7 +773,7 @@ impl RoomDurability {
             self.status_tx.send_replace(status_from_state(&state));
             return Err(RoomDurabilityError::ReconciledSourceAfterArchive {
                 archive: archive.0.directory,
-                source,
+                source: Box::new(source),
             });
         }
 

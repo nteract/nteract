@@ -11547,22 +11547,20 @@ async fn save_based_recovery_clears_failed_flag() {
         "a successful write clears the failed-load flag"
     );
 
-    // Put content on disk and autosave the still-empty (but recovered) room.
-    // The external write trips the staleness guard first (the disk no longer
-    // matches the save-time baseline), so the autosave defers; once the file
-    // watcher observes the new bytes (note_disk_content is what the watcher
-    // calls), the autosave writes through — proving the load-failed flag was
-    // cleared by the save, which is this test's subject.
-    write_two_cell_notebook(&notebook_path).await;
-    let err = save_notebook_to_disk(&room, None)
-        .await
-        .expect_err("externally changed file defers the autosave");
-    assert!(matches!(err, SaveError::Retryable(_)));
-    room.persistence
-        .note_disk_content(&tokio::fs::read(&notebook_path).await.unwrap());
-    save_notebook_to_disk(&room, None)
+    // Author and delete a temporary cell so the live document remains empty
+    // at new causal heads. This forces a real checkpoint instead of an
+    // `AlreadyCurrent` result. If the explicit recovery above had not cleared
+    // the failed-load guard, the existing non-empty JSON file would block this
+    // in-place save.
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "temporary-recovery-cell", "code").unwrap();
+        doc.delete_cell("temporary-recovery-cell").unwrap();
+    }
+    let outcome = save_notebook_to_disk(&room, None)
         .await
         .expect("recovered room must autosave through");
+    assert!(matches!(outcome, FileSaveOutcome::Saved { .. }));
     assert_eq!(
         disk_cell_count(&notebook_path),
         0,
