@@ -856,6 +856,41 @@ def test_dataset_mimebundle_emits_arrow_ipc_with_hf_features():
     assert b'"_type": "Image"' in md[b"huggingface"]
 
 
+def test_dataset_mimebundle_applies_logical_indices_mapping():
+    """Selected/shuffled datasets must render their logical rows, not every
+    row in the physical backing table that ``Dataset.data.table`` exposes."""
+    import io
+
+    pa = pytest.importorskip("pyarrow")
+    pytest.importorskip("datasets")
+    from datasets import Dataset
+    from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    _buffer_hook.pending_buffers().clear()
+
+    ds = Dataset.from_dict({"id": [0, 1, 2, 3, 4], "value": ["a", "b", "c", "d", "e"]})
+    selected = ds.select([4, 2, 0])
+    assert selected._indices is not None
+    assert selected.data.table.num_rows == 5
+
+    bundle = _bootstrap._dataset_mimebundle(selected)
+
+    assert bundle is not None
+    ref = bundle[BLOB_REF_MIME]
+    data = _buffer_hook.pending_buffers()[ref["hash"]]
+    rendered = pa.ipc.open_stream(io.BytesIO(data)).read_all()
+    assert rendered.column("id").to_pylist() == [4, 2, 0]
+    assert rendered.num_rows == selected.num_rows
+    assert bundle[ARROW_STREAM_MANIFEST_MIME]["summary"] == {
+        "total_rows": 3,
+        "included_rows": 3,
+        "sampled": False,
+        "sample_strategy": "none",
+    }
+
+
 def test_dataset_mimebundle_falls_back_to_summary_when_no_table():
     """Streaming / iterable datasets have no ``.data.table``; the formatter
     must keep the legacy text-only behavior so it stays best-effort."""
