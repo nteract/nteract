@@ -1220,7 +1220,7 @@ function authenticatedConnectionFromAnacondaSessionWhoami(
       ? profile.is_confirmed
       : typeof profile?.email_verified === "boolean"
         ? profile.email_verified
-        : Boolean(email);
+        : false;
 
   return {
     principal,

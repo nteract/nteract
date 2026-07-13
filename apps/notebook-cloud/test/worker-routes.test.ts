@@ -694,6 +694,7 @@ describe("Worker artifact routes", () => {
 
   it("bootstraps an app session from an Anaconda session cookie", async (t) => {
     let forwardedCookie = "";
+    const waitUntilPromises: Promise<unknown>[] = [];
     t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       assert.equal(String(input), "https://auth.stage.anaconda.com/api/auth/sessions/whoami");
       forwardedCookie = new Headers(init?.headers).get("Cookie") ?? "";
@@ -730,8 +731,9 @@ describe("Worker artifact routes", () => {
         },
       }),
       env,
-      fakeContext(),
+      fakeContextWithWaitUntil(waitUntilPromises),
     );
+    await Promise.all(waitUntilPromises);
 
     assert.equal(response.status, 200);
     assert.equal(forwardedCookie, "anaconda_session_dev=dev-session");
@@ -750,7 +752,48 @@ describe("Worker artifact routes", () => {
     assert.equal(body.session?.provider, "oidc");
     assert.equal(typeof body.session?.expires_at, "number");
     assert.equal(typeof body.session?.cache_key, "string");
+    assert.equal(env.DB.profiles.get("user:anaconda:session-cookie-user")?.email_verified, 1);
   });
+
+  for (const [label, profile] of [
+    ["explicitly unverified", { email: "unverified@example.test", is_confirmed: false }],
+    ["missing verification", { email: "unverified@example.test" }],
+  ] as const) {
+    it(`keeps ${label} Anaconda session emails unverified`, async (t) => {
+      t.mock.method(globalThis, "fetch", async () =>
+        jsonResponse({
+          identity: {
+            id: "unverified-session-user",
+            traits: { email: "unverified@example.test" },
+          },
+          passport: {
+            user_id: "unverified-session-user",
+            profile,
+          },
+        }),
+      );
+      const env = fakeEnv({
+        NOTEBOOK_CLOUD_ANACONDA_SESSION_COOKIE_NAMES: "anaconda_session_dev",
+        NOTEBOOK_CLOUD_ANACONDA_SESSION_USERINFO_URL:
+          "https://auth.stage.anaconda.com/api/auth/sessions/whoami",
+        NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+      });
+      const waitUntilPromises: Promise<unknown>[] = [];
+
+      const response = await worker.fetch(
+        new Request("https://cloud.test/api/auth/session", {
+          headers: { Cookie: "anaconda_session_dev=dev-session" },
+        }),
+        env,
+        fakeContextWithWaitUntil(waitUntilPromises),
+      );
+      await Promise.all(waitUntilPromises);
+
+      assert.equal(response.status, 200);
+      assert.equal(env.DB.profiles.get("user:anaconda:unverified-session-user")?.email_verified, 0);
+      assert.equal(env.DB.accountLinks.has("user:anaconda:unverified-session-user"), false);
+    });
+  }
 
   it("ignores Anaconda session bootstrap when the configured cookie is absent", async (t) => {
     const fetchMock = t.mock.method(globalThis, "fetch", async () => {
