@@ -2312,7 +2312,7 @@ class TestWidgetRuntimeState:
 
     async def test_private_widget_snapshot_reads_runtime_state_comms(self, session):
         """ipywidgets comm_open state lands in RuntimeStateDoc for Python inspection."""
-        await async_start_kernel_with_retry(session)
+        await async_use_auto_kernel_or_start(session)
 
         cell_id = await session.create_cell(
             "from IPython.display import display\n"
