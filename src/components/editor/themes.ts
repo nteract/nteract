@@ -62,12 +62,19 @@ function buildTheme(
         color: settings.gutterForeground,
         borderRight: "none",
       },
+      // Give line numbers room to breathe so they don't crowd the code.
+      ".cm-lineNumbers .cm-gutterElement": {
+        padding: "0 12px 0 8px",
+        minWidth: "2ch",
+      },
+      // Keep the gutter quiet — no active-line highlight block behind numbers.
+      ".cm-activeLineGutter": {
+        backgroundColor: "transparent",
+        color: settings.gutterForeground,
+      },
       ...(settings.lineHighlight
         ? {
             ".cm-activeLine": {
-              backgroundColor: settings.lineHighlight,
-            },
-            ".cm-activeLineGutter": {
               backgroundColor: settings.lineHighlight,
             },
           }
