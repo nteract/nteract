@@ -29,7 +29,13 @@ Every Automerge actor label is a string of the form:
 ```
 
 - **Principal**: the authenticated entity. Format: `<scheme>:<scheme-specific-id>`. Examples: `local:quill`, `user:anaconda:550e8400-e29b-41d4-a716-446655440000`, `hub:hub.2i2c.mybinder.org:rgbkrk-notebooks-i28hqg97`, `system`.
-- **Operator**: the actor doing the work right now, under the principal. Self-declared by the connecting client. Convention: `<kind>:<vendor?>:<session-uuid>`. Examples: `desktop:7f3a`, `tui:9d2b`, `agent:claude:s1`, `agent:codex:s2`, `runtime:py-3.12-s4`.
+- **Operator**: connection- or import-scoped attribution for what acted under
+  the principal. Self-declared by the initiating client. Convention:
+  `<kind>[:<declared-label>]:<nonce>`. The optional label is opaque and may
+  describe an application, agent, model family, harness, runtime, or other
+  operator; it is not a closed product taxonomy. Examples: `desktop:7f3a`,
+  `tui:9d2b`, `agent:claude:s1`, `agent:codex:s2`,
+  `runtime:python:s4`.
 
 Slash is the delimiter, taken on the first occurrence. If a principal ever contains a literal `/` it is percent-encoded; in practice this does not arise (UUIDs, hostnames, and usernames don't contain slashes).
 
@@ -42,6 +48,16 @@ may syntax-check it and may constrain accepted operator kinds for a credential
 class, but an operator string is not proof that the process is really Desktop,
 Codex, Claude, Python, or any other runtime. UI can display operator kind as an
 attribution hint; authorization must use the authenticated principal and scope.
+
+`agent` is an open operator kind, not a product-specific identity class. Any
+agent product, model-serving client, orchestration harness, MCP client, or
+bespoke integration may supply an agent operator descriptor under the same
+contract. Its declared label may identify whichever agent, model family,
+harness, or product is useful for attribution. Exact model ids, providers,
+versions, and richer provenance may remain separate non-authorizing
+audit/display metadata. Those claims are client-declared and advisory unless
+independently attested. None of those details becomes the principal or creates a
+special connection topology.
 
 Worked examples are at the end of this document.
 
@@ -215,9 +231,9 @@ interface PresenceActorProjection {
 `actorLabel` remains the exact `<principal>/<operator>` label used for CRDT
 attribution and color matching. The nested `principal` is verified host state.
 The nested `operator` is accepted attribution for this connection. Display text
-such as "Codex for Kyle Kelley" is derived from `operator` plus `principal`; it
-does not require a separate `on_behalf_of` field unless a future feature models
-delegation chains between multiple principals.
+such as "Codex for Kyle Kelley" is one rendering of a generic agent operator
+plus a principal. It does not require a separate `on_behalf_of` field unless a
+future feature models delegation chains between multiple principals.
 
 Projection scope does not make a viewer less of a sync participant. A `viewer`
 or read-only peer still receives room changes, sends empty sync negotiation
@@ -456,16 +472,21 @@ email or username such as `rgbkrk@gmail.com` is display metadata; the actor
 label uses the host's stable principal identifier.
 
 The publish request declares an initiating operator descriptor separately from
-the source history, such as `desktop` or `agent:codex`. This preserves the
-operator kind and vendor, not a source session identifier. The destination may
-syntax-check or constrain that descriptor as described in Decision 1, but the
-operator remains attribution metadata rather than an authentication claim. The
-destination combines the verified principal, the descriptor, and a fresh
-per-publish nonce. For example:
+the source history, such as `desktop` or `agent:<declared-label>`. The protocol
+does not decide whether that label names an agent, model family, harness, or
+product. Codex, Claude, OpenCode, and bespoke agents are illustrative values
+under the same open contract, not separate publish paths. The descriptor does
+not preserve a source session identifier. Exact model, provider, or version
+details may accompany it as non-authorizing audit metadata; those claims are
+client-declared and advisory unless independently attested. The destination may
+syntax-check the descriptor and constrain accepted operator kinds as described
+in Decision 1, but the operator remains attribution metadata rather than an
+authentication claim. The destination combines the verified principal, the
+descriptor, and a fresh per-publish nonce. For example:
 
 ```text
 user:anaconda:550e.../desktop:<fresh-publish-uuid>
-user:anaconda:550e.../agent:codex:<fresh-publish-uuid>
+user:anaconda:550e.../agent:<declared-label>:<fresh-publish-uuid>
 ```
 
 The fresh nonce belongs to the destination import. It is not copied from a
@@ -508,10 +529,10 @@ The publish flow is:
 
 The import actor describes who performed the publish operation and how; it does
 not claim authorship of each historical edit. UI may therefore render
-"published by rgbkrk@gmail.com via Desktop" or "Codex on behalf of
-rgbkrk@gmail.com" while the durable actor label remains the verified hosted
-principal plus operator. The original source notebook and its history remain
-unchanged.
+"published by rgbkrk@gmail.com via Desktop" or generically "<agent label> on
+behalf of rgbkrk@gmail.com"; "Codex on behalf of rgbkrk@gmail.com" is one
+example. The durable actor label remains the verified hosted principal plus
+operator. The original source notebook and its history remain unchanged.
 
 When Automerge gains signed-change support (keyhive direction; see
 `https://www.inkandswitch.com/keyhive/notebook/`), historical authorship could
@@ -533,7 +554,9 @@ be carried across publish if every change is signed by its claimed author.
   import attribution. If audit attribution is decomposed into typed fields, a
   reconstruction test must prove equality with the destination import actor,
   including its fresh import id. Independently established canonical schema
-  genesis is the only shared history exception.
+  genesis is the only shared history exception. An unknown future operator label
+  must round-trip through import attribution without changing the authenticated
+  principal, effective scope, or authorization result.
 
 ## Limitations
 
@@ -614,10 +637,11 @@ flow is:
   `RuntimeStateDoc`, and `CommsDoc`: cells, metadata, outputs, published widget
   state, and blob references.
 - The destination creates fresh Automerge documents. A Desktop publish imports
-  state under `user:anaconda:550e.../desktop:<fresh-publish-uuid>`; a
-  Codex-initiated publish uses
-  `user:anaconda:550e.../agent:codex:<fresh-publish-uuid>` and may display as
-  "Codex on behalf of rgbkrk@gmail.com."
+  state under `user:anaconda:550e.../desktop:<fresh-publish-uuid>`; any
+  agent-capable client or harness uses the same
+  `user:anaconda:550e.../agent:<declared-label>:<fresh-publish-uuid>` shape.
+  Codex is one example and may display as "Codex on behalf of
+  rgbkrk@gmail.com."
 - The source change DAGs are not copied. Output blobs retain their SHA-256
   hashes, and the imported state preserves the publish contract.
 - A new room appears at `runtimed.com/n/<id>` with the hosted principal as

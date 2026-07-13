@@ -70,8 +70,10 @@ Neighbors:
   namespace for federated catalogs and sessions.
 - **Principal**: the authenticated entity proven by a credential, such as a
   user account or service account.
-- **Operator**: the local process/persona acting under that principal, such as
-  `agent:codex:lab2` or `agent:opencode:mbp`.
+- **Operator**: the initiating application, agent, model family, harness,
+  runtime, or other client acting under that principal. Labels are open-ended;
+  `agent:codex:lab2` and `agent:opencode:mbp` are examples, not protocol
+  categories.
 
 ## Decision 1: One local MCP server resolves local and hosted notebook targets
 
@@ -175,8 +177,8 @@ The following properties are load-bearing:
 - non-secret routing and domain data may live in the registry;
 - bearer values are read from environment variables, OS keychain, or a future
   secret helper, not persisted as plaintext by `runt config`;
-- the registry is machine-local and may differ between Desktop, Codex, CI,
-  workstation hosts, and user laptops;
+- the registry is machine-local and may differ between Desktop, agent
+  clients/harnesses, CI, workstation hosts, and user laptops;
 - the low-level registry is shared by daemon bridges and standalone MCP/CLI
   clients; the Desktop host adapter consumes the daemon-owned account/catalog
   API rather than resolving registry entries itself;
@@ -262,11 +264,13 @@ When to use each:
 
 - **Desktop hosted windows:** daemon-mediated bridge. The Desktop app attaches
   to a daemon notebook room; the daemon bridges that room to the hosted origin.
-- **Current `runt mcp` hosted targets, including standalone Codex/agent
-  registrations:** direct connector. The MCP process holds the WebSocket.
-- **Future daemon-mediated Codex sessions:** use the daemon bridge only after
-  the initiating agent operator and account-qualified target survive the full
-  open handshake. This is a target topology, not current behavior.
+- **Current `runt mcp` hosted targets, including standalone agent clients and
+  harness registrations:** direct connector. The MCP process holds the
+  WebSocket.
+- **Future daemon-mediated agent sessions:** use the daemon bridge only after
+  the initiating operator descriptor and account-qualified target survive the
+  full open handshake. This is a target connection path, not current behavior
+  or a product-specific topology.
 
 Both current paths resolve the same machine-local `cloud-domains.toml` (shared
 via `notebook-cloud-transport::registry`). They must share destination principal
@@ -281,11 +285,14 @@ the hosted identity layer. If it is a service-account key such as
 `quilldaemon`, that service account is the principal.
 
 The initiating client supplies an operator descriptor per connection. Desktop
-declares a Desktop operator in its hosted-open handshake; Codex and other agents
-declare their agent operator through their MCP connection. The registry's
-optional `operator` field is only a fallback for headless clients that do not
-declare one. It must not replace an explicit per-connection operator or cause a
-Desktop-initiated action to be attributed to an agent.
+declares a Desktop operator in its hosted-open handshake; an agent-capable
+client or harness declares the operator it represents through its MCP
+connection. The descriptor may identify any agent, model family, provider,
+harness, or product; none is protocol-privileged. Exact model/version provenance
+may be separate audit metadata, but it is client-declared and advisory unless
+independently attested. The registry's optional `operator` field is only a
+fallback for headless clients that do not declare one. It must not replace an
+explicit per-connection operator or misattribute one operator to another.
 
 The operator is attribution metadata, not authorization. Examples:
 
@@ -319,10 +326,10 @@ may still be alive.
 Current implementation status is narrower than this decision. Desktop supplies
 an explicit per-window operator through its daemon open handshake. The direct
 `runt mcp` connector does not accept an initiating operator per connection and
-falls back to the registry operator or a generic MCP label. Therefore “Codex on
-behalf of the hosted principal” is a target contract, not yet a guarantee of
-the direct connector; the canonical Codex path and operator propagation remain
-an open follow-up.
+falls back to the registry operator or a generic MCP label. Therefore generic
+agent-on-behalf-of-principal attribution is a target contract, not yet a
+guarantee of the direct connector. Initiating-operator propagation across direct
+and daemon-mediated paths remains open; this is not a product-specific topology.
 
 ## Decision 5: Hosted catalogs are explicit, account-qualified, and headless
 
@@ -451,9 +458,11 @@ change: old values keep meaning local notebook ids.
   surface before exposing stable host-configuration UI. Reject non-loopback
   cleartext origins and cover the explicit loopback development exception.
 - **Per-connection operator precedence:** Ensure an explicit Desktop or MCP
-  operator descriptor wins over the registry fallback, choose the canonical
-  daemon-mediated or direct Codex path, and cover Desktop and Codex using the
-  same host credential with distinct attribution.
+  operator descriptor wins over the registry fallback, define one generic
+  propagation contract across daemon-mediated and direct paths, and cover
+  Desktop plus multiple agent/model/harness descriptors using the same host
+  credential with distinct attribution. Unknown future labels must round-trip
+  without changing principal, effective scope, or authorization.
 - **Explicit stable publish target:** `runt-publish` currently defaults to
   `preview.runt.run`. Remove that product default, or confine it to explicit
   development tooling, before publishing is exposed through stable Desktop.
