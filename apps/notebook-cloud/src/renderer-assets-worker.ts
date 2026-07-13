@@ -30,7 +30,12 @@ const rendererAssetsWorker: ExportedHandler<RendererAssetsEnv> = {
 
     const assetUrl = new URL(request.url);
     assetUrl.pathname = assetPathname;
-    const response = await env.ASSETS.fetch(new Request(assetUrl, request));
+    let response: Response;
+    try {
+      response = await env.ASSETS.fetch(new Request(assetUrl, request));
+    } catch {
+      return fallThroughToOrigin(request, json({ error: "renderer assets are unavailable" }, 503));
+    }
     const assetResponse = withRendererAssetCors(new Response(response.body, response), {
       assetPathname,
     });

@@ -278,6 +278,44 @@ describe("renderer assets Worker", () => {
     assert.equal(originFetch.mock.callCount(), 1);
   });
 
+  it("falls through when the sidecar assets binding rejects", async (t) => {
+    let originCallCount = 0;
+    const originFetch = t.mock.method(globalThis, "fetch", async () => {
+      originCallCount += 1;
+      if (originCallCount === 1) {
+        return new Response("main-worker-asset", {
+          headers: { "X-Renderer-Asset-Source": "main-worker" },
+        });
+      }
+      throw new Error("no downstream Custom Domain Worker");
+    });
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async () => {
+          throw new Error("asset binding unavailable");
+        },
+      },
+    });
+
+    const originResponse = await rendererAssetsWorker.fetch(
+      new Request("https://cloud.test/renderer-assets/sift_wasm.wasm"),
+      env,
+      fakeContext(),
+    );
+    const standaloneResponse = await rendererAssetsWorker.fetch(
+      new Request("https://assets.test/renderer-assets/sift_wasm.wasm"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(originResponse.status, 200);
+    assert.equal(originResponse.headers.get("X-Renderer-Asset-Source"), "main-worker");
+    assert.equal(standaloneResponse.status, 503);
+    assert.equal(standaloneResponse.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.deepEqual(await standaloneResponse.json(), { error: "renderer assets are unavailable" });
+    assert.equal(originFetch.mock.callCount(), 2);
+  });
+
   it("keeps cache-validation responses in the sidecar Worker", async (t) => {
     const originFetch = t.mock.method(globalThis, "fetch", async () => {
       throw new Error("origin fallback should not run");
