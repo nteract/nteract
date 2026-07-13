@@ -22,13 +22,22 @@ const rendererAssetsWorker: ExportedHandler<RendererAssetsEnv> = {
       return json({ error: "not found" }, 404);
     }
     if (!env.ASSETS) {
-      return json({ error: "renderer assets are not configured" }, 503);
+      return fallThroughToOrigin(
+        request,
+        json({ error: "renderer assets are not configured" }, 503),
+      );
     }
 
     const assetUrl = new URL(request.url);
     assetUrl.pathname = assetPathname;
     const response = await env.ASSETS.fetch(new Request(assetUrl, request));
-    return withRendererAssetCors(new Response(response.body, response), { assetPathname });
+    const assetResponse = withRendererAssetCors(new Response(response.body, response), {
+      assetPathname,
+    });
+    if (response.status >= 400) {
+      return fallThroughToOrigin(request, assetResponse);
+    }
+    return assetResponse;
   },
 };
 
@@ -57,6 +66,19 @@ function rendererAssetPathname(rawName: string): string | null {
   }
 
   return `/${name}`;
+}
+
+async function fallThroughToOrigin(request: Request, fallback: Response): Promise<Response> {
+  try {
+    // A path Route can continue to the Worker on the matching Custom Domain by
+    // fetching the untouched incoming request. Keep the main Worker's bundled
+    // renderer assets available while the two Workers roll out independently.
+    return await fetch(request);
+  } catch {
+    // Standalone workers.dev and local deployments have no downstream Custom
+    // Domain Worker. Preserve the renderer Worker's original error there.
+    return fallback;
+  }
 }
 
 function json(value: unknown, status = 200): Response {
