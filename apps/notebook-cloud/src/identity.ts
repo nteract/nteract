@@ -63,6 +63,7 @@ export interface AuthenticatedConnectionMetadata {
     | "dev-token-header"
     | "dev-token-subprotocol"
     | "api-key-bearer"
+    | "host-session-cookie"
     | "oidc-bearer"
     | "oidc-subprotocol"
     | "workstation-credential-header";
@@ -168,7 +169,7 @@ const JWT_CLOCK_TOLERANCE_SECONDS = 60;
 const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
 const ANACONDA_API_KEY_CACHE_MAX_ENTRIES = 256;
 const ANACONDA_API_KEY_CACHE_TTL_MS = 60 * 1000;
-const OIDC_SUBJECT_MAX_LENGTH = 256;
+export const IDENTITY_SUBJECT_MAX_LENGTH = 256;
 const jwksCache = new Map<
   string,
   {
@@ -290,7 +291,7 @@ export async function authenticateOidcRequest(
   if (!subject) {
     throw new AuthError("OIDC token is missing sub", 401);
   }
-  if (subject.length > OIDC_SUBJECT_MAX_LENGTH) {
+  if (subject.length > IDENTITY_SUBJECT_MAX_LENGTH) {
     throw new AuthError("OIDC token sub is too long", 401);
   }
 
@@ -472,7 +473,7 @@ async function fetchAnacondaApiKeyUserInfo(
   if (!subject) {
     throw new AuthError("Anaconda API key userinfo is missing user_id", 401);
   }
-  if (subject.length > OIDC_SUBJECT_MAX_LENGTH) {
+  if (subject.length > IDENTITY_SUBJECT_MAX_LENGTH) {
     throw new AuthError("Anaconda API key user_id is too long", 401);
   }
 
@@ -782,6 +783,7 @@ function isMetadataTransport(value: string): value is AuthenticatedConnectionMet
     value === "dev-token-header" ||
     value === "dev-token-subprotocol" ||
     value === "api-key-bearer" ||
+    value === "host-session-cookie" ||
     value === "oidc-bearer" ||
     value === "oidc-subprotocol" ||
     value === "workstation-credential-header"

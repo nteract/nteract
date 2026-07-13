@@ -172,6 +172,7 @@ import {
   readCloudAppSession,
   type CloudAppSession,
 } from "./app-session.ts";
+import { authenticateHostSessionRequest, hostSessionHealth } from "./host-session.ts";
 import {
   NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
@@ -282,7 +283,8 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: exactPath("/api/auth/session"),
     methods: ["GET", "POST", "DELETE"],
-    handler: (_match, request, env, ctx) => routeAppSession(request, env, ctx),
+    handler: async (_match, request, env, ctx) =>
+      withNoStore(await routeAppSession(request, env, ctx)),
   },
   {
     match: exactPath("/local-auth", "/dev/local-auth"),
@@ -540,6 +542,7 @@ async function routeHealth(
     auth: {
       anaconda_api_key: anacondaApiKeyHealth(env),
       app_session: appSessionHealth(env),
+      host_session: hostSessionHealth(env),
       oidc: oidcHealth(env),
     },
   });
@@ -1038,6 +1041,11 @@ function appSessionHealth(env: Env): { status: "configured" | "disabled" } {
   return { status: appSessionConfigured(env) ? "configured" : "disabled" };
 }
 
+function withNoStore(response: Response): Response {
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
 async function routeAppSession(
   request: Request,
   env: Env,
@@ -1050,7 +1058,7 @@ async function routeAppSession(
     const bootstrapped =
       existingSession || !appSessionConfigured(env)
         ? null
-        : await anacondaSessionAppSessionCookie(request, env);
+        : await hostSessionAppSessionCookie(request, env);
     const session = existingSession ?? bootstrapped?.session ?? null;
     const response = await withAppSessionRenewalCookie(
       json({ ok: true, session: session ? appSessionResponse(session) : null }),
@@ -1099,30 +1107,11 @@ async function routeAppSession(
   return response;
 }
 
-async function anacondaSessionAppSessionCookie(
+async function hostSessionAppSessionCookie(
   request: Request,
   env: Env,
 ): Promise<{ cookie: string; identity: AuthenticatedConnection; session: CloudAppSession } | null> {
-  const userinfoUrl = anacondaSessionUserinfoUrl(env);
-  const cookie = anacondaSessionCookieHeader(request, env);
-  if (!userinfoUrl || !cookie) {
-    return null;
-  }
-
-  const userinfo = await fetch(userinfoUrl, {
-    headers: {
-      Accept: "application/json",
-      Cookie: cookie,
-    },
-  }).catch(() => null);
-  if (!userinfo?.ok) {
-    return null;
-  }
-
-  const identity = authenticatedConnectionFromAnacondaSessionWhoami(
-    (await userinfo.json().catch(() => null)) as unknown,
-    env,
-  );
+  const identity = await authenticateHostSessionRequest(request, env);
   if (!identity) {
     return null;
   }
@@ -1140,124 +1129,6 @@ async function anacondaSessionAppSessionCookie(
     return null;
   }
   return { cookie: appSessionCookie, identity, session };
-}
-
-function anacondaSessionUserinfoUrl(env: Env): string | null {
-  const raw =
-    env.NOTEBOOK_CLOUD_ANACONDA_SESSION_USERINFO_URL?.trim() ||
-    env.NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL?.trim();
-  if (!raw) {
-    return null;
-  }
-  try {
-    const url = new URL(raw);
-    return url.protocol === "https:" ? url.href : null;
-  } catch {
-    return null;
-  }
-}
-
-function anacondaSessionCookieHeader(request: Request, env: Env): string | null {
-  const acceptedNames = env.NOTEBOOK_CLOUD_ANACONDA_SESSION_COOKIE_NAMES?.split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  if (!acceptedNames?.length) {
-    return null;
-  }
-  const accepted = new Set(acceptedNames);
-  const selected: string[] = [];
-  for (const part of (request.headers.get("Cookie") ?? "").split(";")) {
-    const [rawName, ...rawValue] = part.split("=");
-    const name = rawName?.trim();
-    if (name && accepted.has(name)) {
-      selected.push(`${name}=${rawValue.join("=").trim()}`);
-    }
-  }
-  return selected.length ? selected.join("; ") : null;
-}
-
-function authenticatedConnectionFromAnacondaSessionWhoami(
-  value: unknown,
-  env: Env,
-): AuthenticatedConnection | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const body = value as {
-    identity?: { id?: unknown; traits?: { email?: unknown } };
-    passport?: {
-      profile?: {
-        email?: unknown;
-        email_verified?: unknown;
-        first_name?: unknown;
-        is_confirmed?: unknown;
-        last_name?: unknown;
-        picture?: unknown;
-        username?: unknown;
-      };
-      user_id?: unknown;
-    };
-  };
-  const userId = stringValue(body.identity?.id) ?? stringValue(body.passport?.user_id);
-  if (!userId) {
-    return null;
-  }
-
-  const principalNamespace = anacondaPrincipalNamespace(env);
-  const principal = `${principalNamespace}:${userId}`;
-  try {
-    validatePrincipal(principal);
-  } catch {
-    return null;
-  }
-
-  const profile = body.passport?.profile;
-  const email = stringValue(body.identity?.traits?.email) ?? stringValue(profile?.email);
-  const displayName =
-    displayNameFromProfile(profile) ?? stringValue(profile?.username) ?? email ?? undefined;
-  const emailVerified =
-    typeof profile?.is_confirmed === "boolean"
-      ? profile.is_confirmed
-      : typeof profile?.email_verified === "boolean"
-        ? profile.email_verified
-        : false;
-
-  return {
-    principal,
-    operator: "browser:http",
-    actorLabel: `${principal}/browser:http`,
-    scope: "viewer",
-    metadata: {
-      provider: "oidc",
-      transport: "oidc-bearer",
-      principalNamespace,
-      ...(displayName ? { displayName } : {}),
-      ...(email ? { email, emailVerified } : {}),
-      ...(stringValue(profile?.picture) ? { avatarUrl: stringValue(profile?.picture) } : {}),
-    },
-  };
-}
-
-function anacondaPrincipalNamespace(env: Env): string {
-  const namespace =
-    env.NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE?.trim() ||
-    env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?.trim() ||
-    "user:anaconda";
-  return namespace.replace(/:+$/, "") || "user:anaconda";
-}
-
-function displayNameFromProfile(
-  profile: { first_name?: unknown; last_name?: unknown } | undefined,
-): string | undefined {
-  const name = [stringValue(profile?.first_name), stringValue(profile?.last_name)]
-    .filter(Boolean)
-    .join(" ")
-    .trim();
-  return name || undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function appSessionResponse(session: CloudAppSession): Record<string, unknown> {

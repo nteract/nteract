@@ -11,6 +11,7 @@ import {
   TRUSTED_WEBSOCKET_PROTOCOL_HEADER,
   authenticateDevRequest,
 } from "../src/identity.ts";
+import { HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1 } from "../src/host-session.ts";
 import {
   NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
@@ -278,6 +279,50 @@ describe("Worker artifact routes", () => {
     };
     assert.deepEqual(body.auth.app_session, { status: "configured" });
     assert.doesNotMatch(JSON.stringify(body), new RegExp(APP_SESSION_SECRET));
+  });
+
+  it("reports host session readiness without exposing configured values", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER: HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
+      NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/health"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      auth: { host_session: { status: string } };
+    };
+    assert.deepEqual(body.auth.host_session, { status: "configured" });
+    assert.doesNotMatch(
+      JSON.stringify(body),
+      /identity\.example\.test|platform_session|user:example/,
+    );
+  });
+
+  it("reports partial host session readiness for invalid deployments", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER: "unknown-v1",
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "http://identity.example.test/userinfo",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/health"),
+      env,
+      fakeContext(),
+    );
+
+    const body = (await response.json()) as {
+      auth: { host_session: { status: string } };
+    };
+    assert.deepEqual(body.auth.host_session, { status: "partial" });
   });
 
   it("serves viewer bundle assets through the Worker assets binding", async () => {
@@ -692,42 +737,37 @@ describe("Worker artifact routes", () => {
     assert.equal(typeof body.session?.cache_key, "string");
   });
 
-  it("bootstraps an app session from an Anaconda session cookie", async (t) => {
+  it("bootstraps an app session from a configured host session", async (t) => {
     let forwardedCookie = "";
     const waitUntilPromises: Promise<unknown>[] = [];
     t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-      assert.equal(String(input), "https://auth.stage.anaconda.com/api/auth/sessions/whoami");
-      forwardedCookie = new Headers(init?.headers).get("Cookie") ?? "";
+      assert.equal(String(input), "https://identity.example.test/userinfo");
+      const headers = new Headers(init?.headers);
+      forwardedCookie = headers.get("Cookie") ?? "";
+      assert.equal(headers.get("Cache-Control"), "no-store");
+      assert.equal(init?.redirect, "error");
       return jsonResponse({
-        identity: {
-          id: "session-cookie-user",
-          traits: { email: "session-cookie@example.test" },
-        },
-        passport: {
-          user_id: "session-cookie-user",
-          profile: {
-            email: "session-cookie@example.test",
-            first_name: "Session",
-            is_confirmed: true,
-            last_name: "Cookie",
-          },
-        },
-        tokenized: "tokenized-secret-value",
+        sub: "session/cookie user",
+        email: "session-cookie@example.test",
+        email_verified: true,
+        given_name: "Session",
+        family_name: "Cookie",
+        access_token: "upstream-secret-value",
       });
     });
     const env = fakeEnv({
-      NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "user:anaconda",
-      NOTEBOOK_CLOUD_ANACONDA_SESSION_COOKIE_NAMES: "anaconda_session_dev",
-      NOTEBOOK_CLOUD_ANACONDA_SESSION_USERINFO_URL:
-        "https://auth.stage.anaconda.com/api/auth/sessions/whoami",
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+      NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER: HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
+      NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
     });
 
     const response = await worker.fetch(
       new Request("https://cloud.test/api/auth/session", {
         headers: {
           Cookie:
-            "unrelated=value; anaconda_session_dev=dev-session; __Host-nteract_cloud_app_session=old",
+            "unrelated=value; platform_session=host-session; __Host-nteract_cloud_app_session=old",
         },
       }),
       env,
@@ -736,13 +776,14 @@ describe("Worker artifact routes", () => {
     await Promise.all(waitUntilPromises);
 
     assert.equal(response.status, 200);
-    assert.equal(forwardedCookie, "anaconda_session_dev=dev-session");
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.equal(forwardedCookie, "platform_session=host-session");
     assert.match(
       response.headers.get("Set-Cookie") ?? "",
       new RegExp(`^${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=`),
     );
     const bodyText = await response.text();
-    assert.doesNotMatch(bodyText, /tokenized-secret-value/);
+    assert.doesNotMatch(bodyText, /upstream-secret-value/);
     assert.doesNotMatch(bodyText, /session-cookie@example\.test/);
     const body = JSON.parse(bodyText) as {
       ok: boolean;
@@ -752,37 +793,34 @@ describe("Worker artifact routes", () => {
     assert.equal(body.session?.provider, "oidc");
     assert.equal(typeof body.session?.expires_at, "number");
     assert.equal(typeof body.session?.cache_key, "string");
-    assert.equal(env.DB.profiles.get("user:anaconda:session-cookie-user")?.email_verified, 1);
+    assert.equal(env.DB.profiles.get("user:example:session%2Fcookie%20user")?.email_verified, 1);
   });
 
-  for (const [label, profile] of [
-    ["explicitly unverified", { email: "unverified@example.test", is_confirmed: false }],
-    ["missing verification", { email: "unverified@example.test" }],
+  for (const [label, claims] of [
+    ["explicitly unverified", { email_verified: false }],
+    ["missing verification", {}],
   ] as const) {
-    it(`keeps ${label} Anaconda session emails unverified`, async (t) => {
+    it(`keeps ${label} host session emails unverified`, async (t) => {
       t.mock.method(globalThis, "fetch", async () =>
         jsonResponse({
-          identity: {
-            id: "unverified-session-user",
-            traits: { email: "unverified@example.test" },
-          },
-          passport: {
-            user_id: "unverified-session-user",
-            profile,
-          },
+          sub: "unverified-session-user",
+          email: "unverified@example.test",
+          ...claims,
         }),
       );
       const env = fakeEnv({
-        NOTEBOOK_CLOUD_ANACONDA_SESSION_COOKIE_NAMES: "anaconda_session_dev",
-        NOTEBOOK_CLOUD_ANACONDA_SESSION_USERINFO_URL:
-          "https://auth.stage.anaconda.com/api/auth/sessions/whoami",
         NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+        NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+        NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER:
+          HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
+        NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
+        NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
       });
       const waitUntilPromises: Promise<unknown>[] = [];
 
       const response = await worker.fetch(
         new Request("https://cloud.test/api/auth/session", {
-          headers: { Cookie: "anaconda_session_dev=dev-session" },
+          headers: { Cookie: "platform_session=host-session" },
         }),
         env,
         fakeContextWithWaitUntil(waitUntilPromises),
@@ -790,20 +828,21 @@ describe("Worker artifact routes", () => {
       await Promise.all(waitUntilPromises);
 
       assert.equal(response.status, 200);
-      assert.equal(env.DB.profiles.get("user:anaconda:unverified-session-user")?.email_verified, 0);
-      assert.equal(env.DB.accountLinks.has("user:anaconda:unverified-session-user"), false);
+      assert.equal(env.DB.profiles.get("user:example:unverified-session-user")?.email_verified, 0);
+      assert.equal(env.DB.accountLinks.has("user:example:unverified-session-user"), false);
     });
   }
 
-  it("ignores Anaconda session bootstrap when the configured cookie is absent", async (t) => {
+  it("ignores host session bootstrap when the configured cookie is absent", async (t) => {
     const fetchMock = t.mock.method(globalThis, "fetch", async () => {
-      throw new Error("auth whoami should not be fetched without the configured session cookie");
+      throw new Error("identity should not be fetched without the configured session cookie");
     });
     const env = fakeEnv({
-      NOTEBOOK_CLOUD_ANACONDA_SESSION_COOKIE_NAMES: "anaconda_session_dev",
-      NOTEBOOK_CLOUD_ANACONDA_SESSION_USERINFO_URL:
-        "https://auth.stage.anaconda.com/api/auth/sessions/whoami",
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+      NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER: HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
+      NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
     });
 
     const response = await worker.fetch(
@@ -817,6 +856,7 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 200);
     assert.equal(fetchMock.mock.callCount(), 0);
     assert.deepEqual(await response.json(), { ok: true, session: null });
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
     assert.equal(response.headers.get("Set-Cookie"), null);
   });
 
