@@ -6,6 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 [assets]
 directory = "./dist/plugins"
 binding = "ASSETS"
+run_worker_first = true
 
 [observability]
 enabled = true

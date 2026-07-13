@@ -193,6 +193,169 @@ describe("renderer assets Worker", () => {
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
     assert.equal(response.headers.get("Content-Type"), "application/wasm");
   });
+
+  it("falls through to the Custom Domain Worker when the sidecar asset is unavailable", async (t) => {
+    const assetRequests: Array<{ method: string; url: string }> = [];
+    const originRequests: Array<{ method: string; url: string; etag: string | null }> = [];
+    const assetStatuses = [404, 503];
+    const originFetch = t.mock.method(
+      globalThis,
+      "fetch",
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        originRequests.push({
+          method: request.method,
+          url: request.url,
+          etag: request.headers.get("If-None-Match"),
+        });
+        return new Response("main-worker-asset", {
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "X-Renderer-Asset-Source": "main-worker",
+          },
+        });
+      },
+    );
+
+    for (const status of assetStatuses) {
+      const response = await rendererAssetsWorker.fetch(
+        new Request("https://cloud.test/renderer-assets/sift_wasm.wasm?v=build", {
+          headers: { "If-None-Match": '"previous"' },
+        }),
+        fakeEnv({
+          ASSETS: {
+            fetch: async (request: Request) => {
+              assetRequests.push({ method: request.method, url: request.url });
+              return new Response("sidecar miss", { status });
+            },
+          },
+        }),
+        fakeContext(),
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("X-Renderer-Asset-Source"), "main-worker");
+      assert.equal(await response.text(), "main-worker-asset");
+    }
+
+    assert.deepEqual(assetRequests, [
+      { method: "GET", url: "https://cloud.test/sift_wasm.wasm?v=build" },
+      { method: "GET", url: "https://cloud.test/sift_wasm.wasm?v=build" },
+    ]);
+    assert.deepEqual(originRequests, [
+      {
+        method: "GET",
+        url: "https://cloud.test/renderer-assets/sift_wasm.wasm?v=build",
+        etag: '"previous"',
+      },
+      {
+        method: "GET",
+        url: "https://cloud.test/renderer-assets/sift_wasm.wasm?v=build",
+        etag: '"previous"',
+      },
+    ]);
+    assert.equal(originFetch.mock.callCount(), assetStatuses.length);
+  });
+
+  it("falls through when the sidecar assets binding is absent", async (t) => {
+    const originFetch = t.mock.method(
+      globalThis,
+      "fetch",
+      async () =>
+        new Response("main-worker-asset", {
+          headers: { "X-Renderer-Asset-Source": "main-worker" },
+        }),
+    );
+
+    const response = await rendererAssetsWorker.fetch(
+      new Request("https://cloud.test/renderer-assets/sift_wasm.wasm"),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("X-Renderer-Asset-Source"), "main-worker");
+    assert.equal(originFetch.mock.callCount(), 1);
+  });
+
+  it("falls through when the sidecar assets binding rejects", async (t) => {
+    let originCallCount = 0;
+    const originFetch = t.mock.method(globalThis, "fetch", async () => {
+      originCallCount += 1;
+      if (originCallCount === 1) {
+        return new Response("main-worker-asset", {
+          headers: { "X-Renderer-Asset-Source": "main-worker" },
+        });
+      }
+      throw new Error("no downstream Custom Domain Worker");
+    });
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async () => {
+          throw new Error("asset binding unavailable");
+        },
+      },
+    });
+
+    const originResponse = await rendererAssetsWorker.fetch(
+      new Request("https://cloud.test/renderer-assets/sift_wasm.wasm"),
+      env,
+      fakeContext(),
+    );
+    const standaloneResponse = await rendererAssetsWorker.fetch(
+      new Request("https://assets.test/renderer-assets/sift_wasm.wasm"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(originResponse.status, 200);
+    assert.equal(originResponse.headers.get("X-Renderer-Asset-Source"), "main-worker");
+    assert.equal(standaloneResponse.status, 503);
+    assert.equal(standaloneResponse.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.deepEqual(await standaloneResponse.json(), { error: "renderer assets are unavailable" });
+    assert.equal(originFetch.mock.callCount(), 2);
+  });
+
+  it("keeps cache-validation responses in the sidecar Worker", async (t) => {
+    const originFetch = t.mock.method(globalThis, "fetch", async () => {
+      throw new Error("origin fallback should not run");
+    });
+
+    const response = await rendererAssetsWorker.fetch(
+      new Request("https://cloud.test/renderer-assets/sift_wasm.wasm"),
+      fakeEnv({
+        ASSETS: {
+          fetch: async () => new Response(null, { status: 304 }),
+        },
+      }),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 304);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(originFetch.mock.callCount(), 0);
+  });
+
+  it("returns the sidecar error when no downstream origin is available", async (t) => {
+    const originFetch = t.mock.method(globalThis, "fetch", async () => {
+      throw new Error("no downstream Custom Domain Worker");
+    });
+
+    const response = await rendererAssetsWorker.fetch(
+      new Request("https://assets.test/renderer-assets/missing.wasm"),
+      fakeEnv({
+        ASSETS: {
+          fetch: async () => new Response("sidecar miss", { status: 404 }),
+        },
+      }),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(await response.text(), "sidecar miss");
+    assert.equal(originFetch.mock.callCount(), 1);
+  });
 });
 
 function fakeEnv(overrides: Partial<Env> = {}): Pick<Env, "ASSETS"> {
