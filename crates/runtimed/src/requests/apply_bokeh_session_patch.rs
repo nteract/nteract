@@ -122,6 +122,22 @@ async fn resolve_buffer_refs(
                 "Bokeh patch buffers exceed maximum {MAX_BOKEH_PATCH_BUFFER_BYTES} bytes"
             ));
         }
+        let metadata = blob_store
+            .get_meta(&buffer_ref.blob)
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to read Bokeh buffer {} metadata: {error}",
+                    buffer_ref.id
+                )
+            })?
+            .ok_or_else(|| format!("Bokeh buffer blob {} was not found", buffer_ref.blob))?;
+        if metadata.size != buffer_ref.size {
+            return Err(format!(
+                "Bokeh buffer {} size mismatch: expected {}, got {}",
+                buffer_ref.id, buffer_ref.size, metadata.size
+            ));
+        }
         let data = blob_store
             .get(&buffer_ref.blob)
             .await
@@ -254,5 +270,35 @@ mod tests {
             .expect_err("oversized buffer must fail");
 
         assert!(error.contains("exceed maximum"));
+    }
+
+    #[tokio::test]
+    async fn buffer_refs_reject_underreported_size_before_blob_read() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("blobs");
+        let blob_store = BlobStore::with_ephemeral_cap(root.clone(), 0);
+        let blob = blob_store
+            .put(b"larger-than-advertised", "application/octet-stream")
+            .await
+            .expect("store blob");
+        tokio::fs::remove_file(root.join(&blob[..2]).join(&blob[2..]))
+            .await
+            .expect("remove blob bytes while retaining metadata");
+        let mut request = request();
+        request
+            .buffer_refs
+            .push(notebook_protocol::protocol::BokehSessionBufferRef {
+                id: "underreported".to_string(),
+                blob,
+                size: 1,
+                media_type: "application/octet-stream".to_string(),
+            });
+
+        let error = resolve_buffer_refs(&mut request, &blob_store)
+            .await
+            .expect_err("underreported buffer must fail before reading its bytes");
+
+        assert!(error.contains("size mismatch"));
+        assert!(error.contains("got 22"));
     }
 }

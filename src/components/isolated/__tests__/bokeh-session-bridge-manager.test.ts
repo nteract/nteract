@@ -122,6 +122,14 @@ function makeHarness() {
   return { blobs, frame, manager, patchListener: () => patchListener, transport };
 }
 
+function patchQueueSize(manager: BokehSessionBridgeManager): number {
+  return (
+    manager as unknown as {
+      patchQueues: Map<string, Promise<void>>;
+    }
+  ).patchQueues.size;
+}
+
 describe("BokehSessionBridgeManager", () => {
   it("materializes a checkpoint and contiguous patch tail from blob storage", async () => {
     const { manager } = makeHarness();
@@ -217,6 +225,7 @@ describe("BokehSessionBridgeManager", () => {
         }),
       },
     });
+    expect(patchQueueSize(manager)).toBe(0);
     manager.dispose();
   });
 

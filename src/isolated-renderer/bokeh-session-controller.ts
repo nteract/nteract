@@ -186,6 +186,7 @@ export class BokehSessionController {
   private transactionTimer: number | null = null;
   private inFlightTransaction: string | null = null;
   private canonicalEvents = new Map<number, NteractBokehResolvedPatchEvent>();
+  private drainingCanonicalEvents = false;
   private syncPromise: Promise<void> | null = null;
   private syncGeneration = 0;
   private unsubscribePatch: (() => void) | null = null;
@@ -431,15 +432,22 @@ export class BokehSessionController {
   }
 
   private async drainCanonicalEvents(): Promise<void> {
-    if (!this.document || this.syncPromise || this.disposed) return;
-    while (this.canonicalEvents.has(this.revision + 1)) {
-      const event = this.canonicalEvents.get(this.revision + 1)!;
-      this.canonicalEvents.delete(this.revision + 1);
-      await this.applyCanonicalEvent(event, false);
+    if (!this.document || this.syncPromise || this.disposed || this.drainingCanonicalEvents) {
+      return;
     }
-    const nextRevision = Math.min(...this.canonicalEvents.keys());
-    if (Number.isFinite(nextRevision) && nextRevision > this.revision + 1) {
-      this.scheduleResync();
+    this.drainingCanonicalEvents = true;
+    try {
+      while (this.canonicalEvents.has(this.revision + 1)) {
+        const event = this.canonicalEvents.get(this.revision + 1)!;
+        this.canonicalEvents.delete(this.revision + 1);
+        await this.applyCanonicalEvent(event, false);
+      }
+      const nextRevision = Math.min(...this.canonicalEvents.keys());
+      if (Number.isFinite(nextRevision) && nextRevision > this.revision + 1) {
+        this.scheduleResync();
+      }
+    } finally {
+      this.drainingCanonicalEvents = false;
     }
   }
 

@@ -311,6 +311,10 @@ pub(crate) async fn append_callback_outputs(
     blob_store: &BlobStore,
     blob_publisher: &OutputBlobPublisher,
 ) -> anyhow::Result<()> {
+    // Interactive callbacks can run long after the owning execution reached
+    // `ExecutionDone`, so they cannot participate in that execution's terminal
+    // stream-ordering barrier. Append them to the durable owning execution
+    // directly; RuntimeStateHandle serializes this write with other state edits.
     let execution_id = state
         .read(|state_doc| {
             state_doc

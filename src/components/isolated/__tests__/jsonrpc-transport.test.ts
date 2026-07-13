@@ -163,6 +163,30 @@ describe("JsonRpcTransport", () => {
       expect(second).toHaveBeenCalledTimes(2);
     });
 
+    it("isolates notification subscriber failures", () => {
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const survivor = vi.fn();
+      transport.onNotification("test/method", () => {
+        throw new Error("subscriber failed");
+      });
+      transport.onNotification("test/method", survivor);
+      transport.start();
+
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { jsonrpc: "2.0", method: "test/method", params: { revision: 1 } },
+          source: mockTarget.window,
+        }),
+      );
+
+      expect(survivor).toHaveBeenCalledWith({ revision: 1 });
+      expect(consoleError).toHaveBeenCalledWith(
+        "[jsonrpc] Notification handler failed:",
+        expect.objectContaining({ message: "subscriber failed" }),
+      );
+    });
+
     it("resolves request promises on response", async () => {
       const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
       transport.start();

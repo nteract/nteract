@@ -138,7 +138,16 @@ function harness() {
     onStatus,
     onLayout: vi.fn(),
   });
-  return { container, controller, documents, notify, onStatus, patchRequests, requestHost };
+  return {
+    container,
+    controller,
+    documents,
+    notify,
+    onStatus,
+    patchRequests,
+    requestHost,
+    runtime,
+  };
 }
 
 describe("BokehSessionController", () => {
@@ -245,6 +254,55 @@ describe("BokehSessionController", () => {
 
     expect(requestHost).toHaveBeenCalledTimes(1);
     expect(documents).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("serializes canonical events while a checkpoint document mounts", async () => {
+    const { controller, documents, notify, requestHost, runtime } = harness();
+    await controller.start();
+    let releaseMount: (() => void) | undefined;
+    const mountReleased = new Promise<void>((resolve) => {
+      releaseMount = resolve;
+    });
+    runtime.addDocumentStandalone = async (_document, element) => {
+      await mountReleased;
+      element.appendChild(document.createElement("div"));
+      return { clear: vi.fn() };
+    };
+
+    notify(NTERACT_BOKEH_SESSION_PATCH, {
+      outputId: "output-1",
+      event: {
+        sessionId: "session-1",
+        transactionId: "checkpoint-1",
+        baseRevision: 0,
+        revision: 1,
+        checkpoint: {
+          revision: 1,
+          document: { roots: [{ id: "root-1" }] },
+          buffers: [],
+        },
+      },
+    });
+    notify(NTERACT_BOKEH_SESSION_PATCH, {
+      outputId: "output-1",
+      event: {
+        sessionId: "session-1",
+        transactionId: "server-change-2",
+        baseRevision: 1,
+        revision: 2,
+        serverPatch: { patch: { events: [{ kind: "ModelChanged", new: 7 }] }, buffers: [] },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(requestHost).toHaveBeenCalledTimes(1);
+    releaseMount?.();
+    await settle();
+    await settle();
+
+    expect(documents).toHaveLength(2);
+    expect(documents[1].applied).toEqual([{ events: [{ kind: "ModelChanged", new: 7 }] }]);
     controller.dispose();
   });
 

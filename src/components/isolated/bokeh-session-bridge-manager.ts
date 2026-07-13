@@ -420,5 +420,11 @@ export class BokehSessionBridgeManager {
         console.error("[bokeh-session] Failed to deliver document patch:", error);
       });
     this.patchQueues.set(sessionId, next);
+    const clearSettledQueue = () => {
+      if (this.patchQueues.get(sessionId) === next) {
+        this.patchQueues.delete(sessionId);
+      }
+    };
+    void next.then(clearSettledQueue, clearSettledQueue);
   }
 }

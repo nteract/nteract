@@ -239,7 +239,11 @@ export class JsonRpcTransport {
         const handlers = this.notificationHandlers.get(data.method);
         if (handlers) {
           for (const handler of handlers) {
-            handler(data.params);
+            try {
+              handler(data.params);
+            } catch (error) {
+              console.error("[jsonrpc] Notification handler failed:", error);
+            }
           }
         }
         // Unknown notifications are silently ignored
