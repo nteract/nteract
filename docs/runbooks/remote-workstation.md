@@ -207,6 +207,11 @@ routes are owned by the Hub proxy: nothing needs to be exposed. The
 Hub-token validation; until that lands, use OIDC bearer or Anaconda API-key
 auth against the hosted deployment.
 
+This is the currently supported workstation path, not the only intended Hub
+topology. Direct attachment to an existing Jupyter Server, an nteract server
+extension, and Hub-service provisioning are explored in
+[Hosted Notebook Accounts and Compute Federation](../memos/hosted-notebook-federation.md).
+
 ## Outerbounds
 
 Outerbounds workstations are Linux x64 with a per-user home — the defaults

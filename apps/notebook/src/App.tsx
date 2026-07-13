@@ -133,6 +133,7 @@ import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kerne
 import { useNotebookActionPolicy } from "./lib/notebook-action-policy";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
+import { hostedNotebookWindowTitle } from "./lib/hosted-notebook-url";
 import {
   attachExecutionPerformanceId,
   installExecutionPerformanceApi,
@@ -377,6 +378,7 @@ function AppContent() {
     triggerSync,
     localActor,
     connectionScope,
+    hostedNotebookUrl,
   } = useNotebook();
 
   // Daemon sync status. Drives the kernel-action gate: until the daemon
@@ -1577,16 +1579,24 @@ function AppContent() {
   // between the mount-time `getReadyInfo` pull, the `daemon:ready` event, and
   // the `path_changed` broadcast. Keeping all three paths identical prevents
   // "one of them forgot to update titleBase" bugs.
-  const applyNotebookPath = useCallback((path: string | null | undefined) => {
-    if (path) {
-      const parts = path.split(/[\\/]/);
-      setTitleBase(parts[parts.length - 1] || "Untitled.ipynb");
-      setEphemeral(false);
-    } else {
-      setTitleBase("Untitled.ipynb");
-      setEphemeral(true);
-    }
-  }, []);
+  const applyNotebookPath = useCallback(
+    (path: string | null | undefined, hostedUrl = hostedNotebookUrl) => {
+      if (hostedUrl) {
+        setTitleBase(hostedNotebookWindowTitle(hostedUrl));
+        // The local bridge room is ephemeral, but the hosted document is
+        // remotely durable. Do not show the local untitled/unsaved marker.
+        setEphemeral(false);
+      } else if (path) {
+        const parts = path.split(/[\\/]/);
+        setTitleBase(parts[parts.length - 1] || "Untitled.ipynb");
+        setEphemeral(false);
+      } else {
+        setTitleBase("Untitled.ipynb");
+        setEphemeral(true);
+      }
+    },
+    [hostedNotebookUrl],
+  );
 
   // Path transitions are driven by `RuntimeStateDoc.path` (frame 0x05).
   // A non-null value means the room is file-backed; a null value (only
@@ -1596,8 +1606,8 @@ function AppContent() {
   // straight projection.
   const runtimePath = runtimeState.path;
   useEffect(() => {
-    applyNotebookPath(runtimePath);
-  }, [applyNotebookPath, runtimePath]);
+    applyNotebookPath(runtimePath, hostedNotebookUrl);
+  }, [applyNotebookPath, hostedNotebookUrl, runtimePath]);
 
   const reconnectRuntime = useCallback(() => {
     setDaemonStatus({ status: "checking" });
@@ -1777,6 +1787,7 @@ function AppContent() {
             runtime?: string;
             ephemeral?: boolean;
             notebook_path?: string | null;
+            hosted_notebook_url?: string | null;
           }
         | null
         | undefined,
@@ -1790,10 +1801,11 @@ function AppContent() {
       // Sync titlebar: derive filename + ephemeral from the path carried
       // on the ready payload.
       if (payload) {
+        const hostedUrl = payload.hosted_notebook_url ?? null;
         if (typeof payload.ephemeral === "boolean") {
-          applyNotebookPath(payload.ephemeral ? null : (payload.notebook_path ?? null));
+          applyNotebookPath(payload.ephemeral ? null : (payload.notebook_path ?? null), hostedUrl);
         } else if (payload.notebook_path !== undefined) {
-          applyNotebookPath(payload.notebook_path);
+          applyNotebookPath(payload.notebook_path, hostedUrl);
         }
       }
     };

@@ -260,6 +260,9 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     async openInNewWindow(path) {
       await invoke("open_notebook_in_new_window", { path });
     },
+    async openHostedInNewWindow(url) {
+      await invoke("open_hosted_notebook_in_new_window", { url });
+    },
     async cloneToEphemeral() {
       return invoke<string>("clone_notebook_to_ephemeral");
     },

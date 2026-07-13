@@ -27,6 +27,7 @@ Related decisions:
 - [Hosted Room Authorization](./hosted-room-authorization.md)
 - [Hosted Credential Transport](./hosted-credential-transport.md)
 - [Runtime Principal Promotion](./runtime-principal-promotion.md)
+- [Hosted Notebook Accounts and Compute Federation](../memos/hosted-notebook-federation.md)
 
 ## Vocabulary
 
@@ -133,7 +134,10 @@ app, `notebook-cloud-transport`, `runtime-doc`, `runtimed-wasm`, and
   outside the room protocol. The Outerbounds current-Python smoke is tracked in
   [#3992](https://github.com/nteract/nteract/issues/3992); the JupyterHub
   kernelspec and working-directory adapter remains in
-  [#3608](https://github.com/nteract/nteract/issues/3608).
+  [#3608](https://github.com/nteract/nteract/issues/3608). Alternative Hub
+  provisioning and attachment topologies remain exploratory in the
+  [federation memo](../memos/hosted-notebook-federation.md) and do not change the
+  accepted dial-home contract.
 - Compatibility notices and safe idle self-update remain connector lifecycle
   work and must not interrupt active execution
   ([#3975](https://github.com/nteract/nteract/issues/3975)).

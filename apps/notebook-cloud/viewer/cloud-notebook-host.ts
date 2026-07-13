@@ -206,6 +206,9 @@ export function createCloudNotebookHost({
       openInNewWindow: async () => {
         throw new Error("Hosted notebooks cannot open local files.");
       },
+      openHostedInNewWindow: async () => {
+        throw new Error("Hosted notebooks are already open in the cloud host.");
+      },
       cloneToEphemeral: async () => {
         throw new Error("Hosted notebooks cannot clone to a local ephemeral room.");
       },

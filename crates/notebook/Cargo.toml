@@ -47,6 +47,7 @@ notebook-doc = { path = "../notebook-doc" }
 notebook-wire = { path = "../notebook-wire" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }
+notebook-cloud-transport = { path = "../notebook-cloud-transport", features = ["registry"] }
 runt-workspace = { path = "../runt-workspace" }
 nbformat = { workspace = true }
 log = { workspace = true }

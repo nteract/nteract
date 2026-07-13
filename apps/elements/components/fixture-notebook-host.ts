@@ -70,6 +70,7 @@ export function createFixtureNotebookHost({
       getDefaultSaveDirectory: async () => "/Users/kyle/notebooks",
       saveAs: asyncNoop,
       openInNewWindow: asyncNoop,
+      openHostedInNewWindow: asyncNoop,
       cloneToEphemeral: async () => "fixture-room",
     },
     window: {

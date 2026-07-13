@@ -152,6 +152,7 @@ export function useNotebook() {
   const commentsNotebookRefJsonRef = useRef<string | null>(null);
   const [localActor, setLocalActor] = useState(actorLabelRef.current);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
+  const [hostedNotebookUrl, setHostedNotebookUrl] = useState<string | null>(null);
   const canWriteNotebookRef = useRef(true);
   const readyNotebookIdentityRef = useRef<string | null>(null);
 
@@ -393,6 +394,7 @@ export function useNotebook() {
         commentsNotebookRefJsonRef.current = serializeCommentsNotebookRef(
           trigger.payload.comments_notebook_ref,
         );
+        setHostedNotebookUrl(trigger.payload.hosted_notebook_url ?? null);
         const connectionScope = trigger.payload.connection_scope ?? null;
         setConnectionScope(connectionScope);
         canWriteNotebookRef.current = scopeAllowsNotebookWrite(connectionScope);
@@ -560,8 +562,10 @@ export function useNotebook() {
     // it on save / save-as / untitled promotion. Reading it here avoids
     // a Tauri round-trip to the WindowNotebookRegistry.
     const hasPath = runtimePath != null;
-    await saveNotebook(host, flushSync, hasPath);
-  }, [host, flushSync, runtimePath]);
+    await saveNotebook(host, flushSync, hasPath, {
+      hosted: hostedNotebookUrl !== null,
+    });
+  }, [host, flushSync, hostedNotebookUrl, runtimePath]);
 
   const openNotebook = useCallback(() => openNotebookFile(host), [host]);
 
@@ -630,6 +634,7 @@ export function useNotebook() {
     triggerSync,
     localActor,
     connectionScope,
+    hostedNotebookUrl,
   };
 }
 

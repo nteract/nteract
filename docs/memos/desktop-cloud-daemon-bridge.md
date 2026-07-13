@@ -3,14 +3,19 @@
 **Status:** V1 implemented in #3884, 2026-06-26. Remaining work (local
 kernels, CommsDoc/CommentsDoc bridging, persistence) tracked in issue #3861.
 
+This memo records the live-room opening primitive. Account discovery, Notebook
+Home, multitenant/private deployment policy, and JupyterHub compute federation
+are explored separately in
+[Hosted Notebook Accounts and Compute Federation](hosted-notebook-federation.md).
+
 ## Problem
 
-Desktop-hosted cloud notebooks should be mediated by the local daemon. Today
-the only native path into a hosted room is direct: `runt mcp` (and the
-cloud-runtime-agent / workstation peers) dial `wss://<host>/n/<id>/sync` with
-`CloudWsFrameTransport` and sync as standalone peers. The desktop UI has no
-hosted path at all, and nothing gives UI, MCP agents, local kernels, and
-persistence one local authority for a cloud notebook.
+Desktop-hosted cloud notebooks should be mediated by the local daemon. Before
+the V1 bridge, the only native path into a hosted room was direct: `runt mcp`
+(and the cloud-runtime-agent / workstation peers) dialed
+`wss://<host>/n/<id>/sync` with `CloudWsFrameTransport` and synced as standalone
+peers. Desktop had no hosted path, and nothing gave UI, MCP agents, local
+kernels, and persistence one local authority for a cloud notebook.
 
 Target topology (from #3861):
 
@@ -115,6 +120,8 @@ is #3599.
 
 ## Remaining Work (see #3861)
 
+- Account-aware discovery and Notebook Home use the federation memo above; they
+  are not additional responsibilities of the per-room bridge.
 - OAuth/device-flow credential acquisition and keychain storage.
 - CommsDoc/CommentsDoc bridging; widget replay across the bridge.
 - Offering local daemon compute to the hosted room (workstation attach is a
