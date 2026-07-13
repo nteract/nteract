@@ -200,6 +200,8 @@ export {
   type EnvProgressPhase,
   type ExecutionState,
   type ExecutionTransition,
+  type FileCheckpointState,
+  type FileSourceIssue,
   KERNEL_ERROR_REASON,
   type KernelActivity,
   type KernelErrorReasonKey,
@@ -556,7 +558,9 @@ export {
   NotebookClient,
   type ExecuteCellOptions,
   type NotebookClientOptions,
+  type ReconcileNotebookSourceOutcome,
   type RunAllCellsOptions,
+  type SaveNotebookOutcome,
   SaveNotebookError,
 } from "./notebook-client";
 export type {
@@ -575,7 +579,11 @@ export type {
   NotebookRequest,
   NotebookResponse,
   PackageManager,
+  SaveBlockedReason,
   SaveErrorKind,
+  SourceReconciliation,
+  SourceReconciliationBlockedReason,
+  SourceReconciliationOperation,
 } from "./request-types";
 
 // Blob upload

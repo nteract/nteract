@@ -35,6 +35,13 @@ type SyncEngineStoreStreams = Pick<
   | "poolState$"
 >;
 
+function initialLoadAllowsMutations(status: SessionStatus | null): boolean {
+  return (
+    status?.initial_load.phase === "ready" ||
+    status?.initial_load.phase === "not_needed"
+  );
+}
+
 export interface NotebookSyncStoreBridgeOptions {
   engine: SyncEngineStoreStreams;
   getHandle: () => NotebookHandle | null;
@@ -44,6 +51,7 @@ export interface NotebookSyncStoreBridgeOptions {
     handle: NotebookHandle,
   ) => ExecutionViewChangeset | null | undefined;
   refreshCanAcceptCellMutations: (handle?: NotebookHandle) => boolean;
+  setInitialLoadReadyForMutations: (ready: boolean) => void;
   setIsLoading: (isLoading: boolean) => void;
   setLoadError: (loadError: string | null) => void;
   bootstrapTimeoutMs?: number;
@@ -111,6 +119,7 @@ export function startNotebookSyncStoreBridge(
     initialLoadWasStreaming = false;
     latestSessionStatus = null;
     bootstrapTimeoutFired = false;
+    options.setInitialLoadReadyForMutations(false);
     armBootstrapTimeout();
   };
 
@@ -121,6 +130,7 @@ export function startNotebookSyncStoreBridge(
     const handle = options.getHandle();
     if (!handle) {
       initialMaterializeDeferred = false;
+      options.setInitialLoadReadyForMutations(false);
       options.setIsLoading(false);
       return;
     }
@@ -160,7 +170,9 @@ export function startNotebookSyncStoreBridge(
           options.projectExecutionViewChangeset(handle),
         );
         seedOutputStoresFromHandle(handle, cellIdList);
-        options.refreshCanAcceptCellMutations(handle);
+        options.setInitialLoadReadyForMutations(
+          initialLoadAllowsMutations(latestSessionStatus),
+        );
         options.setLoadError(null);
         options.setIsLoading(
           latestSessionStatus
@@ -174,6 +186,7 @@ export function startNotebookSyncStoreBridge(
         initialMaterializeInFlight = false;
         if (stopped) return;
         logger.warn("[automerge-notebook] initial materialize failed:", err);
+        options.setInitialLoadReadyForMutations(false);
         options.setLoadError(err instanceof Error ? err.message : String(err));
         options.setIsLoading(false);
       });
@@ -192,6 +205,7 @@ export function startNotebookSyncStoreBridge(
         initialMaterializeDeferred = false;
         initialLoadCurrentlyStreaming = false;
         initialLoadWasStreaming = false;
+        options.setInitialLoadReadyForMutations(false);
         options.setLoadError(status.initial_load.reason);
         options.setIsLoading(false);
         return;
@@ -204,6 +218,7 @@ export function startNotebookSyncStoreBridge(
       if (initialLoadStreaming) {
         initialLoadCurrentlyStreaming = true;
         initialLoadWasStreaming = true;
+        options.setInitialLoadReadyForMutations(false);
         clearBootstrapTimeout(true);
       } else if (
         !interactiveReady &&
@@ -220,6 +235,9 @@ export function startNotebookSyncStoreBridge(
         return;
       }
       if (interactiveReady) {
+        options.setInitialLoadReadyForMutations(
+          initialLoadAllowsMutations(latestSessionStatus),
+        );
         options.setIsLoading(initialLoadStreaming);
       }
     }),

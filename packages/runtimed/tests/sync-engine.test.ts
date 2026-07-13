@@ -165,6 +165,7 @@ function makeRuntimeState(
     project_context: { state: "Pending" },
     workstation: null,
     last_saved: null,
+    file_checkpoint: { exported_heads: [], save_sequence: null, source_issue: null },
     executions: executions as RuntimeState["executions"],
     comms: {},
     bokeh_sessions: {},
@@ -820,6 +821,7 @@ describe("SyncEngine", () => {
         project_context: { state: "Pending" },
         workstation: null,
         last_saved: null,
+        file_checkpoint: { exported_heads: [], save_sequence: null, source_issue: null },
         executions: {},
         comms: {},
         bokeh_sessions: {},
@@ -914,6 +916,7 @@ describe("SyncEngine", () => {
         project_context: { state: "Pending" },
         workstation: null,
         last_saved: null,
+        file_checkpoint: { exported_heads: [], save_sequence: null, source_issue: null },
         executions: {
           "exec-1": {
             status: "running",

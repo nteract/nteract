@@ -360,6 +360,24 @@ export interface WorkstationAttachmentState {
   runtime_session_id?: string | null;
 }
 
+/** Why the file-backed source is not currently healthy. */
+export type FileSourceIssue =
+  | { kind: "conflict"; reason: string }
+  | { kind: "degraded"; reason: string };
+
+/**
+ * Causal `.ipynb` checkpoint projected by the daemon.
+ *
+ * Empty heads plus a null sequence means no file checkpoint has committed.
+ * `source_issue` is independent so a recovery conflict can be surfaced even
+ * before any checkpoint exists.
+ */
+export interface FileCheckpointState {
+  exported_heads: string[];
+  save_sequence: number | null;
+  source_issue: FileSourceIssue | null;
+}
+
 export interface RuntimeState {
   /**
    * RuntimeStateDoc identity. Mirrors the NotebookDoc's runtime_state_doc_id
@@ -371,6 +389,8 @@ export interface RuntimeState {
   env: EnvState;
   trust: TrustState;
   last_saved: string | null;
+  /** Daemon-authored causal file checkpoint and source health. */
+  file_checkpoint: FileCheckpointState;
   /**
    * Path to the notebook's `.ipynb` on the daemon's disk. `null` for
    * untitled notebooks; the daemon writes this on save / save-as.
@@ -427,6 +447,11 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
     approved_pixi_channels: [],
   },
   last_saved: null,
+  file_checkpoint: {
+    exported_heads: [],
+    save_sequence: null,
+    source_issue: null,
+  },
   path: null,
   executions: {},
   comms: {},

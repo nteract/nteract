@@ -83,6 +83,8 @@ describe("saveNotebook", () => {
     mockSendRequest.mockResolvedValueOnce({
       result: "notebook_saved",
       path: "/home/user/notebooks/MyNotebook.ipynb",
+      exported_heads: ["abc123"],
+      save_sequence: 1,
     });
 
     const result = await saveNotebook(stubHost, flushSync, true);
@@ -128,6 +130,27 @@ describe("saveNotebook", () => {
     const result = await saveNotebook(stubHost, flushSync, true);
 
     expect(result).toBe(false);
+  });
+
+  it("treats an already-current causal checkpoint as a successful save", async () => {
+    mockSendRequest.mockResolvedValueOnce({
+      result: "notebook_already_current",
+      path: "/home/user/notebooks/MyNotebook.ipynb",
+      exported_heads: ["abc123"],
+      save_sequence: 4,
+    });
+
+    await expect(saveNotebook(stubHost, flushSync, true)).resolves.toBe(true);
+  });
+
+  it("returns false for a typed blocked save outcome", async () => {
+    mockSendRequest.mockResolvedValueOnce({
+      result: "notebook_save_blocked",
+      save_sequence: 3,
+      reason: { type: "superseded", latest_sequence: 4 },
+    });
+
+    await expect(saveNotebook(stubHost, flushSync, true)).resolves.toBe(false);
   });
 
   it("returns false on transport failure", async () => {
