@@ -46,11 +46,13 @@ pub(super) async fn apply_notebook_doc_frame(
         message.changes = sync::ChunkList::empty();
     }
     let has_client_changes = !message.changes.is_empty();
+    let peer_state_before = peer_state.clone();
 
     // Complete all document mutations inside the lock, encode the reply, then
     // release the lock before performing async I/O.
     let (persist_bytes, reply_encoded, metadata_changed) = {
         let mut doc = room.doc.write().await;
+        let rollback_state = has_client_changes.then(|| (doc.save(), doc.get_actor_id()));
 
         if has_client_changes {
             // v1: clone-preview validator. Replace with sync_message_new_changes
@@ -90,8 +92,38 @@ pub(super) async fn apply_notebook_doc_frame(
             changed && diff_metadata_touched(doc.doc_mut(), &heads_before, &heads_after);
 
         let bytes = if changed { Some(doc.save()) } else { None };
+        if changed && has_client_changes {
+            let peer_changes = doc
+                .doc_mut()
+                .get_changes(&heads_before)
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Err(error) = room.durability.commit_peer_changes(peer_changes) {
+                let restored = rollback_state.as_ref().and_then(|(snapshot, actor)| {
+                    notebook_doc::NotebookDoc::load_with_actor(snapshot, actor).ok()
+                });
+                let document_readable = restored.is_some();
+                if let Some(restored) = restored {
+                    *doc = restored;
+                }
+                *peer_state = peer_state_before;
+                let document_heads = doc.get_heads_hex();
+                let reason = format!("journal commit failed before peer acknowledgement: {error}");
+                room.durability.mark_degraded(reason.clone());
+                room.lifecycle
+                    .mark_degraded(reason.clone(), document_heads, document_readable);
+                let _ = room.state.with_doc(|state| {
+                    state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
+                        reason: reason.clone(),
+                    }))
+                });
+                warn!("[notebook-sync] {reason}");
+                return Err(anyhow::anyhow!(reason));
+            }
+        }
         if changed {
-            // Notify other peers in this room.
+            // The journal marker above is durable before either other peers or
+            // this sender can observe acceptance.
             let _ = room.broadcasts.changed_tx.send(());
         }
 

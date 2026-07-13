@@ -24,9 +24,10 @@ struct InitialLoadFrameDrain<'a> {
 
 /// Drain client acknowledgements while the room materializes.
 ///
-/// Messages carrying client changes are deferred until the room reaches its
-/// coherent initial boundary. Empty messages are safe to apply and advance
-/// this peer's independent sync state so later room batches can keep flowing.
+/// Low-level Automerge changes remain accepted while UI/MCP mutation
+/// capabilities are gated. Each frame is journaled by
+/// `apply_notebook_doc_frame` before its reply is sent, and later staged source
+/// batches merge normally because they retain their generation-owned actor.
 async fn drain_buffered_initial_load_frames<W>(
     drain: &mut InitialLoadFrameDrain<'_>,
     writer: &mut W,
@@ -38,10 +39,6 @@ where
 {
     tokio::task::yield_now().await;
     let mut notebook_doc_converged = None;
-    let mut automerge_frame_deferred = drain
-        .deferred_frames
-        .iter()
-        .any(|frame| frame.frame_type == NotebookFrameType::AutomergeSync);
 
     loop {
         let Some(frame) = drain.framed_reader.try_recv() else {
@@ -51,26 +48,6 @@ where
 
         if frame.frame_type != NotebookFrameType::AutomergeSync {
             drain.deferred_frames.push_back(frame);
-            continue;
-        }
-
-        // Automerge sync state is a reliable in-order stream. Once a client
-        // edit is deferred, every later Automerge frame (including an empty
-        // acknowledgement) must remain behind it until the source settles.
-        // Applying a later ACK first can advance `their_heads` past changes
-        // the room has not incorporated yet and falsely report convergence.
-        if automerge_frame_deferred {
-            drain.deferred_frames.push_back(frame);
-            notebook_doc_converged = Some(false);
-            continue;
-        }
-
-        let message = sync::Message::decode(&frame.payload)
-            .map_err(|error| format!("Failed to decode initial-load reply: {error}"))?;
-        if !message.changes.is_empty() {
-            drain.deferred_frames.push_back(frame);
-            automerge_frame_deferred = true;
-            notebook_doc_converged = Some(false);
             continue;
         }
 
@@ -92,12 +69,9 @@ where
     Ok(notebook_doc_converged)
 }
 
-/// Preserve NotebookDoc changes already accepted from a progressive peer when
-/// the room source reaches a terminal failure.
-///
-/// Change-bearing frames stay deferred while loading so file batches establish
-/// a coherent base first. Failure is also a terminal boundary: apply those
-/// buffered edits before closing the session rather than discarding user work.
+/// Drain any final NotebookDoc frames when the room source reaches a terminal
+/// failure. Earlier frames were already accepted and journaled progressively;
+/// this closes the small boundary race before the connection reports failure.
 async fn apply_failed_initial_load_notebook_frames<W>(
     drain: &mut InitialLoadFrameDrain<'_>,
     writer: &mut W,
@@ -546,7 +520,6 @@ mod tests {
     use crate::blob_store::BlobStore;
     use crate::notebook_sync_server::{
         apply_ipynb_changes, save_notebook_to_disk, RoomInitialLoad, RoomInitialLoadStart,
-        STREAMING_BATCH_SIZE,
     };
 
     #[derive(Default)]
@@ -650,6 +623,26 @@ mod tests {
         ))
     }
 
+    fn empty_projection(generation: u64) -> Arc<runtimed_client::protocol::NotebookProjection> {
+        Arc::new(runtimed_client::protocol::NotebookProjection {
+            schema_version: runtimed_client::protocol::NOTEBOOK_PROJECTION_SCHEMA_VERSION,
+            load_generation: generation,
+            notebook_id: "test-notebook".to_string(),
+            notebook_path: None,
+            cells: Vec::new(),
+            dependencies: Vec::new(),
+            runtime: Default::default(),
+            source_state: Default::default(),
+            availability: Default::default(),
+            readiness: Default::default(),
+            projection_complete: true,
+            projection_heads: vec![format!("projection-head-{generation}")],
+            notebook_heads: vec![format!("projection-head-{generation}")],
+            runtime_state_heads: Vec::new(),
+            captured_at: chrono::Utc::now(),
+        })
+    }
+
     async fn write_one_cell_notebook(path: &Path) {
         tokio::fs::write(
             path,
@@ -751,6 +744,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_unfinished_source_claim_terminalizes_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = test_room(&tmp);
+        let load_path = tmp.path().join("cancelled.ipynb");
+        room.initial_load.mark_required();
+        let (claim, _) = crate::notebook_sync_server::claim_room_initial_load(&room, load_path);
+        let claim = claim.expect("required source generation should be claimable");
+        let generation = claim.generation();
+
+        drop(claim);
+
+        let settled = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            room.initial_load.wait_until_settled(),
+        )
+        .await
+        .expect("cancelled source claim must wake waiters");
+        assert!(matches!(
+            settled,
+            RoomInitialLoadState::Failed {
+                generation: observed,
+                reason,
+            } if observed == generation && reason.contains("ended before completion")
+        ));
+        assert!(room.load_failed());
+    }
+
+    #[tokio::test]
+    async fn unwinding_source_owner_terminalizes_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = test_room(&tmp);
+        room.initial_load.mark_required();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (claim, _) = crate::notebook_sync_server::claim_room_initial_load(
+                &room,
+                tmp.path().join("panicked.ipynb"),
+            );
+            let _claim = claim.expect("required source generation should be claimable");
+            panic!("injected source owner panic");
+        }));
+
+        assert!(result.is_err());
+        assert!(matches!(
+            room.initial_load.state(),
+            RoomInitialLoadState::Failed { reason, .. }
+                if reason.contains("ended before completion")
+        ));
+    }
+
+    #[tokio::test]
+    async fn later_open_can_retry_failed_pristine_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = test_room(&tmp);
+        let load_path = tmp.path().join("retry.ipynb");
+
+        start_room_initial_load(&room, load_path.clone(), tmp.path().to_path_buf());
+        assert!(matches!(
+            room.initial_load.wait_until_settled().await,
+            RoomInitialLoadState::Failed { generation: 1, .. }
+        ));
+
+        write_one_cell_notebook(&load_path).await;
+        assert!(
+            crate::notebook_sync_server::retry_failed_room_initial_load_if_safe(
+                &room,
+                load_path,
+                tmp.path().to_path_buf(),
+            )
+            .await,
+            "a failed generation with no published or peer changes is safe to retry"
+        );
+
+        assert!(matches!(
+            room.initial_load.wait_until_settled().await,
+            RoomInitialLoadState::Ready {
+                generation: 2,
+                cell_count: 1,
+            }
+        ));
+        assert_eq!(room.doc.read().await.cell_count(), 1);
+        assert!(!room.load_failed());
+    }
+
+    #[tokio::test]
+    async fn failed_generation_with_live_edits_is_not_replayed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = test_room(&tmp);
+        let load_path = tmp.path().join("do-not-replay.ipynb");
+
+        start_room_initial_load(&room, load_path.clone(), tmp.path().to_path_buf());
+        assert!(matches!(
+            room.initial_load.wait_until_settled().await,
+            RoomInitialLoadState::Failed { generation: 1, .. }
+        ));
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "peer-cell", "code").unwrap();
+            doc.update_source("peer-cell", "peer truth").unwrap();
+        }
+        write_one_cell_notebook(&load_path).await;
+
+        assert!(
+            !crate::notebook_sync_server::retry_failed_room_initial_load_if_safe(
+                &room,
+                load_path,
+                tmp.path().to_path_buf(),
+            )
+            .await,
+            "automatic replay must stop once the live document contains edits"
+        );
+        assert!(matches!(
+            room.initial_load.state(),
+            RoomInitialLoadState::Failed { generation: 1, .. }
+        ));
+        assert_eq!(
+            room.doc
+                .read()
+                .await
+                .get_cell("peer-cell")
+                .expect("peer edit must be preserved")
+                .source,
+            "peer truth"
+        );
+    }
+
+    #[tokio::test]
     async fn late_waiter_observes_ready_generation_after_loading_snapshot() {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
@@ -759,6 +879,11 @@ mod tests {
         let RoomInitialLoadStart::Started { generation } = start else {
             panic!("pending load should be claimable");
         };
+        assert!(room.lifecycle.publish_recovered_projection_ready(
+            generation,
+            empty_projection(generation),
+            Vec::new(),
+        ));
         assert!(room.initial_load.complete_ready(generation, 0));
 
         let mut reader = tokio::io::empty();
@@ -1213,7 +1338,7 @@ mod tests {
         let recovery = tokio::spawn(async move {
             // The task cannot run until the stream yields in
             // `apply_failed_initial_load_notebook_frames`.
-            recovery_room.mark_load_recovered(0);
+            recovery_room.mark_load_recovered(0).await.unwrap();
         });
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
@@ -1251,7 +1376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn source_failure_preserves_published_batches_and_source_file() {
+    async fn source_preparation_failure_leaves_live_doc_untouched_and_preserves_source_file() {
         let tmp = tempfile::tempdir().unwrap();
         let load_path = tmp.path().join("partial.ipynb");
         let source_bytes = br##"{
@@ -1302,14 +1427,18 @@ mod tests {
         ));
         assert_eq!(
             room.doc.read().await.cell_count(),
-            STREAMING_BATCH_SIZE,
-            "source failure must not roll back already-published room truth"
+            0,
+            "source preparation must finish before the first live change is published"
         );
         assert!(room.load_failed());
 
-        save_notebook_to_disk(&room, None)
+        let save_error = save_notebook_to_disk(&room, None)
             .await
-            .expect("failed-source persistence guard should skip in-place write");
+            .expect_err("failed-source persistence guard must reject in-place save");
+        assert!(matches!(
+            save_error,
+            crate::notebook_sync_server::SaveError::Retryable(_)
+        ));
         assert_eq!(tokio::fs::read(&load_path).await.unwrap(), source_bytes);
     }
 
@@ -1371,11 +1500,11 @@ mod tests {
         assert!(initial_load.complete_failed(first, "retry me".to_string()));
 
         let second = initial_load
-            .retry_failed()
+            .retry_failed_claimed()
             .expect("failed source can retry");
         assert!(matches!(
             initial_load.begin().0,
-            RoomInitialLoadStart::Started { generation } if generation == second
+            RoomInitialLoadStart::Observing { generation } if generation == second
         ));
         assert!(
             !initial_load.complete_ready(first, 99),
@@ -1398,7 +1527,7 @@ mod tests {
         assert!(initial_load.complete_failed(failed, "retry me".to_string()));
 
         let recovered = initial_load
-            .recover_failed(3)
+            .recover_failed(3, empty_projection(failed + 1))
             .expect("external reconciliation should publish recovery");
         assert_eq!(recovered, failed + 1);
         assert_eq!(

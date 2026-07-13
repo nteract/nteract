@@ -271,6 +271,13 @@ export interface SyncableHandle {
   /** Current Automerge notebook document heads as hex strings. */
   get_heads_hex(): string[];
 
+  /**
+   * Whether the local NotebookDoc has changes outside the causal history of
+   * the supplied heads. `undefined` means one or more heads have not reached
+   * this peer yet, so containment is not currently knowable.
+   */
+  has_changes_not_contained_by_heads?(heads_hex: string[]): boolean | undefined;
+
   /** Dependency metadata fingerprint covered by trust approval. */
   get_dependency_fingerprint(): string | undefined;
 

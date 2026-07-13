@@ -481,6 +481,7 @@ fn request_required_scope(
         | NotebookRequest::RunAllCells { .. }
         | NotebookRequest::RunAllCellsGuarded { .. }
         | NotebookRequest::SaveNotebook { .. }
+        | NotebookRequest::ReconcileNotebookSource { .. }
         | NotebookRequest::SyncEnvironment { .. }
         | NotebookRequest::ApproveTrust { .. }
         | NotebookRequest::ApproveProjectEnvironment { .. } => RequestRequiredScope::Owner,
@@ -568,6 +569,24 @@ mod tests {
             blob_store,
             true,
         ))
+    }
+
+    #[test]
+    fn source_reconciliation_is_owner_only() {
+        let request = NotebookRequest::ReconcileNotebookSource {
+            operation:
+                notebook_protocol::protocol::SourceReconciliation::KeepRecoveredAndOverwriteSource,
+        };
+
+        assert!(request_allowed_for_scope(&request, ConnectionScope::Owner));
+        assert!(!request_allowed_for_scope(
+            &request,
+            ConnectionScope::Editor
+        ));
+        assert!(!request_allowed_for_scope(
+            &request,
+            ConnectionScope::Viewer
+        ));
     }
 
     #[tokio::test]

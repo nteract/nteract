@@ -11,6 +11,85 @@ use super::peer_runtime_sync::{persist_terminal_execution_records, runtime_file_
 use super::peer_writer::spawn_peer_writer;
 use super::{NotebookRoom, RuntimeAgentMessage, STATE_SYNC_COMPACT_THRESHOLD};
 
+/// Apply one NotebookDoc sync frame from the runtime agent.
+///
+/// Runtime agents are trusted room peers, but their NotebookDoc changes still
+/// cross the same durability boundary as human peers: the recovery journal is
+/// committed before either a room broadcast or a sync reply can acknowledge
+/// the changes. A failed journal append restores both the live document (with
+/// its actor identity) and the Automerge sync state so the exact frame can be
+/// replayed after the storage fault is repaired.
+async fn apply_runtime_agent_notebook_doc_frame(
+    room: &NotebookRoom,
+    sync_state: &mut automerge::sync::State,
+    payload: &[u8],
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let message = automerge::sync::Message::decode(payload)
+        .map_err(|error| anyhow::anyhow!("decode error: {error}"))?;
+    let has_agent_changes = !message.changes.is_empty();
+    let sync_state_before = sync_state.clone();
+
+    let (persist_bytes, reply_encoded) = {
+        let mut doc = room.doc.write().await;
+        let rollback_state = has_agent_changes.then(|| (doc.save(), doc.get_actor_id()));
+        let heads_before = doc.get_heads();
+
+        doc.receive_sync_message_recovering(sync_state, message, "peer-runtime-agent-doc")
+            .map_err(|error| anyhow::anyhow!("runtime-agent doc receive failed: {error}"))?;
+
+        let changed = heads_before != doc.get_heads();
+        if changed && has_agent_changes {
+            let agent_changes = doc
+                .doc_mut()
+                .get_changes(&heads_before)
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Err(error) = room.durability.commit_peer_changes(agent_changes) {
+                let restored = rollback_state.as_ref().and_then(|(snapshot, actor)| {
+                    notebook_doc::NotebookDoc::load_with_actor(snapshot, actor).ok()
+                });
+                let document_readable = restored.is_some();
+                if let Some(restored) = restored {
+                    *doc = restored;
+                }
+                *sync_state = sync_state_before;
+                let document_heads = doc.get_heads_hex();
+                let reason =
+                    format!("journal commit failed before runtime-agent acknowledgement: {error}");
+                room.durability.mark_degraded(reason.clone());
+                room.lifecycle
+                    .mark_degraded(reason.clone(), document_heads, document_readable);
+                let _ = room.state.with_doc(|state| {
+                    state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
+                        reason: reason.clone(),
+                    }))
+                });
+                warn!("[notebook-sync] {reason}");
+                return Err(anyhow::anyhow!(reason));
+            }
+        }
+
+        if changed {
+            // The append above is the visibility boundary for runtime-agent
+            // changes. Other peers are notified only after it is durable.
+            let _ = room.broadcasts.changed_tx.send(());
+        }
+
+        let persist_bytes = changed.then(|| doc.save());
+        let reply_encoded = doc
+            .generate_sync_message_recovering(sync_state, "peer-runtime-agent-doc-reply")
+            .map_err(|error| anyhow::anyhow!("runtime-agent doc reply failed: {error}"))?
+            .map(|reply| reply.encode());
+        (persist_bytes, reply_encoded)
+    };
+
+    if let Some(bytes) = persist_bytes {
+        room.persistence.enqueue_persist_bytes(bytes);
+    }
+
+    Ok(reply_encoded)
+}
+
 /// Handle a runtime agent subprocess that connected back to the daemon's Unix socket.
 ///
 /// The runtime agent is a special peer that owns the kernel for this notebook
@@ -226,41 +305,24 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                 };
                 match typed_frame.frame_type {
                     NotebookFrameType::AutomergeSync => {
-                        if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
-                            let mut doc = room.doc.write().await;
-                            match doc.receive_sync_message_recovering(
-                                &mut doc_sync_state,
-                                msg,
-                                "peer-runtime-agent-doc",
-                            ) {
-                                Ok(()) => {
-                                    let _ = room.broadcasts.changed_tx.send(());
-                                }
-                                Err(e) => {
-                                    warn!("[notebook-sync] Agent doc sync receive failed: {}", e);
-                                    break;
-                                }
+                        let reply_encoded = match apply_runtime_agent_notebook_doc_frame(
+                            &room,
+                            &mut doc_sync_state,
+                            &typed_frame.payload,
+                        ).await {
+                            Ok(reply) => reply,
+                            Err(e) => {
+                                warn!("[notebook-sync] Agent doc sync failed: {}", e);
+                                break;
                             }
-                            // Send sync reply
-                            match doc.generate_sync_message_recovering(
-                                &mut doc_sync_state,
-                                "peer-runtime-agent-doc-reply",
+                        };
+                        if let Some(encoded) = reply_encoded {
+                            if let Err(e) = agent_writer.send_frame(
+                                NotebookFrameType::AutomergeSync,
+                                encoded,
                             ) {
-                                Ok(Some(reply)) => {
-                                    let encoded = reply.encode();
-                                    if let Err(e) = agent_writer.send_frame(
-                                        NotebookFrameType::AutomergeSync,
-                                        encoded,
-                                    ) {
-                                        warn!("[notebook-sync] Failed to queue doc sync reply to runtime agent: {}", e);
-                                        break;
-                                    }
-                                }
-                                Ok(None) => {}
-                                Err(e) => {
-                                    warn!("[notebook-sync] Agent doc sync reply failed: {}", e);
-                                    break;
-                                }
+                                warn!("[notebook-sync] Failed to queue doc sync reply to runtime agent: {}", e);
+                                break;
                             }
                         }
                     }
@@ -610,6 +672,178 @@ fn validate_runtime_agent_broadcast(broadcast: &NotebookBroadcast) -> anyhow::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::blob_store::BlobStore;
+
+    fn test_file_backed_room(tmp: &tempfile::TempDir) -> (uuid::Uuid, PathBuf, Arc<NotebookRoom>) {
+        let notebook_id = uuid::Uuid::new_v4();
+        let notebook_path = tmp.path().join("runtime-agent.ipynb");
+        std::fs::write(
+            &notebook_path,
+            br#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+        )
+        .expect("write source notebook");
+        let room = Arc::new(NotebookRoom::new_fresh(
+            notebook_id,
+            Some(notebook_path),
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        ));
+        (notebook_id, room.identity.persist_path.clone(), room)
+    }
+
+    async fn runtime_agent_change_frame(
+        room: &NotebookRoom,
+        server_state: &mut automerge::sync::State,
+    ) -> Vec<u8> {
+        let snapshot = {
+            let mut doc = room.doc.write().await;
+            let snapshot = doc.save();
+            if let Some(initial) = doc
+                .generate_sync_message_recovering(server_state, "runtime-agent-test-init")
+                .expect("generate initial server sync")
+            {
+                let mut agent =
+                    notebook_doc::NotebookDoc::load_with_actor(&snapshot, "runtime-agent:test")
+                        .expect("load runtime-agent test document");
+                let mut agent_state = automerge::sync::State::new();
+                agent
+                    .receive_sync_message_recovering(
+                        &mut agent_state,
+                        initial,
+                        "runtime-agent-test-receive-init",
+                    )
+                    .expect("receive initial server sync");
+                agent
+                    .add_cell(0, "runtime-agent-cell", "code")
+                    .expect("add runtime-agent cell");
+                agent
+                    .append_source("runtime-agent-cell", "answer = 42")
+                    .expect("set runtime-agent cell source");
+                return agent
+                    .generate_sync_message_recovering(&mut agent_state, "runtime-agent-test-change")
+                    .expect("generate runtime-agent change sync")
+                    .expect("runtime-agent change message")
+                    .encode();
+            }
+            snapshot
+        };
+
+        // Automerge currently produces an initial message for a fresh sync
+        // state. Keep a fallback so the fixture remains valid if that protocol
+        // optimization changes.
+        let mut agent = notebook_doc::NotebookDoc::load_with_actor(&snapshot, "runtime-agent:test")
+            .expect("load runtime-agent test document");
+        let mut agent_state = automerge::sync::State::new();
+        agent
+            .add_cell(0, "runtime-agent-cell", "code")
+            .expect("add runtime-agent cell");
+        agent
+            .append_source("runtime-agent-cell", "answer = 42")
+            .expect("set runtime-agent cell source");
+        agent
+            .generate_sync_message_recovering(
+                &mut agent_state,
+                "runtime-agent-test-change-fallback",
+            )
+            .expect("generate runtime-agent fallback sync")
+            .expect("runtime-agent fallback message")
+            .encode()
+    }
+
+    #[tokio::test]
+    async fn runtime_agent_doc_change_is_rolled_back_until_journal_commit() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let (notebook_id, persist_path, room) = test_file_backed_room(&tmp);
+        let journal_path = persist_path.with_extension("recovery");
+        std::fs::create_dir(&journal_path).expect("install journal write fault");
+
+        let mut server_state = automerge::sync::State::new();
+        let frame = runtime_agent_change_frame(&room, &mut server_state).await;
+        let decoded = automerge::sync::Message::decode(&frame).expect("decode test frame");
+        assert!(
+            !decoded.changes.is_empty(),
+            "fault must cover a changes-bearing sync frame"
+        );
+        let sync_state_before = server_state.clone();
+        let (heads_before, actor_before) = {
+            let mut doc = room.doc.write().await;
+            (doc.get_heads(), doc.get_actor_id())
+        };
+        let mut changed_rx = room.broadcasts.changed_tx.subscribe();
+
+        let error = apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &frame)
+            .await
+            .expect_err("journal fault must reject runtime-agent changes");
+        assert!(error.to_string().contains("journal commit failed"));
+        {
+            let mut doc = room.doc.write().await;
+            assert_eq!(doc.get_heads(), heads_before, "live document rolled back");
+            assert_eq!(doc.get_actor_id(), actor_before, "room actor preserved");
+            assert!(doc.get_cell("runtime-agent-cell").is_none());
+        }
+        assert_eq!(
+            format!("{server_state:?}"),
+            format!("{sync_state_before:?}"),
+            "runtime-agent sync state rolled back for exact replay"
+        );
+        assert!(
+            matches!(
+                changed_rx.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "rejected changes must not be broadcast"
+        );
+        assert!(matches!(
+            room.lifecycle.availability(),
+            super::super::RoomAvailability::Degraded(_)
+        ));
+        let source_issue = room
+            .state
+            .with_doc(|state| Ok(state.read_state().file_checkpoint.source_issue))
+            .expect("read runtime source issue");
+        assert!(matches!(
+            source_issue,
+            Some(runtime_doc::FileSourceIssue::Degraded { .. })
+        ));
+
+        std::fs::remove_dir(&journal_path).expect("repair journal path");
+        let _reply = apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &frame)
+            .await
+            .expect("exact frame should replay after storage repair");
+        tokio::time::timeout(std::time::Duration::from_secs(1), changed_rx.recv())
+            .await
+            .expect("accepted change should broadcast")
+            .expect("broadcast channel remains open");
+        assert!(
+            room.doc
+                .read()
+                .await
+                .get_cell("runtime-agent-cell")
+                .is_some(),
+            "accepted runtime-agent change is visible"
+        );
+
+        drop(room);
+        let source_path = tmp.path().join("runtime-agent.ipynb");
+        let reopened = NotebookRoom::new_fresh(
+            notebook_id,
+            Some(source_path),
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("reopened-blobs"))),
+            false,
+        );
+        assert!(
+            reopened
+                .doc
+                .read()
+                .await
+                .get_cell("runtime-agent-cell")
+                .is_some(),
+            "acknowledged runtime-agent change survives journal recovery"
+        );
+    }
 
     #[tokio::test]
     async fn forwards_runtime_agent_broadcast_to_subscriber() {

@@ -154,6 +154,7 @@ export function useNotebook() {
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const [hostedNotebookUrl, setHostedNotebookUrl] = useState<string | null>(null);
   const canWriteNotebookRef = useRef(true);
+  const initialLoadReadyForMutationsRef = useRef(false);
   const readyNotebookIdentityRef = useRef<string | null>(null);
 
   const [handleHost] = useState(
@@ -260,11 +261,22 @@ export function useNotebook() {
 
   const refreshCanAcceptCellMutations = useCallback(
     (handle = handleHost.current) => {
-      const canAccept = canWriteNotebookRef.current && (handle?.has_cells_map() ?? false);
+      const canAccept =
+        canWriteNotebookRef.current &&
+        initialLoadReadyForMutationsRef.current &&
+        (handle?.has_cells_map() ?? false);
       setCanAcceptCellMutations(canAccept);
       return canAccept;
     },
     [handleHost],
+  );
+
+  const setInitialLoadReadyForMutations = useCallback(
+    (ready: boolean) => {
+      initialLoadReadyForMutationsRef.current = ready;
+      refreshCanAcceptCellMutations();
+    },
+    [refreshCanAcceptCellMutations],
   );
 
   const focusCellInStore = useCallback((cellId: string) => {
@@ -277,9 +289,12 @@ export function useNotebook() {
       createNotebookController<NotebookHandle>({
         getHandle: () => handleHost.current,
         getEngine: () => engineRef.current,
-        canWriteCellSource: () => canWriteNotebookRef.current,
-        canEditStructure: () => canWriteNotebookRef.current,
-        canAcceptStructure: (handle) => handle.has_cells_map(),
+        canWriteCellSource: () =>
+          canWriteNotebookRef.current && initialLoadReadyForMutationsRef.current,
+        canEditStructure: () =>
+          canWriteNotebookRef.current && initialLoadReadyForMutationsRef.current,
+        canAcceptStructure: (handle) =>
+          initialLoadReadyForMutationsRef.current && handle.has_cells_map(),
         applyMutationEvent: (event) => {
           const engine = engineRef.current;
           return engine
@@ -309,6 +324,7 @@ export function useNotebook() {
       if (!bootstrapped) return false;
 
       setCanAcceptCellMutations(false);
+      initialLoadReadyForMutationsRef.current = false;
       setLoadError(null);
       setIsLoading(true);
 
@@ -363,6 +379,7 @@ export function useNotebook() {
       outputCache: outputCacheRef.current,
       projectExecutionViewChangeset,
       refreshCanAcceptCellMutations,
+      setInitialLoadReadyForMutations,
       setIsLoading,
       setLoadError,
       bootstrapTimeoutMs: BOOTSTRAP_INTERACTIVE_TIMEOUT_MS,
@@ -466,6 +483,7 @@ export function useNotebook() {
       resetRuntimeStoresProjection();
       resetPoolState();
       canWriteNotebookRef.current = false;
+      initialLoadReadyForMutationsRef.current = false;
       setCanAcceptCellMutations(false);
       handleHost.clear();
     };
@@ -476,6 +494,7 @@ export function useNotebook() {
     materializeCells,
     notifyRelayReady,
     refreshCanAcceptCellMutations,
+    setInitialLoadReadyForMutations,
   ]);
 
   // ── Cell mutations ─────────────────────────────────────────────────
@@ -609,6 +628,21 @@ export function useNotebook() {
     [],
   );
 
+  /**
+   * Stable proxy for causal NotebookDoc change hints. Desktop title state
+   * subscribes once and performs the cheap head-containment query only when
+   * this fires or the daemon publishes a new file checkpoint.
+   */
+  const notebookDocChanged$ = useMemo(
+    () =>
+      new Observable<void>((subscriber) => {
+        const engine = engineRef.current;
+        if (!engine) return;
+        return engine.notebookDocChanged$.subscribe(subscriber);
+      }),
+    [],
+  );
+
   return {
     cellIds,
     isLoading,
@@ -631,6 +665,7 @@ export function useNotebook() {
     getHandle,
     getEngine,
     sessionStatus$,
+    notebookDocChanged$,
     triggerSync,
     localActor,
     connectionScope,

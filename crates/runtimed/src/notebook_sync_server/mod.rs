@@ -51,8 +51,16 @@ mod attachments;
 mod blob_upload;
 mod catalog;
 mod comments_store;
+// The coordinator is wired into room mutation paths after the standalone
+// journal and checkpoint primitives.
+#[allow(dead_code)]
+pub(crate) mod durability;
+// The checkpoint primitive intentionally lands before persistence integration.
+#[allow(dead_code)]
+pub(crate) mod file_checkpoint;
 mod hosted_bridge;
 mod identity;
+mod lifecycle;
 mod load;
 mod metadata;
 mod nbformat_convert;
@@ -72,6 +80,9 @@ mod peer_writer;
 mod persist;
 mod project_context;
 mod projection;
+// The journal primitive intentionally lands before room integration.
+#[allow(dead_code)]
+pub(crate) mod recovery;
 mod registry;
 mod room;
 mod runtime_bridge;
@@ -84,6 +95,7 @@ pub(crate) use catalog::*;
 pub use hosted_bridge::HostedBridgeHandle;
 pub(crate) use hosted_bridge::*;
 pub(crate) use identity::*;
+pub(crate) use lifecycle::*;
 pub(crate) use load::*;
 pub(crate) use metadata::*;
 pub(crate) use nbformat_convert::*;

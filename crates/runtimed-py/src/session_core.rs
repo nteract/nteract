@@ -11,7 +11,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use notebook_protocol::connection::LaunchSpec;
-use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveErrorKind};
+use notebook_protocol::protocol::{
+    NotebookRequest, NotebookResponse, SaveBlockedReason, SaveErrorKind,
+};
 use notebook_sync::{BroadcastReceiver, DocHandle};
 use runtime_doc::{KernelActivity, RuntimeLifecycle};
 
@@ -1891,7 +1893,33 @@ pub(crate) async fn save(
     let response = handle.send_request(request).await.map_err(to_py_err)?;
 
     match response {
-        NotebookResponse::NotebookSaved { path: saved_path } => Ok(SaveResult { path: saved_path }),
+        NotebookResponse::NotebookSaved {
+            path: saved_path, ..
+        }
+        | NotebookResponse::NotebookAlreadyCurrent {
+            path: saved_path, ..
+        } => Ok(SaveResult { path: saved_path }),
+        NotebookResponse::NotebookSaveBlocked { reason, .. } => {
+            let message = match reason {
+                SaveBlockedReason::PathAlreadyOpen { uuid, path } => format!(
+                    "Cannot save: {path} is already open in session {uuid}. Close that session first, then retry."
+                ),
+                SaveBlockedReason::SequenceExhausted => {
+                    "save checkpoint sequence exhausted".to_string()
+                }
+                SaveBlockedReason::Superseded { latest_sequence } => format!(
+                    "save was superseded by newer sequence {latest_sequence}"
+                ),
+                SaveBlockedReason::SourceConflict { message } => {
+                    format!("source conflict requires explicit reconciliation: {message}")
+                }
+                SaveBlockedReason::SourceDegraded { message } => {
+                    format!("source is degraded: {message}")
+                }
+                SaveBlockedReason::Io { message } => message,
+            };
+            Err(to_py_err(message))
+        }
         NotebookResponse::SaveError { error } => match error {
             SaveErrorKind::PathAlreadyOpen {
                 uuid,

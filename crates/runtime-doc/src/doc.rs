@@ -97,6 +97,11 @@
 //!       head_revision: Uint
 //!       checkpoint: Map|null (blob-backed full document checkpoint)
 //!       patch_tail: List[Map] (bounded blob-backed transactions after checkpoint)
+//!   file_checkpoint/       Map (additive; absent in frozen schema v2 genesis)
+//!     exported_heads: List[Str] (NotebookDoc Automerge heads in hex)
+//!     save_sequence: Uint|null  (monotonic committed file replacement sequence)
+//!     source_issue_kind: Str    ("" | "conflict" | "degraded")
+//!     source_issue_reason: Str  (human-readable diagnostic; "" when clear)
 //!   runtime_state_doc_id: Str|null
 //!   last_saved: Str|null   (ISO timestamp of last save)
 //! ```
@@ -409,6 +414,49 @@ pub struct WorkstationAttachmentState {
     pub runtime_session_id: Option<String>,
 }
 
+/// Why the file-backed source cannot currently be treated as healthy.
+///
+/// A conflict means both the journal-backed live document and an externally
+/// changed `.ipynb` must be preserved for explicit reconciliation. Degraded
+/// covers other durability failures where the room remains resident and must
+/// not claim a successful checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FileSourceIssue {
+    Conflict { reason: String },
+    Degraded { reason: String },
+}
+
+impl FileSourceIssue {
+    fn kind_str(&self) -> &'static str {
+        match self {
+            Self::Conflict { .. } => "conflict",
+            Self::Degraded { .. } => "degraded",
+        }
+    }
+
+    fn reason(&self) -> &str {
+        match self {
+            Self::Conflict { reason } | Self::Degraded { reason } => reason,
+        }
+    }
+}
+
+/// Causal file state projected to RuntimeStateDoc readers.
+///
+/// This map is additive and intentionally absent from the frozen v2 genesis.
+/// Missing data therefore reads as no committed checkpoint and no source
+/// issue, keeping older RuntimeStateDoc snapshots backward-compatible.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileCheckpointState {
+    #[serde(default)]
+    pub exported_heads: Vec<String>,
+    #[serde(default)]
+    pub save_sequence: Option<u64>,
+    #[serde(default)]
+    pub source_issue: Option<FileSourceIssue>,
+}
+
 /// Full runtime state snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeState {
@@ -421,6 +469,10 @@ pub struct RuntimeState {
     pub env: EnvState,
     pub trust: TrustRuntimeState,
     pub last_saved: Option<String>,
+    /// Last causally committed `.ipynb` checkpoint and current source health.
+    /// Missing fields in older RuntimeStateDocs project to the default state.
+    #[serde(default)]
+    pub file_checkpoint: FileCheckpointState,
     /// Path to the notebook's `.ipynb` on the daemon's disk.
     /// `None` for untitled notebooks; daemon writes this on save / save-as.
     pub path: Option<String>,
@@ -2532,6 +2584,112 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
+    /// Read the last causally committed file checkpoint and source health.
+    ///
+    /// Frozen v2 genesis documents and older persisted snapshots do not have
+    /// this additive map, so absence projects to [`FileCheckpointState::default`].
+    pub fn file_checkpoint(&self) -> FileCheckpointState {
+        let Some(checkpoint) = self.get_map("file_checkpoint") else {
+            return FileCheckpointState::default();
+        };
+        let source_issue = match self.read_str(&checkpoint, "source_issue_kind").as_str() {
+            "conflict" => Some(FileSourceIssue::Conflict {
+                reason: self.read_str(&checkpoint, "source_issue_reason"),
+            }),
+            "degraded" => Some(FileSourceIssue::Degraded {
+                reason: self.read_str(&checkpoint, "source_issue_reason"),
+            }),
+            _ => None,
+        };
+        FileCheckpointState {
+            exported_heads: self.read_str_list(&checkpoint, "exported_heads"),
+            save_sequence: self.read_opt_u64(&checkpoint, "save_sequence"),
+            source_issue,
+        }
+    }
+
+    /// Publish a committed `.ipynb` checkpoint at exact NotebookDoc heads.
+    ///
+    /// Callers must invoke this only after durable file replacement succeeds.
+    /// Source health is intentionally left unchanged; reconciliation owns that
+    /// independent axis.
+    pub fn set_file_checkpoint(
+        &mut self,
+        exported_heads: &[String],
+        save_sequence: u64,
+    ) -> Result<(), RuntimeStateError> {
+        let current = self.file_checkpoint();
+        if current.exported_heads == exported_heads && current.save_sequence == Some(save_sequence)
+        {
+            return Ok(());
+        }
+
+        let checkpoint = self.get_or_create_root_map("file_checkpoint")?;
+        let heads = match self.doc.get(&checkpoint, "exported_heads").ok().flatten() {
+            Some((Value::Object(ObjType::List), heads)) => heads,
+            _ => self
+                .doc
+                .put_object(&checkpoint, "exported_heads", ObjType::List)?,
+        };
+        for index in (0..self.doc.length(&heads)).rev() {
+            self.doc.delete(&heads, index)?;
+        }
+        for (index, head) in exported_heads.iter().enumerate() {
+            self.doc.insert(&heads, index, head.as_str())?;
+        }
+        self.doc.put(
+            &checkpoint,
+            "save_sequence",
+            ScalarValue::Uint(save_sequence),
+        )?;
+        Ok(())
+    }
+
+    /// Clear committed checkpoint metadata without changing source health.
+    pub fn clear_file_checkpoint(&mut self) -> Result<(), RuntimeStateError> {
+        let current = self.file_checkpoint();
+        if current.exported_heads.is_empty() && current.save_sequence.is_none() {
+            return Ok(());
+        }
+
+        let checkpoint = self.get_or_create_root_map("file_checkpoint")?;
+        if let Some((Value::Object(ObjType::List), heads)) =
+            self.doc.get(&checkpoint, "exported_heads").ok().flatten()
+        {
+            for index in (0..self.doc.length(&heads)).rev() {
+                self.doc.delete(&heads, index)?;
+            }
+        }
+        self.doc
+            .put(&checkpoint, "save_sequence", ScalarValue::Null)?;
+        Ok(())
+    }
+
+    /// Publish or clear a source conflict/degradation diagnostic.
+    pub fn set_file_source_issue(
+        &mut self,
+        issue: Option<&FileSourceIssue>,
+    ) -> Result<(), RuntimeStateError> {
+        if self.file_checkpoint().source_issue.as_ref() == issue {
+            return Ok(());
+        }
+
+        let checkpoint = self.get_or_create_root_map("file_checkpoint")?;
+        match issue {
+            Some(issue) => {
+                self.doc
+                    .put(&checkpoint, "source_issue_kind", issue.kind_str())?;
+                self.doc
+                    .put(&checkpoint, "source_issue_reason", issue.reason())?;
+            }
+            None => {
+                self.doc.put(&checkpoint, "source_issue_kind", "")?;
+                self.doc.put(&checkpoint, "source_issue_reason", "")?;
+            }
+        }
+        Ok(())
+    }
+
     /// Set the `last_saved` timestamp.
     pub fn set_last_saved(&mut self, timestamp: Option<&str>) -> Result<(), RuntimeStateError> {
         self.set_optional_str("last_saved", timestamp)
@@ -3304,6 +3462,7 @@ impl RuntimeStateDoc {
             .unwrap_or_default();
 
         let last_saved = self.read_opt_str(&ROOT, "last_saved");
+        let file_checkpoint = self.file_checkpoint();
         let path = self.read_opt_str(&ROOT, "path");
         let runtime_state_doc_id = self.runtime_state_doc_id();
         let workstation = self.workstation_attachment();
@@ -3333,6 +3492,7 @@ impl RuntimeStateDoc {
             env: env_state,
             trust: trust_state,
             last_saved,
+            file_checkpoint,
             path,
             executions,
             comms,
@@ -4430,6 +4590,87 @@ mod tests {
 
         doc.set_last_saved(None).unwrap();
         assert_eq!(doc.read_state().last_saved, None);
+    }
+
+    #[test]
+    fn file_checkpoint_defaults_for_frozen_v2_genesis() {
+        let doc = RuntimeStateDoc::new();
+
+        assert_eq!(doc.file_checkpoint(), FileCheckpointState::default());
+        assert_eq!(
+            doc.read_state().file_checkpoint,
+            FileCheckpointState::default()
+        );
+        assert!(doc.doc().get(ROOT, "file_checkpoint").unwrap().is_none());
+    }
+
+    #[test]
+    fn file_checkpoint_and_source_issue_round_trip_independently() {
+        let mut doc = RuntimeStateDoc::new();
+        let exported_heads = vec!["aa11".to_string(), "bb22".to_string()];
+
+        doc.set_file_checkpoint(&exported_heads, 7).unwrap();
+        assert_eq!(
+            doc.read_state().file_checkpoint,
+            FileCheckpointState {
+                exported_heads: exported_heads.clone(),
+                save_sequence: Some(7),
+                source_issue: None,
+            }
+        );
+
+        let conflict = FileSourceIssue::Conflict {
+            reason: "disk fingerprint changed while journal heads were unsaved".to_string(),
+        };
+        doc.set_file_source_issue(Some(&conflict)).unwrap();
+        assert_eq!(
+            doc.read_state().file_checkpoint.source_issue,
+            Some(conflict)
+        );
+
+        let degraded = FileSourceIssue::Degraded {
+            reason: "recovery journal flush failed".to_string(),
+        };
+        doc.set_file_source_issue(Some(&degraded)).unwrap();
+        doc.clear_file_checkpoint().unwrap();
+        assert_eq!(
+            doc.read_state().file_checkpoint,
+            FileCheckpointState {
+                exported_heads: Vec::new(),
+                save_sequence: None,
+                source_issue: Some(degraded),
+            }
+        );
+
+        doc.set_file_source_issue(None).unwrap();
+        assert_eq!(
+            doc.read_state().file_checkpoint,
+            FileCheckpointState::default()
+        );
+    }
+
+    #[test]
+    fn file_checkpoint_serializes_to_the_client_runtime_state_shape() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_file_checkpoint(&["cafebabe".to_string()], 12)
+            .unwrap();
+        doc.set_file_source_issue(Some(&FileSourceIssue::Conflict {
+            reason: "source and journal diverged".to_string(),
+        }))
+        .unwrap();
+
+        let value = serde_json::to_value(doc.read_state()).unwrap();
+        assert_eq!(
+            value.get("file_checkpoint"),
+            Some(&serde_json::json!({
+                "exported_heads": ["cafebabe"],
+                "save_sequence": 12,
+                "source_issue": {
+                    "kind": "conflict",
+                    "reason": "source and journal diverged",
+                },
+            }))
+        );
     }
 
     #[test]

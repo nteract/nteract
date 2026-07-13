@@ -339,6 +339,10 @@ impl Default for RoomBroadcasts {
 /// streaming-load gate are needed whether the room is ephemeral today or
 /// will be promoted to file-backed later.
 pub struct RoomPersistence {
+    /// Serializes causal `.ipynb` checkpoint claims and atomic replacement.
+    /// The coordinator is shared with blocking workers so no Tokio mutex is
+    /// held across filesystem I/O.
+    file_checkpoint: Arc<super::file_checkpoint::FileCheckpointCoordinator>,
     /// Debouncer channels — present only when the room writes to a
     /// persisted Automerge doc (`notebook-docs/*.automerge`). Ephemeral
     /// rooms keep this `None`, and so do rooms promoted via Save (the
@@ -402,6 +406,7 @@ impl RoomPersistence {
     /// Build a persistence struct with no active debouncer (ephemeral rooms).
     pub fn ephemeral() -> Self {
         Self {
+            file_checkpoint: Arc::new(super::file_checkpoint::FileCheckpointCoordinator::default()),
             debouncer: std::sync::Mutex::new(None),
             last_save_sources: RwLock::new(HashMap::new()),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
@@ -417,6 +422,7 @@ impl RoomPersistence {
         flush_request_tx: mpsc::UnboundedSender<FlushRequest>,
     ) -> Self {
         Self {
+            file_checkpoint: Arc::new(super::file_checkpoint::FileCheckpointCoordinator::default()),
             debouncer: std::sync::Mutex::new(Some(PersistDebouncer {
                 persist_tx,
                 flush_request_tx,
@@ -467,6 +473,29 @@ impl RoomPersistence {
             .lock()
             .ok()
             .and_then(|previous| previous.get(cell_id).cloned())
+    }
+
+    /// Reserve request order before formatting, blob resolution, or
+    /// serialization begins.
+    pub(crate) fn claim_file_checkpoint(
+        &self,
+    ) -> Result<super::file_checkpoint::SaveSequenceClaim, super::file_checkpoint::SaveClaimError>
+    {
+        self.file_checkpoint.reserve()
+    }
+
+    /// Clone the room-owned checkpoint coordinator for a blocking completion.
+    pub(crate) fn file_checkpoint_coordinator(
+        &self,
+    ) -> Arc<super::file_checkpoint::FileCheckpointCoordinator> {
+        Arc::clone(&self.file_checkpoint)
+    }
+
+    pub(crate) fn restore_file_checkpoint(
+        &self,
+        checkpoint: super::file_checkpoint::FileCheckpoint,
+    ) {
+        self.file_checkpoint.restore(checkpoint);
     }
 
     pub fn clear_previous_visible_execution(&self, cell_id: &str) {
@@ -579,33 +608,63 @@ pub enum RoomInitialLoadStart {
 
 /// Single-flight, observable initial-load state for one notebook room.
 pub struct RoomInitialLoad {
-    /// Serializes read/transition/write so two callers cannot both publish a
-    /// new `Loading` generation. This is synchronous state and is never held
-    /// across an await.
-    transition: std::sync::Mutex<()>,
+    lifecycle: Arc<RoomLifecycle>,
+    /// Legacy wire projection. The authoritative state is `lifecycle`; this
+    /// sender only preserves the pre-progressive session protocol during the
+    /// room-substrate slice.
     state_tx: watch::Sender<RoomInitialLoadState>,
-    /// Whether a room-owned task has claimed the current `Loading`
-    /// generation. Kept under `transition`; atomic storage lets `is_loading`
-    /// remain a cheap synchronous predicate for eviction/autosave paths.
-    task_claimed: AtomicBool,
 }
 
 impl Default for RoomInitialLoad {
     fn default() -> Self {
-        let (state_tx, _) = watch::channel(RoomInitialLoadState::NotNeeded { generation: 0 });
-        Self {
-            transition: std::sync::Mutex::new(()),
-            state_tx,
-            task_claimed: AtomicBool::new(false),
-        }
+        Self::new(RoomLifecycle::test_default())
     }
 }
 
 impl RoomInitialLoad {
-    fn lock_transition(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.transition
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    pub(crate) fn new(lifecycle: Arc<RoomLifecycle>) -> Self {
+        let initial = Self::project_state(&lifecycle.source_state());
+        let (state_tx, _) = watch::channel(initial);
+        Self {
+            lifecycle,
+            state_tx,
+        }
+    }
+
+    fn project_state(source: &RoomSourceState) -> RoomInitialLoadState {
+        let status = source.status();
+        match source {
+            RoomSourceState::Preparing(_) | RoomSourceState::Publishing(_) => {
+                RoomInitialLoadState::Loading {
+                    generation: status.generation,
+                }
+            }
+            RoomSourceState::Ready(_)
+                if status.generation == 0
+                    && matches!(status.fingerprint, RoomSourceFingerprint::NotApplicable) =>
+            {
+                RoomInitialLoadState::NotNeeded {
+                    generation: status.generation,
+                }
+            }
+            RoomSourceState::Ready(_) => RoomInitialLoadState::Ready {
+                generation: status.generation,
+                cell_count: status.progress.completed,
+            },
+            RoomSourceState::Failed(_) => RoomInitialLoadState::Failed {
+                generation: status.generation,
+                reason: status
+                    .error
+                    .as_ref()
+                    .map(|error| error.message.clone())
+                    .unwrap_or_else(|| "source failed".to_string()),
+            },
+        }
+    }
+
+    fn refresh_legacy(&self) {
+        self.state_tx
+            .send_replace(Self::project_state(&self.lifecycle.source_state()));
     }
 
     pub fn subscribe(&self) -> watch::Receiver<RoomInitialLoadState> {
@@ -613,19 +672,14 @@ impl RoomInitialLoad {
     }
 
     pub fn state(&self) -> RoomInitialLoadState {
-        self.state_tx.borrow().clone()
+        Self::project_state(&self.lifecycle.source_state())
     }
 
     /// Publish `Loading` before a file-backed room becomes discoverable.
     /// The actual source task claims this generation with [`Self::begin`].
     pub fn mark_required(&self) {
-        let _guard = self.lock_transition();
-        if let RoomInitialLoadState::NotNeeded { generation } = self.state() {
-            self.task_claimed.store(false, Ordering::Release);
-            self.state_tx.send_replace(RoomInitialLoadState::Loading {
-                generation: generation.saturating_add(1),
-            });
-        }
+        self.lifecycle.mark_source_required();
+        self.refresh_legacy();
     }
 
     /// Start the first load, or join the generation already loading/settled.
@@ -634,46 +688,34 @@ impl RoomInitialLoad {
     /// partially materialized document requires an explicit reconciliation
     /// decision rather than blindly replaying file cells over live room state.
     pub fn begin(&self) -> (RoomInitialLoadStart, watch::Receiver<RoomInitialLoadState>) {
-        let _guard = self.lock_transition();
-        let current = self.state();
-        let start = match current {
-            RoomInitialLoadState::Loading { generation } => {
-                if self.task_claimed.swap(true, Ordering::AcqRel) {
-                    RoomInitialLoadStart::Observing { generation }
-                } else {
-                    RoomInitialLoadStart::Started { generation }
-                }
-            }
-            RoomInitialLoadState::Ready { generation, .. }
-            | RoomInitialLoadState::Failed { generation, .. } => {
+        if matches!(self.state(), RoomInitialLoadState::NotNeeded { .. }) {
+            self.lifecycle.mark_source_required();
+        }
+        let start = match self.lifecycle.begin_source() {
+            RoomSourceStart::Started { generation } => RoomInitialLoadStart::Started { generation },
+            RoomSourceStart::Observing { generation } => {
                 RoomInitialLoadStart::Observing { generation }
             }
-            RoomInitialLoadState::NotNeeded { generation } => {
-                let generation = generation.saturating_add(1);
-                self.task_claimed.store(true, Ordering::Release);
-                self.state_tx
-                    .send_replace(RoomInitialLoadState::Loading { generation });
-                RoomInitialLoadStart::Started { generation }
-            }
         };
+        self.refresh_legacy();
         (start, self.subscribe())
     }
 
-    /// Explicitly start a new generation after a terminal failure.
+    /// Atomically advance a failed generation and claim its source task.
     ///
-    /// The initial loader does not call this automatically because a failed
-    /// generation may have published partial file cells alongside concurrent
-    /// room edits. A future reconciliation policy can opt into retrying without
-    /// weakening the generation guard.
-    pub fn retry_failed(&self) -> Option<u64> {
-        let _guard = self.lock_transition();
-        let RoomInitialLoadState::Failed { generation, .. } = self.state() else {
-            return None;
-        };
-        let generation = generation.saturating_add(1);
-        self.task_claimed.store(false, Ordering::Release);
-        self.state_tx
-            .send_replace(RoomInitialLoadState::Loading { generation });
+    /// Production retry uses this combined transition so a resident room can
+    /// never expose a new `Loading` generation without an owner between two
+    /// separate calls. The returned generation must immediately be wrapped in
+    /// a `RoomInitialLoadClaim`, whose drop guard terminalizes cancellation.
+    pub(crate) fn retry_failed_claimed(&self) -> Option<u64> {
+        let generation = self.lifecycle.retry_failed_claimed()?;
+        self.refresh_legacy();
+        Some(generation)
+    }
+
+    pub(crate) fn resume_failed_staged_claimed(&self) -> Option<u64> {
+        let generation = self.lifecycle.resume_failed_staged_claimed()?;
+        self.refresh_legacy();
         Some(generation)
     }
 
@@ -683,17 +725,16 @@ impl RoomInitialLoad {
     /// new authoritative baseline without replaying the failed source task.
     /// Advance the generation so waiters can distinguish that recovery from
     /// the failed attempt it supersedes.
-    pub fn recover_failed(&self, cell_count: usize) -> Option<u64> {
-        let _guard = self.lock_transition();
-        let RoomInitialLoadState::Failed { generation, .. } = self.state() else {
-            return None;
-        };
-        let generation = generation.saturating_add(1);
-        self.task_claimed.store(false, Ordering::Release);
-        self.state_tx.send_replace(RoomInitialLoadState::Ready {
-            generation,
-            cell_count,
-        });
+    pub fn recover_failed(
+        &self,
+        cell_count: usize,
+        projection: Arc<runtimed_client::protocol::NotebookProjection>,
+    ) -> Option<u64> {
+        let heads = projection.notebook_heads.clone();
+        let generation = self
+            .lifecycle
+            .recover_failed(cell_count, heads, projection)?;
+        self.refresh_legacy();
         Some(generation)
     }
 
@@ -702,54 +743,62 @@ impl RoomInitialLoad {
     /// Dropping this future only drops its watch receiver. It cannot cancel or
     /// mutate the room-owned source operation.
     pub async fn wait_until_settled(&self) -> RoomInitialLoadState {
-        let mut receiver = self.subscribe();
-        loop {
-            let state = receiver.borrow().clone();
-            if !state.is_loading() {
-                return state;
-            }
-            if receiver.changed().await.is_err() {
-                return self.state();
-            }
-        }
+        let state = self
+            .lifecycle
+            .wait_for_source_settled(std::time::Duration::from_secs(120))
+            .await
+            .into_current();
+        Self::project_state(&state)
     }
 
     pub fn complete_ready(&self, generation: u64, cell_count: usize) -> bool {
-        let _guard = self.lock_transition();
-        if self.state() != (RoomInitialLoadState::Loading { generation }) {
-            return false;
+        let heads = self
+            .lifecycle
+            .availability()
+            .status()
+            .document_heads
+            .clone();
+        self.complete_ready_with_heads(generation, cell_count, heads)
+    }
+
+    pub(crate) fn complete_ready_with_heads(
+        &self,
+        generation: u64,
+        cell_count: usize,
+        document_heads: Vec<String>,
+    ) -> bool {
+        let completed = self
+            .lifecycle
+            .complete_ready(generation, cell_count, document_heads);
+        if completed {
+            self.refresh_legacy();
         }
-        self.state_tx.send_replace(RoomInitialLoadState::Ready {
-            generation,
-            cell_count,
-        });
-        self.task_claimed.store(false, Ordering::Release);
-        true
+        completed
     }
 
     pub fn complete_failed(&self, generation: u64, reason: String) -> bool {
-        let _guard = self.lock_transition();
-        if self.state() != (RoomInitialLoadState::Loading { generation }) {
-            return false;
+        let completed = self
+            .lifecycle
+            .complete_failed(generation, "source_failed", reason);
+        if completed {
+            self.refresh_legacy();
         }
-        self.state_tx
-            .send_replace(RoomInitialLoadState::Failed { generation, reason });
-        self.task_claimed.store(false, Ordering::Release);
-        true
+        completed
     }
 
     pub fn is_loading(&self) -> bool {
-        self.state().is_loading()
+        self.lifecycle.source_state().is_in_progress()
+    }
+
+    #[cfg(test)]
+    pub fn task_claimed_for_test(&self) -> bool {
+        self.lifecycle.task_claimed()
     }
 
     #[cfg(test)]
     fn reset_loading_for_test(&self) {
-        let _guard = self.lock_transition();
-        if let RoomInitialLoadState::Loading { generation } = self.state() {
-            self.state_tx
-                .send_replace(RoomInitialLoadState::NotNeeded { generation });
-            self.task_claimed.store(false, Ordering::Release);
-        }
+        self.lifecycle.reset_in_progress();
+        self.refresh_legacy();
     }
 }
 
@@ -901,6 +950,18 @@ impl Drop for ReservationGuard {
     }
 }
 
+pub(crate) struct SourceReconciliationClaim {
+    room: Arc<NotebookRoom>,
+}
+
+impl Drop for SourceReconciliationClaim {
+    fn drop(&mut self) {
+        self.room
+            .source_reconciliation_claimed
+            .store(false, Ordering::Release);
+    }
+}
+
 pub struct NotebookRoom {
     /// Permanent, immutable UUID for this room, independent of the display
     /// path or string lookup keys used by callers. Rooms are still looked up
@@ -915,6 +976,12 @@ pub struct NotebookRoom {
     pub persistence: RoomPersistence,
     /// Room-owned, generation-bearing initial file materialization lifecycle.
     pub initial_load: RoomInitialLoad,
+    /// Authoritative source and availability axes plus durable staged artifacts.
+    pub(crate) lifecycle: Arc<RoomLifecycle>,
+    /// Serializes source, peer, daemon, and file-checkpoint journal records.
+    pub(crate) durability: Arc<super::durability::RoomDurability>,
+    /// Atomic lease for a reconciliation that may span async disk preparation.
+    pub(crate) source_reconciliation_claimed: AtomicBool,
     /// File binding owner: canonical .ipynb path, file watcher, autosave.
     pub file_binding: NotebookFileBinding,
     /// Notebook identity: persist_path and working_dir.
@@ -983,6 +1050,17 @@ pub struct NotebookRoom {
 }
 
 impl NotebookRoom {
+    pub(crate) fn try_claim_source_reconciliation(
+        self: &Arc<Self>,
+    ) -> Option<SourceReconciliationClaim> {
+        self.source_reconciliation_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| SourceReconciliationClaim {
+                room: Arc::clone(self),
+            })
+    }
+
     /// True when this room is bridged to a hosted cloud notebook.
     pub fn is_hosted(&self) -> bool {
         self.hosted.load(Ordering::Relaxed)
@@ -1044,30 +1122,116 @@ impl NotebookRoom {
         let filename = notebook_doc_filename(&notebook_id_str);
         let persist_path = docs_dir.join(&filename);
 
-        // For untitled notebooks (path is None), the persisted Automerge doc is their
-        // only content record — there's no .ipynb on disk. Load it if it exists
-        // so content survives daemon restarts, preserving even legacy pre-seed history.
-        // For saved notebooks (path is Some), .ipynb is the source of truth, so
-        // delete stale persisted docs and start fresh from the canonical schema seed
-        // before the daemon imports file contents from disk.
+        // All persistent rooms recover from the append-only journal first.
+        // The legacy `.automerge` file is only a migration input for untitled
+        // rooms that have no journal yet.
         let runtimed_actor = "runtimed";
-        let mut doc = if !ephemeral && path.is_none() && persist_path.exists() {
+        let recovery_journal =
+            super::recovery::RecoveryJournal::new(persist_path.with_extension("recovery"));
+        let source_bytes = path
+            .as_ref()
+            .and_then(|source_path| std::fs::read(source_path).ok())
+            .unwrap_or_default();
+        let source_fingerprint = super::recovery::source_fingerprint(&source_bytes);
+        let mut recovered_record = None;
+        let mut startup_source_conflict = None;
+        let mut recovered_doc = None;
+        if !ephemeral {
+            match recovery_journal.load(source_fingerprint) {
+                Ok(super::recovery::RecoveryLoadOutcome::Match(recovery)) => {
+                    if recovery.record.manifest.notebook_id != id {
+                        anyhow::bail!(
+                            "recovery journal notebook identity {} does not match room {}",
+                            recovery.record.manifest.notebook_id,
+                            id
+                        );
+                    }
+                    let loaded = NotebookDoc::load_with_actor(
+                        &recovery.record.automerge_snapshot,
+                        runtimed_actor,
+                    )
+                    .map_err(|error| anyhow::anyhow!("load recovered notebook: {error}"))?;
+                    let recovered_schema = loaded.schema_version().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "recovery journal for {id} has no valid NotebookDoc schema version"
+                        )
+                    })?;
+                    if recovered_schema != recovery.record.manifest.notebook_schema_version {
+                        anyhow::bail!(
+                            "recovery journal schema manifest {} does not match snapshot schema {} for {}",
+                            recovery.record.manifest.notebook_schema_version,
+                            recovered_schema,
+                            id
+                        );
+                    }
+                    info!(
+                        "[notebook-sync] Restored journal generation {} for {}",
+                        recovery.record.manifest.source_generation, id
+                    );
+                    recovered_doc = Some(loaded);
+                    recovered_record = Some(recovery);
+                }
+                Ok(super::recovery::RecoveryLoadOutcome::SourceConflict {
+                    recovery,
+                    current_source_fingerprint,
+                }) => {
+                    if recovery.record.manifest.notebook_id != id {
+                        anyhow::bail!(
+                            "recovery journal notebook identity {} does not match room {}",
+                            recovery.record.manifest.notebook_id,
+                            id
+                        );
+                    }
+                    let loaded = NotebookDoc::load_with_actor(
+                        &recovery.record.automerge_snapshot,
+                        runtimed_actor,
+                    )
+                    .map_err(|error| anyhow::anyhow!("load conflicted recovery: {error}"))?;
+                    let recovered_schema = loaded.schema_version().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "recovery journal for {id} has no valid NotebookDoc schema version"
+                        )
+                    })?;
+                    if recovered_schema != recovery.record.manifest.notebook_schema_version {
+                        anyhow::bail!(
+                            "recovery journal schema manifest {} does not match snapshot schema {} for {}",
+                            recovery.record.manifest.notebook_schema_version,
+                            recovered_schema,
+                            id
+                        );
+                    }
+                    let reason = format!(
+                        "source_conflict: disk fingerprint {} differs from recovery fingerprint {}; both were preserved",
+                        current_source_fingerprint.to_hex(),
+                        recovery.record.manifest.source_fingerprint.to_hex()
+                    );
+                    warn!("[notebook-sync] {reason}");
+                    startup_source_conflict = Some(reason);
+                    recovered_doc = Some(loaded);
+                    recovered_record = Some(recovery);
+                }
+                Ok(super::recovery::RecoveryLoadOutcome::Unavailable { .. }) => {}
+                Err(error) => {
+                    // Keep the journal intact. Source preparation will either
+                    // append successfully after a repairable tail or enter a
+                    // visible degraded state; never delete recovery implicitly.
+                    warn!(
+                        "[notebook-sync] Could not inspect recovery journal for {}: {}",
+                        id, error
+                    );
+                }
+            }
+        }
+
+        let mut doc = if let Some(recovered) = recovered_doc {
+            recovered
+        } else if !ephemeral && path.is_none() && persist_path.exists() {
             info!(
                 "[notebook-sync] Loading persisted doc for untitled notebook: {:?}",
                 persist_path
             );
             NotebookDoc::load_or_create_with_actor(&persist_path, &notebook_id_str, runtimed_actor)
         } else {
-            if !ephemeral && persist_path.exists() {
-                if crate::paths::snapshot_before_delete(&persist_path, docs_dir) {
-                    let _ = std::fs::remove_file(&persist_path);
-                } else {
-                    warn!(
-                        "[notebook-sync] Keeping persisted doc (snapshot failed): {:?}",
-                        persist_path
-                    );
-                }
-            }
             // TODO(phase-6): tighten NotebookDoc to accept Uuid directly
             NotebookDoc::new_with_actor(&notebook_id_str, runtimed_actor)
         };
@@ -1093,6 +1257,28 @@ impl NotebookRoom {
             // Untitled notebooks have no .ipynb on disk — trust signature lives
             // in the persisted Automerge doc we just loaded.
             None => match doc.get_metadata_snapshot() {
+                Some(snapshot) => verify_trust_from_snapshot(&snapshot, &trusted_packages),
+                None => TrustState {
+                    status: runt_trust::TrustStatus::NoDependencies,
+                    info: runt_trust::TrustInfo {
+                        status: runt_trust::TrustStatus::NoDependencies,
+                        uv_dependencies: vec![],
+                        approved_uv_dependencies: vec![],
+                        conda_dependencies: vec![],
+                        approved_conda_dependencies: vec![],
+                        conda_channels: vec![],
+                        approved_conda_channels: vec![],
+                        pixi_dependencies: vec![],
+                        approved_pixi_dependencies: vec![],
+                        pixi_pypi_dependencies: vec![],
+                        approved_pixi_pypi_dependencies: vec![],
+                        pixi_channels: vec![],
+                        approved_pixi_channels: vec![],
+                    },
+                    pending_launch: false,
+                },
+            },
+            Some(_) if recovered_record.is_some() => match doc.get_metadata_snapshot() {
                 Some(snapshot) => verify_trust_from_snapshot(&snapshot, &trusted_packages),
                 None => TrustState {
                     status: runt_trust::TrustStatus::NoDependencies,
@@ -1179,13 +1365,142 @@ impl NotebookRoom {
             Some((p, f)) => RoomPersistence::with_debouncer(p, f),
             None => RoomPersistence::ephemeral(),
         };
+        let document_head_hashes = doc.get_heads();
+        let document_heads = document_head_hashes
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let genesis_snapshot = doc.save();
+        let durability = if let Some(recovery) = recovered_record {
+            Arc::new(super::durability::RoomDurability::recovered(
+                recovery_journal,
+                recovery,
+            ))
+        } else if !ephemeral {
+            // Every persistent room, including an untitled one, acknowledges
+            // NotebookDoc changes only through the append-only recovery
+            // journal. The legacy debounced `.automerge` snapshot remains a
+            // migration/read-compatibility input, never the durability truth
+            // for a newly acknowledged change.
+            Arc::new(super::durability::RoomDurability::journaled(
+                recovery_journal,
+                id,
+                path.clone(),
+                source_fingerprint,
+                0,
+                genesis_snapshot.clone(),
+            ))
+        } else {
+            Arc::new(super::durability::RoomDurability::volatile(
+                id,
+                genesis_snapshot.clone(),
+                document_head_hashes.iter().map(|head| head.0).collect(),
+            ))
+        };
+        let lifecycle = RoomLifecycle::new(genesis_snapshot, document_heads);
+        if durability.status().has_durable_record {
+            let manifest = durability.manifest();
+            let recovered_heads = manifest
+                .durable_heads
+                .iter()
+                .map(hex::encode)
+                .collect::<Vec<_>>();
+            let cell_count = doc.cell_count();
+            if let Some(save_sequence) = manifest.file_save_sequence {
+                if let Some(checkpoint_path) = manifest.canonical_path.clone() {
+                    let saved_at = std::fs::metadata(&checkpoint_path)
+                        .and_then(|metadata| metadata.modified())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    persistence.restore_file_checkpoint(super::file_checkpoint::FileCheckpoint {
+                        path: checkpoint_path,
+                        exported_heads: manifest.exported_heads.clone(),
+                        file_fingerprint: manifest.source_fingerprint,
+                        save_sequence,
+                        saved_at,
+                    });
+                }
+                let exported_heads = manifest
+                    .exported_heads
+                    .iter()
+                    .map(hex::encode)
+                    .collect::<Vec<_>>();
+                state.with_doc(|runtime| {
+                    runtime.set_file_checkpoint(&exported_heads, save_sequence)
+                })?;
+            }
+            if manifest.canonical_path.is_none() && path.is_none() {
+                // An untitled room has no external source task to resume. Its
+                // recovered Automerge union is the active source of truth, so
+                // the default NotNeeded/Interactive lifecycle is already the
+                // correct state even when peer-authored hashes are present.
+            } else if let Some(reason) = startup_source_conflict {
+                state.with_doc(|runtime| {
+                    runtime.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Conflict {
+                        reason: reason.clone(),
+                    }))
+                })?;
+                lifecycle.restore_source_conflict(
+                    manifest.source_generation,
+                    manifest.source_fingerprint,
+                    cell_count,
+                    recovered_heads,
+                    reason,
+                );
+            } else {
+                match manifest.source_phase {
+                    super::recovery::RecoverySourcePhase::DurablyStaged
+                    | super::recovery::RecoverySourcePhase::Ready => {
+                        lifecycle.restore_recovered_pending(
+                            manifest.source_generation,
+                            manifest.source_fingerprint,
+                            cell_count,
+                            recovered_heads,
+                        );
+                    }
+                    super::recovery::RecoverySourcePhase::Pending
+                    | super::recovery::RecoverySourcePhase::Failed
+                        if !manifest.peer_change_hashes.is_empty() =>
+                    {
+                        let reason = format!(
+                            "source_degraded: recovery contains {} peer changes but no durably staged source generation",
+                            manifest.peer_change_hashes.len()
+                        );
+                        state.with_doc(|runtime| {
+                            runtime.set_file_source_issue(Some(
+                                &runtime_doc::FileSourceIssue::Degraded {
+                                    reason: reason.clone(),
+                                },
+                            ))
+                        })?;
+                        lifecycle.restore_incomplete_source(
+                            manifest.source_generation,
+                            manifest.source_fingerprint,
+                            cell_count,
+                            recovered_heads,
+                            reason,
+                        );
+                    }
+                    super::recovery::RecoverySourcePhase::Pending
+                    | super::recovery::RecoverySourcePhase::Failed => {
+                        // A source-free journal snapshot with no collaborative
+                        // changes is safe to regenerate. Leave lifecycle at its
+                        // pristine default; catalog publication claims a fresh
+                        // source generation when file ingestion is requested.
+                    }
+                }
+            }
+        }
+        let initial_load = RoomInitialLoad::new(Arc::clone(&lifecycle));
 
         Ok(Self {
             id,
             doc: Arc::new(RwLock::new(doc)),
             broadcasts: RoomBroadcasts::default(),
             persistence,
-            initial_load: RoomInitialLoad::default(),
+            initial_load,
+            lifecycle,
+            durability,
+            source_reconciliation_claimed: AtomicBool::new(false),
             file_binding: NotebookFileBinding::new(path, ephemeral),
             identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
@@ -1302,12 +1617,36 @@ impl NotebookRoom {
             &state,
             path.as_deref(),
         );
+        let document_head_hashes = doc.get_heads();
+        let document_heads = document_head_hashes
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let genesis_snapshot = doc.save();
+        let durability = Arc::new(super::durability::RoomDurability::journaled(
+            super::recovery::RecoveryJournal::new(persist_path.with_extension("recovery")),
+            id,
+            path.clone(),
+            super::recovery::source_fingerprint(
+                &path
+                    .as_ref()
+                    .and_then(|source_path| std::fs::read(source_path).ok())
+                    .unwrap_or_default(),
+            ),
+            0,
+            genesis_snapshot.clone(),
+        ));
+        let lifecycle = RoomLifecycle::new(genesis_snapshot, document_heads);
+        let initial_load = RoomInitialLoad::new(Arc::clone(&lifecycle));
         Self {
             id,
             doc: Arc::new(RwLock::new(doc)),
             broadcasts: RoomBroadcasts::default(),
             persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
-            initial_load: RoomInitialLoad::default(),
+            initial_load,
+            lifecycle,
+            durability,
+            source_reconciliation_claimed: AtomicBool::new(false),
             file_binding: NotebookFileBinding::new(path, false),
             identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
@@ -1353,6 +1692,9 @@ impl NotebookRoom {
     /// caller won the race and should perform the load.
     #[cfg(test)]
     pub fn try_start_loading(&self) -> bool {
+        if !self.initial_load.is_loading() {
+            self.lifecycle.mark_source_required();
+        }
         matches!(
             self.initial_load.begin().0,
             RoomInitialLoadStart::Started { .. }
@@ -1384,9 +1726,25 @@ impl NotebookRoom {
     }
 
     /// Clear the persistence hazard and publish a recovered Ready generation.
-    pub fn mark_load_recovered(&self, cell_count: usize) {
-        self.persistence.clear_load_failed();
-        let _ = self.initial_load.recover_failed(cell_count);
+    ///
+    /// A failed file-backed generation cannot become Ready without first
+    /// capturing the bounded projection that generation will own. This keeps
+    /// later projection reads from rebuilding an unqualified live-doc view.
+    pub async fn mark_load_recovered(&self, cell_count: usize) -> anyhow::Result<Option<u64>> {
+        let RoomSourceState::Failed(previous) = self.lifecycle.source_state() else {
+            self.persistence.clear_load_failed();
+            return Ok(None);
+        };
+        let generation = previous.generation.saturating_add(1);
+        let projection = Arc::new(
+            super::projection::build_live_notebook_projection_for_generation(self, generation)
+                .await?,
+        );
+        let recovered = self.initial_load.recover_failed(cell_count, projection);
+        if recovered.is_some() {
+            self.persistence.clear_load_failed();
+        }
+        Ok(recovered)
     }
 
     /// Get kernel info if a kernel is running (runtime-agent-backed).

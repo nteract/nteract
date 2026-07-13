@@ -634,6 +634,66 @@ impl NotebookDoc {
         None
     }
 
+    /// Read only `metadata.runt.uv.dependencies` without materializing the
+    /// rest of notebook metadata.
+    ///
+    /// Control-plane projections call this while holding the document lock.
+    /// Traversing the native Automerge maps directly keeps arbitrary Jupyter
+    /// extension metadata and unrelated runt configuration out of that hot
+    /// path. Legacy scalar-encoded runt metadata is supported by parsing only
+    /// that scalar value.
+    pub fn get_uv_dependencies(&self) -> Vec<String> {
+        fn dependency_strings(value: Option<serde_json::Value>) -> Vec<String> {
+            value
+                .and_then(|value| value.as_array().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|value| value.as_str().map(ToString::to_string))
+                .collect()
+        }
+
+        let Some(meta_id) = self.metadata_map_id() else {
+            return Vec::new();
+        };
+        let Some((runt_value, runt_id)) = self.doc.get(&meta_id, "runt").ok().flatten() else {
+            return Vec::new();
+        };
+        let runt_id = match runt_value {
+            automerge::Value::Object(ObjType::Map) => runt_id,
+            automerge::Value::Scalar(value) => {
+                let automerge::ScalarValue::Str(encoded) = value.as_ref() else {
+                    return Vec::new();
+                };
+                return serde_json::from_str::<serde_json::Value>(encoded)
+                    .ok()
+                    .and_then(|runt| runt.get("uv").cloned())
+                    .and_then(|uv| uv.get("dependencies").cloned())
+                    .map(|dependencies| dependency_strings(Some(dependencies)))
+                    .unwrap_or_default();
+            }
+            _ => return Vec::new(),
+        };
+        let Some((uv_value, uv_id)) = self.doc.get(&runt_id, "uv").ok().flatten() else {
+            return Vec::new();
+        };
+        match uv_value {
+            automerge::Value::Object(ObjType::Map) => {
+                dependency_strings(read_json_value(&self.doc, &uv_id, "dependencies"))
+            }
+            automerge::Value::Scalar(value) => {
+                let automerge::ScalarValue::Str(encoded) = value.as_ref() else {
+                    return Vec::new();
+                };
+                serde_json::from_str::<serde_json::Value>(encoded)
+                    .ok()
+                    .and_then(|uv| uv.get("dependencies").cloned())
+                    .map(|dependencies| dependency_strings(Some(dependencies)))
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Read the notebook metadata as it existed at a historical head set.
     pub fn get_metadata_snapshot_at_heads(
         &self,
@@ -6415,6 +6475,31 @@ mod tests {
         let read_back = doc.get_metadata_snapshot().unwrap();
         assert_eq!(read_back.kernelspec.as_ref().unwrap().name, "deno");
         assert_eq!(read_back.language_info.as_ref().unwrap().name, "typescript");
+    }
+
+    #[test]
+    fn uv_dependency_projection_ignores_unrelated_large_metadata() {
+        let mut doc = NotebookDoc::new("nb-bounded-metadata");
+        let mut snapshot = metadata::NotebookMetadataSnapshot::default();
+        snapshot.runt.uv = Some(metadata::UvInlineMetadata {
+            dependencies: vec!["numpy>=2".to_string(), "pandas".to_string()],
+            requires_python: Some(">=3.11".to_string()),
+            prerelease: None,
+        });
+        snapshot.extras.insert(
+            "large-extension-payload".to_string(),
+            serde_json::Value::String("x".repeat(2 * 1024 * 1024)),
+        );
+        snapshot.runt.extra.insert(
+            "large-unrelated-runt-payload".to_string(),
+            serde_json::Value::String("y".repeat(2 * 1024 * 1024)),
+        );
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+
+        assert_eq!(
+            doc.get_uv_dependencies(),
+            vec!["numpy>=2".to_string(), "pandas".to_string()]
+        );
     }
 
     #[test]

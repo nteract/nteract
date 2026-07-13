@@ -94,6 +94,124 @@ describe("NotebookClient", () => {
     });
   });
 
+  it("returns the committed causal save checkpoint", async () => {
+    const { client, sendRequest } = stubClient();
+    sendRequest.mockResolvedValueOnce({
+      result: "notebook_saved",
+      path: "/tmp/notebook.ipynb",
+      exported_heads: ["head-a"],
+      save_sequence: 7,
+    });
+
+    await expect(client.saveNotebook({ formatCells: true })).resolves.toEqual({
+      outcome: "saved",
+      path: "/tmp/notebook.ipynb",
+      exportedHeads: ["head-a"],
+      saveSequence: 7,
+    });
+  });
+
+  it("distinguishes already-current from a new checkpoint", async () => {
+    const { client, sendRequest } = stubClient();
+    sendRequest.mockResolvedValueOnce({
+      result: "notebook_already_current",
+      path: "/tmp/notebook.ipynb",
+      exported_heads: ["head-a"],
+      save_sequence: 7,
+    });
+
+    await expect(client.saveNotebook({ formatCells: false })).resolves.toEqual({
+      outcome: "already_current",
+      path: "/tmp/notebook.ipynb",
+      exportedHeads: ["head-a"],
+      saveSequence: 7,
+    });
+  });
+
+  it("returns structured blocked save state without throwing", async () => {
+    const { client, sendRequest } = stubClient();
+    sendRequest.mockResolvedValueOnce({
+      result: "notebook_save_blocked",
+      save_sequence: 3,
+      reason: { type: "superseded", latest_sequence: 4 },
+    });
+
+    await expect(client.saveNotebook({ formatCells: false })).resolves.toEqual({
+      outcome: "blocked",
+      path: undefined,
+      saveSequence: 3,
+      reason: { type: "superseded", latest_sequence: 4 },
+    });
+  });
+
+  it("reconciles a disk-source conflict behind the caller's required heads", async () => {
+    const { client, flush, sendRequest } = stubClientWithHeads(["head-a"]);
+    sendRequest.mockResolvedValueOnce({
+      result: "notebook_source_reconciled",
+      operation: "archive_recovery_and_reload_source",
+      path: "/tmp/notebook.ipynb",
+      archived_journal: "/tmp/room.recovery.archived",
+      exported_heads: ["head-disk"],
+      save_sequence: 8,
+      source_generation: 4,
+    });
+
+    await expect(
+      client.reconcileNotebookSource({ type: "archive_recovery_and_reload_source" }),
+    ).resolves.toEqual({
+      outcome: "reconciled",
+      operation: "archive_recovery_and_reload_source",
+      path: "/tmp/notebook.ipynb",
+      archivedJournal: "/tmp/room.recovery.archived",
+      exportedHeads: ["head-disk"],
+      saveSequence: 8,
+      sourceGeneration: 4,
+    });
+    expect(flush).toHaveBeenCalledOnce();
+    expect(sendRequest).toHaveBeenCalledWith(
+      {
+        type: "reconcile_notebook_source",
+        operation: { type: "archive_recovery_and_reload_source" },
+      },
+      { required_heads: ["head-a"] },
+    );
+  });
+
+  it("returns a structured source-reconciliation block without false success", async () => {
+    const { client, sendRequest } = stubClient();
+    sendRequest.mockResolvedValueOnce({
+      result: "notebook_source_reconciliation_blocked",
+      operation: "save_recovered_as",
+      reason: {
+        type: "target_must_differ",
+        bound_path: "/tmp/notebook.ipynb",
+        requested_path: "/tmp/notebook.ipynb",
+      },
+    });
+
+    await expect(
+      client.reconcileNotebookSource({
+        type: "save_recovered_as",
+        path: "/tmp/notebook.ipynb",
+      }),
+    ).resolves.toEqual({
+      outcome: "blocked",
+      operation: "save_recovered_as",
+      reason: {
+        type: "target_must_differ",
+        bound_path: "/tmp/notebook.ipynb",
+        requested_path: "/tmp/notebook.ipynb",
+      },
+    });
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "reconcile_notebook_source",
+      operation: {
+        type: "save_recovered_as",
+        path: "/tmp/notebook.ipynb",
+      },
+    });
+  });
+
   it("attaches required heads to daemon-managed execute requests", async () => {
     const { client, flush, sendRequest } = stubClientWithHeads(["head-a"]);
 

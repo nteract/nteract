@@ -17,14 +17,22 @@ pub(crate) struct ParsedIpynbCells {
 /// The source field can be either a string or an array of strings (lines).
 /// We normalize it to a single string.
 ///
-/// For older notebooks (pre-nbformat 4.5) without cell IDs we mint a fresh
-/// UUID per cell. The next save writes those UUIDs back, upgrading the file
-/// to nbformat 4.5. Positional `__external_cell_N` IDs were briefly used
-/// here and caused source/cell-type desync when the autosave-write-watch
-/// loop renumbered them by position — see issue and review notes.
+/// For older notebooks (pre-nbformat 4.5) without cell IDs we derive a UUIDv5
+/// from the stable room identity and the legacy cell ordinal. Re-reading the
+/// same idless file for recovery or a watcher edit therefore retains the exact
+/// staged identity. The next save writes those IDs back, upgrading the file to
+/// nbformat 4.5 and removing the ordinal fallback.
 ///
 /// Positions are generated incrementally using fractional indexing.
+#[cfg(test)]
 pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedIpynbCells> {
+    parse_cells_from_ipynb_for_notebook(json, uuid::Uuid::nil())
+}
+
+pub(crate) fn parse_cells_from_ipynb_for_notebook(
+    json: &serde_json::Value,
+    notebook_id: uuid::Uuid,
+) -> Option<ParsedIpynbCells> {
     use loro_fractional_index::FractionalIndex;
 
     let cells_json = json.get("cells").and_then(|c| c.as_array())?;
@@ -35,12 +43,13 @@ pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedI
 
     let parsed_cells = cells_json
         .iter()
-        .map(|cell| {
+        .enumerate()
+        .map(|(index, cell)| {
             let id = cell
                 .get("id")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                .unwrap_or_else(|| legacy_cell_id(notebook_id, index));
 
             let cell_type = cell
                 .get("cell_type")
@@ -110,6 +119,14 @@ pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedI
     })
 }
 
+fn legacy_cell_id(notebook_id: uuid::Uuid, index: usize) -> String {
+    uuid::Uuid::new_v5(
+        &notebook_id,
+        format!("nteract:legacy-nbformat-cell:{index}").as_bytes(),
+    )
+    .to_string()
+}
+
 /// Parse notebook metadata from a .ipynb JSON value.
 ///
 /// Uses `NotebookMetadataSnapshot::from_metadata_value` which extracts
@@ -166,14 +183,6 @@ pub(crate) struct ParsedStreamingNotebook {
     pub metadata_value: Option<serde_json::Value>,
     pub attachments: NbformatAttachmentMap,
 }
-type StreamingLoadBatchEntry = (
-    usize,
-    StreamingCell,
-    Vec<serde_json::Value>,
-    ResolvedAssets,
-    AttachmentRefs,
-);
-
 fn should_resolve_markdown_assets(cell_type: &str) -> bool {
     cell_type == "markdown"
 }
@@ -238,7 +247,15 @@ fn jobj_get<'a, 's>(
 /// Returns `(cells, Option<metadata_snapshot>)`. Outputs are kept as
 /// `serde_json::Value` so they can be passed directly to `create_manifest`
 /// without a serialize→parse round-trip.
+#[cfg(test)]
 pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebook, String> {
+    parse_notebook_jiter_for_notebook(bytes, uuid::Uuid::nil())
+}
+
+fn parse_notebook_jiter_for_notebook(
+    bytes: &[u8],
+    notebook_id: uuid::Uuid,
+) -> Result<ParsedStreamingNotebook, String> {
     let json = jiter::JsonValue::parse(bytes, false)
         .map_err(|e| format!("Invalid notebook JSON: {}", e))?;
 
@@ -271,7 +288,7 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
 
     let mut cells = Vec::with_capacity(cells_arr.len());
     let mut attachments = HashMap::new();
-    for cell in cells_arr.iter() {
+    for (index, cell) in cells_arr.iter().enumerate() {
         let cell_obj = match cell {
             jiter::JsonValue::Object(obj) => obj,
             _ => continue,
@@ -282,7 +299,7 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
                 jiter::JsonValue::Str(s) => Some(s.to_string()),
                 _ => None,
             })
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            .unwrap_or_else(|| legacy_cell_id(notebook_id, index));
 
         let cell_type = jobj_get(cell_obj, "cell_type")
             .and_then(|v| match v {
@@ -521,6 +538,7 @@ fn widget_metadata_buffer_path(value: Option<&serde_json::Value>) -> Option<Vec<
     }
 }
 
+#[cfg(test)]
 fn write_widget_comm_topology_to_state_doc(
     state_doc: &mut RuntimeStateDoc,
     comms: &[LoadedWidgetComm],
@@ -538,6 +556,7 @@ fn write_widget_comm_topology_to_state_doc(
     Ok(())
 }
 
+#[cfg(test)]
 fn write_widget_comm_state_to_comms_doc(
     comms_doc: &mut runtime_doc::CommsDoc,
     comms: &[LoadedWidgetComm],
@@ -594,118 +613,93 @@ pub(crate) fn fallback_output_with_id(output: &serde_json::Value) -> serde_json:
     fallback
 }
 
-/// Materialize notebook cells into the room in batches.
-///
-/// This function owns no peer writer and no per-peer `sync::State`. Every
-/// mutation uses the room's ordinary broadcast channels, so all current peers
-/// can progressively generate their own deltas. The room lifecycle task is the
-/// sole caller.
-pub(crate) async fn materialize_initial_load(
+struct PreparedInitialCell {
+    cell: StreamingCell,
+    output_refs: Vec<serde_json::Value>,
+    resolved_assets: ResolvedAssets,
+    attachment_refs: AttachmentRefs,
+    execution: Option<LoadedExecution>,
+}
+
+struct PreparedInitialImport {
+    source_content: Vec<u8>,
+    fingerprint: super::recovery::SourceFingerprint,
+    cells: Vec<PreparedInitialCell>,
+    metadata: Option<NotebookMetadataSnapshot>,
+    widget_comms: Vec<LoadedWidgetComm>,
+    loaded_sources: HashMap<String, String>,
+}
+
+/// Fully validated and asset-resolved disk state for an explicit source
+/// reconciliation. Preparation is async and completes before the recovery
+/// journal is archived or the live document lock is acquired.
+pub(crate) struct PreparedSourceReconciliation {
+    prepared: PreparedInitialImport,
+}
+
+/// The exact causal replacement authored onto the live recovered document.
+pub(crate) struct AppliedSourceReconciliation {
+    pub(crate) fingerprint: super::recovery::SourceFingerprint,
+    pub(crate) source_content: Vec<u8>,
+    pub(crate) loaded_sources: HashMap<String, String>,
+    pub(crate) heads: Vec<automerge::ChangeHash>,
+    pub(crate) change_hashes: Vec<automerge::ChangeHash>,
+    pub(crate) snapshot: Vec<u8>,
+    executions: Vec<StagedExecutionImport>,
+    widget_comms: Vec<StagedWidgetCommImport>,
+}
+
+/// Read, parse, and resolve every source-owned value before the live notebook
+/// document is touched. Blob writes are content-addressed and therefore safe
+/// to complete before the staged Automerge history is published.
+async fn prepare_initial_import(
     room: &NotebookRoom,
     path: &Path,
     execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
-) -> Result<usize, String> {
-    let start = std::time::Instant::now();
-
-    // 1. Read and parse the notebook file with jiter
-    let bytes = tokio::fs::read(path)
+) -> Result<PreparedInitialImport, String> {
+    let source_content = tokio::fs::read(path)
         .await
-        .map_err(|e| format!("Failed to read notebook: {}", e))?;
-
-    let parsed = parse_notebook_jiter(&bytes)?;
-    let cells = parsed.cells;
-    let metadata = parsed.metadata;
+        .map_err(|error| format!("Failed to read notebook: {error}"))?;
+    let fingerprint = super::recovery::source_fingerprint(&source_content);
+    let parsed = parse_notebook_jiter_for_notebook(&source_content, room.id)?;
     let widget_comms =
         widget_comms_from_notebook_metadata(parsed.metadata_value.as_ref(), &room.blob_store).await;
-    let nbformat_attachments = parsed.attachments;
-
-    let total_cells = cells.len();
-    info!(
-        "[streaming-load] Parsed {} cells from {} in {:?}",
-        total_cells,
-        path.display(),
-        start.elapsed()
-    );
-    let loaded_sources: HashMap<String, String> = cells
-        .iter()
-        .map(|cell| (cell.id.clone(), cell.source.clone()))
-        .collect();
-    let should_seed_save_baseline = match room.file_binding.path().await {
-        Some(bound_path) => bound_path == path,
-        None => false,
-    };
-    if should_seed_save_baseline {
-        // The file watcher is live while cells stream to the frontend. Seed the
-        // disk-source baseline before exposing batches so an unchanged initial
-        // watch event cannot roll back immediate live edits.
-        *room.persistence.last_save_sources.write().await = loaded_sources;
-        // Also seed the disk-hash staleness baseline: these bytes are what this
-        // daemon read; autosave refuses to overwrite anything else until the
-        // watcher reconciles it.
-        room.persistence.note_disk_content(&bytes);
-    }
     let notebook_path = room
         .file_binding
         .path()
         .await
-        .map(|p| p.to_string_lossy().to_string());
+        .map(|value| value.to_string_lossy().into_owned());
     let context_id = super::notebook_execution_context_id(room, notebook_path.as_deref());
     let durable_records = durable_execution_records(execution_store, &context_id).await;
+    let mut claimed_execution_ids = HashSet::new();
+    let mut prepared_cells = Vec::with_capacity(parsed.cells.len());
+    let mut loaded_sources = HashMap::with_capacity(parsed.cells.len());
 
-    if !widget_comms.is_empty() {
-        room.state
-            .with_doc(|sd| write_widget_comm_topology_to_state_doc(sd, &widget_comms))
-            .map_err(|e| format!("Failed to load widget metadata into runtime state: {e}"))?;
-        room.comms
-            .with_doc(|cd| write_widget_comm_state_to_comms_doc(cd, &widget_comms))
-            .map_err(|e| format!("Failed to load widget metadata into comms doc: {e}"))?;
-    }
-
-    // 2. Stream cells in batches
-    let mut cell_iter = cells.into_iter().enumerate().peekable();
-    let mut batch_num = 0u32;
-
-    while cell_iter.peek().is_some() {
-        let batch_start = std::time::Instant::now();
-
-        // Collect one batch and process outputs through blob store (outside doc lock)
-        let mut batch: Vec<StreamingLoadBatchEntry> = Vec::new();
-        for _ in 0..STREAMING_BATCH_SIZE {
-            let Some((idx, cell)) = cell_iter.next() else {
-                break;
-            };
-            let mut output_refs = Vec::with_capacity(cell.outputs.len());
-            for output in &cell.outputs {
-                output_refs.push(output_value_to_manifest_ref(output, &room.blob_store).await);
-            }
-            let attachment_refs = nbformat_attachments_to_blob_refs(
-                nbformat_attachments.get(&cell.id),
-                &room.blob_store,
-            )
-            .await
-            .map_err(|e| format!("Failed to ingest attachments for {}: {e}", cell.id))?;
-            let mut resolved_assets = if should_resolve_markdown_assets(&cell.cell_type) {
-                resolve_markdown_assets(&cell.source, Some(path), None, &room.blob_store).await
-            } else {
-                ResolvedAssets::new()
-            };
-            if should_resolve_markdown_assets(&cell.cell_type) {
-                resolved_assets.extend(resolved_attachment_assets(&cell.source, &attachment_refs));
-            }
-            batch.push((idx, cell, output_refs, resolved_assets, attachment_refs));
+    for cell in parsed.cells {
+        loaded_sources.insert(cell.id.clone(), cell.source.clone());
+        let mut output_refs = Vec::with_capacity(cell.outputs.len());
+        for output in &cell.outputs {
+            output_refs.push(output_value_to_manifest_ref(output, &room.blob_store).await);
         }
-
-        // Store outputs in RuntimeStateDoc with durable execution state when a
-        // matching terminal record exists, otherwise mint synthetic IDs.
-        // Collect (cell_id, execution) pairs for linking below.
-        let mut cell_executions: HashMap<String, LoadedExecution> = HashMap::new();
-        let mut claimed_execution_ids = HashSet::new();
-        for (_idx, cell, output_refs, _resolved_assets, _attachment_refs) in &batch {
-            if output_refs.is_empty() {
-                continue;
-            }
-            let parsed_ec = cell.execution_count.parse::<i64>().ok();
-            let execution = durable_or_synthetic_execution(
+        let attachment_refs =
+            nbformat_attachments_to_blob_refs(parsed.attachments.get(&cell.id), &room.blob_store)
+                .await
+                .map_err(|error| {
+                    format!("Failed to ingest attachments for {}: {error}", cell.id)
+                })?;
+        let mut resolved_assets = if should_resolve_markdown_assets(&cell.cell_type) {
+            resolve_markdown_assets(&cell.source, Some(path), None, &room.blob_store).await
+        } else {
+            ResolvedAssets::new()
+        };
+        if should_resolve_markdown_assets(&cell.cell_type) {
+            resolved_assets.extend(resolved_attachment_assets(&cell.source, &attachment_refs));
+        }
+        let execution_count = cell.execution_count.parse::<i64>().ok();
+        let execution = if output_refs.is_empty() && execution_count.is_none() {
+            None
+        } else {
+            Some(durable_or_synthetic_execution(
                 &durable_records,
                 &mut claimed_execution_ids,
                 DurableExecutionLookup {
@@ -713,31 +707,61 @@ pub(crate) async fn materialize_initial_load(
                     notebook_path: notebook_path.as_deref(),
                     cell_id: &cell.id,
                     source: &cell.source,
-                    execution_count: parsed_ec,
-                    outputs: output_refs,
+                    execution_count,
+                    outputs: &output_refs,
                 },
-            );
-            cell_executions.insert(cell.id.clone(), execution);
-        }
-        let _ = room.state.with_doc(|sd| {
-            for (_idx, cell, output_refs, _resolved_assets, _attachment_refs) in &batch {
-                if let Some(execution) = cell_executions.get(&cell.id) {
-                    let _ = sd.create_execution(&execution.execution_id);
-                    let _ = sd.set_outputs(&execution.execution_id, output_refs);
-                    if let Ok(ec) = cell.execution_count.parse::<i64>() {
-                        let _ = sd.set_execution_count(&execution.execution_id, ec);
-                    }
-                    let _ = sd.set_execution_done(&execution.execution_id, execution.success);
-                }
-            }
-            Ok(())
+            ))
+        };
+        prepared_cells.push(PreparedInitialCell {
+            cell,
+            output_refs,
+            resolved_assets,
+            attachment_refs,
+            execution,
         });
+    }
 
-        // Add the batch to the authoritative room document. Peer-specific sync
-        // messages are generated by each peer loop after the room broadcast.
-        {
-            let mut doc = room.doc.write().await;
-            for (_idx, cell, _output_refs, resolved_assets, attachment_refs) in &batch {
+    Ok(PreparedInitialImport {
+        source_content,
+        fingerprint,
+        cells: prepared_cells,
+        metadata: parsed.metadata,
+        widget_comms,
+        loaded_sources,
+    })
+}
+
+/// Read and fully prepare the bound `.ipynb` before a caller commits to
+/// archiving recovery history. This deliberately shares the initial source
+/// preparation path so attachments, output blobs, markdown assets, metadata,
+/// and stable disk cell IDs receive identical validation.
+pub(crate) async fn prepare_source_reconciliation(
+    room: &NotebookRoom,
+    path: &Path,
+    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
+) -> Result<PreparedSourceReconciliation, String> {
+    prepare_initial_import(room, path, execution_store)
+        .await
+        .map(|prepared| PreparedSourceReconciliation { prepared })
+}
+
+/// Author a deliberate disk-source replacement on top of the current live
+/// recovered history. The caller must hold the room document write lock and
+/// retain a pre-mutation snapshot for rollback if the journal commit fails.
+pub(crate) fn apply_prepared_source_reconciliation(
+    doc: &mut NotebookDoc,
+    actor: &str,
+    prepared: PreparedSourceReconciliation,
+) -> Result<AppliedSourceReconciliation, String> {
+    let baseline_heads = doc.get_heads();
+    doc.transact_at_heads_recovering(
+        &baseline_heads,
+        Some(actor),
+        "source-reconciliation",
+        |doc| {
+            doc.clear_all_cells()?;
+            for prepared_cell in &prepared.prepared.cells {
+                let cell = &prepared_cell.cell;
                 doc.add_cell_full(
                     &cell.id,
                     &cell.cell_type,
@@ -745,64 +769,581 @@ pub(crate) async fn materialize_initial_load(
                     &cell.source,
                     &cell.execution_count,
                     &cell.metadata,
-                )
-                .map_err(|e| format!("Failed to add cell {}: {}", cell.id, e))?;
-                // Link cell to its synthetic execution_id
-                if let Some(execution) = cell_executions.get(&cell.id) {
-                    let _ = doc.set_execution_id(&cell.id, Some(&execution.execution_id));
+                )?;
+                if let Some(execution) = &prepared_cell.execution {
+                    doc.set_execution_id(&cell.id, Some(&execution.execution_id))?;
                 }
-                doc.set_cell_resolved_assets(&cell.id, resolved_assets)
-                    .map_err(|e| format!("Failed to set resolved assets for {}: {}", cell.id, e))?;
-                doc.set_cell_attachments(&cell.id, attachment_refs)
-                    .map_err(|e| format!("Failed to set attachments for {}: {}", cell.id, e))?;
+                doc.set_cell_resolved_assets(&cell.id, &prepared_cell.resolved_assets)?;
+                doc.set_cell_attachments(&cell.id, &prepared_cell.attachment_refs)?;
             }
+            if let Some(metadata) = prepared.prepared.metadata.as_ref() {
+                doc.set_metadata_snapshot(metadata)?;
+            } else {
+                doc.set_metadata_snapshot(&NotebookMetadataSnapshot::default())?;
+            }
+            Ok(())
+        },
+    )
+    .map_err(|error| format!("Failed to author source reconciliation: {error}"))?;
+
+    let changes = doc.doc_mut().get_changes(&baseline_heads);
+    if changes.is_empty() {
+        return Err("Source reconciliation authored no causal replacement changes".to_string());
+    }
+    let change_hashes = changes.iter().map(automerge::Change::hash).collect();
+    let heads = doc.get_heads();
+    let snapshot = doc.save();
+    let executions = prepared
+        .prepared
+        .cells
+        .iter()
+        .filter_map(|prepared_cell| {
+            prepared_cell
+                .execution
+                .as_ref()
+                .map(|execution| StagedExecutionImport {
+                    execution_id: execution.execution_id.clone(),
+                    success: execution.success,
+                    execution_count: prepared_cell.cell.execution_count.parse::<i64>().ok(),
+                    outputs: prepared_cell.output_refs.clone(),
+                })
+        })
+        .collect();
+    let widget_comms = prepared
+        .prepared
+        .widget_comms
+        .iter()
+        .map(|comm| StagedWidgetCommImport {
+            comm_id: comm.comm_id.clone(),
+            model_module: comm.model_module.clone(),
+            model_name: comm.model_name.clone(),
+            state: comm.state.clone(),
+            seq: comm.seq,
+        })
+        .collect();
+
+    Ok(AppliedSourceReconciliation {
+        fingerprint: prepared.prepared.fingerprint,
+        source_content: prepared.prepared.source_content,
+        loaded_sources: prepared.prepared.loaded_sources,
+        heads,
+        change_hashes,
+        snapshot,
+        executions,
+        widget_comms,
+    })
+}
+
+fn capture_staged_batch(
+    staged: &mut NotebookDoc,
+    previous_heads: &[automerge::ChangeHash],
+) -> Option<StagedChangeBatch> {
+    let resulting_heads = staged.get_heads();
+    let changes = staged.doc_mut().get_changes(previous_heads);
+    if changes.is_empty() {
+        return None;
+    }
+    let hashes = changes.iter().map(automerge::Change::hash).collect();
+    Some(StagedChangeBatch {
+        changes,
+        hashes,
+        resulting_heads,
+    })
+}
+
+async fn stage_initial_import(
+    room: &NotebookRoom,
+    generation: u64,
+    prepared: PreparedInitialImport,
+) -> Result<
+    (
+        Arc<StagedImportArtifact>,
+        Arc<runtimed_client::protocol::NotebookProjection>,
+    ),
+    String,
+> {
+    let actor = format!("runtimed:source:{}:{generation}", room.id);
+    let genesis = room.lifecycle.genesis_snapshot();
+    let mut staged = NotebookDoc::load_with_actor(&genesis, &actor)
+        .map_err(|error| format!("Failed to load canonical room genesis: {error}"))?;
+    let mut change_batches = Vec::new();
+    let mut executions = Vec::new();
+
+    for cells in prepared.cells.chunks(STREAMING_BATCH_SIZE) {
+        let previous_heads = staged.get_heads();
+        for prepared_cell in cells {
+            let cell = &prepared_cell.cell;
+            staged
+                .add_cell_full(
+                    &cell.id,
+                    &cell.cell_type,
+                    &cell.position,
+                    &cell.source,
+                    &cell.execution_count,
+                    &cell.metadata,
+                )
+                .map_err(|error| format!("Failed to stage cell {}: {error}", cell.id))?;
+            if let Some(execution) = &prepared_cell.execution {
+                staged
+                    .set_execution_id(&cell.id, Some(&execution.execution_id))
+                    .map_err(|error| {
+                        format!("Failed to stage execution for {}: {error}", cell.id)
+                    })?;
+                executions.push(StagedExecutionImport {
+                    execution_id: execution.execution_id.clone(),
+                    success: execution.success,
+                    execution_count: cell.execution_count.parse::<i64>().ok(),
+                    outputs: prepared_cell.output_refs.clone(),
+                });
+            }
+            staged
+                .set_cell_resolved_assets(&cell.id, &prepared_cell.resolved_assets)
+                .map_err(|error| format!("Failed to stage assets for {}: {error}", cell.id))?;
+            staged
+                .set_cell_attachments(&cell.id, &prepared_cell.attachment_refs)
+                .map_err(|error| format!("Failed to stage attachments for {}: {error}", cell.id))?;
         }
+        if let Some(batch) = capture_staged_batch(&mut staged, &previous_heads) {
+            change_batches.push(batch);
+        }
+    }
 
-        // Notify every peer, including the peer that happened to initiate the
-        // load. A broken peer writer cannot affect this room-owned operation.
-        let _ = room.broadcasts.changed_tx.send(());
-        // RuntimeStateDoc notification is automatic via with_doc heads check
+    if let Some(metadata) = &prepared.metadata {
+        let previous_heads = staged.get_heads();
+        staged
+            .set_metadata_snapshot(metadata)
+            .map_err(|error| format!("Failed to stage notebook metadata: {error}"))?;
+        if let Some(batch) = capture_staged_batch(&mut staged, &previous_heads) {
+            change_batches.push(batch);
+        }
+    }
 
-        // Give woken peer loops a scheduling turn to snapshot this batch before
-        // the source authors the next one. This preserves progressive delivery
-        // without waiting for, or becoming owned by, any particular peer.
-        tokio::task::yield_now().await;
+    let staged_heads = staged.get_heads();
+    let change_hashes = change_batches
+        .iter()
+        .flat_map(|batch| batch.hashes.iter().copied())
+        .collect::<Vec<_>>();
+    let snapshot: Arc<[u8]> = staged.save().into();
+    let projection = Arc::new(
+        build_staged_notebook_projection(room, &mut staged, generation)
+            .await
+            .map_err(|error| format!("Failed to build staged projection: {error:#}"))?,
+    );
+    let widget_comms = prepared
+        .widget_comms
+        .into_iter()
+        .map(|comm| StagedWidgetCommImport {
+            comm_id: comm.comm_id,
+            model_module: comm.model_module,
+            model_name: comm.model_name,
+            state: comm.state,
+            seq: comm.seq,
+        })
+        .collect();
+    let artifact = Arc::new(StagedImportArtifact {
+        generation,
+        fingerprint: prepared.fingerprint,
+        change_batches,
+        change_hashes,
+        staged_heads,
+        snapshot,
+        source_content: prepared.source_content.into(),
+        cell_count: prepared.cells.len(),
+        loaded_sources: prepared.loaded_sources,
+        executions,
+        widget_comms,
+    });
+    Ok((artifact, projection))
+}
 
-        batch_num += 1;
-        debug!(
-            "[streaming-load] Batch {} ({} cells) in {:?}",
-            batch_num,
-            batch.len(),
-            batch_start.elapsed(),
+async fn journal_and_publish_staged_import(
+    room: &NotebookRoom,
+    artifact: Arc<StagedImportArtifact>,
+    projection: Arc<runtimed_client::protocol::NotebookProjection>,
+    document_heads: Vec<String>,
+) -> Result<(), String> {
+    let durability = Arc::clone(&room.durability);
+    let lifecycle = Arc::clone(&room.lifecycle);
+    let generation = artifact.generation;
+    let fingerprint = artifact.fingerprint;
+    let change_hashes = artifact.change_hashes.iter().map(|hash| hash.0).collect();
+    let durable_heads = artifact.staged_heads.iter().map(|head| head.0).collect();
+    let snapshot = Vec::from(artifact.snapshot.as_ref());
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        durability
+            .commit_staged_source(
+                &snapshot,
+                durable_heads,
+                generation,
+                fingerprint,
+                change_hashes,
+            )
+            .map_err(|error| format!("Failed to commit staged recovery record: {error}"))?;
+        if !lifecycle.publish_projection_ready(generation, artifact, projection, document_heads) {
+            return Err(
+                "session_superseded: source generation changed before projection publish"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Recovery journal task failed: {error}"))?
+}
+
+fn publish_initial_file_checkpoint(
+    room: &NotebookRoom,
+    source_path: &Path,
+    artifact: &StagedImportArtifact,
+) -> Result<(), String> {
+    let exported_heads = artifact
+        .staged_heads
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let saved_at = std::fs::metadata(source_path)
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    room.persistence
+        .restore_file_checkpoint(super::file_checkpoint::FileCheckpoint {
+            path: source_path.to_path_buf(),
+            exported_heads: artifact.staged_heads.iter().map(|head| head.0).collect(),
+            file_fingerprint: artifact.fingerprint,
+            save_sequence: 0,
+            saved_at,
+        });
+    room.state
+        .with_doc(|state| state.set_file_checkpoint(&exported_heads, 0))
+        .map_err(|error| format!("Failed to publish source checkpoint state: {error}"))?;
+    Ok(())
+}
+
+fn apply_staged_runtime_sidecars(
+    room: &NotebookRoom,
+    artifact: &StagedImportArtifact,
+) -> Result<(), String> {
+    apply_runtime_sidecars(room, &artifact.executions, &artifact.widget_comms)
+}
+
+fn prepared_runtime_sidecars(
+    prepared: &PreparedInitialImport,
+) -> (Vec<StagedExecutionImport>, Vec<StagedWidgetCommImport>) {
+    let executions = prepared
+        .cells
+        .iter()
+        .filter_map(|prepared_cell| {
+            let execution = prepared_cell.execution.as_ref()?;
+            Some(StagedExecutionImport {
+                execution_id: execution.execution_id.clone(),
+                success: execution.success,
+                execution_count: prepared_cell.cell.execution_count.parse::<i64>().ok(),
+                outputs: prepared_cell.output_refs.clone(),
+            })
+        })
+        .collect();
+    let widget_comms = prepared
+        .widget_comms
+        .iter()
+        .map(|comm| StagedWidgetCommImport {
+            comm_id: comm.comm_id.clone(),
+            model_module: comm.model_module.clone(),
+            model_name: comm.model_name.clone(),
+            state: comm.state.clone(),
+            seq: comm.seq,
+        })
+        .collect();
+    (executions, widget_comms)
+}
+
+/// Rebind reconstructed source sidecars to the execution identifiers already
+/// authored by the immutable staged generation.
+///
+/// A synthetic execution id is chosen while a source is first staged. After a
+/// daemon restart, preparing the same `.ipynb` can choose a new synthetic id;
+/// publishing outputs under that new id would leave the recovered NotebookDoc
+/// pointing at missing RuntimeState. The journaled document is authoritative
+/// for this identity, so recovery reuses its exact id.
+fn bind_prepared_executions_to_staged_document(
+    prepared: &mut PreparedInitialImport,
+    doc: &NotebookDoc,
+) -> Result<(), String> {
+    for prepared_cell in &mut prepared.cells {
+        let Some(execution) = prepared_cell.execution.as_mut() else {
+            continue;
+        };
+        let Some(staged_execution_id) = doc.get_execution_id(&prepared_cell.cell.id) else {
+            return Err(format!(
+                "source_degraded: recovered cell {} is missing its staged execution identity",
+                prepared_cell.cell.id
+            ));
+        };
+        execution.execution_id = staged_execution_id;
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_reconciled_runtime_sidecars(
+    room: &NotebookRoom,
+    reconciliation: &AppliedSourceReconciliation,
+) -> Result<(), String> {
+    apply_runtime_sidecars(
+        room,
+        &reconciliation.executions,
+        &reconciliation.widget_comms,
+    )
+}
+
+fn apply_runtime_sidecars(
+    room: &NotebookRoom,
+    executions: &[StagedExecutionImport],
+    widget_comms: &[StagedWidgetCommImport],
+) -> Result<(), String> {
+    room.state
+        .with_doc(|state| {
+            for execution in executions {
+                state.create_execution(&execution.execution_id)?;
+                if !execution.outputs.is_empty() {
+                    state.set_outputs(&execution.execution_id, &execution.outputs)?;
+                }
+                if let Some(count) = execution.execution_count {
+                    state.set_execution_count(&execution.execution_id, count)?;
+                }
+                state.set_execution_done(&execution.execution_id, execution.success)?;
+            }
+            for comm in widget_comms {
+                state.put_comm(
+                    &comm.comm_id,
+                    JUPYTER_WIDGET_TARGET,
+                    &comm.model_module,
+                    &comm.model_name,
+                    &serde_json::json!({}),
+                    comm.seq,
+                )?;
+            }
+            Ok(())
+        })
+        .map_err(|error| format!("Failed to publish staged runtime state: {error}"))?;
+    room.comms
+        .with_doc(|comms| {
+            for comm in widget_comms {
+                comms.put_comm_state(&comm.comm_id, &comm.state)?;
+            }
+            Ok(())
+        })
+        .map_err(|error| format!("Failed to publish staged comm state: {error}"))?;
+    Ok(())
+}
+
+async fn publish_staged_import(
+    room: &NotebookRoom,
+    path: &Path,
+    artifact: &StagedImportArtifact,
+) -> Result<Vec<String>, String> {
+    let current_source = tokio::fs::read(path)
+        .await
+        .map_err(|error| format!("Failed to re-read notebook before publication: {error}"))?;
+    if super::recovery::source_fingerprint(&current_source) != artifact.fingerprint {
+        return Err(
+            "source_conflict: notebook changed after staging; preserved staged recovery and disk"
+                .to_string(),
         );
     }
 
-    // 3. Set metadata (if present) and notify peers.
-    if let Some(meta) = metadata {
-        {
+    if room.file_binding.path().await.as_deref() == Some(path) {
+        *room.persistence.last_save_sources.write().await = artifact.loaded_sources.clone();
+        room.persistence
+            .note_disk_content(artifact.source_content.as_ref());
+    }
+    apply_staged_runtime_sidecars(room, artifact)?;
+
+    let mut document_heads = room
+        .lifecycle
+        .availability()
+        .status()
+        .document_heads
+        .clone();
+    for (index, batch) in artifact.change_batches.iter().enumerate() {
+        document_heads = {
             let mut doc = room.doc.write().await;
-            doc.set_metadata_snapshot(&meta)
-                .map_err(|e| format!("Failed to set notebook metadata: {e}"))?;
+            let missing_change = batch
+                .hashes
+                .iter()
+                .any(|hash| doc.doc_mut().get_change_by_hash(hash).is_none());
+            if missing_change {
+                doc.doc_mut()
+                    .apply_changes(batch.changes.clone())
+                    .map_err(|error| format!("Failed to publish staged batch: {error}"))?;
+            }
+            if let Some(missing) = batch
+                .hashes
+                .iter()
+                .find(|hash| doc.doc_mut().get_change_by_hash(hash).is_none())
+            {
+                return Err(format!(
+                    "Published batch is missing staged change {missing}"
+                ));
+            }
+            doc.get_heads_hex()
+        };
+        if !room.lifecycle.note_published_batch(
+            artifact.generation,
+            index.saturating_add(1),
+            document_heads.clone(),
+        ) {
+            return Err("session_superseded: source generation changed during publish".to_string());
         }
         let _ = room.broadcasts.changed_tx.send(());
+        tokio::task::yield_now().await;
     }
-
-    info!(
-        "[streaming-load] Loaded {} cells in {} batches ({:?})",
-        total_cells,
-        batch_num,
-        start.elapsed()
-    );
-
-    Ok(total_cells)
+    Ok(document_heads)
 }
 
-async fn fail_initial_load(
-    room: &Arc<NotebookRoom>,
+/// Reconstruct process-local projection and RuntimeState/Comms sidecars for a
+/// matching journal generation without authoring a second source history.
+pub(crate) async fn finalize_recovered_source(
+    room: &NotebookRoom,
+    path: &Path,
     generation: u64,
-    load_path: &Path,
-    reason: String,
-) {
+    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
+) -> Result<(usize, Vec<String>), String> {
+    let manifest = room.durability.manifest();
+    if manifest.source_generation != generation
+        || !matches!(
+            manifest.source_phase,
+            super::recovery::RecoverySourcePhase::DurablyStaged
+                | super::recovery::RecoverySourcePhase::Ready
+        )
+    {
+        return Err("source_degraded: recovery generation is not resumable".to_string());
+    }
+
+    let mut prepared = prepare_initial_import(room, path, execution_store).await?;
+    if prepared.fingerprint != manifest.source_fingerprint {
+        return Err(
+            "source_conflict: disk changed while the recovered source was being finalized"
+                .to_string(),
+        );
+    }
+
+    let (cell_count, document_heads) = {
+        let mut doc = room.doc.write().await;
+        for raw_hash in &manifest.staged_change_hashes {
+            let hash = automerge::ChangeHash(*raw_hash);
+            if doc.doc_mut().get_change_by_hash(&hash).is_none() {
+                return Err(format!(
+                    "source_degraded: recovered document is missing staged change {hash}"
+                ));
+            }
+        }
+        bind_prepared_executions_to_staged_document(&mut prepared, &doc)?;
+        (doc.cell_count(), doc.get_heads_hex())
+    };
+    let (executions, widget_comms) = prepared_runtime_sidecars(&prepared);
+    apply_runtime_sidecars(room, &executions, &widget_comms)?;
+    *room.persistence.last_save_sources.write().await = prepared.loaded_sources;
+    room.persistence.note_disk_content(&prepared.source_content);
+
+    let projection = Arc::new(
+        super::projection::build_live_notebook_projection_for_generation(room, generation)
+            .await
+            .map_err(|error| format!("Failed to rebuild recovered projection: {error:#}"))?,
+    );
+    if !room.lifecycle.publish_recovered_projection_ready(
+        generation,
+        projection,
+        document_heads.clone(),
+    ) {
+        return Err(
+            "session_superseded: recovered source generation changed during finalization"
+                .to_string(),
+        );
+    }
+    room.durability
+        .commit_source_ready(generation)
+        .map_err(|error| format!("Failed to commit recovered source Ready marker: {error}"))?;
+    Ok((cell_count, document_heads))
+}
+
+/// Prepare an immutable source history, commit it to the recovery journal,
+/// then replay those exact changes into the live room in bounded batches.
+pub(crate) async fn materialize_initial_load(
+    room: &NotebookRoom,
+    path: &Path,
+    generation: u64,
+    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
+) -> Result<(usize, Vec<String>), String> {
+    let start = std::time::Instant::now();
+    let (artifact, projection) = if let Some(staged) = room.lifecycle.staged_import(generation) {
+        let projection = room
+            .lifecycle
+            .prepared_projection(generation)
+            .or_else(|| room.lifecycle.projection(generation))
+            .ok_or_else(|| {
+                "source_degraded: staged source projection is unavailable for retry".to_string()
+            })?;
+        (staged, projection)
+    } else {
+        let prepared = prepare_initial_import(room, path, execution_store).await?;
+        let total_cells = prepared.cells.len();
+        if !room
+            .lifecycle
+            .note_prepared(generation, prepared.fingerprint, total_cells)
+        {
+            return Err("session_superseded: source generation changed during prepare".to_string());
+        }
+        let (artifact, projection) = stage_initial_import(room, generation, prepared).await?;
+        if !room.lifecycle.record_prepared_artifacts(
+            generation,
+            Arc::clone(&artifact),
+            Arc::clone(&projection),
+        ) {
+            return Err(
+                "session_superseded: source generation changed before artifact ownership"
+                    .to_string(),
+            );
+        }
+        (artifact, projection)
+    };
+
+    // Capture the current live prefix before the journal await. Peer changes
+    // accepted after this point are merged into the durable union by
+    // `commit_staged_source`; the first published batch refreshes these heads.
+    // A resumed generation deliberately repeats this idempotent journal step:
+    // cancellation may have retained the prepared artifact before its prior
+    // journal worker reached a durable marker.
+    let document_heads = {
+        let mut doc = room.doc.write().await;
+        doc.get_heads_hex()
+    };
+    if !room.lifecycle.note_journaling(generation) {
+        return Err("session_superseded: source generation changed before journal".to_string());
+    }
+    // The blocking worker owns both the durable marker and projection publish.
+    // If this async task is cancelled, the worker still finishes that ordered
+    // pair while the task lease terminalizes the room generation.
+    journal_and_publish_staged_import(room, Arc::clone(&artifact), projection, document_heads)
+        .await?;
+
+    // A resumed immutable artifact already owns ProjectionReady; reassert the
+    // causal file checkpoint in case its earlier RuntimeState projection was
+    // interrupted after the journal marker.
+    publish_initial_file_checkpoint(room, path, &artifact)?;
+
+    let document_heads = publish_staged_import(room, path, &artifact).await?;
+    room.durability
+        .commit_source_ready(generation)
+        .map_err(|error| format!("Failed to commit source Ready marker: {error}"))?;
+    info!(
+        "[streaming-load] Published {} cells in {} immutable batches from {} ({:?})",
+        artifact.cell_count,
+        artifact.change_batches.len(),
+        path.display(),
+        start.elapsed()
+    );
+    Ok((artifact.cell_count, document_heads))
+}
+
+fn fail_initial_load(room: &Arc<NotebookRoom>, generation: u64, load_path: &Path, reason: String) {
     if room.initial_load.state() != (RoomInitialLoadState::Loading { generation }) {
         debug!(
             "[notebook-sync] Ignoring stale initial-load failure for room {} generation {}",
@@ -830,37 +1371,104 @@ async fn fail_initial_load(
     }
 }
 
-/// Start or join this room's initial file materialization.
+/// Ownership token for one room source generation.
 ///
-/// The spawned operation owns only the room and file path. Callers receive a
-/// watch receiver and may drop it freely; doing so does not cancel the load.
-pub(crate) fn start_room_initial_load(
+/// The token is created when a caller claims `Loading(g)`, before a fresh room
+/// is published in the registry, and is moved into the spawned source task.
+/// Dropping the token while the same generation is still loading turns that
+/// generation into `Failed`. This covers cancellation as well as unwinding: a
+/// room can never remain visibly `Loading` merely because its task disappeared.
+pub(crate) struct RoomInitialLoadClaim {
+    room: Arc<NotebookRoom>,
+    generation: u64,
+    load_path: PathBuf,
+    armed: bool,
+}
+
+impl RoomInitialLoadClaim {
+    fn new(room: &Arc<NotebookRoom>, generation: u64, load_path: PathBuf) -> Self {
+        Self {
+            room: Arc::clone(room),
+            generation,
+            load_path,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+impl Drop for RoomInitialLoadClaim {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        fail_initial_load(
+            &self.room,
+            self.generation,
+            &self.load_path,
+            "initial materialization task ended before completion".to_string(),
+        );
+    }
+}
+
+/// Claim the current source generation without spawning it yet.
+///
+/// Keeping claim and spawn separate lets room creation acquire this ownership
+/// token before registry publication, then transfer it to the task immediately
+/// after winning the registry insertion race.
+pub(crate) fn claim_room_initial_load(
     room: &Arc<NotebookRoom>,
     load_path: PathBuf,
-    execution_store_dir: PathBuf,
-) -> watch::Receiver<RoomInitialLoadState> {
+) -> (
+    Option<RoomInitialLoadClaim>,
+    watch::Receiver<RoomInitialLoadState>,
+) {
     let (start, receiver) = room.initial_load.begin();
     let RoomInitialLoadStart::Started { generation } = start else {
-        return receiver;
+        return (None, receiver);
     };
+    (
+        Some(RoomInitialLoadClaim::new(room, generation, load_path)),
+        receiver,
+    )
+}
 
+/// Transfer a claimed source generation into its supervised task.
+pub(crate) fn spawn_claimed_room_initial_load(
+    mut claim: RoomInitialLoadClaim,
+    execution_store_dir: PathBuf,
+) {
     let execution_store =
         runtimed_client::execution_store::ExecutionStore::new(execution_store_dir);
-    let task_room = Arc::clone(room);
-    let task_path = load_path.clone();
-    let panic_room = Arc::clone(room);
-    let panic_path = load_path;
+    let generation = claim.generation;
+    let task_room = Arc::clone(&claim.room);
+    let task_path = claim.load_path.clone();
 
     spawn_supervised(
         "room-initial-load",
         async move {
-            match materialize_initial_load(&task_room, &task_path, Some(&execution_store)).await {
-                Ok(cell_count) => {
-                    if task_room
-                        .initial_load
-                        .complete_ready(generation, cell_count)
-                    {
-                        task_room.mark_load_recovered(cell_count);
+            match materialize_initial_load(
+                &task_room,
+                &task_path,
+                generation,
+                Some(&execution_store),
+            )
+            .await
+            {
+                Ok((cell_count, document_heads)) => {
+                    if task_room.initial_load.complete_ready_with_heads(
+                        generation,
+                        cell_count,
+                        document_heads,
+                    ) {
+                        task_room.clear_load_failed();
                         info!(
                             "[notebook-sync] Initial materialization complete: {} cells from {} (generation {})",
                             cell_count,
@@ -875,24 +1483,132 @@ pub(crate) fn start_room_initial_load(
                     }
                 }
                 Err(reason) => {
-                    fail_initial_load(&task_room, generation, &task_path, reason).await;
+                    fail_initial_load(&task_room, generation, &task_path, reason);
                 }
             }
+            claim.disarm();
         },
-        move |panic_info| {
-            let room = panic_room;
-            let path = panic_path;
-            let reason = format!(
-                "initial materialization task panicked: {}",
-                panic_info.message
-            );
-            tokio::spawn(async move {
-                fail_initial_load(&room, generation, &path, reason).await;
-            });
+        |_| {
+            // `RoomInitialLoadClaim::drop` terminalizes this generation while
+            // unwinding. The supervisor still records the panic centrally.
         },
     );
+}
+
+/// Finalize a matching recovered generation without regenerating its staged
+/// Automerge changes. The same ownership lease terminalizes cancellation or
+/// panic, so a registry-visible recovery cannot remain Loading forever.
+pub(crate) fn spawn_claimed_room_recovery_finalize(
+    mut claim: RoomInitialLoadClaim,
+    execution_store_dir: Option<PathBuf>,
+) {
+    let execution_store =
+        execution_store_dir.map(runtimed_client::execution_store::ExecutionStore::new);
+    let generation = claim.generation;
+    let task_room = Arc::clone(&claim.room);
+    let task_path = claim.load_path.clone();
+
+    spawn_supervised(
+        "room-recovery-finalize",
+        async move {
+            match finalize_recovered_source(
+                &task_room,
+                &task_path,
+                generation,
+                execution_store.as_ref(),
+            )
+            .await
+            {
+                Ok((cell_count, document_heads)) => {
+                    if task_room.initial_load.complete_ready_with_heads(
+                        generation,
+                        cell_count,
+                        document_heads,
+                    ) {
+                        task_room.clear_load_failed();
+                        info!(
+                            "[notebook-sync] Recovered source generation {} finalized for {}",
+                            generation,
+                            task_path.display()
+                        );
+                    }
+                }
+                Err(reason) => {
+                    fail_initial_load(&task_room, generation, &task_path, reason);
+                }
+            }
+            claim.disarm();
+        },
+        |_| {},
+    );
+}
+
+/// Start or join this room's initial file materialization.
+///
+/// The spawned operation owns only the room and file path. Callers receive a
+/// watch receiver and may drop it freely; doing so does not cancel the load.
+pub(crate) fn start_room_initial_load(
+    room: &Arc<NotebookRoom>,
+    load_path: PathBuf,
+    execution_store_dir: PathBuf,
+) -> watch::Receiver<RoomInitialLoadState> {
+    let (claim, receiver) = claim_room_initial_load(room, load_path);
+    let Some(claim) = claim else {
+        return receiver;
+    };
+    spawn_claimed_room_initial_load(claim, execution_store_dir);
 
     receiver
+}
+
+/// Retry a failed source generation only while the live notebook is pristine.
+///
+/// A non-pristine document may contain a partially published import or peer
+/// edits. Replaying the file over either would turn recovery into an implicit
+/// reconciliation policy, so those rooms remain failed until a watcher/save
+/// establishes an explicit baseline. The document write guard closes the race
+/// between the pristine check and claiming the retry generation.
+pub(crate) async fn retry_failed_room_initial_load_if_safe(
+    room: &Arc<NotebookRoom>,
+    load_path: PathBuf,
+    execution_store_dir: PathBuf,
+) -> bool {
+    if let Some(generation) = room.initial_load.resume_failed_staged_claimed() {
+        let claim = RoomInitialLoadClaim::new(room, generation, load_path.clone());
+        spawn_claimed_room_initial_load(claim, execution_store_dir);
+        info!(
+            "[notebook-sync] Resuming immutable staged import for {} (generation {})",
+            load_path.display(),
+            generation
+        );
+        return true;
+    }
+
+    let (claim, generation) = {
+        let mut doc = room.doc.write().await;
+        if !doc.is_pristine() {
+            info!(
+                "[notebook-sync] Not retrying failed initial materialization for {}: room contains live document changes",
+                load_path.display()
+            );
+            return false;
+        }
+
+        let Some(generation) = room.initial_load.retry_failed_claimed() else {
+            return false;
+        };
+        let claim = RoomInitialLoadClaim::new(room, generation, load_path.clone());
+        (claim, generation)
+    };
+    debug_assert_eq!(claim.generation(), generation);
+    spawn_claimed_room_initial_load(claim, execution_store_dir);
+
+    info!(
+        "[notebook-sync] Retrying initial materialization for {} (generation {})",
+        load_path.display(),
+        generation
+    );
+    true
 }
 
 /// Test helper for loading notebook cells and metadata from a `.ipynb` file
@@ -1376,6 +2092,170 @@ pub(crate) fn build_new_notebook_metadata(
     }
 }
 
+/// Commit watcher-authored changes before releasing the document lock.
+pub(crate) fn commit_file_watcher_changes(
+    room: &NotebookRoom,
+    doc: &mut NotebookDoc,
+    baseline_heads: &[automerge::ChangeHash],
+    rollback_snapshot: &[u8],
+    rollback_actor: &str,
+    source_revision: Option<&ExternalSourceRevision>,
+) -> bool {
+    let changes = doc
+        .doc_mut()
+        .get_changes(baseline_heads)
+        .into_iter()
+        .collect::<Vec<_>>();
+    if changes.is_empty() && source_revision.is_none() {
+        return true;
+    }
+    let commit = match source_revision {
+        Some(revision) => room.durability.commit_external_source_revision(
+            changes,
+            revision.fingerprint,
+            revision.canonical_path.clone(),
+            revision.save_sequence,
+        ),
+        None => room.durability.commit_peer_changes(changes),
+    };
+    let committed_status = match commit {
+        Ok(super::durability::DurableCommitOutcome::Committed(status))
+        | Ok(super::durability::DurableCommitOutcome::AlreadyDurable(status)) => status,
+        Err(error) => {
+            let document_readable =
+                match NotebookDoc::load_with_actor(rollback_snapshot, rollback_actor) {
+                    Ok(restored) => {
+                        *doc = restored;
+                        true
+                    }
+                    Err(_) => false,
+                };
+            let document_heads = doc.get_heads_hex();
+            let source_conflict = matches!(
+                &error,
+                super::durability::RoomDurabilityError::SourceConflict { .. }
+            );
+            let reason = if source_conflict {
+                format!(
+                "source_conflict: external source changed while journal heads were not exported; both versions were preserved: {error}"
+            )
+            } else {
+                format!(
+                "file watcher journal commit failed before external changes became visible: {error}"
+            )
+            };
+            room.durability.mark_degraded(reason.clone());
+            if source_conflict {
+                room.lifecycle
+                    .mark_source_conflict(reason.clone(), document_heads);
+            } else {
+                room.lifecycle
+                    .mark_degraded(reason.clone(), document_heads, document_readable);
+            }
+            let _ = room.state.with_doc(|state| {
+                let issue = if source_conflict {
+                    runtime_doc::FileSourceIssue::Conflict {
+                        reason: reason.clone(),
+                    }
+                } else {
+                    runtime_doc::FileSourceIssue::Degraded {
+                        reason: reason.clone(),
+                    }
+                };
+                state.set_file_source_issue(Some(&issue))
+            });
+            warn!("[notebook-watch] {reason}");
+            return false;
+        }
+    };
+    if let Some(revision) = source_revision {
+        room.persistence
+            .restore_file_checkpoint(super::file_checkpoint::FileCheckpoint {
+                path: revision.canonical_path.clone(),
+                exported_heads: room.durability.manifest().exported_heads,
+                file_fingerprint: revision.fingerprint,
+                save_sequence: revision.save_sequence,
+                saved_at: revision.saved_at,
+            });
+        debug_assert_eq!(
+            committed_status.source_phase,
+            super::recovery::RecoverySourcePhase::DurablyStaged
+        );
+    }
+    true
+}
+
+async fn complete_external_source_revision(
+    room: &NotebookRoom,
+    revision: Option<&ExternalSourceRevision>,
+) -> bool {
+    let Some(revision) = revision else {
+        return true;
+    };
+    let status = room.durability.status();
+    let exported_heads = status.exported_heads.clone();
+    let sidecar = room.state.with_doc(|state| {
+        state.set_file_checkpoint(&exported_heads, revision.save_sequence)?;
+        state.set_file_source_issue(None)
+    });
+    if let Err(error) = sidecar {
+        let reason = format!(
+            "external source generation {} was staged but could not become Ready: {error}",
+            status.source_generation
+        );
+        degrade_external_source_revision(room, reason);
+        return false;
+    }
+    let projection = match super::projection::build_live_notebook_projection_for_generation(
+        room,
+        status.source_generation,
+    )
+    .await
+    {
+        Ok(projection) => Arc::new(projection),
+        Err(error) => {
+            let reason = format!(
+                "external source generation {} could not build its bounded projection: {error:#}",
+                status.source_generation
+            );
+            degrade_external_source_revision(room, reason);
+            return false;
+        }
+    };
+    if let Err(error) = room
+        .durability
+        .commit_source_ready(status.source_generation)
+    {
+        let reason = format!(
+            "external source generation {} was staged but could not become Ready: {error}",
+            status.source_generation
+        );
+        degrade_external_source_revision(room, reason);
+        return false;
+    }
+    room.lifecycle.complete_external_source_revision(
+        status.source_generation,
+        revision.fingerprint,
+        projection.cells.len(),
+        projection,
+        status.durable_heads,
+    );
+    true
+}
+
+fn degrade_external_source_revision(room: &NotebookRoom, reason: String) {
+    let document_heads = room.durability.status().durable_heads;
+    room.durability.mark_degraded(reason.clone());
+    room.lifecycle
+        .mark_degraded(reason.clone(), document_heads, true);
+    let _ = room.state.with_doc(|state| {
+        state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
+            reason: reason.clone(),
+        }))
+    });
+    warn!("[notebook-watch] {reason}");
+}
+
 /// Apply external .ipynb changes to the Automerge doc.
 ///
 /// Compares cells by ID and:
@@ -1387,7 +2267,9 @@ pub(crate) fn build_new_notebook_metadata(
 /// When a kernel is running, outputs and execution counts are preserved
 /// to avoid losing in-progress execution results.
 ///
-/// Returns true if any changes were applied.
+/// Returns true only after changed NotebookDoc heads have a durable journal
+/// marker. Journal failure rolls the live document back before returning.
+#[cfg(test)]
 pub(crate) async fn apply_ipynb_changes(
     room: &NotebookRoom,
     external_cells: &[CellSnapshot],
@@ -1395,6 +2277,70 @@ pub(crate) async fn apply_ipynb_changes(
     external_attachments: &HashMap<String, serde_json::Value>,
     has_running_kernel: bool,
 ) -> bool {
+    apply_ipynb_changes_inner(
+        room,
+        external_cells,
+        external_outputs,
+        external_attachments,
+        has_running_kernel,
+        None,
+        None,
+    )
+    .await
+    .changed()
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AppliedIpynbChanges {
+    pub(crate) cells_changed: bool,
+    pub(crate) metadata_changed: bool,
+}
+
+pub(crate) struct ExternalSourceRevision {
+    pub(crate) fingerprint: super::recovery::SourceFingerprint,
+    pub(crate) canonical_path: PathBuf,
+    pub(crate) save_sequence: u64,
+    pub(crate) saved_at: std::time::SystemTime,
+}
+
+impl AppliedIpynbChanges {
+    fn changed(self) -> bool {
+        self.cells_changed || self.metadata_changed
+    }
+}
+
+/// Apply a file-watcher revision while causally binding every authored batch
+/// to the exact source fingerprint it came from.
+pub(crate) async fn apply_ipynb_changes_from_source(
+    room: &NotebookRoom,
+    external_cells: &[CellSnapshot],
+    external_outputs: &HashMap<String, Vec<serde_json::Value>>,
+    external_attachments: &HashMap<String, serde_json::Value>,
+    external_metadata: Option<&NotebookMetadataSnapshot>,
+    has_running_kernel: bool,
+    source_revision: ExternalSourceRevision,
+) -> AppliedIpynbChanges {
+    apply_ipynb_changes_inner(
+        room,
+        external_cells,
+        external_outputs,
+        external_attachments,
+        has_running_kernel,
+        external_metadata,
+        Some(&source_revision),
+    )
+    .await
+}
+
+async fn apply_ipynb_changes_inner(
+    room: &NotebookRoom,
+    external_cells: &[CellSnapshot],
+    external_outputs: &HashMap<String, Vec<serde_json::Value>>,
+    external_attachments: &HashMap<String, serde_json::Value>,
+    has_running_kernel: bool,
+    external_metadata: Option<&NotebookMetadataSnapshot>,
+    source_revision: Option<&ExternalSourceRevision>,
+) -> AppliedIpynbChanges {
     let current_cells = {
         let doc = room.doc.read().await;
         doc.get_cells()
@@ -1429,7 +2375,7 @@ pub(crate) async fn apply_ipynb_changes(
                         "[notebook-watch] Failed to ingest attachments for {}: {}",
                         cell.id, e
                     );
-                    return false;
+                    return AppliedIpynbChanges::default();
                 }
             };
             if !refs.is_empty() {
@@ -1522,8 +2468,10 @@ pub(crate) async fn apply_ipynb_changes(
 
         // Scope the doc write guard so it drops before state_doc and
         // saved_sources `.await`s (deadlock prevention).
-        let deferred_executions = {
+        let (applied, deferred_executions) = {
             let mut doc = room.doc.write().await;
+            let rollback_actor = doc.get_actor_id();
+            let rollback_snapshot = doc.save();
             let current_execution_ids: HashMap<String, String> = current_cells
                 .iter()
                 .filter_map(|cell| {
@@ -1610,34 +2558,78 @@ pub(crate) async fn apply_ipynb_changes(
                         }
                     }
 
-                    Ok(deferred)
+                    let metadata_changed = external_metadata.is_some_and(|metadata| {
+                        doc.get_metadata_snapshot().as_ref() != Some(metadata)
+                    });
+                    if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
+                        doc.set_metadata_snapshot(metadata)?;
+                    }
+
+                    Ok((deferred, metadata_changed))
                 },
             ) {
-                Ok(deferred) => deferred,
+                Ok((deferred, metadata_changed)) => {
+                    let changed = doc.get_heads() != heads;
+                    if (changed || source_revision.is_some())
+                        && !commit_file_watcher_changes(
+                            room,
+                            &mut doc,
+                            &heads,
+                            &rollback_snapshot,
+                            &rollback_actor,
+                            source_revision,
+                        )
+                    {
+                        (AppliedIpynbChanges::default(), Vec::new())
+                    } else {
+                        (
+                            AppliedIpynbChanges {
+                                cells_changed: changed,
+                                metadata_changed,
+                            },
+                            deferred,
+                        )
+                    }
+                }
                 Err(e) => {
                     warn!("[file-watcher] order transaction failed: {}", e);
                     // Do not create RuntimeStateDoc executions for cells that
                     // failed to commit to the notebook doc.
-                    Vec::new()
+                    (AppliedIpynbChanges::default(), Vec::new())
                 }
             }
         }; // doc guard dropped here
 
+        if !applied.changed() {
+            return applied;
+        }
+
         // Apply deferred state_doc writes
         if !deferred_executions.is_empty() {
-            let _ = room.state.with_doc(|sd| {
+            let sidecars = room.state.with_doc(|sd| {
                 for de in &deferred_executions {
-                    let _ = sd.create_execution(&de.synthetic_eid);
+                    sd.create_execution(&de.synthetic_eid)?;
                     if !de.outputs.is_empty() {
-                        let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
+                        sd.set_outputs(&de.synthetic_eid, de.outputs)?;
                     }
                     if let Some(ec) = de.execution_count {
-                        let _ = sd.set_execution_count(&de.synthetic_eid, ec);
+                        sd.set_execution_count(&de.synthetic_eid, ec)?;
                     }
-                    let _ = sd.set_execution_done(&de.synthetic_eid, true);
+                    sd.set_execution_done(&de.synthetic_eid, true)?;
                 }
                 Ok(())
             });
+            if let Err(error) = sidecars {
+                degrade_external_source_revision(
+                    room,
+                    format!("external source runtime sidecars failed: {error}"),
+                );
+                return AppliedIpynbChanges::default();
+            }
+        }
+
+        if !complete_external_source_revision(room, source_revision).await {
+            return AppliedIpynbChanges::default();
         }
 
         // Update saved_sources baseline so subsequent external edits are
@@ -1650,7 +2642,7 @@ pub(crate) async fn apply_ipynb_changes(
             }
         }
 
-        return true;
+        return applied;
     }
 
     // Snapshot saved_sources before the doc write lock to avoid holding
@@ -1723,8 +2715,10 @@ pub(crate) async fn apply_ipynb_changes(
     // Scope the doc write guard so it drops before state_doc and
     // saved_sources `.await`s (deadlock prevention: no lock held
     // across `.await`).
-    let (changed, deferred_execs) = {
+    let (applied, deferred_execs) = {
         let mut doc = room.doc.write().await;
+        let rollback_actor = doc.get_actor_id();
+        let rollback_snapshot = doc.save();
         let heads = doc.get_heads();
         match doc.transact_at_heads_recovering(
             &heads,
@@ -1885,38 +2879,79 @@ pub(crate) async fn apply_ipynb_changes(
                     let _ = doc.set_execution_id(cell_id, None);
                 }
 
-                Ok((changed, deferred_execs))
+                let cells_changed = changed;
+                let metadata_changed = external_metadata.is_some_and(|metadata| {
+                    doc.get_metadata_snapshot().as_ref() != Some(metadata)
+                });
+                if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
+                    doc.set_metadata_snapshot(metadata)?;
+                }
+
+                Ok((cells_changed, metadata_changed, deferred_execs))
             },
         ) {
-            Ok(result) => result,
+            Ok((cells_changed, metadata_changed, deferred)) => {
+                let changed = cells_changed || metadata_changed;
+                if (changed || source_revision.is_some())
+                    && !commit_file_watcher_changes(
+                        room,
+                        &mut doc,
+                        &heads,
+                        &rollback_snapshot,
+                        &rollback_actor,
+                        source_revision,
+                    )
+                {
+                    (AppliedIpynbChanges::default(), Vec::new())
+                } else {
+                    (
+                        AppliedIpynbChanges {
+                            cells_changed,
+                            metadata_changed,
+                        },
+                        deferred,
+                    )
+                }
+            }
             Err(e) => {
                 warn!("[file-watcher] update transaction failed: {}", e);
-                (false, Vec::new())
+                (AppliedIpynbChanges::default(), Vec::new())
             }
         }
     }; // doc guard dropped here
 
     // Apply deferred state_doc writes
     if !deferred_execs.is_empty() {
-        let _ = room.state.with_doc(|sd| {
+        let sidecars = room.state.with_doc(|sd| {
             for de in &deferred_execs {
-                let _ = sd.create_execution(&de.synthetic_eid);
+                sd.create_execution(&de.synthetic_eid)?;
                 if !de.outputs.is_empty() {
-                    let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
+                    sd.set_outputs(&de.synthetic_eid, de.outputs)?;
                 }
                 if let Some(ec) = de.execution_count {
-                    let _ = sd.set_execution_count(&de.synthetic_eid, ec);
+                    sd.set_execution_count(&de.synthetic_eid, ec)?;
                 }
-                let _ = sd.set_execution_done(&de.synthetic_eid, true);
+                sd.set_execution_done(&de.synthetic_eid, true)?;
             }
             Ok(())
         });
+        if let Err(error) = sidecars {
+            degrade_external_source_revision(
+                room,
+                format!("external source runtime sidecars failed: {error}"),
+            );
+            return AppliedIpynbChanges::default();
+        }
+    }
+
+    if !complete_external_source_revision(room, source_revision).await {
+        return AppliedIpynbChanges::default();
     }
 
     // Update saved_sources baseline after applying external changes so
     // that subsequent external edits are detected correctly (P2-a) and
     // externally-added cells become deletable if later removed (P2-b).
-    if changed {
+    if applied.cells_changed {
         let mut saved = room.persistence.last_save_sources.write().await;
         for ext_cell in external_cells {
             saved.insert(ext_cell.id.clone(), ext_cell.source.clone());
@@ -1925,5 +2960,75 @@ pub(crate) async fn apply_ipynb_changes(
         saved.retain(|id, _| external_map.contains_key(id.as_str()));
     }
 
-    changed
+    applied
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod reconciliation_tests {
+    use super::*;
+
+    #[test]
+    fn source_reconciliation_is_a_causal_replacement_with_stable_disk_ids() {
+        let mut doc = NotebookDoc::new("source-reconciliation-test");
+        doc.add_cell_full(
+            "recovered-cell",
+            "code",
+            &loro_fractional_index::FractionalIndex::default().to_string(),
+            "recovered = True",
+            "null",
+            &serde_json::json!({ "origin": "journal" }),
+        )
+        .unwrap();
+        let recovered_heads = doc.get_heads();
+        let disk_bytes = br##"{"cells":[{"cell_type":"markdown","id":"disk-cell","metadata":{"origin":"disk"},"source":["# Disk\n"]}],"metadata":{"custom":{"selected":true}},"nbformat":4,"nbformat_minor":5}"##
+            .to_vec();
+        let metadata = NotebookMetadataSnapshot::from_metadata_value(
+            &serde_json::json!({ "custom": { "selected": true } }),
+        );
+        let position = loro_fractional_index::FractionalIndex::default().to_string();
+        let prepared = PreparedSourceReconciliation {
+            prepared: PreparedInitialImport {
+                source_content: disk_bytes.clone(),
+                fingerprint: super::super::recovery::source_fingerprint(&disk_bytes),
+                cells: vec![PreparedInitialCell {
+                    cell: StreamingCell {
+                        id: "disk-cell".to_string(),
+                        cell_type: "markdown".to_string(),
+                        position,
+                        source: "# Disk\n".to_string(),
+                        execution_count: "null".to_string(),
+                        outputs: Vec::new(),
+                        metadata: serde_json::json!({ "origin": "disk" }),
+                    },
+                    output_refs: Vec::new(),
+                    resolved_assets: ResolvedAssets::new(),
+                    attachment_refs: AttachmentRefs::new(),
+                    execution: None,
+                }],
+                metadata: Some(metadata),
+                widget_comms: Vec::new(),
+                loaded_sources: HashMap::from([("disk-cell".to_string(), "# Disk\n".to_string())]),
+            },
+        };
+
+        let applied =
+            apply_prepared_source_reconciliation(&mut doc, "runtimed:reconcile:test", prepared)
+                .unwrap();
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].id, "disk-cell");
+        assert_eq!(cells[0].source, "# Disk\n");
+        assert_eq!(cells[0].metadata, serde_json::json!({ "origin": "disk" }));
+        assert_eq!(
+            doc.get_metadata_snapshot().unwrap().extras.get("custom"),
+            Some(&serde_json::json!({ "selected": true }))
+        );
+        assert!(!applied.change_hashes.is_empty());
+        assert_eq!(applied.heads, doc.get_heads());
+        assert!(recovered_heads
+            .iter()
+            .all(|head| doc.doc_mut().get_change_by_hash(head).is_some()));
+    }
 }

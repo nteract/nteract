@@ -1139,6 +1139,10 @@ pub struct Daemon {
     conda_pool: Mutex<Pool>,
     pixi_pool: Mutex<Pool>,
     shutdown: Arc<Mutex<bool>>,
+    /// Serializes the causal room barrier that precedes a clean shutdown.
+    /// This is separate from `shutdown`: background tasks must not observe a
+    /// committed shutdown until every resident room is durably recoverable.
+    shutdown_preparing: std::sync::atomic::AtomicBool,
     /// Notifier to wake up accept loops on shutdown.
     shutdown_notify: Arc<Notify>,
     /// Singleton lock - kept alive while daemon is running.
@@ -1533,6 +1537,7 @@ impl Daemon {
             pixi_pool: Mutex::new(Pool::new(initial_pixi_pool_size, config.max_age_secs)),
             config,
             shutdown: Arc::new(Mutex::new(false)),
+            shutdown_preparing: std::sync::atomic::AtomicBool::new(false),
             shutdown_notify: Arc::new(Notify::new()),
             pool_ready_uv: Notify::new(),
             pool_ready_conda: Notify::new(),
@@ -1560,11 +1565,220 @@ impl Daemon {
 
     /// Trigger a graceful shutdown of the daemon.
     ///
-    /// Sets the shutdown flag and notifies all waiting tasks.
+    /// A clean shutdown is not published to background tasks or server loops
+    /// until every room passes its causal durability barrier. When a room is
+    /// degraded or its journal cannot be flushed, the daemon keeps serving the
+    /// resident room so the caller can reconcile it and retry shutdown.
+    ///
     /// Used by both signal handlers and the RPC shutdown command.
-    pub async fn trigger_shutdown(&self) {
+    pub async fn trigger_shutdown(&self) -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering;
+
+        if *self.shutdown.lock().await {
+            return Ok(());
+        }
+
+        if self
+            .shutdown_preparing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            anyhow::bail!("clean shutdown is already preparing");
+        }
+
+        if let Err(error) = self.shutdown_notebook_rooms().await {
+            warn!(
+                "[runtimed] clean shutdown blocked; daemon remains available for recovery: {}",
+                error
+            );
+            self.shutdown_preparing.store(false, Ordering::Release);
+            return Err(error);
+        }
+
         *self.shutdown.lock().await = true;
         self.shutdown_notify.notify_waiters();
+        Ok(())
+    }
+
+    /// Establish the same causal journal barrier used by room reaping before
+    /// a clean daemon shutdown releases the room. Source publication journals
+    /// its complete staged generation before touching the live document, so a
+    /// loading room only needs to prove that its currently visible heads are
+    /// already contained by that durable union. Once interactive, daemon-side
+    /// mutations are captured in one final complete snapshot first.
+    async fn await_room_durability_on_shutdown(
+        room: &Arc<crate::notebook_sync_server::NotebookRoom>,
+    ) -> Result<(), crate::notebook_sync_server::durability::RoomDurabilityError> {
+        use crate::notebook_sync_server::durability::DurableMutation;
+
+        let (required_heads, needs_barrier) = {
+            let mut doc = room.doc.write().await;
+            let heads = doc.get_heads();
+            let required_heads = heads.iter().map(ToString::to_string).collect::<Vec<_>>();
+            let durability_status = room.durability.status();
+            let needs_barrier = durability_status.has_durable_record;
+            if !room.is_loading() {
+                // Commit synchronously while the live document lock is held,
+                // then freeze the journal before releasing that lock. Every
+                // later peer/daemon mutation will fail its commit and roll
+                // back, so these heads are the shutdown transaction's exact
+                // causal cut.
+                room.durability.commit_snapshot(
+                    &doc.save(),
+                    heads.iter().map(|head| head.0).collect::<Vec<_>>(),
+                    DurableMutation::Daemon,
+                )?;
+            }
+            room.durability.freeze_commits();
+            (required_heads, needs_barrier || !room.is_loading())
+        };
+
+        if needs_barrier {
+            room.durability
+                .await_durable(&required_heads, std::time::Duration::from_secs(5))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// A degraded room is recovery evidence, not reaper capacity. Keep it in
+    /// the registry until an explicit reconciliation clears both the journal
+    /// and lifecycle failure state.
+    fn room_requires_durability_repair(room: &crate::notebook_sync_server::NotebookRoom) -> bool {
+        room.durability.status().is_degraded()
+            || matches!(
+                room.lifecycle.availability(),
+                crate::notebook_sync_server::RoomAvailability::Degraded(_)
+            )
+    }
+
+    fn mark_room_durability_degraded(
+        room: &crate::notebook_sync_server::NotebookRoom,
+        reason: String,
+        document_heads: Vec<String>,
+    ) {
+        room.durability.mark_degraded(reason.clone());
+        room.lifecycle
+            .mark_degraded(reason.clone(), document_heads, true);
+        let _ = room.state.with_doc(|state| {
+            state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
+                reason: reason.clone(),
+            }))
+        });
+    }
+
+    async fn await_reaper_durability(
+        room: &crate::notebook_sync_server::NotebookRoom,
+        required_heads: &[String],
+        timeout: std::time::Duration,
+    ) -> Result<(), crate::notebook_sync_server::durability::RoomDurabilityError> {
+        match room.durability.await_durable(required_heads, timeout).await {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                let reason = format!("reaper durable-head wait failed: {error}");
+                Self::mark_room_durability_degraded(room, reason, required_heads.to_vec());
+                Err(error)
+            }
+        }
+    }
+
+    /// Stop runtime agents and establish every room's final causal durability
+    /// barrier. The registry is drained only after every barrier succeeds. A
+    /// failed room remains registered and degraded so shutdown cannot report a
+    /// clean commit after discarding unsaved recovery state.
+    async fn shutdown_notebook_rooms(&self) -> anyhow::Result<()> {
+        let shutdown_rooms = self.notebook_rooms.freeze_publication_and_snapshot().await;
+        let mut durability_failures = Vec::new();
+
+        for (notebook_uuid, room) in &shutdown_rooms {
+            // Shut down runtime agent via RPC before dropping handle.
+            {
+                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+                if has_runtime_agent {
+                    info!(
+                        "[runtimed] Shutting down runtime agent for notebook on exit: {}",
+                        notebook_uuid
+                    );
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        crate::notebook_sync_server::send_runtime_agent_request(
+                            room,
+                            notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
+                        ),
+                    )
+                    .await;
+                }
+                // Drop the handle so it tears down the runtime-agent ownership
+                // group and removes the matching manifest only after cleanup
+                // succeeds.
+                {
+                    let mut ra_guard = room.runtime_agent_handle.lock().await;
+                    *ra_guard = None;
+                }
+                {
+                    let mut tx = room.runtime_agent_request_tx.lock().await;
+                    *tx = None;
+                }
+            }
+
+            if Self::room_requires_durability_repair(room) {
+                room.durability.freeze_commits();
+                let reason = room
+                    .durability
+                    .status()
+                    .degraded_reason
+                    .or_else(|| room.lifecycle.availability().status().reason.clone())
+                    .unwrap_or_else(|| {
+                        "room is degraded and requires explicit durability repair".to_string()
+                    });
+                let heads = {
+                    let mut doc = room.doc.write().await;
+                    doc.get_heads()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                };
+                Self::mark_room_durability_degraded(room, reason.clone(), heads);
+                warn!(
+                    "[runtimed] clean shutdown retained degraded room {}: {}",
+                    notebook_uuid, reason
+                );
+                durability_failures.push(format!("{notebook_uuid}: {reason}"));
+                continue;
+            }
+
+            if let Err(error) = Self::await_room_durability_on_shutdown(room).await {
+                let reason = format!("clean-shutdown durability barrier failed: {error}");
+                let heads = {
+                    let mut doc = room.doc.write().await;
+                    doc.get_heads()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                };
+                Self::mark_room_durability_degraded(room, reason.clone(), heads);
+                warn!(
+                    "[runtimed] {} for {}; preserving the last complete recovery record",
+                    reason, notebook_uuid
+                );
+                durability_failures.push(format!("{notebook_uuid}: {error}"));
+            }
+        }
+
+        if !durability_failures.is_empty() {
+            for (_, room) in &shutdown_rooms {
+                room.durability.thaw_commits();
+            }
+            self.notebook_rooms.thaw_publication().await;
+            anyhow::bail!(
+                "clean shutdown retained {} room(s) after durability failure: {}",
+                durability_failures.len(),
+                durability_failures.join("; ")
+            );
+        }
+
+        let _drained_rooms = self.notebook_rooms.drain().await;
+        Ok(())
     }
 
     /// Build the `DaemonInfo` response from live daemon state.
@@ -1965,45 +2179,76 @@ impl Daemon {
         //   2. A second ctrl-c or SIGKILL skips destructors entirely.
         //
         // To avoid holding the notebook_rooms lock across .await points, first
-        // drain the map into an owned collection, then shut down agents.
-        let drained_rooms = self.notebook_rooms.drain().await;
-
-        for (notebook_uuid, room) in drained_rooms {
-            // Shut down runtime agent via RPC before dropping handle
-            {
-                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-                if has_runtime_agent {
-                    info!(
-                        "[runtimed] Shutting down runtime agent for notebook on exit: {}",
-                        notebook_uuid
-                    );
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        crate::notebook_sync_server::send_runtime_agent_request(
-                            &room,
-                            notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
-                        ),
-                    )
-                    .await;
-                }
-                // Drop the handle so it tears down the runtime-agent ownership group
-                // and removes the matching manifest only after cleanup succeeds.
-                {
-                    let mut ra_guard = room.runtime_agent_handle.lock().await;
-                    *ra_guard = None;
-                }
-                {
-                    let mut tx = room.runtime_agent_request_tx.lock().await;
-                    *tx = None;
-                }
-            }
-        }
+        // snapshot the map into an owned collection. Keep the rooms registered
+        // until their runtime agents stop and their causal journal barriers
+        // finish; only then drain the registry as the shutdown commit point.
+        let room_shutdown_result = self.shutdown_notebook_rooms().await;
 
         // Cleanup socket (Unix only - named pipes don't need cleanup)
         #[cfg(unix)]
         tokio::fs::remove_file(&self.config.socket_path).await.ok();
 
+        room_shutdown_result?;
         Ok(())
+    }
+
+    /// Resolve a file-backed room identity without making the best-effort path
+    /// registry a single point of failure for crash recovery.
+    ///
+    /// The registry remains the fast-path and binding authority. On a miss (or
+    /// when the registry itself is unavailable), inspect the authoritative
+    /// recovery journals by canonical path before assigning a new UUID. This
+    /// closes the promotion/restart window where the journal commit succeeded
+    /// but its later auxiliary registry write did not.
+    async fn resolve_file_notebook_id(&self, canonical_path: &Path) -> anyhow::Result<uuid::Uuid> {
+        if let Some(notebook_id) = self.notebook_registry.lookup(canonical_path) {
+            return Ok(notebook_id);
+        }
+
+        let docs_dir = self.config.notebook_docs_dir.clone();
+        let discovery_path = canonical_path.to_path_buf();
+        let discovery = tokio::task::spawn_blocking(move || {
+            crate::notebook_sync_server::recovery::discover_journal_by_canonical_path(
+                &docs_dir,
+                &discovery_path,
+            )
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "source_degraded: recovery identity scan task failed for {}: {error}",
+                canonical_path.display()
+            )
+        })?
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "source_degraded: could not resolve recovery identity for {}: {error}",
+                canonical_path.display()
+            )
+        })?;
+
+        match discovery {
+            crate::notebook_sync_server::recovery::RecoveryJournalDiscovery::Found {
+                notebook_id,
+                journal_path,
+            } => {
+                info!(
+                    "[notebook-recovery] Restored path binding {} -> {} from {}",
+                    canonical_path.display(),
+                    notebook_id,
+                    journal_path.display()
+                );
+                self.notebook_registry.record(
+                    canonical_path,
+                    notebook_id,
+                    &chrono::Utc::now().to_rfc3339(),
+                );
+                Ok(notebook_id)
+            }
+            crate::notebook_sync_server::recovery::RecoveryJournalDiscovery::NotFound => Ok(self
+                .notebook_registry
+                .resolve_or_assign(canonical_path, &chrono::Utc::now().to_rfc3339())),
+        }
     }
 
     /// Unix-specific server loop using a pre-bound Unix domain socket.
@@ -2612,7 +2857,7 @@ impl Daemon {
                             parsed,
                             crate::notebook_sync_server::RoomCreationOptions {
                                 path: None,
-                                initial_load_required: false,
+                                initial_load_execution_store_dir: None,
                                 docs_dir: &docs_dir,
                                 blob_store: self.blob_store.clone(),
                                 ephemeral: false, // NotebookSync handshake is always persistent
@@ -2658,15 +2903,25 @@ impl Daemon {
                         // Resolve a stable id for this file so reopening it (even
                         // across a daemon restart) lands on the same id, instead
                         // of minting a fresh UUID per run. See NIP-1.
-                        let stable_id = self
-                            .notebook_registry
-                            .resolve_or_assign(&canonical, &chrono::Utc::now().to_rfc3339());
+                        let stable_id = match self.resolve_file_notebook_id(&canonical).await {
+                            Ok(notebook_id) => notebook_id,
+                            Err(error) => {
+                                let (_reader, mut writer) = tokio::io::split(stream);
+                                send_error_response(
+                                    &mut writer,
+                                    error.to_string(),
+                                    typed_bootstrap.unwrap_or(false),
+                                )
+                                .await?;
+                                return Ok(());
+                            }
+                        };
                         crate::notebook_sync_server::get_or_create_room_result(
                             &self.notebook_rooms,
                             stable_id,
                             crate::notebook_sync_server::RoomCreationOptions {
                                 path: Some(canonical),
-                                initial_load_required: false,
+                                initial_load_execution_store_dir: None,
                                 docs_dir: &docs_dir,
                                 blob_store: self.blob_store.clone(),
                                 ephemeral: false,
@@ -2983,7 +3238,7 @@ impl Daemon {
             room_uuid,
             crate::notebook_sync_server::RoomCreationOptions {
                 path: None,
-                initial_load_required: false,
+                initial_load_execution_store_dir: None,
                 docs_dir: &docs_dir,
                 blob_store: self.blob_store.clone(),
                 ephemeral: true,
@@ -3376,16 +3631,22 @@ impl Daemon {
         } else {
             // Reopening the same file resolves to the same id across daemon
             // restarts instead of minting a fresh UUID per run. See NIP-1.
-            let uuid = self
-                .notebook_registry
-                .resolve_or_assign(&canonical_path, &chrono::Utc::now().to_rfc3339());
+            let uuid = match self.resolve_file_notebook_id(&canonical_path).await {
+                Ok(notebook_id) => notebook_id,
+                Err(error) => {
+                    let (_reader, mut writer) = tokio::io::split(stream);
+                    send_error_response(&mut writer, error.to_string(), typed_bootstrap).await?;
+                    return Ok(());
+                }
+            };
             let path = Some(canonical_path.clone());
             crate::notebook_sync_server::get_or_create_room_result(
                 &self.notebook_rooms,
                 uuid,
                 crate::notebook_sync_server::RoomCreationOptions {
                     path,
-                    initial_load_required: file_exists,
+                    initial_load_execution_store_dir: file_exists
+                        .then_some(self.config.execution_store_dir.as_path()),
                     docs_dir: &docs_dir,
                     blob_store: self.blob_store.clone(),
                     ephemeral: false, // OpenNotebook handshake is always persistent
@@ -3410,6 +3671,9 @@ impl Daemon {
             let mut create_error = None;
             let count = {
                 let mut doc = room.doc.write().await;
+                let rollback_actor = doc.get_actor_id();
+                let rollback_snapshot = doc.save();
+                let baseline_heads = doc.get_heads();
                 if doc.is_pristine() {
                     match crate::notebook_sync_server::create_empty_notebook(
                         &mut doc,
@@ -3430,6 +3694,21 @@ impl Daemon {
                             );
                             create_error = Some(e);
                         }
+                    }
+                }
+                if create_error.is_none() && created_new_at_path {
+                    if let Err(error) =
+                        crate::notebook_sync_server::durability::commit_daemon_notebook_mutation(
+                            &room,
+                            &mut doc,
+                            &baseline_heads,
+                            &rollback_snapshot,
+                            &rollback_actor,
+                            "new file-backed notebook creation",
+                        )
+                    {
+                        create_error = Some(error);
+                        created_new_at_path = false;
                     }
                 }
                 doc.cell_count()
@@ -3480,6 +3759,21 @@ impl Daemon {
         // A concurrent control-plane projection can now observe Loading and
         // wait instead of treating the room's pristine document as complete.
         if let Some(load_path) = needs_load.as_ref() {
+            if matches!(
+                room.initial_load.state(),
+                crate::notebook_sync_server::RoomInitialLoadState::Failed { .. }
+            ) {
+                // A later open is the production retry trigger for transient
+                // read/parse failures. Retry only if no source batch or peer
+                // edit has ever made the live Automerge document non-pristine;
+                // otherwise explicit watcher/save reconciliation is required.
+                let _ = crate::notebook_sync_server::retry_failed_room_initial_load_if_safe(
+                    &room,
+                    load_path.clone(),
+                    self.config.execution_store_dir.clone(),
+                )
+                .await;
+            }
             let _load_state_rx = crate::notebook_sync_server::start_room_initial_load(
                 &room,
                 load_path.clone(),
@@ -3621,7 +3915,7 @@ impl Daemon {
             uuid,
             crate::notebook_sync_server::RoomCreationOptions {
                 path: None, // CreateNotebook creates untitled rooms with no file path
-                initial_load_required: false,
+                initial_load_execution_store_dir: None,
                 docs_dir: &docs_dir,
                 blob_store: self.blob_store.clone(),
                 ephemeral,
@@ -3637,6 +3931,9 @@ impl Daemon {
         // already present and we skip seeding.
         let (cell_count, create_error, freshly_created) = {
             let mut doc = room.doc.write().await;
+            let rollback_actor = doc.get_actor_id();
+            let rollback_snapshot = doc.save();
+            let baseline_heads = doc.get_heads();
             let mut err = None;
             let mut fresh = false;
             if !doc.is_pristine() {
@@ -3661,6 +3958,21 @@ impl Daemon {
                     Err(e) => {
                         err = Some(e);
                     }
+                }
+            }
+            if err.is_none() && fresh {
+                if let Err(error) =
+                    crate::notebook_sync_server::durability::commit_daemon_notebook_mutation(
+                        &room,
+                        &mut doc,
+                        &baseline_heads,
+                        &rollback_snapshot,
+                        &rollback_actor,
+                        "new notebook creation",
+                    )
+                {
+                    err = Some(error);
+                    fresh = false;
                 }
             }
             (doc.cell_count(), err, fresh)
@@ -4139,10 +4451,12 @@ impl Daemon {
 
             Request::GetRuntimeMetrics => self.build_runtime_metrics(),
 
-            Request::Shutdown => {
-                self.trigger_shutdown().await;
-                Response::ShuttingDown
-            }
+            Request::Shutdown => match self.trigger_shutdown().await {
+                Ok(()) => Response::ShuttingDown,
+                Err(error) => Response::Error {
+                    message: format!("clean shutdown blocked: {error}"),
+                },
+            },
 
             Request::FlushPool => {
                 info!("[runtimed] Flushing all pooled environments");
@@ -4263,7 +4577,9 @@ impl Daemon {
             }
 
             Request::GetNotebookProjection { notebook_id } => {
-                use crate::notebook_sync_server::RoomInitialLoadState;
+                use crate::notebook_sync_server::{
+                    RoomAvailability, RoomAvailabilityTarget, RoomSourceState,
+                };
                 use runtimed_client::protocol::NotebookProjectionFailure;
 
                 info!(
@@ -4282,24 +4598,56 @@ impl Daemon {
                     };
                 };
 
-                let generation = loop {
-                    match room.initial_load.wait_until_settled().await {
-                        RoomInitialLoadState::NotNeeded { generation }
-                        | RoomInitialLoadState::Ready { generation, .. } => break generation,
-                        RoomInitialLoadState::Failed { generation, reason } => {
-                            return Response::NotebookProjectionUnavailable {
-                                notebook_id,
-                                failure: NotebookProjectionFailure::InitialLoadFailed {
-                                    generation,
-                                    reason,
-                                },
-                            };
-                        }
-                        // `wait_until_settled` normally cannot return Loading.
-                        // If its watch channel is ever replaced while the room
-                        // remains alive, resubscribe rather than exposing a
-                        // partial projection.
-                        RoomInitialLoadState::Loading { .. } => continue,
+                let availability = room
+                    .lifecycle
+                    .wait_for_availability(
+                        RoomAvailabilityTarget::ProjectionReady,
+                        std::time::Duration::from_secs(120),
+                    )
+                    .await
+                    .into_current();
+                let generation = match availability {
+                    RoomAvailability::ProjectionReady(status)
+                    | RoomAvailability::Interactive(status) => status.generation,
+                    // A degraded room may still have a journal-restored
+                    // document and generation-owned projection. Keep those
+                    // readable while mutation and execution remain gated so
+                    // callers can inspect and explicitly reconcile a source
+                    // conflict instead of losing the only recovery surface.
+                    RoomAvailability::Degraded(status)
+                        if status.capabilities.read_projection
+                            || status.capabilities.read_document =>
+                    {
+                        status.generation
+                    }
+                    RoomAvailability::Degraded(status) => {
+                        let source = room.lifecycle.source_state();
+                        let reason = match &source {
+                            RoomSourceState::Failed(source) => source
+                                .error
+                                .as_ref()
+                                .map(|error| error.message.clone())
+                                .or(status.reason)
+                                .unwrap_or_else(|| "room source degraded".to_string()),
+                            _ => status
+                                .reason
+                                .unwrap_or_else(|| "room source degraded".to_string()),
+                        };
+                        return Response::NotebookProjectionUnavailable {
+                            notebook_id,
+                            failure: NotebookProjectionFailure::InitialLoadFailed {
+                                generation: source.generation(),
+                                reason,
+                            },
+                        };
+                    }
+                    RoomAvailability::Attached(status) => {
+                        return Response::Error {
+                            message: format!(
+                                "notebook_not_ready: source generation {} remains attached without a durable projection",
+                                status.generation
+                            ),
+                        };
                     }
                 };
 
@@ -4309,8 +4657,22 @@ impl Daemon {
                     Ok(projection) => Response::NotebookProjection {
                         projection: Box::new(projection),
                     },
+                    Err(
+                        crate::notebook_sync_server::NotebookProjectionBuildError::NotRetained {
+                            generation,
+                            document_readable,
+                            reason,
+                        },
+                    ) => Response::NotebookProjectionUnavailable {
+                        notebook_id,
+                        failure: NotebookProjectionFailure::ProjectionNotRetained {
+                            generation,
+                            document_readable,
+                            reason,
+                        },
+                    },
                     Err(error) => Response::Error {
-                        message: format!("Failed to build notebook projection: {error:#}"),
+                        message: format!("Failed to build notebook projection: {error}"),
                     },
                 }
             }
@@ -4718,6 +5080,7 @@ impl Daemon {
                     .load(std::sync::atomic::Ordering::Relaxed)
                     > 0
                     || room.is_loading()
+                    || Self::room_requires_durability_repair(&room)
                 {
                     return None;
                 }
@@ -4773,7 +5136,56 @@ impl Daemon {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|| uuid.to_string());
 
-            // Step 1: force-flush the persist debouncer so the
+            // Step 1: establish a causal journal barrier for the exact live
+            // NotebookDoc heads before any eviction cleanup. This also
+            // captures daemon-authored changes that were not peer/source
+            // transactions. A journal failure degrades the room and leaves it
+            // resident for explicit repair.
+            let (snapshot, required_head_hashes, required_heads) = {
+                let mut doc = room.doc.write().await;
+                let heads = doc.get_heads();
+                let encoded = heads.iter().map(ToString::to_string).collect::<Vec<_>>();
+                let raw = heads.iter().map(|head| head.0).collect::<Vec<_>>();
+                (doc.save(), raw, encoded)
+            };
+            let durability = Arc::clone(&room.durability);
+            let durable_commit = tokio::task::spawn_blocking(move || {
+                durability.commit_snapshot(
+                    &snapshot,
+                    required_head_hashes,
+                    crate::notebook_sync_server::durability::DurableMutation::Daemon,
+                )
+            })
+            .await;
+            let durable_commit = match durable_commit {
+                Ok(result) => result,
+                Err(error) => Err(
+                    crate::notebook_sync_server::durability::RoomDurabilityError::InvalidSnapshot(
+                        format!("journal task failed: {error}"),
+                    ),
+                ),
+            };
+            if let Err(error) = durable_commit {
+                let reason = format!("reaper journal barrier failed: {error}");
+                Self::mark_room_durability_degraded(&room, reason.clone(), required_heads);
+                warn!(
+                    "[runtimed] Resident-room reaper: {} - keeping {} resident",
+                    reason, notebook_id_label
+                );
+                continue;
+            }
+            const DURABLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+            if let Err(error) =
+                Self::await_reaper_durability(&room, &required_heads, DURABLE_TIMEOUT).await
+            {
+                warn!(
+                    "[runtimed] Resident-room reaper: durable-head wait failed for {}: {} - keeping resident",
+                    notebook_id_label, error
+                );
+                continue;
+            }
+
+            // Step 2: force-flush the legacy persist debouncer so the
             // `.automerge` mirror is current before we touch
             // anything. Skipped for ephemeral rooms (no debouncer).
             // The flush is non-destructive (the debouncer keeps
@@ -4795,7 +5207,7 @@ impl Daemon {
                 }
             }
 
-            // Step 2: atomic commit before any destructive cleanup.
+            // Step 3: atomic commit before any destructive cleanup.
             // Re-check active_peers, reservations, generation, and
             // still-torn-down under the registry lock. A reconnect
             // that races in zeroes the timestamp and bumps the
@@ -4815,7 +5227,13 @@ impl Daemon {
                     let same_gen = r.connections.connection_generation() == gen_at_sample;
                     let still_stamped = r.connections.last_kernel_torn_down_at().is_some();
                     let source_settled = !r.is_loading();
-                    no_peers && no_reservations && same_gen && still_stamped && source_settled
+                    let durability_healthy = !Self::room_requires_durability_repair(r);
+                    no_peers
+                        && no_reservations
+                        && same_gen
+                        && still_stamped
+                        && source_settled
+                        && durability_healthy
                 })
                 .await;
 
@@ -4831,7 +5249,7 @@ impl Daemon {
             // here on the cleanup is internal and can take its time
             // without racing the connect side.
 
-            // Step 3: shut down the autosave debouncer. The autosave
+            // Step 4: shut down the autosave debouncer. The autosave
             // task owns an `Arc<NotebookRoom>`; the ack guarantees a
             // final save before exit. A timeout here leaks the Arc
             // until the kernel/process dies, but the room is already
@@ -4845,7 +5263,7 @@ impl Daemon {
             )
             .await;
 
-            // Step 4: fire-and-forget watcher shutdowns. Each task
+            // Step 5: fire-and-forget watcher shutdowns. Each task
             // owns an `Arc<NotebookRoom>` and releases it on receipt
             // of the oneshot signal.
             room.file_binding.shutdown_notebook_watcher().await;
@@ -4854,7 +5272,7 @@ impl Daemon {
                 crate::notebook_sync_server::release_autosave_owner_marker_for_path(path).await;
             }
 
-            // Step 5: take the persist debouncer out so its senders
+            // Step 6: take the persist debouncer out so its senders
             // drop and the task exits via its shutdown arm with one
             // final flush. Without `.take()` the senders only drop
             // when the room Arc itself drops, which the autosave /
@@ -6791,6 +7209,151 @@ mod tests {
         }
     }
 
+    async fn write_ready_recovery_with_peer_edit(
+        config: &DaemonConfig,
+        canonical_path: &Path,
+        notebook_id: uuid::Uuid,
+    ) -> crate::notebook_sync_server::recovery::RecoveryManifest {
+        let source = br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[{"id":"disk-cell","cell_type":"code","metadata":{},"execution_count":null,"outputs":[],"source":["disk_value = 1\n"]}]}"#;
+        tokio::fs::write(canonical_path, source).await.unwrap();
+        let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
+        let room = crate::notebook_sync_server::NotebookRoom::new_fresh(
+            notebook_id,
+            Some(canonical_path.to_path_buf()),
+            &config.notebook_docs_dir,
+            blob_store,
+            false,
+        );
+
+        let (staged_snapshot, staged_heads, staged_change_hashes) = {
+            let mut doc = room.doc.write().await;
+            let baseline = doc.get_heads();
+            doc.add_cell(0, "disk-cell", "code").unwrap();
+            doc.update_source("disk-cell", "disk_value = 1\n").unwrap();
+            let staged_change_hashes = doc
+                .doc_mut()
+                .get_changes(&baseline)
+                .iter()
+                .map(|change| change.hash().0)
+                .collect::<Vec<_>>();
+            let staged_heads = doc.get_heads().iter().map(|head| head.0).collect();
+            (doc.save(), staged_heads, staged_change_hashes)
+        };
+        room.durability
+            .commit_staged_source(
+                &staged_snapshot,
+                staged_heads,
+                1,
+                crate::notebook_sync_server::recovery::source_fingerprint(source),
+                staged_change_hashes,
+            )
+            .unwrap();
+        room.durability.commit_source_ready(1).unwrap();
+
+        let peer_changes = {
+            let mut doc = room.doc.write().await;
+            let baseline = doc.get_heads();
+            doc.update_source("disk-cell", "peer_acknowledged = 2")
+                .unwrap();
+            doc.doc_mut()
+                .get_changes(&baseline)
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        room.durability.commit_peer_changes(peer_changes).unwrap();
+        room.durability.manifest()
+    }
+
+    async fn reopen_recovered_room(
+        daemon: &Arc<Daemon>,
+        canonical_path: &Path,
+        expected: &crate::notebook_sync_server::recovery::RecoveryManifest,
+    ) {
+        let resolved_id = daemon
+            .resolve_file_notebook_id(canonical_path)
+            .await
+            .expect("journal identity discovery should succeed");
+        assert_eq!(resolved_id, expected.notebook_id);
+
+        let (room, _guard) = crate::notebook_sync_server::get_or_create_room_result(
+            &daemon.notebook_rooms,
+            resolved_id,
+            crate::notebook_sync_server::RoomCreationOptions {
+                path: Some(canonical_path.to_path_buf()),
+                initial_load_execution_store_dir: Some(&daemon.config.execution_store_dir),
+                docs_dir: &daemon.config.notebook_docs_dir,
+                blob_store: daemon.blob_store.clone(),
+                ephemeral: false,
+                trusted_packages: daemon.trusted_packages.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(room.id, expected.notebook_id);
+        assert_eq!(
+            room.durability.manifest().durable_heads,
+            expected.durable_heads
+        );
+        assert_eq!(
+            room.doc
+                .read()
+                .await
+                .get_cell_source("disk-cell")
+                .as_deref(),
+            Some("peer_acknowledged = 2")
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_recovers_acknowledged_peer_heads_after_registry_mapping_is_lost() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        let notebook_path = temp_dir.path().join("registry-lost.ipynb");
+        tokio::fs::write(&notebook_path, b"{}").await.unwrap();
+        let canonical_path = tokio::fs::canonicalize(&notebook_path).await.unwrap();
+        let notebook_id = uuid::Uuid::new_v4();
+
+        let first_daemon = Daemon::new_for_test(config.clone()).unwrap();
+        first_daemon.notebook_registry.record(
+            &canonical_path,
+            notebook_id,
+            &chrono::Utc::now().to_rfc3339(),
+        );
+        let expected =
+            write_ready_recovery_with_peer_edit(&config, &canonical_path, notebook_id).await;
+        first_daemon.notebook_registry.forget(&canonical_path);
+        drop(first_daemon);
+
+        let restarted = Daemon::new_for_test(config).unwrap();
+        assert_eq!(restarted.notebook_registry.lookup(&canonical_path), None);
+        reopen_recovered_room(&restarted, &canonical_path, &expected).await;
+        assert_eq!(
+            restarted.notebook_registry.lookup(&canonical_path),
+            Some(notebook_id),
+            "journal discovery should repair the auxiliary path registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_recovers_acknowledged_peer_heads_with_unavailable_registry() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = lease_test_config(&temp_dir);
+        let notebook_path = temp_dir.path().join("registry-unavailable.ipynb");
+        tokio::fs::write(&notebook_path, b"{}").await.unwrap();
+        let canonical_path = tokio::fs::canonicalize(&notebook_path).await.unwrap();
+        let notebook_id = uuid::Uuid::new_v4();
+        let expected =
+            write_ready_recovery_with_peer_edit(&config, &canonical_path, notebook_id).await;
+
+        let blocked_parent = temp_dir.path().join("registry-parent-is-a-file");
+        std::fs::write(&blocked_parent, b"not a directory").unwrap();
+        config.notebook_registry_db_path = blocked_parent.join("registry.sqlite");
+        let restarted = Daemon::new_for_test(config).unwrap();
+        assert!(restarted.notebook_registry.unavailable_reason().is_some());
+        reopen_recovered_room(&restarted, &canonical_path, &expected).await;
+    }
+
     #[tokio::test]
     async fn resident_room_reaper_waits_for_initial_materialization() {
         let temp_dir = TempDir::new().unwrap();
@@ -6828,12 +7391,231 @@ mod tests {
         else {
             panic!("pending source should be claimable");
         };
+        let projection = Arc::new(
+            crate::notebook_sync_server::build_live_notebook_projection_for_generation(
+                &room, generation,
+            )
+            .await
+            .unwrap(),
+        );
+        assert!(room.lifecycle.publish_recovered_projection_ready(
+            generation,
+            projection,
+            Vec::new(),
+        ));
         assert!(room.initial_load.complete_ready(generation, 0));
 
         daemon.ghost_room_reaper_sweep_with_cap(0, 0).await;
         assert!(
             daemon.notebook_rooms.peek_uuid(uuid).await.is_none(),
             "settled peerless room should become eligible for eviction"
+        );
+    }
+
+    #[tokio::test]
+    async fn resident_room_reaper_durable_wait_failure_degrades_and_never_evicts() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        let docs_dir = config.notebook_docs_dir.clone();
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let uuid = uuid::Uuid::new_v4();
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid,
+            None,
+            &docs_dir,
+            daemon.blob_store.clone(),
+            true,
+        ));
+        let required_heads = {
+            let mut doc = room.doc.write().await;
+            doc.get_heads()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+
+        // Model an asynchronous journal failure discovered by the causal
+        // head barrier, after candidate selection and snapshot commit.
+        room.durability
+            .mark_degraded("injected durable wait failure");
+        Daemon::await_reaper_durability(
+            &room,
+            &required_heads,
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .expect_err("a degraded journal must fail the reaper barrier");
+
+        assert!(matches!(
+            room.lifecycle.availability(),
+            crate::notebook_sync_server::RoomAvailability::Degraded(_)
+        ));
+        assert!(matches!(
+            room.state
+                .read(|state| state.read_state())
+                .unwrap()
+                .file_checkpoint
+                .source_issue,
+            Some(runtime_doc::FileSourceIssue::Degraded { .. })
+        ));
+
+        room.connections
+            .last_kernel_torn_down_at
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        let outcome = daemon
+            .notebook_rooms
+            .insert_or_get(uuid, room.clone(), None)
+            .await
+            .unwrap();
+        let (_, reservation) = outcome.into_parts();
+        drop(reservation);
+
+        daemon.ghost_room_reaper_sweep_with_cap(0, 0).await;
+        daemon.ghost_room_reaper_sweep_with_cap(0, 0).await;
+        assert!(
+            daemon.notebook_rooms.peek_uuid(uuid).await.is_some(),
+            "later sweeps must retain a room after its durability barrier fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn resident_room_reaper_excludes_lifecycle_only_degradation() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        let docs_dir = config.notebook_docs_dir.clone();
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let uuid = uuid::Uuid::new_v4();
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid,
+            None,
+            &docs_dir,
+            daemon.blob_store.clone(),
+            true,
+        ));
+        let heads = {
+            let mut doc = room.doc.write().await;
+            doc.get_heads()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+        room.lifecycle
+            .mark_degraded("injected lifecycle degradation".to_string(), heads, true);
+        assert!(
+            !room.durability.status().is_degraded(),
+            "test must isolate the lifecycle-axis guard"
+        );
+        room.connections
+            .last_kernel_torn_down_at
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        let outcome = daemon
+            .notebook_rooms
+            .insert_or_get(uuid, room, None)
+            .await
+            .unwrap();
+        let (_, reservation) = outcome.into_parts();
+        drop(reservation);
+
+        daemon.ghost_room_reaper_sweep_with_cap(0, 0).await;
+        assert!(
+            daemon.notebook_rooms.peek_uuid(uuid).await.is_some(),
+            "lifecycle-degraded recovery state must not become reaper capacity"
+        );
+    }
+
+    #[tokio::test]
+    async fn clean_shutdown_durability_failure_keeps_registry_and_returns_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        let docs_dir = config.notebook_docs_dir.clone();
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let uuid = uuid::Uuid::new_v4();
+        let notebook_path = temp_dir.path().join("shutdown-failure.ipynb");
+        std::fs::write(
+            &notebook_path,
+            br#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+        )
+        .unwrap();
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid,
+            Some(notebook_path.clone()),
+            &docs_dir,
+            daemon.blob_store.clone(),
+            false,
+        ));
+        let journal_path = room
+            .durability
+            .journal()
+            .expect("file-backed room has a recovery journal")
+            .path()
+            .to_path_buf();
+        std::fs::create_dir_all(&journal_path).unwrap();
+        let outcome = daemon
+            .notebook_rooms
+            .insert_or_get(uuid, room.clone(), Some(&notebook_path))
+            .await
+            .unwrap();
+        let (_, reservation) = outcome.into_parts();
+        drop(reservation);
+
+        let error = daemon
+            .shutdown_notebook_rooms()
+            .await
+            .expect_err("journal failure must make clean shutdown fail");
+        assert!(
+            error.to_string().contains("clean shutdown retained 1 room"),
+            "unexpected shutdown error: {error:#}"
+        );
+        assert_eq!(daemon.notebook_rooms.len().await, 1);
+        assert!(daemon.notebook_rooms.peek_uuid(uuid).await.is_some());
+        assert!(room.durability.status().is_degraded());
+        assert!(matches!(
+            room.lifecycle.availability(),
+            crate::notebook_sync_server::RoomAvailability::Degraded(_)
+        ));
+        assert!(matches!(
+            room.state
+                .read(|state| state.read_state())
+                .unwrap()
+                .file_checkpoint
+                .source_issue,
+            Some(runtime_doc::FileSourceIssue::Degraded { .. })
+        ));
+
+        // A failed shutdown transaction must reopen the publication and
+        // commit gates. Otherwise one disk fault permanently bricks every
+        // later attach even though the daemon explicitly remains available
+        // for reconciliation.
+        let second_uuid = uuid::Uuid::new_v4();
+        let second_room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            second_uuid,
+            None,
+            &docs_dir,
+            daemon.blob_store.clone(),
+            true,
+        ));
+        let outcome = daemon
+            .notebook_rooms
+            .insert_or_get(second_uuid, second_room, None)
+            .await
+            .expect("failed shutdown must thaw room publication");
+        let (_, reservation) = outcome.into_parts();
+        drop(reservation);
+        assert_eq!(daemon.notebook_rooms.len().await, 2);
+
+        // Repairing the injected filesystem fault alone is not an implicit
+        // reconciliation decision. A later shutdown still cannot evict the
+        // degraded room until its lifecycle and durability state are cleared
+        // explicitly.
+        std::fs::remove_dir_all(&journal_path).unwrap();
+        daemon
+            .shutdown_notebook_rooms()
+            .await
+            .expect_err("a later shutdown must retain the degraded room");
+        assert_eq!(
+            daemon.notebook_rooms.len().await,
+            2,
+            "the degraded recovery room and later publication must both remain resident"
         );
     }
 

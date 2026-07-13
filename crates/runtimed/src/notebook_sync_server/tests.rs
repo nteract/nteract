@@ -900,7 +900,7 @@ async fn test_get_or_create_room_reuses_existing() {
         uuid1,
         RoomCreationOptions {
             path: None,
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: tmp.path(),
             blob_store: blob_store.clone(),
             ephemeral: false,
@@ -913,7 +913,7 @@ async fn test_get_or_create_room_reuses_existing() {
         uuid1,
         RoomCreationOptions {
             path: None,
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: tmp.path(),
             blob_store,
             ephemeral: false,
@@ -939,7 +939,7 @@ async fn file_load_is_pending_before_room_becomes_observable() {
         uuid,
         RoomCreationOptions {
             path: Some(path.clone()),
-            initial_load_required: true,
+            initial_load_execution_store_dir: Some(tmp.path()),
             docs_dir: tmp.path(),
             blob_store,
             ephemeral: false,
@@ -953,14 +953,400 @@ async fn file_load_is_pending_before_room_becomes_observable() {
         .await
         .expect("room should be registered");
     assert!(Arc::ptr_eq(&room, &visible));
-    assert!(matches!(
-        visible.initial_load.state(),
-        RoomInitialLoadState::Loading { generation: 1 }
-    ));
+    match visible.initial_load.state() {
+        RoomInitialLoadState::Loading { generation: 1 } => assert!(
+            visible.initial_load.task_claimed_for_test(),
+            "a registry-visible Loading generation must already have an owner"
+        ),
+        RoomInitialLoadState::Ready { generation: 1, .. }
+        | RoomInitialLoadState::Failed { generation: 1, .. } => {
+            // The room-owned task may settle before this test observes it.
+        }
+        state => panic!("unexpected initial-load state after publication: {state:?}"),
+    }
     assert!(
         visible.connections.last_kernel_torn_down_at().is_some(),
         "a never-attached file room must enter the peerless reaper lifecycle"
     );
+}
+
+#[tokio::test]
+async fn published_room_source_claim_cancellation_terminalizes_projection_waits() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let uuid = Uuid::new_v4();
+    let path = tmp.path().join("cancelled-before-spawn.ipynb");
+    let room = Arc::new(NotebookRoom::new_fresh(
+        uuid,
+        Some(path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+
+    room.initial_load.mark_required();
+    let (claim, _) = claim_room_initial_load(&room, path.clone());
+    let claim = claim.expect("source generation should be claimed before publication");
+    rooms
+        .insert_or_get(uuid, Arc::clone(&room), Some(&path))
+        .await
+        .expect("publish claimed room");
+
+    // Model cancellation in the narrow registry-publication-to-task-spawn
+    // window. The ownership token's Drop path must publish a terminal state.
+    drop(claim);
+
+    assert!(matches!(
+        room.initial_load.state(),
+        RoomInitialLoadState::Failed { generation: 1, .. }
+    ));
+    let waited = room
+        .lifecycle
+        .wait_for_availability(
+            RoomAvailabilityTarget::ProjectionReady,
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+    assert!(matches!(
+        waited,
+        RoomWaitResult::Current(RoomAvailability::Degraded(_))
+    ));
+}
+
+#[tokio::test]
+async fn matching_recovery_journal_restores_room_without_source_regeneration() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let path = tmp.path().join("matching-recovery.ipynb");
+    write_numbered_notebook(&path, 1).await;
+    let id = Uuid::new_v4();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "recovered-cell", "code").unwrap();
+        doc.update_source("recovered-cell", "journal_value = 1")
+            .unwrap();
+    }
+    commit_test_room_source(&room).await;
+    let journal_path = room.durability.journal().unwrap().path().to_path_buf();
+    let journal_before = std::fs::read(&journal_path).unwrap();
+    drop(room);
+
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let (recovered, _guard) = get_or_create_room(
+        &rooms,
+        id,
+        RoomCreationOptions {
+            path: Some(path),
+            initial_load_execution_store_dir: Some(tmp.path()),
+            docs_dir: &docs_dir,
+            blob_store,
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
+    )
+    .await;
+    let settled = recovered
+        .lifecycle
+        .wait_for_source_settled(std::time::Duration::from_secs(5))
+        .await
+        .into_current();
+    assert!(matches!(settled, RoomSourceState::Ready(_)));
+    assert_eq!(recovered.doc.read().await.cell_count(), 1);
+    assert_eq!(
+        recovered.doc.read().await.get_cell_source("recovered-cell"),
+        Some("journal_value = 1".to_string())
+    );
+    assert!(matches!(
+        recovered.lifecycle.availability(),
+        RoomAvailability::Interactive(_)
+    ));
+    assert_eq!(std::fs::read(&journal_path).unwrap(), journal_before);
+}
+
+#[tokio::test]
+async fn idless_durably_staged_recovery_rebuilds_sidecars_with_stable_identities() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let path = tmp.path().join("staged-sidecars.ipynb");
+    let source = br#"{
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [{
+            "cell_type": "code",
+            "metadata": {},
+            "execution_count": 1,
+            "outputs": [{"output_type":"stream","name":"stdout","text":["hello\n"]}],
+            "source": ["print('hello')\n"]
+        }]
+    }"#;
+    tokio::fs::write(&path, source).await.unwrap();
+    let id = Uuid::new_v4();
+    let legacy_cell_id = Uuid::new_v5(&id, b"nteract:legacy-nbformat-cell:0").to_string();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    let fingerprint = super::recovery::source_fingerprint(source);
+    let (snapshot, heads, hashes) = {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, &legacy_cell_id, "code").unwrap();
+        doc.update_source(&legacy_cell_id, "print('hello')\n")
+            .unwrap();
+        doc.set_execution_id(&legacy_cell_id, Some("staged-execution-id"))
+            .unwrap();
+        let heads = doc.get_heads().iter().map(|head| head.0).collect();
+        let hashes = doc
+            .doc_mut()
+            .get_changes(&[])
+            .iter()
+            .map(|change| change.hash().0)
+            .collect();
+        (doc.save(), heads, hashes)
+    };
+    room.durability
+        .commit_snapshot(
+            &snapshot,
+            heads,
+            super::durability::DurableMutation::Source {
+                generation: 1,
+                fingerprint,
+                staged_change_hashes: hashes,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        room.durability.status().source_phase,
+        super::recovery::RecoverySourcePhase::DurablyStaged
+    );
+    drop(room);
+
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let (recovered, _guard) = get_or_create_room(
+        &rooms,
+        id,
+        RoomCreationOptions {
+            path: Some(path),
+            initial_load_execution_store_dir: Some(tmp.path()),
+            docs_dir: &docs_dir,
+            blob_store,
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
+    )
+    .await;
+    let settled = recovered
+        .lifecycle
+        .wait_for_source_settled(std::time::Duration::from_secs(5))
+        .await
+        .into_current();
+    assert!(matches!(settled, RoomSourceState::Ready(_)));
+    assert_eq!(
+        recovered
+            .doc
+            .read()
+            .await
+            .get_execution_id(&legacy_cell_id)
+            .as_deref(),
+        Some("staged-execution-id")
+    );
+    let execution = recovered
+        .state
+        .read(|state| state.get_execution("staged-execution-id"))
+        .unwrap();
+    assert!(execution.is_some(), "recovery must rebuild RuntimeState");
+    let outputs = recovered
+        .state
+        .read(|state| state.get_outputs("staged-execution-id"))
+        .unwrap();
+    assert!(!outputs.is_empty(), "recovery must rebuild source outputs");
+    assert_eq!(
+        recovered.durability.status().source_phase,
+        super::recovery::RecoverySourcePhase::Ready
+    );
+}
+
+#[tokio::test]
+async fn peer_only_pending_recovery_never_regenerates_or_reports_ready() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let path = tmp.path().join("peer-only-pending.ipynb");
+    write_numbered_notebook(&path, 1).await;
+    let id = Uuid::new_v4();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    let changes = {
+        let mut doc = room.doc.write().await;
+        let before = doc.get_heads();
+        doc.add_cell(0, "offline-peer-cell", "code").unwrap();
+        doc.update_source("offline-peer-cell", "peer_truth = 1")
+            .unwrap();
+        doc.doc_mut().get_changes(&before)
+    };
+    room.durability.commit_peer_changes(changes).unwrap();
+    drop(room);
+
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let (recovered, _guard) = get_or_create_room(
+        &rooms,
+        id,
+        RoomCreationOptions {
+            path: Some(path),
+            initial_load_execution_store_dir: Some(tmp.path()),
+            docs_dir: &docs_dir,
+            blob_store,
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        recovered.lifecycle.source_state(),
+        RoomSourceState::Failed(ref status)
+            if status.error.as_ref().is_some_and(|error| error.code == "source_degraded")
+    ));
+    assert!(matches!(
+        recovered.lifecycle.availability(),
+        RoomAvailability::Degraded(_)
+    ));
+    assert_eq!(
+        recovered
+            .doc
+            .read()
+            .await
+            .get_cell_source("offline-peer-cell")
+            .as_deref(),
+        Some("peer_truth = 1")
+    );
+}
+
+#[tokio::test]
+async fn pending_recovery_without_peer_changes_safely_imports_disk() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let path = tmp.path().join("pending-safe-reload.ipynb");
+    write_numbered_notebook(&path, 1).await;
+    let id = Uuid::new_v4();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    let (snapshot, heads) = {
+        let mut doc = room.doc.write().await;
+        (
+            doc.save(),
+            doc.get_heads().iter().map(|head| head.0).collect(),
+        )
+    };
+    room.durability
+        .commit_snapshot(&snapshot, heads, super::durability::DurableMutation::Daemon)
+        .unwrap();
+    assert_eq!(
+        room.durability.status().source_phase,
+        super::recovery::RecoverySourcePhase::Pending
+    );
+    drop(room);
+
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let (recovered, _guard) = get_or_create_room(
+        &rooms,
+        id,
+        RoomCreationOptions {
+            path: Some(path),
+            initial_load_execution_store_dir: Some(tmp.path()),
+            docs_dir: &docs_dir,
+            blob_store,
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
+    )
+    .await;
+    let settled = recovered
+        .lifecycle
+        .wait_for_source_settled(std::time::Duration::from_secs(5))
+        .await
+        .into_current();
+    assert!(matches!(settled, RoomSourceState::Ready(_)));
+    assert_eq!(recovered.doc.read().await.cell_count(), 1);
+    assert_eq!(
+        recovered.durability.status().source_phase,
+        super::recovery::RecoverySourcePhase::Ready
+    );
+}
+
+#[tokio::test]
+async fn recovery_source_fingerprint_mismatch_preserves_both_and_degrades() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let path = tmp.path().join("conflicted-recovery.ipynb");
+    write_numbered_notebook(&path, 1).await;
+    let id = Uuid::new_v4();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "journal-cell", "code").unwrap();
+        doc.update_source("journal-cell", "journal_truth = 1")
+            .unwrap();
+    }
+    commit_test_room_source(&room).await;
+    let journal_path = room.durability.journal().unwrap().path().to_path_buf();
+    let journal_before = std::fs::read(&journal_path).unwrap();
+    let external_revision = br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[{"id":"disk-cell","cell_type":"code","metadata":{},"execution_count":null,"outputs":[],"source":["disk_truth = 2\n"]}]}"#;
+    tokio::fs::write(&path, external_revision).await.unwrap();
+    drop(room);
+
+    let recovered = NotebookRoom::new_fresh(id, Some(path.clone()), &docs_dir, blob_store, false);
+    assert_eq!(recovered.doc.read().await.cell_count(), 1);
+    assert_eq!(
+        recovered.doc.read().await.get_cell_source("journal-cell"),
+        Some("journal_truth = 1".to_string())
+    );
+    assert!(matches!(
+        recovered.lifecycle.source_state(),
+        RoomSourceState::Failed(ref status)
+            if status.error.as_ref().is_some_and(|error| error.code == "source_conflict")
+    ));
+    assert!(matches!(
+        recovered.lifecycle.availability(),
+        RoomAvailability::Degraded(_)
+    ));
+    assert_eq!(tokio::fs::read(&path).await.unwrap(), external_revision);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), journal_before);
 }
 
 #[tokio::test]
@@ -976,7 +1362,7 @@ async fn test_get_or_create_room_different_notebooks() {
         uuid1,
         RoomCreationOptions {
             path: None,
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: tmp.path(),
             blob_store: blob_store.clone(),
             ephemeral: false,
@@ -989,7 +1375,7 @@ async fn test_get_or_create_room_different_notebooks() {
         uuid2,
         RoomCreationOptions {
             path: None,
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: tmp.path(),
             blob_store,
             ephemeral: false,
@@ -1058,7 +1444,7 @@ async fn test_new_fresh_creates_empty_doc() {
 }
 
 #[tokio::test]
-async fn test_new_fresh_deletes_stale_persisted_doc_for_file_path() {
+async fn test_new_fresh_preserves_but_ignores_legacy_persisted_doc_for_file_path() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
 
@@ -1080,15 +1466,17 @@ async fn test_new_fresh_deletes_stale_persisted_doc_for_file_path() {
     let persist_path = tmp.path().join(&filename);
     assert!(persist_path.exists(), "Persisted file should exist");
 
-    // Create fresh room for a file-backed path — should delete persisted doc and start empty.
-    // path=Some means this is file-backed, so the persisted .automerge doc should be deleted.
+    // Create a file-backed room. Legacy UUID-keyed persistence is not recovery
+    // authority for a file-backed room, but it is preserved for explicit
+    // inspection instead of being deleted as a side effect of opening.
     let fake_ipynb = tmp.path().join("stale-test.ipynb");
     let room = NotebookRoom::new_fresh(uuid, Some(fake_ipynb), tmp.path(), blob_store, false);
 
-    // Persisted file should be deleted
+    // Legacy bytes remain intact while the live room starts from canonical
+    // genesis and will establish its recovery journal during source staging.
     assert!(
-        !persist_path.exists(),
-        "Persisted file should be deleted by new_fresh"
+        persist_path.exists(),
+        "opening a file-backed room must not delete legacy recovery bytes"
     );
 
     // Room should be empty (no cells from persisted doc)
@@ -1097,7 +1485,7 @@ async fn test_new_fresh_deletes_stale_persisted_doc_for_file_path() {
 }
 
 #[tokio::test]
-async fn test_file_backed_room_discards_legacy_persisted_history_before_ipynb_import() {
+async fn test_file_backed_room_ignores_and_preserves_legacy_history_before_ipynb_import() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
     let uuid = Uuid::parse_str("bbbbbbbb-cccc-dddd-eeee-222222222222").unwrap();
@@ -1139,8 +1527,8 @@ async fn test_file_backed_room_discards_legacy_persisted_history_before_ipynb_im
     );
 
     assert!(
-        !persist_path.exists(),
-        "file-backed rooms must discard stale UUID-keyed Automerge history"
+        persist_path.exists(),
+        "file-backed rooms preserve stale UUID-keyed history for manual recovery"
     );
 
     let actors = room.doc.try_write().unwrap().contributing_actors();
@@ -1208,6 +1596,70 @@ async fn test_new_fresh_loads_persisted_doc_for_untitled_notebook() {
     );
     let cells = doc.get_cells();
     assert_eq!(cells[0].source, "restored content");
+}
+
+#[tokio::test]
+async fn persistent_untitled_peer_change_is_journaled_and_survives_restart() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap();
+
+    let room = NotebookRoom::new_fresh(uuid, None, tmp.path(), blob_store.clone(), false);
+    assert!(
+        room.durability.journal().is_some(),
+        "persistent untitled rooms must acknowledge edits through a recovery journal"
+    );
+
+    let committed_heads = {
+        let mut doc = room.doc.write().await;
+        let baseline_heads = doc.get_heads();
+        let rollback_snapshot = doc.save();
+        let rollback_actor = doc.get_actor_id();
+        doc.add_cell(0, "journaled-cell", "code").unwrap();
+        doc.update_source("journaled-cell", "durable = True")
+            .unwrap();
+        super::durability::commit_daemon_notebook_mutation(
+            &room,
+            &mut doc,
+            &baseline_heads,
+            &rollback_snapshot,
+            &rollback_actor,
+            "persistent untitled test mutation",
+        )
+        .unwrap();
+        doc.get_heads()
+    };
+    let committed_manifest = room.durability.manifest();
+    assert_eq!(
+        committed_manifest.durable_heads,
+        committed_heads
+            .iter()
+            .map(|head| head.0)
+            .collect::<Vec<_>>()
+    );
+    assert!(room.durability.status().has_durable_record);
+    drop(room);
+
+    let recovered = NotebookRoom::new_fresh(uuid, None, tmp.path(), blob_store, false);
+    assert_eq!(
+        recovered.doc.read().await.get_cell_source("journaled-cell"),
+        Some("durable = True".to_string())
+    );
+    assert_eq!(
+        recovered.durability.manifest().durable_heads,
+        committed_manifest.durable_heads,
+        "restart must recover the exact acknowledged causal heads"
+    );
+    assert!(recovered.durability.status().has_durable_record);
+    assert!(matches!(
+        recovered.lifecycle.source_state(),
+        RoomSourceState::Ready(ref status)
+            if status.fingerprint == RoomSourceFingerprint::NotApplicable
+    ));
+    assert!(matches!(
+        recovered.lifecycle.availability(),
+        RoomAvailability::Interactive(_)
+    ));
 }
 
 #[tokio::test]
@@ -1748,7 +2200,7 @@ fn test_room_with_path_and_store(
     let blob_store = test_blob_store(tmp);
     let notebook_id = notebook_path.to_string_lossy().to_string();
 
-    let doc = notebook_doc::NotebookDoc::new(&notebook_id);
+    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
     let persist_path = tmp.path().join("doc.automerge");
     let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
     let (flush_request_tx, flush_rx) = mpsc::unbounded_channel::<FlushRequest>();
@@ -1770,12 +2222,30 @@ fn test_room_with_path_and_store(
     let comments = comments_store
         .load_or_create(&comments_doc_id, &comments_ref)
         .expect("create comments document");
+    let document_head_hashes = doc.get_heads();
+    let document_heads = document_head_hashes
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let genesis_snapshot = doc.save();
+    let durability = Arc::new(super::durability::RoomDurability::journaled(
+        super::recovery::RecoveryJournal::new(persist_path.with_extension("recovery")),
+        room_id,
+        Some(notebook_path.clone()),
+        super::recovery::source_fingerprint(&[]),
+        0,
+        genesis_snapshot.clone(),
+    ));
+    let lifecycle = RoomLifecycle::new(genesis_snapshot, document_heads);
     let room = NotebookRoom {
         id: room_id,
         doc: Arc::new(RwLock::new(doc)),
         broadcasts: RoomBroadcasts::default(),
         persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
-        initial_load: RoomInitialLoad::default(),
+        initial_load: RoomInitialLoad::new(Arc::clone(&lifecycle)),
+        lifecycle,
+        durability,
+        source_reconciliation_claimed: AtomicBool::new(false),
         file_binding: NotebookFileBinding::new(Some(notebook_path.clone()), false),
         identity: RoomIdentity::new(persist_path),
         connections: RoomConnections::default(),
@@ -1816,6 +2286,230 @@ fn test_room_with_path_and_store(
     };
 
     (room, notebook_path)
+}
+
+#[tokio::test]
+async fn file_backed_projection_read_requires_a_retained_artifact() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "projection-missing.ipynb");
+
+    let error = build_notebook_projection(&room, 0)
+        .await
+        .expect_err("file-backed reads must not synthesize a live-doc projection");
+    assert!(matches!(
+        error,
+        NotebookProjectionBuildError::NotRetained {
+            generation: 0,
+            document_readable: true,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn degraded_projection_read_returns_retained_generation_with_current_readiness() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "projection-degraded.ipynb");
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "retained-cell", "code").unwrap();
+        doc.update_source("retained-cell", "print('retained')")
+            .unwrap();
+    }
+
+    let projection = Arc::new(
+        build_live_notebook_projection_for_generation(&room, 1)
+            .await
+            .unwrap(),
+    );
+    let retained_heads = projection.projection_heads.clone();
+    room.lifecycle.complete_external_source_revision(
+        1,
+        super::recovery::source_fingerprint(b"generation one"),
+        1,
+        Arc::clone(&projection),
+        projection.notebook_heads.clone(),
+    );
+    room.lifecycle.fail_reconciliation(
+        2,
+        super::recovery::source_fingerprint(b"generation two"),
+        1,
+        vec!["new-document-head".to_string()],
+        "new source sidecar failed".to_string(),
+    );
+
+    let observed = build_notebook_projection(&room, 2).await.unwrap();
+    assert_eq!(observed.load_generation, 1);
+    assert_eq!(observed.projection_heads, retained_heads);
+    assert_eq!(observed.cells[0].id, "retained-cell");
+    assert_eq!(observed.source_state.generation, 2);
+    assert_eq!(
+        observed.source_state.phase,
+        runtimed_client::protocol::NotebookSourcePhase::Failed
+    );
+    assert_eq!(observed.availability.generation, 2);
+    assert_eq!(
+        observed.availability.phase,
+        runtimed_client::protocol::NotebookAvailabilityPhase::Degraded
+    );
+    assert!(observed.readiness.projection);
+    assert!(observed.readiness.document);
+    assert!(!observed.readiness.runtime);
+}
+
+/// Test fixtures mutate NotebookDoc directly instead of entering through the
+/// peer/daemon mutation paths that journal before acknowledgement. Mirror that
+/// production prerequisite before exercising the file checkpoint itself.
+async fn commit_test_room_doc(room: &NotebookRoom) {
+    let (snapshot, heads) = {
+        let mut doc = room.doc.write().await;
+        let heads = doc.get_heads().iter().map(|head| head.0).collect();
+        (doc.save(), heads)
+    };
+    room.durability
+        .commit_snapshot(&snapshot, heads, super::durability::DurableMutation::Daemon)
+        .expect("test NotebookDoc mutation should be journaled before save");
+}
+
+async fn commit_test_room_source(room: &NotebookRoom) {
+    let path = room
+        .file_binding
+        .path()
+        .await
+        .expect("source-backed test room");
+    let fingerprint = super::recovery::source_fingerprint(&tokio::fs::read(path).await.unwrap());
+    let (snapshot, heads, hashes) = {
+        let mut doc = room.doc.write().await;
+        let heads = doc.get_heads().iter().map(|head| head.0).collect();
+        let hashes = doc
+            .doc_mut()
+            .get_changes(&[])
+            .iter()
+            .map(|change| change.hash().0)
+            .collect();
+        (doc.save(), heads, hashes)
+    };
+    room.durability
+        .commit_snapshot(
+            &snapshot,
+            heads,
+            super::durability::DurableMutation::Source {
+                generation: 1,
+                fingerprint,
+                staged_change_hashes: hashes,
+            },
+        )
+        .expect("test source generation should be staged");
+    room.durability
+        .commit_source_ready(1)
+        .expect("test source generation should become Ready");
+}
+
+#[tokio::test]
+async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "peer-journal-failure.ipynb");
+    let (server_snapshot, server_heads, server_actor) = {
+        let mut doc = room.doc.write().await;
+        (doc.save(), doc.get_heads(), doc.get_actor_id())
+    };
+    let mut client = NotebookDoc::load_with_actor(&server_snapshot, "mcp:test-peer").unwrap();
+    client.add_cell(0, "peer-cell", "code").unwrap();
+    client.update_source("peer-cell", "peer_value = 1").unwrap();
+    let mut client_state = sync::State::new();
+    let mut server_peer_state = sync::State::new();
+    let initial_server_message = room
+        .doc
+        .write()
+        .await
+        .generate_sync_message_recovering(&mut server_peer_state, "test-peer-initial")
+        .unwrap()
+        .expect("server should start the sync handshake");
+    client
+        .receive_sync_message_recovering(
+            &mut client_state,
+            initial_server_message,
+            "test-peer-initial-receive",
+        )
+        .unwrap();
+    let payload = client
+        .generate_sync_message_recovering(&mut client_state, "test-peer-change")
+        .unwrap()
+        .expect("peer should produce a changes-bearing message")
+        .encode();
+    assert!(
+        !sync::Message::decode(&payload).unwrap().changes.is_empty(),
+        "the injected frame must cross the peer durability path"
+    );
+
+    let journal_path = room
+        .durability
+        .journal()
+        .expect("file-backed room journal")
+        .path()
+        .to_path_buf();
+    std::fs::create_dir_all(&journal_path).unwrap();
+    let identity = RoomConnectionIdentity::local(Some("mcp:test-peer".to_string()))
+        .await
+        .unwrap();
+    let mut changed = room.broadcasts.changed_tx.subscribe();
+
+    let error = match super::peer_notebook_sync::apply_notebook_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &identity,
+        &payload,
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("journal failure must reject the peer frame before acknowledgement"),
+    };
+    assert!(error.to_string().contains("before peer acknowledgement"));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), changed.recv())
+            .await
+            .is_err(),
+        "rejected peer changes must not be broadcast"
+    );
+    {
+        let mut doc = room.doc.write().await;
+        assert_eq!(doc.get_heads(), server_heads);
+        assert_eq!(doc.get_actor_id(), server_actor);
+        assert_eq!(doc.cell_count(), 0);
+    }
+    assert!(matches!(
+        room.state
+            .read(|state| state.read_state().file_checkpoint.source_issue)
+            .unwrap(),
+        Some(runtime_doc::FileSourceIssue::Degraded { .. })
+    ));
+
+    // The same encoded peer message succeeds after the injected I/O fault is
+    // removed, proving the sync state was rolled back with the document.
+    std::fs::remove_dir(&journal_path).unwrap();
+    let (_, reply) = super::peer_notebook_sync::apply_notebook_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &identity,
+        &payload,
+    )
+    .await
+    .expect("retry should accept and durably acknowledge the same peer change");
+    assert!(reply.is_some());
+    assert_eq!(room.doc.read().await.cell_count(), 1);
+    tokio::time::timeout(std::time::Duration::from_secs(1), changed.recv())
+        .await
+        .expect("accepted peer change should broadcast")
+        .expect("broadcast channel should remain open");
+}
+
+async fn save_notebook_to_disk(
+    room: &NotebookRoom,
+    target_path: Option<&str>,
+) -> Result<FileSaveOutcome, SaveError> {
+    commit_test_room_doc(room).await;
+    super::persist::save_notebook_to_disk(room, target_path).await
 }
 
 fn test_daemon_config(tmp: &tempfile::TempDir) -> crate::daemon::DaemonConfig {
@@ -1970,6 +2664,150 @@ async fn test_save_notebook_to_disk_creates_valid_nbformat() {
     assert!(
         notebook.nbformat_minor >= 5,
         "Cell IDs require nbformat_minor >= 5"
+    );
+
+    let runtime = room.state.read(|state| state.read_state()).unwrap();
+    assert!(!runtime.file_checkpoint.exported_heads.is_empty());
+    assert_eq!(runtime.file_checkpoint.save_sequence, Some(1));
+    assert!(runtime.last_saved.is_some());
+}
+
+#[tokio::test]
+async fn already_current_save_does_not_advance_checkpoint_or_saved_timestamp() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "already-current.ipynb");
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source("cell1", "print('hello')").unwrap();
+    }
+
+    let first = save_notebook_to_disk(&room, None).await.unwrap();
+    assert!(matches!(first, FileSaveOutcome::Saved { .. }));
+    let first_runtime = room.state.read(|state| state.read_state()).unwrap();
+
+    let second = save_notebook_to_disk(&room, None).await.unwrap();
+    assert!(matches!(
+        second,
+        FileSaveOutcome::AlreadyCurrent {
+            save_sequence: 1,
+            ..
+        }
+    ));
+    let second_runtime = room.state.read(|state| state.read_state()).unwrap();
+    assert_eq!(
+        second_runtime.file_checkpoint,
+        first_runtime.file_checkpoint
+    );
+    assert_eq!(second_runtime.last_saved, first_runtime.last_saved);
+}
+
+#[tokio::test]
+async fn source_conflict_blocks_in_place_save_but_allows_save_recovered_elsewhere() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "conflicted.ipynb");
+    tokio::fs::write(&notebook_path, b"original source")
+        .await
+        .unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "recovered", "code").unwrap();
+        doc.update_source("recovered", "value = 42").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let document_heads = {
+        let mut doc = room.doc.write().await;
+        doc.get_heads_hex()
+    };
+    room.lifecycle.restore_source_conflict(
+        1,
+        super::recovery::source_fingerprint(b"original source"),
+        1,
+        document_heads,
+        "source_conflict: disk and recovery differ".to_string(),
+    );
+
+    let in_place = super::persist::save_notebook_to_disk(&room, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        in_place,
+        SaveError::CheckpointBlocked {
+            reason: notebook_protocol::protocol::SaveBlockedReason::SourceConflict { .. },
+            ..
+        }
+    ));
+    assert_eq!(
+        tokio::fs::read(&notebook_path).await.unwrap(),
+        b"original source"
+    );
+
+    let alternate = tmp.path().join("recovered-copy.ipynb");
+    let saved_elsewhere =
+        super::persist::save_notebook_to_disk(&room, Some(alternate.to_string_lossy().as_ref()))
+            .await
+            .unwrap();
+    assert!(matches!(saved_elsewhere, FileSaveOutcome::Saved { .. }));
+    assert!(alternate.exists());
+    assert!(matches!(
+        room.lifecycle.source_state(),
+        RoomSourceState::Failed(ref status)
+            if status.error.as_ref().is_some_and(|error| error.code == "source_conflict")
+    ));
+    assert!(matches!(
+        room.lifecycle.availability(),
+        RoomAvailability::Degraded(_)
+    ));
+}
+
+#[tokio::test]
+async fn external_watcher_conflict_publishes_structured_source_conflict() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "watcher-conflict.ipynb");
+    let disk_revision = br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#;
+    tokio::fs::write(&notebook_path, disk_revision)
+        .await
+        .unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "unsaved-peer-cell", "code").unwrap();
+        doc.update_source("unsaved-peer-cell", "value = 42")
+            .unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    assert!(
+        mark_external_source_conflict_if_needed(&room, &notebook_path, disk_revision).await,
+        "dirty journal heads and a different disk fingerprint must conflict"
+    );
+    match room.lifecycle.source_state() {
+        RoomSourceState::Failed(status) => {
+            let error = status.error.expect("structured source error");
+            assert_eq!(error.code, "source_conflict");
+            assert!(error.message.contains("both versions were preserved"));
+            assert_eq!(status.retry, RoomSourceRetry::ExplicitReconciliation);
+        }
+        state => panic!("watcher conflict must fail the source axis, got {state:?}"),
+    }
+    let availability = room.lifecycle.availability();
+    assert!(matches!(availability, RoomAvailability::Degraded(_)));
+    assert!(!availability.status().capabilities.mutate);
+    assert!(!availability.status().capabilities.execute);
+    assert!(matches!(
+        room.state
+            .read(|state| state.read_state().file_checkpoint.source_issue)
+            .unwrap(),
+        Some(runtime_doc::FileSourceIssue::Conflict { .. })
+    ));
+    assert_eq!(
+        tokio::fs::read(&notebook_path).await.unwrap(),
+        disk_revision,
+        "conflict detection must not rewrite the external source"
+    );
+    assert_eq!(
+        room.doc.read().await.cell_count(),
+        1,
+        "conflict detection must retain the recovered journal state"
     );
 }
 
@@ -2948,13 +3786,41 @@ fn test_parse_cells_from_ipynb_missing_ids() {
     let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
     let cells = &parsed.cells;
     assert_eq!(cells.len(), 2);
-    // Should mint fresh UUIDs for ID-less cells so the next save writes
-    // stable identifiers rather than positional placeholders.
+    // Should derive UUIDs for ID-less cells so recovery and watcher reparses
+    // retain identity until the next save writes explicit ids.
     assert!(uuid::Uuid::parse_str(&cells[0].id).is_ok());
     assert!(uuid::Uuid::parse_str(&cells[1].id).is_ok());
     assert_ne!(cells[0].id, cells[1].id);
     assert_eq!(cells[0].source, "x = 1");
     assert_eq!(cells[1].source, "y = 2");
+}
+
+#[test]
+fn idless_external_edits_keep_the_room_derived_cell_id() {
+    let notebook_id = Uuid::new_v4();
+    let before = serde_json::json!({
+        "cells": [{
+            "cell_type": "code",
+            "metadata": {},
+            "execution_count": null,
+            "outputs": [],
+            "source": ["value = 1\n"]
+        }]
+    });
+    let after = serde_json::json!({
+        "cells": [{
+            "cell_type": "code",
+            "metadata": {},
+            "execution_count": null,
+            "outputs": [],
+            "source": ["value = 2\n"]
+        }]
+    });
+
+    let before = parse_cells_from_ipynb_for_notebook(&before, notebook_id).unwrap();
+    let after = parse_cells_from_ipynb_for_notebook(&after, notebook_id).unwrap();
+    assert_eq!(before.cells[0].id, after.cells[0].id);
+    assert_ne!(before.cells[0].source, after.cells[0].source);
 }
 
 #[test]
@@ -4352,7 +5218,7 @@ async fn test_save_notebook_to_disk_with_target_path() {
 
     assert!(result.is_ok());
     let saved_path = result.unwrap();
-    assert_eq!(saved_path, new_path.to_string_lossy());
+    assert_eq!(saved_path.path(), new_path.to_string_lossy());
     assert!(new_path.exists(), "File should be created at new path");
 
     // Verify content
@@ -4517,7 +5383,7 @@ async fn test_save_notebook_to_disk_appends_ipynb_extension() {
     assert!(result.is_ok());
     let saved_path = result.unwrap();
     assert!(
-        saved_path.ends_with(".ipynb"),
+        saved_path.path().ends_with(".ipynb"),
         "Saved path should have .ipynb extension"
     );
 
@@ -4612,6 +5478,7 @@ async fn test_save_notebook_skips_format_when_disable_auto_format_enabled() {
         doc.add_cell(0, "cell1", "code").unwrap();
         doc.update_source("cell1", "x=1").unwrap();
     }
+    commit_test_room_doc(&room).await;
 
     let response = crate::requests::save_notebook::handle(&room, &daemon, true, None).await;
     assert!(
@@ -5005,7 +5872,7 @@ async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
         .unwrap();
     let canonical = tokio::fs::canonicalize(&written)
         .await
-        .unwrap_or_else(|_| PathBuf::from(&written));
+        .unwrap_or_else(|_| PathBuf::from(written.path()));
 
     rooms.bind_path(room.id, canonical.clone()).await.unwrap();
     room.file_binding
@@ -5349,12 +6216,14 @@ async fn test_promote_untitled_starts_autosave() {
     // 4. Promote the room using the production helper.
     let canonical = tokio::fs::canonicalize(&written)
         .await
-        .unwrap_or_else(|_| PathBuf::from(&written));
+        .unwrap_or_else(|_| PathBuf::from(written.path()));
 
     try_claim_path(&rooms, &canonical, room.id)
         .await
         .expect("path claim should succeed");
-    finalize_untitled_promotion(&room, canonical.clone()).await;
+    finalize_untitled_promotion(&room, canonical.clone())
+        .await
+        .unwrap();
 
     // Verify post-promotion state.
     assert!(
@@ -5374,6 +6243,20 @@ async fn test_promote_untitled_starts_autosave() {
     assert!(
         !room.file_binding.is_ephemeral(),
         "is_ephemeral should be cleared after promotion"
+    );
+    let promoted_generation = room.lifecycle.source_state().generation();
+    let promoted_projection = room
+        .lifecycle
+        .projection(promoted_generation)
+        .expect("file-backed Ready generation should retain its projection");
+    assert_eq!(
+        promoted_projection.notebook_path.as_deref(),
+        Some(canonical.to_string_lossy().as_ref())
+    );
+    assert_eq!(promoted_projection.cells.len(), 1);
+    assert_eq!(
+        room.lifecycle.availability().status().projection_heads,
+        promoted_projection.projection_heads
     );
 
     // 5. Add a new cell AFTER promotion (simulates MCP create_cell).
@@ -5552,7 +6435,7 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
             uuid,
             RoomCreationOptions {
                 path,
-                initial_load_required: false,
+                initial_load_execution_store_dir: None,
                 docs_dir: &docs_dir,
                 blob_store: blob_store.clone(),
                 ephemeral: false,
@@ -5574,7 +6457,7 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
             uuid,
             RoomCreationOptions {
                 path,
-                initial_load_required: false,
+                initial_load_execution_store_dir: None,
                 docs_dir: &docs_dir,
                 blob_store: blob_store.clone(),
                 ephemeral: false,
@@ -8957,7 +9840,7 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         source_uuid,
         RoomCreationOptions {
             path: Some(source_path.clone()),
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: &docs_dir,
             blob_store: blob_store.clone(),
             ephemeral: false,
@@ -9290,7 +10173,7 @@ async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
         source_uuid,
         RoomCreationOptions {
             path: Some(tmp.path().join("source.ipynb")),
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: &docs_dir,
             blob_store: blob_store.clone(),
             ephemeral: false,
@@ -9802,12 +10685,12 @@ async fn test_autosave_fires_on_runtime_file_dirty_without_self_loop() {
         .unwrap();
     let canonical = tokio::fs::canonicalize(&written)
         .await
-        .unwrap_or_else(|_| PathBuf::from(&written));
+        .unwrap_or_else(|_| PathBuf::from(written.path()));
     let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
     try_claim_path(&rooms, &canonical, room.id)
         .await
         .expect("path claim should succeed");
-    finalize_untitled_promotion(&room, canonical).await;
+    finalize_untitled_promotion(&room, canonical).await.unwrap();
 
     let initial = tokio::fs::read_to_string(&save_path).await.unwrap();
     let initial_nb: serde_json::Value = serde_json::from_str(&initial).unwrap();
@@ -9902,18 +10785,21 @@ async fn test_autosave_shutdown_flushes_pending_doc_change() {
         .unwrap();
     let canonical = tokio::fs::canonicalize(&written)
         .await
-        .unwrap_or_else(|_| PathBuf::from(&written));
+        .unwrap_or_else(|_| PathBuf::from(written.path()));
     let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
     try_claim_path(&rooms, &canonical, room.id)
         .await
         .expect("path claim should succeed");
-    finalize_untitled_promotion(&room, canonical.clone()).await;
+    finalize_untitled_promotion(&room, canonical.clone())
+        .await
+        .unwrap();
 
     {
         let mut doc = room.doc.write().await;
         doc.add_cell(1, "cell-2", "code").unwrap();
         doc.update_source("cell-2", "after = 2").unwrap();
     }
+    commit_test_room_doc(&room).await;
     let _ = room.broadcasts.changed_tx.send(());
 
     assert!(
@@ -10081,7 +10967,7 @@ async fn test_autosave_shutdown_during_loading_returns_false_without_write() {
         .unwrap();
     let canonical = tokio::fs::canonicalize(&written)
         .await
-        .unwrap_or_else(|_| PathBuf::from(&written));
+        .unwrap_or_else(|_| PathBuf::from(written.path()));
     room.file_binding
         .set_path_for_test(Some(canonical.clone()))
         .await;
@@ -10210,7 +11096,7 @@ fn finalize_trust_status_unavailable_store_is_untrusted() {
 // A failed/incomplete streaming load empties the room doc (peer_session
 // clears all cells on load failure). Autosave and kernel-teardown then call
 // save_notebook_to_disk(.., None), which would overwrite a populated .ipynb
-// with zero cells. The guard skips that write.
+// with zero cells. The guard rejects that write without reporting success.
 
 /// Write a populated two-cell .ipynb to disk.
 async fn write_two_cell_notebook(path: &Path) {
@@ -10272,15 +11158,115 @@ async fn autosave_skips_zeroing_write_after_failed_load() {
     room.finish_loading();
 
     // Autosave / kernel-teardown path.
-    save_notebook_to_disk(&room, None)
+    let error = save_notebook_to_disk(&room, None)
         .await
-        .expect("guard skips the write and returns Ok so autosave stays armed");
+        .expect_err("failed-load autosave must not report success without writing");
+    assert!(matches!(error, SaveError::Retryable(_)));
 
     assert_eq!(
         disk_cell_count(&notebook_path),
         2,
         "empty doc must not overwrite the populated .ipynb"
     );
+}
+
+#[tokio::test]
+async fn explicit_save_after_failed_load_returns_error_instead_of_notebook_saved() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "failed_explicit.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
+    let room = Arc::new(room);
+    room.mark_load_failed();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+
+    let response = crate::requests::save_notebook::handle(&room, &daemon, false, None).await;
+    match response {
+        crate::protocol::NotebookResponse::NotebookSaveBlocked {
+            reason: notebook_protocol::protocol::SaveBlockedReason::Io { message },
+            ..
+        } => assert!(message.contains("initial file load failed")),
+        other => panic!("failed-load save must return NotebookSaveBlocked, got {other:?}"),
+    }
+    assert_eq!(disk_cell_count(&notebook_path), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_load_autosave_does_not_stamp_last_saved() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "failed_autosave.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
+    let room = Arc::new(room);
+    room.mark_load_failed();
+
+    let shutdown = spawn_autosave_debouncer_with_config(
+        notebook_path.to_string_lossy().into_owned(),
+        Arc::clone(&room),
+        AutosaveDebouncerConfig {
+            debounce_ms: 10,
+            max_interval_ms: 100,
+            check_interval_ms: 1,
+        },
+    );
+    let _ = room.broadcasts.changed_tx.send(());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(
+        room.state
+            .read(|sd| sd.read_state().last_saved)
+            .unwrap_or_default(),
+        None,
+        "autosave must not stamp last_saved when no file write occurred"
+    );
+    assert_eq!(disk_cell_count(&notebook_path), 2);
+
+    let (ack_tx, ack_rx) = oneshot::channel();
+    shutdown.send(ack_tx).unwrap();
+    assert!(
+        !ack_rx.await.unwrap(),
+        "shutdown flush must also report that the file was not saved"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn degraded_source_autosave_pauses_until_a_new_event_or_reconciliation() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "degraded_autosave.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
+    let room = Arc::new(room);
+    let document_heads = room.doc.write().await.get_heads_hex();
+    room.lifecycle.mark_degraded(
+        "injected source degradation".to_string(),
+        document_heads,
+        true,
+    );
+
+    let checkpoint = room.persistence.file_checkpoint_coordinator();
+    let shutdown = spawn_autosave_debouncer_with_config(
+        notebook_path.to_string_lossy().into_owned(),
+        Arc::clone(&room),
+        AutosaveDebouncerConfig {
+            debounce_ms: 10,
+            max_interval_ms: 100,
+            check_interval_ms: 1,
+        },
+    );
+    let _ = room.broadcasts.changed_tx.send(());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(
+        checkpoint.latest_claimed_sequence(),
+        1,
+        "a terminal source state must not reserve a new save on every timer tick"
+    );
+    assert_eq!(disk_cell_count(&notebook_path), 2);
+
+    let (ack_tx, ack_rx) = oneshot::channel();
+    shutdown.send(ack_tx).unwrap();
+    assert!(!ack_rx.await.unwrap());
 }
 
 /// An explicit user save (target_path = Some) is a deliberate action and
@@ -10376,9 +11362,10 @@ async fn autosave_skips_zeroing_write_over_corrupt_file() {
     room.mark_load_failed();
     room.finish_loading();
 
-    save_notebook_to_disk(&room, None)
+    let error = save_notebook_to_disk(&room, None)
         .await
-        .expect("guard skips the write and returns Ok");
+        .expect_err("failed-load autosave must surface the preserved corrupt file");
+    assert!(matches!(error, SaveError::Retryable(_)));
 
     let on_disk = std::fs::read(&notebook_path).unwrap();
     assert_eq!(
@@ -10408,9 +11395,10 @@ async fn autosave_skips_zeroing_write_when_disk_cells_not_array() {
     room.mark_load_failed();
     room.finish_loading();
 
-    save_notebook_to_disk(&room, None)
+    let error = save_notebook_to_disk(&room, None)
         .await
-        .expect("guard skips the write and returns Ok");
+        .expect_err("failed-load autosave must surface the malformed source");
+    assert!(matches!(error, SaveError::Retryable(_)));
 
     let on_disk = std::fs::read(&notebook_path).unwrap();
     assert_eq!(
@@ -10596,10 +11584,11 @@ async fn same_path_explicit_save_is_in_place_and_protected() {
     }
     room.mark_load_failed();
 
-    // Same-path Some save == in-place == must be skipped; the file is preserved.
-    save_notebook_to_disk(&room, Some(notebook_path.to_str().unwrap()))
+    // Same-path Some save == in-place == must fail honestly; the file is preserved.
+    let error = save_notebook_to_disk(&room, Some(notebook_path.to_str().unwrap()))
         .await
-        .expect("in-place save no-ops cleanly");
+        .expect_err("in-place save must not claim success without a write");
+    assert!(matches!(error, SaveError::Retryable(_)));
     assert_eq!(
         disk_cell_count(&notebook_path),
         2,
