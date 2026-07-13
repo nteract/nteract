@@ -63,6 +63,7 @@ export interface AuthenticatedConnectionMetadata {
     | "dev-token-header"
     | "dev-token-subprotocol"
     | "api-key-bearer"
+    | "host-session-cookie"
     | "oidc-bearer"
     | "oidc-subprotocol"
     | "workstation-credential-header";
@@ -782,6 +783,7 @@ function isMetadataTransport(value: string): value is AuthenticatedConnectionMet
     value === "dev-token-header" ||
     value === "dev-token-subprotocol" ||
     value === "api-key-bearer" ||
+    value === "host-session-cookie" ||
     value === "oidc-bearer" ||
     value === "oidc-subprotocol" ||
     value === "workstation-credential-header"
