@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// MIME type that binds a notebook output to a durable Bokeh document session.
+pub const BOKEH_SESSION_MIME: &str = "application/vnd.nteract.bokeh-session.v1+json";
+
 #[derive(Debug, Clone)]
 pub struct StreamOutputState {
     pub output_id: String,

@@ -25,7 +25,7 @@ use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_commit_context::OutputCommitContext;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 
-pub(crate) const BOKEH_SESSION_MIME: &str = "application/vnd.nteract.bokeh-session.v1+json";
+pub(crate) use runtime_doc::BOKEH_SESSION_MIME;
 pub(crate) const BOKEH_PATCH_REQUEST: &str = "nteract_bokeh_patch_request";
 pub(crate) const BOKEH_PATCH_REPLY: &str = "nteract_bokeh_patch_reply";
 pub(crate) const BOKEH_CHECKPOINT_REQUEST: &str = "nteract_bokeh_checkpoint_request";

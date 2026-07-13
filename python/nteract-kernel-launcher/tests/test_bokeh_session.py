@@ -625,7 +625,13 @@ def test_checkpoint_and_close_shell_handlers():
         cast(Any, kernel),
         "SHELL",
         [],
-        {"content": {"session_id": session_id, "transaction_id": "checkpoint-1"}},
+        {
+            "content": {
+                "schema_version": 1,
+                "session_id": session_id,
+                "transaction_id": "checkpoint-1",
+            }
+        },
     )
     checkpoint_reply = kernel.replies.pop()
     assert checkpoint_reply["msg_type"] == _BOKEH_CHECKPOINT_REPLY
@@ -637,12 +643,59 @@ def test_checkpoint_and_close_shell_handlers():
         cast(Any, kernel),
         "SHELL",
         [],
-        {"content": {"session_id": session_id, "transaction_id": "close-1"}},
+        {
+            "content": {
+                "schema_version": 1,
+                "session_id": session_id,
+                "transaction_id": "close-1",
+            }
+        },
     )
     close_reply = kernel.replies.pop()
     assert close_reply["msg_type"] == _BOKEH_CLOSE_REPLY
     assert close_reply["content"]["status"] == "ok"
     assert session_registry.get(session_id) is None
+
+
+@pytest.mark.parametrize(
+    ("handler_name", "reply_type", "error_match"),
+    [
+        (
+            "nteract_bokeh_checkpoint_request",
+            "nteract_bokeh_checkpoint_reply",
+            "Unsupported Bokeh checkpoint schema version",
+        ),
+        (
+            "nteract_bokeh_close_request",
+            "nteract_bokeh_close_reply",
+            "Unsupported Bokeh close schema version",
+        ),
+    ],
+)
+def test_checkpoint_and_close_handlers_reject_unsupported_schema(
+    handler_name, reply_type, error_match
+):
+    from nteract_kernel_launcher.app import NteractKernel
+
+    kernel = _FakeKernel()
+
+    getattr(NteractKernel, handler_name)(
+        cast(Any, kernel),
+        "SHELL",
+        [],
+        {
+            "content": {
+                "schema_version": 999,
+                "session_id": "session-1",
+                "transaction_id": "transaction-1",
+            }
+        },
+    )
+
+    reply = kernel.replies.pop()
+    assert reply["msg_type"] == reply_type
+    assert reply["content"]["status"] == "error"
+    assert reply["content"]["error"]["evalue"] == error_match
 
 
 def test_wire_event_offsets_server_and_checkpoint_buffers():

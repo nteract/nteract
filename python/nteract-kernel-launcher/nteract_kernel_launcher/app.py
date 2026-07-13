@@ -380,6 +380,8 @@ class NteractKernel(IPythonKernel):
         transaction_id = content.get("transaction_id") or str(uuid.uuid4())
         reply_buffers: list[bytes] = []
         try:
+            if content.get("schema_version") != BOKEH_SESSION_SCHEMA_VERSION:
+                raise ValueError("Unsupported Bokeh checkpoint schema version")
             if not isinstance(session_id, str):
                 raise TypeError("Bokeh checkpoint request requires session_id")
             session = session_registry.require(session_id)
@@ -416,20 +418,24 @@ class NteractKernel(IPythonKernel):
         content = parent.get("content", {})
         session_id = content.get("session_id")
         transaction_id = content.get("transaction_id") or str(uuid.uuid4())
-        if not isinstance(session_id, str):
-            reply = {
-                "status": "error",
-                "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
-                "session_id": session_id,
-                "transaction_id": transaction_id,
-                "error": _error_payload(TypeError("Bokeh close request requires session_id")),
-            }
-        else:
+        try:
+            if content.get("schema_version") != BOKEH_SESSION_SCHEMA_VERSION:
+                raise ValueError("Unsupported Bokeh close schema version")
+            if not isinstance(session_id, str):
+                raise TypeError("Bokeh close request requires session_id")
             reply = {
                 "status": "ok" if session_registry.close(session_id) else "not_found",
                 "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
                 "session_id": session_id,
                 "transaction_id": transaction_id,
+            }
+        except Exception as exc:  # noqa: BLE001
+            reply = {
+                "status": "error",
+                "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
+                "session_id": session_id,
+                "transaction_id": transaction_id,
+                "error": _error_payload(exc),
             }
         _send_bokeh_reply(self, stream, ident, _BOKEH_CLOSE_REPLY, reply)
 

@@ -2,7 +2,7 @@ use automerge::{ObjType, ReadDoc, Value, ROOT};
 
 use crate::{
     BokehSessionContentRef, BokehSessionState, BokehSessionStatus, ExecutionState, RuntimeState,
-    RuntimeStateDoc, RuntimeStateError,
+    RuntimeStateDoc, RuntimeStateError, BOKEH_SESSION_MIME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -478,15 +478,29 @@ fn validate_runtime_peer_bokeh_session_delta(
         validate_bokeh_session_replay(scope, session_id, after_session)?;
 
         let Some(before_session) = before.state.bokeh_sessions.get(session_id) else {
-            if !after
-                .state
-                .executions
-                .contains_key(&after_session.execution_id)
-            {
+            let Some(execution) = after.state.executions.get(&after_session.execution_id) else {
                 return Err(runtime_state_policy_error(
                     scope,
                     "bokeh_sessions",
                     &format!("new Bokeh session {session_id} must reference an accepted execution"),
+                ));
+            };
+            if execution.cell_id.as_deref() != Some(after_session.cell_id.as_str()) {
+                return Err(runtime_state_policy_error(
+                    scope,
+                    "bokeh_sessions",
+                    &format!(
+                        "new Bokeh session {session_id} must match its accepted execution cell"
+                    ),
+                ));
+            }
+            if !execution_has_bokeh_output(execution, &after_session.output_id) {
+                return Err(runtime_state_policy_error(
+                    scope,
+                    "bokeh_sessions",
+                    &format!(
+                        "new Bokeh session {session_id} must reference its accepted Bokeh output"
+                    ),
                 ));
             }
             if after_session.status != BokehSessionStatus::Connected {
@@ -584,11 +598,15 @@ fn validate_bokeh_session_replay(
         ));
     }
 
-    let mut replay_revision = 0;
-    if let Some(checkpoint) = &session.checkpoint {
-        validate_bokeh_content_ref(scope, session_id, &checkpoint.content_ref)?;
-        replay_revision = checkpoint.revision;
-    }
+    let Some(checkpoint) = &session.checkpoint else {
+        return Err(runtime_state_policy_error(
+            scope,
+            "bokeh_sessions",
+            &format!("Bokeh session {session_id} has no checkpoint"),
+        ));
+    };
+    validate_bokeh_content_ref(scope, session_id, &checkpoint.content_ref)?;
+    let mut replay_revision = checkpoint.revision;
 
     for patch in &session.patch_tail {
         validate_bokeh_content_ref(scope, session_id, &patch.content_ref)?;
@@ -614,6 +632,22 @@ fn validate_bokeh_session_replay(
     }
 
     Ok(())
+}
+
+fn execution_has_bokeh_output(execution: &ExecutionState, output_id: &str) -> bool {
+    execution.outputs.iter().any(|output| {
+        output.get("output_id").and_then(serde_json::Value::as_str) == Some(output_id)
+            && matches!(
+                output
+                    .get("output_type")
+                    .and_then(serde_json::Value::as_str),
+                Some("display_data" | "execute_result")
+            )
+            && output
+                .get("data")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|data| data.contains_key(BOKEH_SESSION_MIME))
+    })
 }
 
 fn validate_bokeh_content_ref(
@@ -699,9 +733,24 @@ mod tests {
 
     fn runtime_doc_with_accepted_execution() -> RuntimeStateDoc {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution_with_source("exec-1", "slider", 0)
+        doc.create_execution_with_source_provenance("exec-1", "slider", 0, None, Some("cell-1"))
             .unwrap();
         doc
+    }
+
+    fn append_bokeh_output(doc: &mut RuntimeStateDoc, execution_id: &str, output_id: &str) {
+        doc.append_output(
+            execution_id,
+            &json!({
+                "output_type": "display_data",
+                "output_id": output_id,
+                "data": {
+                    BOKEH_SESSION_MIME: {"inline": "{}"},
+                    "text/plain": {"inline": "FloatSlider(value=4)"},
+                },
+            }),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -709,6 +758,7 @@ mod tests {
         let before_doc = runtime_doc_with_accepted_execution();
         let before = runtime_state_policy_snapshot(&before_doc);
         let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        append_bokeh_output(&mut after_doc, "exec-1", "output-1");
         let mut session = bokeh_session("exec-1");
         after_doc.put_bokeh_session("session-1", &session).unwrap();
         let created = runtime_state_policy_snapshot(&after_doc);
@@ -752,6 +802,7 @@ mod tests {
         let before_doc = runtime_doc_with_accepted_execution();
         let before = runtime_state_policy_snapshot(&before_doc);
         let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        append_bokeh_output(&mut after_doc, "exec-1", "output-1");
         let mut session = bokeh_session("exec-1");
         session.head_revision = 2;
         session.patch_tail.push(BokehSessionPatchRef {
@@ -771,6 +822,7 @@ mod tests {
     #[test]
     fn runtime_peer_policy_rejects_bokeh_session_provenance_rewrite() {
         let mut before_doc = runtime_doc_with_accepted_execution();
+        append_bokeh_output(&mut before_doc, "exec-1", "output-1");
         before_doc
             .put_bokeh_session("session-1", &bokeh_session("exec-1"))
             .unwrap();
@@ -785,6 +837,83 @@ mod tests {
             validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
                 .unwrap_err();
         assert!(error.to_string().contains("provenance is immutable"));
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_bokeh_session_without_checkpoint() {
+        let before_doc = runtime_doc_with_accepted_execution();
+        let before = runtime_state_policy_snapshot(&before_doc);
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        append_bokeh_output(&mut after_doc, "exec-1", "output-1");
+        let mut session = bokeh_session("exec-1");
+        session.checkpoint = None;
+        after_doc.put_bokeh_session("session-1", &session).unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let error =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+        assert!(error.to_string().contains("has no checkpoint"));
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_bokeh_session_for_another_output() {
+        let before_doc = runtime_doc_with_accepted_execution();
+        let before = runtime_state_policy_snapshot(&before_doc);
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        append_bokeh_output(&mut after_doc, "exec-1", "other-output");
+        after_doc
+            .put_bokeh_session("session-1", &bokeh_session("exec-1"))
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let error =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+        assert!(error.to_string().contains("accepted Bokeh output"));
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_bokeh_session_for_plain_output() {
+        let before_doc = runtime_doc_with_accepted_execution();
+        let before = runtime_state_policy_snapshot(&before_doc);
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        after_doc
+            .append_output(
+                "exec-1",
+                &json!({
+                    "output_type": "display_data",
+                    "output_id": "output-1",
+                    "data": {"text/plain": {"inline": "not a Bokeh session"}},
+                }),
+            )
+            .unwrap();
+        after_doc
+            .put_bokeh_session("session-1", &bokeh_session("exec-1"))
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let error =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+        assert!(error.to_string().contains("accepted Bokeh output"));
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_bokeh_session_for_another_cell() {
+        let before_doc = runtime_doc_with_accepted_execution();
+        let before = runtime_state_policy_snapshot(&before_doc);
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        append_bokeh_output(&mut after_doc, "exec-1", "output-1");
+        let mut session = bokeh_session("exec-1");
+        session.cell_id = "other-cell".to_string();
+        after_doc.put_bokeh_session("session-1", &session).unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let error =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+        assert!(error.to_string().contains("accepted execution cell"));
     }
 
     #[test]
