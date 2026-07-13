@@ -118,6 +118,21 @@ describe("host session identities", () => {
     );
   });
 
+  it("rejects oversized subjects for every host identity adapter", () => {
+    const subject = "s".repeat(257);
+    assert.equal(
+      parseHostSessionIdentity({ sub: subject }, HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1),
+      null,
+    );
+    assert.equal(
+      parseHostSessionIdentity(
+        { identity: { id: subject } },
+        HOST_SESSION_IDENTITY_ADAPTER_ANACONDA_WHOAMI_V1,
+      ),
+      null,
+    );
+  });
+
   it("maps host and OIDC credentials for the same subject to one principal", async (t) => {
     const subject = "subject/with space";
     const { env: oidcEnv, token } = await oidcTokenFixture({ subject });
@@ -140,6 +155,8 @@ describe("host session identities", () => {
       }),
       {
         NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session, second_session",
+        NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER:
+          HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
         NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
         NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE:
           oidcEnv.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE,
@@ -150,6 +167,36 @@ describe("host session identities", () => {
     assert.equal(hostIdentity?.metadata.provider, "oidc");
     assert.equal(hostIdentity?.metadata.transport, "host-session-cookie");
     assert.equal(forwardedCookie, "platform_session=opaque; second_session=other");
+  });
+
+  it("authenticates the Anaconda wire adapter through the generic host session seam", async (t) => {
+    t.mock.method(globalThis, "fetch", async () =>
+      Response.json({
+        identity: { id: "subject-a", traits: { email: "user@example.test" } },
+        passport: {
+          user_id: "subject-a",
+          profile: { email: "user@example.test", email_verified: true, username: "hosted" },
+        },
+      }),
+    );
+
+    const identity = await authenticateHostSessionRequest(
+      new Request("https://cloud.test/api/auth/session", {
+        headers: { Cookie: "platform_session=opaque" },
+      }),
+      {
+        NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+        NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER:
+          HOST_SESSION_IDENTITY_ADAPTER_ANACONDA_WHOAMI_V1,
+        NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/whoami",
+        NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
+      },
+    );
+
+    assert.equal(identity?.principal, "user:example:subject-a");
+    assert.equal(identity?.metadata.provider, "oidc");
+    assert.equal(identity?.metadata.transport, "host-session-cookie");
+    assert.equal(identity?.metadata.emailVerified, true);
   });
 
   it("fails closed for incomplete, non-HTTPS, and unknown-adapter configuration", async (t) => {
@@ -166,9 +213,36 @@ describe("host session identities", () => {
       }),
       null,
     );
+    const missingAdapterConfig = {
+      NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
+      NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
+    };
+    assert.equal(await authenticateHostSessionRequest(request, missingAdapterConfig), null);
+    assert.deepEqual(hostSessionHealth(missingAdapterConfig), { status: "partial" });
+    const duplicateCookieConfig = {
+      NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session, platform_session",
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER: HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
+      NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
+    };
+    assert.equal(await authenticateHostSessionRequest(request, duplicateCookieConfig), null);
+    assert.deepEqual(hostSessionHealth(duplicateCookieConfig), { status: "partial" });
+    assert.equal(
+      await authenticateHostSessionRequest(request, {
+        NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session, invalid name",
+        NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER:
+          HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
+        NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
+        NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
+      }),
+      null,
+    );
     assert.equal(
       await authenticateHostSessionRequest(request, {
         NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+        NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER:
+          HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
         NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "http://identity.example.test/userinfo",
         NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
       }),
@@ -190,6 +264,8 @@ describe("host session identities", () => {
         }),
         {
           NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+          NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER:
+            HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
           NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
           NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
         },

@@ -1,7 +1,9 @@
 import {
   encodePrincipalComponent,
+  IDENTITY_SUBJECT_MAX_LENGTH,
   validatePrincipal,
   type AuthenticatedConnection,
+  type AuthenticatedConnectionMetadata,
 } from "./identity.ts";
 
 export const HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1 = "oidc-userinfo-v1";
@@ -12,6 +14,12 @@ export type HostSessionIdentityAdapter =
   | typeof HOST_SESSION_IDENTITY_ADAPTER_ANACONDA_WHOAMI_V1;
 
 export interface HostSessionEnvironment {
+  /**
+   * Opt-in bridge from host-owned cookies into the OIDC account realm. App
+   * sessions are not revalidated against the host after bootstrap, so a
+   * deployment must provide compatible logout, revocation, and account-switch
+   * behavior before enabling these settings.
+   */
   NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES?: string;
   NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER?: string;
   NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL?: string;
@@ -36,11 +44,23 @@ interface HostSessionConfig {
 }
 
 type HostSessionIdentityParser = (value: unknown) => HostSessionIdentity | null;
+type HostSessionIdentityProvider = Extract<AuthenticatedConnectionMetadata["provider"], "oidc">;
+
+interface HostSessionIdentityAdapterDefinition {
+  identityProvider: HostSessionIdentityProvider;
+  parse: HostSessionIdentityParser;
+}
 
 const HOST_SESSION_IDENTITY_ADAPTERS = {
-  [HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1]: parseOidcUserInfoV1,
-  [HOST_SESSION_IDENTITY_ADAPTER_ANACONDA_WHOAMI_V1]: parseAnacondaWhoamiV1,
-} satisfies Record<HostSessionIdentityAdapter, HostSessionIdentityParser>;
+  [HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1]: {
+    identityProvider: "oidc",
+    parse: parseOidcUserInfoV1,
+  },
+  [HOST_SESSION_IDENTITY_ADAPTER_ANACONDA_WHOAMI_V1]: {
+    identityProvider: "oidc",
+    parse: parseAnacondaWhoamiV1,
+  },
+} satisfies Record<HostSessionIdentityAdapter, HostSessionIdentityAdapterDefinition>;
 
 const HOST_SESSION_IDENTITY_TIMEOUT_MS = 5_000;
 const COOKIE_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -93,6 +113,7 @@ export async function authenticateHostSessionRequest(
   if (!identity) {
     return null;
   }
+  const identityProvider = HOST_SESSION_IDENTITY_ADAPTERS[config.identityAdapter].identityProvider;
 
   const principal = `${config.principalNamespace}:${encodePrincipalComponent(identity.subject)}`;
   try {
@@ -107,9 +128,9 @@ export async function authenticateHostSessionRequest(
     actorLabel: `${principal}/browser:http`,
     scope: "viewer",
     metadata: {
-      // Host sessions and direct OIDC must converge on the same account realm.
-      // The transport records how this request was authenticated.
-      provider: "oidc",
+      // Adapter definitions bind host subjects to a reviewed account realm;
+      // deployment configuration cannot select an arbitrary provider label.
+      provider: identityProvider,
       transport: "host-session-cookie",
       principalNamespace: config.principalNamespace,
       ...(identity.displayName ? { displayName: identity.displayName } : {}),
@@ -125,15 +146,14 @@ export function parseHostSessionIdentity(
   value: unknown,
   adapter: HostSessionIdentityAdapter,
 ): HostSessionIdentity | null {
-  return HOST_SESSION_IDENTITY_ADAPTERS[adapter](value);
+  const identity = HOST_SESSION_IDENTITY_ADAPTERS[adapter].parse(value);
+  return identity && identity.subject.length <= IDENTITY_SUBJECT_MAX_LENGTH ? identity : null;
 }
 
 function hostSessionConfigFromEnv(env: HostSessionEnvironment): HostSessionConfig | null {
-  const cookieNames = new Set(
-    env.NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES?.split(",")
-      .map((value) => value.trim())
-      .filter((value) => COOKIE_NAME_PATTERN.test(value)) ?? [],
-  );
+  const configuredCookieNames =
+    env.NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES?.split(",").map((value) => value.trim()) ?? [];
+  const cookieNames = new Set(configuredCookieNames);
   const identityUrl = httpsUrl(env.NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL);
   const principalNamespace = normalizedPrincipalNamespace(
     env.NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE,
@@ -141,14 +161,21 @@ function hostSessionConfigFromEnv(env: HostSessionEnvironment): HostSessionConfi
   const identityAdapter = hostSessionIdentityAdapter(
     env.NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER,
   );
-  if (!cookieNames.size || !identityUrl || !principalNamespace || !identityAdapter) {
+  if (
+    !configuredCookieNames.length ||
+    configuredCookieNames.some((name) => !COOKIE_NAME_PATTERN.test(name)) ||
+    cookieNames.size !== configuredCookieNames.length ||
+    !identityUrl ||
+    !principalNamespace ||
+    !identityAdapter
+  ) {
     return null;
   }
   return { cookieNames, identityAdapter, identityUrl, principalNamespace };
 }
 
 function hostSessionIdentityAdapter(value: string | undefined): HostSessionIdentityAdapter | null {
-  const normalized = value?.trim() || HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1;
+  const normalized = value?.trim();
   return normalized === HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1 ||
     normalized === HOST_SESSION_IDENTITY_ADAPTER_ANACONDA_WHOAMI_V1
     ? normalized

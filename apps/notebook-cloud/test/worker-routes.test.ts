@@ -11,6 +11,7 @@ import {
   TRUSTED_WEBSOCKET_PROTOCOL_HEADER,
   authenticateDevRequest,
 } from "../src/identity.ts";
+import { HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1 } from "../src/host-session.ts";
 import {
   NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
@@ -283,6 +284,7 @@ describe("Worker artifact routes", () => {
   it("reports host session readiness without exposing configured values", async () => {
     const env = fakeEnv({
       NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER: HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
       NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
       NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
     });
@@ -756,6 +758,7 @@ describe("Worker artifact routes", () => {
     const env = fakeEnv({
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
       NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER: HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
       NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
       NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
     });
@@ -808,6 +811,8 @@ describe("Worker artifact routes", () => {
       const env = fakeEnv({
         NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
         NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+        NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER:
+          HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
         NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
         NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
       });
@@ -835,6 +840,7 @@ describe("Worker artifact routes", () => {
     const env = fakeEnv({
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
       NOTEBOOK_CLOUD_HOST_SESSION_COOKIE_NAMES: "platform_session",
+      NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_ADAPTER: HOST_SESSION_IDENTITY_ADAPTER_OIDC_USERINFO_V1,
       NOTEBOOK_CLOUD_HOST_SESSION_IDENTITY_URL: "https://identity.example.test/userinfo",
       NOTEBOOK_CLOUD_HOST_SESSION_PRINCIPAL_NAMESPACE: "user:example",
     });
