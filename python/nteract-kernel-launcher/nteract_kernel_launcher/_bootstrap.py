@@ -204,21 +204,31 @@ def _arrow_stream_mimebundle(source: Any, include=None, exclude=None) -> dict | 
 def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
     """Emit Arrow IPC bytes + HF features summary for a ``datasets.Dataset``.
 
-    The underlying ``ds.data.table`` carries the ``huggingface`` schema KV
+    The Arrow-formatted logical view preserves the ``huggingface`` schema KV
     metadata that Sift uses to detect rich types (Image, ClassLabel,
-    Translation, …). Going through the arrow table preserves that metadata
-    end-to-end. When no underlying table is available (IterableDataset,
-    streaming, …), fall back to the legacy summary-only bundle so the
-    formatter stays best-effort.
+    Translation, …) while also applying any Dataset indices mapping from
+    ``shuffle`` / ``select``. Reading ``ds.data.table`` directly would expose
+    the physical backing rows instead. When no table-backed logical view is
+    available (IterableDataset, streaming, …), fall back to the legacy
+    summary-only bundle so the formatter stays best-effort.
     """
-    table = getattr(getattr(ds, "data", None), "table", None)
     summary = lambda: summarize_dataset(ds)  # noqa: E731
+    table = getattr(getattr(ds, "data", None), "table", None)
 
     if table is None:
         try:
             return {"text/llm+plain": summary()}
         except Exception as exc:  # noqa: BLE001
             log.debug("dataset mimebundle failed: %s", exc)
+            return None
+
+    try:
+        table = ds.with_format("arrow")[:]
+    except Exception as exc:  # noqa: BLE001
+        log.debug("dataset logical Arrow materialization failed: %s", exc)
+        try:
+            return {"text/llm+plain": summary()}
+        except Exception:  # noqa: BLE001
             return None
 
     total_rows = getattr(ds, "num_rows", table.num_rows)
