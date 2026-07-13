@@ -488,33 +488,26 @@ async fn rejoin(
             Ok((handle, broadcast_rx, new_cell_count, new_notebook_id)) => {
                 crate::presence::announce(&handle, &label).await;
 
-                // Guard: only install the rejoined session if no tool call
-                // (connect_notebook / create_notebook) established a
-                // different session while we were awaiting the connection
-                // + initial load. If the session is now Some with a
-                // different notebook_id, the user's explicit choice wins
-                // and we drop the rejoined peer connection.
-                {
-                    let guard = session.read().await;
-                    if let Some(existing) = guard.as_ref() {
-                        if existing.notebook_id != new_notebook_id {
-                            info!(
-                                "Rejoin target {new_notebook_id} superseded by active session {}; \
-                                 dropping rejoined connection",
-                                existing.notebook_id
-                            );
-                            return true;
-                        }
-                    }
-                }
-
                 let new_session = NotebookSession::local(
                     handle,
                     broadcast_rx,
                     new_notebook_id,
                     notebook_path.clone(),
                 );
-                *session.write().await = Some(new_session);
+                // Hold the publication lock across the check/install. Any
+                // active session is authoritative, even for the same UUID:
+                // an explicit tool activation may carry retained projection
+                // heads/generation that a background rejoin must not erase.
+                let mut guard = session.write().await;
+                if let Some(existing) = guard.as_ref() {
+                    info!(
+                        "Rejoin target {} superseded by active session {}; \
+                         dropping rejoined connection",
+                        new_session.notebook_id, existing.notebook_id
+                    );
+                    return true;
+                }
+                *guard = Some(new_session);
                 info!("Rejoined notebook session ({new_cell_count} cells)");
                 return true;
             }
@@ -607,26 +600,22 @@ async fn rejoin_hosted(
                 let label = peer_label.read().await.clone();
                 crate::presence::announce(&result.handle, &label).await;
 
-                {
-                    let guard = session.read().await;
-                    if let Some(existing) = guard.as_ref() {
-                        if existing.session_key() != target {
-                            info!(
-                                "Hosted rejoin target {target} superseded by active session {}; \
-                                 dropping rejoined connection",
-                                existing.session_key()
-                            );
-                            return true;
-                        }
-                    }
-                }
-
-                *session.write().await = Some(NotebookSession::hosted(
+                let new_session = NotebookSession::hosted(
                     result.handle,
                     result.broadcast_rx,
                     notebook_id.clone(),
                     domain_config.base_url.clone(),
-                ));
+                );
+                let mut guard = session.write().await;
+                if let Some(existing) = guard.as_ref() {
+                    info!(
+                        "Hosted rejoin target {target} superseded by active session {}; \
+                         dropping rejoined connection",
+                        existing.session_key()
+                    );
+                    return true;
+                }
+                *guard = Some(new_session);
                 info!("Rejoined hosted notebook session {target}");
                 return true;
             }

@@ -17,6 +17,28 @@ use runtimed_outputs::output_resolver;
 use runtimed_outputs::resolved_output::Output;
 use tracing::warn;
 
+#[derive(Debug, Clone)]
+pub struct ExecutionDispatchError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl ExecutionDispatchError {
+    fn sync_failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "sync_failed",
+            message: message.into(),
+        }
+    }
+
+    fn not_ready(message: impl Into<String>) -> Self {
+        Self {
+            code: "notebook_not_ready",
+            message: message.into(),
+        }
+    }
+}
+
 /// Result of executing a cell.
 pub struct ExecutionResult {
     /// The cell ID that was executed.
@@ -70,15 +92,13 @@ pub async fn execute_and_wait(
     timeout: Duration,
     blob_base_url: &Option<String>,
     blob_store_path: &Option<std::path::PathBuf>,
-) -> ExecutionResult {
+) -> Result<ExecutionResult, ExecutionDispatchError> {
     // Step 1: Capture the source version this command is meant to observe.
-    let required_heads = match handle.current_heads_hex() {
-        Ok(heads) => heads,
-        Err(e) => {
-            warn!("failed to capture notebook heads before execution: {e}");
-            Vec::new()
-        }
-    };
+    let required_heads = handle.current_heads_hex().map_err(|error| {
+        ExecutionDispatchError::sync_failed(format!(
+            "Could not capture the notebook heads required for execution: {error}"
+        ))
+    })?;
 
     // Step 2: Submit execution request
     let request = NotebookRequest::ExecuteCell {
@@ -91,18 +111,21 @@ pub async fn execute_and_wait(
 
     let execution_id = match response {
         Ok(NotebookResponse::CellQueued { execution_id, .. }) => Some(execution_id),
-        Ok(_) => None,
-        Err(_e) => {
-            return ExecutionResult {
-                cell_id: cell_id.to_string(),
-                execution_id: None,
-                outputs: Vec::new(),
-                output_manifests: Vec::new(),
-                resolved_outputs_by_manifest: Vec::new(),
-                execution_count: None,
-                status: "error".to_string(),
-                success: false,
-            };
+        Ok(NotebookResponse::Error { error })
+        | Ok(NotebookResponse::GuardRejected { reason: error }) => {
+            return Err(ExecutionDispatchError::not_ready(format!(
+                "Execution was not queued: {error}"
+            )));
+        }
+        Ok(other) => {
+            return Err(ExecutionDispatchError::sync_failed(format!(
+                "Execution returned an unexpected daemon response: {other:?}"
+            )));
+        }
+        Err(error) => {
+            return Err(ExecutionDispatchError::sync_failed(format!(
+                "Execution could not be queued after the required heads: {error}"
+            )));
         }
     };
 
@@ -197,7 +220,7 @@ pub async fn execute_and_wait(
         success = false;
     }
 
-    ExecutionResult {
+    Ok(ExecutionResult {
         cell_id: cell_id.to_string(),
         execution_id,
         outputs,
@@ -206,7 +229,7 @@ pub async fn execute_and_wait(
         execution_count,
         status: final_status,
         success,
-    }
+    })
 }
 
 /// Result of running all cells.
@@ -226,14 +249,12 @@ pub struct RunAllResult {
 /// 2. Sends `RunAllCells` request.
 ///
 /// Returns immediately with the queued cell→execution ID mapping.
-pub async fn run_all_and_queue(handle: &DocHandle) -> RunAllResult {
-    let required_heads = match handle.current_heads_hex() {
-        Ok(heads) => heads,
-        Err(e) => {
-            warn!("failed to capture notebook heads before run_all_cells: {e}");
-            Vec::new()
-        }
-    };
+pub async fn run_all_and_queue(handle: &DocHandle) -> Result<RunAllResult, ExecutionDispatchError> {
+    let required_heads = handle.current_heads_hex().map_err(|error| {
+        ExecutionDispatchError::sync_failed(format!(
+            "Could not capture the notebook heads required to run all cells: {error}"
+        ))
+    })?;
 
     let response = handle
         .send_request_after_heads(
@@ -249,12 +270,21 @@ pub async fn run_all_and_queue(handle: &DocHandle) -> RunAllResult {
             .into_iter()
             .map(|q| (q.cell_id, q.execution_id))
             .collect(),
-        _ => {
-            return RunAllResult {
-                timed_out: false,
-                status: "error".to_string(),
-                cell_execution_ids: HashMap::new(),
-            };
+        Ok(NotebookResponse::Error { error })
+        | Ok(NotebookResponse::GuardRejected { reason: error }) => {
+            return Err(ExecutionDispatchError::not_ready(format!(
+                "Run all was not queued: {error}"
+            )));
+        }
+        Ok(other) => {
+            return Err(ExecutionDispatchError::sync_failed(format!(
+                "Run all returned an unexpected daemon response: {other:?}"
+            )));
+        }
+        Err(error) => {
+            return Err(ExecutionDispatchError::sync_failed(format!(
+                "Run all could not be queued after the required heads: {error}"
+            )));
         }
     };
 
@@ -265,11 +295,11 @@ pub async fn run_all_and_queue(handle: &DocHandle) -> RunAllResult {
     }
     .to_string();
 
-    RunAllResult {
+    Ok(RunAllResult {
         timed_out: false,
         status,
         cell_execution_ids,
-    }
+    })
 }
 
 /// Run all cells and wait for completion.
@@ -279,11 +309,14 @@ pub async fn run_all_and_queue(handle: &DocHandle) -> RunAllResult {
 ///
 /// Returns a lightweight `RunAllResult` with overall status. The caller should
 /// read the full notebook state after this returns to build the summary view.
-pub async fn run_all_and_wait(handle: &DocHandle, timeout: Duration) -> RunAllResult {
-    let mut result = run_all_and_queue(handle).await;
+pub async fn run_all_and_wait(
+    handle: &DocHandle,
+    timeout: Duration,
+) -> Result<RunAllResult, ExecutionDispatchError> {
+    let mut result = run_all_and_queue(handle).await?;
 
     if result.status == "error" || result.cell_execution_ids.is_empty() {
-        return result;
+        return Ok(result);
     }
 
     let execution_ids: HashSet<&str> = result
@@ -337,5 +370,5 @@ pub async fn run_all_and_wait(handle: &DocHandle, timeout: Duration) -> RunAllRe
     }
     .to_string();
 
-    result
+    Ok(result)
 }

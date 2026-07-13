@@ -29,10 +29,14 @@ pub mod presence;
 pub mod project_file;
 mod resources;
 mod session;
+mod session_activation;
 mod structured;
 pub mod tools;
 
-use session::{NotebookSession, SessionDropInfo};
+use session::{
+    NotebookSession, SessionAccess, SessionAccessError, SessionDropInfo, SessionRequirement,
+};
+use session_activation::SessionActivation;
 
 const SLOW_MCP_TOOL_CALL: Duration = Duration::from_secs(30);
 
@@ -43,6 +47,9 @@ pub struct NteractMcp {
     blob_store_path: Option<PathBuf>,
     execution_store_path: PathBuf,
     session: Arc<RwLock<Option<NotebookSession>>>,
+    /// Owns monotonically ordered notebook activation generations and
+    /// coalesces concurrent connections to the same canonical target.
+    session_activation: Arc<SessionActivation>,
     /// Parked sessions from previous `connect_notebook` / `create_notebook`
     /// calls. When an agent switches notebooks, the old session is moved here
     /// instead of being dropped, keeping the daemon peer connection alive so
@@ -80,6 +87,7 @@ impl NteractMcp {
             blob_store_path,
             execution_store_path: runtimed_client::default_execution_store_dir(),
             session: Arc::new(RwLock::new(None)),
+            session_activation: Arc::new(SessionActivation::default()),
             parked_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             last_session_drop: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
@@ -144,6 +152,60 @@ impl NteractMcp {
     /// Get the shared session drop info (for the daemon watcher).
     pub fn last_session_drop(&self) -> &Arc<RwLock<Option<SessionDropInfo>>> {
         &self.last_session_drop
+    }
+
+    /// Acquire the active session through the centralized readiness gate.
+    /// `None` means there is no active session; a typed error means a session
+    /// exists but does not currently expose the requested capability.
+    pub(crate) async fn session_access(
+        &self,
+        requirement: SessionRequirement,
+    ) -> Result<Option<SessionAccess>, SessionAccessError> {
+        let guard = self.session.read().await;
+        let Some(session) = guard.as_ref() else {
+            return Ok(None);
+        };
+        if session.activation_generation != 0
+            && !self
+                .session_activation
+                .is_current_identity(session.activation_generation, &session.activation_target)
+        {
+            let readiness = session.readiness();
+            return Err(SessionAccessError {
+                code: "session_superseded",
+                message: "A newer notebook target superseded this session".to_string(),
+                readiness,
+            });
+        }
+        session.access(requirement).map(Some)
+    }
+
+    /// Revalidate an access token after an await point. Both the activation
+    /// owner and the published session slot must still name the exact target
+    /// captured before the operation began.
+    pub(crate) async fn ensure_session_access_current(
+        &self,
+        access: &SessionAccess,
+    ) -> Result<(), SessionAccessError> {
+        let generation = access.readiness.session_generation;
+        let target = &access.readiness.target;
+        let activation_current = generation == 0
+            || self
+                .session_activation
+                .is_current_identity(generation, target);
+        let slot_current = self.session.read().await.as_ref().is_some_and(|session| {
+            session.activation_generation == generation
+                && session.activation_target == *target
+                && session.notebook_id == access.notebook_id
+        });
+        if activation_current && slot_current {
+            return Ok(());
+        }
+        Err(SessionAccessError {
+            code: "session_superseded",
+            message: "A newer notebook target superseded this operation".to_string(),
+            readiness: access.readiness.clone(),
+        })
     }
 
     /// Disconnect this MCP process's peer from the active notebook session.

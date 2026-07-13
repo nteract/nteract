@@ -126,8 +126,13 @@ pub async fn create_cell(
 
     // Clone handle, then drop the session lock so other tools
     // (interrupt_kernel, etc.) aren't blocked during execution.
+    let access = if and_run && cell_type == "code" {
+        require_session_access!(server, Execute)
+    } else {
+        require_session_access!(server, DocumentMutation)
+    };
     let (handle, cell_id) = {
-        let handle = require_handle!(server);
+        let handle = access.handle.clone();
         let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
 
         let after_cell_id = match explicit_after_cell_id {
@@ -151,14 +156,24 @@ pub async fn create_cell(
     crate::presence::emit_cursor(&handle, &cell_id, end_line, end_col, &peer_label).await;
 
     if and_run && cell_type == "code" {
-        let result = execution::execute_and_wait(
+        if let Err(error) = server.ensure_session_access_current(&access).await {
+            return super::session_access_error(error);
+        }
+        let result = match execution::execute_and_wait(
             &handle,
             &cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
             &server.blob_store_path,
         )
-        .await;
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => return super::execution_dispatch_error(error),
+        };
+        if let Err(error) = server.ensure_session_access_current(&access).await {
+            return super::session_access_error(error);
+        }
 
         return super::build_execution_result(&result, &handle, server).await;
     }
@@ -194,7 +209,12 @@ pub async fn set_cell(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    let handle = require_handle!(server);
+    let access = if and_run {
+        require_session_access!(server, Execute)
+    } else {
+        require_session_access!(server, DocumentMutation)
+    };
+    let handle = access.handle.clone();
     assert_cell_exists(&handle, cell_id)?;
 
     if source.is_none() && cell_type.is_none() {
@@ -231,14 +251,24 @@ pub async fn set_cell(
 
     let current_type = handle.get_cell_type(cell_id).unwrap_or_default();
     if and_run && current_type == "code" {
-        let result = execution::execute_and_wait(
+        if let Err(error) = server.ensure_session_access_current(&access).await {
+            return super::session_access_error(error);
+        }
+        let result = match execution::execute_and_wait(
             &handle,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
             &server.blob_store_path,
         )
-        .await;
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => return super::execution_dispatch_error(error),
+        };
+        if let Err(error) = server.ensure_session_access_current(&access).await {
+            return super::session_access_error(error);
+        }
 
         return super::build_execution_result(&result, &handle, server).await;
     }
@@ -259,7 +289,7 @@ pub async fn delete_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
     assert_cell_exists(&handle, cell_id)?;
 
     let peer_label = server.get_peer_label().await;
@@ -288,7 +318,7 @@ pub async fn move_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
 
     let after_cell_id = explicit_after_cell_id_arg(request)?.flatten();
 
@@ -323,7 +353,7 @@ pub async fn clear_outputs(
     reject_unknown_args(request, &["cell_ids"])?;
     let explicit_ids: Option<Vec<String>> = arg_string_array(request, "cell_ids");
 
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
 
     // If cell_ids provided, clear those (empty list = no-op); otherwise clear all.
     let cell_ids: Vec<String> = match explicit_ids {

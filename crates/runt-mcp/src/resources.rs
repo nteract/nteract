@@ -288,11 +288,17 @@ async fn handle_for_notebook(
 ) -> Result<notebook_sync::handle::DocHandle, McpError> {
     if let Some(session) = server.session.read().await.as_ref() {
         if session.notebook_id == notebook_id {
-            return Ok(session.handle.clone());
+            return session
+                .access(crate::session::SessionRequirement::DocumentRead)
+                .map(|access| access.handle)
+                .map_err(resource_session_access_error);
         }
     }
     if let Some(session) = server.parked_sessions.read().await.get(notebook_id) {
-        return Ok(session.handle.clone());
+        return session
+            .access(crate::session::SessionRequirement::DocumentRead)
+            .map(|access| access.handle)
+            .map_err(resource_session_access_error);
     }
     Err(McpError::resource_not_found(
         format!(
@@ -301,6 +307,20 @@ async fn handle_for_notebook(
         ),
         None,
     ))
+}
+
+fn resource_session_access_error(error: crate::session::SessionAccessError) -> McpError {
+    McpError::internal_error(
+        serde_json::json!({
+            "error": {
+                "code": error.code,
+                "message": error.message,
+            },
+            "session": error.readiness,
+        })
+        .to_string(),
+        None,
+    )
 }
 
 fn json_resource(uri: &str, text: String) -> ResourceContents {

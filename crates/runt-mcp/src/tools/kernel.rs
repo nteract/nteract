@@ -15,12 +15,16 @@ pub async fn interrupt_kernel(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let handle = require_handle!(server);
+    let access = require_session_access!(server, Execute);
+    let handle = access.handle.clone();
 
-    match handle
+    let response = handle
         .send_request(NotebookRequest::InterruptExecution {})
-        .await
-    {
+        .await;
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
+    match response {
         Ok(_) => {
             let result = serde_json::json!({ "interrupted": true });
             tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
@@ -34,16 +38,9 @@ pub async fn restart_kernel(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let (handle, notebook_id) = {
-        let guard = server.session.read().await;
-        match guard.as_ref() {
-            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
-            None => {
-                drop(guard);
-                return super::no_session_error(server).await;
-            }
-        }
-    };
+    let access = require_session_access!(server, Execute);
+    let handle = access.handle.clone();
+    let notebook_id = access.notebook_id.clone();
 
     // Capture kernel_type and env_source from the *current* RuntimeState
     // before shutdown. After a daemon restart the fresh RuntimeStateDoc has
@@ -78,38 +75,64 @@ pub async fn restart_kernel(
             // Even if shutdown fails (no kernel), proceed to launch
         }
     }
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
 
     // Brief pause for shutdown to complete
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
 
     // Step 2: Get a fresh handle (the original may have been invalidated by
     // a daemon restart during the shutdown sequence). If the session was
     // replaced by daemon_watch's rejoin, we pick up the new one.
-    let handle = {
-        let guard = server.session.read().await;
-        match guard.as_ref() {
-            Some(s) => s.handle.clone(),
-            None => {
-                // Session dropped — wait for daemon_watch to rejoin.
-                drop(guard);
-                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
-                let guard = server.session.read().await;
-                match guard.as_ref() {
-                    Some(s) => s.handle.clone(),
-                    None => {
-                        return tool_error(
-                            "Lost connection to daemon during kernel restart. \
-                             The session will auto-reconnect — retry in a few seconds.",
-                        )
-                    }
+    let refreshed_access = match server
+        .session_access(crate::session::SessionRequirement::Execute)
+        .await
+    {
+        Ok(Some(access)) => access,
+        Err(error) => return super::session_access_error(error),
+        Ok(None) => {
+            // Session dropped — wait for daemon_watch to rejoin.
+            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+            match server
+                .session_access(crate::session::SessionRequirement::Execute)
+                .await
+            {
+                Ok(Some(access)) => access,
+                Err(error) => return super::session_access_error(error),
+                Ok(None) => {
+                    return tool_error(
+                        "Lost connection to daemon during kernel restart. \
+                         The session will auto-reconnect — retry in a few seconds.",
+                    )
                 }
             }
         }
     };
+    if refreshed_access.readiness.session_generation != access.readiness.session_generation
+        || refreshed_access.readiness.target != access.readiness.target
+        || refreshed_access.notebook_id != access.notebook_id
+    {
+        return super::session_access_error(crate::session::SessionAccessError {
+            code: "session_superseded",
+            message: "Notebook target changed during kernel restart".to_string(),
+            readiness: access.readiness.clone(),
+        });
+    }
+    let handle = refreshed_access.handle.clone();
 
     // Ensure daemon has latest metadata (deps may have changed since last sync)
     if let Err(e) = handle.confirm_sync().await {
         tracing::warn!("confirm_sync failed before restart_kernel launch: {e}");
+    }
+    if let Err(error) = server
+        .ensure_session_access_current(&refreshed_access)
+        .await
+    {
+        return super::session_access_error(error);
     }
 
     // Step 3: Determine env_source. Prefer the pre-shutdown env_source
@@ -178,11 +201,30 @@ pub async fn restart_kernel(
         Err(SyncError::Disconnected) => {
             tracing::warn!("LaunchKernel disconnected during restart, waiting for reconnection");
             tokio::time::sleep(std::time::Duration::from_secs(8)).await;
-            let guard = server.session.read().await;
-            match guard.as_ref() {
-                Some(s) => {
-                    let fresh_handle = s.handle.clone();
-                    drop(guard);
+            if let Err(error) = server
+                .ensure_session_access_current(&refreshed_access)
+                .await
+            {
+                return super::session_access_error(error);
+            }
+            match server
+                .session_access(crate::session::SessionRequirement::Execute)
+                .await
+            {
+                Ok(Some(access)) => {
+                    if access.readiness.session_generation
+                        != refreshed_access.readiness.session_generation
+                        || access.readiness.target != refreshed_access.readiness.target
+                        || access.notebook_id != refreshed_access.notebook_id
+                    {
+                        return super::session_access_error(crate::session::SessionAccessError {
+                            code: "session_superseded",
+                            message: "Notebook target changed while retrying kernel restart"
+                                .to_string(),
+                            readiness: refreshed_access.readiness.clone(),
+                        });
+                    }
+                    let fresh_handle = access.handle;
                     if let Err(e) = fresh_handle.confirm_sync().await {
                         tracing::warn!(
                             "confirm_sync failed before restart_kernel retry launch: {e}"
@@ -198,7 +240,7 @@ pub async fn restart_kernel(
                         })
                         .await
                 }
-                None => Err(SyncError::Disconnected),
+                Ok(None) | Err(_) => Err(SyncError::Disconnected),
             }
         }
         other => other,
@@ -217,13 +259,32 @@ pub async fn restart_kernel(
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let current_handle = {
-                    let guard = server.session.read().await;
-                    guard.as_ref().map(|s| s.handle.clone())
-                };
-                let Some(h) = current_handle else {
+                if let Err(error) = server
+                    .ensure_session_access_current(&refreshed_access)
+                    .await
+                {
+                    return super::session_access_error(error);
+                }
+                let current_access = server
+                    .session_access(crate::session::SessionRequirement::RuntimeRead)
+                    .await
+                    .ok()
+                    .flatten();
+                let Some(current_access) = current_access else {
                     continue;
                 };
+                if current_access.readiness.session_generation
+                    != refreshed_access.readiness.session_generation
+                    || current_access.readiness.target != refreshed_access.readiness.target
+                {
+                    return super::session_access_error(crate::session::SessionAccessError {
+                        code: "session_superseded",
+                        message: "Notebook target changed while waiting for kernel restart"
+                            .to_string(),
+                        readiness: refreshed_access.readiness.clone(),
+                    });
+                }
+                let h = current_access.handle;
                 if let Ok(state) = h.get_runtime_state() {
                     if matches!(
                         state.kernel.lifecycle,
