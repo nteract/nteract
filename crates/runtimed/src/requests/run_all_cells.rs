@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use runtime_doc::RuntimeLifecycle;
 use tracing::warn;
 
+use crate::notebook_sync_server::durability::commit_daemon_notebook_mutation;
 use crate::notebook_sync_server::NotebookRoom;
 use crate::protocol::{NotebookResponse, QueueEntry};
 use crate::requests::guarded;
@@ -152,6 +153,10 @@ async fn handle_inner(
                     }
                 };
 
+                let rollback_actor = doc.get_actor_id();
+                let rollback_snapshot = doc.save();
+                let baseline_heads = doc.get_heads();
+
                 // Pre-compute execution entries while holding the doc write
                 // lock so guarded requests cannot be invalidated before the
                 // cell→execution_id pointers are stamped.
@@ -256,6 +261,20 @@ async fn handle_inner(
                             error: format!("failed to stamp execution pointer: {e}"),
                         };
                     }
+                }
+                if let Err(error) = commit_daemon_notebook_mutation(
+                    room,
+                    &mut doc,
+                    &baseline_heads,
+                    &rollback_snapshot,
+                    &rollback_actor,
+                    "run all cells",
+                ) {
+                    let _ = room.state.with_doc(|state| {
+                        state.remove_executions(&created_execution_ids)?;
+                        Ok(())
+                    });
+                    return NotebookResponse::Error { error };
                 }
                 for (cell_id, previous_execution_id) in previous_execution_ids {
                     room.persistence

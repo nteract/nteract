@@ -860,6 +860,9 @@ pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
 
     let persist_bytes = {
         let mut doc = room.doc.write().await;
+        let rollback_actor = doc.get_actor_id();
+        let rollback_snapshot = doc.save();
+        let durable_baseline_heads = doc.get_heads();
         let wrote_assets = match doc.transact_at_heads_recovering(
             &baseline_heads,
             Some("runtimed:assets"),
@@ -887,6 +890,17 @@ pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
             }
         };
         if !wrote_assets {
+            return;
+        }
+        if let Err(error) = super::durability::commit_daemon_notebook_mutation(
+            room,
+            &mut doc,
+            &durable_baseline_heads,
+            &rollback_snapshot,
+            &rollback_actor,
+            "markdown asset projection",
+        ) {
+            warn!("[metadata] {error}");
             return;
         }
         doc.save()
@@ -1387,6 +1401,8 @@ pub(crate) async fn capture_env_into_metadata(
     env_id: &str,
 ) -> bool {
     let mut doc = room.doc.write().await;
+    let rollback_actor = doc.get_actor_id();
+    let rollback_snapshot = doc.save();
     let heads = doc.get_heads();
     let changed = match doc.transact_at_heads_recovering(
         &heads,
@@ -1442,6 +1458,19 @@ pub(crate) async fn capture_env_into_metadata(
             false
         }
     };
+    if changed {
+        if let Err(error) = super::durability::commit_daemon_notebook_mutation(
+            room,
+            &mut doc,
+            &heads,
+            &rollback_snapshot,
+            &rollback_actor,
+            "environment metadata capture",
+        ) {
+            warn!("[notebook-sync] {error}");
+            return false;
+        }
+    }
     drop(doc);
     if changed {
         // Notify the autosave debouncer so the capture lands in the .ipynb
@@ -1509,6 +1538,8 @@ pub(crate) async fn flush_launched_deps_to_metadata(
     };
 
     let mut doc = room.doc.write().await;
+    let rollback_actor = doc.get_actor_id();
+    let rollback_snapshot = doc.save();
     let heads = doc.get_heads();
     let changed = match doc.transact_at_heads_recovering(
         &heads,
@@ -1560,6 +1591,19 @@ pub(crate) async fn flush_launched_deps_to_metadata(
             false
         }
     };
+    if changed {
+        if let Err(error) = super::durability::commit_daemon_notebook_mutation(
+            room,
+            &mut doc,
+            &heads,
+            &rollback_snapshot,
+            &rollback_actor,
+            "launched dependency metadata flush",
+        ) {
+            warn!("[notebook-sync] {error}");
+            return false;
+        }
+    }
     drop(doc);
     changed
 }
@@ -5071,6 +5115,9 @@ pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, 
     let mut formatted_count = 0;
     if !formatted_updates.is_empty() {
         let mut doc = room.doc.write().await;
+        let rollback_actor = doc.get_actor_id();
+        let rollback_snapshot = doc.save();
+        let durable_baseline_heads = doc.get_heads();
         match doc.transact_at_heads_recovering(
             &baseline_heads,
             Some(&formatter_actor(&runtime)),
@@ -5088,10 +5135,18 @@ pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, 
             },
         ) {
             Ok((applied, changed)) => {
-                formatted_count = applied;
                 if changed {
+                    super::durability::commit_daemon_notebook_mutation(
+                        room,
+                        &mut doc,
+                        &durable_baseline_heads,
+                        &rollback_snapshot,
+                        &rollback_actor,
+                        "save-time formatting",
+                    )?;
                     let _ = room.broadcasts.changed_tx.send(());
                 }
+                formatted_count = applied;
                 info!(
                     "[format] Formatted {} code cells (runtime: {})",
                     formatted_count, runtime

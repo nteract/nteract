@@ -242,7 +242,7 @@ pub struct NotebookKernelInfo {
 }
 
 /// Version of the room-owned notebook projection wire shape.
-pub const NOTEBOOK_PROJECTION_SCHEMA_VERSION: u32 = 1;
+pub const NOTEBOOK_PROJECTION_SCHEMA_VERSION: u32 = 2;
 
 /// Typed terminal failures for room-owned projection requests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +252,13 @@ pub enum NotebookProjectionFailure {
     RoomNotFound,
     /// The room's initial file materialization reached a terminal failure.
     InitialLoadFailed { generation: u64, reason: String },
+    /// Durable document state is readable, but no immutable projection artifact
+    /// was retained for this or an earlier source generation.
+    ProjectionNotRetained {
+        generation: u64,
+        document_readable: bool,
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for NotebookProjectionFailure {
@@ -261,6 +268,15 @@ impl std::fmt::Display for NotebookProjectionFailure {
             Self::InitialLoadFailed { generation, reason } => {
                 write!(f, "initial load generation {generation} failed: {reason}")
             }
+            Self::ProjectionNotRetained {
+                generation,
+                document_readable,
+                reason,
+            } => write!(
+                f,
+                "source generation {generation} has no retained projection \
+                 (document_readable={document_readable}): {reason}"
+            ),
         }
     }
 }
@@ -297,6 +313,113 @@ pub struct NotebookRuntimeProjection {
     pub project_context: runtime_doc::ProjectContext,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotebookSourcePhase {
+    Preparing,
+    Publishing,
+    #[default]
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotebookSourceRetry {
+    #[default]
+    NotNeeded,
+    RegenerateIfPristine,
+    ResumeStaged,
+    ExplicitReconciliation,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotebookSourceProgress {
+    pub completed: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotebookSourceProjectionState {
+    pub phase: NotebookSourcePhase,
+    pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub progress: NotebookSourceProgress,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    #[serde(default)]
+    pub retry: NotebookSourceRetry,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotebookAvailabilityPhase {
+    Attached,
+    ProjectionReady,
+    #[default]
+    Interactive,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotebookCapabilities {
+    pub read: bool,
+    pub mutate: bool,
+    pub execute: bool,
+}
+
+impl Default for NotebookCapabilities {
+    fn default() -> Self {
+        Self {
+            read: true,
+            mutate: true,
+            execute: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotebookAvailabilityProjection {
+    pub phase: NotebookAvailabilityPhase,
+    pub generation: u64,
+    #[serde(default)]
+    pub document_heads: Vec<String>,
+    #[serde(default)]
+    pub projection_heads: Vec<String>,
+    #[serde(default)]
+    pub capabilities: NotebookCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotebookReadiness {
+    pub projection: bool,
+    pub document: bool,
+    pub runtime: bool,
+}
+
+impl Default for NotebookReadiness {
+    fn default() -> Self {
+        // Projections from older daemons were returned only after initial
+        // document loading completed. Runtime readiness was never implied.
+        Self {
+            projection: true,
+            document: true,
+            runtime: false,
+        }
+    }
+}
+
+const fn projection_complete_by_default() -> bool {
+    true
+}
+
 /// Coherent initial notebook view captured from the authoritative room.
 ///
 /// NotebookDoc and RuntimeStateDoc are separate Automerge documents, so the
@@ -315,6 +438,20 @@ pub struct NotebookProjection {
     #[serde(default)]
     pub dependencies: Vec<String>,
     pub runtime: NotebookRuntimeProjection,
+    /// Authoritative source-generation state at response time.
+    #[serde(default)]
+    pub source_state: NotebookSourceProjectionState,
+    /// Authoritative room availability and user-facing capabilities.
+    #[serde(default)]
+    pub availability: NotebookAvailabilityProjection,
+    #[serde(default)]
+    pub readiness: NotebookReadiness,
+    /// True when this bounded projection covers the complete staged cell list
+    /// for `projection_heads` (cell sources remain previews by design).
+    #[serde(default = "projection_complete_by_default")]
+    pub projection_complete: bool,
+    #[serde(default)]
+    pub projection_heads: Vec<String>,
     pub notebook_heads: Vec<String>,
     pub runtime_state_heads: Vec<String>,
     pub captured_at: DateTime<Utc>,
@@ -669,6 +806,36 @@ mod tests {
             }],
             dependencies: vec!["numpy".to_string()],
             runtime: NotebookRuntimeProjection::default(),
+            source_state: NotebookSourceProjectionState {
+                phase: NotebookSourcePhase::Publishing,
+                generation: 7,
+                fingerprint: Some("cc".repeat(32)),
+                progress: NotebookSourceProgress {
+                    completed: 1,
+                    total: Some(2),
+                },
+                retry: NotebookSourceRetry::ResumeStaged,
+                ..Default::default()
+            },
+            availability: NotebookAvailabilityProjection {
+                phase: NotebookAvailabilityPhase::ProjectionReady,
+                generation: 7,
+                document_heads: vec!["dd".repeat(32)],
+                projection_heads: vec!["aa".repeat(32)],
+                capabilities: NotebookCapabilities {
+                    read: true,
+                    mutate: false,
+                    execute: false,
+                },
+                reason: None,
+            },
+            readiness: NotebookReadiness {
+                projection: true,
+                document: false,
+                runtime: false,
+            },
+            projection_complete: true,
+            projection_heads: vec!["aa".repeat(32)],
             notebook_heads: vec!["aa".repeat(32)],
             runtime_state_heads: vec!["bb".repeat(32)],
             captured_at: Utc::now(),
@@ -700,6 +867,36 @@ mod tests {
                 assert_eq!(notebook_id, "018f0000-0000-7000-8000-000000000001");
                 assert_eq!(generation, 9);
                 assert_eq!(reason, "invalid notebook JSON");
+            }
+            _ => panic!("unexpected response type"),
+        }
+    }
+
+    #[test]
+    fn test_response_notebook_projection_not_retained() {
+        let response = Response::NotebookProjectionUnavailable {
+            notebook_id: "018f0000-0000-7000-8000-000000000001".to_string(),
+            failure: NotebookProjectionFailure::ProjectionNotRetained {
+                generation: 11,
+                document_readable: true,
+                reason: "recovery journal has no projection artifact".to_string(),
+            },
+        };
+
+        match roundtrip_response(&response) {
+            Response::NotebookProjectionUnavailable {
+                notebook_id,
+                failure:
+                    NotebookProjectionFailure::ProjectionNotRetained {
+                        generation,
+                        document_readable,
+                        reason,
+                    },
+            } => {
+                assert_eq!(notebook_id, "018f0000-0000-7000-8000-000000000001");
+                assert_eq!(generation, 11);
+                assert!(document_readable);
+                assert_eq!(reason, "recovery journal has no projection artifact");
             }
             _ => panic!("unexpected response type"),
         }

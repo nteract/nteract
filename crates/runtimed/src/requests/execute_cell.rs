@@ -6,6 +6,7 @@ use automerge::ChangeHash;
 use runtime_doc::RuntimeLifecycle;
 use tracing::warn;
 
+use crate::notebook_sync_server::durability::commit_daemon_notebook_mutation;
 use crate::notebook_sync_server::{
     detect_room_runtime, format_source, formatter_actor, NotebookRoom,
 };
@@ -148,6 +149,9 @@ async fn handle_inner(
                     if let Some(runtime) = detect_room_runtime(&room_clone).await {
                         if let Some(formatted) = format_source(&source_clone, &runtime).await {
                             let mut doc = room_clone.doc.write().await;
+                            let rollback_actor = doc.get_actor_id();
+                            let rollback_snapshot = doc.save();
+                            let baseline_heads = doc.get_heads();
                             match doc.transact_at_heads_recovering(
                                 &format_heads,
                                 Some(&formatter_actor(&runtime)),
@@ -158,7 +162,19 @@ async fn handle_inner(
                                 },
                             ) {
                                 Ok(true) => {
-                                    let _ = room_clone.broadcasts.changed_tx.send(());
+                                    match commit_daemon_notebook_mutation(
+                                        &room_clone,
+                                        &mut doc,
+                                        &baseline_heads,
+                                        &rollback_snapshot,
+                                        &rollback_actor,
+                                        "cell formatter",
+                                    ) {
+                                        Ok(()) => {
+                                            let _ = room_clone.broadcasts.changed_tx.send(());
+                                        }
+                                        Err(error) => warn!("[format] {error}"),
+                                    }
                                 }
                                 Ok(false) => {}
                                 Err(e) => {
@@ -264,6 +280,10 @@ async fn queue_cell_if_current(
         }
     }
 
+    let rollback_actor = doc.get_actor_id();
+    let rollback_snapshot = doc.save();
+    let baseline_heads = doc.get_heads();
+
     let mut execution_id = requested_execution_id
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -332,6 +352,21 @@ async fn queue_cell_if_current(
         return QueueCellResult::Response(Box::new(NotebookResponse::Error {
             error: format!("failed to stamp execution pointer: {e}"),
         }));
+    }
+    if let Err(error) = commit_daemon_notebook_mutation(
+        room,
+        &mut doc,
+        &baseline_heads,
+        &rollback_snapshot,
+        &rollback_actor,
+        "execute cell",
+    ) {
+        let rollback_id = execution_id.clone();
+        let _ = room.state.with_doc(|state| {
+            state.remove_executions(&[rollback_id])?;
+            Ok(())
+        });
+        return QueueCellResult::Response(Box::new(NotebookResponse::Error { error }));
     }
     if let Some(previous_execution_id) = current_execution_id.as_deref() {
         room.persistence

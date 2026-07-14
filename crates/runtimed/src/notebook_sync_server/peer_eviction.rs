@@ -646,6 +646,26 @@ pub(super) async fn handle_peer_disconnect(
 mod tests {
     use super::*;
 
+    fn empty_projection(generation: u64) -> Arc<runtimed_client::protocol::NotebookProjection> {
+        Arc::new(runtimed_client::protocol::NotebookProjection {
+            schema_version: runtimed_client::protocol::NOTEBOOK_PROJECTION_SCHEMA_VERSION,
+            load_generation: generation,
+            notebook_id: "test-notebook".to_string(),
+            notebook_path: None,
+            cells: Vec::new(),
+            dependencies: Vec::new(),
+            runtime: Default::default(),
+            source_state: Default::default(),
+            availability: Default::default(),
+            readiness: Default::default(),
+            projection_complete: true,
+            projection_heads: vec![format!("projection-head-{generation}")],
+            notebook_heads: vec![format!("projection-head-{generation}")],
+            runtime_state_heads: Vec::new(),
+            captured_at: chrono::Utc::now(),
+        })
+    }
+
     #[tokio::test]
     async fn notebook_write_wait_times_out_while_source_is_loading() {
         let initial_load = RoomInitialLoad::default();
@@ -665,12 +685,18 @@ mod tests {
 
     #[tokio::test]
     async fn notebook_write_wait_observes_source_ready() {
-        let initial_load = Arc::new(RoomInitialLoad::default());
+        let lifecycle = crate::notebook_sync_server::RoomLifecycle::test_default();
+        let initial_load = Arc::new(RoomInitialLoad::new(Arc::clone(&lifecycle)));
         initial_load.mark_required();
         let generation = initial_load.state().generation();
         let completer = Arc::clone(&initial_load);
         tokio::spawn(async move {
             tokio::task::yield_now().await;
+            assert!(lifecycle.publish_recovered_projection_ready(
+                generation,
+                empty_projection(generation),
+                Vec::new(),
+            ));
             assert!(completer.complete_ready(generation, 1));
         });
 

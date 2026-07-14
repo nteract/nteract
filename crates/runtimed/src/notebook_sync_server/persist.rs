@@ -404,7 +404,7 @@ pub(crate) async fn save_notebook_to_disk(
             }
             // Disk already matches the room, so any failed-load hazard is
             // resolved — clear the flag so a later legitimate empty save writes.
-            room.mark_load_recovered(cell_count);
+            let _ = room.mark_load_recovered(cell_count).await;
             return Ok(notebook_path.to_string_lossy().to_string());
         }
     }
@@ -438,7 +438,7 @@ pub(crate) async fn save_notebook_to_disk(
     // (A still-failed empty room over existing content is skipped by the guard
     // above and never reaches here, so this only clears genuine recoveries:
     // Save As, or adding a cell to a failed-load room and saving.)
-    room.mark_load_recovered(cell_count);
+    let _ = room.mark_load_recovered(cell_count).await;
 
     // Update last_self_write timestamp so the file watcher skips our own write.
     // Applies to all rooms (including ephemeral that were just promoted to
@@ -808,6 +808,11 @@ pub(crate) async fn try_claim_path(
                 path: p.to_string_lossy().into_owned(),
             },
         ),
+        Err(path_index::PathIndexError::RegistryFrozen) => {
+            Err(notebook_protocol::protocol::SaveErrorKind::Io {
+                message: "notebook room publication is frozen for clean shutdown".to_string(),
+            })
+        }
     }
 }
 
@@ -1859,7 +1864,7 @@ pub(crate) fn spawn_notebook_file_watcher(
                             };
 
                             if cells_reconciled && metadata_reconciled {
-                                room.mark_load_recovered(external_cells.len());
+                                let _ = room.mark_load_recovered(external_cells.len()).await;
                             }
 
                             if cells_changed || metadata_changed {

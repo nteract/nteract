@@ -138,6 +138,59 @@ pub(crate) fn run_blocking_durability_boundary<T>(operation: impl FnOnce() -> T)
     }
 }
 
+/// Commit a daemon-authored NotebookDoc mutation before it is acknowledged or
+/// advertised to another peer.
+///
+/// Callers retain the document write guard across this synchronous journal
+/// append. A failed append restores the exact pre-mutation document and actor,
+/// then closes mutation and execution capabilities until recovery is
+/// reconciled. RuntimeState changes paired with the NotebookDoc mutation remain
+/// the caller's rollback responsibility.
+pub(crate) fn commit_daemon_notebook_mutation(
+    room: &super::NotebookRoom,
+    doc: &mut notebook_doc::NotebookDoc,
+    baseline_heads: &[ChangeHash],
+    rollback_snapshot: &[u8],
+    rollback_actor: &str,
+    operation: &str,
+) -> Result<(), String> {
+    run_blocking_durability_boundary(|| {
+        let heads = doc.get_heads();
+        if heads == baseline_heads {
+            return Ok(());
+        }
+        let snapshot = doc.save();
+        let raw_heads = heads.iter().map(|head| head.0).collect::<Vec<_>>();
+        if let Err(error) =
+            room.durability
+                .commit_snapshot(&snapshot, raw_heads, DurableMutation::Daemon)
+        {
+            let document_readable =
+                match notebook_doc::NotebookDoc::load_with_actor(rollback_snapshot, rollback_actor)
+                {
+                    Ok(restored) => {
+                        *doc = restored;
+                        true
+                    }
+                    Err(_) => false,
+                };
+            let document_heads = doc.get_heads_hex();
+            let reason =
+                format!("{operation} journal commit failed before acknowledgement: {error}");
+            room.durability.mark_degraded(reason.clone());
+            room.lifecycle
+                .mark_degraded(reason.clone(), document_heads, document_readable);
+            let _ = room.state.with_doc(|state| {
+                state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
+                    reason: reason.clone(),
+                }))
+            });
+            return Err(reason);
+        }
+        Ok(())
+    })
+}
+
 struct DurabilityState {
     manifest: RecoveryManifest,
     durable_snapshot: Arc<[u8]>,

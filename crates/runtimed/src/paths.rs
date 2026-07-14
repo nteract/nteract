@@ -47,6 +47,8 @@ pub use notebook_doc::notebook_doc_filename;
 // ---------------------------------------------------------------------------
 
 /// Maximum number of snapshots to keep per notebook hash.
+// The remaining caller moves with the causal-save slice.
+#[allow(dead_code)]
 const MAX_SNAPSHOTS_PER_NOTEBOOK: usize = 5;
 
 /// Snapshot a persisted automerge doc before deleting it.
@@ -56,6 +58,8 @@ const MAX_SNAPSHOTS_PER_NOTEBOOK: usize = 5;
 ///
 /// Returns `true` if the snapshot was created successfully. The caller
 /// should only delete the original file when this returns `true`.
+// The remaining caller moves with the causal-save slice.
+#[allow(dead_code)]
 pub(crate) fn snapshot_before_delete(persist_path: &Path, docs_dir: &Path) -> bool {
     let Some(stem) = persist_path.file_stem().and_then(|s| s.to_str()) else {
         return false;
