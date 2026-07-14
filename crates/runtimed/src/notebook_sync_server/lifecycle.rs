@@ -46,7 +46,6 @@ pub struct RoomSourceError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum RoomSourceRetry {
     NotNeeded,
     RegenerateIfPristine,

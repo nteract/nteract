@@ -121,8 +121,12 @@ causal barrier, not a timer or "last saved" timestamp.
 Room reaping and clean daemon shutdown require that barrier for the room's
 current heads. A journal failure leaves the room resident and changes
 availability to `Degraded`; it cannot silently evict acknowledged work.
-Reaping snapshots the heads, awaits their durability, then revalidates peer
-count, room generation, and current heads before removal.
+Reaping snapshots the heads, commits them to the journal, awaits their
+durability, then removes the room only if the final predicate still holds: no
+peers, no reservations, same connection generation, teardown timestamp still
+present, source not loading, and durability not requiring repair. Writer-side
+journaling plus the generation and reservation checks carry the post-barrier
+protection.
 
 The journal is recovery state, not a replacement user file. `.ipynb` remains
 the user-visible exported representation. Automerge remains the live document

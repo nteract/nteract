@@ -3,11 +3,8 @@ use super::*;
 
 /// Daemon-wide handle to the resident-room registry.
 ///
-/// Previously `Arc<Mutex<HashMap<Uuid, Arc<NotebookRoom>>>>`. The
-/// underlying type is now `RoomRegistry`, which owns both the UUID
-/// map and the path → UUID secondary index under one tokio mutex.
-/// Existing call sites keep the `NotebookRooms` name and only the
-/// operations change.
+/// `RoomRegistry` owns both the UUID map and the path -> UUID secondary index
+/// under one tokio mutex.
 pub type NotebookRooms = Arc<RoomRegistry>;
 
 pub(crate) struct RoomCreationOptions<'a> {

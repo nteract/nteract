@@ -1,12 +1,11 @@
 //! Combined registry of resident notebook rooms.
 //!
-//! Owns both the `Uuid → Arc<NotebookRoom>` map and the path → UUID
+//! Owns both the `Uuid -> Arc<NotebookRoom>` map and the path -> UUID
 //! secondary index behind one tokio `Mutex`. Joined operations
 //! (insertion of a new room that also takes a path, removal of a room
 //! while purging its path entry, path lookup followed by UUID
 //! resolution) happen under a single lock acquisition, which closes
-//! the "rooms inserted but path index not yet, or vice versa" race
-//! that the two-lock layout exposed.
+//! partial-publication races between those maps.
 //!
 //! Lookups hand callers a `ReservationGuard` alongside the `Arc`. The
 //! room reaper's peer-less predicate is

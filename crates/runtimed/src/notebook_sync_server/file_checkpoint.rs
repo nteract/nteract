@@ -236,11 +236,10 @@ impl FileCheckpointCoordinator {
         Ok(SaveSequenceClaim { sequence })
     }
 
-    /// Claim a fully prepared target in one synchronous operation.
+    /// Claim a fully prepared immutable target in one synchronous operation.
     ///
-    /// Production save paths reserve before preparation and use
-    /// [`Self::complete_reserved`]. This convenience is retained for callers
-    /// that already have immutable content and for focused coordinator tests.
+    /// Callers that prepare content asynchronously should reserve first and
+    /// later bind the prepared target with [`Self::complete_reserved`].
     pub(crate) fn claim(&self, target: FileCheckpointTarget) -> Result<SaveClaim, SaveClaimError> {
         let reservation = self.reserve()?;
         Ok(self.bind(reservation, target))

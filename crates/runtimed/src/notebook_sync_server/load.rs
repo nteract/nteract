@@ -2816,8 +2816,8 @@ async fn apply_ipynb_changes_inner(
                                 "[notebook-watch] Cell type changed for {}: {} -> {}",
                                 ext_cell.id, current_cell.cell_type, ext_cell.cell_type
                             );
-                            // Cell type changes require recreating the cell (rare case)
-                            // For now, just log - full support would need more work
+                            // Cell type changes require recreating the cell, so the
+                            // watcher leaves the existing cell structure intact.
                         }
 
                         // Preserve outputs and execution_count if kernel is running
@@ -2992,9 +2992,9 @@ async fn apply_ipynb_changes_inner(
         return AppliedIpynbChanges::default();
     }
 
-    // Update saved_sources baseline after applying external changes so
-    // that subsequent external edits are detected correctly (P2-a) and
-    // externally-added cells become deletable if later removed (P2-b).
+    // Update saved_sources after applying external changes. The baseline must
+    // match the current external file so later edits are detected and cells
+    // added externally can be deleted if they disappear from disk.
     if applied.cells_changed && source_revision.is_none() {
         let mut saved = room.persistence.last_save_sources.write().await;
         for ext_cell in external_cells {
