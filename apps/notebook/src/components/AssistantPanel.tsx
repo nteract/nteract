@@ -1,4 +1,4 @@
-import { Send, Sparkles, Square, X } from "lucide-react";
+import { ArrowUp, Sparkles, Square, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -7,7 +7,6 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { streamAssistantChat, type AssistantChatMessage } from "../lib/assistant-chat-client";
 import { logger } from "../lib/logger";
@@ -38,12 +37,21 @@ export function AssistantPanel() {
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Keep the transcript pinned to the bottom as tokens stream in.
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
+
+  // Auto-grow the textarea to fit its content.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
 
   // Cancel any in-flight request on unmount.
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -203,40 +211,38 @@ export function AssistantPanel() {
         )}
       </div>
 
-      <form onSubmit={handleSubmit} className="flex shrink-0 items-end gap-2 border-t p-3">
-        <textarea
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={handleKeyDown}
-          rows={2}
-          placeholder="Message the assistant…"
-          data-testid="assistant-input"
-          className="min-h-[2.5rem] flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        />
-        {isStreaming ? (
-          <Button
-            type="button"
-            size="icon"
-            variant="secondary"
-            onClick={stop}
-            title="Stop"
-            aria-label="Stop"
-            data-testid="assistant-stop"
+      <form onSubmit={handleSubmit} className="shrink-0 border-t p-3">
+        <div className="relative">
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={handleKeyDown}
+            rows={1}
+            placeholder="Message the assistant…"
+            data-testid="assistant-input"
+            className="block w-full resize-none overflow-hidden rounded-2xl border bg-background pl-3 pr-10 py-2 text-sm leading-5 placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+          />
+          <button
+            type={isStreaming ? "button" : "submit"}
+            onClick={isStreaming ? stop : undefined}
+            disabled={!isStreaming && input.trim().length === 0}
+            title={isStreaming ? "Stop" : "Send (⌘↵)"}
+            aria-label={isStreaming ? "Stop" : "Send"}
+            data-testid={isStreaming ? "assistant-stop" : "assistant-send"}
+            className={cn(
+              "absolute bottom-1 right-1 inline-flex size-7 items-center justify-center rounded-full transition-opacity",
+              isStreaming ? "bg-muted text-foreground" : "bg-primary text-primary-foreground",
+              !isStreaming && input.trim().length === 0 && "cursor-not-allowed opacity-40",
+            )}
           >
-            <Square className="size-4" fill="currentColor" />
-          </Button>
-        ) : (
-          <Button
-            type="submit"
-            size="icon"
-            disabled={input.trim().length === 0}
-            title="Send"
-            aria-label="Send"
-            data-testid="assistant-send"
-          >
-            <Send className="size-4" />
-          </Button>
-        )}
+            {isStreaming ? (
+              <Square className="size-3" fill="currentColor" />
+            ) : (
+              <ArrowUp className="size-4" />
+            )}
+          </button>
+        </div>
       </form>
     </aside>
   );
