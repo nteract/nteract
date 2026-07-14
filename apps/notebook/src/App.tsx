@@ -92,6 +92,8 @@ import {
   DenoDependencyPanel as DenoDependencyHeader,
   UvDependencyPanel as DependencyHeader,
 } from "@/components/environment";
+import { Sparkles } from "lucide-react";
+import { AssistantPanel } from "./components/AssistantPanel";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
@@ -112,6 +114,7 @@ import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
+import { toggleAssistantPanel, useAssistantPanelOpen } from "./lib/assistant-panel-state";
 import { getBlobResolver, useBlobPort, useBlobResolver } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
 import {
@@ -429,6 +432,7 @@ function AppContent() {
   const globalFind = useGlobalFind(cellIds);
 
   const { activePanelId: activeRailPanel, collapsed: railCollapsed } = useNotebookRailUiState();
+  const assistantPanelOpen = useAssistantPanelOpen();
   const stageHadFocusBeforeRailTakeoverRef = useRef(false);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
@@ -2011,16 +2015,33 @@ function AppContent() {
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}
           trailingControls={
-            // Connection/identity slot: renders nothing for a purely local
-            // session (isRemoteNotebookContext) — conditionality is the
-            // point. The source derives from daemon lifecycle events (the
-            // IPC transport's status is constant in practice), and the
-            // copy is scoped to the link it measures.
-            <NotebookConnectionIdentity
-              capabilities={shellCapabilities}
-              connectionStatus$={desktopConnectionStatus}
-              connectionLabel="Daemon connection"
-            />
+            <>
+              {/* Connection/identity slot: renders nothing for a purely local
+                  session (isRemoteNotebookContext) — conditionality is the
+                  point. The source derives from daemon lifecycle events (the
+                  IPC transport's status is constant in practice), and the
+                  copy is scoped to the link it measures. */}
+              <NotebookConnectionIdentity
+                capabilities={shellCapabilities}
+                connectionStatus$={desktopConnectionStatus}
+                connectionLabel="Daemon connection"
+              />
+              <button
+                type="button"
+                onClick={toggleAssistantPanel}
+                data-testid="assistant-toggle"
+                aria-pressed={assistantPanelOpen}
+                className={cn(
+                  "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+                  "bg-violet-500/10 text-violet-600 hover:bg-violet-500/20 dark:text-violet-400",
+                  assistantPanelOpen && "ring-1 ring-current/25",
+                )}
+                title={assistantPanelOpen ? "Close assistant" : "Open assistant"}
+              >
+                <Sparkles className="size-3" />
+                <span>Assistant</span>
+              </button>
+            </>
           }
         />
         {globalFind.isOpen && (
@@ -2059,6 +2080,7 @@ function AppContent() {
         />
         <NotebookDocumentShell
           capabilities={shellCapabilities}
+          asideRight={assistantPanelOpen ? <AssistantPanel /> : null}
           stageLabel="Notebook editor"
           notices={
             sourceIssueNotice ? (

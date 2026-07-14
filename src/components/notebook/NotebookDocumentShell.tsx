@@ -9,6 +9,8 @@ export interface NotebookDocumentShellProps {
    */
   rootElement?: "div" | "main";
   rail?: ReactNode;
+  /** Optional panel rendered to the right of the notebook stage (e.g. assistant). */
+  asideRight?: ReactNode;
   toolbar?: ReactNode;
   notices?: ReactNode;
   children: ReactNode;
@@ -24,6 +26,7 @@ export interface NotebookDocumentShellProps {
 export function NotebookDocumentShell({
   rootElement = "div",
   rail,
+  asideRight,
   toolbar,
   notices,
   children,
@@ -74,6 +77,7 @@ export function NotebookDocumentShell({
         >
           {children}
         </section>
+        {asideRight}
       </div>
     </Root>
   );
