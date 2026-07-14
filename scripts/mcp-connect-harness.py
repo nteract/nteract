@@ -44,7 +44,7 @@ from uuid import UUID
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FORMATTED_CELL_ID_RE = re.compile(r"^⏺ ━━━ cell (\S+) \(", re.MULTILINE)
 AUTOMERGE_HEAD_RE = re.compile(r"^[0-9a-f]{64}$")
-TRANSIENT_READINESS_CODES = {"notebook_not_ready"}
+TRANSIENT_READINESS_CODES = {"notebook_not_ready", "runtime_not_ready"}
 # asyncio's subprocess streams otherwise inherit a 64 KiB line limit. MCP
 # stdio frames are newline-delimited JSON and a legitimate notebook response
 # can exceed that even when the progressive projection itself stays bounded.
@@ -109,17 +109,17 @@ def structured_error(result: dict[str, Any]) -> tuple[str | None, dict[str, Any]
 
 
 def readiness_transition_errors(code: str | None, payload: dict[str, Any]) -> list[str]:
-    if code != "notebook_not_ready":
+    if code not in TRANSIENT_READINESS_CODES:
         return []
     errors: list[str] = []
     session = payload.get("session")
     if not isinstance(session, dict):
-        return ["notebook_not_ready must carry structured session state"]
+        return [f"{code} must carry structured session state"]
     generation = session.get("session_generation")
     if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
-        errors.append("notebook_not_ready session_generation must be positive")
+        errors.append(f"{code} session_generation must be positive")
     if not isinstance(session.get("source_state"), dict):
-        errors.append("notebook_not_ready must carry source_state")
+        errors.append(f"{code} must carry source_state")
     for field in (
         "projection_ready",
         "document_ready",
@@ -127,18 +127,27 @@ def readiness_transition_errors(code: str | None, payload: dict[str, Any]) -> li
         "interactive",
     ):
         if not isinstance(session.get(field), bool):
-            errors.append(f"notebook_not_ready session.{field} must be boolean")
+            errors.append(f"{code} session.{field} must be boolean")
     capabilities = session.get("capabilities")
     if not isinstance(capabilities, dict):
-        errors.append("notebook_not_ready must carry capabilities")
+        errors.append(f"{code} must carry capabilities")
     else:
         for capability in ("read", "mutate", "execute"):
             if not isinstance(capabilities.get(capability), bool):
-                errors.append(
-                    f"notebook_not_ready session.capabilities.{capability} must be boolean"
-                )
-        if capabilities.get("mutate") is True or capabilities.get("execute") is True:
-            errors.append("notebook_not_ready must keep mutate/execute capabilities closed")
+                errors.append(f"{code} session.capabilities.{capability} must be boolean")
+        if code == "notebook_not_ready":
+            if capabilities.get("mutate") is True or capabilities.get("execute") is True:
+                errors.append("notebook_not_ready must keep mutate/execute capabilities closed")
+        elif code == "runtime_not_ready":
+            # Runtime-only unreadiness: the document plane stays interactive,
+            # so mutation may remain open, but execution must be closed and the
+            # session must actually be in the interactive/runtime-missing shape.
+            if capabilities.get("execute") is True:
+                errors.append("runtime_not_ready must keep the execute capability closed")
+            if session.get("interactive") is not True:
+                errors.append("runtime_not_ready requires an interactive session")
+            if session.get("runtime_ready") is not False:
+                errors.append("runtime_not_ready requires runtime_ready to be false")
     return errors
 
 
@@ -749,13 +758,13 @@ def validate_runtime_not_ready(samples: list[dict[str, Any]]) -> dict[str, Any]:
         if (
             isinstance(execute_probe, dict)
             and execute_probe.get("skipped") is not True
-            and execute_probe.get("error_code") == "notebook_not_ready"
+            and execute_probe.get("error_code") in TRANSIENT_READINESS_CODES
             and not execute_probe.get("structured_state_errors")
         ):
             execute_probe_evidence.append(
                 {
                     "location": f"sample[{sample_index}].runtime_execute_probe",
-                    "error_code": "notebook_not_ready",
+                    "error_code": execute_probe.get("error_code"),
                 }
             )
 
@@ -770,7 +779,8 @@ def validate_runtime_not_ready(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "execute_probe_evidence": execute_probe_evidence,
         "structured_transition_codes": sorted(transition_codes),
         "note": (
-            "runtime and execute readiness were closed and execute_cell returned notebook_not_ready"
+            "runtime and execute readiness were closed and execute_cell "
+            "returned a structured readiness error"
             if gate_closed and execute_probe_evidence
             else "no sample proved both the advertised and exercised execution gate"
         ),
@@ -1014,10 +1024,23 @@ async def run_sample(
                     {"cell_id": mutation_probe_cell_id, "timeout_secs": 0.1},
                 )
             )
-            runtime_execute_probe["expected_error_code"] = "notebook_not_ready"
+            # The probe races room activation: before the room is interactive
+            # the gate returns notebook_not_ready; once interactive with no
+            # runtime it returns runtime_not_ready. Both prove execution
+            # stayed closed.
+            runtime_execute_probe["expected_error_codes"] = sorted(TRANSIENT_READINESS_CODES)
             runtime_execute_probe["gate_proved"] = runtime_execute_probe.get(
                 "error_code"
-            ) == "notebook_not_ready" and not runtime_execute_probe.get("structured_state_errors")
+            ) in TRANSIENT_READINESS_CODES and not runtime_execute_probe.get(
+                "structured_state_errors"
+            )
+            # The gate can legitimately open between connect and probe (the
+            # runtime plane syncs and execute reaches the daemon). That leaves
+            # nothing to prove; only a non-structured failure is a defect.
+            runtime_execute_probe["gate_opened_before_probe"] = (
+                runtime_execute_probe.get("tool_error") is False
+                and runtime_execute_probe.get("error_code") is None
+            )
         convergence, interactive_probe = await asyncio.gather(
             poll_document_until_interactive(
                 client,
@@ -1107,6 +1130,11 @@ async def run_sample(
             and all(notebook_id == requested_notebook_id for notebook_id in connect_notebook_ids)
         )
         fixture_ids_match = fixture_cell_ids is None or actual_ids == fixture_cell_ids
+        runtime_gate_ok = (
+            runtime_execute_probe.get("skipped") is True
+            or runtime_execute_probe.get("gate_proved") is True
+            or runtime_execute_probe.get("gate_opened_before_probe") is True
+        )
         sample_result["ok"] = (
             connects_ok
             and connect_ids_match_read
@@ -1119,6 +1147,7 @@ async def run_sample(
             and convergence["ok"]
             and interactive_probe["ok"]
             and fixture_ids_match
+            and runtime_gate_ok
         )
         sample_result["connect_cell_ids_match_immediate_read"] = (
             all(

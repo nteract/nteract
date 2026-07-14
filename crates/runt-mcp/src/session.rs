@@ -476,6 +476,22 @@ impl NotebookSession {
                     "source_degraded",
                     format!("Notebook source materialization failed: {reason}"),
                 )
+            } else if matches!(
+                requirement,
+                SessionRequirement::RuntimeRead | SessionRequirement::Execute
+            ) && readiness.interactive
+            {
+                // The document side is fully interactive; only the runtime is
+                // missing. `notebook_not_ready` promises closed mutate/execute
+                // capabilities, which would contradict the open mutate gate in
+                // this payload, so runtime-only failures carry their own code.
+                (
+                    "runtime_not_ready",
+                    format!(
+                        "Notebook runtime is not ready for {}; launch a kernel or wait for the runtime to become ready",
+                        requirement.label()
+                    ),
+                )
             } else {
                 (
                     "notebook_not_ready",
