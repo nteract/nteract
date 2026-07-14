@@ -269,10 +269,14 @@ result. Path and UUID aliases for a known file-backed room resolve through the
 daemon to the same room key before coalescing. Session locks are not held across
 file loading, socket connection, projection, or sync waits.
 
-Failures are structured as `notebook_not_ready`, `source_degraded`,
-`source_conflict`, `session_superseded`, or `sync_failed`. Projection success
-followed by local peer failure leaves a degraded read-only session; source
-failure before a projection can be honored fails the connection directly.
+Failures are structured as `notebook_not_ready`, `runtime_not_ready`,
+`source_degraded`, `source_conflict`, `session_superseded`, or `sync_failed`.
+`notebook_not_ready` always carries closed mutate/execute capabilities. When
+the document plane is already interactive and only the runtime is missing,
+runtime reads and execution fail as `runtime_not_ready` instead, with mutation
+still open. Projection success followed by local peer failure leaves a
+degraded read-only session; source failure before a projection can be honored
+fails the connection directly.
 
 ## Worked examples
 

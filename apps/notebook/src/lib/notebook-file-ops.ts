@@ -1,5 +1,5 @@
 import type { NotebookHost } from "@nteract/notebook-host";
-import { NotebookClient, SaveNotebookError } from "runtimed";
+import { NotebookClient } from "runtimed";
 import { logger } from "./logger";
 
 /**
@@ -45,7 +45,11 @@ export async function saveNotebook(
 
     if (hasPath) {
       const client = new NotebookClient({ transport: host.transport });
-      await client.saveNotebook({ formatCells: true });
+      const outcome = await client.saveNotebook({ formatCells: true });
+      if (outcome.outcome === "blocked") {
+        logger.error("[notebook-file-ops] Save blocked:", outcome.reason);
+        return false;
+      }
     } else {
       const defaultDir = await host.notebook.getDefaultSaveDirectory();
       const filePath = await host.dialog.saveFile({
@@ -58,11 +62,7 @@ export async function saveNotebook(
 
     return true;
   } catch (e) {
-    if (e instanceof SaveNotebookError) {
-      logger.error("[notebook-file-ops] Save failed:", e.message);
-    } else {
-      logger.error("[notebook-file-ops] Save failed:", e);
-    }
+    logger.error("[notebook-file-ops] Save failed:", e);
     return false;
   }
 }

@@ -63,7 +63,8 @@ pub async fn execute_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let handle = require_handle!(server);
+    let access = require_session_access!(server, Execute);
+    let handle = access.handle.clone();
 
     let timeout_secs = request
         .arguments
@@ -87,15 +88,25 @@ pub async fn execute_cell(
 
     let peer_label = server.get_peer_label().await;
     crate::presence::emit_focus(&handle, cell_id, &peer_label).await;
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
 
-    let result = execution::execute_and_wait(
+    let result = match execution::execute_and_wait(
         &handle,
         cell_id,
         Duration::from_secs_f64(timeout_secs),
         &server.blob_base_url,
         &server.blob_store_path,
     )
-    .await;
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => return super::execution_dispatch_error(error),
+    };
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
 
     super::build_execution_result(&result, &handle, server).await
 }
@@ -110,7 +121,8 @@ pub async fn run_all_cells(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let handle = require_handle!(server);
+    let access = require_session_access!(server, Execute);
+    let handle = access.handle.clone();
 
     let wait = arg_bool(request, "wait").unwrap_or(true);
 
@@ -123,9 +135,15 @@ pub async fn run_all_cells(
 
     // Fire-and-forget: queue cells and return immediately.
     if !wait {
-        let result = execution::run_all_and_queue(&handle).await;
-        if result.status == "error" {
-            return tool_error("Failed to queue cells for execution");
+        if let Err(error) = server.ensure_session_access_current(&access).await {
+            return super::session_access_error(error);
+        }
+        let result = match execution::run_all_and_queue(&handle).await {
+            Ok(result) => result,
+            Err(error) => return super::execution_dispatch_error(error),
+        };
+        if let Err(error) = server.ensure_session_access_current(&access).await {
+            return super::session_access_error(error);
         }
         let n = result.cell_execution_ids.len();
         let mut lines = vec![format!("Queued {n} cells for execution")];
@@ -139,7 +157,17 @@ pub async fn run_all_cells(
     }
 
     // Wait mode: run all cells and collect outputs.
-    let result = execution::run_all_and_wait(&handle, Duration::from_secs_f64(timeout_secs)).await;
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
+    let result =
+        match execution::run_all_and_wait(&handle, Duration::from_secs_f64(timeout_secs)).await {
+            Ok(result) => result,
+            Err(error) => return super::execution_dispatch_error(error),
+        };
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
 
     let cells = handle.get_cells();
     let runtime_state = handle.get_runtime_state().ok();
@@ -345,9 +373,13 @@ pub async fn get_results(
     })?;
     let full_output = arg_bool(request, "full_output").unwrap_or(false);
 
-    let handle = {
-        let guard = server.session.read().await;
-        guard.as_ref().map(|session| session.handle.clone())
+    let (handle, access_error) = match server
+        .session_access(crate::session::SessionRequirement::RuntimeRead)
+        .await
+    {
+        Ok(Some(access)) => (Some(access.handle), None),
+        Ok(None) => (None, None),
+        Err(error) => (None, Some(error)),
     };
 
     if let Some(handle) = handle.as_ref() {
@@ -403,6 +435,10 @@ pub async fn get_results(
             full_output,
         )
         .await;
+    }
+
+    if let Some(error) = access_error {
+        return super::session_access_error(error);
     }
 
     tool_error(&format!(

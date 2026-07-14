@@ -53,7 +53,7 @@ pub async fn add_cell_tags(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
 
     // Get existing tags from cell metadata
     let metadata = match handle.get_cell_metadata(cell_id) {
@@ -98,7 +98,7 @@ pub async fn remove_cell_tags(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
 
     let metadata = match handle.get_cell_metadata(cell_id) {
         Some(m) => m,
@@ -135,7 +135,7 @@ pub async fn set_cells_source_hidden(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
 
     let cell_ids: Vec<String> = arg_string_array(request, "cell_ids").unwrap_or_default();
 
@@ -164,7 +164,7 @@ pub async fn set_cells_outputs_hidden(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
 
     let cell_ids: Vec<String> = arg_string_array(request, "cell_ids").unwrap_or_default();
 

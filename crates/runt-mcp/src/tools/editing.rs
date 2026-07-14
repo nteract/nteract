@@ -77,7 +77,12 @@ pub async fn replace_match(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    let handle = require_handle!(server);
+    let access = if and_run {
+        require_session_access!(server, Execute)
+    } else {
+        require_session_access!(server, DocumentMutation)
+    };
+    let handle = access.handle.clone();
 
     let source = match handle.get_cell_source(cell_id) {
         Some(s) => s,
@@ -112,14 +117,24 @@ pub async fn replace_match(
     crate::presence::emit_cursor(&handle, cell_id, line, col, &peer_label).await;
 
     if and_run {
-        let result = execution::execute_and_wait(
+        if let Err(error) = server.ensure_session_access_current(&access).await {
+            return super::session_access_error(error);
+        }
+        let result = match execution::execute_and_wait(
             &handle,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
             &server.blob_store_path,
         )
-        .await;
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => return super::execution_dispatch_error(error),
+        };
+        if let Err(error) = server.ensure_session_access_current(&access).await {
+            return super::session_access_error(error);
+        }
         return super::build_execution_result(&result, &handle, server).await;
     }
 
@@ -149,7 +164,12 @@ pub async fn replace_regex(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    let handle = require_handle!(server);
+    let access = if and_run {
+        require_session_access!(server, Execute)
+    } else {
+        require_session_access!(server, DocumentMutation)
+    };
+    let handle = access.handle.clone();
 
     let source = match handle.get_cell_source(cell_id) {
         Some(s) => s,
@@ -184,14 +204,24 @@ pub async fn replace_regex(
     crate::presence::emit_cursor(&handle, cell_id, line, col, &peer_label).await;
 
     if and_run {
-        let result = execution::execute_and_wait(
+        if let Err(error) = server.ensure_session_access_current(&access).await {
+            return super::session_access_error(error);
+        }
+        let result = match execution::execute_and_wait(
             &handle,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
             &server.blob_store_path,
         )
-        .await;
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => return super::execution_dispatch_error(error),
+        };
+        if let Err(error) = server.ensure_session_access_current(&access).await {
+            return super::session_access_error(error);
+        }
         return super::build_execution_result(&result, &handle, server).await;
     }
 

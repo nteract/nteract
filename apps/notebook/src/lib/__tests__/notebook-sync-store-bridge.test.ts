@@ -167,6 +167,7 @@ function startBridge(overrides: Partial<NotebookSyncStoreBridgeOptions> = {}) {
   };
   const projectExecutionViewChangeset = vi.fn(() => projection);
   const refreshCanAcceptCellMutations = vi.fn(() => true);
+  const setInitialLoadReadyForMutations = vi.fn();
   const setIsLoading = vi.fn();
   const setLoadError = vi.fn();
 
@@ -177,6 +178,7 @@ function startBridge(overrides: Partial<NotebookSyncStoreBridgeOptions> = {}) {
     outputCache: new Map(),
     projectExecutionViewChangeset,
     refreshCanAcceptCellMutations,
+    setInitialLoadReadyForMutations,
     setIsLoading,
     setLoadError,
     ...overrides,
@@ -190,6 +192,7 @@ function startBridge(overrides: Partial<NotebookSyncStoreBridgeOptions> = {}) {
     options,
     projectExecutionViewChangeset,
     refreshCanAcceptCellMutations,
+    setInitialLoadReadyForMutations,
     setIsLoading,
     setLoadError,
     subjects,
@@ -227,6 +230,7 @@ describe("startNotebookSyncStoreBridge", () => {
       materializeCells,
       projectExecutionViewChangeset,
       refreshCanAcceptCellMutations,
+      setInitialLoadReadyForMutations,
       setIsLoading,
       subjects,
     } = startBridge();
@@ -243,9 +247,38 @@ describe("startNotebookSyncStoreBridge", () => {
     expect(mocks.seedOutputStoresFromHandle).toHaveBeenCalledWith(handle, [
       "cell-1",
     ]);
-    expect(refreshCanAcceptCellMutations).toHaveBeenCalledWith(handle);
+    expect(setInitialLoadReadyForMutations).toHaveBeenLastCalledWith(true);
+    expect(refreshCanAcceptCellMutations).toHaveBeenCalledTimes(1);
     expect(setIsLoading).toHaveBeenLastCalledWith(false);
     expect(mocks.notifyMetadataChanged).toHaveBeenCalledTimes(1);
+
+    bridge.stop();
+  });
+
+  it("keeps mutations disabled while a room source is streaming", async () => {
+    const {
+      bridge,
+      setInitialLoadReadyForMutations,
+      subjects,
+    } = startBridge();
+
+    subjects.sessionStatus$.next(streamingStatus());
+    subjects.initialSyncComplete$.next();
+    subjects.cellChanges$.next({
+      added: ["cell-1"],
+      changed: [],
+      order_changed: true,
+      removed: [],
+    });
+    await flushMicrotasks();
+
+    expect(setInitialLoadReadyForMutations).toHaveBeenCalledWith(false);
+    expect(setInitialLoadReadyForMutations).not.toHaveBeenCalledWith(true);
+
+    subjects.sessionStatus$.next(readyStatus());
+    await flushMicrotasks();
+
+    expect(setInitialLoadReadyForMutations).toHaveBeenLastCalledWith(true);
 
     bridge.stop();
   });

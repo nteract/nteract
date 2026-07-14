@@ -29,6 +29,7 @@
 //! })?;
 //! ```
 
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -721,6 +722,23 @@ impl DocHandle {
             .collect())
     }
 
+    /// Return whether the local NotebookDoc contains every required causal
+    /// head without serializing or cloning the complete document.
+    pub fn contains_notebook_heads(&self, required_heads: &[String]) -> Result<bool, SyncError> {
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        document_contains_heads(&state.doc, required_heads)
+    }
+
+    /// Return whether the local RuntimeStateDoc contains every required
+    /// causal head without serializing or cloning the complete document.
+    pub fn contains_runtime_state_heads(
+        &self,
+        required_heads: &[String],
+    ) -> Result<bool, SyncError> {
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        document_contains_heads(state.state_doc.doc(), required_heads)
+    }
+
     /// Save the current local `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`
     /// replicas.
     ///
@@ -1170,6 +1188,23 @@ impl DocHandle {
     }
 }
 
+fn document_contains_heads(
+    document: &AutoCommit,
+    required_heads: &[String],
+) -> Result<bool, SyncError> {
+    for encoded in required_heads {
+        let head = automerge::ChangeHash::from_str(encoded).map_err(|error| {
+            SyncError::Protocol(format!(
+                "invalid required Automerge head {encoded}: {error}"
+            ))
+        })?;
+        if document.get_change_by_hash(&head).is_none() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Read the execution_id for a cell directly from a raw AutoCommit document.
 fn read_execution_id(doc: &AutoCommit, cell_id: &str) -> Option<String> {
     let (_, cells_id) = doc.get(&automerge::ROOT, "cells").ok().flatten()?;
@@ -1187,6 +1222,7 @@ fn read_execution_id(doc: &AutoCommit, cell_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::transaction::Transactable;
     use comments_doc::CommentAnchor;
     use tokio::sync::broadcast;
 
@@ -1230,6 +1266,52 @@ mod tests {
             status_rx,
             "test-notebook".to_string(),
         )
+    }
+
+    #[test]
+    fn causal_head_queries_accept_ancestors_without_serializing_documents() {
+        let handle = test_handle();
+        handle
+            .with_doc(|doc| doc.put(automerge::ROOT, "first", 1))
+            .unwrap()
+            .unwrap();
+        let required = handle.current_heads_hex().unwrap();
+        handle
+            .with_doc(|doc| doc.put(automerge::ROOT, "second", 2))
+            .unwrap()
+            .unwrap();
+
+        assert!(handle.contains_notebook_heads(&required).unwrap());
+        assert!(!handle.contains_notebook_heads(&["00".repeat(32)]).unwrap());
+
+        let runtime_heads = {
+            let mut state = handle.doc.lock().unwrap();
+            state
+                .state_doc
+                .doc_mut()
+                .put(automerge::ROOT, "proof", 1)
+                .unwrap();
+            state
+                .state_doc
+                .get_heads()
+                .into_iter()
+                .map(|head| head.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(handle.contains_runtime_state_heads(&runtime_heads).unwrap());
+    }
+
+    #[test]
+    fn causal_head_query_is_recomputed_for_replacement_handle() {
+        let original = test_handle();
+        original
+            .with_doc(|doc| doc.put(automerge::ROOT, "only-original", 1))
+            .unwrap()
+            .unwrap();
+        let required = original.current_heads_hex().unwrap();
+
+        let replacement = test_handle();
+        assert!(!replacement.contains_notebook_heads(&required).unwrap());
     }
 
     #[tokio::test]

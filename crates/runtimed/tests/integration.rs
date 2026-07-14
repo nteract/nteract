@@ -2916,7 +2916,10 @@ async fn test_streaming_load_via_open_notebook() {
         .get_notebook_projection(&info.notebook_id, Duration::from_secs(10))
         .await
         .expect("room projection should settle independently of the peer");
-    assert_eq!(projection.schema_version, 1);
+    assert_eq!(
+        projection.schema_version,
+        runtimed_client::protocol::NOTEBOOK_PROJECTION_SCHEMA_VERSION
+    );
     assert_eq!(projection.load_generation, 1);
     assert_eq!(projection.notebook_id, info.notebook_id);
     assert_eq!(projection.notebook_path.as_deref(), canonical_path.to_str());

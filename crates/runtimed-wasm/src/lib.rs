@@ -3581,6 +3581,36 @@ impl NotebookHandle {
         self.doc.get_heads_hex()
     }
 
+    /// Whether this NotebookDoc contains changes that are not causal
+    /// dependencies of `heads_hex`.
+    ///
+    /// This is the cheap dirty-state query for a daemon-published file
+    /// checkpoint: it walks Automerge's change graph without serializing the
+    /// document or its tail. `None` means at least one checkpoint head has not
+    /// reached this peer yet, so containment cannot be decided honestly.
+    pub fn has_changes_not_contained_by_heads(
+        &mut self,
+        heads_hex: Vec<String>,
+    ) -> Result<Option<bool>, JsError> {
+        self.has_changes_not_contained_by_heads_inner(&heads_hex)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    fn has_changes_not_contained_by_heads_inner(
+        &mut self,
+        heads_hex: &[String],
+    ) -> Result<Option<bool>, String> {
+        let heads = parse_heads_hex(heads_hex)?;
+        let doc = self.doc.doc_mut();
+        if heads
+            .iter()
+            .any(|head| doc.get_change_by_hash(head).is_none())
+        {
+            return Ok(None);
+        }
+        Ok(Some(!doc.get_changes(&heads).is_empty()))
+    }
+
     /// True when the local NotebookDoc contains every head the connected
     /// peer last advertised on this connection's sync state — the doc has
     /// provably caught up to everything the peer said it has.
@@ -7922,6 +7952,60 @@ mod tests {
             "text": {"inline": "empty id\n"},
         }));
         assert!(empty.get(RUNT_OUTPUT_CACHE_KEY).is_none());
+    }
+
+    #[test]
+    fn causal_checkpoint_heads_detect_only_live_changes_beyond_the_checkpoint() {
+        let mut handle = handle_with_cell("cell-1", "x = 1");
+        let checkpoint_heads = handle.get_heads_hex();
+
+        assert_eq!(
+            handle
+                .has_changes_not_contained_by_heads_inner(&checkpoint_heads)
+                .expect("query checkpoint heads"),
+            Some(false)
+        );
+
+        handle
+            .update_source("cell-1", "x = 2")
+            .expect("author local edit");
+        assert_eq!(
+            handle
+                .has_changes_not_contained_by_heads_inner(&checkpoint_heads)
+                .expect("query stale checkpoint heads"),
+            Some(true)
+        );
+
+        let new_checkpoint_heads = handle.get_heads_hex();
+        assert_eq!(
+            handle
+                .has_changes_not_contained_by_heads_inner(&new_checkpoint_heads)
+                .expect("query current checkpoint heads"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn causal_checkpoint_heads_are_unknown_until_the_checkpoint_reaches_this_peer() {
+        let mut handle = handle_with_cell("cell-1", "x = 1");
+        let unknown = "ab".repeat(32);
+
+        assert_eq!(
+            handle
+                .has_changes_not_contained_by_heads_inner(&[unknown])
+                .expect("query unknown checkpoint head"),
+            None
+        );
+    }
+
+    #[test]
+    fn causal_checkpoint_heads_reject_malformed_hashes() {
+        let mut handle = handle_with_cell("cell-1", "x = 1");
+
+        let error = handle
+            .has_changes_not_contained_by_heads_inner(&["not-a-head".to_string()])
+            .expect_err("malformed checkpoint head must fail");
+        assert!(error.contains("invalid change hash"), "{error}");
     }
 
     #[test]

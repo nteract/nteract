@@ -689,16 +689,9 @@ pub async fn add_dependency(
     // Detect list-like strings agents sometimes pass and split them.
     let packages = parse_package_param(raw_package);
 
-    let (handle, notebook_id) = {
-        let guard = server.session.read().await;
-        match guard.as_ref() {
-            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
-            None => {
-                drop(guard);
-                return super::no_session_error(server).await;
-            }
-        }
-    };
+    let access = require_session_access!(server, DocumentMutation);
+    let handle = access.handle;
+    let notebook_id = access.notebook_id;
 
     let manager = detect_package_manager(&handle);
 
@@ -756,16 +749,9 @@ pub async fn manage_dependencies(
     }
     let apply_str = apply.as_str();
 
-    let (handle, notebook_id) = {
-        let guard = server.session.read().await;
-        match guard.as_ref() {
-            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
-            None => {
-                drop(guard);
-                return super::no_session_error(server).await;
-            }
-        }
-    };
+    let access = require_session_access!(server, DocumentMutation);
+    let handle = access.handle;
+    let notebook_id = access.notebook_id;
     let manager = detect_package_manager(&handle);
     let before_fingerprint = dependency_fingerprint_for_handle(&handle);
     let has_edits = !params.add.is_empty() || !params.remove.is_empty();
@@ -875,16 +861,9 @@ pub async fn remove_dependency(
     // caller gets the right outcome without a confusing intermediate error.
     let after = if after == "sync" { "restart" } else { after };
 
-    let (handle, notebook_id) = {
-        let guard = server.session.read().await;
-        match guard.as_ref() {
-            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
-            None => {
-                drop(guard);
-                return super::no_session_error(server).await;
-            }
-        }
-    };
+    let access = require_session_access!(server, DocumentMutation);
+    let handle = access.handle;
+    let notebook_id = access.notebook_id;
 
     let manager = detect_package_manager(&handle);
 
@@ -925,7 +904,7 @@ pub async fn get_dependencies(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentRead);
 
     let manager = detect_package_manager(&handle);
     let result = dependency_state_json(&handle, &manager);
@@ -937,7 +916,7 @@ pub async fn approve_trust(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, DocumentMutation);
     let supplied_fingerprint = arg_str(request, "dependency_fingerprint").map(str::to_string);
     let current_fingerprint = dependency_fingerprint_for_handle(&handle);
     let expected_fingerprint = supplied_fingerprint
@@ -985,7 +964,7 @@ pub async fn sync_environment(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let handle = require_handle!(server);
+    let handle = require_handle!(server, Execute);
 
     // Ensure daemon has latest metadata
     if let Err(e) = handle.confirm_sync().await {

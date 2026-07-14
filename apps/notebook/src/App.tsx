@@ -64,6 +64,7 @@ import {
   NotebookConnectionIdentity,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  NotebookNotice,
   PoolErrorBanner,
   shouldShowKernelLaunchErrorBanner,
   TrustDialog,
@@ -136,6 +137,7 @@ import { useNotebookActionPolicy } from "./lib/notebook-action-policy";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { hostedNotebookWindowTitle } from "./lib/hosted-notebook-url";
+import { fileSourceIssueNotice, notebookDocumentIsDirty } from "./lib/notebook-file-state";
 import {
   attachExecutionPerformanceId,
   installExecutionPerformanceApi,
@@ -377,6 +379,7 @@ function AppContent() {
     getHandle,
     getEngine,
     sessionStatus$,
+    notebookDocChanged$,
     triggerSync,
     localActor,
     connectionScope,
@@ -505,9 +508,9 @@ function AppContent() {
   const runtime = deriveRuntimeKind(runtimeState, detectedRuntime, runtimeHint);
 
   // `true` when the room is in-memory only (untitled); reported by the daemon
-  // via `daemon:ready`. Drives the always-dirty titlebar asterisk. Null until
-  // the first ready event lands — treated conservatively as "unknown, assume
-  // persisted" so we don't flash an asterisk on open-from-disk notebooks.
+  // via `daemon:ready`. Untitled rooms are always dirty. Null until the first
+  // ready event lands — treated conservatively as "unknown, assume persisted"
+  // so we don't flash an asterisk on open-from-disk notebooks.
   const [ephemeral, setEphemeral] = useState<boolean | null>(null);
 
   // Canonical window-title base. Bootstrapped from the host on mount (Rust
@@ -516,6 +519,7 @@ function AppContent() {
   // without a getTitle-then-setTitle round-trip that would race with the
   // concurrent Rust-side title update from `applyPathChanged`.
   const [titleBase, setTitleBase] = useState<string | null>(null);
+  const [fileBackedDirty, setFileBackedDirty] = useState(false);
 
   // UV Dependency management
   const {
@@ -1635,6 +1639,27 @@ function AppContent() {
     applyNotebookPath(runtimePath, hostedNotebookUrl);
   }, [applyNotebookPath, hostedNotebookUrl, runtimePath]);
 
+  const fileCheckpointRef = useRef(runtimeState.file_checkpoint);
+  fileCheckpointRef.current = runtimeState.file_checkpoint;
+  const fileCheckpointCausalKey = `${runtimeState.file_checkpoint.save_sequence ?? "none"}\0${runtimeState.file_checkpoint.exported_heads.join("\0")}`;
+  const isFileBacked = ephemeral === false && runtimePath !== null && hostedNotebookUrl === null;
+  useEffect(() => {
+    const refreshDirtyState = () => {
+      setFileBackedDirty(
+        notebookDocumentIsDirty({
+          ephemeral,
+          fileBacked: isFileBacked,
+          fileCheckpoint: fileCheckpointRef.current,
+          handle: getHandle(),
+        }),
+      );
+    };
+
+    refreshDirtyState();
+    const subscription = notebookDocChanged$.subscribe(refreshDirtyState);
+    return () => subscription.unsubscribe();
+  }, [ephemeral, fileCheckpointCausalKey, getHandle, isFileBacked, notebookDocChanged$]);
+
   const reconnectRuntime = useCallback(() => {
     setDaemonStatus({ status: "checking" });
     host.daemon.reconnect({ force: true }).catch((e: unknown) => {
@@ -1645,17 +1670,20 @@ function AppContent() {
     });
   }, [host]);
 
-  // Title is purely a function of `ephemeral`. Untitled notebooks get
-  // the `*` prefix; saved notebooks render their filename. Autosave
-  // (2s quiet, 10s max) keeps the file current within seconds of any
-  // edit, so the file-backed case never shows an unsaved-changes dot.
+  const documentDirty = ephemeral === true ? true : isFileBacked ? fileBackedDirty : false;
+
+  // Untitled notebooks remain dirty. File-backed notebooks get the `*`
+  // prefix only while the local NotebookDoc contains changes beyond the
+  // daemon's causally committed exported heads.
   useEffect(() => {
     if (titleBase == null) return;
-    const next = ephemeral === true ? `* ${titleBase}` : titleBase;
+    const next = documentDirty ? `* ${titleBase}` : titleBase;
     host.window.setTitle(next).catch(() => {
       // Window may have been closed mid-render.
     });
-  }, [host, ephemeral, titleBase]);
+  }, [documentDirty, host, titleBase]);
+
+  const sourceIssueNotice = fileSourceIssueNotice(runtimeState.file_checkpoint.source_issue);
 
   // Cmd+F to open global find
   useEffect(() => {
@@ -2032,6 +2060,17 @@ function AppContent() {
         <NotebookDocumentShell
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
+          notices={
+            sourceIssueNotice ? (
+              <NotebookNotice
+                tone="warning"
+                title={sourceIssueNotice.title}
+                data-testid="notebook-file-source-issue"
+              >
+                {sourceIssueNotice.message}
+              </NotebookNotice>
+            ) : null
+          }
           stageClassName={cn(
             "flex-row min-w-0 flex-1",
             !railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
