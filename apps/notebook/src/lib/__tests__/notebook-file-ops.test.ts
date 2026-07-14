@@ -123,8 +123,8 @@ describe("saveNotebook", () => {
 
   it("returns false on daemon save errors", async () => {
     mockSendRequest.mockResolvedValueOnce({
-      result: "save_error",
-      error: { type: "io", message: "disk full" },
+      result: "notebook_save_blocked",
+      reason: { type: "io", message: "disk full" },
     });
 
     const result = await saveNotebook(stubHost, flushSync, true);

@@ -51,7 +51,6 @@ pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
     "notebook_save_blocked",
     "notebook_source_reconciled",
     "notebook_source_reconciliation_blocked",
-    "save_error",
     "notebook_cloned",
     "ok",
     "error",
@@ -170,10 +169,6 @@ export function frameSizeLimits(frameType: number): FrameSizeLimits {{
 pub fn generated_request_types_ts() -> String {
     format!(
         r#"{GENERATED_HEADER}import type {{ QueueEntry }} from "./runtime-state";
-
-export interface GuardedNotebookProvenance {{
-  observed_heads: string[];
-}}
 
 export interface DependencyGuard {{
   observed_heads: string[];
@@ -402,7 +397,6 @@ export type NotebookResponse =
       operation: SourceReconciliationOperation;
       reason: SourceReconciliationBlockedReason;
     }}
-  | {{ result: "save_error"; error: SaveErrorKind }}
   | {{ result: "notebook_cloned"; notebook_id: string; working_dir?: string | null }}
   | {{ result: "ok" }}
   | {{ result: "error"; error: string }}
@@ -422,20 +416,6 @@ export type NotebookResponse =
   | {{ result: "blob_part_stored"; upload_id: string; part_number: number; sha256: string }}
   | {{ result: "blob_upload_aborted"; upload_id: string }}
   | {{ result: "blob_upload_error"; reason: BlobUploadErrorKind }};
-
-/**
- * Structured save failures returned in `NotebookResponse::SaveError`.
- * Mirrors `notebook_protocol::protocol::SaveErrorKind`.
- */
-export type SaveErrorKind =
-  | {{
-      type: "path_already_open";
-      /** UUID of the room that currently holds this path. */
-      uuid: string;
-      /** The conflicting path. */
-      path: string;
-    }}
-  | {{ type: "io"; message: string }};
 
 /** A save request that did not commit a file checkpoint. */
 export type SaveBlockedReason =

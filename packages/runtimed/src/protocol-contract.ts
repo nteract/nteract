@@ -60,7 +60,6 @@ export const NOTEBOOK_RESPONSE_RESULTS = [
   "notebook_save_blocked",
   "notebook_source_reconciled",
   "notebook_source_reconciliation_blocked",
-  "save_error",
   "notebook_cloned",
   "ok",
   "error",

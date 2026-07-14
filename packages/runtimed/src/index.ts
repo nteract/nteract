@@ -555,13 +555,13 @@ export {
 export {
   type ApplyBokehSessionPatchOptions,
   type BokehPatchBuffer,
+  type GuardedNotebookProvenance,
   NotebookClient,
   type ExecuteCellOptions,
   type NotebookClientOptions,
   type ReconcileNotebookSourceOutcome,
   type RunAllCellsOptions,
   type SaveNotebookOutcome,
-  SaveNotebookError,
 } from "./notebook-client";
 export type {
   BokehSessionPatchReply,
@@ -572,7 +572,6 @@ export type {
   DependencyGuard,
   DenoLaunchedConfig,
   EnvSource,
-  GuardedNotebookProvenance,
   HistoryEntry,
   LaunchedEnvConfig,
   LaunchSpec,
@@ -580,7 +579,6 @@ export type {
   NotebookResponse,
   PackageManager,
   SaveBlockedReason,
-  SaveErrorKind,
   SourceReconciliation,
   SourceReconciliationBlockedReason,
   SourceReconciliationOperation,

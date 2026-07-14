@@ -4618,9 +4618,7 @@ impl Daemon {
             }
 
             Request::GetNotebookProjection { notebook_id } => {
-                use crate::notebook_sync_server::{
-                    RoomAvailability, RoomAvailabilityTarget, RoomSourceState,
-                };
+                use crate::notebook_sync_server::{RoomAvailability, RoomSourceState};
                 use runtimed_client::protocol::NotebookProjectionFailure;
 
                 info!(
@@ -4641,10 +4639,7 @@ impl Daemon {
 
                 let availability = room
                     .lifecycle
-                    .wait_for_availability(
-                        RoomAvailabilityTarget::ProjectionReady,
-                        std::time::Duration::from_secs(120),
-                    )
+                    .wait_for_projection_ready(std::time::Duration::from_secs(120))
                     .await
                     .into_current();
                 let generation = match availability {

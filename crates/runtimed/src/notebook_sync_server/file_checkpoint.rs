@@ -14,11 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::SystemTime;
 
-use tokio::sync::broadcast;
-
 use super::recovery::{source_fingerprint, SourceFingerprint};
-
-const CHECKPOINT_EVENT_CAPACITY: usize = 32;
 
 /// Exact file metadata a save intends to make durable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,12 +81,6 @@ pub(crate) struct FileCheckpointPreparation {
     pub(crate) exported_heads: Vec<[u8; 32]>,
     pub(crate) file_fingerprint: SourceFingerprint,
     pub(crate) save_sequence: u64,
-}
-
-/// Emitted only after both file replacement and checkpoint advancement.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FileCheckpointEvent {
-    pub(crate) checkpoint: FileCheckpoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,7 +188,6 @@ struct CheckpointState {
 #[derive(Debug)]
 pub(crate) struct FileCheckpointCoordinator {
     state: Mutex<CheckpointState>,
-    events: broadcast::Sender<FileCheckpointEvent>,
 }
 
 impl Default for FileCheckpointCoordinator {
@@ -212,14 +201,12 @@ impl FileCheckpointCoordinator {
         let initial_sequence = initial_checkpoint
             .as_ref()
             .map_or(0, |checkpoint| checkpoint.save_sequence);
-        let (events, _) = broadcast::channel(CHECKPOINT_EVENT_CAPACITY);
         Self {
             state: Mutex::new(CheckpointState {
                 latest_reserved_sequence: initial_sequence,
                 latest_barrier_sequence: initial_sequence,
                 checkpoint: initial_checkpoint,
             }),
-            events,
         }
     }
 
@@ -238,8 +225,9 @@ impl FileCheckpointCoordinator {
 
     /// Claim a fully prepared immutable target in one synchronous operation.
     ///
-    /// Callers that prepare content asynchronously should reserve first and
-    /// later bind the prepared target with [`Self::complete_reserved`].
+    /// Test-only: production callers reserve a sequence first (`reserve`)
+    /// and bind the prepared target through `complete_reserved_with_durable_intent`.
+    #[cfg(test)]
     pub(crate) fn claim(&self, target: FileCheckpointTarget) -> Result<SaveClaim, SaveClaimError> {
         let reservation = self.reserve()?;
         Ok(self.bind(reservation, target))
@@ -265,7 +253,6 @@ impl FileCheckpointCoordinator {
     }
 
     /// Restore the last journal-committed checkpoint during room startup.
-    /// No event is emitted: this is recovered state, not a new file save.
     pub(crate) fn restore(&self, checkpoint: FileCheckpoint) {
         let mut state = self.lock_state();
         if state
@@ -292,56 +279,6 @@ impl FileCheckpointCoordinator {
     /// overwrite file-watcher bookkeeping installed by a newer save.
     pub(crate) fn latest_barrier_sequence(&self) -> u64 {
         self.lock_state().latest_barrier_sequence
-    }
-
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<FileCheckpointEvent> {
-        self.events.subscribe()
-    }
-
-    /// Claim, prepare, and causally commit one file checkpoint.
-    pub(crate) fn save(&self, target: FileCheckpointTarget, content: &[u8]) -> SaveOutcome {
-        self.save_with(target, content, &RealCheckpointIo, &SystemCheckpointClock)
-    }
-
-    /// Prepare and commit an exact previously ordered claim.
-    ///
-    /// Call [`Self::claim`] before handing work to `spawn_blocking`, then move
-    /// that claim into the blocking task and complete it here. This preserves
-    /// caller-visible save ordering even when blocking workers begin out of
-    /// order.
-    pub(crate) fn complete(&self, claim: SaveClaim, content: &[u8]) -> SaveOutcome {
-        self.complete_with(claim, content, &RealCheckpointIo, &SystemCheckpointClock)
-    }
-
-    /// Bind an exact target to a sequence reserved before asynchronous
-    /// preparation, then complete it on the calling thread.
-    pub(crate) fn complete_reserved(
-        &self,
-        reservation: SaveSequenceClaim,
-        target: FileCheckpointTarget,
-        content: &[u8],
-    ) -> SaveOutcome {
-        let claim = self.bind(reservation, target);
-        self.complete(claim, content)
-    }
-
-    /// Complete a reserved save and require a post-replacement causal commit
-    /// before advancing coordinator state or emitting the checkpoint event.
-    pub(crate) fn complete_reserved_with_commit(
-        &self,
-        reservation: SaveSequenceClaim,
-        target: FileCheckpointTarget,
-        content: &[u8],
-        commit: impl FnOnce(&FileCheckpoint) -> Result<(), String>,
-    ) -> SaveOutcome {
-        let claim = self.bind(reservation, target);
-        self.complete_with_commit(
-            claim,
-            content,
-            &RealCheckpointIo,
-            &SystemCheckpointClock,
-            commit,
-        )
     }
 
     /// Complete a save with a durable pre-replacement intent and an abort
@@ -372,10 +309,10 @@ impl FileCheckpointCoordinator {
     /// Select an already-existing disk revision as the causal checkpoint for
     /// an explicit source reconciliation.
     ///
-    /// This performs no file write and emits no `FileCheckpointEvent`. It
-    /// holds the sequence lock from the final supersession check through the
-    /// caller's journal commit and checkpoint publication, so an older async
-    /// reload cannot regress a newer save request.
+    /// This performs no file write. It holds the sequence lock from the final
+    /// supersession check through the caller's journal commit and checkpoint
+    /// publication, so an older async reload cannot regress a newer save
+    /// request.
     pub(crate) fn commit_existing_with<T>(
         &self,
         reservation: SaveSequenceClaim,
@@ -396,6 +333,7 @@ impl FileCheckpointCoordinator {
         Ok(committed)
     }
 
+    #[cfg(test)]
     fn save_with(
         &self,
         target: FileCheckpointTarget,
@@ -415,6 +353,7 @@ impl FileCheckpointCoordinator {
         self.complete_with(claim, content, io, clock)
     }
 
+    #[cfg(test)]
     fn complete_with(
         &self,
         claim: SaveClaim,
@@ -425,6 +364,7 @@ impl FileCheckpointCoordinator {
         self.complete_with_commit(claim, content, io, clock, |_| Ok(()))
     }
 
+    #[cfg(test)]
     fn complete_with_commit(
         &self,
         claim: SaveClaim,
@@ -575,9 +515,6 @@ impl FileCheckpointCoordinator {
         }
         state.latest_barrier_sequence = claim.sequence;
         state.checkpoint = Some(checkpoint.clone());
-        let _ = self.events.send(FileCheckpointEvent {
-            checkpoint: checkpoint.clone(),
-        });
         SaveOutcome::Saved { checkpoint }
     }
 
@@ -667,14 +604,6 @@ impl CheckpointIo for RealCheckpointIo {
     fn replace_temp(&self, temporary_path: &Path, target_path: &Path) -> io::Result<()> {
         replace_file(temporary_path, target_path)?;
         sync_parent_directory(target_path)
-    }
-
-    fn target_fingerprint(&self, target_path: &Path) -> io::Result<Option<SourceFingerprint>> {
-        match std::fs::read(target_path) {
-            Ok(bytes) => Ok(Some(source_fingerprint(&bytes))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
     }
 
     fn remove_temp(&self, temporary_path: &Path) {
@@ -870,28 +799,19 @@ mod tests {
         ));
     }
 
-    fn assert_no_commit(
-        coordinator: &FileCheckpointCoordinator,
-        clock: &CountingClock,
-        events: &mut broadcast::Receiver<FileCheckpointEvent>,
-    ) {
+    fn assert_no_commit(coordinator: &FileCheckpointCoordinator, clock: &CountingClock) {
         assert!(coordinator.checkpoint().is_none());
         assert_eq!(clock.calls(), 0);
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
     }
 
     #[test]
-    fn successful_save_records_exact_causal_checkpoint_and_event() {
+    fn successful_save_records_exact_causal_checkpoint() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("notebook.ipynb");
         let content = b"{\"cells\":[]}";
         let target = target(&path, 9, content);
         let coordinator = FileCheckpointCoordinator::default();
         let clock = CountingClock::default();
-        let mut events = coordinator.subscribe();
 
         let outcome = coordinator.save_with(target.clone(), content, &RealCheckpointIo, &clock);
         let checkpoint = match outcome {
@@ -909,26 +829,24 @@ mod tests {
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_000)
         );
         assert_eq!(coordinator.checkpoint(), Some(checkpoint.clone()));
-        assert_eq!(events.try_recv().unwrap().checkpoint, checkpoint);
         assert_eq!(clock.calls(), 1);
     }
 
     #[test]
-    fn already_current_advances_claim_but_not_checkpoint_timestamp_or_event() {
+    fn already_current_advances_claim_but_not_checkpoint_timestamp() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("notebook.ipynb");
         let content = b"current";
         let target = target(&path, 1, content);
         let coordinator = FileCheckpointCoordinator::default();
         let clock = CountingClock::default();
-        let mut events = coordinator.subscribe();
 
         let saved = coordinator.save_with(target.clone(), content, &RealCheckpointIo, &clock);
         let checkpoint = match saved {
             SaveOutcome::Saved { checkpoint } => checkpoint,
             other => panic!("expected initial save, got {other:?}"),
         };
-        assert_eq!(events.try_recv().unwrap().checkpoint, checkpoint);
+        assert_eq!(coordinator.checkpoint(), Some(checkpoint.clone()));
 
         assert_eq!(
             coordinator.save_with(target, content, &RealCheckpointIo, &clock),
@@ -940,10 +858,6 @@ mod tests {
         assert_eq!(coordinator.latest_claimed_sequence(), 2);
         assert_eq!(coordinator.checkpoint(), Some(checkpoint));
         assert_eq!(clock.calls(), 1);
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
     }
 
     #[test]
@@ -953,8 +867,6 @@ mod tests {
         let content = b"new";
         let coordinator = FileCheckpointCoordinator::default();
         let clock = CountingClock::default();
-        let mut events = coordinator.subscribe();
-
         let outcome = coordinator.save_with(
             target(&path, 1, content),
             content,
@@ -965,7 +877,7 @@ mod tests {
         );
 
         assert_blocked_at(outcome, SaveIoStage::WriteTemp);
-        assert_no_commit(&coordinator, &clock, &mut events);
+        assert_no_commit(&coordinator, &clock);
         assert!(!path.exists());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
@@ -977,8 +889,6 @@ mod tests {
         let content = b"new";
         let coordinator = FileCheckpointCoordinator::default();
         let clock = CountingClock::default();
-        let mut events = coordinator.subscribe();
-
         let outcome = coordinator.save_with(
             target(&path, 1, content),
             content,
@@ -989,7 +899,7 @@ mod tests {
         );
 
         assert_blocked_at(outcome, SaveIoStage::FlushTemp);
-        assert_no_commit(&coordinator, &clock, &mut events);
+        assert_no_commit(&coordinator, &clock);
         assert!(!path.exists());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
@@ -1002,8 +912,6 @@ mod tests {
         let content = b"new";
         let coordinator = FileCheckpointCoordinator::default();
         let clock = CountingClock::default();
-        let mut events = coordinator.subscribe();
-
         let outcome = coordinator.save_with(
             target(&path, 1, content),
             content,
@@ -1014,20 +922,19 @@ mod tests {
         );
 
         assert_blocked_at(outcome, SaveIoStage::Replace);
-        assert_no_commit(&coordinator, &clock, &mut events);
+        assert_no_commit(&coordinator, &clock);
         assert_eq!(std::fs::read(&path).unwrap(), b"old");
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
     #[test]
-    fn journal_commit_failure_keeps_replaced_file_but_emits_no_checkpoint() {
+    fn journal_commit_failure_keeps_replaced_file_but_advances_no_checkpoint() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("notebook.ipynb");
         std::fs::write(&path, b"old").unwrap();
         let content = b"new";
         let coordinator = FileCheckpointCoordinator::default();
         let clock = CountingClock::default();
-        let mut events = coordinator.subscribe();
         let claim = coordinator.claim(target(&path, 1, content)).unwrap();
 
         let outcome =
@@ -1046,10 +953,6 @@ mod tests {
         );
         assert_eq!(std::fs::read(&path).unwrap(), content);
         assert!(coordinator.checkpoint().is_none());
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
         assert_eq!(clock.calls(), 1);
     }
 
@@ -1061,7 +964,6 @@ mod tests {
         let new_content = b"new completion".to_vec();
         let coordinator = Arc::new(FileCheckpointCoordinator::default());
         let clock = Arc::new(CountingClock::default());
-        let mut events = coordinator.subscribe();
         let (prepared_tx, prepared_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let old_io = BlockingFlushIo {
@@ -1097,12 +999,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), new_content);
         assert_eq!(new_checkpoint.save_sequence, 2);
         assert_eq!(new_checkpoint.exported_heads, vec![[2; 32]]);
-        assert_eq!(coordinator.checkpoint(), Some(new_checkpoint.clone()));
-        assert_eq!(events.try_recv().unwrap().checkpoint, new_checkpoint);
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
+        assert_eq!(coordinator.checkpoint(), Some(new_checkpoint));
         assert_eq!(clock.calls(), 1);
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
@@ -1221,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_source_checkpoint_commits_without_emitting_a_saved_event() {
+    fn existing_source_checkpoint_commits_without_a_fresh_write() {
         let coordinator = FileCheckpointCoordinator::default();
         let reservation = coordinator.reserve().unwrap();
         let checkpoint = FileCheckpoint {
@@ -1231,7 +1128,6 @@ mod tests {
             save_sequence: reservation.sequence(),
             saved_at: SystemTime::UNIX_EPOCH,
         };
-        let mut events = coordinator.subscribe();
 
         let committed = coordinator
             .commit_existing_with(reservation, checkpoint.clone(), |_| Ok(7))
@@ -1239,9 +1135,5 @@ mod tests {
 
         assert_eq!(committed, 7);
         assert_eq!(coordinator.checkpoint(), Some(checkpoint));
-        assert!(matches!(
-            events.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
-        ));
     }
 }

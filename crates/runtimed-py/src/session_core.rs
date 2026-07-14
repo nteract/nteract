@@ -11,9 +11,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use notebook_protocol::connection::LaunchSpec;
-use notebook_protocol::protocol::{
-    NotebookRequest, NotebookResponse, SaveBlockedReason, SaveErrorKind,
-};
+use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveBlockedReason};
 use notebook_sync::{BroadcastReceiver, DocHandle};
 use runtime_doc::{KernelActivity, RuntimeLifecycle};
 
@@ -1920,16 +1918,6 @@ pub(crate) async fn save(
             };
             Err(to_py_err(message))
         }
-        NotebookResponse::SaveError { error } => match error {
-            SaveErrorKind::PathAlreadyOpen {
-                uuid,
-                path: conflict,
-            } => Err(to_py_err(format!(
-                "Cannot save: {conflict} is already open in session {uuid}. \
-                 Close that session first, then retry.",
-            ))),
-            SaveErrorKind::Io { message } => Err(to_py_err(message)),
-        },
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }

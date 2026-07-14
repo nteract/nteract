@@ -126,17 +126,9 @@ async fn handle_with_intent(
     };
 
     if let Some(ref canonical_pre) = pre_claim {
-        if let Err(kind) =
+        if let Err(reason) =
             NotebookFileBinding::claim_path(&daemon.notebook_rooms, canonical_pre, room.id).await
         {
-            let reason = match kind {
-                notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen { uuid, path } => {
-                    notebook_protocol::protocol::SaveBlockedReason::PathAlreadyOpen { uuid, path }
-                }
-                notebook_protocol::protocol::SaveErrorKind::Io { message } => {
-                    notebook_protocol::protocol::SaveBlockedReason::Io { message }
-                }
-            };
             return NotebookResponse::NotebookSaveBlocked {
                 path: path.clone(),
                 save_sequence: Some(save_sequence),
@@ -207,9 +199,9 @@ async fn handle_with_intent(
         };
     }
 
-    let (checkpoint_sequence, wrote_file) = match &save_outcome {
-        FileSaveOutcome::Saved { save_sequence, .. } => (*save_sequence, true),
-        FileSaveOutcome::AlreadyCurrent { save_sequence, .. } => (*save_sequence, false),
+    let checkpoint_sequence = match &save_outcome {
+        FileSaveOutcome::Saved { save_sequence, .. }
+        | FileSaveOutcome::AlreadyCurrent { save_sequence, .. } => *save_sequence,
     };
 
     // Post-write canonicalize. Usually matches the pre-write key. If it
@@ -248,7 +240,6 @@ async fn handle_with_intent(
             room,
             std::path::Path::new(&written),
             checkpoint_sequence,
-            wrote_file,
         )
         .await;
     }
@@ -257,13 +248,9 @@ async fn handle_with_intent(
     if was_untitled {
         if let Err(message) = finalize_untitled_promotion(room, canonical.clone()).await {
             NotebookFileBinding::release_path(&daemon.notebook_rooms, &canonical).await;
-            let save_sequence = match &save_outcome {
-                FileSaveOutcome::Saved { save_sequence, .. }
-                | FileSaveOutcome::AlreadyCurrent { save_sequence, .. } => *save_sequence,
-            };
             return NotebookResponse::NotebookSaveBlocked {
                 path: Some(written),
-                save_sequence: Some(save_sequence),
+                save_sequence: Some(checkpoint_sequence),
                 reason: notebook_protocol::protocol::SaveBlockedReason::Io { message },
             };
         }

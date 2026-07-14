@@ -122,7 +122,7 @@ impl NotebookFileBinding {
         rooms: &NotebookRooms,
         canonical: &Path,
         uuid: uuid::Uuid,
-    ) -> Result<(), notebook_protocol::protocol::SaveErrorKind> {
+    ) -> Result<(), notebook_protocol::protocol::SaveBlockedReason> {
         try_claim_path(rooms, canonical, uuid).await
     }
 
@@ -364,9 +364,8 @@ pub struct RoomPersistence {
     pub last_save_sources: RwLock<HashMap<String, String>>,
     /// Highest committed save sequence allowed to update the primary-path
     /// watcher baselines. Post-`spawn_blocking` save continuations may resume
-    /// out of order, so the sources, disk hash, and self-write timestamp are
-    /// advanced together under `last_save_sources` only when this sequence is
-    /// not stale.
+    /// out of order, so the sources and disk hash are advanced together under
+    /// `last_save_sources` only when this sequence is not stale.
     primary_save_baseline_sequence: AtomicU64,
     /// Previous visible execution_id per cell, captured just before a new
     /// execution pointer replaces it. This is intentionally daemon-local
@@ -374,9 +373,6 @@ pub struct RoomPersistence {
     /// the last visible outputs on disk while a re-execution is still queued
     /// or running with no outputs yet.
     previous_visible_executions: std::sync::Mutex<HashMap<String, String>>,
-    /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
-    /// Used to skip file watcher events triggered by our own saves.
-    pub last_self_write: AtomicU64,
     /// SHA-256 of the `.ipynb` bytes as this daemon last saw them on disk:
     /// seeded at load, refreshed after every self-write and every file-watcher
     /// read. `save_notebook_to_disk` refuses a primary-path save when the
@@ -417,7 +413,6 @@ impl RoomPersistence {
             last_save_sources: RwLock::new(HashMap::new()),
             primary_save_baseline_sequence: AtomicU64::new(0),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
-            last_self_write: AtomicU64::new(0),
             last_known_disk_hash: std::sync::Mutex::new(None),
             load_failed: AtomicBool::new(false),
         }
@@ -437,7 +432,6 @@ impl RoomPersistence {
             last_save_sources: RwLock::new(HashMap::new()),
             primary_save_baseline_sequence: AtomicU64::new(0),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
-            last_self_write: AtomicU64::new(0),
             last_known_disk_hash: std::sync::Mutex::new(None),
             load_failed: AtomicBool::new(false),
         }
@@ -464,7 +458,6 @@ impl RoomPersistence {
         save_sequence: u64,
         sources: HashMap<String, String>,
         bytes: &[u8],
-        self_write: bool,
     ) -> bool {
         let mut saved = self.last_save_sources.write().await;
         if self.primary_save_baseline_sequence.load(Ordering::Acquire) > save_sequence {
@@ -472,13 +465,6 @@ impl RoomPersistence {
         }
         *saved = sources;
         self.note_disk_content(bytes);
-        if self_write {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_millis() as u64)
-                .unwrap_or(0);
-            self.last_self_write.store(now, Ordering::Release);
-        }
         self.primary_save_baseline_sequence
             .store(save_sequence, Ordering::Release);
         true
@@ -946,12 +932,6 @@ impl ReservationGuard {
             .reservations
             .fetch_add(1, Ordering::Relaxed);
         Self { room }
-    }
-
-    /// The room this guard is reserving.
-    #[allow(dead_code)]
-    pub fn room(&self) -> &Arc<NotebookRoom> {
-        &self.room
     }
 }
 

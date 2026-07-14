@@ -18,43 +18,17 @@ import type {
   CommRequestMessage,
   CompletionItem,
   DependencyGuard,
-  GuardedNotebookProvenance,
   HistoryEntry,
   NotebookRequest,
   NotebookResponse,
   SaveBlockedReason,
-  SaveErrorKind,
   SourceReconciliation,
   SourceReconciliationBlockedReason,
   SourceReconciliationOperation,
 } from "./request-types";
 
-/**
- * Thrown when `NotebookClient.saveNotebook` receives a structured
- * `SaveErrorKind` from the daemon. Callers that need to branch on the
- * kind (e.g., to surface the conflicting UUID on `path_already_open`)
- * can inspect `.kind`. `.message` is a user-facing rendering suitable
- * for display.
- */
-export class SaveNotebookError extends Error {
-  readonly kind: SaveErrorKind;
-  constructor(kind: SaveErrorKind) {
-    super(formatSaveError(kind));
-    this.name = "SaveNotebookError";
-    this.kind = kind;
-  }
-}
-
-function formatSaveError(kind: SaveErrorKind): string {
-  switch (kind.type) {
-    case "path_already_open":
-      return (
-        `Cannot save: ${kind.path} is already open in another notebook window. ` +
-        `Close that window first, or choose a different path.`
-      );
-    case "io":
-      return `Failed to save notebook: ${kind.message}`;
-  }
+export interface GuardedNotebookProvenance {
+  observed_heads: string[];
 }
 
 const nullLogger: SyncEngineLogger = {
@@ -385,7 +359,7 @@ export class NotebookClient {
    * Save the notebook to disk via the daemon.
    *
    * Pass `path` to save-as. Without `path`, saves in place — the daemon
-   * uses the room's current path and returns `save_error` if the room
+   * uses the room's current path and returns a blocked outcome if the room
    * is still untitled.
    *
    * Returns an honest causal outcome. Only `saved` means atomic replacement
@@ -433,12 +407,6 @@ export class NotebookClient {
           path: response.path,
           saveSequence: response.save_sequence,
           reason: response.reason,
-        };
-      case "save_error":
-        return {
-          outcome: "blocked",
-          path: options.path,
-          reason: response.error,
         };
       case "error":
         throw new Error(`Daemon save failed: ${response.error}`);

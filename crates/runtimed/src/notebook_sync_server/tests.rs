@@ -821,22 +821,6 @@ async fn reservation_guards_stack() {
 }
 
 #[tokio::test]
-async fn reservation_guard_room_accessor_returns_same_arc() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let blob_store = test_blob_store(&tmp);
-    let room = Arc::new(NotebookRoom::new_fresh(
-        Uuid::new_v4(),
-        None,
-        tmp.path(),
-        blob_store,
-        false,
-    ));
-
-    let guard = ReservationGuard::new(room.clone());
-    assert!(Arc::ptr_eq(guard.room(), &room));
-}
-
-#[tokio::test]
 async fn test_room_load_or_create_new() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
@@ -1003,10 +987,7 @@ async fn published_room_source_claim_cancellation_terminalizes_projection_waits(
     ));
     let waited = room
         .lifecycle
-        .wait_for_availability(
-            RoomAvailabilityTarget::ProjectionReady,
-            std::time::Duration::from_secs(1),
-        )
+        .wait_for_projection_ready(std::time::Duration::from_secs(1))
         .await;
     assert!(matches!(
         waited,
@@ -3969,6 +3950,325 @@ async fn test_persist_debouncer_flush_request_reports_write_failure() {
 // File watcher tests
 // ==========================================================================
 
+/// Serialized single-code-cell notebook bytes for watcher tests.
+fn watcher_test_ipynb_bytes(cell_id: &str, source: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [{
+            "id": cell_id,
+            "cell_type": "code",
+            "source": source,
+            "execution_count": null,
+            "outputs": [],
+            "metadata": {}
+        }]
+    }))
+    .unwrap()
+}
+
+fn watcher_observation_for_test(
+    observed: &[u8],
+    known_disk: Option<&[u8]>,
+    manifest: &[u8],
+    pending: Option<&[u8]>,
+) -> WatcherObservation {
+    WatcherObservation {
+        observed: super::recovery::source_fingerprint(observed),
+        known_disk_hash: known_disk
+            .map(|bytes| *super::recovery::source_fingerprint(bytes).as_bytes()),
+        manifest_fingerprint: super::recovery::source_fingerprint(manifest),
+        pending_checkpoint_fingerprint: pending.map(super::recovery::source_fingerprint),
+    }
+}
+
+/// A snapshot of the room state a watcher event would build its observation
+/// from, mirroring `process_watcher_event` exactly.
+fn watcher_observation_from_room(room: &NotebookRoom, disk_bytes: &[u8]) -> WatcherObservation {
+    let manifest = room.durability.manifest();
+    WatcherObservation {
+        observed: super::recovery::source_fingerprint(disk_bytes),
+        known_disk_hash: room.persistence.known_disk_hash(),
+        manifest_fingerprint: manifest.source_fingerprint,
+        pending_checkpoint_fingerprint: manifest
+            .pending_file_checkpoint
+            .map(|pending| pending.file_fingerprint),
+    }
+}
+
+#[test]
+fn classify_watcher_observation_table() {
+    use WatcherIngestDecision::{Ingest, Skip};
+    use WatcherSkipReason::*;
+
+    const OBSERVED: &[u8] = b"observed notebook bytes";
+    const OTHER: &[u8] = b"some other notebook bytes";
+
+    let cases: Vec<(&str, WatcherObservation, WatcherIngestDecision)> = vec![
+        (
+            "known disk hash only",
+            watcher_observation_for_test(OBSERVED, Some(OBSERVED), OTHER, None),
+            Skip(KnownDiskContent),
+        ),
+        (
+            "manifest fingerprint only, diverged baseline",
+            watcher_observation_for_test(OBSERVED, Some(OTHER), OBSERVED, None),
+            Skip(ManifestFingerprint),
+        ),
+        (
+            "manifest fingerprint only, no baseline",
+            watcher_observation_for_test(OBSERVED, None, OBSERVED, None),
+            Skip(ManifestFingerprint),
+        ),
+        (
+            "pending checkpoint only",
+            watcher_observation_for_test(OBSERVED, Some(OTHER), OTHER, Some(OBSERVED)),
+            Skip(PendingCheckpoint),
+        ),
+        (
+            "known disk hash and manifest fingerprint",
+            watcher_observation_for_test(OBSERVED, Some(OBSERVED), OBSERVED, None),
+            Skip(KnownDiskContent),
+        ),
+        (
+            "manifest fingerprint and pending checkpoint",
+            watcher_observation_for_test(OBSERVED, None, OBSERVED, Some(OBSERVED)),
+            Skip(ManifestFingerprint),
+        ),
+        (
+            "all guards at once",
+            watcher_observation_for_test(OBSERVED, Some(OBSERVED), OBSERVED, Some(OBSERVED)),
+            Skip(KnownDiskContent),
+        ),
+        (
+            "unknown bytes ingest",
+            watcher_observation_for_test(OBSERVED, None, OTHER, None),
+            Ingest,
+        ),
+        (
+            "unknown bytes ingest despite stale baselines",
+            watcher_observation_for_test(OBSERVED, Some(OTHER), OTHER, Some(OTHER)),
+            Ingest,
+        ),
+    ];
+
+    for (name, observation, expected) in cases {
+        assert_eq!(
+            classify_watcher_observation(&observation),
+            expected,
+            "case: {name}"
+        );
+    }
+}
+
+/// Fifty byte-identical debounced events (the inotify IN_ACCESS storm shape)
+/// must be fully suppressed: zero merges, zero checkpoint sequence claims,
+/// zero journal appends, and an unchanged source generation. The room's doc
+/// deliberately differs from the disk bytes so a single misclassified event
+/// would merge the disk cell and move every counter.
+#[tokio::test]
+async fn watcher_storm_of_identical_events_is_fully_suppressed() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "storm.ipynb");
+
+    let disk_bytes = watcher_test_ipynb_bytes("storm-cell", "value = 42");
+    tokio::fs::write(&notebook_path, &disk_bytes).await.unwrap();
+    // The baseline a completed save or watcher merge leaves behind.
+    room.persistence.note_disk_content(&disk_bytes);
+
+    let observation = watcher_observation_from_room(&room, &disk_bytes);
+    assert_eq!(
+        classify_watcher_observation(&observation),
+        WatcherIngestDecision::Skip(WatcherSkipReason::KnownDiskContent),
+    );
+
+    let claimed_before = room
+        .persistence
+        .file_checkpoint_coordinator()
+        .latest_claimed_sequence();
+    let manifest_before = room.durability.manifest();
+    let heads_before = room.doc.write().await.get_heads_hex();
+
+    for _ in 0..50 {
+        process_watcher_event(&room, &notebook_path).await;
+    }
+
+    assert_eq!(
+        room.doc.write().await.get_heads_hex(),
+        heads_before,
+        "storm must not merge anything into the doc"
+    );
+    assert_eq!(room.doc.read().await.cell_count(), 0);
+    assert_eq!(
+        room.persistence
+            .file_checkpoint_coordinator()
+            .latest_claimed_sequence(),
+        claimed_before,
+        "storm must not claim checkpoint sequences"
+    );
+    let manifest_after = room.durability.manifest();
+    assert_eq!(
+        manifest_after.sequence, manifest_before.sequence,
+        "storm must not append journal records"
+    );
+    assert_eq!(
+        manifest_after.source_generation, manifest_before.source_generation,
+        "storm must not advance the source generation"
+    );
+}
+
+/// The commit-to-baseline window: a save's journal commit has landed but its
+/// primary-path baseline install has not run yet. An event observing the new
+/// bytes must skip via the manifest fingerprint.
+#[tokio::test]
+async fn watcher_event_between_journal_commit_and_baseline_install_skips() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "commit-window.ipynb");
+
+    // The bound content this daemon previously saved and reconciled.
+    let old_bytes = watcher_test_ipynb_bytes("cell-1", "x = 1");
+    tokio::fs::write(&notebook_path, &old_bytes).await.unwrap();
+    room.persistence.note_disk_content(&old_bytes);
+
+    // The in-flight save: doc mutated, journaled, new bytes renamed into
+    // place, checkpoint committed. The baseline install has NOT run.
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "x = 2").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let new_bytes = watcher_test_ipynb_bytes("cell-1", "x = 2");
+    tokio::fs::write(&notebook_path, &new_bytes).await.unwrap();
+    let claim = room.persistence.claim_file_checkpoint().unwrap();
+    let heads: Vec<[u8; 32]> = {
+        let mut doc = room.doc.write().await;
+        doc.get_heads().iter().map(|head| head.0).collect()
+    };
+    room.durability
+        .commit_file_checkpoint(
+            notebook_path.clone(),
+            super::recovery::source_fingerprint(&new_bytes),
+            heads,
+            claim.sequence(),
+        )
+        .expect("journal commit for the in-flight save");
+
+    let observation = watcher_observation_from_room(&room, &new_bytes);
+    assert_eq!(
+        classify_watcher_observation(&observation),
+        WatcherIngestDecision::Skip(WatcherSkipReason::ManifestFingerprint),
+        "the committed manifest fingerprint covers the commit-to-baseline window"
+    );
+
+    let claimed_before = room
+        .persistence
+        .file_checkpoint_coordinator()
+        .latest_claimed_sequence();
+    let manifest_before = room.durability.manifest();
+    let heads_before = room.doc.write().await.get_heads_hex();
+
+    process_watcher_event(&room, &notebook_path).await;
+
+    assert_eq!(room.doc.write().await.get_heads_hex(), heads_before);
+    assert_eq!(
+        room.persistence
+            .file_checkpoint_coordinator()
+            .latest_claimed_sequence(),
+        claimed_before
+    );
+    let manifest_after = room.durability.manifest();
+    assert_eq!(manifest_after.sequence, manifest_before.sequence);
+    assert_eq!(
+        manifest_after.source_generation,
+        manifest_before.source_generation
+    );
+    assert!(
+        !matches!(room.lifecycle.availability(), RoomAvailability::Degraded(_)),
+        "our own committed bytes must not degrade the room"
+    );
+}
+
+/// The rename-to-commit window: the new bytes are visible on disk and the
+/// journal holds the prepared checkpoint intent, but the commit marker has
+/// not landed. The pending-checkpoint fingerprint resolves the event; a
+/// misclassification here would manufacture a source conflict because the
+/// journal's durable heads are ahead of its exported heads.
+#[tokio::test]
+async fn watcher_event_in_rename_to_commit_window_skips_via_pending_checkpoint() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "rename-window.ipynb");
+
+    let old_bytes = watcher_test_ipynb_bytes("cell-1", "x = 1");
+    tokio::fs::write(&notebook_path, &old_bytes).await.unwrap();
+    room.persistence.note_disk_content(&old_bytes);
+
+    // The in-flight save: doc mutated and journaled, checkpoint intent
+    // prepared, temp file renamed over the target. The commit marker has
+    // NOT been appended.
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "x = 2").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let new_bytes = watcher_test_ipynb_bytes("cell-1", "x = 2");
+    let claim = room.persistence.claim_file_checkpoint().unwrap();
+    let heads: Vec<[u8; 32]> = {
+        let mut doc = room.doc.write().await;
+        doc.get_heads().iter().map(|head| head.0).collect()
+    };
+    room.durability
+        .prepare_file_checkpoint(
+            notebook_path.clone(),
+            super::recovery::source_fingerprint(&new_bytes),
+            heads,
+            claim.sequence(),
+            None,
+        )
+        .expect("checkpoint intent for the in-flight save");
+    tokio::fs::write(&notebook_path, &new_bytes).await.unwrap();
+
+    let observation = watcher_observation_from_room(&room, &new_bytes);
+    assert_eq!(
+        classify_watcher_observation(&observation),
+        WatcherIngestDecision::Skip(WatcherSkipReason::PendingCheckpoint),
+        "the prepared checkpoint fingerprint covers the rename-to-commit window"
+    );
+
+    let claimed_before = room
+        .persistence
+        .file_checkpoint_coordinator()
+        .latest_claimed_sequence();
+    let manifest_before = room.durability.manifest();
+    let heads_before = room.doc.write().await.get_heads_hex();
+
+    process_watcher_event(&room, &notebook_path).await;
+
+    assert_eq!(room.doc.write().await.get_heads_hex(), heads_before);
+    assert_eq!(
+        room.persistence
+            .file_checkpoint_coordinator()
+            .latest_claimed_sequence(),
+        claimed_before
+    );
+    let manifest_after = room.durability.manifest();
+    assert_eq!(manifest_after.sequence, manifest_before.sequence);
+    assert_eq!(
+        manifest_after.source_generation,
+        manifest_before.source_generation
+    );
+    assert!(
+        manifest_after.pending_file_checkpoint.is_some(),
+        "the prepared intent must remain for the save to commit"
+    );
+    assert!(
+        !matches!(room.lifecycle.availability(), RoomAvailability::Degraded(_)),
+        "our own renamed bytes must not be classified as a source conflict"
+    );
+}
+
 #[test]
 fn test_parse_cells_from_ipynb_with_ids() {
     let json = serde_json::json!({
@@ -3990,7 +4290,8 @@ fn test_parse_cells_from_ipynb_with_ids() {
         ]
     });
 
-    let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
+    let parsed = parse_cells_from_ipynb_for_notebook(&json, Uuid::nil())
+        .expect("Should parse valid notebook");
     let cells = &parsed.cells;
     assert_eq!(cells.len(), 2);
     assert_eq!(cells[0].id, "cell-1");
@@ -4025,7 +4326,8 @@ fn test_parse_cells_from_ipynb_missing_ids() {
         ]
     });
 
-    let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
+    let parsed = parse_cells_from_ipynb_for_notebook(&json, Uuid::nil())
+        .expect("Should parse valid notebook");
     let cells = &parsed.cells;
     assert_eq!(cells.len(), 2);
     // Should derive UUIDs for ID-less cells so recovery and watcher reparses
@@ -4071,7 +4373,8 @@ fn test_parse_cells_from_ipynb_empty() {
     let json = serde_json::json!({
         "cells": []
     });
-    let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid empty notebook");
+    let parsed = parse_cells_from_ipynb_for_notebook(&json, Uuid::nil())
+        .expect("Should parse valid empty notebook");
     assert!(parsed.cells.is_empty());
     assert!(parsed.outputs_by_cell.is_empty());
 }
@@ -4083,7 +4386,7 @@ fn test_parse_cells_from_ipynb_no_cells_key() {
         "metadata": {}
     });
     assert!(
-        parse_cells_from_ipynb(&json).is_none(),
+        parse_cells_from_ipynb_for_notebook(&json, Uuid::nil()).is_none(),
         "Should return None for invalid notebook"
     );
 }
@@ -5933,7 +6236,7 @@ async fn bench_streaming_load_steps() {
     let read_elapsed = t0.elapsed();
 
     let t_parse = std::time::Instant::now();
-    let parsed = parse_notebook_jiter(&bytes).unwrap();
+    let parsed = parse_notebook_jiter_for_notebook(&bytes, Uuid::nil()).unwrap();
     let cells = parsed.cells;
     let parse_elapsed = t_parse.elapsed();
 
@@ -6131,7 +6434,7 @@ async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
 }
 
 /// Verify that `promote_untitled_to_file_backed` returns
-/// `SaveErrorKind::PathAlreadyOpen` when the target path is already held by
+/// `SaveBlockedReason::PathAlreadyOpen` when the target path is already held by
 /// another room, and does NOT mutate the fresh room's state on error.
 #[tokio::test]
 async fn saving_to_already_open_path_returns_path_already_open_error() {
@@ -6161,7 +6464,7 @@ async fn saving_to_already_open_path_returns_path_already_open_error() {
         .unwrap_err();
 
     match err {
-        notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen { uuid, path: p } => {
+        notebook_protocol::protocol::SaveBlockedReason::PathAlreadyOpen { uuid, path: p } => {
             assert_eq!(uuid, existing_uuid.to_string());
             assert_eq!(p, target_path.to_string_lossy());
         }
@@ -11898,14 +12201,15 @@ fn parse_notebook_jiter_errors_on_missing_or_invalid_cells() {
     // Missing `cells` key -> Err (was previously Ok with empty cells).
     let missing = br#"{"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
     assert!(
-        parse_notebook_jiter(missing).is_err(),
+        parse_notebook_jiter_for_notebook(missing, Uuid::nil()).is_err(),
         "a notebook with no cells key must fail to load"
     );
     // `cells` present but not an array -> Err (unchanged).
     let not_array = br#"{"cells":{},"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
-    assert!(parse_notebook_jiter(not_array).is_err());
+    assert!(parse_notebook_jiter_for_notebook(not_array, Uuid::nil()).is_err());
     // A genuine empty notebook (cells: []) still parses successfully.
     let empty = br#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
-    let ok = parse_notebook_jiter(empty).expect("cells: [] is a valid empty notebook");
+    let ok = parse_notebook_jiter_for_notebook(empty, Uuid::nil())
+        .expect("cells: [] is a valid empty notebook");
     assert_eq!(ok.cells.len(), 0);
 }
