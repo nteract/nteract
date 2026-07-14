@@ -162,6 +162,53 @@ impl ActivationLease {
         true
     }
 
+    /// Error result for an attempt superseded by a newer target.
+    pub fn superseded_result(&self) -> CallToolResult {
+        activation_error(
+            "session_superseded",
+            "A newer notebook target superseded this connection",
+            self.generation,
+            &self.target,
+        )
+    }
+
+    /// Publish `session` into the active slot and commit this lease as the
+    /// installed identity, rolling back on a refused commit.
+    ///
+    /// This is the supersede discipline for slot publication, in lock order:
+    /// the attempt must be current before taking the slot lock, current again
+    /// under the lock before the slot is touched, and `mark_installed` is the
+    /// atomic commit point. A refused commit restores the previous occupant
+    /// and drops the stale session, so a superseded connect never leaves its
+    /// session published over the target the user switched to.
+    ///
+    /// Returns the previous occupant on success; its disposition (parking,
+    /// teardown) is the caller's decision. Generic over the slot payload so
+    /// tests exercise the exact production lock/check ordering against a stub
+    /// payload instead of mirroring it.
+    pub async fn install_in_slot<S>(
+        &self,
+        slot: &tokio::sync::RwLock<Option<S>>,
+        session: S,
+    ) -> Result<Option<S>, CallToolResult> {
+        if !self.is_current() {
+            return Err(self.superseded_result());
+        }
+
+        let mut guard = slot.write().await;
+        if !self.is_current() {
+            return Err(self.superseded_result());
+        }
+        let previous = guard.replace(session);
+        if !self.mark_installed() {
+            let stale = guard.take();
+            *guard = previous;
+            drop(stale);
+            return Err(self.superseded_result());
+        }
+        Ok(previous)
+    }
+
     /// Add another canonical locator for this same in-flight room.
     ///
     /// A cold path open learns the daemon UUID only after its handshake. Once
@@ -271,6 +318,8 @@ pub fn activation_error(
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+
     use super::*;
 
     fn target(value: &str) -> CanonicalNotebookTarget {
@@ -370,6 +419,129 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("sync_failed")
         );
+    }
+
+    fn assert_superseded(error: &CallToolResult) {
+        assert_eq!(error.is_error, Some(true));
+        assert_eq!(
+            error
+                .structured_content
+                .as_ref()
+                .and_then(|value| value.pointer("/error/code"))
+                .and_then(serde_json::Value::as_str),
+            Some("session_superseded")
+        );
+    }
+
+    /// Deterministic rollback drive for `install_in_slot`, the production
+    /// publish/commit/rollback sequence used by `install_activated_session`
+    /// (tools/session.rs). The connect future is stubbed with a oneshot so
+    /// the supersede lands at an exact point: after the reconnect claims its
+    /// lease, before its session reaches the slot. A superseded connect must
+    /// never publish over the notebook the user just switched to; the
+    /// previous occupant stays installed.
+    #[tokio::test]
+    async fn superseded_connect_install_preserves_previous_slot_occupant() {
+        let owner = Arc::new(SessionActivation::default());
+        let slot = Arc::new(tokio::sync::RwLock::new(None::<String>));
+
+        // Healthy occupant: target A connects, publishes, and commits.
+        let ActivationTicket::Leader(mut installed) = owner.begin(target("local:id:a")) else {
+            panic!("first activation must lead");
+        };
+        assert_eq!(
+            installed
+                .install_in_slot(&slot, "session-a-gen1".to_string())
+                .await
+                .expect("current attempt must install"),
+            None
+        );
+        let installed_generation = installed.generation();
+        installed.complete(&success("connected a"));
+
+        // Reconnect attempt for the same target. Its flight closed with
+        // `complete`, so this leads a fresh generation.
+        let ActivationTicket::Leader(reconnect) = owner.begin(target("local:id:a")) else {
+            panic!("reconnect after a completed flight must lead");
+        };
+        let (connect_tx, connect_rx) = tokio::sync::oneshot::channel::<String>();
+        let install_slot = Arc::clone(&slot);
+        let install = tokio::spawn(async move {
+            // Stubbed connect: the daemon handshake resolves only when the
+            // test fires the oneshot, after the supersede below.
+            let session = connect_rx.await.expect("connect stub must resolve");
+            reconnect.install_in_slot(&install_slot, session).await
+        });
+
+        // Supersede mid-flight: the user switches to B while A's stubbed
+        // connect is still pending.
+        let ActivationTicket::Leader(_b) = owner.begin(target("local:id:b")) else {
+            panic!("different target must lead");
+        };
+
+        connect_tx
+            .send("session-a-gen2".to_string())
+            .expect("install task must be waiting on the connect stub");
+
+        let result = install.await.expect("install task must not panic");
+
+        // The pre-publish is_current check refuses the stale attempt before
+        // its session reaches the slot, and the result reports it.
+        let error = result.expect_err("superseded install must not publish");
+        assert_superseded(&error);
+
+        // The previous occupant still owns the slot and the installed
+        // identity.
+        assert_eq!(slot.read().await.as_deref(), Some("session-a-gen1"));
+        assert!(owner.is_current_identity(installed_generation, "local:id:a"));
+    }
+
+    /// Pins the second `is_current` check: the one taken under the slot
+    /// write lock, after the pre-lock check already passed. The install
+    /// future is polled to its lock acquisition while the test holds the
+    /// write guard, then superseded before the guard is released. Only the
+    /// under-lock check can refuse this attempt; without it the stale
+    /// session would publish.
+    #[tokio::test]
+    async fn supersede_while_awaiting_slot_lock_is_refused_under_the_lock() {
+        let owner = Arc::new(SessionActivation::default());
+        let slot = tokio::sync::RwLock::new(None::<String>);
+
+        let ActivationTicket::Leader(mut installed) = owner.begin(target("local:id:a")) else {
+            panic!("first activation must lead");
+        };
+        installed
+            .install_in_slot(&slot, "session-a-gen1".to_string())
+            .await
+            .expect("current attempt must install");
+        let installed_generation = installed.generation();
+        installed.complete(&success("connected a"));
+
+        let ActivationTicket::Leader(reconnect) = owner.begin(target("local:id:a")) else {
+            panic!("reconnect after a completed flight must lead");
+        };
+
+        let guard = slot.write().await;
+        let mut install =
+            std::pin::pin!(reconnect.install_in_slot(&slot, "session-a-gen2".to_string()));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        // First poll passes the pre-lock check (the attempt is still
+        // current) and parks on the slot write lock the test holds.
+        assert!(install.as_mut().poll(&mut context).is_pending());
+
+        // Supersede while the install is queued on the lock, then let it in.
+        let ActivationTicket::Leader(_b) = owner.begin(target("local:id:b")) else {
+            panic!("different target must lead");
+        };
+        drop(guard);
+
+        let error = install
+            .await
+            .expect_err("superseded install must not publish");
+        assert_superseded(&error);
+
+        assert_eq!(slot.read().await.as_deref(), Some("session-a-gen1"));
+        assert!(owner.is_current_identity(installed_generation, "local:id:a"));
     }
 
     #[tokio::test]
