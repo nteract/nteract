@@ -3815,7 +3815,7 @@ impl Daemon {
                 )
                 .await;
             }
-            let _load_state_rx = crate::notebook_sync_server::start_room_initial_load(
+            crate::notebook_sync_server::start_room_initial_load(
                 &room,
                 load_path.clone(),
                 self.config.execution_store_dir.clone(),
@@ -7422,7 +7422,7 @@ mod tests {
             "peerless room must remain resident while its source is active"
         );
 
-        let (start, _) = room.initial_load.begin();
+        let start = room.initial_load.begin();
         let crate::notebook_sync_server::RoomInitialLoadStart::Started { generation } = start
         else {
             panic!("pending source should be claimable");
@@ -7462,7 +7462,7 @@ mod tests {
             true,
         ));
         room.initial_load.mark_required();
-        let (start, _) = room.initial_load.begin();
+        let start = room.initial_load.begin();
         assert!(matches!(
             start,
             crate::notebook_sync_server::RoomInitialLoadStart::Started { .. }

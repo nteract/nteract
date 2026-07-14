@@ -271,6 +271,11 @@ where
 ///
 /// The caller passes `peer_state` from the initial notebook-doc sync so each
 /// streamed batch can produce deltas from the same baseline.
+///
+/// Test-only wrapper that supplies an inert frame drain (exhausted framed
+/// reader, no deferred frames, local connection identity) so ordering
+/// invariants can be asserted on the writer side without a live client
+/// stream.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) async fn stream_initial_load<R, W>(
@@ -289,6 +294,9 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    let mut framed_reader = connection::FramedReader::spawn(tokio::io::empty(), 1);
+    let mut deferred_frames = VecDeque::new();
+    let connection_identity = RoomConnectionIdentity::local(Some("mcp:test".to_string())).await?;
     Ok(stream_initial_load_inner(
         writer,
         room,
@@ -299,7 +307,11 @@ where
         runtime_state_phase,
         initial_load_phase,
         client_protocol_version,
-        None,
+        InitialLoadFrameDrain {
+            framed_reader: &mut framed_reader,
+            deferred_frames: &mut deferred_frames,
+            connection_identity: &connection_identity,
+        },
     )
     .await?
     .initial_load_phase)
@@ -333,11 +345,11 @@ where
         runtime_state_phase,
         initial_load_phase,
         client_protocol_version,
-        Some(InitialLoadFrameDrain {
+        InitialLoadFrameDrain {
             framed_reader,
             deferred_frames,
             connection_identity,
-        }),
+        },
     )
     .await?;
     *notebook_doc_phase = outcome.notebook_doc_phase;
@@ -355,14 +367,14 @@ async fn stream_initial_load_inner<W>(
     runtime_state_phase: notebook_protocol::protocol::RuntimeStatePhaseWire,
     initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
     client_protocol_version: u8,
-    mut frame_drain: Option<InitialLoadFrameDrain<'_>>,
+    mut frame_drain: InitialLoadFrameDrain<'_>,
 ) -> anyhow::Result<InitialLoadSyncOutcome>
 where
     W: AsyncWrite + Unpin,
 {
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
     let mut source_state_rx = if let Some(load_path) = needs_load {
-        let _legacy_load_rx = start_room_initial_load(
+        start_room_initial_load(
             room,
             load_path.to_path_buf(),
             execution_store_dir.to_path_buf(),
@@ -398,14 +410,12 @@ where
                 if send_initial_load_doc_delta(writer, room, peer_state).await? {
                     notebook_doc_converged = false;
                 }
-                if let Some(drain) = frame_drain.as_mut() {
-                    if let Some(converged) =
-                        drain_buffered_initial_load_frames(drain, writer, room, peer_state)
-                            .await
-                            .map_err(anyhow::Error::msg)?
-                    {
-                        notebook_doc_converged = converged;
-                    }
+                if let Some(converged) =
+                    drain_buffered_initial_load_frames(&mut frame_drain, writer, room, peer_state)
+                        .await
+                        .map_err(anyhow::Error::msg)?
+                {
+                    notebook_doc_converged = converged;
                 }
                 if notebook_doc_converged {
                     notebook_doc_phase =
@@ -430,11 +440,14 @@ where
                 generation: settled_generation,
                 reason,
             } if settled_generation == generation => {
-                if let Some(drain) = frame_drain.as_mut() {
-                    apply_failed_initial_load_notebook_frames(drain, writer, room, peer_state)
-                        .await
-                        .map_err(anyhow::Error::msg)?;
-                }
+                apply_failed_initial_load_notebook_frames(
+                    &mut frame_drain,
+                    writer,
+                    room,
+                    peer_state,
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
                 // Preserving buffered edits awaits room locks and transport.
                 // An external watcher/save can reconcile the source and
                 // advance Failed(g) to Ready(g+1) meanwhile. Never publish the
@@ -486,14 +499,16 @@ where
                         if send_initial_load_doc_delta(writer, room, peer_state).await? {
                             notebook_doc_converged = false;
                         }
-                        if let Some(drain) = frame_drain.as_mut() {
-                            if let Some(converged) =
-                                drain_buffered_initial_load_frames(drain, writer, room, peer_state)
-                                .await
-                                .map_err(anyhow::Error::msg)?
-                            {
-                                notebook_doc_converged = converged;
-                            }
+                        if let Some(converged) = drain_buffered_initial_load_frames(
+                            &mut frame_drain,
+                            writer,
+                            room,
+                            peer_state,
+                        )
+                        .await
+                        .map_err(anyhow::Error::msg)?
+                        {
+                            notebook_doc_converged = converged;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -733,18 +748,19 @@ mod tests {
         let load_path = tmp.path().join("source.ipynb");
         write_one_cell_notebook(&load_path).await;
 
-        let first = start_room_initial_load(&room, load_path.clone(), tmp.path().to_path_buf());
-        let second = start_room_initial_load(&room, load_path, tmp.path().to_path_buf());
-
-        let first_generation = first.borrow().generation();
+        let authoritative = room.initial_load.subscribe_authoritative();
+        start_room_initial_load(&room, load_path.clone(), tmp.path().to_path_buf());
+        let first_generation = authoritative.borrow().generation();
         assert_eq!(
-            first.borrow().clone(),
+            room.initial_load.state(),
             RoomInitialLoadState::Loading {
                 generation: first_generation
             }
         );
+
+        start_room_initial_load(&room, load_path, tmp.path().to_path_buf());
         assert_eq!(
-            second.borrow().generation(),
+            room.initial_load.state().generation(),
             first_generation,
             "all waiters must observe the same source generation"
         );
@@ -766,8 +782,8 @@ mod tests {
         let room = test_room(&tmp);
         let load_path = tmp.path().join("cancelled.ipynb");
         room.initial_load.mark_required();
-        let (claim, _) = crate::notebook_sync_server::claim_room_initial_load(&room, load_path);
-        let claim = claim.expect("required source generation should be claimable");
+        let claim = crate::notebook_sync_server::claim_room_initial_load(&room, load_path)
+            .expect("required source generation should be claimable");
         let generation = claim.generation();
 
         drop(claim);
@@ -795,11 +811,11 @@ mod tests {
         room.initial_load.mark_required();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (claim, _) = crate::notebook_sync_server::claim_room_initial_load(
+            let _claim = crate::notebook_sync_server::claim_room_initial_load(
                 &room,
                 tmp.path().join("panicked.ipynb"),
-            );
-            let _claim = claim.expect("required source generation should be claimable");
+            )
+            .expect("required source generation should be claimable");
             panic!("injected source owner panic");
         }));
 
@@ -892,7 +908,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         room.initial_load.mark_required();
-        let (start, _) = room.initial_load.begin();
+        let start = room.initial_load.begin();
         let RoomInitialLoadStart::Started { generation } = start else {
             panic!("pending load should be claimable");
         };
@@ -1110,7 +1126,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         room.initial_load.mark_required();
-        let (start, _) = room.initial_load.begin();
+        let start = room.initial_load.begin();
         let RoomInitialLoadStart::Started { generation } = start else {
             panic!("pending load should be claimable");
         };
@@ -1283,7 +1299,7 @@ mod tests {
         );
 
         room.initial_load.mark_required();
-        let (start, _) = room.initial_load.begin();
+        let start = room.initial_load.begin();
         let RoomInitialLoadStart::Started { generation } = start else {
             panic!("pending load should be claimable");
         };
@@ -1338,7 +1354,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         room.initial_load.mark_required();
-        let (start, _) = room.initial_load.begin();
+        let start = room.initial_load.begin();
         let RoomInitialLoadStart::Started { generation } = start else {
             panic!("pending load should be claimable");
         };
@@ -1504,7 +1520,7 @@ mod tests {
         };
         assert_eq!(cell_count, 0);
         assert!(matches!(
-            room.initial_load.begin().0,
+            room.initial_load.begin(),
             RoomInitialLoadStart::Observing {
                 generation: observed
             } if observed == generation
@@ -1514,7 +1530,7 @@ mod tests {
     #[test]
     fn stale_completion_cannot_publish_over_retry_generation() {
         let initial_load = RoomInitialLoad::default();
-        let (start, _) = initial_load.begin();
+        let start = initial_load.begin();
         let RoomInitialLoadStart::Started { generation: first } = start else {
             panic!("first source claim should start");
         };
@@ -1524,7 +1540,7 @@ mod tests {
             .retry_failed_claimed()
             .expect("failed source can retry");
         assert!(matches!(
-            initial_load.begin().0,
+            initial_load.begin(),
             RoomInitialLoadStart::Observing { generation } if generation == second
         ));
         assert!(
@@ -1541,7 +1557,7 @@ mod tests {
     fn external_recovery_advances_failed_generation_to_ready() {
         let initial_load = RoomInitialLoad::default();
         initial_load.mark_required();
-        let (start, _) = initial_load.begin();
+        let start = initial_load.begin();
         let RoomInitialLoadStart::Started { generation: failed } = start else {
             panic!("required load should start");
         };
