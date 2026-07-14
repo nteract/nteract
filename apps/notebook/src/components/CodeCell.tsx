@@ -395,7 +395,7 @@ export const CodeCell = memo(function CodeCell({
   const outputs = useCellOutputs(cell.id);
   const executionId = useCellExecutionId(cell.id);
   const execution = useExecution(executionId);
-  const previousOutputCountRef = useRef(outputs.length);
+  const previousLatestOutputIdRef = useRef(outputs[outputs.length - 1]?.output_id);
   const executionCount = execution?.execution_count ?? null;
   const submittedByActorLabel = execution?.submitted_by_actor_label ?? null;
   const isExecutionErrored = execution?.success === false || execution?.status === "error";
@@ -442,17 +442,22 @@ export const CodeCell = memo(function CodeCell({
     }
   }, [isOutputsHidden, onOutputFocusChange, outputFocused, outputs.length, showOutputChrome]);
 
+  // Fires once per newly committed output identity. Output ids are
+  // daemon-stamped UUIDs, unique per run, so a warm re-run that replaces
+  // the previous output in a single commit (length 1 -> 1) still changes
+  // the latest output_id and emits the mark. Keying on array length would
+  // miss that coalesced replacement.
   useEffect(() => {
-    const previousOutputCount = previousOutputCountRef.current;
-    previousOutputCountRef.current = outputs.length;
-    if (outputs.length <= previousOutputCount) return;
-
     const latestOutput = outputs[outputs.length - 1];
+    const previousLatestOutputId = previousLatestOutputIdRef.current;
+    previousLatestOutputIdRef.current = latestOutput?.output_id;
+    if (!latestOutput?.output_id || latestOutput.output_id === previousLatestOutputId) return;
+
     markExecutionPerformance("react.outputs.committed", {
       cellId: cell.id,
       executionId: executionId ?? undefined,
       outputCount: outputs.length,
-      outputId: latestOutput?.output_id,
+      outputId: latestOutput.output_id,
     });
   }, [cell.id, executionId, outputs]);
 
