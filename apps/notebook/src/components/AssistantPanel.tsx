@@ -31,14 +31,41 @@ function nextMessageId(): string {
  * Assistant side panel — a standalone chat against the daemon's
  * `/assistant/chat` proxy. Does not read or write notebook state.
  */
+const MIN_WIDTH = 280;
+const MAX_WIDTH = 720;
+const DEFAULT_WIDTH = 384;
+
 export function AssistantPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [width, setWidth] = useState(DEFAULT_WIDTH);
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const dragStartX = useRef<number | null>(null);
+  const dragStartWidth = useRef<number>(DEFAULT_WIDTH);
+
+  const handleResizePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      dragStartX.current = event.clientX;
+      dragStartWidth.current = width;
+      (event.target as HTMLDivElement).setPointerCapture(event.pointerId);
+    },
+    [width],
+  );
+
+  const handleResizePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragStartX.current === null) return;
+    const delta = dragStartX.current - event.clientX;
+    setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, dragStartWidth.current + delta)));
+  }, []);
+
+  const handleResizePointerUp = useCallback(() => {
+    dragStartX.current = null;
+  }, []);
 
   // Keep the transcript pinned to the bottom as tokens stream in.
   useEffect(() => {
@@ -154,9 +181,17 @@ export function AssistantPanel() {
   return (
     <aside
       data-testid="assistant-panel"
-      className="flex h-full w-[clamp(20rem,26vw,24rem)] shrink-0 flex-col border-l bg-background"
+      className="relative flex h-full shrink-0 flex-col border-l bg-background"
+      style={{ width }}
       aria-label="Assistant"
     >
+      {/* Resize handle */}
+      <div
+        className="absolute inset-y-0 left-0 w-1 cursor-col-resize hover:bg-primary/20 active:bg-primary/30"
+        onPointerDown={handleResizePointerDown}
+        onPointerMove={handleResizePointerMove}
+        onPointerUp={handleResizePointerUp}
+      />
       <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
         <Sparkles className="size-4 text-violet-500" />
         <span className="text-sm font-medium">Assistant</span>
