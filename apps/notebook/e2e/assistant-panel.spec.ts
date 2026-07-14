@@ -25,10 +25,14 @@ test.describe("assistant side panel", () => {
     const panel = page.getByTestId("assistant-panel");
     await expect(panel).toBeVisible();
 
-    // Type a greeting and send.
+    // Type a greeting and send. Use pressSequentially (not fill) so the
+    // recording shows the text being entered character by character rather
+    // than appearing all at once.
     const input = panel.getByTestId("assistant-input");
     await input.click();
-    await input.fill("Hello! Please reply with a short friendly greeting.");
+    await input.pressSequentially("Hello! Please reply with a short friendly greeting.", {
+      delay: 40,
+    });
     await panel.getByTestId("assistant-send").click();
 
     // The user's message renders immediately.
