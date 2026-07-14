@@ -3969,6 +3969,418 @@ async fn test_persist_debouncer_flush_request_reports_write_failure() {
 // File watcher tests
 // ==========================================================================
 
+/// Serialized single-code-cell notebook bytes for watcher tests.
+fn watcher_test_ipynb_bytes(cell_id: &str, source: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [{
+            "id": cell_id,
+            "cell_type": "code",
+            "source": source,
+            "execution_count": null,
+            "outputs": [],
+            "metadata": {}
+        }]
+    }))
+    .unwrap()
+}
+
+fn watcher_observation_for_test(
+    observed: &[u8],
+    now_ms: u64,
+    last_self_write_ms: u64,
+    known_disk: Option<&[u8]>,
+    manifest: &[u8],
+    pending: Option<&[u8]>,
+) -> WatcherObservation {
+    WatcherObservation {
+        observed: super::recovery::source_fingerprint(observed),
+        now_ms,
+        last_self_write_ms,
+        known_disk_hash: known_disk
+            .map(|bytes| *super::recovery::source_fingerprint(bytes).as_bytes()),
+        manifest_fingerprint: super::recovery::source_fingerprint(manifest),
+        pending_checkpoint_fingerprint: pending.map(super::recovery::source_fingerprint),
+    }
+}
+
+/// A snapshot of the room state a watcher event would build its observation
+/// from, mirroring `process_watcher_event` exactly.
+fn watcher_observation_from_room(room: &NotebookRoom, disk_bytes: &[u8]) -> WatcherObservation {
+    let manifest = room.durability.manifest();
+    WatcherObservation {
+        observed: super::recovery::source_fingerprint(disk_bytes),
+        // Far outside any self-write window: the fingerprint guards must
+        // carry the decision on their own.
+        now_ms: 1_000_000,
+        last_self_write_ms: 0,
+        known_disk_hash: room.persistence.known_disk_hash(),
+        manifest_fingerprint: manifest.source_fingerprint,
+        pending_checkpoint_fingerprint: manifest
+            .pending_file_checkpoint
+            .map(|pending| pending.file_fingerprint),
+    }
+}
+
+#[test]
+fn classify_watcher_observation_table() {
+    use WatcherIngestDecision::{Ingest, Skip};
+    use WatcherSkipReason::*;
+
+    const OBSERVED: &[u8] = b"observed notebook bytes";
+    const OTHER: &[u8] = b"some other notebook bytes";
+    // Timestamps outside the self-write window.
+    const QUIET_NOW: u64 = 1_000_000;
+    const QUIET_LAST: u64 = 0;
+    // Timestamps inside the self-write window.
+    const RECENT_NOW: u64 = 1_000_000;
+    const RECENT_LAST: u64 = RECENT_NOW - SELF_WRITE_SKIP_WINDOW_MS + 1;
+
+    let cases: Vec<(&str, WatcherObservation, WatcherIngestDecision)> = vec![
+        (
+            "self-write window only",
+            watcher_observation_for_test(OBSERVED, RECENT_NOW, RECENT_LAST, None, OTHER, None),
+            Skip(SelfWriteWindow),
+        ),
+        (
+            "window boundary is exclusive",
+            watcher_observation_for_test(
+                OBSERVED,
+                RECENT_NOW,
+                RECENT_NOW - SELF_WRITE_SKIP_WINDOW_MS,
+                None,
+                OTHER,
+                None,
+            ),
+            Ingest,
+        ),
+        (
+            "known disk hash only",
+            watcher_observation_for_test(
+                OBSERVED,
+                QUIET_NOW,
+                QUIET_LAST,
+                Some(OBSERVED),
+                OTHER,
+                None,
+            ),
+            Skip(KnownDiskContent),
+        ),
+        (
+            "manifest fingerprint only, diverged baseline",
+            watcher_observation_for_test(
+                OBSERVED,
+                QUIET_NOW,
+                QUIET_LAST,
+                Some(OTHER),
+                OBSERVED,
+                None,
+            ),
+            Skip(ManifestFingerprint),
+        ),
+        (
+            "manifest fingerprint only, no baseline",
+            watcher_observation_for_test(OBSERVED, QUIET_NOW, QUIET_LAST, None, OBSERVED, None),
+            Skip(ManifestFingerprint),
+        ),
+        (
+            "pending checkpoint only",
+            watcher_observation_for_test(
+                OBSERVED,
+                QUIET_NOW,
+                QUIET_LAST,
+                Some(OTHER),
+                OTHER,
+                Some(OBSERVED),
+            ),
+            Skip(PendingCheckpoint),
+        ),
+        (
+            "window and known disk hash",
+            watcher_observation_for_test(
+                OBSERVED,
+                RECENT_NOW,
+                RECENT_LAST,
+                Some(OBSERVED),
+                OTHER,
+                None,
+            ),
+            Skip(SelfWriteWindow),
+        ),
+        (
+            "known disk hash and manifest fingerprint",
+            watcher_observation_for_test(
+                OBSERVED,
+                QUIET_NOW,
+                QUIET_LAST,
+                Some(OBSERVED),
+                OBSERVED,
+                None,
+            ),
+            Skip(KnownDiskContent),
+        ),
+        (
+            "manifest fingerprint and pending checkpoint",
+            watcher_observation_for_test(
+                OBSERVED,
+                QUIET_NOW,
+                QUIET_LAST,
+                None,
+                OBSERVED,
+                Some(OBSERVED),
+            ),
+            Skip(ManifestFingerprint),
+        ),
+        (
+            "all guards at once",
+            watcher_observation_for_test(
+                OBSERVED,
+                RECENT_NOW,
+                RECENT_LAST,
+                Some(OBSERVED),
+                OBSERVED,
+                Some(OBSERVED),
+            ),
+            Skip(SelfWriteWindow),
+        ),
+        (
+            "unknown bytes ingest",
+            watcher_observation_for_test(OBSERVED, QUIET_NOW, QUIET_LAST, None, OTHER, None),
+            Ingest,
+        ),
+        (
+            "unknown bytes ingest despite stale baselines",
+            watcher_observation_for_test(
+                OBSERVED,
+                QUIET_NOW,
+                QUIET_LAST,
+                Some(OTHER),
+                OTHER,
+                Some(OTHER),
+            ),
+            Ingest,
+        ),
+    ];
+
+    for (name, observation, expected) in cases {
+        assert_eq!(
+            classify_watcher_observation(&observation),
+            expected,
+            "case: {name}"
+        );
+    }
+}
+
+/// Fifty byte-identical debounced events (the inotify IN_ACCESS storm shape)
+/// must be fully suppressed: zero merges, zero checkpoint sequence claims,
+/// zero journal appends, and an unchanged source generation. The room's doc
+/// deliberately differs from the disk bytes so a single misclassified event
+/// would merge the disk cell and move every counter.
+#[tokio::test]
+async fn watcher_storm_of_identical_events_is_fully_suppressed() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "storm.ipynb");
+
+    let disk_bytes = watcher_test_ipynb_bytes("storm-cell", "value = 42");
+    tokio::fs::write(&notebook_path, &disk_bytes).await.unwrap();
+    // The baseline a completed save or watcher merge leaves behind.
+    room.persistence.note_disk_content(&disk_bytes);
+
+    let observation = watcher_observation_from_room(&room, &disk_bytes);
+    assert_eq!(
+        classify_watcher_observation(&observation),
+        WatcherIngestDecision::Skip(WatcherSkipReason::KnownDiskContent),
+    );
+
+    let claimed_before = room
+        .persistence
+        .file_checkpoint_coordinator()
+        .latest_claimed_sequence();
+    let manifest_before = room.durability.manifest();
+    let heads_before = room.doc.write().await.get_heads_hex();
+
+    for _ in 0..50 {
+        process_watcher_event(&room, &notebook_path).await;
+    }
+
+    assert_eq!(
+        room.doc.write().await.get_heads_hex(),
+        heads_before,
+        "storm must not merge anything into the doc"
+    );
+    assert_eq!(room.doc.read().await.cell_count(), 0);
+    assert_eq!(
+        room.persistence
+            .file_checkpoint_coordinator()
+            .latest_claimed_sequence(),
+        claimed_before,
+        "storm must not claim checkpoint sequences"
+    );
+    let manifest_after = room.durability.manifest();
+    assert_eq!(
+        manifest_after.sequence, manifest_before.sequence,
+        "storm must not append journal records"
+    );
+    assert_eq!(
+        manifest_after.source_generation, manifest_before.source_generation,
+        "storm must not advance the source generation"
+    );
+}
+
+/// The commit-to-baseline window: a save's journal commit has landed but its
+/// primary-path baseline install has not run yet. An event observing the new
+/// bytes must skip via the manifest fingerprint, not the self-write window
+/// (`last_self_write` stays untouched here).
+#[tokio::test]
+async fn watcher_event_between_journal_commit_and_baseline_install_skips() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "commit-window.ipynb");
+
+    // The bound content this daemon previously saved and reconciled.
+    let old_bytes = watcher_test_ipynb_bytes("cell-1", "x = 1");
+    tokio::fs::write(&notebook_path, &old_bytes).await.unwrap();
+    room.persistence.note_disk_content(&old_bytes);
+
+    // The in-flight save: doc mutated, journaled, new bytes renamed into
+    // place, checkpoint committed. The baseline install has NOT run.
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "x = 2").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let new_bytes = watcher_test_ipynb_bytes("cell-1", "x = 2");
+    tokio::fs::write(&notebook_path, &new_bytes).await.unwrap();
+    let claim = room.persistence.claim_file_checkpoint().unwrap();
+    let heads: Vec<[u8; 32]> = {
+        let mut doc = room.doc.write().await;
+        doc.get_heads().iter().map(|head| head.0).collect()
+    };
+    room.durability
+        .commit_file_checkpoint(
+            notebook_path.clone(),
+            super::recovery::source_fingerprint(&new_bytes),
+            heads,
+            claim.sequence(),
+        )
+        .expect("journal commit for the in-flight save");
+
+    let observation = watcher_observation_from_room(&room, &new_bytes);
+    assert_eq!(
+        classify_watcher_observation(&observation),
+        WatcherIngestDecision::Skip(WatcherSkipReason::ManifestFingerprint),
+        "the committed manifest fingerprint covers the commit-to-baseline window"
+    );
+
+    let claimed_before = room
+        .persistence
+        .file_checkpoint_coordinator()
+        .latest_claimed_sequence();
+    let manifest_before = room.durability.manifest();
+    let heads_before = room.doc.write().await.get_heads_hex();
+
+    process_watcher_event(&room, &notebook_path).await;
+
+    assert_eq!(room.doc.write().await.get_heads_hex(), heads_before);
+    assert_eq!(
+        room.persistence
+            .file_checkpoint_coordinator()
+            .latest_claimed_sequence(),
+        claimed_before
+    );
+    let manifest_after = room.durability.manifest();
+    assert_eq!(manifest_after.sequence, manifest_before.sequence);
+    assert_eq!(
+        manifest_after.source_generation,
+        manifest_before.source_generation
+    );
+    assert!(
+        !matches!(room.lifecycle.availability(), RoomAvailability::Degraded(_)),
+        "our own committed bytes must not degrade the room"
+    );
+}
+
+/// The rename-to-commit window: the new bytes are visible on disk and the
+/// journal holds the prepared checkpoint intent, but the commit marker has
+/// not landed. The pending-checkpoint fingerprint resolves the event; a
+/// misclassification here would manufacture a source conflict because the
+/// journal's durable heads are ahead of its exported heads.
+#[tokio::test]
+async fn watcher_event_in_rename_to_commit_window_skips_via_pending_checkpoint() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "rename-window.ipynb");
+
+    let old_bytes = watcher_test_ipynb_bytes("cell-1", "x = 1");
+    tokio::fs::write(&notebook_path, &old_bytes).await.unwrap();
+    room.persistence.note_disk_content(&old_bytes);
+
+    // The in-flight save: doc mutated and journaled, checkpoint intent
+    // prepared, temp file renamed over the target. The commit marker has
+    // NOT been appended.
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "x = 2").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let new_bytes = watcher_test_ipynb_bytes("cell-1", "x = 2");
+    let claim = room.persistence.claim_file_checkpoint().unwrap();
+    let heads: Vec<[u8; 32]> = {
+        let mut doc = room.doc.write().await;
+        doc.get_heads().iter().map(|head| head.0).collect()
+    };
+    room.durability
+        .prepare_file_checkpoint(
+            notebook_path.clone(),
+            super::recovery::source_fingerprint(&new_bytes),
+            heads,
+            claim.sequence(),
+            None,
+        )
+        .expect("checkpoint intent for the in-flight save");
+    tokio::fs::write(&notebook_path, &new_bytes).await.unwrap();
+
+    let observation = watcher_observation_from_room(&room, &new_bytes);
+    assert_eq!(
+        classify_watcher_observation(&observation),
+        WatcherIngestDecision::Skip(WatcherSkipReason::PendingCheckpoint),
+        "the prepared checkpoint fingerprint covers the rename-to-commit window"
+    );
+
+    let claimed_before = room
+        .persistence
+        .file_checkpoint_coordinator()
+        .latest_claimed_sequence();
+    let manifest_before = room.durability.manifest();
+    let heads_before = room.doc.write().await.get_heads_hex();
+
+    process_watcher_event(&room, &notebook_path).await;
+
+    assert_eq!(room.doc.write().await.get_heads_hex(), heads_before);
+    assert_eq!(
+        room.persistence
+            .file_checkpoint_coordinator()
+            .latest_claimed_sequence(),
+        claimed_before
+    );
+    let manifest_after = room.durability.manifest();
+    assert_eq!(manifest_after.sequence, manifest_before.sequence);
+    assert_eq!(
+        manifest_after.source_generation,
+        manifest_before.source_generation
+    );
+    assert!(
+        manifest_after.pending_file_checkpoint.is_some(),
+        "the prepared intent must remain for the save to commit"
+    );
+    assert!(
+        !matches!(room.lifecycle.availability(), RoomAvailability::Degraded(_)),
+        "our own renamed bytes must not be classified as a source conflict"
+    );
+}
+
 #[test]
 fn test_parse_cells_from_ipynb_with_ids() {
     let json = serde_json::json!({
