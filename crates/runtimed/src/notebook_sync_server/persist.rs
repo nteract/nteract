@@ -272,12 +272,17 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
     // Whether this save targets the room's bound path. Baseline bookkeeping
     // (last_save_sources, the disk-hash staleness guard) applies only to the
     // primary path — saving to an alternate path (Save As) must not corrupt
-    // the baselines for the file watcher.
+    // the baselines for the file watcher. A targeted save on a room with no
+    // bound path is the binding save (untitled promotion): there is no other
+    // primary to corrupt, and the file watcher armed right after promotion
+    // needs this write recorded as the disk baseline, or its first event
+    // treats our own bytes as an external edit.
     let is_primary_path = target_path.is_none()
         || room
             .file_binding
             .path_matches(notebook_path.as_path())
-            .await;
+            .await
+        || room.file_binding.path().await.is_none();
 
     // A degraded room preserves recovered Automerge truth and its divergent
     // source file until the caller chooses an explicit reconciliation path.
@@ -2330,6 +2335,23 @@ pub(crate) fn spawn_notebook_file_watcher(
                             };
                             let observed_fingerprint =
                                 super::recovery::source_fingerprint(contents.as_bytes());
+
+                            // Bytes we already reconciled carry no new disk
+                            // truth. Skipping them here is load-bearing on
+                            // Linux: inotify reports reads (IN_ACCESS), so a
+                            // poller merely reading the file would otherwise
+                            // re-run the merge on every debounce window —
+                            // churning the journal and resetting the autosave
+                            // debounce forever.
+                            if room.persistence.known_disk_hash().is_some()
+                                && !room.persistence.disk_content_diverged(contents.as_bytes())
+                            {
+                                debug!(
+                                    "[notebook-watch] Disk content unchanged for {:?}; skipping",
+                                    notebook_path
+                                );
+                                continue;
+                            }
 
                             // A journal with heads newer than its causal file
                             // checkpoint represents unsaved collaborative
