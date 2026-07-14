@@ -12213,3 +12213,299 @@ fn parse_notebook_jiter_errors_on_missing_or_invalid_cells() {
         .expect("cells: [] is a valid empty notebook");
     assert_eq!(ok.cells.len(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Primary-save baseline gate (verification roadmap item 9)
+// ---------------------------------------------------------------------------
+
+/// One `note_primary_save_baseline` call. The payload index derives distinct
+/// sources and disk bytes per call, so a mixed tuple is detectable even when
+/// two calls share a save sequence.
+struct BaselineSaveCall {
+    sequence: u64,
+    payload: u64,
+}
+
+impl BaselineSaveCall {
+    fn new(sequence: u64, payload: u64) -> Self {
+        Self { sequence, payload }
+    }
+
+    fn sources(&self) -> HashMap<String, String> {
+        HashMap::from([(
+            format!("baseline-cell-{}", self.payload),
+            format!("x = {}", self.payload),
+        )])
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        format!("baseline-disk-bytes-{}", self.payload).into_bytes()
+    }
+}
+
+/// Assert the baseline fields (`last_save_sources`, the recorded disk hash,
+/// and the committed baseline sequence) all carry the expected save's
+/// payload, never a mix of two saves.
+async fn assert_baseline_tuple(
+    persistence: &RoomPersistence,
+    expected: Option<(&HashMap<String, String>, &[u8], u64)>,
+    context: &str,
+) {
+    use sha2::Digest as _;
+
+    let sources = persistence.last_save_sources.read().await.clone();
+    let disk_hash = persistence.known_disk_hash();
+    let sequence = persistence.primary_save_baseline_sequence_for_test();
+    match expected {
+        Some((expected_sources, expected_bytes, expected_sequence)) => {
+            assert_eq!(
+                &sources, expected_sources,
+                "{context}: last_save_sources must belong to the owning save"
+            );
+            let expected_hash: [u8; 32] = sha2::Sha256::digest(expected_bytes).into();
+            assert_eq!(
+                disk_hash,
+                Some(expected_hash),
+                "{context}: disk hash must belong to the owning save"
+            );
+            assert_eq!(
+                sequence, expected_sequence,
+                "{context}: baseline sequence must belong to the owning save"
+            );
+        }
+        None => {
+            assert!(
+                sources.is_empty(),
+                "{context}: no accepted save yet, last_save_sources must stay empty"
+            );
+            assert_eq!(
+                disk_hash, None,
+                "{context}: no accepted save yet, disk hash must stay unset"
+            );
+            assert_eq!(
+                sequence, 0,
+                "{context}: no accepted save yet, baseline sequence must stay 0"
+            );
+        }
+    }
+}
+
+/// Replay a deterministic sequence of baseline calls and, after every call,
+/// assert the whole tuple is owned by the maximal accepted call so far.
+async fn drive_primary_save_baseline_calls(calls: &[BaselineSaveCall], scenario: &str) {
+    let persistence = RoomPersistence::ephemeral();
+    let mut owner: Option<&BaselineSaveCall> = None;
+    for (step, call) in calls.iter().enumerate() {
+        let context = format!(
+            "{scenario}: step {step} (sequence {}, payload {})",
+            call.sequence, call.payload
+        );
+        let accepted = persistence
+            .note_primary_save_baseline(call.sequence, call.sources(), &call.bytes())
+            .await;
+        // The gate accepts monotonically: any call at or above the newest
+        // accepted sequence rebinds the whole tuple; anything older is
+        // refused outright.
+        let expect_accept = owner.is_none_or(|current| call.sequence >= current.sequence);
+        assert_eq!(accepted, expect_accept, "{context}: acceptance mismatch");
+        if accepted {
+            owner = Some(call);
+        }
+        let expected_tuple =
+            owner.map(|owning| (owning.sources(), owning.bytes(), owning.sequence));
+        assert_baseline_tuple(
+            &persistence,
+            expected_tuple
+                .as_ref()
+                .map(|(sources, bytes, sequence)| (sources, bytes.as_slice(), *sequence)),
+            &context,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn primary_save_baseline_out_of_order_permutations_keep_tuple_from_max_accepted_call() {
+    const PERMUTATIONS: [[u64; 3]; 6] = [
+        [1, 2, 3],
+        [1, 3, 2],
+        [2, 1, 3],
+        [2, 3, 1],
+        [3, 1, 2],
+        [3, 2, 1],
+    ];
+    for (permutation_index, order) in PERMUTATIONS.iter().enumerate() {
+        let calls: Vec<BaselineSaveCall> = order
+            .iter()
+            .enumerate()
+            .map(|(step, &sequence)| {
+                BaselineSaveCall::new(sequence, (permutation_index as u64) * 10 + step as u64)
+            })
+            .collect();
+        drive_primary_save_baseline_calls(&calls, &format!("permutation {order:?}")).await;
+    }
+}
+
+#[tokio::test]
+async fn primary_save_baseline_duplicate_sequences_rebind_only_at_current_maximum() {
+    // A replayed duplicate at the current maximum re-owns the whole tuple.
+    drive_primary_save_baseline_calls(
+        &[BaselineSaveCall::new(2, 0), BaselineSaveCall::new(2, 1)],
+        "duplicate at the maximum",
+    )
+    .await;
+
+    // Duplicates of an already-superseded sequence stay refused and mutate
+    // nothing, while a duplicate of the maximum still lands.
+    drive_primary_save_baseline_calls(
+        &[
+            BaselineSaveCall::new(3, 10),
+            BaselineSaveCall::new(1, 11),
+            BaselineSaveCall::new(1, 12),
+            BaselineSaveCall::new(3, 13),
+        ],
+        "stale duplicates after a newer save",
+    )
+    .await;
+
+    // Interleaved duplicates across an out-of-order burst.
+    drive_primary_save_baseline_calls(
+        &[
+            BaselineSaveCall::new(2, 20),
+            BaselineSaveCall::new(5, 21),
+            BaselineSaveCall::new(2, 22),
+            BaselineSaveCall::new(5, 23),
+            BaselineSaveCall::new(4, 24),
+        ],
+        "interleaved duplicates",
+    )
+    .await;
+}
+
+fn baseline_race_ipynb_bytes(cell_id: &str, source: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "cells": [{
+            "cell_type": "code",
+            "execution_count": null,
+            "id": cell_id,
+            "metadata": {},
+            "outputs": [],
+            "source": source,
+        }],
+        "metadata": {},
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }))
+    .unwrap()
+}
+
+/// Complete a reserved checkpoint through the same durable-intent callback
+/// seams the production save path uses, committing the checkpoint into the
+/// room's durability manifest.
+fn complete_checkpoint_through_durable_intent_seams(
+    room: &NotebookRoom,
+    reservation: file_checkpoint::SaveSequenceClaim,
+    path: &Path,
+    bytes: &[u8],
+) -> file_checkpoint::FileCheckpoint {
+    let target =
+        file_checkpoint::FileCheckpointTarget::for_content(path.to_path_buf(), Vec::new(), bytes);
+    let durability = &room.durability;
+    let outcome = room
+        .persistence
+        .file_checkpoint_coordinator()
+        .complete_reserved_with_durable_intent(
+            reservation,
+            target,
+            bytes,
+            |preparation| {
+                durability
+                    .prepare_file_checkpoint(
+                        preparation.path.clone(),
+                        preparation.file_fingerprint,
+                        preparation.exported_heads.clone(),
+                        preparation.save_sequence,
+                        None,
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            },
+            |preparation| {
+                durability
+                    .abort_file_checkpoint(preparation.save_sequence)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            },
+            |checkpoint| {
+                durability
+                    .commit_file_checkpoint(
+                        checkpoint.path.clone(),
+                        checkpoint.file_fingerprint,
+                        checkpoint.exported_heads.clone(),
+                        checkpoint.save_sequence,
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            },
+        );
+    match outcome {
+        file_checkpoint::SaveOutcome::Saved { checkpoint } => checkpoint,
+        other => panic!("checkpoint completion should commit a save: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn save_continuation_race_superseded_sequence_fails_manifest_triple_check_and_rebinds_nothing(
+) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, false);
+    let path = tmp.path().join("raced.ipynb");
+
+    let s1_bytes = baseline_race_ipynb_bytes("cell-s1", "s1 = 1");
+    let s2_bytes = baseline_race_ipynb_bytes("cell-s2", "s2 = 2");
+
+    let s1 = room.persistence.claim_file_checkpoint().unwrap();
+    let s2 = room.persistence.claim_file_checkpoint().unwrap();
+    let s1_sequence = s1.sequence();
+    let s2_sequence = s2.sequence();
+    assert!(s2_sequence > s1_sequence);
+
+    // Both blocking completions commit in claim order; s2's checkpoint is
+    // the newest committed manifest entry before either async continuation
+    // resumes.
+    complete_checkpoint_through_durable_intent_seams(&room, s1, &path, &s1_bytes);
+    complete_checkpoint_through_durable_intent_seams(&room, s2, &path, &s2_bytes);
+
+    // s1's continuation resumes late: the manifest triple-check (save
+    // sequence, source fingerprint, canonical path) must refuse it and
+    // rebind nothing.
+    assert!(
+        !refresh_primary_baseline_from_checkpoint(&room, &path, s1_sequence).await,
+        "stale continuation must fail the manifest triple-check"
+    );
+    assert_baseline_tuple(&room.persistence, None, "after stale s1 continuation").await;
+
+    // s2's continuation matches the manifest and installs the whole tuple.
+    assert!(
+        refresh_primary_baseline_from_checkpoint(&room, &path, s2_sequence).await,
+        "committed continuation must rebuild the baseline"
+    );
+    let s2_sources = HashMap::from([("cell-s2".to_string(), "s2 = 2".to_string())]);
+    assert_baseline_tuple(
+        &room.persistence,
+        Some((&s2_sources, s2_bytes.as_slice(), s2_sequence)),
+        "after s2 continuation",
+    )
+    .await;
+
+    // A replayed stale continuation still rebinds nothing once a real
+    // baseline exists.
+    assert!(!refresh_primary_baseline_from_checkpoint(&room, &path, s1_sequence).await);
+    assert_baseline_tuple(
+        &room.persistence,
+        Some((&s2_sources, s2_bytes.as_slice(), s2_sequence)),
+        "after replayed stale s1 continuation",
+    )
+    .await;
+}

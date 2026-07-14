@@ -470,6 +470,12 @@ impl RoomPersistence {
         true
     }
 
+    /// Test-only view of the committed primary-save baseline sequence.
+    #[cfg(test)]
+    pub fn primary_save_baseline_sequence_for_test(&self) -> u64 {
+        self.primary_save_baseline_sequence.load(Ordering::Acquire)
+    }
+
     /// The baseline recorded by [`Self::note_disk_content`], if any.
     pub fn known_disk_hash(&self) -> Option<[u8; 32]> {
         self.last_known_disk_hash.lock().ok().and_then(|h| *h)
