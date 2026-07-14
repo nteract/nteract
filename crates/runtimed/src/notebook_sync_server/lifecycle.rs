@@ -156,14 +156,6 @@ impl RoomAvailability {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum RoomAvailabilityTarget {
-    Attached,
-    ProjectionReady,
-    Interactive,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RoomWaitResult<T> {
     Reached(T),
@@ -183,8 +175,6 @@ impl<T> RoomWaitResult<T> {
 pub struct StagedChangeBatch {
     pub changes: Vec<Change>,
     pub hashes: Vec<ChangeHash>,
-    #[allow(dead_code)]
-    pub resulting_heads: Vec<ChangeHash>,
 }
 
 #[derive(Clone)]
@@ -1188,9 +1178,8 @@ impl RoomLifecycle {
         }
     }
 
-    pub async fn wait_for_availability(
+    pub async fn wait_for_projection_ready(
         &self,
-        target: RoomAvailabilityTarget,
         timeout: Duration,
     ) -> RoomWaitResult<RoomAvailability> {
         let mut receiver = self.subscribe_availability();
@@ -1198,16 +1187,8 @@ impl RoomLifecycle {
             loop {
                 let state = receiver.borrow().clone();
                 let reached = matches!(
-                    (target, &state),
-                    (RoomAvailabilityTarget::Attached, _)
-                        | (
-                            RoomAvailabilityTarget::ProjectionReady,
-                            RoomAvailability::ProjectionReady(_) | RoomAvailability::Interactive(_)
-                        )
-                        | (
-                            RoomAvailabilityTarget::Interactive,
-                            RoomAvailability::Interactive(_)
-                        )
+                    &state,
+                    RoomAvailability::ProjectionReady(_) | RoomAvailability::Interactive(_)
                 );
                 if reached || matches!(state, RoomAvailability::Degraded(_)) {
                     return state;
@@ -1329,10 +1310,7 @@ mod tests {
         let lifecycle = RoomLifecycle::test_default();
         lifecycle.mark_source_required();
         let result = lifecycle
-            .wait_for_availability(
-                RoomAvailabilityTarget::ProjectionReady,
-                Duration::from_millis(1),
-            )
+            .wait_for_projection_ready(Duration::from_millis(1))
             .await;
         assert!(matches!(
             result,

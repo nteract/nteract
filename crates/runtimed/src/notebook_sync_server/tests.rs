@@ -821,22 +821,6 @@ async fn reservation_guards_stack() {
 }
 
 #[tokio::test]
-async fn reservation_guard_room_accessor_returns_same_arc() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let blob_store = test_blob_store(&tmp);
-    let room = Arc::new(NotebookRoom::new_fresh(
-        Uuid::new_v4(),
-        None,
-        tmp.path(),
-        blob_store,
-        false,
-    ));
-
-    let guard = ReservationGuard::new(room.clone());
-    assert!(Arc::ptr_eq(guard.room(), &room));
-}
-
-#[tokio::test]
 async fn test_room_load_or_create_new() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
@@ -1003,10 +987,7 @@ async fn published_room_source_claim_cancellation_terminalizes_projection_waits(
     ));
     let waited = room
         .lifecycle
-        .wait_for_availability(
-            RoomAvailabilityTarget::ProjectionReady,
-            std::time::Duration::from_secs(1),
-        )
+        .wait_for_projection_ready(std::time::Duration::from_secs(1))
         .await;
     assert!(matches!(
         waited,
@@ -3990,7 +3971,8 @@ fn test_parse_cells_from_ipynb_with_ids() {
         ]
     });
 
-    let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
+    let parsed = parse_cells_from_ipynb_for_notebook(&json, Uuid::nil())
+        .expect("Should parse valid notebook");
     let cells = &parsed.cells;
     assert_eq!(cells.len(), 2);
     assert_eq!(cells[0].id, "cell-1");
@@ -4025,7 +4007,8 @@ fn test_parse_cells_from_ipynb_missing_ids() {
         ]
     });
 
-    let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
+    let parsed = parse_cells_from_ipynb_for_notebook(&json, Uuid::nil())
+        .expect("Should parse valid notebook");
     let cells = &parsed.cells;
     assert_eq!(cells.len(), 2);
     // Should derive UUIDs for ID-less cells so recovery and watcher reparses
@@ -4071,7 +4054,8 @@ fn test_parse_cells_from_ipynb_empty() {
     let json = serde_json::json!({
         "cells": []
     });
-    let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid empty notebook");
+    let parsed = parse_cells_from_ipynb_for_notebook(&json, Uuid::nil())
+        .expect("Should parse valid empty notebook");
     assert!(parsed.cells.is_empty());
     assert!(parsed.outputs_by_cell.is_empty());
 }
@@ -4083,7 +4067,7 @@ fn test_parse_cells_from_ipynb_no_cells_key() {
         "metadata": {}
     });
     assert!(
-        parse_cells_from_ipynb(&json).is_none(),
+        parse_cells_from_ipynb_for_notebook(&json, Uuid::nil()).is_none(),
         "Should return None for invalid notebook"
     );
 }
@@ -5933,7 +5917,7 @@ async fn bench_streaming_load_steps() {
     let read_elapsed = t0.elapsed();
 
     let t_parse = std::time::Instant::now();
-    let parsed = parse_notebook_jiter(&bytes).unwrap();
+    let parsed = parse_notebook_jiter_for_notebook(&bytes, Uuid::nil()).unwrap();
     let cells = parsed.cells;
     let parse_elapsed = t_parse.elapsed();
 
@@ -11898,14 +11882,15 @@ fn parse_notebook_jiter_errors_on_missing_or_invalid_cells() {
     // Missing `cells` key -> Err (was previously Ok with empty cells).
     let missing = br#"{"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
     assert!(
-        parse_notebook_jiter(missing).is_err(),
+        parse_notebook_jiter_for_notebook(missing, Uuid::nil()).is_err(),
         "a notebook with no cells key must fail to load"
     );
     // `cells` present but not an array -> Err (unchanged).
     let not_array = br#"{"cells":{},"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
-    assert!(parse_notebook_jiter(not_array).is_err());
+    assert!(parse_notebook_jiter_for_notebook(not_array, Uuid::nil()).is_err());
     // A genuine empty notebook (cells: []) still parses successfully.
     let empty = br#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
-    let ok = parse_notebook_jiter(empty).expect("cells: [] is a valid empty notebook");
+    let ok = parse_notebook_jiter_for_notebook(empty, Uuid::nil())
+        .expect("cells: [] is a valid empty notebook");
     assert_eq!(ok.cells.len(), 0);
 }
