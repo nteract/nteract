@@ -208,7 +208,7 @@ export function AssistantPanel() {
                   ) : (
                     <Streamdown
                       mode={message.isStreaming ? "streaming" : "static"}
-                      className="prose prose-sm dark:prose-invert max-w-none"
+                      className="prose prose-sm dark:prose-invert max-w-none [&_ul]:pl-5 [&_ol]:pl-5"
                     >
                       {message.content}
                     </Streamdown>
