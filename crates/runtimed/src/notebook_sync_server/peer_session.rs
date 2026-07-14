@@ -271,6 +271,11 @@ where
 ///
 /// The caller passes `peer_state` from the initial notebook-doc sync so each
 /// streamed batch can produce deltas from the same baseline.
+///
+/// Test-only wrapper that supplies an inert frame drain (exhausted framed
+/// reader, no deferred frames, local connection identity) so ordering
+/// invariants can be asserted on the writer side without a live client
+/// stream.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) async fn stream_initial_load<R, W>(
@@ -289,6 +294,9 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    let mut framed_reader = connection::FramedReader::spawn(tokio::io::empty(), 1);
+    let mut deferred_frames = VecDeque::new();
+    let connection_identity = RoomConnectionIdentity::local(Some("mcp:test".to_string())).await?;
     Ok(stream_initial_load_inner(
         writer,
         room,
@@ -299,7 +307,11 @@ where
         runtime_state_phase,
         initial_load_phase,
         client_protocol_version,
-        None,
+        InitialLoadFrameDrain {
+            framed_reader: &mut framed_reader,
+            deferred_frames: &mut deferred_frames,
+            connection_identity: &connection_identity,
+        },
     )
     .await?
     .initial_load_phase)
@@ -333,11 +345,11 @@ where
         runtime_state_phase,
         initial_load_phase,
         client_protocol_version,
-        Some(InitialLoadFrameDrain {
+        InitialLoadFrameDrain {
             framed_reader,
             deferred_frames,
             connection_identity,
-        }),
+        },
     )
     .await?;
     *notebook_doc_phase = outcome.notebook_doc_phase;
@@ -355,7 +367,7 @@ async fn stream_initial_load_inner<W>(
     runtime_state_phase: notebook_protocol::protocol::RuntimeStatePhaseWire,
     initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
     client_protocol_version: u8,
-    mut frame_drain: Option<InitialLoadFrameDrain<'_>>,
+    mut frame_drain: InitialLoadFrameDrain<'_>,
 ) -> anyhow::Result<InitialLoadSyncOutcome>
 where
     W: AsyncWrite + Unpin,
@@ -398,14 +410,12 @@ where
                 if send_initial_load_doc_delta(writer, room, peer_state).await? {
                     notebook_doc_converged = false;
                 }
-                if let Some(drain) = frame_drain.as_mut() {
-                    if let Some(converged) =
-                        drain_buffered_initial_load_frames(drain, writer, room, peer_state)
-                            .await
-                            .map_err(anyhow::Error::msg)?
-                    {
-                        notebook_doc_converged = converged;
-                    }
+                if let Some(converged) =
+                    drain_buffered_initial_load_frames(&mut frame_drain, writer, room, peer_state)
+                        .await
+                        .map_err(anyhow::Error::msg)?
+                {
+                    notebook_doc_converged = converged;
                 }
                 if notebook_doc_converged {
                     notebook_doc_phase =
@@ -430,11 +440,14 @@ where
                 generation: settled_generation,
                 reason,
             } if settled_generation == generation => {
-                if let Some(drain) = frame_drain.as_mut() {
-                    apply_failed_initial_load_notebook_frames(drain, writer, room, peer_state)
-                        .await
-                        .map_err(anyhow::Error::msg)?;
-                }
+                apply_failed_initial_load_notebook_frames(
+                    &mut frame_drain,
+                    writer,
+                    room,
+                    peer_state,
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
                 // Preserving buffered edits awaits room locks and transport.
                 // An external watcher/save can reconcile the source and
                 // advance Failed(g) to Ready(g+1) meanwhile. Never publish the
@@ -486,14 +499,16 @@ where
                         if send_initial_load_doc_delta(writer, room, peer_state).await? {
                             notebook_doc_converged = false;
                         }
-                        if let Some(drain) = frame_drain.as_mut() {
-                            if let Some(converged) =
-                                drain_buffered_initial_load_frames(drain, writer, room, peer_state)
-                                .await
-                                .map_err(anyhow::Error::msg)?
-                            {
-                                notebook_doc_converged = converged;
-                            }
+                        if let Some(converged) = drain_buffered_initial_load_frames(
+                            &mut frame_drain,
+                            writer,
+                            room,
+                            peer_state,
+                        )
+                        .await
+                        .map_err(anyhow::Error::msg)?
+                        {
+                            notebook_doc_converged = converged;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
