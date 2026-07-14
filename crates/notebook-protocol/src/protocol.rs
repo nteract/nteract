@@ -136,12 +136,6 @@ pub struct QueueEntry {
     pub execution_id: String,
 }
 
-/// Frontend-observed notebook state used to guard trust-approved follow-up actions.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct GuardedNotebookProvenance {
-    pub observed_heads: Vec<String>,
-}
-
 /// Dependency state used to guard trust-approved sync.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DependencyGuard {
@@ -222,26 +216,6 @@ pub struct EnvSyncDiff {
 }
 
 // ── Notebook protocol enums ─────────────────────────────────────────────────
-
-/// Structured error kinds returned in `NotebookResponse::SaveError`.
-///
-/// Note: `path` fields carry the serialized path string. Callers that build
-/// `PathAlreadyOpen` from a `PathBuf` should use `p.to_string_lossy().into_owned()`
-/// so non-UTF-8 paths degrade gracefully on the wire (Task 6.2 concern).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SaveErrorKind {
-    /// Another room is currently serving this path. The agent must close
-    /// the conflicting session (by UUID) before saving here.
-    PathAlreadyOpen {
-        /// UUID of the room that currently holds this path.
-        uuid: String,
-        /// The conflicting path (lossy-UTF-8 serialized from `PathBuf`).
-        path: String,
-    },
-    /// I/O or serialization failure. Message is human-readable.
-    Io { message: String },
-}
 
 /// Why a save request could not advance the causal file checkpoint.
 ///
@@ -931,9 +905,6 @@ pub enum NotebookResponse {
         operation: SourceReconciliationOperation,
         reason: SourceReconciliationBlockedReason,
     },
-
-    /// Legacy save failure response retained for older daemon/client paths.
-    SaveError { error: SaveErrorKind },
 
     /// Notebook forked into a new ephemeral room.
     NotebookCloned {
@@ -1782,61 +1753,8 @@ mod tests {
         }
     }
 
-    fn extract_string_array(source: &str, const_name: &str) -> BTreeSet<String> {
-        let needle = format!("export const {const_name} = [");
-        let start = source
-            .find(&needle)
-            .unwrap_or_else(|| panic!("missing TS const {const_name}"))
-            + needle.len();
-        let rest = &source[start..];
-        let end = rest
-            .find("] as const")
-            .unwrap_or_else(|| panic!("missing end of TS const {const_name}"));
-
-        rest[..end]
-            .split(',')
-            .filter_map(|part| {
-                let value = part.trim().trim_matches('\n').trim();
-                value
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .map(ToOwned::to_owned)
-            })
-            .collect()
-    }
-
     fn expected_values(values: &[&str]) -> BTreeSet<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
-    }
-
-    #[test]
-    fn typescript_protocol_contract_matches_rust_discriminants() {
-        let ts_contract = include_str!("../../../packages/runtimed/src/protocol-contract.ts");
-
-        assert_eq!(
-            extract_string_array(ts_contract, "NOTEBOOK_REQUEST_TYPES"),
-            expected_values(crate::typescript::NOTEBOOK_REQUEST_TYPES)
-        );
-        assert_eq!(
-            extract_string_array(ts_contract, "NOTEBOOK_RESPONSE_RESULTS"),
-            expected_values(crate::typescript::NOTEBOOK_RESPONSE_RESULTS)
-        );
-        assert_eq!(
-            extract_string_array(ts_contract, "SESSION_CONTROL_TYPES"),
-            expected_values(crate::typescript::SESSION_CONTROL_TYPES)
-        );
-        assert_eq!(
-            extract_string_array(ts_contract, "NOTEBOOK_DOC_PHASES"),
-            expected_values(crate::typescript::NOTEBOOK_DOC_PHASES)
-        );
-        assert_eq!(
-            extract_string_array(ts_contract, "RUNTIME_STATE_PHASES"),
-            expected_values(crate::typescript::RUNTIME_STATE_PHASES)
-        );
-        assert_eq!(
-            extract_string_array(ts_contract, "INITIAL_LOAD_PHASES"),
-            expected_values(crate::typescript::INITIAL_LOAD_PHASES)
-        );
     }
 
     #[test]

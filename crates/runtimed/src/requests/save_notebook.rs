@@ -126,17 +126,9 @@ async fn handle_with_intent(
     };
 
     if let Some(ref canonical_pre) = pre_claim {
-        if let Err(kind) =
+        if let Err(reason) =
             NotebookFileBinding::claim_path(&daemon.notebook_rooms, canonical_pre, room.id).await
         {
-            let reason = match kind {
-                notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen { uuid, path } => {
-                    notebook_protocol::protocol::SaveBlockedReason::PathAlreadyOpen { uuid, path }
-                }
-                notebook_protocol::protocol::SaveErrorKind::Io { message } => {
-                    notebook_protocol::protocol::SaveBlockedReason::Io { message }
-                }
-            };
             return NotebookResponse::NotebookSaveBlocked {
                 path: path.clone(),
                 save_sequence: Some(save_sequence),

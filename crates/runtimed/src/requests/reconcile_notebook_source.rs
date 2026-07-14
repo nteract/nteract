@@ -117,12 +117,6 @@ async fn save_recovered_as(
         NotebookResponse::NotebookSaveBlocked { reason, .. } => {
             blocked(operation, map_save_block(reason))
         }
-        NotebookResponse::SaveError { error } => blocked(
-            operation,
-            SourceReconciliationBlockedReason::Io {
-                message: format!("save recovered notebook failed: {error:?}"),
-            },
-        ),
         NotebookResponse::Error { error } => blocked(
             operation,
             SourceReconciliationBlockedReason::Io { message: error },
@@ -193,12 +187,6 @@ async fn keep_recovered(
         NotebookResponse::NotebookSaveBlocked { reason, .. } => {
             blocked(operation, map_save_block(reason))
         }
-        NotebookResponse::SaveError { error } => blocked(
-            operation,
-            SourceReconciliationBlockedReason::Io {
-                message: format!("overwrite recovered notebook failed: {error:?}"),
-            },
-        ),
         NotebookResponse::Error { error } => blocked(
             operation,
             SourceReconciliationBlockedReason::Io { message: error },

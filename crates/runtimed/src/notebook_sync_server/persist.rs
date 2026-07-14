@@ -1226,17 +1226,17 @@ pub(crate) async fn try_claim_path(
     rooms: &NotebookRooms,
     canonical: &Path,
     uuid: uuid::Uuid,
-) -> Result<(), notebook_protocol::protocol::SaveErrorKind> {
+) -> Result<(), notebook_protocol::protocol::SaveBlockedReason> {
     match rooms.bind_path(uuid, canonical.to_path_buf()).await {
         Ok(()) => Ok(()),
         Err(path_index::PathIndexError::PathAlreadyOpen { uuid, path: p }) => Err(
-            notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen {
+            notebook_protocol::protocol::SaveBlockedReason::PathAlreadyOpen {
                 uuid: uuid.to_string(),
                 path: p.to_string_lossy().into_owned(),
             },
         ),
         Err(path_index::PathIndexError::RegistryFrozen) => {
-            Err(notebook_protocol::protocol::SaveErrorKind::Io {
+            Err(notebook_protocol::protocol::SaveBlockedReason::Io {
                 message: "notebook room publication is frozen for clean shutdown".to_string(),
             })
         }
